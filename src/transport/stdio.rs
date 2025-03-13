@@ -1,8 +1,10 @@
 use async_trait::async_trait;
-use hyper::{Body, Request, Response, StatusCode};
+use hyper::{Body, Request, Response, Server, StatusCode};
+use hyper::service::{make_service_fn, service_fn};
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -14,24 +16,42 @@ use crate::transport::{Transport, TransportMode};
 /// STDIO transport handler for MCP servers
 #[derive(Clone)]
 pub struct StdioTransport {
+    port: Option<u16>,
     container_id: Arc<Mutex<Option<String>>>,
     container_name: Arc<Mutex<Option<String>>>,
     runtime: Arc<Mutex<Option<Box<dyn ContainerRuntime>>>>,
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     message_tx: Arc<Mutex<Option<mpsc::Sender<SseMessage>>>>,
     response_rx: Arc<Mutex<Option<mpsc::Receiver<JsonRpcMessage>>>>,
+    http_shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
 impl StdioTransport {
     /// Create a new STDIO transport handler
     pub fn new() -> Self {
         Self {
+            port: None,
             container_id: Arc::new(Mutex::new(None)),
             container_name: Arc::new(Mutex::new(None)),
             runtime: Arc::new(Mutex::new(None)),
             shutdown_tx: Arc::new(Mutex::new(None)),
             message_tx: Arc::new(Mutex::new(None)),
             response_rx: Arc::new(Mutex::new(None)),
+            http_shutdown_tx: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Create a new STDIO transport handler with a specific port
+    pub fn with_port(port: u16) -> Self {
+        Self {
+            port: Some(port),
+            container_id: Arc::new(Mutex::new(None)),
+            container_name: Arc::new(Mutex::new(None)),
+            runtime: Arc::new(Mutex::new(None)),
+            shutdown_tx: Arc::new(Mutex::new(None)),
+            message_tx: Arc::new(Mutex::new(None)),
+            response_rx: Arc::new(Mutex::new(None)),
+            http_shutdown_tx: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -41,6 +61,135 @@ impl StdioTransport {
         let new_runtime = Arc::new(Mutex::new(Some(runtime)));
         self.runtime = new_runtime;
         self
+    }
+
+    /// Start the HTTP server for the reverse proxy
+    async fn start_http_server(&self, port: u16) -> Result<()> {
+        // Get container ID and name
+        let container_id = {
+            let guard = self.container_id.lock().await;
+            guard.clone()
+        };
+        
+        let container_id = match container_id {
+            Some(id) => id,
+            None => return Err(Error::Transport("Container ID not set".to_string())),
+        };
+
+        let container_name = {
+            let guard = self.container_name.lock().await;
+            guard.clone()
+        };
+        
+        let container_name = match container_name {
+            Some(name) => name,
+            None => return Err(Error::Transport("Container name not set".to_string())),
+        };
+
+        // Clone the message sender for use in the service
+        let message_tx = {
+            let guard = self.message_tx.lock().await;
+            guard.clone()
+        };
+        
+        let message_tx = match message_tx {
+            Some(tx) => tx,
+            None => return Err(Error::Transport("Message sender not available".to_string())),
+        };
+
+        // Create service function for handling requests
+        let container_id_clone = container_id.clone();
+        let message_tx_clone = message_tx.clone();
+        
+        let make_svc = make_service_fn(move |_| {
+            let container_id = container_id_clone.clone();
+            let message_tx = message_tx_clone.clone();
+            
+            async move {
+                Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
+                    let container_id = container_id.clone();
+                    let message_tx = message_tx.clone();
+                    
+                    async move {
+                        // Read the request body
+                        let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                eprintln!("Error reading request body: {}", e);
+                                return Ok::<_, hyper::Error>(Response::builder()
+                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                    .body(Body::from(format!("Error: {}", e)))
+                                    .unwrap());
+                            }
+                        };
+                        
+                        let body_str = String::from_utf8_lossy(&body_bytes);
+                        
+                        // Parse the SSE message
+                        let sse_message = match StdioTransport::parse_sse_message(&body_str) {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                eprintln!("Error parsing SSE message: {}", e);
+                                return Ok(Response::builder()
+                                    .status(StatusCode::BAD_REQUEST)
+                                    .body(Body::from(format!("Error: {}", e)))
+                                    .unwrap());
+                            }
+                        };
+                        
+                        // Log the message
+                        println!("Received SSE message for container {}: event={}, data={}",
+                            container_id,
+                            sse_message.event,
+                            sse_message.data
+                        );
+                        
+                        // Send the message to the processor
+                        if let Err(e) = message_tx.send(sse_message).await {
+                            eprintln!("Error sending message: {}", e);
+                            return Ok(Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(Body::from(format!("Error: {}", e)))
+                                .unwrap());
+                        }
+                        
+                        // Return a success response
+                        Ok(Response::builder()
+                            .status(StatusCode::OK)
+                            .body(Body::empty())
+                            .unwrap())
+                    }
+                }))
+            }
+        });
+
+        // Create the server
+        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        let server = Server::bind(&addr).serve(make_svc);
+        
+        println!("Reverse proxy started for STDIO container {} on port {}", container_name, port);
+        println!("Forwarding SSE events to container's stdin/stdout");
+
+        // Create shutdown channel
+        let (tx, rx) = oneshot::channel::<()>();
+        {
+            let mut guard = self.http_shutdown_tx.lock().await;
+            *guard = Some(tx);
+        }
+
+        // Run the server with graceful shutdown
+        let server_with_shutdown = server.with_graceful_shutdown(async {
+            rx.await.ok();
+        });
+
+        // Spawn the server task
+        tokio::spawn(async move {
+            if let Err(e) = server_with_shutdown.await {
+                eprintln!("Proxy server error: {}", e);
+            }
+        });
+
+        Ok(())
     }
 
     /// Process SSE messages and handle bidirectional communication with the container
@@ -311,7 +460,7 @@ impl Transport for StdioTransport {
         &self,
         container_id: &str,
         container_name: &str,
-        _port: Option<u16>,
+        port: Option<u16>,
         env_vars: &mut HashMap<String, String>,
     ) -> Result<()> {
         // Store container ID and name
@@ -322,6 +471,13 @@ impl Transport for StdioTransport {
         let mut name_guard = self.container_name.lock().await;
         *name_guard = Some(container_name.to_string());
         drop(name_guard);
+
+        // Store port if provided
+        if let Some(p) = port {
+            // Since we're using a non-mutex field, we need to create a mutable clone
+            let mut this = self.clone();
+            this.port = Some(p);
+        }
 
         // Set environment variables for the container
         env_vars.insert("MCP_TRANSPORT".to_string(), "stdio".to_string());
@@ -389,6 +545,17 @@ impl Transport for StdioTransport {
 
         println!("STDIO transport started for container {}", container_name);
 
+        // Start the HTTP server if a port is provided
+        if let Some(port) = self.port {
+            if let Err(e) = self.start_http_server(port).await {
+                eprintln!("Failed to start HTTP server: {}", e);
+                // Continue anyway, as the STDIO transport is still functional
+            }
+        } else {
+            println!("No port specified, HTTP reverse proxy not started");
+            println!("To use HTTP reverse proxy with STDIO transport, specify a port with --port");
+        }
+
         Ok(())
     }
 
@@ -400,13 +567,23 @@ impl Transport for StdioTransport {
             println!("STDIO transport stopped");
         }
 
+        // Stop the HTTP server if it's running
+        let mut http_guard = self.http_shutdown_tx.lock().await;
+        if let Some(tx) = http_guard.take() {
+            let _ = tx.send(());
+            println!("HTTP reverse proxy stopped");
+        }
+
         Ok(())
     }
 
     async fn is_running(&self) -> Result<bool> {
         // Check if shutdown channel is still available
-        let guard = self.shutdown_tx.lock().await;
-        Ok(guard.is_some())
+        let stdio_running = self.shutdown_tx.lock().await.is_some();
+        let http_running = self.http_shutdown_tx.lock().await.is_some();
+        
+        // Transport is considered running if either the STDIO transport or HTTP server is running
+        Ok(stdio_running || http_running)
     }
     
     fn as_any(&self) -> &dyn Any {

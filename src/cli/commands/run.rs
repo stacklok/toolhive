@@ -18,7 +18,7 @@ pub struct RunCommand {
     #[arg(long)]
     pub name: String,
 
-    /// Port to expose (for SSE transport)
+    /// Port to expose (for SSE transport or STDIO reverse proxy)
     #[arg(long)]
     pub port: Option<u16>,
 
@@ -50,7 +50,7 @@ impl RunCommand {
                 ))
             })?;
 
-        // Validate port for SSE transport
+        // Validate port for SSE transport (required) and get port for STDIO transport (optional)
         let port = match transport_mode {
             TransportMode::SSE => {
                 self.port.ok_or_else(|| {
@@ -59,7 +59,10 @@ impl RunCommand {
                     )
                 })?
             }
-            _ => self.port.unwrap_or(0),
+            TransportMode::STDIO => {
+                // Port is optional for STDIO transport (used for reverse proxy)
+                self.port.unwrap_or(0)
+            }
         };
 
         // Load permission profile
@@ -118,9 +121,6 @@ impl RunCommand {
             },
             _ => transport,
         };
-
-        // Set up the transport
-        transport.setup("", &self.name, self.port, &mut env_vars).await?;
 
         // Create and start the container
         let container_id = runtime

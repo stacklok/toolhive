@@ -26,6 +26,10 @@ pub struct RunCommand {
     #[arg(long, default_value = "stdio")]
     pub permission_profile: String,
 
+    /// Environment variables to pass to the MCP server (format: KEY=VALUE)
+    #[arg(long, short = 'e')]
+    pub env: Vec<String>,
+
     /// Image to use for the MCP server
     pub image: String,
 
@@ -79,6 +83,20 @@ impl RunCommand {
 
         // Create environment variables for the container
         let mut env_vars = HashMap::new();
+        
+        // Add user-provided environment variables
+        for env_var in &self.env {
+            if let Some(pos) = env_var.find('=') {
+                let key = env_var[..pos].to_string();
+                let value = env_var[pos + 1..].to_string();
+                env_vars.insert(key, value);
+            } else {
+                return Err(crate::error::Error::InvalidArgument(format!(
+                    "Invalid environment variable format: {}. Expected format: KEY=VALUE",
+                    env_var
+                )));
+            }
+        }
 
         // Create transport handler
         let transport = TransportFactory::create(transport_mode, port);

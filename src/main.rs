@@ -7,15 +7,18 @@ use std::path::PathBuf;
 use tracing::info;
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+async fn main() {
+    // Initialize logging with more verbose output
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_env_filter("mcp_lok=debug")
+        .init();
 
     // Parse command-line arguments
     let cli = cli::parse_args();
 
     // Handle commands
-    match cli.command {
+    let result = match cli.command {
         Some(cli::Commands::Run {
             name,
             transport,
@@ -24,10 +27,10 @@ async fn main() -> Result<()> {
             image,
             args,
         }) => {
-            run_server(&name, &transport, port, permission_profile, &image, &args, false).await?;
+            run_server(&name, &transport, port, permission_profile, &image, &args, false).await
         }
         Some(cli::Commands::List) => {
-            list_servers().await?;
+            list_servers().await
         }
         Some(cli::Commands::Start {
             name,
@@ -37,26 +40,46 @@ async fn main() -> Result<()> {
             image,
             args,
         }) => {
-            run_server(&name, &transport, port, permission_profile, &image, &args, true).await?;
+            run_server(&name, &transport, port, permission_profile, &image, &args, true).await
         }
         Some(cli::Commands::Stop { name }) => {
-            stop_server(&name).await?;
+            stop_server(&name).await
         }
         Some(cli::Commands::Rm { name }) => {
-            remove_server(&name).await?;
+            remove_server(&name).await
         }
         Some(cli::Commands::Version) => {
             println!("mcp-lok version {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
         }
         None => {
             // Default command: start an MCP server that manages mcp-lok servers
             println!("Starting MCP server manager...");
             // TODO: Implement MCP server manager
             println!("Not implemented yet");
+            Ok(())
         }
-    }
+    };
 
-    Ok(())
+    // Handle errors
+    if let Err(err) = result {
+        eprintln!("Error: {}", err);
+        
+        // Print cause chain for better debugging
+        let mut source = err.source();
+        while let Some(err) = source {
+            eprintln!("\nCaused by:\n    {}", err);
+            source = err.source();
+        }
+        
+        // Provide helpful hints based on error type
+        if err.to_string().contains("socket") {
+            eprintln!("\nHint: Make sure Docker or Podman is installed and running.");
+            eprintln!("You may need to start the Docker/Podman service or check permissions.");
+        }
+        
+        std::process::exit(1);
+    }
 }
 
 /// Run an MCP server

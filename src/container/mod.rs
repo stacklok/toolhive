@@ -8,7 +8,7 @@ use bollard::container::{
     StartContainerOptions, StopContainerOptions,
 };
 use bollard::models::{HostConfig, Mount, MountTypeEnum, PortBinding};
-use bollard::Docker;
+use bollard::{Docker, ClientVersion};
 use std::collections::HashMap;
 use tracing::{debug, info};
 
@@ -42,16 +42,63 @@ impl TransportMode {
 impl ContainerManager {
     /// Create a new container manager
     pub async fn new() -> Result<Self> {
-        // Try to connect to Docker socket first, then Podman if that fails
-        let docker = match Docker::connect_with_socket_defaults() {
-            Ok(docker) => docker,
-            Err(_) => {
-                // Try Podman socket as fallback
-                Docker::connect_with_socket_defaults()
-                    .context("Failed to connect to Docker or Podman socket")?
+        // Print debug information about the environment
+        info!("Current working directory: {:?}", std::env::current_dir());
+        
+        // Check if Docker socket exists
+        let docker_socket = std::path::Path::new("/var/run/docker.sock");
+        info!("Docker socket exists: {}", docker_socket.exists());
+        
+        let podman_socket_1 = std::path::Path::new("/var/run/podman/podman.sock");
+        info!("Podman socket 1 exists: {}", podman_socket_1.exists());
+        
+        // Check for Podman socket in XDG_RUNTIME_DIR
+        let xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        info!("XDG_RUNTIME_DIR: {}", xdg_runtime_dir);
+        
+        let podman_socket_2 = std::path::PathBuf::from(xdg_runtime_dir).join("podman/podman.sock");
+        info!("Podman socket 2 path: {}", podman_socket_2.display());
+        info!("Podman socket 2 exists: {}", podman_socket_2.exists());
+        
+        // Try to connect to Docker or Podman socket
+        let docker = if docker_socket.exists() {
+            info!("Attempting to connect to Docker socket at /var/run/docker.sock");
+            Docker::connect_with_socket_defaults()
+                .context("Failed to connect to Docker socket")?
+        } else if podman_socket_1.exists() {
+            info!("Attempting to connect to Podman socket at /var/run/podman/podman.sock");
+            Docker::connect_with_socket_defaults()
+                .context("Failed to connect to Podman socket at /var/run/podman/podman.sock")?
+        } else if podman_socket_2.exists() {
+            info!("Attempting to connect to Podman socket at {}", podman_socket_2.display());
+            // Connect directly to the Podman socket in XDG_RUNTIME_DIR
+            let socket_path = podman_socket_2.to_str().unwrap();
+            info!("Connecting directly to socket at {}", socket_path);
+            
+            // Create a ClientVersion with the correct version values
+            let client_version = ClientVersion {
+                major_version: 1,
+                minor_version: 47,
+            };
+            
+            // Try to connect with the socket path directly
+            Docker::connect_with_socket(socket_path, 30, &client_version)
+                .context(format!("Failed to connect to Podman socket at {}", podman_socket_2.display()))?
+        } else {
+            // List all files in /var/run to help diagnose the issue
+            if let Ok(entries) = std::fs::read_dir("/var/run") {
+                info!("Contents of /var/run:");
+                for entry in entries {
+                    if let Ok(entry) = entry {
+                        info!("  {}", entry.path().display());
+                    }
+                }
             }
+            
+            anyhow::bail!("Neither Docker nor Podman socket found. Make sure Docker or Podman is installed and running.")
         };
 
+        info!("Successfully connected to Docker/Podman API");
         Ok(ContainerManager { docker })
     }
 
@@ -135,9 +182,29 @@ impl ContainerManager {
 
         // Add socket mount for STDIO transport
         if transport == TransportMode::STDIO {
+            // Use a temporary directory for the socket file
+            let socket_dir = std::env::temp_dir().join("mcp-lok");
+            let socket_path = socket_dir.join("mcp.sock");
+            
+            // Create the directory if it doesn't exist
+            if !socket_dir.exists() {
+                std::fs::create_dir_all(&socket_dir)
+                    .context("Failed to create socket directory")?;
+            }
+            
+            // Create an empty file for the socket if it doesn't exist
+            if !socket_path.exists() {
+                std::fs::File::create(&socket_path)
+                    .context("Failed to create socket file")?;
+            }
+            
+            let socket_path_str = socket_path.to_str().unwrap().to_string();
+            info!("Using socket path: {}", socket_path_str);
+            
+            // Use /mcp.sock in the target container
             mounts.push(Mount {
-                target: Some("/var/run/mcp.sock".to_string()),
-                source: Some("/var/run/mcp.sock".to_string()),
+                target: Some("/mcp.sock".to_string()),
+                source: Some(socket_path_str),
                 typ: Some(MountTypeEnum::BIND),
                 read_only: Some(false),
                 ..Default::default()

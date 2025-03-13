@@ -10,6 +10,13 @@ Under the hood, mcp-lok acts as a very thin client for the Docker/Podman Unix so
 
 Existing ways to start MCP servers are viewed as insecure, often granting containers more privileges than necessary. mcp-lok aims to solve this by starting containers in a locked-down environment, granting only the minimal permissions required to run. This significantly reduces the attack surface and enforces best practices for container security.
 
+## Prerequisites
+
+Before using mcp-lok, ensure you have the following installed:
+
+- Docker or Podman: mcp-lok requires either Docker or Podman to be installed and running
+- Rust (for building from source)
+
 ## Installation
 
 ### From Source
@@ -21,6 +28,14 @@ cargo build --release
 ```
 
 The binary will be available at `target/release/mcp-lok`.
+
+### Troubleshooting
+
+If you encounter errors like "Failed to connect to Docker or Podman socket", make sure:
+
+1. Docker or Podman is installed and running
+2. Your user has permissions to access the Docker/Podman socket
+3. The socket file exists at the expected location (/var/run/docker.sock or /var/run/podman/podman.sock)
 
 ## Commands
 

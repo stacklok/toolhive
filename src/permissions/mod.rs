@@ -73,18 +73,15 @@ impl PermissionProfile {
 
     /// Get the stdio profile (minimal permissions for stdio transport)
     pub fn stdio_profile() -> Self {
-        let mut profile = PermissionProfile::new();
-        profile.read.insert("/var/run/mcp.sock".to_string());
-        profile.write.insert("/var/run/mcp.sock".to_string());
-        profile
+        // Create an empty profile with no permissions
+        PermissionProfile::new()
     }
 
     /// Get the network profile (allows outbound network connections)
     pub fn network_profile() -> Self {
         let mut profile = PermissionProfile::new();
-        profile.read.insert("/var/run/mcp.sock".to_string());
-        profile.write.insert("/var/run/mcp.sock".to_string());
         
+        // Configure network permissions
         let outbound = OutboundNetworkPermissions {
             insecure_allow_all: true,
             allow_transport: HashSet::new(),

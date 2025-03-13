@@ -10,7 +10,14 @@ use bollard::container::{
 use bollard::models::{HostConfig, Mount, MountTypeEnum, PortBinding};
 use bollard::{Docker, ClientVersion};
 use std::collections::HashMap;
-use tracing::{debug, info};
+// use std::io::Write;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+// use std::sync::{Arc, Mutex}; // Removed unused imports
+use std::thread;
+// use tokio::io::{AsyncReadExt, AsyncWriteExt};
+// use tokio::sync::oneshot;
+use tracing::{debug, error, info};
 
 use crate::permissions::PermissionProfile;
 
@@ -102,6 +109,315 @@ impl ContainerManager {
         Ok(ContainerManager { docker })
     }
 
+    /// Set up a container for STDIO transport
+    fn setup_stdio_transport(&self, name: &str) -> Result<()> {
+        info!("Setting up STDIO transport for {}", name);
+        
+        // For STDIO transport, we need to set up a proxy between HTTP SSE and STDIO
+        // This will be done after the container is started
+        
+        Ok(())
+    }
+    
+    /// Set up a proxy between HTTP SSE and container STDIO
+    fn setup_stdio_proxy(&self, container_id: &str, name: &str, port: Option<u16>) -> Result<()> {
+        // Default to port 8080 if not specified
+        let port = port.unwrap_or(8080);
+        
+        info!("Setting up STDIO proxy for {} on port {}", name, port);
+        
+        // Start a TCP listener for HTTP SSE connections
+        let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+            .context(format!("Failed to bind to port {}", port))?;
+        
+        info!("Listening for HTTP SSE connections on port {}", port);
+        
+        // Clone container ID and name for the thread
+        let container_id = container_id.to_string();
+        let name = name.to_string();
+        
+        // Create a Docker client for the thread
+        let docker = self.docker.clone();
+        
+        // Spawn a thread to handle incoming connections
+        thread::spawn(move || {
+            info!("STDIO proxy thread started for {}", name);
+            
+            // Create a runtime for async operations
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            
+            // Accept connections
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        info!("Accepted HTTP SSE connection for {}", name);
+                        
+                        // Clone the Docker client and container ID for this connection
+                        let docker_clone = docker.clone();
+                        let container_id_clone = container_id.clone();
+                        
+                        // Handle the connection in the current thread
+                        // This is a blocking operation, so we'll handle one connection at a time
+                        if let Err(e) = rt.block_on(Self::handle_sse_connection(stream, docker_clone, &container_id_clone)) {
+                            error!("Error handling HTTP SSE connection: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error accepting HTTP SSE connection: {}", e);
+                        break;
+                    }
+                }
+            }
+            
+            info!("STDIO proxy thread exiting for {}", name);
+        });
+        
+        Ok(())
+    }
+    
+    /// Handle an HTTP SSE connection
+    async fn handle_sse_connection(stream: TcpStream, docker: Docker, container_id: &str) -> Result<()> {
+        use bollard::container::AttachContainerOptions;
+        info!("Handling HTTP SSE connection for container {}", container_id);
+        
+        // Use blocking I/O for reading the HTTP request
+        let mut reader = std::io::BufReader::new(stream.try_clone()?);
+        let mut request_line = String::new();
+        std::io::BufRead::read_line(&mut reader, &mut request_line)?;
+        
+        info!("Received HTTP request: {}", request_line.trim());
+        
+        // Read headers until we get an empty line
+        let mut headers = Vec::new();
+        loop {
+            let mut header = String::new();
+            std::io::BufRead::read_line(&mut reader, &mut header)?;
+            if header == "\r\n" || header == "\n" {
+                break;
+            }
+            headers.push(header);
+        }
+        
+        // Use blocking I/O for writing the response
+        let mut writer = stream;
+        // Send HTTP SSE response headers
+        let response_headers = "HTTP/1.1 200 OK\r\n\
+                               Content-Type: text/event-stream\r\n\
+                               Cache-Control: no-cache\r\n\
+                               Connection: keep-alive\r\n\
+                               \r\n";
+        
+        writer.write_all(response_headers.as_bytes())?;
+        writer.flush()?;
+        
+        // Attach to the container
+        let options = AttachContainerOptions::<String> {
+            stdin: Some(true),
+            stdout: Some(true),
+            stderr: Some(true),
+            stream: Some(true),
+            ..Default::default()
+        };
+        
+        let _attach_stream = docker.attach_container(container_id, Some(options)).await?;
+        
+        // Create a channel to signal when the connection is closed
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+        let _tx_clone = tx.clone();
+        
+        // Create a thread to forward container output to the client
+        let writer_clone = writer.try_clone()?;
+        let tx_clone = tx.clone();
+        let container_to_client_thread = thread::spawn(move || {
+            let mut writer = writer_clone;
+            
+            // Create a runtime for async operations
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            
+            // Get the attach stream
+            let mut attach_stream = match rt.block_on(async {
+                let options = AttachContainerOptions::<String> {
+                    stdin: Some(true),
+                    stdout: Some(true),
+                    stderr: Some(true),
+                    stream: Some(true),
+                    ..Default::default()
+                };
+                
+                docker.attach_container(container_id, Some(options)).await
+            }) {
+                Ok(stream) => stream,
+                Err(e) => {
+                    error!("Failed to attach to container: {}", e);
+                    
+                    // Send a few heartbeat messages as a fallback
+                    for i in 1..=10 {
+                        // Format the output as an SSE event
+                        let event = format!("event: message\r\ndata: {{\"type\": \"heartbeat\", \"count\": {}}}\r\n\r\n", i);
+                        
+                        // Send the event to the client
+                        if let Err(e) = writer.write_all(event.as_bytes()) {
+                            error!("Failed to write to HTTP SSE stream: {}", e);
+                            break;
+                        }
+                        
+                        // Flush the writer to ensure the event is sent immediately
+                        if let Err(e) = writer.flush() {
+                            error!("Failed to flush HTTP SSE stream: {}", e);
+                            break;
+                        }
+                        
+                        // Wait for a second
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    }
+                    
+                    // Signal that the connection is closed
+                    rt.block_on(async {
+                        let _ = tx_clone.send(()).await;
+                    });
+                    
+                    info!("Container to client task exiting (fallback mode)");
+                    return;
+                }
+            };
+            
+            // Forward container output to the client
+            rt.block_on(async {
+                let mut buffer = [0u8; 4096];
+                
+                loop {
+                    match attach_stream.read(&mut buffer).await {
+                        Ok(0) => {
+                            // End of stream
+                            info!("Container stream ended");
+                            break;
+                        }
+                        Ok(n) => {
+                            // Format the output as an SSE event
+                            let output = String::from_utf8_lossy(&buffer[..n]);
+                            let event = format!("event: message\r\ndata: {}\r\n\r\n", output);
+                            
+                            // Send the event to the client
+                            if let Err(e) = writer.write_all(event.as_bytes()) {
+                                error!("Failed to write to HTTP SSE stream: {}", e);
+                                break;
+                            }
+                            
+                            // Flush the writer to ensure the event is sent immediately
+                            if let Err(e) = writer.flush() {
+                                error!("Failed to flush HTTP SSE stream: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to read from container: {}", e);
+                            break;
+                        }
+                    }
+                }
+            });
+            
+            // Signal that the connection is closed
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(async {
+                let _ = tx_clone.send(()).await;
+            });
+            
+            info!("Container to client task exiting");
+        });
+        
+        // Create a thread to forward messages from client to container
+        let reader_clone = reader.into_inner();
+        let client_to_container_thread = thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(reader_clone);
+            let mut buffer = [0u8; 4096];
+            
+            // Create a runtime for async operations
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            
+            // Get the attach stream
+            let mut attach_stream = match rt.block_on(async {
+                let options = AttachContainerOptions::<String> {
+                    stdin: Some(true),
+                    stdout: Some(true),
+                    stderr: Some(true),
+                    stream: Some(true),
+                    ..Default::default()
+                };
+                
+                docker.attach_container(container_id, Some(options)).await
+            }) {
+                Ok(stream) => stream,
+                Err(e) => {
+                    error!("Failed to attach to container: {}", e);
+                    
+                    // Signal that the connection is closed
+                    rt.block_on(async {
+                        let _ = tx.send(()).await;
+                    });
+                    
+                    info!("Client to container task exiting (fallback mode)");
+                    return;
+                }
+            };
+            
+            loop {
+                // Read from the client
+                match reader.read(&mut buffer) {
+                    Ok(0) => {
+                        // End of stream
+                        info!("Client disconnected");
+                        break;
+                    }
+                    Ok(n) => {
+                        // Parse the client message and forward it to the container
+                        let message = String::from_utf8_lossy(&buffer[..n]);
+                        info!("Received message from client: {}", message);
+                        
+                        // Forward the message to the container
+                        rt.block_on(async {
+                            if let Err(e) = attach_stream.write_all(&buffer[..n]).await {
+                                error!("Failed to write to container: {}", e);
+                            }
+                            
+                            if let Err(e) = attach_stream.flush().await {
+                                error!("Failed to flush container stream: {}", e);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        error!("Failed to read from client: {}", e);
+                        break;
+                    }
+                }
+            }
+            
+            // Signal that the connection is closed
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(async {
+                let _ = tx.send(()).await;
+            });
+            
+            info!("Client to container task exiting");
+        });
+        
+        // Wait for the connection to close
+        let _ = rx.recv().await;
+        info!("Connection closed");
+        
+        // Wait for the threads to finish
+        if let Err(e) = container_to_client_thread.join() {
+            error!("Error joining container to client thread: {:?}", e);
+        }
+        
+        if let Err(e) = client_to_container_thread.join() {
+            error!("Error joining client to container thread: {:?}", e);
+        }
+        
+        info!("HTTP SSE connection handler exiting");
+        Ok(())
+    }
+
     /// Run an MCP server container
     pub async fn run_container(
         &self,
@@ -128,7 +444,7 @@ impl ContainerManager {
         );
 
         // Prepare host config based on transport mode and permissions
-        let host_config = self.create_host_config(transport, port, profile)?;
+        let host_config = self.create_host_config(name, transport, port, profile)?;
 
         // Prepare container config
         let mut cmd = Vec::new();
@@ -144,6 +460,13 @@ impl ContainerManager {
             ..Default::default()
         };
 
+        // If using STDIO transport, set it up
+        if transport == TransportMode::STDIO {
+            if let Err(e) = self.setup_stdio_transport(name) {
+                error!("Failed to set up STDIO transport: {}", e);
+                return Err(e);
+            }
+        }
         // Create container
         let options = CreateContainerOptions {
             name,
@@ -164,6 +487,47 @@ impl ContainerManager {
 
         info!("Started MCP server container: {}", name);
         debug!("Container ID: {}", response.id);
+        
+        // If using STDIO transport, set up the proxy
+        if transport == TransportMode::STDIO {
+            if let Err(e) = self.setup_stdio_proxy(&response.id, name, port) {
+                error!("Failed to set up STDIO proxy: {}", e);
+                // Try to stop and remove the container if proxy setup fails
+                let _ = self.docker.stop_container(&response.id, None::<StopContainerOptions>).await;
+                let _ = self.docker.remove_container(&response.id, None::<RemoveContainerOptions>).await;
+                return Err(e);
+            }
+            
+            // If not in detached mode, keep the main command running
+            if !_detach {
+                info!("Press Ctrl+C to stop the MCP server");
+                
+                // Create a channel to wait for Ctrl+C
+                let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+                
+                // Handle Ctrl+C
+                let container_id = response.id.clone();
+                let docker_clone = self.docker.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = tokio::signal::ctrl_c().await {
+                        error!("Failed to listen for Ctrl+C: {}", e);
+                        return;
+                    }
+                    
+                    info!("Received Ctrl+C, stopping MCP server");
+                    
+                    // Stop and remove the container
+                    let _ = docker_clone.stop_container(&container_id, None::<StopContainerOptions>).await;
+                    let _ = docker_clone.remove_container(&container_id, None::<RemoveContainerOptions>).await;
+                    
+                    // Signal that we're done
+                    let _ = tx.send(());
+                });
+                
+                // Wait for Ctrl+C
+                let _ = rx.await;
+            }
+        }
 
         Ok(response.id)
     }
@@ -171,6 +535,7 @@ impl ContainerManager {
     /// Create host config based on transport mode and permissions
     fn create_host_config(
         &self,
+        _name: &str,
         transport: TransportMode,
         port: Option<u16>,
         profile: &PermissionProfile,
@@ -180,36 +545,8 @@ impl ContainerManager {
         // Set up mounts
         let mut mounts = Vec::new();
 
-        // Add socket mount for STDIO transport
-        if transport == TransportMode::STDIO {
-            // Use a temporary directory for the socket file
-            let socket_dir = std::env::temp_dir().join("mcp-lok");
-            let socket_path = socket_dir.join("mcp.sock");
-            
-            // Create the directory if it doesn't exist
-            if !socket_dir.exists() {
-                std::fs::create_dir_all(&socket_dir)
-                    .context("Failed to create socket directory")?;
-            }
-            
-            // Create an empty file for the socket if it doesn't exist
-            if !socket_path.exists() {
-                std::fs::File::create(&socket_path)
-                    .context("Failed to create socket file")?;
-            }
-            
-            let socket_path_str = socket_path.to_str().unwrap().to_string();
-            info!("Using socket path: {}", socket_path_str);
-            
-            // Use /mcp.sock in the target container
-            mounts.push(Mount {
-                target: Some("/mcp.sock".to_string()),
-                source: Some(socket_path_str),
-                typ: Some(MountTypeEnum::BIND),
-                read_only: Some(false),
-                ..Default::default()
-            });
-        }
+        // For STDIO transport, we don't need to add any special mounts
+        // The container will use its stdin/stdout for communication
 
         // Add additional mounts from permission profile
         for path in &profile.read {

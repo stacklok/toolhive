@@ -44,6 +44,7 @@ tempfile = "3.8"
 async-trait = "0.1"
 prettytable = "0.10"
 chrono = "0.4"
+urlencoding = "2.1"
 
 [dev-dependencies]
 mockall = "0.11"

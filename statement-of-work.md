@@ -3,7 +3,8 @@
 mcp-lok is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers. It is written in Rust and has extensive test coverage—including input validation—to ensure reliability and security.
 
 Under the hood, mcp-lok acts as a very thin client for the Docker/Podman Unix socket API. This design choice allows it to remain both efficient and lightweight while still providing powerful, container-based isolation for running MCP servers.
-Why mcp-lok?
+
+## Why mcp-lok?
 
 Existing ways to start MCP servers are viewed as insecure, often granting containers more privileges than necessary. mcp-lok aims to solve this by starting containers in a locked-down environment, granting only the minimal permissions required to run. This significantly reduces the attack surface and enforces best practices for container security.
 Commands
@@ -49,7 +50,7 @@ This command closely resembles `docker run` but focuses on security and simplici
     mcp-lok-name: my-mcp-server
     ```
 
-* Sets up the specified transport (e.g., SSE, stdio), potentially using a reverse proxy or Unix socket, depending on user choice.
+* Sets up the specified transport (e.g., SSE, stdio), potentially using a reverse proxy, depending on user choice.
 
 ### Transport Modes
 
@@ -59,7 +60,9 @@ This command closely resembles `docker run` but focuses on security and simplici
 
 * **STDIO**:
 
-    If the transport is `stdio`, mcp-lok creates a Unix socket (`/var/run/mcp.sock`) that the container uses for I/O. This approach is highly secure and does not expose external ports.
+    If the transport is `stdio`, mcp-lok redirects SEE traffic to the container's standard input and output.
+    This acts as a secure proxy, ensuring that the container does not have direct access to the network nor
+    the host machine.
 
 ## Permissions
 

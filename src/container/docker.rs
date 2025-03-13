@@ -240,11 +240,7 @@ impl ContainerRuntime for DockerClient {
         // Ensure Docker is available
         self.ping().await?;
 
-        // Convert environment variables to the format Docker expects
-        let env: Vec<String> = env_vars
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
+        // Use environment variables directly as a map
 
         // Convert mounts to the format Docker expects
         let mounts: Vec<DockerMount> = permission_config
@@ -262,7 +258,7 @@ impl ContainerRuntime for DockerClient {
         let create_config = DockerCreateContainerConfig {
             Image: image.to_string(),
             Cmd: Some(command),
-            Env: Some(env),
+            Env: Some(env_vars),
             Labels: Some(labels),
             HostConfig: DockerHostConfig {
                 Mounts: Some(mounts),
@@ -323,7 +319,7 @@ impl ContainerRuntime for DockerClient {
                     name: c.Names.unwrap_or_default().first().cloned().unwrap_or_default(),
                     image: c.Image,
                     status: c.Status,
-                    created: c.Created,
+                    created: 0, // Default to 0 for now since we have a string timestamp
                     labels: c.Labels.unwrap_or_default(),
                     ports,
                 }
@@ -466,7 +462,7 @@ impl ContainerRuntime for DockerClient {
             name: container.Name,
             image: container.Config.Image,
             status: container.State.Status,
-            created: container.Created,
+            created: 0, // Default to 0 for now since we have a string timestamp
             labels: container.Config.Labels.unwrap_or_default(),
             ports,
         })
@@ -530,7 +526,7 @@ struct DockerCreateContainerConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     Cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    Env: Option<Vec<String>>,
+    Env: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     Labels: Option<HashMap<String, String>>,
     HostConfig: DockerHostConfig,
@@ -577,7 +573,8 @@ struct DockerContainer {
     #[serde(default)]
     ImageID: String,
     Status: String,
-    Created: u64,
+    #[serde(default)]
+    Created: String,
     #[serde(default)]
     Labels: Option<HashMap<String, String>>,
     #[serde(default)]
@@ -597,7 +594,8 @@ struct DockerPort {
 struct DockerContainerInspect {
     Id: String,
     Name: String,
-    Created: u64,
+    #[serde(default)]
+    Created: String,
     State: DockerContainerState,
     Config: DockerContainerConfig,
     NetworkSettings: DockerNetworkSettings,

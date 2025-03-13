@@ -17,7 +17,7 @@ use crate::permissions::profile::ContainerPermissionConfig;
 // Podman socket paths
 const PODMAN_SOCKET_PATH: &str = "/var/run/podman/podman.sock";
 const PODMAN_XDG_RUNTIME_SOCKET_PATH: &str = "podman/podman.sock";
-const PODMAN_API_VERSION: &str = "v4.0.0";
+const PODMAN_API_VERSION: &str = "v5.0.0";
 
 /// Client for interacting with the Podman API
 pub struct PodmanClient {
@@ -35,13 +35,17 @@ impl PodmanClient {
 
     /// Create a new Podman client with a custom socket path
     pub async fn with_socket_path(socket_path: &str) -> Result<Self> {
+        println!("Creating Podman client with socket path: {}", socket_path);
+        
         // Check if the socket exists
         if !Path::new(socket_path).exists() {
+            println!("Podman socket not found at {}", socket_path);
             return Err(Error::ContainerRuntime(format!(
                 "Podman socket not found at {}",
                 socket_path
             )));
         }
+        println!("Podman socket exists at {}", socket_path);
 
         // Create HTTP client with Unix socket support
         let client = Client::builder()
@@ -53,15 +57,27 @@ impl PodmanClient {
         };
 
         // Verify that Podman is available
-        podman.ping().await?;
+        println!("Pinging Podman API...");
+        match podman.ping().await {
+            Ok(_) => println!("Podman API ping successful"),
+            Err(e) => {
+                println!("Podman API ping failed: {}", e);
+                return Err(e);
+            }
+        }
 
+        println!("Podman client created successfully");
         Ok(podman)
     }
 
     /// Find the Podman socket path
     fn find_podman_socket() -> Result<String> {
+        println!("Searching for Podman socket...");
+        
         // Check standard location
+        println!("Checking standard location: {}", PODMAN_SOCKET_PATH);
         if Path::new(PODMAN_SOCKET_PATH).exists() {
+            println!("Found Podman socket at standard location: {}", PODMAN_SOCKET_PATH);
             return Ok(PODMAN_SOCKET_PATH.to_string());
         }
 
@@ -70,9 +86,13 @@ impl PodmanClient {
             let xdg_socket_path = PathBuf::from(xdg_runtime_dir)
                 .join(PODMAN_XDG_RUNTIME_SOCKET_PATH);
             
+            println!("Checking XDG_RUNTIME_DIR location: {}", xdg_socket_path.display());
             if xdg_socket_path.exists() {
+                println!("Found Podman socket at XDG_RUNTIME_DIR location: {}", xdg_socket_path.display());
                 return Ok(xdg_socket_path.to_string_lossy().to_string());
             }
+        } else {
+            println!("XDG_RUNTIME_DIR environment variable not set");
         }
 
         // Check user-specific location
@@ -80,17 +100,28 @@ impl PodmanClient {
             let user_socket_path = PathBuf::from(home)
                 .join(".local/share/containers/podman/machine/podman.sock");
             
+            println!("Checking user-specific location: {}", user_socket_path.display());
             if user_socket_path.exists() {
+                println!("Found Podman socket at user-specific location: {}", user_socket_path.display());
                 return Ok(user_socket_path.to_string_lossy().to_string());
             }
+        } else {
+            println!("HOME environment variable not set");
         }
 
+        println!("Podman socket not found in any location");
         Err(Error::ContainerRuntime("Podman socket not found".to_string()))
+    }
+
+    /// Get the base URI path for the Podman API
+    fn base_uri_path() -> String {
+        format!("/{}/libpod", PODMAN_API_VERSION)
     }
 
     /// Build a URI path for the Podman API
     fn uri_path(&self, path: &str) -> String {
-        format!("/libpod/{}/{}", PODMAN_API_VERSION, path)
+        // Use the correct versioned path format
+        format!("{}/{}", Self::base_uri_path(), path)
     }
 
     /// Make a request to the Podman API
@@ -156,19 +187,31 @@ impl PodmanClient {
 
     /// Check if Podman is available
     async fn ping(&self) -> Result<()> {
-        let uri_path = self.uri_path("_ping");
+        let uri_path = format!("{}/_ping", Self::base_uri_path());
+        println!("Pinging Podman API at path: {}", uri_path);
         
         let req = Request::builder()
             .method(Method::GET)
             .uri(hyperlocal::Uri::new(&self.socket_path, &uri_path))
             .body(Body::empty())?;
         
-        let res = self.client.request(req).await
-            .map_err(|e| Error::ContainerRuntime(format!("Failed to ping Podman: {}", e)))?;
+        println!("Sending ping request to Podman API...");
+        let res = match self.client.request(req).await {
+            Ok(res) => {
+                println!("Received response from Podman API with status: {}", res.status());
+                res
+            },
+            Err(e) => {
+                println!("Failed to ping Podman: {}", e);
+                return Err(Error::ContainerRuntime(format!("Failed to ping Podman: {}", e)));
+            }
+        };
         
         if res.status().is_success() {
+            println!("Podman ping successful");
             Ok(())
         } else {
+            println!("Podman ping failed with status: {}", res.status());
             Err(Error::ContainerRuntime(format!(
                 "Podman ping failed with status: {}",
                 res.status()
@@ -236,8 +279,8 @@ impl AsyncWrite for PodmanAttachWriter {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        // Create a request to write to the container
-        let uri_path = format!("/libpod/{}/containers/{}/attach?stream=1&stdin=1", PODMAN_API_VERSION, self.container_id);
+        // Create a request to write to the container using the correct API version
+        let uri_path = format!("{}/containers/{}/attach?stream=1&stdin=1", PodmanClient::base_uri_path(), self.container_id);
         
         let req = match Request::builder()
             .method(Method::POST)
@@ -277,11 +320,7 @@ impl ContainerRuntime for PodmanClient {
         labels: HashMap<String, String>,
         permission_config: ContainerPermissionConfig,
     ) -> Result<String> {
-        // Convert environment variables to the format Podman expects
-        let env: Vec<String> = env_vars
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
+        // Use environment variables directly as a map
 
         // Convert mounts to the format Podman expects
         let mounts: Vec<PodmanMount> = permission_config
@@ -303,7 +342,7 @@ impl ContainerRuntime for PodmanClient {
         let create_config = PodmanCreateContainerConfig {
             Image: image.to_string(),
             Command: Some(command),
-            Env: Some(env),
+            Env: Some(env_vars),
             Labels: Some(labels),
             HostConfig: PodmanHostConfig {
                 Mounts: Some(mounts),
@@ -335,40 +374,74 @@ impl ContainerRuntime for PodmanClient {
     }
 
     async fn list_containers(&self) -> Result<Vec<ContainerInfo>> {
-        // List containers with the mcp-lok label
-        let path = "containers/json?filters={\"label\":[\"mcp-lok=true\"]}";
-        let podman_containers: Vec<PodmanContainer> = self.request(
-            Method::GET,
-            path,
-            Option::<()>::None,
-        ).await?;
+        // Try different endpoints for listing containers
+        let paths = vec![
+            // Standard Docker API endpoint
+            format!("containers/json?filters={}", urlencoding::encode(&serde_json::json!({"label": ["mcp-lok=true"]}).to_string())),
+            // Podman specific endpoint
+            format!("libpod/containers/json?filters={}", urlencoding::encode(&serde_json::json!({"label": ["mcp-lok=true"]}).to_string())),
+            // Try without filters
+            "containers/json".to_string(),
+            "libpod/containers/json".to_string(),
+        ];
+        
+        for path in paths {
+            println!("Trying to list containers with path: {}", path);
+            
+            match self.request::<(), Vec<PodmanContainer>>(
+                Method::GET,
+                &path,
+                Option::<()>::None,
+            ).await {
+                Ok(podman_containers) => {
+                    println!("Successfully listed containers with path: {}", path);
+                    println!("Found {} containers", podman_containers.len());
+                    
+                    // Convert Podman containers to our ContainerInfo format
+                    let containers = podman_containers
+                        .into_iter()
+                        .filter(|c| {
+                            // Filter for mcp-lok containers if we're using an endpoint without filters
+                            if !path.contains("filters=") {
+                                if let Some(labels) = &c.Labels {
+                                    return labels.get("mcp-lok").map_or(false, |v| v == "true");
+                                }
+                                return false;
+                            }
+                            true
+                        })
+                        .map(|c| {
+                            let ports = c.Ports.unwrap_or_default()
+                                .into_iter()
+                                .map(|p| PortMapping {
+                                    container_port: p.container_port,
+                                    host_port: p.host_port.unwrap_or(0),
+                                    protocol: p.protocol,
+                                })
+                                .collect();
 
-        // Convert Podman containers to our ContainerInfo format
-        let containers = podman_containers
-            .into_iter()
-            .map(|c| {
-                let ports = c.Ports.unwrap_or_default()
-                    .into_iter()
-                    .map(|p| PortMapping {
-                        container_port: p.container_port,
-                        host_port: p.host_port.unwrap_or(0),
-                        protocol: p.protocol,
-                    })
-                    .collect();
+                            ContainerInfo {
+                                id: c.Id,
+                                name: c.Names.unwrap_or_default().first().cloned().unwrap_or_default(),
+                                image: c.Image,
+                                status: c.Status,
+                                created: 0, // Default to 0 for now since we have a string timestamp
+                                labels: c.Labels.unwrap_or_default(),
+                                ports,
+                            }
+                        })
+                        .collect();
 
-                ContainerInfo {
-                    id: c.Id,
-                    name: c.Names.unwrap_or_default().first().cloned().unwrap_or_default(),
-                    image: c.Image,
-                    status: c.Status,
-                    created: c.Created,
-                    labels: c.Labels.unwrap_or_default(),
-                    ports,
+                    return Ok(containers);
+                },
+                Err(e) => {
+                    println!("Failed to list containers with path {}: {}", path, e);
                 }
-            })
-            .collect();
-
-        Ok(containers)
+            }
+        }
+        
+        // If we get here, all attempts failed
+        Err(Error::ContainerRuntime("Failed to list containers with any endpoint".to_string()))
     }
 
     async fn stop_container(&self, container_id: &str) -> Result<()> {
@@ -553,7 +626,7 @@ struct PodmanCreateContainerConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     Command: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    Env: Option<Vec<String>>,
+    Env: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     Labels: Option<HashMap<String, String>>,
     HostConfig: PodmanHostConfig,
@@ -597,7 +670,8 @@ struct PodmanContainer {
     #[serde(default)]
     ImageID: String,
     Status: String,
-    Created: u64,
+    #[serde(default)]
+    Created: String,
     #[serde(default)]
     Labels: Option<HashMap<String, String>>,
     #[serde(default)]

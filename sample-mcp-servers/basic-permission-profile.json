@@ -1,0 +1,12 @@
+{
+    "read": [],
+    "write": [],
+    "network": {
+      "outbound": {
+        "insecure_allow_all": false,
+        "allow_transport": ["tcp"],
+        "allow_host": [],
+        "allow_port": [80, 443]
+      }
+    }
+  }

@@ -1,0 +1,24 @@
+[package]
+name = "mcp-lok"
+version = "0.1.0"
+edition = "2021"
+description = "A lightweight, secure, and fast manager for MCP (Model Context Protocol) servers"
+authors = ["MCP-LOK Contributors"]
+license = "Apache-2.0"
+
+[dependencies]
+# CLI argument parsing
+clap = { version = "4.4", features = ["derive"] }
+# Docker/Podman API client
+bollard = "0.15"
+# Async runtime
+tokio = { version = "1.32", features = ["full"] }
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+# Serialization/deserialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

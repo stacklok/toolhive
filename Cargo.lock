@@ -738,6 +738,7 @@ dependencies = [
  "anyhow",
  "bollard",
  "clap",
+ "futures-util",
  "serde",
  "serde_json",
  "thiserror",

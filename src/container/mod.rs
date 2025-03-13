@@ -9,6 +9,8 @@ use bollard::container::{
 };
 use bollard::models::{HostConfig, Mount, MountTypeEnum, PortBinding};
 use bollard::{Docker, ClientVersion};
+use tokio::io::AsyncWriteExt;
+use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 // use std::io::Write;
 use std::io::{Read, Write};
@@ -158,7 +160,7 @@ impl ContainerManager {
                         
                         // Handle the connection in the current thread
                         // This is a blocking operation, so we'll handle one connection at a time
-                        if let Err(e) = rt.block_on(Self::handle_sse_connection(stream, docker_clone, &container_id_clone)) {
+                        if let Err(e) = rt.block_on(Self::handle_sse_connection(stream, docker_clone, container_id_clone)) {
                             error!("Error handling HTTP SSE connection: {}", e);
                         }
                     }
@@ -176,7 +178,7 @@ impl ContainerManager {
     }
     
     /// Handle an HTTP SSE connection
-    async fn handle_sse_connection(stream: TcpStream, docker: Docker, container_id: &str) -> Result<()> {
+    async fn handle_sse_connection(stream: TcpStream, docker: Docker, container_id: String) -> Result<()> {
         use bollard::container::AttachContainerOptions;
         info!("Handling HTTP SSE connection for container {}", container_id);
         
@@ -200,15 +202,246 @@ impl ContainerManager {
         
         // Use blocking I/O for writing the response
         let mut writer = stream;
-        // Send HTTP SSE response headers
-        let response_headers = "HTTP/1.1 200 OK\r\n\
-                               Content-Type: text/event-stream\r\n\
-                               Cache-Control: no-cache\r\n\
-                               Connection: keep-alive\r\n\
-                               \r\n";
-        
-        writer.write_all(response_headers.as_bytes())?;
-        writer.flush()?;
+        // Check if this is a GET or POST request
+        if request_line.starts_with("GET") {
+            // Handle GET request - send SSE response
+            let response_headers = "HTTP/1.1 200 OK\r\n\
+                                  Content-Type: text/event-stream\r\n\
+                                  Cache-Control: no-cache\r\n\
+                                  Connection: keep-alive\r\n\
+                                  \r\n";
+            
+            if let Err(e) = writer.write_all(response_headers.as_bytes()) {
+                error!("Failed to write HTTP SSE response headers: {}", e);
+                return Err(e.into());
+            }
+            
+            if let Err(e) = writer.flush() {
+                error!("Failed to flush HTTP SSE response headers: {}", e);
+                return Err(e.into());
+            }
+            
+            info!("Sent SSE response headers to client");
+            
+            // Attach to the container to forward its output to the client
+            let options = AttachContainerOptions::<String> {
+                stdin: Some(true),
+                stdout: Some(true),
+                stderr: Some(true),
+                stream: Some(true),
+                ..Default::default()
+            };
+            
+            let attach_results = docker.attach_container(&container_id, Some(options)).await?;
+            let mut output_stream = attach_results.output;
+            
+            // Forward container output to the client as SSE events
+            while let Some(result) = output_stream.next().await {
+                match result {
+                    Ok(log_output) => {
+                        // Extract the actual content from the LogOutput enum
+                        let output_str = match log_output {
+                            bollard::container::LogOutput::StdOut { message } => {
+                                String::from_utf8_lossy(&message).to_string()
+                            },
+                            bollard::container::LogOutput::StdErr { message } => {
+                                String::from_utf8_lossy(&message).to_string()
+                            },
+                            _ => format!("{:?}", log_output),
+                        };
+                        
+                        // Format as an SSE event
+                        let event = format!("event: message\r\ndata: {}\r\n\r\n", output_str);
+                        
+                        // Send the event to the client
+                        if let Err(e) = writer.write_all(event.as_bytes()) {
+                            error!("Failed to write SSE event: {}", e);
+                            break;
+                        }
+                        
+                        if let Err(e) = writer.flush() {
+                            error!("Failed to flush SSE event: {}", e);
+                            break;
+                        }
+                        
+                        info!("Forwarded container output to client as SSE event");
+                    },
+                    Err(e) => {
+                        error!("Failed to read from container: {}", e);
+                        break;
+                    }
+                }
+            }
+        } else if request_line.starts_with("POST") {
+            // Handle POST request - extract JSON-RPC request and forward to container
+            
+            // Read the request body
+            let mut content_length = 0;
+            for header in &headers {
+                if header.to_lowercase().starts_with("content-length:") {
+                    if let Some(length_str) = header.split(':').nth(1) {
+                        if let Ok(length) = length_str.trim().parse::<usize>() {
+                            content_length = length;
+                        }
+                    }
+                }
+            }
+            
+            if content_length == 0 {
+                error!("No Content-Length header found in POST request");
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "No Content-Length header found in POST request",
+                ).into());
+            }
+            
+            // Read the request body
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body)?;
+            
+            // Convert the body to a string
+            let body_str = String::from_utf8_lossy(&body);
+            info!("Received JSON-RPC request: {}", body_str);
+            
+            // Attach to the container
+            let options = AttachContainerOptions::<String> {
+                stdin: Some(true),
+                stdout: Some(true),
+                stderr: Some(true),
+                stream: Some(true),
+                ..Default::default()
+            };
+            
+            let attach_results = docker.attach_container(&container_id, Some(options)).await?;
+            let mut input = attach_results.input;
+            let mut output_stream = attach_results.output;
+            
+            // Write the request to the container with a newline
+            info!("Forwarding JSON-RPC request to container");
+            input.write_all(body_str.as_bytes()).await?;
+            input.write_all(b"\n").await?;
+            input.flush().await?;
+            
+            // Read the response from the container
+            let mut response_buffer = String::new();
+            let mut response_complete = false;
+            
+            // Set a timeout for reading the response
+            let timeout = tokio::time::Duration::from_secs(10);
+            let timeout_future = tokio::time::sleep(timeout);
+            tokio::pin!(timeout_future);
+            
+            info!("Waiting for JSON-RPC response from container");
+            
+            loop {
+                tokio::select! {
+                    maybe_output = output_stream.next() => {
+                        match maybe_output {
+                            Some(Ok(log_output)) => {
+                                // Extract the actual content from the LogOutput enum
+                                let output_str = match log_output {
+                                    bollard::container::LogOutput::StdOut { message } => {
+                                        String::from_utf8_lossy(&message).to_string()
+                                    },
+                                    bollard::container::LogOutput::StdErr { message } => {
+                                        String::from_utf8_lossy(&message).to_string()
+                                    },
+                                    _ => format!("{:?}", log_output),
+                                };
+                                
+                                info!("Received output from container: {}", output_str);
+                                response_buffer.push_str(&output_str);
+                                
+                                // Check if we have a complete JSON-RPC response
+                                if response_buffer.contains("\"jsonrpc\":\"2.0\"") {
+                                    info!("Found complete JSON-RPC response");
+                                    response_complete = true;
+                                    break;
+                                }
+                            },
+                            Some(Err(e)) => {
+                                error!("Failed to read from container: {}", e);
+                                break;
+                            },
+                            None => {
+                                info!("Container output stream ended");
+                                break;
+                            }
+                        }
+                    },
+                    _ = &mut timeout_future => {
+                        info!("Timeout waiting for container response");
+                        break;
+                    }
+                }
+            }
+            
+            // Send the response back to the client
+            if response_complete {
+                // Trim the response buffer to remove any leading/trailing whitespace
+                let response_buffer = response_buffer.trim().to_string();
+                info!("Final JSON-RPC response: {}", response_buffer);
+                
+                // Format the HTTP response with the JSON content
+                let http_response = format!(
+                    "HTTP/1.1 200 OK\r\n\
+                    Content-Type: application/json\r\n\
+                    Content-Length: {}\r\n\
+                    \r\n\
+                    {}",
+                    response_buffer.len(),
+                    response_buffer
+                );
+                
+                if let Err(e) = writer.write_all(http_response.as_bytes()) {
+                    error!("Failed to write HTTP response: {}", e);
+                    return Err(e.into());
+                }
+                
+                if let Err(e) = writer.flush() {
+                    error!("Failed to flush HTTP response: {}", e);
+                    return Err(e.into());
+                }
+                
+                info!("Successfully sent JSON-RPC response to client");
+            } else {
+                // Send an error response if we didn't get a complete response
+                let error_response = "HTTP/1.1 500 Internal Server Error\r\n\
+                                    Content-Type: application/json\r\n\
+                                    Content-Length: 83\r\n\
+                                    \r\n\
+                                    {\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}";
+                
+                error!("No complete JSON-RPC response from container");
+                
+                if let Err(e) = writer.write_all(error_response.as_bytes()) {
+                    error!("Failed to write HTTP error response: {}", e);
+                    return Err(e.into());
+                }
+                
+                if let Err(e) = writer.flush() {
+                    error!("Failed to flush HTTP error response: {}", e);
+                    return Err(e.into());
+                }
+            }
+        } else {
+            // Unsupported request method
+            let error_response = "HTTP/1.1 405 Method Not Allowed\r\n\
+                                Content-Type: text/plain\r\n\
+                                Content-Length: 29\r\n\
+                                \r\n\
+                                Method not allowed: Only GET/POST";
+            
+            if let Err(e) = writer.write_all(error_response.as_bytes()) {
+                error!("Failed to write HTTP error response: {}", e);
+                return Err(e.into());
+            }
+            
+            if let Err(e) = writer.flush() {
+                error!("Failed to flush HTTP error response: {}", e);
+                return Err(e.into());
+            }
+        }
         
         // Attach to the container
         let options = AttachContainerOptions::<String> {
@@ -219,11 +452,14 @@ impl ContainerManager {
             ..Default::default()
         };
         
-        let _attach_stream = docker.attach_container(container_id, Some(options)).await?;
+        let _attach_stream = docker.attach_container(&container_id, Some(options)).await?;
         
         // Create a channel to signal when the connection is closed
         let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
         let _tx_clone = tx.clone();
+        // Clone docker and container_id for the threads
+        let docker_clone1 = docker.clone();
+        let container_id_clone1 = container_id.clone();
         
         // Create a thread to forward container output to the client
         let writer_clone = writer.try_clone()?;
@@ -235,7 +471,7 @@ impl ContainerManager {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             
             // Get the attach stream
-            let mut attach_stream = match rt.block_on(async {
+            let attach_results = match rt.block_on(async {
                 let options = AttachContainerOptions::<String> {
                     stdin: Some(true),
                     stdout: Some(true),
@@ -244,9 +480,9 @@ impl ContainerManager {
                     ..Default::default()
                 };
                 
-                docker.attach_container(container_id, Some(options)).await
+                docker_clone1.attach_container(&container_id_clone1, Some(options)).await
             }) {
-                Ok(stream) => stream,
+                Ok(results) => results,
                 Err(e) => {
                     error!("Failed to attach to container: {}", e);
                     
@@ -283,29 +519,50 @@ impl ContainerManager {
             
             // Forward container output to the client
             rt.block_on(async {
-                let mut buffer = [0u8; 4096];
+                let mut output_stream = attach_results.output;
                 
-                loop {
-                    match attach_stream.read(&mut buffer).await {
-                        Ok(0) => {
-                            // End of stream
-                            info!("Container stream ended");
-                            break;
-                        }
-                        Ok(n) => {
+                while let Some(result) = output_stream.next().await {
+                    match result {
+                        Ok(log_output) => {
                             // Format the output as an SSE event
-                            let output = String::from_utf8_lossy(&buffer[..n]);
-                            let event = format!("event: message\r\ndata: {}\r\n\r\n", output);
+                            // Extract the actual content from the LogOutput enum
+                            let output_str = match log_output {
+                                bollard::container::LogOutput::StdOut { message } => {
+                                    String::from_utf8_lossy(&message).to_string()
+                                },
+                                bollard::container::LogOutput::StdErr { message } => {
+                                    String::from_utf8_lossy(&message).to_string()
+                                },
+                                _ => format!("{:?}", log_output),
+                            };
+                            
+                            let event = format!("event: message\r\ndata: {}\r\n\r\n", output_str);
                             
                             // Send the event to the client
                             if let Err(e) = writer.write_all(event.as_bytes()) {
-                                error!("Failed to write to HTTP SSE stream: {}", e);
+                                if let Some(os_error) = e.raw_os_error() {
+                                    if os_error == 32 {  // EPIPE (Broken pipe)
+                                        error!("Client disconnected (broken pipe)");
+                                    } else {
+                                        error!("Failed to write to HTTP SSE stream: {} (os error: {})", e, os_error);
+                                    }
+                                } else {
+                                    error!("Failed to write to HTTP SSE stream: {}", e);
+                                }
                                 break;
                             }
                             
                             // Flush the writer to ensure the event is sent immediately
                             if let Err(e) = writer.flush() {
-                                error!("Failed to flush HTTP SSE stream: {}", e);
+                                if let Some(os_error) = e.raw_os_error() {
+                                    if os_error == 32 {  // EPIPE (Broken pipe)
+                                        error!("Client disconnected (broken pipe)");
+                                    } else {
+                                        error!("Failed to flush HTTP SSE stream: {} (os error: {})", e, os_error);
+                                    }
+                                } else {
+                                    error!("Failed to flush HTTP SSE stream: {}", e);
+                                }
                                 break;
                             }
                         }
@@ -315,6 +572,8 @@ impl ContainerManager {
                         }
                     }
                 }
+                
+                info!("Container output stream ended");
             });
             
             // Signal that the connection is closed
@@ -326,8 +585,13 @@ impl ContainerManager {
             info!("Container to client task exiting");
         });
         
+        // Clone docker and container_id for the second thread
+        let docker_clone2 = docker.clone();
+        let container_id_clone2 = container_id.clone();
+        
         // Create a thread to forward messages from client to container
         let reader_clone = reader.into_inner();
+        let mut writer_clone2 = writer.try_clone()?;
         let client_to_container_thread = thread::spawn(move || {
             let mut reader = std::io::BufReader::new(reader_clone);
             let mut buffer = [0u8; 4096];
@@ -336,7 +600,7 @@ impl ContainerManager {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             
             // Get the attach stream
-            let mut attach_stream = match rt.block_on(async {
+            let attach_results = match rt.block_on(async {
                 let options = AttachContainerOptions::<String> {
                     stdin: Some(true),
                     stdout: Some(true),
@@ -345,9 +609,9 @@ impl ContainerManager {
                     ..Default::default()
                 };
                 
-                docker.attach_container(container_id, Some(options)).await
+                docker_clone2.attach_container(&container_id_clone2, Some(options)).await
             }) {
-                Ok(stream) => stream,
+                Ok(results) => results,
                 Err(e) => {
                     error!("Failed to attach to container: {}", e);
                     
@@ -361,6 +625,9 @@ impl ContainerManager {
                 }
             };
             
+            // Get the input stream for writing to the container
+            let mut input = attach_results.input;
+            
             loop {
                 // Read from the client
                 match reader.read(&mut buffer) {
@@ -372,15 +639,20 @@ impl ContainerManager {
                     Ok(n) => {
                         // Parse the client message and forward it to the container
                         let message = String::from_utf8_lossy(&buffer[..n]);
-                        info!("Received message from client: {}", message);
+                        info!("Received message from client in client-to-container thread: {}", message);
+                        info!("Message starts with GET: {}", message.starts_with("GET"));
+                        
+                        // We only handle raw data in this thread, not HTTP requests
+                        // HTTP requests are handled in the main handle_sse_connection function
+                        info!("Received raw data from client, forwarding to container");
                         
                         // Forward the message to the container
                         rt.block_on(async {
-                            if let Err(e) = attach_stream.write_all(&buffer[..n]).await {
+                            if let Err(e) = input.write_all(&buffer[..n]).await {
                                 error!("Failed to write to container: {}", e);
                             }
                             
-                            if let Err(e) = attach_stream.flush().await {
+                            if let Err(e) = input.flush().await {
                                 error!("Failed to flush container stream: {}", e);
                             }
                         });

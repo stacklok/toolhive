@@ -6,3 +6,7 @@
 pub mod cli;
 pub mod container;
 pub mod permissions;
+
+// Re-export the container module and TransportMode enum for tests
+pub use container::ContainerManager;
+pub use container::TransportMode;

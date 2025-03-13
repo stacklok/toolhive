@@ -13,6 +13,7 @@ clap = { version = "4.4", features = ["derive"] }
 bollard = "0.15"
 # Async runtime
 tokio = { version = "1.32", features = ["full"] }
+futures-util = "0.3"
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"

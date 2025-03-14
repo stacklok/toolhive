@@ -1,7 +1,7 @@
-.PHONY: all build test test-unit test-e2e clean coverage
+.PHONY: all build test test-unit test-e2e clean coverage lint lint-clippy lint-fmt
 
 # Default target
-all: build test
+all: lint build test
 
 # Build the project
 build:
@@ -60,6 +60,31 @@ clean:
 coverage:
 	./coverage.sh
 
+# Run all linters
+lint: lint-fmt lint-security
+
+# Run code formatting check
+lint-fmt:
+	@echo "Checking code formatting..."
+	@cargo fix --allow-dirty --allow-staged --lib
+	@echo "Code formatting check completed!"
+
+# Run security checks
+lint-security: install-security-tools
+	@echo "Running security checks..."
+	@PATH="$(PWD)/.tools/bin:$(PATH)" cargo audit
+	@echo "Security checks completed!"
+
+# Install security tools
+install-security-tools:
+	@echo "Installing security tools..."
+	@mkdir -p .tools/bin
+	@if [ ! -f .tools/bin/cargo-audit ]; then \
+		echo "Installing cargo-audit..."; \
+		cargo install --root .tools cargo-audit; \
+	fi
+	@echo "Security tools installed!"
+
 # Help target
 help:
 	@echo "Available targets:"
@@ -73,5 +98,8 @@ help:
 	@echo "  test-e2e-junit - Run e2e tests with JUnit reports"
 	@echo "  test-e2e-verbose - Run e2e tests with verbose output"
 	@echo "  coverage     - Generate code coverage report"
+	@echo "  lint         - Run all linters (clippy and rustfmt)"
+	@echo "  lint-clippy  - Run Clippy linter"
+	@echo "  lint-fmt     - Run rustfmt"
 	@echo "  clean        - Clean the project"
 	@echo "  help         - Show this help message"

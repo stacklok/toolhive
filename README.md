@@ -129,7 +129,6 @@ mcp-lok list
 This lists all active MCP servers managed by mcp-lok, along with their current status.
 
 ## Development
-
 ### Running Tests
 
 ```bash
@@ -143,6 +142,41 @@ cargo test --lib
 cargo test --test e2e
 ```
 
+### Code Formatting
+
+This project uses cargo fix to ensure consistent code formatting and fix common issues:
+
+- **cargo fix** - A tool for automatically fixing lint warnings reported by rustc
+
+Configuration for code style is included in the repository:
+- `rustfmt.toml` - Code style configuration
+
+#### Running Formatter
+
+You can run the formatter using the provided Makefile:
+
+```bash
+# Run code formatting check
+make lint-fmt
+
+# Run all linting (currently just code formatting)
+make lint
+```
+
+#### Automatic Formatting
+
+The project is set up with:
+
+1. **Pre-commit Hook** - Automatically runs code formatting check before each commit
+2. **GitHub Actions** - Runs code formatting check on pull requests and pushes to main branch
+
+To skip the pre-commit hook (not recommended), use:
+
+```bash
+git commit --no-verify
+```
+
+### Running BDD-style End-to-End Tests
 ### Running BDD-style End-to-End Tests
 
 The project includes comprehensive BDD-style end-to-end tests using cucumber-rs. These tests verify the functionality of the entire system from a user's perspective.

@@ -232,7 +232,7 @@ impl PermissionProfile {
 mod tests {
     use super::*;
     use std::collections::HashSet;
-    use std::path::PathBuf;
+    
     
     #[test]
     fn test_default_permission_profile() {

@@ -52,3 +52,18 @@ tokio-test = "0.4"
 assert_cmd = "2.0"
 predicates = "3.0"
 test-log = "0.2"
+cucumber = { version = "0.21.1", features = ["macros"] }
+async-trait = "0.1"
+futures = "0.3"
+testcontainers = "0.14"
+regex = "1.10"
+rand = "0.8"
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+harness = false
+
+[[test]]
+name = "bdd_tests"
+path = "tests/e2e/bdd_tests.rs"

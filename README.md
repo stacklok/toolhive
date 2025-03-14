@@ -133,8 +133,49 @@ This lists all active MCP servers managed by mcp-lok, along with their current s
 ### Running Tests
 
 ```bash
+# Run all tests
 cargo test
+
+# Run unit tests only
+cargo test --lib
+
+# Run end-to-end tests
+cargo test --test e2e
 ```
+
+### Running BDD-style End-to-End Tests
+
+The project includes comprehensive BDD-style end-to-end tests using cucumber-rs. These tests verify the functionality of the entire system from a user's perspective.
+
+You can run these tests using the provided Makefile:
+
+```bash
+# Run all tests (unit and e2e)
+make test
+
+# Run only e2e tests
+make test-e2e
+
+# Run a specific feature or tag
+make test-e2e-feature FEATURE=server_lifecycle
+make test-e2e-feature FEATURE=@transport
+
+# Run e2e tests with JUnit reports (for CI integration)
+make test-e2e-junit
+
+# Run e2e tests with verbose output
+make test-e2e-verbose
+
+# Show all available make targets
+make help
+```
+
+The BDD tests are organized into five main feature areas:
+1. Server lifecycle management (starting, stopping, removing servers)
+2. CLI command functionality
+3. Transport mechanisms (SSE and stdio)
+4. Permission profiles and security constraints
+5. MCP protocol implementation
 
 ### Building Documentation
 

@@ -35,6 +35,9 @@ pub enum Error {
     #[error("Container not found: {0}")]
     ContainerNotFound(String),
 
+    #[error("Container exited unexpectedly: {0}")]
+    ContainerExited(String),
+
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 

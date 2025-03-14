@@ -2,7 +2,7 @@ use clap::Args;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::container::{ContainerRuntime, ContainerRuntimeFactory};
+use crate::container::{ContainerMonitor, ContainerRuntime, ContainerRuntimeFactory};
 use crate::error::Result;
 use crate::permissions::profile::PermissionProfile;
 use crate::transport::{Transport, TransportFactory, TransportMode};
@@ -152,17 +152,38 @@ impl RunCommand {
 
         println!("MCP server {} started with container ID {}", self.name, container_id);
         
+        // Create a container monitor
+        let runtime_for_monitor = ContainerRuntimeFactory::create().await?;
+        let mut monitor = ContainerMonitor::new(runtime_for_monitor, &container_id, &self.name);
+        
+        // Start monitoring the container
+        let mut error_rx = monitor.start_monitoring().await?;
+        
         if !skip_ctrl_c {
-            println!("Press Ctrl+C to stop");
+            println!("Press Ctrl+C to stop or wait for container to exit");
 
-            // Wait for Ctrl+C
-            let _ = tokio::signal::ctrl_c().await;
+            // Create a future that completes when Ctrl+C is pressed
+            let ctrl_c = tokio::signal::ctrl_c();
+            
+            tokio::select! {
+                // Wait for Ctrl+C
+                _ = ctrl_c => {
+                    println!("Received Ctrl+C, stopping MCP server...");
+                },
+                // Wait for container exit error
+                Some(err) = error_rx.recv() => {
+                    eprintln!("Container exited unexpectedly: {}", err);
+                }
+            }
 
+            // Stop monitoring
+            monitor.stop_monitoring().await;
+            
             // Stop the transport
-            transport.stop().await?;
+            let _ = transport.stop().await;
 
-            // Stop the container
-            runtime.stop_container(&container_id).await?;
+            // Try to stop the container (it might already be stopped)
+            let _ = runtime.stop_container(&container_id).await;
 
             println!("MCP server {} stopped", self.name);
         }

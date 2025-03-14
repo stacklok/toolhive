@@ -707,4 +707,353 @@ mod tests {
         
         assert!(result.is_err());
     }
+    
+    // Helper struct for testing
+    struct MockAsyncReadWrite {
+        _data: Vec<u8>,
+    }
+    
+    impl MockAsyncReadWrite {
+        fn new() -> Self {
+            Self { _data: Vec::new() }
+        }
+    }
+    
+    impl tokio::io::AsyncRead for MockAsyncReadWrite {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+    
+    impl tokio::io::AsyncWrite for MockAsyncReadWrite {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+    
+    #[tokio::test]
+    async fn test_stdio_transport_lifecycle() -> Result<()> {
+        // Create a mock runtime
+        let mut mock_runtime = MockContainerRuntime::new();
+        
+        // Set up expectations for attach_container
+        mock_runtime.expect_attach_container()
+            .returning(|_| {
+                // Create dummy stdin/stdout that implement both AsyncRead and AsyncWrite
+                let stdin = MockAsyncReadWrite::new();
+                let stdout = MockAsyncReadWrite::new();
+                Ok((Box::new(stdin), Box::new(stdout)))
+            });
+        
+        // Create a transport with the mock runtime
+        let transport = StdioTransport::new().with_runtime(Box::new(mock_runtime));
+        let mut env_vars = HashMap::new();
+        
+        // Set up the transport
+        transport.setup("test-id", "test-container", Some(9001), &mut env_vars).await?;
+        
+        // Start the transport
+        transport.start().await?;
+        
+        // Check if it's running
+        assert!(transport.is_running().await?);
+        
+        // Stop the transport
+        transport.stop().await?;
+        
+        // Check if it's stopped
+        assert!(!transport.is_running().await?);
+        
+        Ok(())
+    }
+    
+    #[test]
+    fn test_sse_to_json_rpc() {
+        // Test with valid JSON data
+        let sse = SseMessage {
+            event: "test-event".to_string(),
+            data: r#"{"key": "value", "number": 42}"#.to_string(),
+            id: Some("123".to_string()),
+        };
+        
+        let json_rpc = StdioTransport::sse_to_json_rpc(&sse);
+        
+        assert_eq!(json_rpc.jsonrpc, "2.0");
+        assert_eq!(json_rpc.method, "test-event");
+        assert_eq!(json_rpc.params["key"], "value");
+        assert_eq!(json_rpc.params["number"], 42);
+        assert_eq!(json_rpc.id, Some(serde_json::Value::String("123".to_string())));
+        
+        // Test with non-JSON data
+        let sse_non_json = SseMessage {
+            event: "plain-text".to_string(),
+            data: "Hello, world!".to_string(),
+            id: None,
+        };
+        
+        let json_rpc_non_json = StdioTransport::sse_to_json_rpc(&sse_non_json);
+        
+        assert_eq!(json_rpc_non_json.jsonrpc, "2.0");
+        assert_eq!(json_rpc_non_json.method, "plain-text");
+        assert_eq!(json_rpc_non_json.params, serde_json::Value::String("Hello, world!".to_string()));
+        assert_eq!(json_rpc_non_json.id, None);
+    }
+    
+    #[test]
+    fn test_json_rpc_to_sse() {
+        // Test with string ID
+        let json_rpc = JsonRpcMessage {
+            jsonrpc: "2.0".to_string(),
+            method: "test-method".to_string(),
+            params: serde_json::json!({"key": "value", "number": 42}),
+            id: Some(serde_json::Value::String("123".to_string())),
+        };
+        
+        let sse = StdioTransport::json_rpc_to_sse(&json_rpc);
+        
+        assert_eq!(sse.event, "test-method");
+        assert_eq!(sse.data, r#"{"key":"value","number":42}"#);
+        assert_eq!(sse.id, Some("123".to_string()));
+        
+        // Test with numeric ID
+        let json_rpc_num_id = JsonRpcMessage {
+            jsonrpc: "2.0".to_string(),
+            method: "test-method".to_string(),
+            params: serde_json::json!({"key": "value"}),
+            id: Some(serde_json::Value::Number(serde_json::Number::from(456))),
+        };
+        
+        let sse_num_id = StdioTransport::json_rpc_to_sse(&json_rpc_num_id);
+        
+        assert_eq!(sse_num_id.event, "test-method");
+        assert_eq!(sse_num_id.data, r#"{"key":"value"}"#);
+        assert_eq!(sse_num_id.id, Some("456".to_string()));
+        
+        // Test without ID
+        let json_rpc_no_id = JsonRpcMessage {
+            jsonrpc: "2.0".to_string(),
+            method: "test-method".to_string(),
+            params: serde_json::json!("simple string"),
+            id: None,
+        };
+        
+        let sse_no_id = StdioTransport::json_rpc_to_sse(&json_rpc_no_id);
+        
+        assert_eq!(sse_no_id.event, "test-method");
+        assert_eq!(sse_no_id.data, r#""simple string""#);
+        assert_eq!(sse_no_id.id, None);
+    }
+    
+    #[test]
+    fn test_parse_sse_message() {
+        // Test with all fields
+        let message = "event: test-event\ndata: {\"key\": \"value\"}\nid: 123";
+        let sse = StdioTransport::parse_sse_message(message).unwrap();
+        
+        assert_eq!(sse.event, "test-event");
+        assert_eq!(sse.data, "{\"key\": \"value\"}");
+        assert_eq!(sse.id, Some("123".to_string()));
+        
+        // Test with only data
+        let message_data_only = "data: Hello, world!";
+        let sse_data_only = StdioTransport::parse_sse_message(message_data_only).unwrap();
+        
+        assert_eq!(sse_data_only.event, "message"); // Default event type
+        assert_eq!(sse_data_only.data, "Hello, world!");
+        assert_eq!(sse_data_only.id, None);
+        
+        // Test with empty message
+        let message_empty = "";
+        let sse_empty = StdioTransport::parse_sse_message(message_empty).unwrap();
+        
+        assert_eq!(sse_empty.event, "message"); // Default event type
+        assert_eq!(sse_empty.data, "");
+        assert_eq!(sse_empty.id, None);
+    }
+    
+    #[tokio::test]
+    async fn test_stdio_transport_with_port() -> Result<()> {
+        // Create a transport with a port
+        let transport = StdioTransport::with_port(8080);
+        
+        // Check that the port was set correctly
+        assert_eq!(transport.port, Some(8080));
+        
+        // Set up the transport
+        let mut env_vars = HashMap::new();
+        transport.setup("test-id", "test-container", None, &mut env_vars).await?;
+        
+        // Check that the environment variables were set correctly
+        assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "stdio");
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_stdio_transport_setup_with_port_override() -> Result<()> {
+        // Create a transport
+        let transport = StdioTransport::with_port(8080);
+        let mut env_vars = HashMap::new();
+        
+        // Set up the transport with a port override
+        transport.setup("test-id", "test-container", Some(9000), &mut env_vars).await?;
+        
+        // Check that the environment variables were set correctly
+        assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "stdio");
+        
+        // Note: The port is not updated on the original transport, but on a clone
+        // This is expected behavior based on the implementation
+        assert_eq!(transport.port, Some(8080));
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_stdio_transport_stop_when_not_running() -> Result<()> {
+        // Create a transport
+        let transport = StdioTransport::new();
+        
+        // Stop the transport (should not fail even though it's not running)
+        transport.stop().await?;
+        
+        // Check if it's running (should be false)
+        assert!(!transport.is_running().await?);
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_stdio_transport_is_running_with_shutdown_tx() -> Result<()> {
+        // Create a transport
+        let transport = StdioTransport::new();
+        
+        // Manually set the shutdown_tx to simulate a running transport
+        let (tx, _rx) = tokio::sync::oneshot::channel::<()>();
+        *transport.shutdown_tx.lock().await = Some(tx);
+        
+        // Check if it's running (should be true)
+        assert!(transport.is_running().await?);
+        
+        // Stop the transport
+        transport.stop().await?;
+        
+        // Check if it's running (should be false)
+        assert!(!transport.is_running().await?);
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_stdio_transport_is_running_with_http_shutdown_tx() -> Result<()> {
+        // Create a transport
+        let transport = StdioTransport::new();
+        
+        // Manually set the http_shutdown_tx to simulate a running HTTP server
+        let (tx, _rx) = tokio::sync::oneshot::channel::<()>();
+        *transport.http_shutdown_tx.lock().await = Some(tx);
+        
+        // Check if it's running (should be true)
+        assert!(transport.is_running().await?);
+        
+        // Stop the transport
+        transport.stop().await?;
+        
+        // Check if it's running (should be false)
+        assert!(!transport.is_running().await?);
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_stdio_transport_handle_request_error() -> Result<()> {
+        // Create a transport
+        let transport = StdioTransport::new();
+        
+        // Create a request
+        let req = hyper::Request::builder()
+            .method("POST")
+            .uri("http://localhost:8080/")
+            .body(hyper::Body::from("event: test\ndata: test data"))
+            .unwrap();
+        
+        // Try to handle the request (should fail because message_tx is not set)
+        let result = transport.handle_request(req).await;
+        
+        // Verify the result is an error
+        assert!(result.is_err());
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_stdio_transport_handle_request_with_response() -> Result<()> {
+        // Create a transport
+        let transport = StdioTransport::new();
+        
+        // Create message channels
+        let (message_tx, _message_rx) = mpsc::channel::<SseMessage>(100);
+        *transport.message_tx.lock().await = Some(message_tx);
+        
+        // Create a request
+        let req = hyper::Request::builder()
+            .method("POST")
+            .uri("http://localhost:8080/")
+            .body(hyper::Body::from("event: test\ndata: test data"))
+            .unwrap();
+        
+        // Handle the request (should succeed now that message_tx is set)
+        let response = transport.handle_request(req).await?;
+        
+        // Verify the response
+        assert_eq!(response.status(), hyper::StatusCode::OK);
+        
+        Ok(())
+    }
+    
+    #[test]
+    fn test_sse_message_creation() {
+        // Test with all fields
+        let sse = SseMessage {
+            event: "test-event".to_string(),
+            data: "{\"key\": \"value\"}".to_string(),
+            id: Some("123".to_string()),
+        };
+        
+        assert_eq!(sse.event, "test-event");
+        assert_eq!(sse.data, "{\"key\": \"value\"}");
+        assert_eq!(sse.id, Some("123".to_string()));
+        
+        // Test without ID
+        let sse_no_id = SseMessage {
+            event: "test-event".to_string(),
+            data: "{\"key\": \"value\"}".to_string(),
+            id: None,
+        };
+        
+        assert_eq!(sse_no_id.event, "test-event");
+        assert_eq!(sse_no_id.data, "{\"key\": \"value\"}");
+        assert_eq!(sse_no_id.id, None);
+    }
 }

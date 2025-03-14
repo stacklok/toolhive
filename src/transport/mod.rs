@@ -76,3 +76,40 @@ impl TransportFactory {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::sse::SseTransport;
+    use crate::transport::stdio::StdioTransport;
+
+    #[test]
+    fn test_transport_mode_from_str() {
+        assert_eq!(TransportMode::from_str("sse"), Some(TransportMode::SSE));
+        assert_eq!(TransportMode::from_str("SSE"), Some(TransportMode::SSE));
+        assert_eq!(TransportMode::from_str("stdio"), Some(TransportMode::STDIO));
+        assert_eq!(TransportMode::from_str("STDIO"), Some(TransportMode::STDIO));
+        assert_eq!(TransportMode::from_str("invalid"), None);
+    }
+
+    #[test]
+    fn test_transport_mode_as_str() {
+        assert_eq!(TransportMode::SSE.as_str(), "sse");
+        assert_eq!(TransportMode::STDIO.as_str(), "stdio");
+    }
+
+    #[test]
+    fn test_transport_factory_create() {
+        // Test creating SSE transport
+        let sse_transport = TransportFactory::create(TransportMode::SSE, 8080);
+        assert_eq!(sse_transport.mode(), TransportMode::SSE);
+        
+        // Test creating STDIO transport
+        let stdio_transport = TransportFactory::create(TransportMode::STDIO, 8081);
+        assert_eq!(stdio_transport.mode(), TransportMode::STDIO);
+        
+        // Verify the correct types were created using downcasting
+        assert!(sse_transport.as_any().downcast_ref::<SseTransport>().is_some());
+        assert!(stdio_transport.as_any().downcast_ref::<StdioTransport>().is_some());
+    }
+}

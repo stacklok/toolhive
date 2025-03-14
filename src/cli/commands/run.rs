@@ -2,10 +2,10 @@ use clap::Args;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::container::ContainerRuntimeFactory;
+use crate::container::{ContainerRuntime, ContainerRuntimeFactory};
 use crate::error::Result;
 use crate::permissions::profile::PermissionProfile;
-use crate::transport::{TransportFactory, TransportMode};
+use crate::transport::{Transport, TransportFactory, TransportMode};
 
 /// Run an MCP server
 #[derive(Args, Debug)]
@@ -76,8 +76,23 @@ impl RunCommand {
         let permission_config = permission_profile.to_container_config()?;
 
         // Create container runtime
-        let mut runtime = ContainerRuntimeFactory::create().await?;
-
+        let runtime = ContainerRuntimeFactory::create().await?;
+        
+        // Create transport handler
+        let transport = TransportFactory::create(transport_mode, port);
+        
+        // Execute with the runtime and transport
+        self.execute_with_runtime_and_transport(runtime, transport, permission_config, false).await
+    }
+    
+    /// Run the command with a specific runtime and transport (for testing)
+    pub async fn execute_with_runtime_and_transport(
+        &self,
+        mut runtime: Box<dyn ContainerRuntime>,
+        transport: Box<dyn Transport>,
+        permission_config: crate::permissions::profile::ContainerPermissionConfig,
+        skip_ctrl_c: bool, // For testing
+    ) -> Result<()> {
         // Create labels for the container
         let mut labels = HashMap::new();
         labels.insert("mcp-lok".to_string(), "true".to_string());
@@ -101,11 +116,8 @@ impl RunCommand {
             }
         }
 
-        // Create transport handler
-        let transport = TransportFactory::create(transport_mode, port);
-        
         // If using stdio transport, set the runtime
-        let transport = match transport_mode {
+        let transport = match transport.mode() {
             TransportMode::STDIO => {
                 let stdio_transport = transport.as_any().downcast_ref::<crate::transport::stdio::StdioTransport>()
                     .ok_or_else(|| crate::error::Error::Transport("Failed to downcast to StdioTransport".to_string()))?;
@@ -139,19 +151,139 @@ impl RunCommand {
         transport.start().await?;
 
         println!("MCP server {} started with container ID {}", self.name, container_id);
-        println!("Press Ctrl+C to stop");
+        
+        if !skip_ctrl_c {
+            println!("Press Ctrl+C to stop");
 
-        // Wait for Ctrl+C
-        let _ = tokio::signal::ctrl_c().await;
+            // Wait for Ctrl+C
+            let _ = tokio::signal::ctrl_c().await;
 
-        // Stop the transport
-        transport.stop().await?;
+            // Stop the transport
+            transport.stop().await?;
 
-        // Stop the container
-        runtime.stop_container(&container_id).await?;
+            // Stop the container
+            runtime.stop_container(&container_id).await?;
 
-        println!("MCP server {} stopped", self.name);
+            println!("MCP server {} stopped", self.name);
+        }
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[tokio::test]
+    async fn test_run_command_env_vars() -> Result<()> {
+        // Test valid environment variables
+        let env_vars = vec!["KEY1=value1".to_string(), "KEY2=value2".to_string()];
+        let mut result_map = HashMap::new();
+        
+        for env_var in &env_vars {
+            if let Some(pos) = env_var.find('=') {
+                let key = env_var[..pos].to_string();
+                let value = env_var[pos + 1..].to_string();
+                result_map.insert(key, value);
+            }
+        }
+        
+        assert_eq!(result_map.get("KEY1").unwrap(), "value1");
+        assert_eq!(result_map.get("KEY2").unwrap(), "value2");
+        
+        // Test invalid environment variable
+        let invalid_env_var = "INVALID_ENV_VAR".to_string();
+        let pos = invalid_env_var.find('=');
+        
+        assert!(pos.is_none());
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_run_command_transport_validation() -> Result<()> {
+        // Test SSE transport without port
+        let cmd = RunCommand {
+            transport: "sse".to_string(),
+            name: "test-server".to_string(),
+            port: None, // Missing port
+            permission_profile: "network".to_string(),
+            env: vec![],
+            image: "test-image".to_string(),
+            args: vec![],
+        };
+        
+        // Parse transport mode
+        let transport_mode = TransportMode::from_str(&cmd.transport).unwrap();
+        
+        // Validate port for SSE transport
+        let result = match transport_mode {
+            TransportMode::SSE => {
+                cmd.port.ok_or_else(|| {
+                    crate::error::Error::InvalidArgument(
+                        "Port is required for SSE transport".to_string(),
+                    )
+                })
+            }
+            _ => Ok(cmd.port.unwrap_or(0)),
+        };
+        
+        // Verify the result is an error
+        assert!(result.is_err());
+        
+        // Test with valid port
+        let cmd = RunCommand {
+            transport: "sse".to_string(),
+            name: "test-server".to_string(),
+            port: Some(8080), // Valid port
+            permission_profile: "network".to_string(),
+            env: vec![],
+            image: "test-image".to_string(),
+            args: vec![],
+        };
+        
+        // Parse transport mode
+        let transport_mode = TransportMode::from_str(&cmd.transport).unwrap();
+        
+        // Validate port for SSE transport
+        let result = match transport_mode {
+            TransportMode::SSE => {
+                cmd.port.ok_or_else(|| {
+                    crate::error::Error::InvalidArgument(
+                        "Port is required for SSE transport".to_string(),
+                    )
+                })
+            }
+            _ => Ok(cmd.port.unwrap_or(0)),
+        };
+        
+        // Verify the result is ok
+        assert!(result.is_ok());
+        
+        // Test invalid transport mode
+        let cmd = RunCommand {
+            transport: "invalid".to_string(),
+            name: "test-server".to_string(),
+            port: Some(8080),
+            permission_profile: "network".to_string(),
+            env: vec![],
+            image: "test-image".to_string(),
+            args: vec![],
+        };
+        
+        // Parse transport mode
+        let result = TransportMode::from_str(&cmd.transport)
+            .ok_or_else(|| {
+                crate::error::Error::InvalidArgument(format!(
+                    "Invalid transport mode: {}. Valid modes are: sse, stdio",
+                    cmd.transport
+                ))
+            });
+        
+        // Verify the result is an error
+        assert!(result.is_err());
+        
         Ok(())
     }
 }

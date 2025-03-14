@@ -248,4 +248,101 @@ mod tests {
 
     // Note: Testing the actual proxy functionality would require more complex setup
     // with a mock HTTP server, which is beyond the scope of this implementation
+    
+    #[tokio::test]
+    async fn test_sse_transport_lifecycle() -> Result<()> {
+        // Create a transport
+        let transport = SseTransport::new(8082);
+        let mut env_vars = HashMap::new();
+        
+        // Set up the transport
+        transport.setup("test-id", "test-container", Some(9002), &mut env_vars).await?;
+        
+        // Start the transport
+        transport.start().await?;
+        
+        // Check if it's running
+        assert!(transport.is_running().await?);
+        
+        // Stop the transport
+        transport.stop().await?;
+        
+        // Check if it's stopped
+        assert!(!transport.is_running().await?);
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_sse_transport_with_container_port() -> Result<()> {
+        // Create a transport with a custom container port
+        let transport = SseTransport::with_container_port(8083, 9003);
+        let mut env_vars = HashMap::new();
+        
+        // Set up the transport
+        transport.setup("test-id", "test-container", None, &mut env_vars).await?;
+        
+        // Check that the container port was set correctly
+        assert_eq!(*transport.container_port.lock().unwrap(), 9003);
+        
+        // Check that the environment variables were set correctly
+        assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "sse");
+        assert_eq!(env_vars.get("MCP_PORT").unwrap(), "9003");
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_sse_transport_setup_with_port_override() -> Result<()> {
+        // Create a transport
+        let transport = SseTransport::new(8084);
+        let mut env_vars = HashMap::new();
+        
+        // Set up the transport with a port override
+        transport.setup("test-id", "test-container", Some(9004), &mut env_vars).await?;
+        
+        // Check that the container port was set correctly
+        assert_eq!(*transport.container_port.lock().unwrap(), 9004);
+        
+        // Check that the environment variables were set correctly
+        assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "sse");
+        assert_eq!(env_vars.get("MCP_PORT").unwrap(), "9004");
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_sse_transport_stop_when_not_running() -> Result<()> {
+        // Create a transport
+        let transport = SseTransport::new(8085);
+        
+        // Stop the transport (should not fail even though it's not running)
+        transport.stop().await?;
+        
+        // Check if it's running (should be false)
+        assert!(!transport.is_running().await?);
+        
+        Ok(())
+    }
+    
+    #[tokio::test]
+    async fn test_sse_transport_is_running_with_shutdown_tx() -> Result<()> {
+        // Create a transport
+        let transport = SseTransport::new(8086);
+        
+        // Manually set the shutdown_tx to simulate a running transport
+        let (tx, _rx) = tokio::sync::oneshot::channel::<()>();
+        *transport.shutdown_tx.lock().unwrap() = Some(tx);
+        
+        // Check if it's running (should be true)
+        assert!(transport.is_running().await?);
+        
+        // Stop the transport
+        transport.stop().await?;
+        
+        // Check if it's running (should be false)
+        assert!(!transport.is_running().await?);
+        
+        Ok(())
+    }
 }

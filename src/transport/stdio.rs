@@ -610,6 +610,7 @@ pub struct JsonRpcMessage {
 }
 
 /// Dummy container runtime for initialization
+#[allow(dead_code)]
 struct DummyContainerRuntime;
 
 #[async_trait]

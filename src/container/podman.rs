@@ -327,10 +327,10 @@ impl ContainerRuntime for PodmanClient {
             .mounts
             .iter()
             .map(|mount| PodmanMount {
-                Type: "bind".to_string(),
-                Source: mount.source.clone(),
-                Destination: mount.target.clone(),
-                Options: if mount.read_only {
+                type_: "bind".to_string(),
+                source: mount.source.clone(),
+                destination: mount.target.clone(),
+                options: if mount.read_only {
                     Some(vec!["ro".to_string()])
                 } else {
                     None
@@ -340,16 +340,16 @@ impl ContainerRuntime for PodmanClient {
 
         // Create container configuration
         let create_config = PodmanCreateContainerConfig {
-            Image: image.to_string(),
-            Command: Some(command),
-            Env: Some(env_vars),
-            Labels: Some(labels),
-            HostConfig: PodmanHostConfig {
-                Mounts: Some(mounts),
-                NetworkMode: permission_config.network_mode,
-                CapDrop: Some(permission_config.cap_drop),
-                CapAdd: Some(permission_config.cap_add),
-                SecurityOpt: Some(permission_config.security_opt),
+            image: image.to_string(),
+            command: Some(command),
+            env: Some(env_vars),
+            labels: Some(labels),
+            host_config: PodmanHostConfig {
+                mounts: Some(mounts),
+                network_mode: permission_config.network_mode,
+                cap_drop: Some(permission_config.cap_drop),
+                cap_add: Some(permission_config.cap_add),
+                security_opt: Some(permission_config.security_opt),
             },
         };
 
@@ -362,7 +362,7 @@ impl ContainerRuntime for PodmanClient {
         ).await?;
 
         // Start container
-        let container_id = &create_response.Id;
+        let container_id = &create_response.id;
         let path = format!("containers/{}/start", container_id);
         let _: serde_json::Value = self.request(
             Method::POST,
@@ -403,7 +403,7 @@ impl ContainerRuntime for PodmanClient {
                         .filter(|c| {
                             // Filter for mcp-lok containers if we're using an endpoint without filters
                             if !path.contains("filters=") {
-                                if let Some(labels) = &c.Labels {
+                                if let Some(labels) = &c.labels {
                                     return labels.get("mcp-lok").map_or(false, |v| v == "true");
                                 }
                                 return false;
@@ -411,7 +411,7 @@ impl ContainerRuntime for PodmanClient {
                             true
                         })
                         .map(|c| {
-                            let ports = c.Ports.unwrap_or_default()
+                            let ports = c.ports.unwrap_or_default()
                                 .into_iter()
                                 .map(|p| PortMapping {
                                     container_port: p.container_port,
@@ -421,12 +421,12 @@ impl ContainerRuntime for PodmanClient {
                                 .collect();
 
                             ContainerInfo {
-                                id: c.Id,
-                                name: c.Names.unwrap_or_default().first().cloned().unwrap_or_default(),
-                                image: c.Image,
-                                status: c.Status,
+                                id: c.id,
+                                name: c.names.unwrap_or_default().first().cloned().unwrap_or_default(),
+                                image: c.image,
+                                status: c.status,
                                 created: 0, // Default to 0 for now since we have a string timestamp
-                                labels: c.Labels.unwrap_or_default(),
+                                labels: c.labels.unwrap_or_default(),
                                 ports,
                             }
                         })
@@ -536,11 +536,11 @@ impl ContainerRuntime for PodmanClient {
 
         // Convert port mappings
         let mut ports = Vec::new();
-        if let Some(port_bindings) = &container.NetworkSettings.Ports {
+        if let Some(port_bindings) = &container.network_settings.ports {
             for (port_proto, bindings) in port_bindings {
                 if let Some(bindings) = bindings {
                     for binding in bindings {
-                        if let Some(host_port_str) = &binding.HostPort {
+                        if let Some(host_port_str) = &binding.host_port {
                             if let Ok(host_port) = host_port_str.parse::<u16>() {
                                 // Parse container port and protocol from the key (e.g., "80/tcp")
                                 let parts: Vec<&str> = port_proto.split('/').collect();
@@ -561,12 +561,12 @@ impl ContainerRuntime for PodmanClient {
         }
 
         Ok(ContainerInfo {
-            id: container.Id,
-            name: container.Name,
-            image: container.Config.Image,
-            status: container.State.Status,
-            created: container.Created,
-            labels: container.Config.Labels.unwrap_or_default(),
+            id: container.id,
+            name: container.name,
+            image: container.config.image,
+            status: container.state.status,
+            created: container.created,
+            labels: container.config.labels.unwrap_or_default(),
             ports,
         })
     }
@@ -622,65 +622,79 @@ impl ContainerRuntime for PodmanClient {
 
 #[derive(Debug, Serialize)]
 struct PodmanCreateContainerConfig {
-    Image: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    Command: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    Env: Option<HashMap<String, String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    Labels: Option<HashMap<String, String>>,
-    HostConfig: PodmanHostConfig,
+    #[serde(rename = "Image")]
+    image: String,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "Command")]
+    command: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "Env")]
+    env: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "Labels")]
+    labels: Option<HashMap<String, String>>,
+    #[serde(rename = "HostConfig")]
+    host_config: PodmanHostConfig,
 }
 
 #[derive(Debug, Serialize)]
 struct PodmanHostConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    Mounts: Option<Vec<PodmanMount>>,
-    NetworkMode: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    CapDrop: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    CapAdd: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    SecurityOpt: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "Mounts")]
+    mounts: Option<Vec<PodmanMount>>,
+    #[serde(rename = "NetworkMode")]
+    network_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "CapDrop")]
+    cap_drop: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "CapAdd")]
+    cap_add: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "SecurityOpt")]
+    security_opt: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
 struct PodmanMount {
-    Type: String,
-    Source: String,
-    Destination: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    Options: Option<Vec<String>>,
+    #[serde(rename = "Type")]
+    type_: String,
+    #[serde(rename = "Source")]
+    source: String,
+    #[serde(rename = "Destination")]
+    destination: String,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "Options")]
+    options: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PodmanCreateContainerResponse {
-    Id: String,
-    #[serde(default)]
-    Warnings: Vec<String>,
+    #[serde(rename = "Id")]
+    id: String,
+    #[serde(default, rename = "Warnings")]
+    #[allow(dead_code)]
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PodmanContainer {
-    Id: String,
-    #[serde(default)]
-    Names: Option<Vec<String>>,
-    Image: String,
-    #[serde(default)]
-    ImageID: String,
-    Status: String,
-    #[serde(default)]
-    Created: String,
-    #[serde(default)]
-    Labels: Option<HashMap<String, String>>,
-    #[serde(default)]
-    Ports: Option<Vec<PodmanPort>>,
+    #[serde(rename = "Id")]
+    id: String,
+    #[serde(default, rename = "Names")]
+    names: Option<Vec<String>>,
+    #[serde(rename = "Image")]
+    image: String,
+    #[serde(default, rename = "ImageID")]
+    #[allow(dead_code)]
+    image_id: String,
+    #[serde(rename = "Status")]
+    status: String,
+    #[serde(default, rename = "Created")]
+    #[allow(dead_code)]
+    created: String,
+    #[serde(default, rename = "Labels")]
+    labels: Option<HashMap<String, String>>,
+    #[serde(default, rename = "Ports")]
+    ports: Option<Vec<PodmanPort>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PodmanPort {
     #[serde(default)]
+    #[allow(dead_code)]
     host_ip: Option<String>,
     container_port: u16,
     host_port: Option<u16>,
@@ -689,46 +703,77 @@ struct PodmanPort {
 
 #[derive(Debug, Deserialize)]
 struct PodmanContainerInspect {
-    Id: String,
-    Name: String,
-    Created: u64,
-    State: PodmanContainerState,
-    Config: PodmanContainerConfig,
-    NetworkSettings: PodmanNetworkSettings,
+    #[serde(rename = "Id")]
+    id: String,
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Created")]
+    created: u64,
+    #[serde(rename = "State")]
+    state: PodmanContainerState,
+    #[serde(rename = "Config")]
+    config: PodmanContainerConfig,
+    #[serde(rename = "NetworkSettings")]
+    network_settings: PodmanNetworkSettings,
 }
 
 #[derive(Debug, Deserialize)]
 struct PodmanContainerState {
-    Status: String,
-    Running: bool,
-    Paused: bool,
-    Restarting: bool,
-    OOMKilled: bool,
-    Dead: bool,
-    Pid: i64,
-    ExitCode: i64,
-    Error: String,
-    StartedAt: String,
-    FinishedAt: String,
+    #[serde(rename = "Status")]
+    status: String,
+    #[serde(rename = "Running")]
+    #[allow(dead_code)]
+    running: bool,
+    #[serde(rename = "Paused")]
+    #[allow(dead_code)]
+    paused: bool,
+    #[serde(rename = "Restarting")]
+    #[allow(dead_code)]
+    restarting: bool,
+    #[serde(rename = "OOMKilled")]
+    #[allow(dead_code)]
+    oom_killed: bool,
+    #[serde(rename = "Dead")]
+    #[allow(dead_code)]
+    dead: bool,
+    #[serde(rename = "Pid")]
+    #[allow(dead_code)]
+    pid: i64,
+    #[serde(rename = "ExitCode")]
+    #[allow(dead_code)]
+    exit_code: i64,
+    #[serde(rename = "Error")]
+    #[allow(dead_code)]
+    error: String,
+    #[serde(rename = "StartedAt")]
+    #[allow(dead_code)]
+    started_at: String,
+    #[serde(rename = "FinishedAt")]
+    #[allow(dead_code)]
+    finished_at: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct PodmanContainerConfig {
-    Image: String,
-    #[serde(default)]
-    Labels: Option<HashMap<String, String>>,
+    #[serde(rename = "Image")]
+    image: String,
+    #[serde(default, rename = "Labels")]
+    labels: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PodmanNetworkSettings {
-    #[serde(default)]
-    Ports: Option<HashMap<String, Option<Vec<PodmanPortBinding>>>>,
+    #[serde(default, rename = "Ports")]
+    ports: Option<HashMap<String, Option<Vec<PodmanPortBinding>>>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PodmanPortBinding {
-    HostIp: Option<String>,
-    HostPort: Option<String>,
+    #[serde(rename = "HostIp")]
+    #[allow(dead_code)]
+    host_ip: Option<String>,
+    #[serde(rename = "HostPort")]
+    host_port: Option<String>,
 }
 
 #[cfg(test)]

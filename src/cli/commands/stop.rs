@@ -1,6 +1,6 @@
 use clap::Args;
 
-use crate::container::{ContainerRuntime, ContainerRuntimeFactory};
+use crate::container::ContainerRuntimeFactory;
 use crate::error::Result;
 
 /// Stop an MCP server

@@ -1,16 +1,19 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use hyper::{Body, Request, Response, Server, StatusCode};
 use hyper::service::{make_service_fn, service_fn};
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
+use mcp_lok::container::{ContainerInfo, ContainerRuntime};
+use mcp_lok::error::{Error, Result};
+use mcp_lok::permissions::profile::ContainerPermissionConfig;
 use mcp_lok::transport::Transport;
 use mcp_lok::transport::sse::SseTransport;
 use mcp_lok::transport::stdio::{JsonRpcMessage, SseMessage, StdioTransport};
-use mcp_lok::error::Result;
 
 // Fake MCP server that responds to MCP protocol requests
 struct FakeMcpServer {
@@ -501,6 +504,273 @@ async fn test_stdio_transport_proxy() -> Result<()> {
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "initialize");
     assert_eq!(requests[1].method, "resources/list");
+    
+    Ok(())
+}
+
+// Mock ContainerRuntime implementation for testing the HTTP-to-stdio proxy
+#[derive(Clone)]
+struct MockContainerRuntimeForProxy {
+    fake_server: Arc<FakeMcpServer>,
+    container_id: String,
+    container_name: String,
+    // Channels to track messages sent to stdin and received from stdout
+    stdin_messages: Arc<Mutex<Vec<String>>>,
+    stdout_messages: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl ContainerRuntime for MockContainerRuntimeForProxy {
+    async fn create_and_start_container(
+        &self,
+        _image: &str,
+        _name: &str,
+        _command: Vec<String>,
+        _env_vars: HashMap<String, String>,
+        _labels: HashMap<String, String>,
+        _permission_config: ContainerPermissionConfig,
+    ) -> Result<String> {
+        Ok(self.container_id.clone())
+    }
+
+    async fn list_containers(&self) -> Result<Vec<ContainerInfo>> {
+        Ok(vec![])
+    }
+
+    async fn stop_container(&self, _container_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn remove_container(&self, _container_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn container_logs(&self, _container_id: &str) -> Result<String> {
+        Ok("".to_string())
+    }
+
+    async fn is_container_running(&self, _container_id: &str) -> Result<bool> {
+        Ok(true)
+    }
+
+    async fn get_container_info(&self, _container_id: &str) -> Result<ContainerInfo> {
+        Err(Error::Transport("Not implemented".to_string()))
+    }
+
+    async fn attach_container(&self, _container_id: &str) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
+        // Create a mock stdin/stdout pair
+        let stdin_messages = self.stdin_messages.clone();
+        let stdout_messages = self.stdout_messages.clone();
+        let fake_server = self.fake_server.clone();
+        
+        // Create a pipe for stdin
+        let (stdin_tx, mut stdin_rx) = tokio::io::duplex(1024);
+        // Create a pipe for stdout
+        let (mut stdout_tx, stdout_rx) = tokio::io::duplex(1024);
+        
+        // Spawn a task to handle the container's stdin/stdout
+        tokio::spawn(async move {
+            let mut buffer = Vec::new();
+            let mut line_buffer = String::new();
+            
+            // Process stdin
+            loop {
+                let mut buf = [0u8; 1024];
+                match stdin_rx.read(&mut buf).await {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        // Process the data
+                        let data = &buf[..n];
+                        buffer.extend_from_slice(data);
+                        
+                        // Process complete lines
+                        let mut start_idx = 0;
+                        for i in 0..buffer.len() {
+                            if buffer[i] == b'\n' {
+                                // Extract the line
+                                if let Ok(line) = std::str::from_utf8(&buffer[start_idx..i]) {
+                                    line_buffer.push_str(line);
+                                    
+                                    // Store the message
+                                    {
+                                        let mut messages = stdin_messages.lock().unwrap();
+                                        messages.push(line_buffer.clone());
+                                    }
+                                    
+                                    // Try to parse as JSON-RPC
+                                    if !line_buffer.trim().is_empty() {
+                                        match serde_json::from_str::<JsonRpcMessage>(&line_buffer.trim()) {
+                                            Ok(json_rpc) => {
+                                                // Process the message
+                                                let response = fake_server.process_message(json_rpc);
+                                                
+                                                // Serialize to JSON
+                                                if let Ok(json_str) = serde_json::to_string(&response) {
+                                                    // Add newline to ensure proper message separation
+                                                    let json_str = format!("{}\n", json_str);
+                                                    
+                                                    // Store the response
+                                                    {
+                                                        let mut messages = stdout_messages.lock().unwrap();
+                                                        messages.push(json_str.clone());
+                                                    }
+                                                    
+                                                    // Write to stdout
+                                                    if let Err(e) = stdout_tx.write_all(json_str.as_bytes()).await {
+                                                        eprintln!("Failed to write to stdout: {}", e);
+                                                        break;
+                                                    }
+                                                    
+                                                    // Flush stdout
+                                                    if let Err(e) = stdout_tx.flush().await {
+                                                        eprintln!("Failed to flush stdout: {}", e);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("Failed to parse JSON-RPC message: {}", e);
+                                                eprintln!("Message: {}", line_buffer);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Clear the line buffer
+                                    line_buffer.clear();
+                                }
+                                
+                                // Update the start index for the next line
+                                start_idx = i + 1;
+                            }
+                        }
+                        
+                        // Keep any remaining partial line in the buffer
+                        if start_idx < buffer.len() {
+                            buffer = buffer[start_idx..].to_vec();
+                        } else {
+                            buffer.clear();
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error reading from stdin: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+        
+        Ok((Box::new(stdin_tx), Box::new(stdout_rx)))
+    }
+}
+
+// Test the HTTP-to-stdio proxy functionality
+#[tokio::test]
+async fn test_stdio_transport_http_proxy() -> Result<()> {
+    // Create a fake MCP server
+    let fake_server = Arc::new(FakeMcpServer::new());
+    
+    // Create a mock container runtime
+    let mock_runtime = MockContainerRuntimeForProxy {
+        fake_server: fake_server.clone(),
+        container_id: "test-container-id".to_string(),
+        container_name: "test-container".to_string(),
+        stdin_messages: Arc::new(Mutex::new(Vec::new())),
+        stdout_messages: Arc::new(Mutex::new(Vec::new())),
+    };
+    
+    // Create a STDIO transport with HTTP proxy on port 8200
+    let transport = StdioTransport::with_port(8200)
+        .with_runtime(Box::new(mock_runtime.clone()));
+    
+    // Set up the transport
+    let mut env_vars = HashMap::new();
+    transport.setup("test-container-id", "test-container", Some(8200), &mut env_vars).await?;
+    
+    // Start the transport
+    transport.start().await?;
+    
+    // Create a client to send requests to the transport
+    let client = reqwest::Client::new();
+    
+    // Send an initialize request via HTTP SSE
+    let initialize_request = SseMessage {
+        event: "initialize".to_string(),
+        data: r#"{"clientInfo":{"name":"test-client","version":"0.1.0"},"capabilities":{},"protocolVersion":"0.1.0"}"#.to_string(),
+        id: Some("1".to_string()),
+    };
+    
+    let response = client.post("http://localhost:8200")
+        .header("Content-Type", "text/event-stream")
+        .body(format!(
+            "event: {}\ndata: {}\nid: {}\n\n",
+            initialize_request.event,
+            initialize_request.data,
+            initialize_request.id.unwrap()
+        ))
+        .send()
+        .await
+        .expect("Failed to send request");
+    
+    assert_eq!(response.status(), StatusCode::OK);
+    
+    // Give some time for the message to be processed
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    
+    // Verify that the message was sent to the container's stdin
+    {
+        let stdin_messages = mock_runtime.stdin_messages.lock().unwrap();
+        assert!(!stdin_messages.is_empty());
+        
+        // The message should be a JSON-RPC message with the initialize method
+        let message = &stdin_messages[0];
+        let json_rpc: JsonRpcMessage = serde_json::from_str(message).expect("Failed to parse JSON-RPC message");
+        assert_eq!(json_rpc.method, "initialize");
+        assert!(json_rpc.params.get("clientInfo").is_some());
+    }
+    
+    // Send a resources/list request
+    let list_request = SseMessage {
+        event: "resources/list".to_string(),
+        data: "{}".to_string(),
+        id: Some("2".to_string()),
+    };
+    
+    let response = client.post("http://localhost:8200")
+        .header("Content-Type", "text/event-stream")
+        .body(format!(
+            "event: {}\ndata: {}\nid: {}\n\n",
+            list_request.event,
+            list_request.data,
+            list_request.id.unwrap()
+        ))
+        .send()
+        .await
+        .expect("Failed to send request");
+    
+    assert_eq!(response.status(), StatusCode::OK);
+    
+    // Give some time for the message to be processed
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    
+    // Verify that the message was sent to the container's stdin
+    {
+        let stdin_messages = mock_runtime.stdin_messages.lock().unwrap();
+        assert!(stdin_messages.len() >= 2);
+        
+        // The second message should be a JSON-RPC message with the resources/list method
+        let message = &stdin_messages[1];
+        let json_rpc: JsonRpcMessage = serde_json::from_str(message).expect("Failed to parse JSON-RPC message");
+        assert_eq!(json_rpc.method, "resources/list");
+    }
+    
+    // Verify the fake server received the expected requests
+    let requests = fake_server.get_requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "initialize");
+    assert_eq!(requests[1].method, "resources/list");
+    
+    // Stop the transport
+    transport.stop().await?;
     
     Ok(())
 }

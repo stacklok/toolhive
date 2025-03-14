@@ -1,4 +1,4 @@
-.PHONY: all build test test-unit test-e2e clean
+.PHONY: all build test test-unit test-e2e clean coverage
 
 # Default target
 all: build test
@@ -56,6 +56,10 @@ test-e2e-verbose:
 clean:
 	cargo clean
 
+# Run code coverage
+coverage:
+	./coverage.sh
+
 # Help target
 help:
 	@echo "Available targets:"
@@ -68,5 +72,6 @@ help:
 	@echo "  test-e2e-feature FEATURE=<name> - Run specific e2e feature"
 	@echo "  test-e2e-junit - Run e2e tests with JUnit reports"
 	@echo "  test-e2e-verbose - Run e2e tests with verbose output"
+	@echo "  coverage     - Generate code coverage report"
 	@echo "  clean        - Clean the project"
 	@echo "  help         - Show this help message"

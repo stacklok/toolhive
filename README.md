@@ -183,6 +183,46 @@ The BDD tests are organized into five main feature areas:
 cargo doc --open
 ```
 
+### Code Coverage
+
+This project uses [grcov](https://github.com/mozilla/grcov) to generate code coverage reports. The coverage setup is configured in the `coverage.sh` script and can be run using the `make coverage` command.
+
+#### Running Code Coverage
+
+To generate a code coverage report:
+
+```bash
+make coverage
+```
+
+This will:
+1. Run the unit tests with coverage instrumentation
+2. Generate an HTML coverage report in `target/coverage/html/`
+3. Generate a Markdown summary report in `target/coverage/summary.md`
+
+#### Current Coverage Status
+
+The current code coverage is around 14%. The permissions module has good coverage (91.71%), but other modules like CLI commands and container implementations need more tests.
+
+#### Areas for Improvement
+
+Based on the coverage report, the following areas need more tests:
+
+1. CLI Commands (0% coverage):
+   - src/cli/commands/list.rs
+   - src/cli/commands/rm.rs
+   - src/cli/commands/run.rs
+   - src/cli/commands/start.rs
+   - src/cli/commands/stop.rs
+
+2. Container Implementations (0% coverage):
+   - src/container/docker.rs
+   - src/container/podman.rs
+
+3. Transport Implementations (partial coverage):
+   - src/transport/sse.rs (26.06%)
+   - src/transport/stdio.rs (9.89%)
+
 ## License
 
 This project is licensed under the Apache 2.0 License. See the LICENSE file for details.

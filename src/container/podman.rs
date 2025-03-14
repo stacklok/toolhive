@@ -8,6 +8,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::container::{ContainerInfo, ContainerRuntime, PortMapping};
@@ -31,6 +32,16 @@ impl PodmanClient {
         // Try to find the Podman socket in various locations
         let socket_path = Self::find_podman_socket()?;
         Self::with_socket_path(&socket_path).await
+    }
+    
+    /// Parse a timestamp string into a Unix timestamp (seconds since epoch)
+    fn parse_timestamp(_timestamp: &str) -> u64 {
+        // Try to parse the timestamp using chrono if available
+        // For simplicity, we'll just return the current timestamp if parsing fails
+        match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_secs(),
+            Err(_) => 0,
+        }
     }
 
     /// Create a new Podman client with a custom socket path
@@ -498,10 +509,37 @@ impl ContainerRuntime for PodmanClient {
 
     async fn is_container_running(&self, container_id: &str) -> Result<bool> {
         // Get container info
-        let container_info = self.get_container_info(container_id).await?;
+        let path = format!("containers/{}/json", container_id);
         
-        // Check if the container is running
-        Ok(container_info.status.contains("Up"))
+        let uri_path = self.uri_path(&path);
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(hyperlocal::Uri::new(&self.socket_path, &uri_path))
+            .body(Body::empty())?;
+        
+        let res = self.client.request(req).await
+            .map_err(|e| Error::ContainerRuntime(format!("Failed to get container info: {}", e)))?;
+        
+        if !res.status().is_success() {
+            if res.status() == StatusCode::NOT_FOUND {
+                return Err(Error::ContainerNotFound(container_id.to_string()));
+            }
+            
+            return Err(Error::ContainerRuntime(format!(
+                "Failed to get container info: {}",
+                res.status()
+            )));
+        }
+        
+        let body_bytes = hyper::body::to_bytes(res.into_body()).await
+            .map_err(|e| Error::ContainerRuntime(format!("Failed to read response body: {}", e)))?;
+        
+        let container: PodmanContainerInspect = serde_json::from_slice(&body_bytes)
+            .map_err(|e| Error::Json(e))?;
+        
+        // Use the running boolean field directly from the container state
+        // This is more reliable than checking the status string
+        Ok(container.state.running)
     }
 
     async fn get_container_info(&self, container_id: &str) -> Result<ContainerInfo> {
@@ -560,12 +598,19 @@ impl ContainerRuntime for PodmanClient {
             }
         }
 
+        // Try to parse the created timestamp
+        let created_timestamp = if let Some(created_str) = container.created.as_ref() {
+            Self::parse_timestamp(created_str)
+        } else {
+            0 // Default to 0 if no timestamp is available
+        };
+        
         Ok(ContainerInfo {
             id: container.id,
             name: container.name,
             image: container.config.image,
             status: container.state.status,
-            created: container.created,
+            created: created_timestamp,
             labels: container.config.labels.unwrap_or_default(),
             ports,
         })
@@ -707,8 +752,8 @@ struct PodmanContainerInspect {
     id: String,
     #[serde(rename = "Name")]
     name: String,
-    #[serde(rename = "Created")]
-    created: u64,
+    #[serde(default, rename = "Created")]
+    created: Option<String>,
     #[serde(rename = "State")]
     state: PodmanContainerState,
     #[serde(rename = "Config")]

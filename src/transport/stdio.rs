@@ -462,6 +462,7 @@ impl Transport for StdioTransport {
         container_name: &str,
         port: Option<u16>,
         env_vars: &mut HashMap<String, String>,
+        _container_ip: Option<String>,
     ) -> Result<()> {
         // Store container ID and name
         let mut id_guard = self.container_id.lock().await;
@@ -651,6 +652,10 @@ impl ContainerRuntime for DummyContainerRuntime {
         Err(Error::Transport("Dummy runtime not implemented".to_string()))
     }
 
+    async fn get_container_ip(&self, _container_id: &str) -> Result<String> {
+        Err(Error::Transport("Dummy runtime not implemented".to_string()))
+    }
+
     async fn attach_container(&self, _container_id: &str) -> Result<(Box<dyn tokio::io::AsyncWrite + Unpin + Send>, Box<dyn tokio::io::AsyncRead + Unpin + Send>)> {
         Err(Error::Transport("Dummy runtime not implemented".to_string()))
     }
@@ -686,6 +691,7 @@ mod tests {
             async fn container_logs(&self, container_id: &str) -> Result<String>;
             async fn is_container_running(&self, container_id: &str) -> Result<bool>;
             async fn get_container_info(&self, container_id: &str) -> Result<ContainerInfo>;
+            async fn get_container_ip(&self, container_id: &str) -> Result<String>;
             async fn attach_container(&self, container_id: &str) -> Result<(Box<dyn tokio::io::AsyncWrite + Unpin + Send>, Box<dyn tokio::io::AsyncRead + Unpin + Send>)>;
         }
     }
@@ -695,7 +701,7 @@ mod tests {
         let transport = StdioTransport::new();
         let mut env_vars = HashMap::new();
         
-        transport.setup("test-id", "test-container", None, &mut env_vars).await.unwrap();
+        transport.setup("test-id", "test-container", None, &mut env_vars, None).await.unwrap();
         
         assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "stdio");
     }
@@ -772,7 +778,7 @@ mod tests {
         let mut env_vars = HashMap::new();
         
         // Set up the transport
-        transport.setup("test-id", "test-container", Some(9001), &mut env_vars).await?;
+        transport.setup("test-id", "test-container", Some(9001), &mut env_vars, None).await?;
         
         // Start the transport
         transport.start().await?;
@@ -903,7 +909,7 @@ mod tests {
         
         // Set up the transport
         let mut env_vars = HashMap::new();
-        transport.setup("test-id", "test-container", None, &mut env_vars).await?;
+        transport.setup("test-id", "test-container", None, &mut env_vars, None).await?;
         
         // Check that the environment variables were set correctly
         assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "stdio");
@@ -918,7 +924,7 @@ mod tests {
         let mut env_vars = HashMap::new();
         
         // Set up the transport with a port override
-        transport.setup("test-id", "test-container", Some(9000), &mut env_vars).await?;
+        transport.setup("test-id", "test-container", Some(9000), &mut env_vars, None).await?;
         
         // Check that the environment variables were set correctly
         assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "stdio");

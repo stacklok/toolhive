@@ -16,6 +16,7 @@ pub struct SseTransport {
     container_port: Arc<Mutex<u16>>,
     container_id: Arc<Mutex<Option<String>>>,
     container_name: Arc<Mutex<Option<String>>>,
+    container_ip: Arc<Mutex<Option<String>>>,
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
@@ -27,6 +28,7 @@ impl SseTransport {
             container_port: Arc::new(Mutex::new(8080)), // Default container port
             container_id: Arc::new(Mutex::new(None)),
             container_name: Arc::new(Mutex::new(None)),
+            container_ip: Arc::new(Mutex::new(None)),
             shutdown_tx: Arc::new(Mutex::new(None)),
         }
     }
@@ -38,8 +40,15 @@ impl SseTransport {
             container_port: Arc::new(Mutex::new(container_port)),
             container_id: Arc::new(Mutex::new(None)),
             container_name: Arc::new(Mutex::new(None)),
+            container_ip: Arc::new(Mutex::new(None)),
             shutdown_tx: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Set the container IP address
+    pub fn with_container_ip(self, ip: &str) -> Self {
+        *self.container_ip.lock().unwrap() = Some(ip.to_string());
+        self
     }
 
     /// Handle HTTP requests and proxy them to the container
@@ -47,12 +56,13 @@ impl SseTransport {
         req: Request<Body>,
         container_port: u16,
         container_id: String,
+        container_ip: String,
     ) -> Result<Response<Body>> {
         // Create a new client for forwarding requests
         let client = hyper::Client::new();
         
-        // Build the target URL
-        let target_url = format!("http://localhost:{}", container_port);
+        // Build the target URL using the container's IP address
+        let target_url = format!("http://{}:{}", container_ip, container_port);
         
         // Get the path and query from the original request
         let uri = req.uri();
@@ -82,10 +92,15 @@ impl SseTransport {
         headers.insert("X-Forwarded-Host", req.uri().host().unwrap_or("localhost").parse().unwrap());
         headers.insert("X-Forwarded-Proto", "http".parse().unwrap());
         
+        // Set Content-Type header for SSE if not present
+        if !req.headers().contains_key(hyper::header::CONTENT_TYPE) {
+            headers.insert(hyper::header::CONTENT_TYPE, "text/event-stream".parse().unwrap());
+        }
+        
         // Log the request
-        println!("Proxying request to container {}: {} {}", 
-            container_id, 
-            req.method(), 
+        println!("Proxying request to container {}: {} {}",
+            container_id,
+            req.method(),
             req.uri().path()
         );
         
@@ -96,6 +111,12 @@ impl SseTransport {
         // Send the request and get the response
         let res = client.request(proxy_req).await
             .map_err(|e| Error::Transport(format!("Failed to forward request: {}", e)))?;
+        
+        // Log the response
+        println!("Received response from container {}: status {}",
+            container_id,
+            res.status()
+        );
         
         // Return the response
         Ok(res)
@@ -114,6 +135,7 @@ impl Transport for SseTransport {
         container_name: &str,
         port: Option<u16>,
         env_vars: &mut HashMap<String, String>,
+        container_ip: Option<String>,
     ) -> Result<()> {
         // Store container ID and name
         *self.container_id.lock().unwrap() = Some(container_id.to_string());
@@ -130,6 +152,17 @@ impl Transport for SseTransport {
         // Set environment variables for the container
         env_vars.insert("MCP_TRANSPORT".to_string(), "sse".to_string());
         env_vars.insert("MCP_PORT".to_string(), container_port.to_string());
+        
+        // Add additional environment variables to help the MCP server
+        env_vars.insert("PORT".to_string(), container_port.to_string());
+        env_vars.insert("MCP_SSE_ENABLED".to_string(), "true".to_string());
+
+        // Store the container IP if provided
+        if let Some(ip) = container_ip {
+            *self.container_ip.lock().unwrap() = Some(ip);
+        }
+
+        println!("SSE transport setup for container {} on port {}", container_name, container_port);
 
         Ok(())
     }
@@ -149,18 +182,33 @@ impl Transport for SseTransport {
         // Get the container port
         let container_port = *self.container_port.lock().unwrap();
         
+        // Get the container IP or use localhost as fallback
+        let container_ip = match self.container_ip.lock().unwrap().clone() {
+            Some(ip) => {
+                println!("Container {} has IP address {}", container_name, ip);
+                ip
+            },
+            None => {
+                println!("Container IP not set, using localhost as fallback");
+                "localhost".to_string()
+            },
+        };
+        
         // Create service function for handling requests
         let container_id_clone = container_id.clone();
+        let container_ip_clone = container_ip.clone();
         
         let make_svc = make_service_fn(move |_| {
             let container_id = container_id_clone.clone();
+            let container_ip = container_ip_clone.clone();
             
             async move {
                 Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
                     let container_id = container_id.clone();
+                    let container_ip = container_ip.clone();
                     
                     async move {
-                        match Self::handle_request(req, container_port, container_id).await {
+                        match Self::handle_request(req, container_port, container_id, container_ip).await {
                             Ok(response) => Ok::<_, hyper::Error>(response),
                             Err(e) => {
                                 eprintln!("Error handling request: {}", e);
@@ -182,6 +230,7 @@ impl Transport for SseTransport {
         
         println!("Reverse proxy started for container {} on port {}", container_name, self.port);
         println!("Forwarding to container port {}", container_port);
+        println!("SSE transport is active - waiting for connections");
 
         // Create shutdown channel
         let (tx, rx) = oneshot::channel::<()>();
@@ -198,6 +247,11 @@ impl Transport for SseTransport {
                 eprintln!("Proxy server error: {}", e);
             }
         });
+
+        // Give the server a moment to start up
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
+        println!("SSE proxy is now ready to handle requests");
 
         Ok(())
     }
@@ -231,11 +285,12 @@ mod tests {
         let transport = SseTransport::new(8080);
         let mut env_vars = HashMap::new();
         
-        transport.setup("test-id", "test-container", Some(9000), &mut env_vars).await.unwrap();
+        transport.setup("test-id", "test-container", Some(9000), &mut env_vars, Some("172.17.0.2".to_string())).await.unwrap();
         
         assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "sse");
         assert_eq!(env_vars.get("MCP_PORT").unwrap(), "9000");
         assert_eq!(*transport.container_port.lock().unwrap(), 9000);
+        assert_eq!(transport.container_ip.lock().unwrap().as_ref().unwrap(), "172.17.0.2");
     }
 
     #[tokio::test]
@@ -256,7 +311,10 @@ mod tests {
         let mut env_vars = HashMap::new();
         
         // Set up the transport
-        transport.setup("test-id", "test-container", Some(9002), &mut env_vars).await?;
+        transport.setup("test-id", "test-container", Some(9002), &mut env_vars, Some("172.17.0.2".to_string())).await?;
+        
+        // Set the container IP
+        *transport.container_ip.lock().unwrap() = Some("172.17.0.2".to_string());
         
         // Start the transport
         transport.start().await?;
@@ -280,7 +338,7 @@ mod tests {
         let mut env_vars = HashMap::new();
         
         // Set up the transport
-        transport.setup("test-id", "test-container", None, &mut env_vars).await?;
+        transport.setup("test-id", "test-container", None, &mut env_vars, Some("172.17.0.2".to_string())).await?;
         
         // Check that the container port was set correctly
         assert_eq!(*transport.container_port.lock().unwrap(), 9003);
@@ -299,7 +357,7 @@ mod tests {
         let mut env_vars = HashMap::new();
         
         // Set up the transport with a port override
-        transport.setup("test-id", "test-container", Some(9004), &mut env_vars).await?;
+        transport.setup("test-id", "test-container", Some(9004), &mut env_vars, Some("172.17.0.2".to_string())).await?;
         
         // Check that the container port was set correctly
         assert_eq!(*transport.container_port.lock().unwrap(), 9004);

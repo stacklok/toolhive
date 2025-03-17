@@ -38,6 +38,7 @@ mod tests {
             async fn container_logs(&self, container_id: &str) -> Result<String>;
             async fn is_container_running(&self, container_id: &str) -> Result<bool>;
             async fn get_container_info(&self, container_id: &str) -> Result<ContainerInfo>;
+            async fn get_container_ip(&self, container_id: &str) -> Result<String>;
             async fn attach_container(&self, container_id: &str) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)>;
         }
     }

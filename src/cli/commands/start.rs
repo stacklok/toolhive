@@ -113,7 +113,7 @@ impl StartCommand {
         };
 
         // Set up the transport
-        transport.setup("", &self.name, self.port, &mut env_vars).await?;
+        transport.setup("", &self.name, self.port, &mut env_vars, None).await?;
 
         // Create and start the container
         let container_id = runtime
@@ -127,8 +127,21 @@ impl StartCommand {
             )
             .await?;
 
+        // Get the container IP address
+        println!("Getting container IP address for {}", container_id);
+        let container_ip = match runtime.get_container_ip(&container_id).await {
+            Ok(ip) => {
+                println!("Container IP address: {}", ip);
+                Some(ip)
+            },
+            Err(e) => {
+                eprintln!("Failed to get container IP address: {}", e);
+                None
+            }
+        };
+
         // Start the transport
-        transport.setup(&container_id, &self.name, self.port, &mut HashMap::new()).await?;
+        transport.setup(&container_id, &self.name, self.port, &mut HashMap::new(), container_ip).await?;
         transport.start().await?;
 
         println!("MCP server {} started with container ID {}", self.name, container_id);

@@ -49,6 +49,7 @@ pub trait Transport: Send + Sync {
         container_name: &str,
         port: Option<u16>,
         env_vars: &mut HashMap<String, String>,
+        container_ip: Option<String>,
     ) -> Result<()>;
 
     /// Start the transport

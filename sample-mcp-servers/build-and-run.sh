@@ -10,8 +10,10 @@ usage() {
   echo "  --build-all         Build all sample MCP servers"
   echo "  --build basic       Build only the basic MCP server"
   echo "  --build weather     Build only the weather MCP server"
+  echo "  --build sse         Build only the SSE MCP server"
   echo "  --run basic         Run the basic MCP server with mcp-lok"
   echo "  --run weather       Run the weather MCP server with mcp-lok"
+  echo "  --run sse           Run the SSE MCP server with mcp-lok"
   echo "  --help              Display this help message"
   exit 1
 }
@@ -68,10 +70,11 @@ while [ $# -gt 0 ]; do
     --build-all)
       build_server "basic"
       build_server "weather"
+      build_server "sse"
       shift
       ;;
     --build)
-      if [ "$2" == "basic" ] || [ "$2" == "weather" ]; then
+      if [ "$2" == "basic" ] || [ "$2" == "weather" ] || [ "$2" == "sse" ]; then
         build_server "$2"
         shift 2
       else
@@ -80,7 +83,7 @@ while [ $# -gt 0 ]; do
       fi
       ;;
     --run)
-      if [ "$2" == "basic" ] || [ "$2" == "weather" ]; then
+      if [ "$2" == "basic" ] || [ "$2" == "weather" ] || [ "$2" == "sse" ]; then
         run_server "$2"
         shift 2
       else

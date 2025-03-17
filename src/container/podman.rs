@@ -542,6 +542,61 @@ impl ContainerRuntime for PodmanClient {
         Ok(container.state.running)
     }
 
+    async fn get_container_ip(&self, container_id: &str) -> Result<String> {
+        // Get container info
+        let path = format!("containers/{}/json", container_id);
+        
+        let uri_path = self.uri_path(&path);
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(hyperlocal::Uri::new(&self.socket_path, &uri_path))
+            .body(Body::empty())?;
+        
+        let res = self.client.request(req).await
+            .map_err(|e| Error::ContainerRuntime(format!("Failed to get container info: {}", e)))?;
+        
+        if !res.status().is_success() {
+            if res.status() == StatusCode::NOT_FOUND {
+                return Err(Error::ContainerNotFound(container_id.to_string()));
+            }
+            
+            return Err(Error::ContainerRuntime(format!(
+                "Failed to get container info: {}",
+                res.status()
+            )));
+        }
+        
+        let body_bytes = hyper::body::to_bytes(res.into_body()).await
+            .map_err(|e| Error::ContainerRuntime(format!("Failed to read response body: {}", e)))?;
+        
+        let container: PodmanContainerInspect = serde_json::from_slice(&body_bytes)
+            .map_err(|e| Error::Json(e))?;
+
+        // Get the container's IP address from the network settings
+        // First try to get the IP from the default bridge network
+        if let Some(networks) = &container.network_settings.networks {
+            if let Some(bridge) = networks.get("bridge") {
+                if let Some(ip) = &bridge.ip_address {
+                    if !ip.is_empty() {
+                        return Ok(ip.clone());
+                    }
+                }
+            }
+            
+            // If bridge network doesn't have an IP, try any other network
+            for (_, network) in networks {
+                if let Some(ip) = &network.ip_address {
+                    if !ip.is_empty() {
+                        return Ok(ip.clone());
+                    }
+                }
+            }
+        }
+        
+        // If we couldn't find an IP address, return an error
+        Err(Error::ContainerRuntime(format!("No IP address found for container {}", container_id)))
+    }
+
     async fn get_container_info(&self, container_id: &str) -> Result<ContainerInfo> {
         // Get container info
         let path = format!("containers/{}/json", container_id);
@@ -810,6 +865,18 @@ struct PodmanContainerConfig {
 struct PodmanNetworkSettings {
     #[serde(default, rename = "Ports")]
     ports: Option<HashMap<String, Option<Vec<PodmanPortBinding>>>>,
+    #[serde(default, rename = "Networks")]
+    networks: Option<HashMap<String, PodmanNetwork>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PodmanNetwork {
+    #[serde(rename = "IPAddress")]
+    ip_address: Option<String>,
+    #[serde(rename = "Gateway")]
+    gateway: Option<String>,
+    #[serde(rename = "MacAddress")]
+    mac_address: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -852,6 +919,7 @@ mod tests {
             async fn container_logs(&self, container_id: &str) -> Result<String>;
             async fn is_container_running(&self, container_id: &str) -> Result<bool>;
             async fn get_container_info(&self, container_id: &str) -> Result<ContainerInfo>;
+            async fn get_container_ip(&self, container_id: &str) -> Result<String>;
             async fn attach_container(&self, container_id: &str) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)>;
         }
     }

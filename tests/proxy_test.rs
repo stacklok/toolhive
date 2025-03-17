@@ -337,7 +337,7 @@ async fn test_sse_transport_proxy() -> Result<()> {
     let mut env_vars = HashMap::new();
     
     // Set up the transport to connect to port 9100 (not the default 8080)
-    transport.setup("test-id", "test-container", Some(9100), &mut env_vars).await?;
+    transport.setup("test-id", "test-container", Some(9100), &mut env_vars, Some("127.0.0.1".to_string())).await?;
     
     // Start the transport
     transport.start().await?;
@@ -442,7 +442,7 @@ async fn test_stdio_transport_proxy() -> Result<()> {
     let mut env_vars = HashMap::new();
     
     // Set up the transport
-    transport.setup("test-id", "test-container", None, &mut env_vars).await?;
+    transport.setup("test-id", "test-container", None, &mut env_vars, None).await?;
     
     // Start the transport (this would normally attach to the container)
     // For testing, we'll manually handle the IO
@@ -555,6 +555,10 @@ impl ContainerRuntime for MockContainerRuntimeForProxy {
 
     async fn get_container_info(&self, _container_id: &str) -> Result<ContainerInfo> {
         Err(Error::Transport("Not implemented".to_string()))
+    }
+
+    async fn get_container_ip(&self, _container_id: &str) -> Result<String> {
+        Ok("127.0.0.1".to_string())
     }
 
     async fn attach_container(&self, _container_id: &str) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
@@ -684,7 +688,7 @@ async fn test_stdio_transport_http_proxy() -> Result<()> {
     
     // Set up the transport
     let mut env_vars = HashMap::new();
-    transport.setup("test-container-id", "test-container", Some(8200), &mut env_vars).await?;
+    transport.setup("test-container-id", "test-container", Some(8200), &mut env_vars, None).await?;
     
     // Start the transport
     transport.start().await?;

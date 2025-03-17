@@ -47,7 +47,7 @@ async fn test_sse_transport_setup() -> Result<()> {
     let transport = SseTransport::new(8080);
     let mut env_vars = HashMap::new();
     
-    transport.setup("test-id", "test-container", Some(9000), &mut env_vars).await?;
+    transport.setup("test-id", "test-container", Some(9000), &mut env_vars, Some("172.17.0.2".to_string())).await?;
     
     assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "sse");
     assert_eq!(env_vars.get("MCP_PORT").unwrap(), "9000");
@@ -70,7 +70,7 @@ async fn test_sse_transport_lifecycle() -> Result<()> {
     let mut env_vars = HashMap::new();
     
     // Set up the transport
-    transport.setup("test-id", "test-container", Some(9001), &mut env_vars).await?;
+    transport.setup("test-id", "test-container", Some(9001), &mut env_vars, Some("172.17.0.2".to_string())).await?;
     
     // Start the transport
     transport.start().await?;
@@ -92,7 +92,7 @@ async fn test_stdio_transport_setup() -> Result<()> {
     let transport = StdioTransport::new();
     let mut env_vars = HashMap::new();
     
-    transport.setup("test-id", "test-container", None, &mut env_vars).await?;
+    transport.setup("test-id", "test-container", None, &mut env_vars, None).await?;
     
     assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "stdio");
     

@@ -26,7 +26,10 @@ fn main() {
 
     // Create a new cucumber runner
     McpLokWorld::cucumber()
-        .with_writer(writer::Junit::new())
-        .with_cli(Args::parse())
-        .run_and_exit("tests/e2e/features");
+        .with_writer(writer::Basic::new(
+            std::io::stdout(),
+            writer::Coloring::Auto,
+            writer::Verbosity::Default,
+        ))
+        .run("tests/e2e/features");
 }

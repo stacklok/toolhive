@@ -192,6 +192,147 @@ impl StdioTransport {
         Ok(())
     }
 
+    /// Attach to a container and get stdin/stdout handles
+    async fn attach_to_container(
+        container_id: &str,
+        runtime: &Arc<Mutex<Option<Box<dyn ContainerRuntime>>>>,
+    ) -> Result<(
+        Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+        Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+    )> {
+        let mut runtime_guard = runtime.lock().await;
+        let runtime_ref = runtime_guard.as_mut().ok_or_else(|| {
+            Error::Transport("Container runtime not available".to_string())
+        })?;
+        
+        // Attach to the container
+        runtime_ref.attach_container(container_id).await
+    }
+
+    /// Process container stdout data and parse JSON-RPC messages
+    async fn process_stdout(
+        mut stdout: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+        response_tx: mpsc::Sender<JsonRpcMessage>,
+    ) {
+        let mut buffer = Vec::new();
+        let mut line_buffer = String::new();
+        let mut buf = [0u8; 1024];
+
+        loop {
+            match stdout.read(&mut buf).await {
+                Ok(0) => {
+                    // EOF, container process has terminated
+                    println!("Container process terminated");
+                    break;
+                }
+                Ok(n) => {
+                    if let Err(e) = Self::process_stdout_chunk(
+                        &buf[..n],
+                        &mut buffer,
+                        &mut line_buffer,
+                        &response_tx
+                    ).await {
+                        eprintln!("Error processing stdout chunk: {}", e);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error reading from container stdout: {}", e);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Process a chunk of data from stdout
+    async fn process_stdout_chunk(
+        data: &[u8],
+        buffer: &mut Vec<u8>,
+        line_buffer: &mut String,
+        response_tx: &mpsc::Sender<JsonRpcMessage>,
+    ) -> Result<()> {
+        // Process the data
+        buffer.extend_from_slice(data);
+        
+        // Process complete lines
+        let mut start_idx = 0;
+        for i in 0..buffer.len() {
+            if buffer[i] == b'\n' {
+                // Extract the line
+                if let Ok(line) = std::str::from_utf8(&buffer[start_idx..i]) {
+                    line_buffer.push_str(line);
+                    
+                    // Try to parse as JSON-RPC
+                    if !line_buffer.trim().is_empty() {
+                        Self::parse_and_send_json_rpc(line_buffer, response_tx).await;
+                    }
+                    
+                    // Clear the line buffer
+                    line_buffer.clear();
+                }
+                
+                // Update the start index for the next line
+                start_idx = i + 1;
+            }
+        }
+        
+        // Keep any remaining partial line in the buffer
+        if start_idx < buffer.len() {
+            *buffer = buffer[start_idx..].to_vec();
+        } else {
+            buffer.clear();
+        }
+
+        Ok(())
+    }
+
+    /// Parse a line as JSON-RPC and send it if valid
+    async fn parse_and_send_json_rpc(
+        line: &str,
+        response_tx: &mpsc::Sender<JsonRpcMessage>,
+    ) {
+        match serde_json::from_str::<JsonRpcMessage>(line.trim()) {
+            Ok(json_rpc) => {
+                // Send the response
+                if let Err(e) = response_tx.send(json_rpc).await {
+                    eprintln!("Failed to send response: {}", e);
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to parse JSON-RPC message: {}", e);
+                eprintln!("Message: {}", line);
+            }
+        }
+    }
+
+    /// Send a message to the container's stdin
+    async fn send_message_to_container(
+        stdin: &mut Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+        sse_message: &SseMessage,
+    ) -> Result<()> {
+        // Convert SSE message to JSON-RPC
+        let json_rpc = Self::sse_to_json_rpc(sse_message);
+        
+        // Serialize to JSON
+        let json_str = serde_json::to_string(&json_rpc)
+            .map_err(|e| Error::Transport(format!("Failed to serialize JSON-RPC: {}", e)))?;
+        
+        // Add newline to ensure proper message separation
+        let json_str = format!("{}\n", json_str);
+        
+        // Log the message for debugging
+        println!("Sending message to container: {}", json_str);
+        
+        // Write to container stdin
+        stdin.write_all(json_str.as_bytes()).await
+            .map_err(|e| Error::Transport(format!("Failed to write to container stdin: {}", e)))?;
+        
+        // Flush stdin to ensure the message is sent
+        stdin.flush().await
+            .map_err(|e| Error::Transport(format!("Failed to flush container stdin: {}", e)))?;
+        
+        Ok(())
+    }
+
     /// Process SSE messages and handle bidirectional communication with the container
     async fn process_messages(
         container_id: String,
@@ -200,86 +341,13 @@ impl StdioTransport {
         response_tx: mpsc::Sender<JsonRpcMessage>,
         mut shutdown_rx: oneshot::Receiver<()>,
     ) -> Result<()> {
-        // Get the container runtime and attach to the container
-        let (stdin, stdout) = {
-            let mut runtime_guard = runtime.lock().await;
-            let runtime_ref = runtime_guard.as_mut().ok_or_else(|| {
-                Error::Transport("Container runtime not available".to_string())
-            })?;
-            
-            // Attach to the container
-            runtime_ref.attach_container(&container_id).await?
-        };
-        
-        let mut stdin = stdin;
-        let mut stdout = stdout;
-        
-        // Create a buffer for reading from stdout
-        let mut buffer = Vec::new();
-        let mut line_buffer = String::new();
+        // Attach to the container
+        let (mut stdin, stdout) = Self::attach_to_container(&container_id, &runtime).await?;
         
         // Spawn a task to read from stdout
         let response_tx_clone = response_tx.clone();
         let stdout_task = tokio::spawn(async move {
-            let mut buf = [0u8; 1024];
-            loop {
-                match stdout.read(&mut buf).await {
-                    Ok(0) => {
-                        // EOF, container process has terminated
-                        println!("Container process terminated");
-                        break;
-                    }
-                    Ok(n) => {
-                        // Process the data
-                        let data = &buf[..n];
-                        buffer.extend_from_slice(data);
-                        
-                        // Process complete lines
-                        let mut start_idx = 0;
-                        for i in 0..buffer.len() {
-                            if buffer[i] == b'\n' {
-                                // Extract the line
-                                if let Ok(line) = std::str::from_utf8(&buffer[start_idx..i]) {
-                                    line_buffer.push_str(line);
-                                    
-                                    // Try to parse as JSON-RPC
-                                    if !line_buffer.trim().is_empty() {
-                                        match serde_json::from_str::<JsonRpcMessage>(&line_buffer.trim()) {
-                                            Ok(json_rpc) => {
-                                                // Send the response
-                                                if let Err(e) = response_tx_clone.send(json_rpc).await {
-                                                    eprintln!("Failed to send response: {}", e);
-                                                }
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Failed to parse JSON-RPC message: {}", e);
-                                                eprintln!("Message: {}", line_buffer);
-                                            }
-                                        }
-                                    }
-                                    
-                                    // Clear the line buffer
-                                    line_buffer.clear();
-                                }
-                                
-                                // Update the start index for the next line
-                                start_idx = i + 1;
-                            }
-                        }
-                        
-                        // Keep any remaining partial line in the buffer
-                        if start_idx < buffer.len() {
-                            buffer = buffer[start_idx..].to_vec();
-                        } else {
-                            buffer.clear();
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Error reading from container stdout: {}", e);
-                        break;
-                    }
-                }
-            }
+            Self::process_stdout(stdout, response_tx_clone).await;
         });
         
         // Process messages until shutdown signal is received
@@ -295,33 +363,8 @@ impl StdioTransport {
                 
                 // Process incoming SSE messages
                 Some(sse_message) = message_rx.recv() => {
-                    // Convert SSE message to JSON-RPC
-                    let json_rpc = Self::sse_to_json_rpc(&sse_message);
-                    
-                    // Serialize to JSON
-                    let json_str = match serde_json::to_string(&json_rpc) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("Failed to serialize JSON-RPC: {}", e);
-                            continue;
-                        }
-                    };
-                    
-                    // Add newline to ensure proper message separation
-                    let json_str = format!("{}\n", json_str);
-                    
-                    // Log the message for debugging
-                    println!("Sending message to container: {}", json_str);
-                    
-                    // Write to container stdin
-                    if let Err(e) = stdin.write_all(json_str.as_bytes()).await {
-                        eprintln!("Failed to write to container stdin: {}", e);
-                        break;
-                    }
-                    
-                    // Flush stdin to ensure the message is sent
-                    if let Err(e) = stdin.flush().await {
-                        eprintln!("Failed to flush container stdin: {}", e);
+                    if let Err(e) = Self::send_message_to_container(&mut stdin, &sse_message).await {
+                        eprintln!("{}", e);
                         break;
                     }
                 }
@@ -1061,5 +1104,398 @@ mod tests {
         assert_eq!(sse_no_id.event, "test-event");
         assert_eq!(sse_no_id.data, "{\"key\": \"value\"}");
         assert_eq!(sse_no_id.id, None);
+    }
+
+    #[tokio::test]
+    async fn test_attach_to_container() -> Result<()> {
+        // Create a mock runtime
+        let mut mock_runtime = MockContainerRuntime::new();
+        
+        // Set up expectations for attach_container
+        mock_runtime.expect_attach_container()
+            .with(eq("test-container-id"))
+            .returning(|_| {
+                let stdin = MockAsyncReadWrite::new();
+                let stdout = MockAsyncReadWrite::new();
+                Ok((Box::new(stdin), Box::new(stdout)))
+            });
+        
+        // Create a runtime with the mock
+        let runtime = Arc::new(Mutex::new(Some(Box::new(mock_runtime) as Box<dyn ContainerRuntime>)));
+        
+        // Call attach_to_container
+        let result = StdioTransport::attach_to_container("test-container-id", &runtime).await;
+        
+        // Verify we got a successful result
+        assert!(result.is_ok());
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_attach_to_container_error() {
+        // Create a mock runtime
+        let mut mock_runtime = MockContainerRuntime::new();
+        
+        // Set up expectations for attach_container to return an error
+        mock_runtime.expect_attach_container()
+            .returning(|_| {
+                Err(Error::Transport("Test error".to_string()))
+            });
+        
+        // Create a runtime with the mock
+        let runtime = Arc::new(Mutex::new(Some(Box::new(mock_runtime) as Box<dyn ContainerRuntime>)));
+        
+        // Call attach_to_container
+        let result = StdioTransport::attach_to_container("test-container-id", &runtime).await;
+        
+        // Verify we got the expected error
+        assert!(result.is_err());
+        if let Err(Error::Transport(msg)) = result {
+            assert_eq!(msg, "Test error");
+        } else {
+            panic!("Expected Transport error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_stdout_chunk() -> Result<()> {
+        // Create test data
+        let data = b"test line 1\ntest line 2\n";
+        let mut buffer = Vec::new();
+        let mut line_buffer = String::new();
+        
+        // Create a channel for testing
+        let (tx, mut rx) = mpsc::channel::<JsonRpcMessage>(10);
+        
+        // Mock JSON-RPC message for the first line
+        let json_rpc1 = r#"{"jsonrpc":"2.0","method":"test","params":{"key":"value"},"id":"1"}"#;
+        
+        // Process the chunk
+        StdioTransport::process_stdout_chunk(
+            data,
+            &mut buffer,
+            &mut line_buffer,
+            &tx
+        ).await?;
+        
+        // Buffer should be empty after processing complete lines
+        assert!(buffer.is_empty());
+        
+        // Line buffer should be empty after processing
+        assert!(line_buffer.is_empty());
+        
+        // No messages should be received since our test data isn't valid JSON-RPC
+        let timeout = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+        assert!(timeout.is_err()); // Timeout expected
+        
+        // Now test with valid JSON-RPC
+        let data = json_rpc1.as_bytes();
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(data);
+        buffer.push(b'\n');
+        
+        // Process the chunk
+        StdioTransport::process_stdout_chunk(
+            &buffer,
+            &mut Vec::new(),
+            &mut line_buffer,
+            &tx
+        ).await?;
+        
+        // Now we should receive a message
+        let received = rx.recv().await;
+        assert!(received.is_some());
+        let message = received.unwrap();
+        assert_eq!(message.method, "test");
+        assert_eq!(message.params["key"], "value");
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_parse_and_send_json_rpc() {
+        // Create a channel for testing
+        let (tx, mut rx) = mpsc::channel::<JsonRpcMessage>(10);
+        
+        // Valid JSON-RPC message
+        let json_rpc = r#"{"jsonrpc":"2.0","method":"test","params":{"key":"value"},"id":"1"}"#;
+        
+        // Parse and send
+        StdioTransport::parse_and_send_json_rpc(json_rpc, &tx).await;
+        
+        // Check that we received the message
+        let received = rx.recv().await;
+        assert!(received.is_some());
+        let message = received.unwrap();
+        assert_eq!(message.jsonrpc, "2.0");
+        assert_eq!(message.method, "test");
+        assert_eq!(message.params["key"], "value");
+        assert_eq!(message.id, Some(serde_json::Value::String("1".to_string())));
+        
+        // Invalid JSON-RPC message
+        let invalid_json = "not a json";
+        
+        // Parse and send (should not panic)
+        StdioTransport::parse_and_send_json_rpc(invalid_json, &tx).await;
+        
+        // No message should be received
+        let timeout = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+        assert!(timeout.is_err()); // Timeout expected
+    }
+
+    #[tokio::test]
+    async fn test_send_message_to_container() -> Result<()> {
+        // Create a mock stdin
+        let mut stdin = Box::new(MockAsyncReadWrite::new()) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
+        
+        // Create an SSE message
+        let sse_message = SseMessage {
+            event: "test-event".to_string(),
+            data: r#"{"key":"value"}"#.to_string(),
+            id: Some("123".to_string()),
+        };
+        
+        // Send the message
+        let result = StdioTransport::send_message_to_container(&mut stdin, &sse_message).await;
+        
+        // Check that it succeeded
+        assert!(result.is_ok());
+        
+        Ok(())
+    }
+
+    // Additional tests for edge cases and error handling
+
+    #[tokio::test]
+    async fn test_process_stdout_chunk_with_partial_lines() -> Result<()> {
+        // Create test data with a partial line at the end
+        let data = b"complete line 1\npartial line";
+        let mut buffer = Vec::new();
+        let mut line_buffer = String::new();
+        
+        // Create a channel for testing
+        let (tx, _rx) = mpsc::channel::<JsonRpcMessage>(10);
+        
+        // Process the chunk
+        StdioTransport::process_stdout_chunk(
+            data,
+            &mut buffer,
+            &mut line_buffer,
+            &tx
+        ).await?;
+        
+        // Buffer should contain the partial line
+        assert_eq!(buffer, b"partial line");
+        
+        // Line buffer should be empty (since no complete lines were processed)
+        assert!(line_buffer.is_empty());
+        
+        // Now add the rest of the line
+        let data2 = b" continued\n";
+        
+        // Process the second chunk
+        StdioTransport::process_stdout_chunk(
+            data2,
+            &mut buffer,
+            &mut line_buffer,
+            &tx
+        ).await?;
+        
+        // Buffer should be empty now
+        assert!(buffer.is_empty());
+        
+        // Line buffer should be empty (since it's cleared after processing)
+        assert!(line_buffer.is_empty());
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_process_stdout_chunk_with_empty_data() -> Result<()> {
+        // Create empty test data
+        let data = b"";
+        let mut buffer = Vec::new();
+        let mut line_buffer = String::new();
+        
+        // Create a channel for testing
+        let (tx, _rx) = mpsc::channel::<JsonRpcMessage>(10);
+        
+        // Process the chunk
+        let result = StdioTransport::process_stdout_chunk(
+            data,
+            &mut buffer,
+            &mut line_buffer,
+            &tx
+        ).await;
+        
+        // Should succeed with empty data
+        assert!(result.is_ok());
+        
+        // Buffer should still be empty
+        assert!(buffer.is_empty());
+        
+        // Line buffer should be unchanged
+        assert!(line_buffer.is_empty());
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_process_stdout_chunk_with_multiple_json_messages() -> Result<()> {
+        // Create test data with multiple JSON-RPC messages
+        let json1 = r#"{"jsonrpc":"2.0","method":"test1","params":{"key":"value1"},"id":"1"}"#;
+        let json2 = r#"{"jsonrpc":"2.0","method":"test2","params":{"key":"value2"},"id":"2"}"#;
+        let data = format!("{}\n{}\n", json1, json2).into_bytes();
+        
+        let mut buffer = Vec::new();
+        let mut line_buffer = String::new();
+        
+        // Create a channel for testing
+        let (tx, mut rx) = mpsc::channel::<JsonRpcMessage>(10);
+        
+        // Process the chunk
+        StdioTransport::process_stdout_chunk(
+            &data,
+            &mut buffer,
+            &mut line_buffer,
+            &tx
+        ).await?;
+        
+        // Buffer should be empty after processing complete lines
+        assert!(buffer.is_empty());
+        
+        // Line buffer should be empty after processing
+        assert!(line_buffer.is_empty());
+        
+        // Should receive two messages
+        let msg1 = rx.recv().await.unwrap();
+        assert_eq!(msg1.method, "test1");
+        assert_eq!(msg1.params["key"], "value1");
+        
+        let msg2 = rx.recv().await.unwrap();
+        assert_eq!(msg2.method, "test2");
+        assert_eq!(msg2.params["key"], "value2");
+        
+        Ok(())
+    }
+
+    // Mock that fails on write
+    struct FailingAsyncWrite;
+    
+    impl tokio::io::AsyncWrite for FailingAsyncWrite {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, "Write error")))
+        }
+        
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_message_to_container_with_write_error() {
+        // Create a failing stdin
+        let mut stdin = Box::new(FailingAsyncWrite) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
+        
+        // Create an SSE message
+        let sse_message = SseMessage {
+            event: "test-event".to_string(),
+            data: r#"{"key":"value"}"#.to_string(),
+            id: Some("123".to_string()),
+        };
+        
+        // Send the message
+        let result = StdioTransport::send_message_to_container(&mut stdin, &sse_message).await;
+        
+        // Should fail with a transport error
+        assert!(result.is_err());
+        if let Err(Error::Transport(msg)) = result {
+            assert!(msg.contains("Failed to write to container stdin"));
+        } else {
+            panic!("Expected Transport error");
+        }
+    }
+
+    // Mock that fails on flush
+    struct FailingFlushAsyncWrite;
+    
+    impl tokio::io::AsyncWrite for FailingFlushAsyncWrite {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, "Flush error")))
+        }
+        
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_message_to_container_with_flush_error() {
+        // Create a failing stdin
+        let mut stdin = Box::new(FailingFlushAsyncWrite) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
+        
+        // Create an SSE message
+        let sse_message = SseMessage {
+            event: "test-event".to_string(),
+            data: r#"{"key":"value"}"#.to_string(),
+            id: Some("123".to_string()),
+        };
+        
+        // Send the message
+        let result = StdioTransport::send_message_to_container(&mut stdin, &sse_message).await;
+        
+        // Should fail with a transport error
+        assert!(result.is_err());
+        if let Err(Error::Transport(msg)) = result {
+            assert!(msg.contains("Failed to flush container stdin"));
+        } else {
+            panic!("Expected Transport error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_attach_to_container_with_no_runtime() {
+        // Create a runtime with None
+        let runtime = Arc::new(Mutex::new(None::<Box<dyn ContainerRuntime>>));
+        
+        // Call attach_to_container
+        let result = StdioTransport::attach_to_container("test-container-id", &runtime).await;
+        
+        // Verify we got the expected error
+        assert!(result.is_err());
+        if let Err(Error::Transport(msg)) = result {
+            assert_eq!(msg, "Container runtime not available");
+        } else {
+            panic!("Expected Transport error");
+        }
     }
 }

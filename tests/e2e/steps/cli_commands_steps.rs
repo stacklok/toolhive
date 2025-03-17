@@ -1,19 +1,19 @@
 use cucumber::{then, when};
 use regex::Regex;
 
-use crate::McpLokWorld;
-use crate::common::utils::execute_mcp_lok;
+use crate::VibeToolWorld;
+use crate::common::utils::execute_vt;
 use crate::common::assertions::{assert_command_failure, assert_output_contains};
 
 #[when(expr = "I run the {string} command")]
-fn run_command(world: &mut McpLokWorld, command: String) {
+fn run_command(world: &mut VibeToolWorld, command: String) {
     // Build the command arguments
     let args: Vec<&str> = vec![&command];
     
     println!("Executing command: cargo run -- {}", command);
     
     // Execute the command
-    let output = execute_mcp_lok(&args).expect("Failed to execute mcp-lok command");
+    let output = execute_vt(&args).expect("Failed to execute vt command");
     
     // Store the command output
     world.command_output = Some(output);
@@ -26,15 +26,14 @@ fn run_command(world: &mut McpLokWorld, command: String) {
 }
 
 #[when(expr = "I run the command with arguments {string}")]
-fn run_command_with_args(world: &mut McpLokWorld, args_str: String) {
+fn run_command_with_args(world: &mut VibeToolWorld, args_str: String) {
     // Split the arguments string by whitespace
     let args: Vec<&str> = args_str.split_whitespace().collect();
     
     println!("Executing command: cargo run -- {}", args_str);
     
     // Execute the command
-    let output = execute_mcp_lok(&args).expect("Failed to execute mcp-lok command");
-    
+    let output = execute_vt(&args).expect("Failed to execute vt command");
     // Store the command output
     world.command_output = Some(output);
     
@@ -46,7 +45,7 @@ fn run_command_with_args(world: &mut McpLokWorld, args_str: String) {
 }
 
 #[then(expr = "the output should contain {string}")]
-fn output_contains(world: &mut McpLokWorld, expected: String) {
+fn output_contains(world: &mut VibeToolWorld, expected: String) {
     if let Some(ref output) = world.command_output {
         assert_output_contains(output, &expected).expect(&format!("Output does not contain '{}'", expected));
     } else {
@@ -55,7 +54,7 @@ fn output_contains(world: &mut McpLokWorld, expected: String) {
 }
 
 #[then("the output should contain the version number")]
-fn output_contains_version(world: &mut McpLokWorld) {
+fn output_contains_version(world: &mut VibeToolWorld) {
     if let Some(ref output) = world.command_output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -75,7 +74,7 @@ fn output_contains_version(world: &mut McpLokWorld) {
 }
 
 #[then("the command should fail")]
-fn command_should_fail(world: &mut McpLokWorld) {
+fn command_should_fail(world: &mut VibeToolWorld) {
     if let Some(ref output) = world.command_output {
         assert_command_failure(output).expect("Command succeeded, but was expected to fail");
     } else {
@@ -84,7 +83,7 @@ fn command_should_fail(world: &mut McpLokWorld) {
 }
 
 #[then("the output should contain an error message")]
-fn output_contains_error(world: &mut McpLokWorld) {
+fn output_contains_error(world: &mut VibeToolWorld) {
     if let Some(ref output) = world.command_output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);

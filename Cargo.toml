@@ -1,10 +1,14 @@
 [package]
-name = "mcp-lok"
+name = "vibetool"
 version = "0.1.0"
 edition = "2021"
 description = "A lightweight, secure, and fast manager for MCP (Model Context Protocol) servers"
-authors = ["MCP-LOK Team"]
+authors = ["Vibe Tool Team"]
 license = "Apache-2.0"
+
+[[bin]]
+name = "vt"
+path = "src/main.rs"
 
 [dependencies]
 # CLI framework

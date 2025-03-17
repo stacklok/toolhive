@@ -1,5 +1,5 @@
 Feature: CLI Command Validation
-  As a user of mcp-lok
+  As a user of vt
   I want to use various CLI commands
   So that I can manage MCP servers effectively
 

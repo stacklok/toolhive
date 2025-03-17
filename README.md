@@ -1,10 +1,10 @@
-# mcp-lok
+# Vibe Tool (vt)
 
-mcp-lok is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers. It is written in Rust and has extensive test coverage—including input validation—to ensure reliability and security.
+Vibe Tool (vt) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers. It is written in Rust and has extensive test coverage—including input validation—to ensure reliability and security.
 
-Under the hood, mcp-lok acts as a very thin client for the Docker/Podman Unix socket API. This design choice allows it to remain both efficient and lightweight while still providing powerful, container-based isolation for running MCP servers.
+Under the hood, Vibe Tool acts as a very thin client for the Docker/Podman Unix socket API. This design choice allows it to remain both efficient and lightweight while still providing powerful, container-based isolation for running MCP servers.
 
-## Why mcp-lok?
+## Why Vibe Tool?
 
 Existing ways to start MCP servers are viewed as insecure, often granting containers more privileges than necessary. mcp-lok aims to solve this by starting containers in a locked-down environment, granting only the minimal permissions required to run. This significantly reduces the attack surface and enforces best practices for container security.
 
@@ -13,32 +13,32 @@ Existing ways to start MCP servers are viewed as insecure, often granting contai
 ### From Source
 
 ```bash
-git clone https://github.com/stacklok/mcp-lok.git
-cd mcp-lok
+git clone https://github.com/stacklok/vibetool.git
+cd vibetool
 cargo build --release
 ```
 
-The binary will be available at `target/release/mcp-lok`.
+The binary will be available at `target/release/vt`.
 
 ## Commands
 
-The mcp-lok command-line interface provides the following subcommands:
+The vt command-line interface provides the following subcommands:
 
-* `mcp-lok run` Runs an MCP server.
+* `vt run` Runs an MCP server.
 
-* `mcp-lok list` Lists running MCP servers.
+* `vt list` Lists running MCP servers.
 
-* `mcp-lok start` Starts an MCP server and sends it to the background.
+* `vt start` Starts an MCP server and sends it to the background.
 
-* `mcp-lok stop` Stops an MCP server.
+* `vt stop` Stops an MCP server.
 
-* `mcp-lok rm` Removes an MCP server.
+* `vt rm` Removes an MCP server.
 
-* `mcp-lok help` Displays help information.
+* `vt help` Displays help information.
 
-* `mcp-lok version` Shows the current version of mcp-lok.
+* `vt version` Shows the current version of Vibe Tool.
 
-* `mcp-lok (no subcommand)` Starts an MCP server that itself is used to manage mcp-lok servers.
+* `vt (no subcommand)` Starts an MCP server that itself is used to manage Vibe Tool servers.
 
 ## Usage
 
@@ -47,20 +47,20 @@ The mcp-lok command-line interface provides the following subcommands:
 To run an MCP server, use the following command:
 
 ```bash
-mcp-lok run --transport sse --name my-mcp-server --port 8080 my-mcp-server-image:latest -- my-mcp-server-args
+vt run --transport sse --name my-mcp-server --port 8080 my-mcp-server-image:latest -- my-mcp-server-args
 ```
 
 This command closely resembles `docker run` but focuses on security and simplicity. When invoked:
 
-* mcp-lok creates a container from the specified image (`my-mcp-server-image:latest`).
+* Vibe Tool creates a container from the specified image (`my-mcp-server-image:latest`).
 
 * It configures the container to listen on the chosen port (8080).
 
-* Labels the container so it can be tracked by mcp-lok:
+* Labels the container so it can be tracked by Vibe Tool:
 
     ```yaml
-    mcp-lok: true
-    mcp-lok-name: my-mcp-server
+    vibetool: true
+    vibetool-name: my-mcp-server
     ```
 
 * Sets up the specified transport (e.g., SSE, stdio), potentially using a reverse proxy, depending on user choice.
@@ -69,17 +69,17 @@ This command closely resembles `docker run` but focuses on security and simplici
 
 * **SSE**:
 
-    If the transport is `sse`, mcp-lok creates a reverse proxy on port `8080` that forwards requests to the container. This means the container itself does not directly expose any ports.
+    If the transport is `sse`, Vibe Tool creates a reverse proxy on port `8080` that forwards requests to the container. This means the container itself does not directly expose any ports.
 
 * **STDIO**:
 
-    If the transport is `stdio`, mcp-lok redirects SEE traffic to the container's standard input and output.
+    If the transport is `stdio`, Vibe Tool redirects SEE traffic to the container's standard input and output.
     This acts as a secure proxy, ensuring that the container does not have direct access to the network nor
     the host machine.
 
 ## Permissions
 
-Containers launched by mcp-lok come with a minimal set of permissions, strictly limited to what is required. Permissions can be further customized via a JSON-based permission profile provided with the `--permission-profile` flag.
+Containers launched by Vibe Tool come with a minimal set of permissions, strictly limited to what is required. Permissions can be further customized via a JSON-based permission profile provided with the `--permission-profile` flag.
 
 An example permission profile file could be:
 
@@ -123,10 +123,10 @@ Two built-in profiles are included for convenience:
 Use:
 
 ```bash
-mcp-lok list
+vt list
 ```
 
-This lists all active MCP servers managed by mcp-lok, along with their current status.
+This lists all active MCP servers managed by Vibe Tool, along with their current status.
 
 ## Development
 ### Running Tests
@@ -176,7 +176,6 @@ To skip the pre-commit hook (not recommended), use:
 git commit --no-verify
 ```
 
-### Running BDD-style End-to-End Tests
 ### Running BDD-style End-to-End Tests
 
 The project includes comprehensive BDD-style end-to-end tests using cucumber-rs. These tests verify the functionality of the entire system from a user's perspective.

@@ -304,8 +304,8 @@ impl ContainerRuntime for DockerClient {
         // Ensure Docker is available
         self.ping().await?;
 
-        // List containers with the mcp-lok label
-        let path = "containers/json?filters={\"label\":[\"mcp-lok=true\"]}";
+        // List containers with the vibetool label
+        let path = "containers/json?filters={\"label\":[\"vibetool=true\"]}";
         let docker_containers: Vec<DockerContainer> = self.request(
             Method::GET,
             path,

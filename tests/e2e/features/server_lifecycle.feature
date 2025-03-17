@@ -1,5 +1,5 @@
 Feature: MCP Server Lifecycle
-  As a user of mcp-lok
+  As a user of vt
   I want to manage MCP server lifecycles
   So that I can start, list, stop, and remove MCP servers
 

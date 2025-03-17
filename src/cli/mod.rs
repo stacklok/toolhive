@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 pub mod commands;
 
-/// MCP-LOK: A lightweight, secure, and fast manager for MCP servers
+/// Vibe Tool (vt): A lightweight, secure, and fast manager for MCP servers
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
@@ -10,7 +10,7 @@ pub struct Cli {
     pub command: Option<Commands>,
 }
 
-/// Commands for MCP-LOK
+/// Commands for Vibe Tool
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Run an MCP server

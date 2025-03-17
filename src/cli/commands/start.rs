@@ -87,9 +87,9 @@ impl StartCommand {
     ) -> Result<()> {
         // Create labels for the container
         let mut labels = HashMap::new();
-        labels.insert("mcp-lok".to_string(), "true".to_string());
-        labels.insert("mcp-lok-name".to_string(), self.name.clone());
-        labels.insert("mcp-lok-transport".to_string(), self.transport.clone());
+        labels.insert("vibetool".to_string(), "true".to_string());
+        labels.insert("vibetool-name".to_string(), self.name.clone());
+        labels.insert("vibetool-transport".to_string(), self.transport.clone());
 
         // Create environment variables for the container
         let mut env_vars = HashMap::new();

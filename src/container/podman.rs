@@ -388,9 +388,9 @@ impl ContainerRuntime for PodmanClient {
         // Try different endpoints for listing containers
         let paths = vec![
             // Standard Docker API endpoint
-            format!("containers/json?filters={}", urlencoding::encode(&serde_json::json!({"label": ["mcp-lok=true"]}).to_string())),
+            format!("containers/json?filters={}", urlencoding::encode(&serde_json::json!({"label": ["vibetool=true"]}).to_string())),
             // Podman specific endpoint
-            format!("libpod/containers/json?filters={}", urlencoding::encode(&serde_json::json!({"label": ["mcp-lok=true"]}).to_string())),
+            format!("libpod/containers/json?filters={}", urlencoding::encode(&serde_json::json!({"label": ["vibetool=true"]}).to_string())),
             // Try without filters
             "containers/json".to_string(),
             "libpod/containers/json".to_string(),
@@ -412,10 +412,10 @@ impl ContainerRuntime for PodmanClient {
                     let containers = podman_containers
                         .into_iter()
                         .filter(|c| {
-                            // Filter for mcp-lok containers if we're using an endpoint without filters
+                            // Filter for vibetool containers if we're using an endpoint without filters
                             if !path.contains("filters=") {
                                 if let Some(labels) = &c.labels {
-                                    return labels.get("mcp-lok").map_or(false, |v| v == "true");
+                                    return labels.get("vibetool").map_or(false, |v| v == "true");
                                 }
                                 return false;
                             }

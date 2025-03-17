@@ -1,19 +1,19 @@
 use cucumber::{given, then, when};
 use std::env;
 
-use crate::McpLokWorld;
-use crate::common::utils::{execute_mcp_lok, extract_container_id, is_container_running, list_containers, extract_container_count};
+use crate::VibeToolWorld;
+use crate::common::utils::{execute_vt, extract_container_id, is_container_running, list_containers, extract_container_count};
 use crate::common::assertions::{assert_command_success, assert_output_contains};
 
 #[given("I have a valid MCP server image")]
-fn valid_server_image(world: &mut McpLokWorld) {
+fn valid_server_image(world: &mut VibeToolWorld) {
     // Set the image name for our test
     world.image_name = Some("localhost/basic-mcp-server".to_string());
     println!("Using image: {}", world.image_name.as_ref().unwrap());
 }
 
 #[when(expr = "I start an MCP server with name {string} and transport {string}")]
-fn start_mcp_server(world: &mut McpLokWorld, name: String, transport: String) {
+fn start_mcp_server(world: &mut VibeToolWorld, name: String, transport: String) {
     // Store the server name and transport for later use
     world.server_name = Some(name.clone());
     world.transport_type = Some(transport.clone());
@@ -32,7 +32,7 @@ fn start_mcp_server(world: &mut McpLokWorld, name: String, transport: String) {
     println!("Executing command: cargo run -- {}", args.join(" "));
     
     // Execute the command
-    let output = execute_mcp_lok(&args).expect("Failed to execute mcp-lok start command");
+    let output = execute_vt(&args).expect("Failed to execute vt start command");
     
     // Store the command output
     world.command_output = Some(output);
@@ -52,7 +52,7 @@ fn start_mcp_server(world: &mut McpLokWorld, name: String, transport: String) {
 }
 
 #[then("the server should be running")]
-fn server_should_be_running(world: &mut McpLokWorld) {
+fn server_should_be_running(world: &mut VibeToolWorld) {
     // Verify the command was successful
     if let Some(ref output) = world.command_output {
         assert_command_success(output).expect("Command failed");
@@ -95,9 +95,9 @@ fn server_should_be_running(world: &mut McpLokWorld) {
 }
 
 #[then("I should see the server in the list of running servers")]
-fn server_in_list(world: &mut McpLokWorld) {
+fn server_in_list(world: &mut VibeToolWorld) {
     // Execute the list command
-    let output = execute_mcp_lok(&["list"]).expect("Failed to execute mcp-lok list command");
+    let output = execute_vt(&["list"]).expect("Failed to execute vt list command");
     
     // Print the command output for debugging
     println!("List command stdout: {}", String::from_utf8_lossy(&output.stdout));
@@ -123,10 +123,10 @@ fn server_in_list(world: &mut McpLokWorld) {
 }
 
 #[when("I stop the server")]
-fn stop_server(world: &mut McpLokWorld) {
+fn stop_server(world: &mut VibeToolWorld) {
     // Stop the server
     if let Some(ref container_id) = world.container_id {
-        let output = execute_mcp_lok(&["stop", container_id]).expect("Failed to execute mcp-lok stop command");
+        let output = execute_vt(&["stop", container_id]).expect("Failed to execute vt stop command");
         
         // Store the command output
         world.command_output = Some(output);
@@ -142,7 +142,7 @@ fn stop_server(world: &mut McpLokWorld) {
 }
 
 #[then("the server should not be running")]
-fn server_should_not_be_running(world: &mut McpLokWorld) {
+fn server_should_not_be_running(world: &mut VibeToolWorld) {
     // Verify the command was successful
     if let Some(ref output) = world.command_output {
         assert_command_success(output).expect("Command failed");

@@ -7,7 +7,7 @@ mod steps;
 
 // Define our cucumber world
 #[derive(cucumber::World, Debug, Default)]
-pub struct McpLokWorld {
+pub struct VibeToolWorld {
     // State shared between steps
     pub command_output: Option<std::process::Output>,
     pub container_id: Option<String>,
@@ -26,5 +26,5 @@ async fn main() {
     let _ = env_logger::builder().is_test(true).try_init();
 
     // Create a new cucumber runner
-    McpLokWorld::run("tests/e2e/features").await;
+    VibeToolWorld::run("tests/e2e/features").await;
 }

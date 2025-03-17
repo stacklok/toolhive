@@ -1,10 +1,10 @@
 use cucumber::{then, when};
 
-use crate::McpLokWorld;
-use crate::common::utils::{execute_mcp_lok, extract_container_id, create_container_runtime_command};
+use crate::VibeToolWorld;
+use crate::common::utils::{execute_vt, extract_container_id, create_container_runtime_command};
 
 #[when(expr = "I start an MCP server with name {string} and transport {string} and port {int}")]
-fn start_mcp_server_with_port(world: &mut McpLokWorld, name: String, transport: String, port: u16) {
+fn start_mcp_server_with_port(world: &mut VibeToolWorld, name: String, transport: String, port: u16) {
     // Store the server name, transport, and port for later use
     world.server_name = Some(name.clone());
     world.transport_type = Some(transport.clone());
@@ -28,7 +28,7 @@ fn start_mcp_server_with_port(world: &mut McpLokWorld, name: String, transport: 
     println!("Executing command: cargo run -- {}", args.join(" "));
     
     // Execute the command
-    let output = execute_mcp_lok(&args).expect("Failed to execute mcp-lok start command");
+    let output = execute_vt(&args).expect("Failed to execute vt start command");
     
     // Store the command output
     world.command_output = Some(output);
@@ -48,7 +48,7 @@ fn start_mcp_server_with_port(world: &mut McpLokWorld, name: String, transport: 
 }
 
 #[then("I should be able to connect to the SSE endpoint")]
-fn connect_to_sse_endpoint(world: &mut McpLokWorld) {
+fn connect_to_sse_endpoint(world: &mut VibeToolWorld) {
     if let Some(port) = world.port {
         // Use curl to check if the SSE endpoint is accessible
         let mut cmd = create_container_runtime_command("curl");

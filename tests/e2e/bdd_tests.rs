@@ -7,7 +7,7 @@ mod steps;
 
 // Define our cucumber world
 #[derive(cucumber::World, Debug, Default)]
-pub struct McpLokWorld {
+pub struct VibeToolWorld {
     // State shared between steps
     pub command_output: Option<std::process::Output>,
     pub container_id: Option<String>,
@@ -25,7 +25,7 @@ fn main() {
     let _ = env_logger::builder().is_test(true).try_init();
 
     // Create a new cucumber runner
-    McpLokWorld::cucumber()
+    VibeToolWorld::cucumber()
         .with_writer(writer::Basic::new(
             std::io::stdout(),
             writer::Coloring::Auto,

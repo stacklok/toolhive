@@ -3,8 +3,8 @@ use std::process;
 use clap::Parser;
 use tokio::runtime::Runtime;
 
-use mcp_lok::cli::{Cli, Commands};
-use mcp_lok::error::Result;
+use vibetool::cli::{Cli, Commands};
+use vibetool::error::Result;
 
 /// Main entry point
 fn main() {

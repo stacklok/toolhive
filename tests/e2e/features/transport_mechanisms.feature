@@ -1,5 +1,5 @@
 Feature: Transport Mechanisms
-  As a user of mcp-lok
+  As a user of vt
   I want to use different transport mechanisms
   So that I can communicate with MCP servers in various ways
 

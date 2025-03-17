@@ -2,16 +2,16 @@ use cucumber::then;
 use std::thread;
 use std::time::Duration;
 
-use crate::McpLokWorld;
-use crate::common::utils::{execute_mcp_lok, exec_in_container, extract_container_count};
+use crate::VibeToolWorld;
+use crate::common::utils::{execute_vt, exec_in_container, extract_container_count};
 use crate::common::assertions::assert_command_success;
 
 #[then("the server should respond to initialization requests")]
-fn server_responds_to_init(world: &mut McpLokWorld) {
+fn server_responds_to_init(world: &mut VibeToolWorld) {
     if let Some(ref _container_id) = world.container_id {
         // Since we can't directly interact with the container due to podman issues,
         // we'll verify that the server is running by checking the list command
-        let list_output = execute_mcp_lok(&["list"]).expect("Failed to execute mcp-lok list command");
+        let list_output = execute_vt(&["list"]).expect("Failed to execute vt list command");
         assert_command_success(&list_output).expect("List command failed");
         
         let stdout = String::from_utf8_lossy(&list_output.stdout);
@@ -37,11 +37,11 @@ fn server_responds_to_init(world: &mut McpLokWorld) {
 }
 
 #[then("the server should respond to resource listing requests")]
-fn server_responds_to_resource_listing(world: &mut McpLokWorld) {
+fn server_responds_to_resource_listing(world: &mut VibeToolWorld) {
     if let Some(ref _container_id) = world.container_id {
         // Since we can't directly interact with the container due to podman issues,
         // we'll verify that the server is running by checking the list command
-        let list_output = execute_mcp_lok(&["list"]).expect("Failed to execute mcp-lok list command");
+        let list_output = execute_vt(&["list"]).expect("Failed to execute vt list command");
         assert_command_success(&list_output).expect("List command failed");
         
         let stdout = String::from_utf8_lossy(&list_output.stdout);
@@ -57,13 +57,13 @@ fn server_responds_to_resource_listing(world: &mut McpLokWorld) {
 }
 
 #[then("the server should handle malformed messages gracefully")]
-fn server_handles_malformed_messages(world: &mut McpLokWorld) {
+fn server_handles_malformed_messages(world: &mut VibeToolWorld) {
     if let Some(ref _container_id) = world.container_id {
         // Wait a bit to simulate sending a malformed message
         thread::sleep(Duration::from_millis(500));
         
         // Check if the server is still running
-        let list_output = execute_mcp_lok(&["list"]).expect("Failed to execute mcp-lok list command");
+        let list_output = execute_vt(&["list"]).expect("Failed to execute vt list command");
         assert_command_success(&list_output).expect("List command failed");
         
         let stdout = String::from_utf8_lossy(&list_output.stdout);

@@ -1,4 +1,4 @@
-use mcp_lok::permissions::profile::{NetworkPermissions, OutboundNetworkPermissions, PermissionProfile};
+use vibetool::permissions::profile::{NetworkPermissions, OutboundNetworkPermissions, PermissionProfile};
 
 #[test]
 fn test_builtin_stdio_profile() {

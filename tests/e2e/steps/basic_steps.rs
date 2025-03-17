@@ -1,10 +1,10 @@
 use cucumber::then;
 
-use crate::McpLokWorld;
+use crate::VibeToolWorld;
 use crate::common::utils::cleanup_container;
 
 #[then("I should clean up the test resources")]
-fn cleanup_resources(world: &mut McpLokWorld) {
+fn cleanup_resources(world: &mut VibeToolWorld) {
     // Clean up the container if it exists
     if let Some(ref container_id) = world.container_id {
         let _ = cleanup_container(container_id);
@@ -20,7 +20,7 @@ fn cleanup_resources(world: &mut McpLokWorld) {
 }
 
 #[then(expr = "I should see {string} in the output")]
-fn see_in_output(world: &mut McpLokWorld, expected: String) {
+fn see_in_output(world: &mut VibeToolWorld, expected: String) {
     if let Some(ref output) = world.command_output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -36,7 +36,7 @@ fn see_in_output(world: &mut McpLokWorld, expected: String) {
 }
 
 #[then(expr = "I should not see {string} in the output")]
-fn not_see_in_output(world: &mut McpLokWorld, unexpected: String) {
+fn not_see_in_output(world: &mut VibeToolWorld, unexpected: String) {
     if let Some(ref output) = world.command_output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);

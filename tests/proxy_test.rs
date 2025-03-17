@@ -8,12 +8,12 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
-use mcp_lok::container::{ContainerInfo, ContainerRuntime};
-use mcp_lok::error::{Error, Result};
-use mcp_lok::permissions::profile::ContainerPermissionConfig;
-use mcp_lok::transport::Transport;
-use mcp_lok::transport::sse::SseTransport;
-use mcp_lok::transport::stdio::{JsonRpcMessage, SseMessage, StdioTransport};
+use vibetool::container::{ContainerInfo, ContainerRuntime};
+use vibetool::error::{Error, Result};
+use vibetool::permissions::profile::ContainerPermissionConfig;
+use vibetool::transport::Transport;
+use vibetool::transport::sse::SseTransport;
+use vibetool::transport::stdio::{JsonRpcMessage, SseMessage, StdioTransport};
 
 // Fake MCP server that responds to MCP protocol requests
 struct FakeMcpServer {

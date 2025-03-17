@@ -7,8 +7,8 @@ pub fn get_container_runtime() -> String {
     env::var("CONTAINER_RUNTIME").unwrap_or_else(|_| "podman".to_string())
 }
 
-/// Executes mcp-lok command
-pub fn execute_mcp_lok(args: &[&str]) -> std::io::Result<Output> {
+/// Executes vt command
+pub fn execute_vt(args: &[&str]) -> std::io::Result<Output> {
     Command::new("cargo")
         .arg("run")
         .arg("--")

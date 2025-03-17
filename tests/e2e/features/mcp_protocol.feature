@@ -1,5 +1,5 @@
 Feature: MCP Protocol Compliance
-  As a user of mcp-lok
+  As a user of vt
   I want to ensure the MCP protocol is correctly implemented
   So that MCP servers can communicate properly with clients
 

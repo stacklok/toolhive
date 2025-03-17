@@ -4,11 +4,11 @@ use hyper::{Body, Request, Response, Server};
 use hyper::service::{make_service_fn, service_fn};
 use tokio::sync::oneshot;
 
-use mcp_lok::transport::{Transport, TransportMode};
-use mcp_lok::transport::sse::SseTransport;
-use mcp_lok::transport::stdio::StdioTransport;
-use mcp_lok::error::Result;
-use mcp_lok::transport::stdio::{SseMessage, JsonRpcMessage};
+use vibetool::transport::{Transport, TransportMode};
+use vibetool::transport::sse::SseTransport;
+use vibetool::transport::stdio::StdioTransport;
+use vibetool::error::Result;
+use vibetool::transport::stdio::{SseMessage, JsonRpcMessage};
 
 // Helper function to create a test HTTP server
 async fn create_test_server(port: u16) -> (String, oneshot::Sender<()>) {

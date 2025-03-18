@@ -46,17 +46,17 @@ impl PodmanClient {
 
     /// Create a new Podman client with a custom socket path
     pub async fn with_socket_path(socket_path: &str) -> Result<Self> {
-        println!("Creating Podman client with socket path: {}", socket_path);
+        log::debug!("Creating Podman client with socket path: {}", socket_path);
         
         // Check if the socket exists
         if !Path::new(socket_path).exists() {
-            println!("Podman socket not found at {}", socket_path);
+            log::debug!("Podman socket not found at {}", socket_path);
             return Err(Error::ContainerRuntime(format!(
                 "Podman socket not found at {}",
                 socket_path
             )));
         }
-        println!("Podman socket exists at {}", socket_path);
+        log::debug!("Podman socket exists at {}", socket_path);
 
         // Create HTTP client with Unix socket support
         let client = Client::builder()
@@ -68,27 +68,27 @@ impl PodmanClient {
         };
 
         // Verify that Podman is available
-        println!("Pinging Podman API...");
+        log::debug!("Pinging Podman API...");
         match podman.ping().await {
-            Ok(_) => println!("Podman API ping successful"),
+            Ok(_) => log::debug!("Podman API ping successful"),
             Err(e) => {
-                println!("Podman API ping failed: {}", e);
+                log::debug!("Podman API ping failed: {}", e);
                 return Err(e);
             }
         }
 
-        println!("Podman client created successfully");
+        log::debug!("Podman client created successfully");
         Ok(podman)
     }
 
     /// Find the Podman socket path
     fn find_podman_socket() -> Result<String> {
-        println!("Searching for Podman socket...");
+        log::debug!("Searching for Podman socket...");
         
         // Check standard location
-        println!("Checking standard location: {}", PODMAN_SOCKET_PATH);
+        log::debug!("Checking standard location: {}", PODMAN_SOCKET_PATH);
         if Path::new(PODMAN_SOCKET_PATH).exists() {
-            println!("Found Podman socket at standard location: {}", PODMAN_SOCKET_PATH);
+            log::debug!("Found Podman socket at standard location: {}", PODMAN_SOCKET_PATH);
             return Ok(PODMAN_SOCKET_PATH.to_string());
         }
 
@@ -97,13 +97,13 @@ impl PodmanClient {
             let xdg_socket_path = PathBuf::from(xdg_runtime_dir)
                 .join(PODMAN_XDG_RUNTIME_SOCKET_PATH);
             
-            println!("Checking XDG_RUNTIME_DIR location: {}", xdg_socket_path.display());
+            log::debug!("Checking XDG_RUNTIME_DIR location: {}", xdg_socket_path.display());
             if xdg_socket_path.exists() {
-                println!("Found Podman socket at XDG_RUNTIME_DIR location: {}", xdg_socket_path.display());
+                log::debug!("Found Podman socket at XDG_RUNTIME_DIR location: {}", xdg_socket_path.display());
                 return Ok(xdg_socket_path.to_string_lossy().to_string());
             }
         } else {
-            println!("XDG_RUNTIME_DIR environment variable not set");
+            log::debug!("XDG_RUNTIME_DIR environment variable not set");
         }
 
         // Check user-specific location
@@ -111,16 +111,16 @@ impl PodmanClient {
             let user_socket_path = PathBuf::from(home)
                 .join(".local/share/containers/podman/machine/podman.sock");
             
-            println!("Checking user-specific location: {}", user_socket_path.display());
+            log::debug!("Checking user-specific location: {}", user_socket_path.display());
             if user_socket_path.exists() {
-                println!("Found Podman socket at user-specific location: {}", user_socket_path.display());
+                log::debug!("Found Podman socket at user-specific location: {}", user_socket_path.display());
                 return Ok(user_socket_path.to_string_lossy().to_string());
             }
         } else {
-            println!("HOME environment variable not set");
+            log::debug!("HOME environment variable not set");
         }
 
-        println!("Podman socket not found in any location");
+        log::debug!("Podman socket not found in any location");
         Err(Error::ContainerRuntime("Podman socket not found".to_string()))
     }
 
@@ -199,30 +199,30 @@ impl PodmanClient {
     /// Check if Podman is available
     async fn ping(&self) -> Result<()> {
         let uri_path = format!("{}/_ping", Self::base_uri_path());
-        println!("Pinging Podman API at path: {}", uri_path);
+        log::debug!("Pinging Podman API at path: {}", uri_path);
         
         let req = Request::builder()
             .method(Method::GET)
             .uri(hyperlocal::Uri::new(&self.socket_path, &uri_path))
             .body(Body::empty())?;
         
-        println!("Sending ping request to Podman API...");
+        log::debug!("Sending ping request to Podman API...");
         let res = match self.client.request(req).await {
             Ok(res) => {
-                println!("Received response from Podman API with status: {}", res.status());
+                log::debug!("Received response from Podman API with status: {}", res.status());
                 res
             },
             Err(e) => {
-                println!("Failed to ping Podman: {}", e);
+                log::debug!("Failed to ping Podman: {}", e);
                 return Err(Error::ContainerRuntime(format!("Failed to ping Podman: {}", e)));
             }
         };
         
         if res.status().is_success() {
-            println!("Podman ping successful");
+            log::debug!("Podman ping successful");
             Ok(())
         } else {
-            println!("Podman ping failed with status: {}", res.status());
+            log::debug!("Podman ping failed with status: {}", res.status());
             Err(Error::ContainerRuntime(format!(
                 "Podman ping failed with status: {}",
                 res.status()
@@ -397,7 +397,7 @@ impl ContainerRuntime for PodmanClient {
         ];
         
         for path in paths {
-            println!("Trying to list containers with path: {}", path);
+            log::debug!("Trying to list containers with path: {}", path);
             
             match self.request::<(), Vec<PodmanContainer>>(
                 Method::GET,
@@ -405,8 +405,8 @@ impl ContainerRuntime for PodmanClient {
                 Option::<()>::None,
             ).await {
                 Ok(podman_containers) => {
-                    println!("Successfully listed containers with path: {}", path);
-                    println!("Found {} containers", podman_containers.len());
+                    log::debug!("Successfully listed containers with path: {}", path);
+                    log::debug!("Found {} containers", podman_containers.len());
                     
                     // Convert Podman containers to our ContainerInfo format
                     let containers = podman_containers
@@ -446,7 +446,7 @@ impl ContainerRuntime for PodmanClient {
                     return Ok(containers);
                 },
                 Err(e) => {
-                    println!("Failed to list containers with path {}: {}", path, e);
+                    log::debug!("Failed to list containers with path {}: {}", path, e);
                 }
             }
         }

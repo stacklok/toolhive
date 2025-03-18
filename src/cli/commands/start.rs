@@ -128,14 +128,14 @@ impl StartCommand {
             .await?;
 
         // Get the container IP address
-        println!("Getting container IP address for {}", container_id);
+        log::debug!("Getting container IP address for {}", container_id);
         let container_ip = match runtime.get_container_ip(&container_id).await {
             Ok(ip) => {
-                println!("Container IP address: {}", ip);
+                log::debug!("Container IP address: {}", ip);
                 Some(ip)
             },
             Err(e) => {
-                eprintln!("Failed to get container IP address: {}", e);
+                log::error!("Failed to get container IP address: {}", e);
                 None
             }
         };
@@ -144,7 +144,7 @@ impl StartCommand {
         transport.setup(&container_id, &self.name, self.port, &mut HashMap::new(), container_ip).await?;
         transport.start().await?;
 
-        println!("MCP server {} started with container ID {}", self.name, container_id);
+        log::info!("MCP server {} started with container ID {}", self.name, container_id);
 
         Ok(())
     }

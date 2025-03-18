@@ -6,6 +6,10 @@ pub mod commands;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
+    /// Enable debug output
+    #[arg(short, long)]
+    pub debug: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

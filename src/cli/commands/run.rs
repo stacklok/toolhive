@@ -147,14 +147,14 @@ impl RunCommand {
             .await?;
 
         // Get the container IP address
-        println!("Getting container IP address for {}", container_id);
+        log::debug!("Getting container IP address for {}", container_id);
         let container_ip = match runtime.get_container_ip(&container_id).await {
             Ok(ip) => {
-                println!("Container IP address: {}", ip);
+                log::debug!("Container IP address: {}", ip);
                 Some(ip)
             },
             Err(e) => {
-                eprintln!("Failed to get container IP address: {}", e);
+                log::error!("Failed to get container IP address: {}", e);
                 None
             }
         };
@@ -164,7 +164,7 @@ impl RunCommand {
         transport.setup(&container_id, &self.name, self.port, &mut transport_env_vars, container_ip).await?;
         transport.start().await?;
 
-        println!("MCP server {} started with container ID {}", self.name, container_id);
+        log::info!("MCP server {} started with container ID {}", self.name, container_id);
         
         // Create a container monitor
         let runtime_for_monitor = ContainerRuntimeFactory::create().await?;
@@ -174,7 +174,7 @@ impl RunCommand {
         let mut error_rx = monitor.start_monitoring().await?;
         
         if !skip_ctrl_c {
-            println!("Press Ctrl+C to stop or wait for container to exit");
+            log::info!("Press Ctrl+C to stop or wait for container to exit");
 
             // Create a future that completes when Ctrl+C is pressed
             let ctrl_c = tokio::signal::ctrl_c();
@@ -182,11 +182,11 @@ impl RunCommand {
             tokio::select! {
                 // Wait for Ctrl+C
                 _ = ctrl_c => {
-                    println!("Received Ctrl+C, stopping MCP server...");
+                    log::info!("Received Ctrl+C, stopping MCP server...");
                 },
                 // Wait for container exit error
                 Some(err) = error_rx.recv() => {
-                    eprintln!("Container exited unexpectedly: {}", err);
+                    log::error!("Container exited unexpectedly: {}", err);
                 }
             }
 
@@ -199,7 +199,7 @@ impl RunCommand {
             // Try to stop the container (it might already be stopped)
             let _ = runtime.stop_container(&container_id).await;
 
-            println!("MCP server {} stopped", self.name);
+            log::info!("MCP server {} stopped", self.name);
         }
 
         Ok(())

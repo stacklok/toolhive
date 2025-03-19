@@ -37,11 +37,13 @@ impl ListCommand {
         };
 
         // Print container information
-        println!("{:<20} {:<20} {:<40} {:<20}", "CONTAINER ID", "NAME", "IMAGE", "STATE");
+        println!("{:<12} {:<20} {:<40} {:<20}", "CONTAINER ID", "NAME", "IMAGE", "STATE");
         for container in containers {
+            // Truncate container ID to first 12 characters (similar to Docker)
+            let truncated_id = container.id.chars().take(12).collect::<String>();
             println!(
-                "{:<20} {:<20} {:<40} {:<20}",
-                container.id, container.name, container.image, container.state
+                "{:<12} {:<20} {:<40} {:<20}",
+                truncated_id, container.name, container.image, container.state
             );
         }
 

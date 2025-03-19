@@ -694,7 +694,7 @@ impl ContainerRuntime for PodmanClient {
     
     async fn attach_container(&self, container_id: &str) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
         // Create the attach URL for reading
-        let attach_url = format!("containers/{}/attach?stream=1&stdout=1&stderr=1", container_id);
+        let attach_url = format!("containers/{}/attach?stream=true&stdin=true&stdout=true&stderr=true", container_id);
         
         // Create the request
         let req = Request::builder()

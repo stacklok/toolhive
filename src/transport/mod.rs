@@ -55,7 +55,13 @@ pub trait Transport: Send + Sync {
     ) -> Result<()>;
 
     /// Start the transport
-    async fn start(&self) -> Result<()>;
+    ///
+    /// For STDIO transport, stdin and stdout are provided from the container's attach
+    async fn start(
+        &self,
+        stdin: Option<Box<dyn tokio::io::AsyncWrite + Unpin + Send>>,
+        stdout: Option<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
+    ) -> Result<()>;
 
     /// Stop the transport
     async fn stop(&self) -> Result<()>;

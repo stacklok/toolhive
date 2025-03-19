@@ -323,7 +323,7 @@ impl AsyncWrite for PodmanAttachWriter {
 
 #[async_trait]
 impl ContainerRuntime for PodmanClient {
-    async fn create_and_start_container(
+    async fn create_container(
         &self,
         image: &str,
         name: &str,
@@ -332,8 +332,6 @@ impl ContainerRuntime for PodmanClient {
         labels: HashMap<String, String>,
         permission_config: ContainerPermissionConfig,
     ) -> Result<String> {
-        // Use environment variables directly as a map
-
         // Convert mounts to the format Podman expects
         let mounts: Vec<PodmanMount> = permission_config
             .mounts
@@ -352,7 +350,7 @@ impl ContainerRuntime for PodmanClient {
 
         // Check if STDIO transport is being used
         let is_stdio_transport = env_vars.get("MCP_TRANSPORT").map_or(false, |v| v == "stdio");
-        
+
         // Create container configuration
         let create_config = PodmanCreateContainerConfig {
             image: image.to_string(),
@@ -382,8 +380,16 @@ impl ContainerRuntime for PodmanClient {
             Some(create_config),
         ).await?;
 
+        // Print the warnings if any only in debug mode
+        for warning in create_response.warnings {
+            log::debug!("Container create warning: {}", warning);
+        }
+
+        Ok(create_response.id.clone())
+    }
+
+    async fn start_container(&self, container_id: &str) -> Result<()> {
         // Start container
-        let container_id = &create_response.id;
         let path = format!("containers/{}/start", container_id);
         let _: serde_json::Value = self.request(
             Method::POST,
@@ -391,7 +397,7 @@ impl ContainerRuntime for PodmanClient {
             Option::<()>::None,
         ).await?;
 
-        Ok(container_id.clone())
+        Ok(())
     }
 
     async fn list_containers(&self) -> Result<Vec<ContainerInfo>> {
@@ -790,7 +796,6 @@ struct PodmanCreateContainerResponse {
     #[serde(rename = "Id")]
     id: String,
     #[serde(default, rename = "Warnings")]
-    #[allow(dead_code)]
     warnings: Vec<String>,
 }
 
@@ -886,6 +891,14 @@ struct PodmanContainerConfig {
     image: String,
     #[serde(default, rename = "Labels")]
     labels: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "AttachStdin")]
+    attach_stdin: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "AttachStdout")]
+    attach_stdout: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "AttachStderr")]
+    attach_stderr: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "OpenStdin")]
+    open_stdin: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -930,7 +943,7 @@ mod tests {
 
         #[async_trait]
         impl ContainerRuntime for PodmanClient {
-            async fn create_and_start_container(
+            async fn create_container(
                 &self,
                 image: &str,
                 name: &str,
@@ -939,6 +952,8 @@ mod tests {
                 labels: HashMap<String, String>,
                 permission_config: ContainerPermissionConfig,
             ) -> Result<String>;
+
+            async fn start_container(&self, container_id: &str) -> Result<()>;
 
             async fn list_containers(&self) -> Result<Vec<ContainerInfo>>;
             async fn stop_container(&self, container_id: &str) -> Result<()>;

@@ -183,9 +183,9 @@ impl RunCommand {
             _ => transport,
         };
 
-        // Create and start the container
+        // Create the container
         let container_id = runtime
-            .create_and_start_container(
+            .create_container(
                 &self.image,
                 &container_name,
                 self.args.clone(),
@@ -194,6 +194,22 @@ impl RunCommand {
                 permission_config,
             )
             .await?;
+
+        // Log that the container was created
+        log::info!("MCP server {} created with container ID {}", container_name, container_id);
+
+        // For STDIO transport, attach to the container before starting it
+        let (stdin, stdout) = if transport.mode() == TransportMode::STDIO {
+            log::debug!("Attaching to container {} for STDIO transport", container_id);
+            let (stdin, stdout) = runtime.attach_container(&container_id).await?;
+            (Some(stdin), Some(stdout))
+        } else {
+            (None, None)
+        };
+
+        // Start the container - This happens before the transport
+        // so the transport could have an IP allocated.
+        runtime.start_container(&container_id).await?;
 
         // Get the container IP address only for SSE transport
         let container_ip = match transport.mode() {
@@ -213,12 +229,15 @@ impl RunCommand {
             _ => None, // Don't need container IP for other transport modes
         };
 
-        // Start the transport
+        // Set up the transport
         let mut transport_env_vars = HashMap::new();
         transport.setup(&container_id, &container_name, &mut transport_env_vars, container_ip).await?;
-        transport.start().await?;
 
-        log::info!("MCP server {} started with container ID {}", container_name, container_id);
+
+        // Start the transport with stdin/stdout if available
+        transport.start(stdin, stdout).await?;
+
+        log::info!("MCP server {} started successfully", container_name);
         
         // Create a container monitor
         let runtime_for_monitor = ContainerRuntimeFactory::create().await?;

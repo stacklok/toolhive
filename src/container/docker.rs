@@ -240,7 +240,7 @@ impl AsyncWrite for DockerAttachWriter {
 
 #[async_trait]
 impl ContainerRuntime for DockerClient {
-    async fn create_and_start_container(
+    async fn create_container(
         &self,
         image: &str,
         name: &str,
@@ -251,8 +251,6 @@ impl ContainerRuntime for DockerClient {
     ) -> Result<String> {
         // Ensure Docker is available
         self.ping().await?;
-
-        // Use environment variables directly as a map
 
         // Convert mounts to the format Docker expects
         let mounts: Vec<DockerMount> = permission_config
@@ -297,8 +295,14 @@ impl ContainerRuntime for DockerClient {
             Some(create_config),
         ).await?;
 
+        Ok(create_response.id.clone())
+    }
+
+    async fn start_container(&self, container_id: &str) -> Result<()> {
+        // Ensure Docker is available
+        self.ping().await?;
+
         // Start container
-        let container_id = &create_response.id;
         let path = format!("containers/{}/start", container_id);
         let _: serde_json::Value = self.request(
             Method::POST,
@@ -306,7 +310,7 @@ impl ContainerRuntime for DockerClient {
             Option::<()>::None,
         ).await?;
 
-        Ok(container_id.clone())
+        Ok(())
     }
 
     async fn list_containers(&self) -> Result<Vec<ContainerInfo>> {
@@ -836,7 +840,7 @@ mod tests {
 
         #[async_trait]
         impl ContainerRuntime for DockerClient {
-            async fn create_and_start_container(
+            async fn create_container(
                 &self,
                 image: &str,
                 name: &str,
@@ -845,6 +849,8 @@ mod tests {
                 labels: HashMap<String, String>,
                 permission_config: ContainerPermissionConfig,
             ) -> Result<String>;
+
+            async fn start_container(&self, container_id: &str) -> Result<()>;
 
             async fn list_containers(&self) -> Result<Vec<ContainerInfo>>;
             async fn stop_container(&self, container_id: &str) -> Result<()>;

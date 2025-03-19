@@ -21,7 +21,7 @@ mod tests {
         
         #[async_trait]
         impl ContainerRuntime for ContainerRuntime {
-            async fn create_and_start_container(
+            async fn create_container(
                 &self,
                 image: &str,
                 name: &str,
@@ -30,6 +30,8 @@ mod tests {
                 labels: HashMap<String, String>,
                 permission_config: ContainerPermissionConfig,
             ) -> Result<String>;
+            
+            async fn start_container(&self, container_id: &str) -> Result<()>;
             
             async fn list_containers(&self) -> Result<Vec<ContainerInfo>>;
             async fn stop_container(&self, container_id: &str) -> Result<()>;

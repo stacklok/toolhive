@@ -47,8 +47,8 @@ pub struct PortMapping {
 /// Common trait for container runtimes
 #[async_trait]
 pub trait ContainerRuntime: Send + Sync {
-    /// Create and start a container
-    async fn create_and_start_container(
+    /// Create a container without starting it
+    async fn create_container(
         &self,
         image: &str,
         name: &str,
@@ -57,6 +57,9 @@ pub trait ContainerRuntime: Send + Sync {
         labels: HashMap<String, String>,
         permission_config: ContainerPermissionConfig,
     ) -> Result<String>;
+
+    /// Start a container
+    async fn start_container(&self, container_id: &str) -> Result<()>;
 
     /// List containers
     async fn list_containers(&self) -> Result<Vec<ContainerInfo>>;
@@ -230,7 +233,7 @@ mod tests {
         
         #[async_trait]
         impl ContainerRuntime for ContainerRuntime {
-            async fn create_and_start_container(
+            async fn create_container(
                 &self,
                 image: &str,
                 name: &str,
@@ -239,6 +242,8 @@ mod tests {
                 labels: HashMap<String, String>,
                 permission_config: ContainerPermissionConfig,
             ) -> Result<String>;
+            
+            async fn start_container(&self, container_id: &str) -> Result<()>;
             
             async fn list_containers(&self) -> Result<Vec<ContainerInfo>>;
             async fn stop_container(&self, container_id: &str) -> Result<()>;

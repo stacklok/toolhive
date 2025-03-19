@@ -162,7 +162,11 @@ impl Transport for SseTransport {
         Ok(())
     }
 
-    async fn start(&self) -> Result<()> {
+    async fn start(
+        &self,
+        _stdin: Option<Box<dyn tokio::io::AsyncWrite + Unpin + Send>>,
+        _stdout: Option<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
+    ) -> Result<()> {
         // Get container ID and name
         let container_id = match self.container_id.lock().unwrap().clone() {
             Some(id) => id,
@@ -401,7 +405,7 @@ mod tests {
     #[tokio::test]
     async fn test_sse_transport_start_without_setup() {
         let transport = SseTransport::new(8080);
-        let result = transport.start().await;
+        let result = transport.start(None, None).await;
         
         assert!(result.is_err());
     }
@@ -462,7 +466,7 @@ mod tests {
         *transport.container_ip.lock().unwrap() = Some("127.0.0.1".to_string());
         
         // Start the transport
-        transport.start().await?;
+        transport.start(None, None).await?;
         
         // Check if it's running
         assert!(transport.is_running().await?);

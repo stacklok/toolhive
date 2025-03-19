@@ -64,7 +64,7 @@ async fn test_sse_transport_setup() -> Result<()> {
 #[tokio::test]
 async fn test_sse_transport_start_without_setup() {
     let transport = SseTransport::new(8080);
-    let result = transport.start().await;
+    let result = transport.start(None, None).await;
     
     assert!(result.is_err());
 }
@@ -114,7 +114,7 @@ async fn test_stdio_transport_setup() -> Result<()> {
 #[tokio::test]
 async fn test_stdio_transport_start_without_setup() {
     let transport = StdioTransport::new(8080);
-    let result = transport.start().await;
+    let result = transport.start(None, None).await;
     
     assert!(result.is_err());
 }

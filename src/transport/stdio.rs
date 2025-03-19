@@ -174,23 +174,6 @@ impl StdioTransport {
         Ok(())
     }
 
-    /// Attach to a container and get stdin/stdout handles
-    async fn attach_to_container(
-        container_id: &str,
-        runtime: &Arc<Mutex<Option<Box<dyn ContainerRuntime>>>>,
-    ) -> Result<(
-        Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
-        Box<dyn tokio::io::AsyncRead + Unpin + Send>,
-    )> {
-        let mut runtime_guard = runtime.lock().await;
-        let runtime_ref = runtime_guard.as_mut().ok_or_else(|| {
-            Error::Transport("Container runtime not available".to_string())
-        })?;
-        
-        // Attach to the container
-        runtime_ref.attach_container(container_id).await
-    }
-
     /// Process container stdout data and parse JSON-RPC messages
     async fn process_stdout(
         mut stdout: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
@@ -315,16 +298,14 @@ impl StdioTransport {
     }
 
     /// Process JSON-RPC messages and handle bidirectional communication with the container
-    async fn process_messages(
-        container_id: String,
-        runtime: Arc<Mutex<Option<Box<dyn ContainerRuntime>>>>,
+    /// using provided stdin and stdout
+    async fn process_messages_with_io(
+        mut stdin: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+        stdout: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
         mut message_rx: mpsc::Receiver<JsonRpcMessage>,
         response_tx: mpsc::Sender<JsonRpcMessage>,
         mut shutdown_rx: oneshot::Receiver<()>,
     ) -> Result<()> {
-        // Attach to the container
-        let (mut stdin, stdout) = Self::attach_to_container(&container_id, &runtime).await?;
-        
         // Spawn a task to read from stdout
         let response_tx_clone = response_tx.clone();
         let stdout_task = tokio::spawn(async move {
@@ -480,7 +461,11 @@ impl Transport for StdioTransport {
         Ok(())
     }
 
-    async fn start(&self) -> Result<()> {
+    async fn start(
+        &self,
+        stdin: Option<Box<dyn tokio::io::AsyncWrite + Unpin + Send>>,
+        stdout: Option<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
+    ) -> Result<()> {
         // Get container ID and name
         let container_id = {
             let guard = self.container_id.lock().await;
@@ -522,14 +507,19 @@ impl Transport for StdioTransport {
             *guard = Some(shutdown_tx);
         }
 
-        // Start the message processor
-        let container_id_clone = container_id.clone();
-        let runtime_clone = self.runtime.clone();
+        // Use provided stdin/stdout if available, otherwise attach to the container
+        let (stdin_box, stdout_box) = if let (Some(stdin_provided), Some(stdout_provided)) = (stdin, stdout) {
+            log::debug!("Using provided stdin/stdout for container {}", container_name);
+            (stdin_provided, stdout_provided)
+        } else {
+            log::debug!("No stdin/stdout provided, attaching to container {}", container_id);
+            return Err(Error::Transport("Stdin/stdout must be provided".to_string()));
+        };
         
         tokio::spawn(async move {
-            if let Err(e) = Self::process_messages(
-                container_id_clone,
-                runtime_clone,
+            if let Err(e) = Self::process_messages_with_io(
+                stdin_box,
+                stdout_box,
                 message_rx,
                 response_tx,
                 shutdown_rx,
@@ -724,7 +714,7 @@ struct DummyContainerRuntime;
 
 #[async_trait]
 impl ContainerRuntime for DummyContainerRuntime {
-    async fn create_and_start_container(
+    async fn create_container(
         &self,
         _image: &str,
         _name: &str,
@@ -733,6 +723,10 @@ impl ContainerRuntime for DummyContainerRuntime {
         _labels: HashMap<String, String>,
         _permission_config: crate::permissions::profile::ContainerPermissionConfig,
     ) -> Result<String> {
+        Err(Error::Transport("Dummy runtime not implemented".to_string()))
+    }
+
+    async fn start_container(&self, _container_id: &str) -> Result<()> {
         Err(Error::Transport("Dummy runtime not implemented".to_string()))
     }
 
@@ -783,7 +777,7 @@ mod tests {
 
         #[async_trait]
         impl ContainerRuntime for ContainerRuntime {
-            async fn create_and_start_container(
+            async fn create_container(
                 &self,
                 image: &str,
                 name: &str,
@@ -792,6 +786,8 @@ mod tests {
                 labels: HashMap<String, String>,
                 permission_config: ContainerPermissionConfig,
             ) -> Result<String>;
+
+            async fn start_container(&self, container_id: &str) -> Result<()>;
 
             async fn list_containers(&self) -> Result<Vec<ContainerInfo>>;
             async fn stop_container(&self, container_id: &str) -> Result<()>;
@@ -825,7 +821,7 @@ mod tests {
     #[tokio::test]
     async fn test_stdio_transport_start_without_setup() {
         let transport = StdioTransport::new(8080);
-        let result = transport.start().await;
+        let result = transport.start(None, None).await;
         
         assert!(result.is_err());
     }
@@ -896,8 +892,10 @@ mod tests {
         // Set up the transport
         transport.setup("test-id", "test-container", &mut env_vars, None).await?;
         
-        // Start the transport
-        transport.start().await?;
+        // Start the transport with stdin/stdout
+        let stdin = MockAsyncReadWrite::new();
+        let stdout = MockAsyncReadWrite::new();
+        transport.start(Some(Box::new(stdin)), Some(Box::new(stdout))).await?;
         
         // Check if it's running
         assert!(transport.is_running().await?);
@@ -1149,57 +1147,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn test_attach_to_container() -> Result<()> {
-        // Create a mock runtime
-        let mut mock_runtime = MockContainerRuntime::new();
-        
-        // Set up expectations for attach_container
-        mock_runtime.expect_attach_container()
-            .with(eq("test-container-id"))
-            .returning(|_| {
-                let stdin = MockAsyncReadWrite::new();
-                let stdout = MockAsyncReadWrite::new();
-                Ok((Box::new(stdin), Box::new(stdout)))
-            });
-        
-        // Create a runtime with the mock
-        let runtime = Arc::new(Mutex::new(Some(Box::new(mock_runtime) as Box<dyn ContainerRuntime>)));
-        
-        // Call attach_to_container
-        let result = StdioTransport::attach_to_container("test-container-id", &runtime).await;
-        
-        // Verify we got a successful result
-        assert!(result.is_ok());
-        
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_attach_to_container_error() {
-        // Create a mock runtime
-        let mut mock_runtime = MockContainerRuntime::new();
-        
-        // Set up expectations for attach_container to return an error
-        mock_runtime.expect_attach_container()
-            .returning(|_| {
-                Err(Error::Transport("Test error".to_string()))
-            });
-        
-        // Create a runtime with the mock
-        let runtime = Arc::new(Mutex::new(Some(Box::new(mock_runtime) as Box<dyn ContainerRuntime>)));
-        
-        // Call attach_to_container
-        let result = StdioTransport::attach_to_container("test-container-id", &runtime).await;
-        
-        // Verify we got the expected error
-        assert!(result.is_err());
-        if let Err(Error::Transport(msg)) = result {
-            assert_eq!(msg, "Test error");
-        } else {
-            panic!("Expected Transport error");
-        }
-    }
 
     #[tokio::test]
     async fn test_process_stdout_chunk() -> Result<()> {
@@ -1525,20 +1472,4 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_attach_to_container_with_no_runtime() {
-        // Create a runtime with None
-        let runtime = Arc::new(Mutex::new(None::<Box<dyn ContainerRuntime>>));
-        
-        // Call attach_to_container
-        let result = StdioTransport::attach_to_container("test-container-id", &runtime).await;
-        
-        // Verify we got the expected error
-        assert!(result.is_err());
-        if let Err(Error::Transport(msg)) = result {
-            assert_eq!(msg, "Container runtime not available");
-        } else {
-            panic!("Expected Transport error");
-        }
-    }
 }

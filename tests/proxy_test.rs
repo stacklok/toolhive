@@ -352,7 +352,7 @@ async fn test_sse_transport_proxy() -> Result<()> {
     transport.setup("test-id", "test-container", &mut env_vars, Some("127.0.0.1".to_string())).await?;
     
     // Start the transport
-    transport.start().await?;
+    transport.start(None, None).await?;
     
     // Create a client to send requests to the transport
     let client = reqwest::Client::new();
@@ -561,7 +561,7 @@ struct MockContainerRuntimeForProxy {
 
 #[async_trait]
 impl ContainerRuntime for MockContainerRuntimeForProxy {
-    async fn create_and_start_container(
+    async fn create_container(
         &self,
         _image: &str,
         _name: &str,
@@ -571,6 +571,10 @@ impl ContainerRuntime for MockContainerRuntimeForProxy {
         _permission_config: ContainerPermissionConfig,
     ) -> Result<String> {
         Ok(self.container_id.clone())
+    }
+
+    async fn start_container(&self, _container_id: &str) -> Result<()> {
+        Ok(())
     }
 
     async fn list_containers(&self) -> Result<Vec<ContainerInfo>> {
@@ -730,8 +734,11 @@ async fn test_stdio_transport_http_proxy() -> Result<()> {
     let mut env_vars = HashMap::new();
     transport.setup("test-container-id", "test-container", &mut env_vars, None).await?;
     
-    // Start the transport
-    transport.start().await?;
+    // Get stdin/stdout from the mock runtime
+    let (stdin, stdout) = mock_runtime.attach_container("test-container-id").await?;
+    
+    // Start the transport with stdin/stdout
+    transport.start(Some(stdin), Some(stdout)).await?;
     
     // Create a client to send requests to the transport
     let client = reqwest::Client::new();

@@ -41,7 +41,6 @@ async fn async_main(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Commands::Run(args)) => args.execute().await,
         Some(Commands::List(args)) => args.execute().await,
-        Some(Commands::Start(args)) => args.execute().await,
         Some(Commands::Stop(args)) => args.execute().await,
         Some(Commands::Remove(args)) => args.execute().await,
         None => {

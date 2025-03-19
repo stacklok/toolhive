@@ -25,10 +25,6 @@ pub enum Commands {
     #[command(name = "list")]
     List(commands::list::ListCommand),
 
-    /// Start an MCP server in the background
-    #[command(name = "start")]
-    Start(commands::start::StartCommand),
-
     /// Stop an MCP server
     #[command(name = "stop")]
     Stop(commands::stop::StopCommand),

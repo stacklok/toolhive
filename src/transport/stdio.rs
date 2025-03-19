@@ -465,7 +465,7 @@ impl Transport for StdioTransport {
         &self,
         container_id: &str,
         container_name: &str,
-        env_vars: &mut HashMap<String, String>,
+        _env_vars: &mut HashMap<String, String>,
         _container_ip: Option<String>,
     ) -> Result<()> {
         // Store container ID and name
@@ -476,10 +476,6 @@ impl Transport for StdioTransport {
         let mut name_guard = self.container_name.lock().await;
         *name_guard = Some(container_name.to_string());
         drop(name_guard);
-
-        // Set environment variables for the container
-        env_vars.insert("MCP_TRANSPORT".to_string(), "stdio".to_string());
-        env_vars.insert("MCP_PORT".to_string(), self.port.to_string());
 
         Ok(())
     }
@@ -815,8 +811,15 @@ mod tests {
         
         transport.setup("test-id", "test-container", &mut env_vars, None).await.unwrap();
         
-        assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "stdio");
-        assert_eq!(env_vars.get("MCP_PORT").unwrap(), "8080");
+        // Environment variables are now set in the environment module, not in the transport
+        // So we don't check them here anymore
+        
+        // Check that container ID and name were set correctly
+        let container_id = transport.container_id.lock().await.clone();
+        let container_name = transport.container_name.lock().await.clone();
+        
+        assert_eq!(container_id, Some("test-id".to_string()));
+        assert_eq!(container_name, Some("test-container".to_string()));
     }
 
     #[tokio::test]
@@ -988,9 +991,8 @@ mod tests {
         let mut env_vars = HashMap::new();
         transport.setup("test-id", "test-container", &mut env_vars, None).await?;
         
-        // Check that the environment variables were set correctly
-        assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "stdio");
-        assert_eq!(env_vars.get("MCP_PORT").unwrap(), "8080");
+        // Environment variables are now set in the environment module, not in the transport
+        // So we don't check them here anymore
         
         Ok(())
     }

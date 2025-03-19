@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::container::{ContainerMonitor, ContainerRuntime, ContainerRuntimeFactory};
+use crate::environment;
 use crate::error::{Error, Result};
 use crate::labels;
 use crate::networking::port;
@@ -158,22 +159,11 @@ impl RunCommand {
         let mut labels = HashMap::new();
         labels::add_standard_labels(&mut labels, &container_name, &self.transport, transport.port());
 
-        // Create environment variables for the container
-        let mut env_vars = HashMap::new();
+        // Parse user-provided environment variables
+        let mut env_vars = environment::parse_environment_variables(&self.env)?;
         
-        // Add user-provided environment variables
-        for env_var in &self.env {
-            if let Some(pos) = env_var.find('=') {
-                let key = env_var[..pos].to_string();
-                let value = env_var[pos + 1..].to_string();
-                env_vars.insert(key, value);
-            } else {
-                return Err(crate::error::Error::InvalidArgument(format!(
-                    "Invalid environment variable format: {}. Expected format: KEY=VALUE",
-                    env_var
-                )));
-            }
-        }
+        // Set transport-specific environment variables
+        environment::set_transport_environment_variables(&mut env_vars, &transport.mode(), transport.port());
 
         // If using stdio transport, set the runtime
         let transport = match transport.mode() {
@@ -276,26 +266,18 @@ mod tests {
     
     #[tokio::test]
     async fn test_run_command_env_vars() -> Result<()> {
-        // Test valid environment variables
+        // Test valid environment variables using the environment module
         let env_vars = vec!["KEY1=value1".to_string(), "KEY2=value2".to_string()];
-        let mut result_map = HashMap::new();
-        
-        for env_var in &env_vars {
-            if let Some(pos) = env_var.find('=') {
-                let key = env_var[..pos].to_string();
-                let value = env_var[pos + 1..].to_string();
-                result_map.insert(key, value);
-            }
-        }
+        let result_map = environment::parse_environment_variables(&env_vars)?;
         
         assert_eq!(result_map.get("KEY1").unwrap(), "value1");
         assert_eq!(result_map.get("KEY2").unwrap(), "value2");
         
         // Test invalid environment variable
-        let invalid_env_var = "INVALID_ENV_VAR".to_string();
-        let pos = invalid_env_var.find('=');
+        let invalid_env_var = vec!["INVALID_ENV_VAR".to_string()];
+        let result = environment::parse_environment_variables(&invalid_env_var);
         
-        assert!(pos.is_none());
+        assert!(result.is_err());
         
         Ok(())
     }

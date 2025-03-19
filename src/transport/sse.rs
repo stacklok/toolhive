@@ -142,7 +142,7 @@ impl Transport for SseTransport {
         &self,
         container_id: &str,
         container_name: &str,
-        env_vars: &mut HashMap<String, String>,
+        _env_vars: &mut HashMap<String, String>,
         container_ip: Option<String>,
     ) -> Result<()> {
         // Store container ID and name
@@ -151,14 +151,6 @@ impl Transport for SseTransport {
         
         // Get the current container port
         let container_port = *self.container_port.lock().unwrap();
-
-        // Set environment variables for the container
-        env_vars.insert("MCP_TRANSPORT".to_string(), "sse".to_string());
-        env_vars.insert("MCP_PORT".to_string(), container_port.to_string());
-        
-        // Add additional environment variables to help the MCP server
-        env_vars.insert("PORT".to_string(), container_port.to_string());
-        env_vars.insert("MCP_SSE_ENABLED".to_string(), "true".to_string());
 
         // Store the container IP if provided
         if let Some(ip) = container_ip {
@@ -394,10 +386,16 @@ mod tests {
         transport.set_container_port(9000);
         transport.setup("test-id", "test-container", &mut env_vars, Some("172.17.0.2".to_string())).await.unwrap();
         
-        assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "sse");
-        assert_eq!(env_vars.get("MCP_PORT").unwrap(), "9000");
+        // Environment variables are now set in the environment module, not in the transport
+        // So we don't check them here anymore
+        
+        // Check that container port and IP were set correctly
         assert_eq!(*transport.container_port.lock().unwrap(), 9000);
         assert_eq!(transport.container_ip.lock().unwrap().as_ref().unwrap(), "172.17.0.2");
+        
+        // Check that container ID and name were set correctly
+        assert_eq!(transport.container_id.lock().unwrap().as_ref().unwrap(), "test-id");
+        assert_eq!(transport.container_name.lock().unwrap().as_ref().unwrap(), "test-container");
     }
 
     #[tokio::test]
@@ -493,9 +491,8 @@ mod tests {
         // Check that the container port was set correctly
         assert_eq!(*transport.container_port.lock().unwrap(), 9003);
         
-        // Check that the environment variables were set correctly
-        assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "sse");
-        assert_eq!(env_vars.get("MCP_PORT").unwrap(), "9003");
+        // Environment variables are now set in the environment module, not in the transport
+        // So we don't check them here anymore
         
         Ok(())
     }
@@ -513,9 +510,8 @@ mod tests {
         // Check that the container port was set correctly
         assert_eq!(*transport.container_port.lock().unwrap(), 9004);
         
-        // Check that the environment variables were set correctly
-        assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "sse");
-        assert_eq!(env_vars.get("MCP_PORT").unwrap(), "9004");
+        // Environment variables are now set in the environment module, not in the transport
+        // So we don't check them here anymore
         
         Ok(())
     }

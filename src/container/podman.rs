@@ -127,7 +127,7 @@ impl PodmanClient {
 
     /// Get the base URI path for the Podman API
     fn base_uri_path() -> String {
-        format!("/{}/libpod", PODMAN_API_VERSION)
+        format!("/{}", PODMAN_API_VERSION)
     }
 
     /// Build a URI path for the Podman API
@@ -356,7 +356,7 @@ impl ContainerRuntime for PodmanClient {
             image: image.to_string(),
             name: name.to_string(),
             command: Some(command),
-            env: Some(env_vars),
+            env: Some(env_hash_to_vec(&env_vars)),
             labels: Some(labels),
             // Set stdin/stdout attachment options if using STDIO transport
             attach_stdin: if is_stdio_transport { Some(true) } else { None },
@@ -741,6 +741,14 @@ impl ContainerRuntime for PodmanClient {
 
 // Podman API types
 
+/// Helper function to convert environment variables from HashMap to Vec<String>
+fn env_hash_to_vec(env_vars: &HashMap<String, String>) -> Vec<String> {
+    env_vars
+        .iter()
+        .map(|(key, value)| format!("{}={}", key, value))
+        .collect()
+}
+
 #[derive(Debug, Serialize)]
 struct PodmanCreateContainerConfig {
     #[serde(rename = "Image")]
@@ -750,7 +758,7 @@ struct PodmanCreateContainerConfig {
     #[serde(skip_serializing_if = "Option::is_none", rename = "Command")]
     command: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "Env")]
-    env: Option<HashMap<String, String>>,
+    env: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "Labels")]
     labels: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "AttachStdin")]

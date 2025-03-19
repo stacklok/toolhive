@@ -106,8 +106,8 @@ impl PermissionProfile {
     /// Get the built-in stdio permission profile
     pub fn builtin_stdio_profile() -> Self {
         Self {
-            read: vec!["/var/run/mcp.sock".to_string()],
-            write: vec!["/var/run/mcp.sock".to_string()],
+            read: vec![],
+            write: vec![],
             network: None,
         }
     }
@@ -115,8 +115,8 @@ impl PermissionProfile {
     /// Get the built-in network permission profile
     pub fn builtin_network_profile() -> Self {
         Self {
-            read: vec!["/var/run/mcp.sock".to_string()],
-            write: vec!["/var/run/mcp.sock".to_string()],
+            read: vec![],
+            write: vec![],
             network: Some(NetworkPermissions {
                 outbound: Some(OutboundNetworkPermissions {
                     insecure_allow_all: true,
@@ -262,8 +262,8 @@ mod tests {
     fn test_builtin_stdio_profile() {
         let profile = PermissionProfile::builtin_stdio_profile();
         
-        assert_eq!(profile.read, vec!["/var/run/mcp.sock"]);
-        assert_eq!(profile.write, vec!["/var/run/mcp.sock"]);
+        assert!(profile.read.is_empty());
+        assert!(profile.write.is_empty());
         assert!(profile.network.is_none());
     }
     
@@ -271,8 +271,8 @@ mod tests {
     fn test_builtin_network_profile() {
         let profile = PermissionProfile::builtin_network_profile();
         
-        assert_eq!(profile.read, vec!["/var/run/mcp.sock"]);
-        assert_eq!(profile.write, vec!["/var/run/mcp.sock"]);
+        assert!(profile.read.is_empty());
+        assert!(profile.write.is_empty());
         assert!(profile.network.is_some());
         
         let network = profile.network.unwrap();
@@ -314,8 +314,8 @@ mod tests {
     #[test]
     fn test_to_container_config() {
         let profile = PermissionProfile {
-            read: vec!["/var/run/mcp.sock".to_string(), "/etc/hosts".to_string()],
-            write: vec!["/var/run/mcp.sock".to_string()],
+            read: vec!["/etc/hosts".to_string()],
+            write: vec!["/tmp".to_string()],
             network: Some(NetworkPermissions {
                 outbound: Some(OutboundNetworkPermissions {
                     insecure_allow_all: true,
@@ -335,7 +335,7 @@ mod tests {
             .map(|m| m.source.clone())
             .collect();
         
-        assert!(mount_paths.contains("/var/run/mcp.sock"));
+        assert!(mount_paths.contains("/tmp"));
         assert!(mount_paths.contains("/etc/hosts"));
         
         // Check network mode
@@ -361,8 +361,8 @@ mod tests {
     fn test_to_container_config_with_transport() {
         // Create a profile with no network permissions
         let profile = PermissionProfile {
-            read: vec!["/var/run/mcp.sock".to_string()],
-            write: vec!["/var/run/mcp.sock".to_string()],
+            read: vec!["/etc/hosts".to_string()],
+            write: vec!["/tmp".to_string()],
             network: None,
         };
         
@@ -376,8 +376,8 @@ mod tests {
         
         // Create a profile with network permissions
         let profile_with_network = PermissionProfile {
-            read: vec!["/var/run/mcp.sock".to_string()],
-            write: vec!["/var/run/mcp.sock".to_string()],
+            read: vec!["/etc/hosts".to_string()],
+            write: vec!["/tmp".to_string()],
             network: Some(NetworkPermissions {
                 outbound: Some(OutboundNetworkPermissions {
                     insecure_allow_all: true,

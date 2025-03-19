@@ -50,6 +50,7 @@ prettytable = "0.10"
 chrono = "0.4"
 urlencoding = "2.1"
 nix = "0.26"
+rand = "0.8"
 
 [dev-dependencies]
 mockall = "0.11"

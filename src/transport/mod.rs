@@ -73,7 +73,13 @@ impl TransportFactory {
     pub fn create(mode: TransportMode, port: u16) -> Box<dyn Transport> {
         match mode {
             TransportMode::SSE => Box::new(sse::SseTransport::new(port)),
-            TransportMode::STDIO => Box::new(stdio::StdioTransport::with_port(port)),
+            TransportMode::STDIO => {
+                if port > 0 {
+                    Box::new(stdio::StdioTransport::with_port(port))
+                } else {
+                    Box::new(stdio::StdioTransport::new())
+                }
+            },
         }
     }
 }

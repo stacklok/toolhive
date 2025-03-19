@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::container::{ContainerMonitor, ContainerRuntime, ContainerRuntimeFactory};
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::networking::port;
 use crate::permissions::profile::PermissionProfile;
 use crate::transport::{Transport, TransportFactory, TransportMode};
 
@@ -39,6 +40,38 @@ pub struct RunCommand {
 }
 
 impl RunCommand {
+    /// Select a port based on the provided port option
+    /// If a specific port (not 0) is provided, it will be used if available
+    /// If no port is provided or port is 0, a random available port will be selected
+    fn select_port(&self) -> Result<u16> {
+        match self.port {
+            // If a specific port (not 0) is provided, try to use it
+            Some(p) if p > 0 => {
+                // Check if the port is available
+                if !port::is_available(p) {
+                    return Err(Error::InvalidArgument(
+                        format!("Port {} is already in use", p)
+                    ));
+                }
+                Ok(p)
+            },
+            // If no port is provided or port is 0, find a random available port
+            _ => {
+                match port::find_available() {
+                    Some(p) => {
+                        log::info!("Using randomly selected port: {}", p);
+                        Ok(p)
+                    },
+                    None => {
+                        Err(Error::InvalidArgument(
+                            "Could not find an available port after multiple attempts".to_string(),
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
     /// Run the command
     pub async fn execute(&self) -> Result<()> {
         // Parse transport mode
@@ -50,20 +83,8 @@ impl RunCommand {
                 ))
             })?;
 
-        // Validate port for SSE transport (required) and get port for STDIO transport (optional)
-        let port = match transport_mode {
-            TransportMode::SSE => {
-                self.port.ok_or_else(|| {
-                    crate::error::Error::InvalidArgument(
-                        "Port is required for SSE transport".to_string(),
-                    )
-                })?
-            }
-            TransportMode::STDIO => {
-                // Port is optional for STDIO transport (used for reverse proxy)
-                self.port.unwrap_or(0)
-            }
-        };
+        // Select a port
+        let port = self.select_port()?;
 
         // Load permission profile
         let permission_profile = match self.permission_profile.as_str() {
@@ -237,64 +258,61 @@ mod tests {
     }
     
     #[tokio::test]
-    async fn test_run_command_transport_validation() -> Result<()> {
-        // Test SSE transport without port
+    async fn test_port_selection() -> Result<()> {
+        // Test with no port specified
         let cmd = RunCommand {
             transport: "sse".to_string(),
             name: "test-server".to_string(),
-            port: None, // Missing port
+            port: None,
             permission_profile: "network".to_string(),
             env: vec![],
             image: "test-image".to_string(),
             args: vec![],
         };
         
-        // Parse transport mode
-        let transport_mode = TransportMode::from_str(&cmd.transport).unwrap();
+        // Select a port
+        let port = cmd.select_port()?;
         
-        // Validate port for SSE transport
-        let result = match transport_mode {
-            TransportMode::SSE => {
-                cmd.port.ok_or_else(|| {
-                    crate::error::Error::InvalidArgument(
-                        "Port is required for SSE transport".to_string(),
-                    )
-                })
-            }
-            _ => Ok(cmd.port.unwrap_or(0)),
-        };
+        // Verify a port was selected
+        assert!(port > 0);
         
-        // Verify the result is an error
-        assert!(result.is_err());
-        
-        // Test with valid port
+        // Test with port 0 (should select a random port)
         let cmd = RunCommand {
             transport: "sse".to_string(),
             name: "test-server".to_string(),
-            port: Some(8080), // Valid port
+            port: Some(0),
             permission_profile: "network".to_string(),
             env: vec![],
             image: "test-image".to_string(),
             args: vec![],
         };
         
-        // Parse transport mode
-        let transport_mode = TransportMode::from_str(&cmd.transport).unwrap();
+        // Select a port
+        let port = cmd.select_port()?;
         
-        // Validate port for SSE transport
-        let result = match transport_mode {
-            TransportMode::SSE => {
-                cmd.port.ok_or_else(|| {
-                    crate::error::Error::InvalidArgument(
-                        "Port is required for SSE transport".to_string(),
-                    )
-                })
-            }
-            _ => Ok(cmd.port.unwrap_or(0)),
+        // Verify a port was selected
+        assert!(port > 0);
+        
+        // Test with specific port (assuming port 8080 is available for the test)
+        let specific_port = 8080;
+        let cmd = RunCommand {
+            transport: "sse".to_string(),
+            name: "test-server".to_string(),
+            port: Some(specific_port),
+            permission_profile: "network".to_string(),
+            env: vec![],
+            image: "test-image".to_string(),
+            args: vec![],
         };
         
-        // Verify the result is ok
-        assert!(result.is_ok());
+        // Only proceed with this test if the port is actually available
+        if port::is_available(specific_port) {
+            // Select a port
+            let port = cmd.select_port()?;
+            
+            // Verify the specific port was selected
+            assert_eq!(port, specific_port);
+        }
         
         // Test invalid transport mode
         let cmd = RunCommand {

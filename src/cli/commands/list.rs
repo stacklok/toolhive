@@ -37,13 +37,18 @@ impl ListCommand {
         };
 
         // Print container information
-        println!("{:<12} {:<20} {:<40} {:<20}", "CONTAINER ID", "NAME", "IMAGE", "STATE");
+        println!("{:<12} {:<20} {:<40} {:<15} {:<10}", "CONTAINER ID", "NAME", "IMAGE", "STATE", "TRANSPORT");
         for container in containers {
             // Truncate container ID to first 12 characters (similar to Docker)
             let truncated_id = container.id.chars().take(12).collect::<String>();
+            
+            // Get transport from labels (default to "unknown" if not found)
+            let unknown = "unknown".to_string();
+            let transport = container.labels.get("vibetool-transport").unwrap_or(&unknown);
+            
             println!(
-                "{:<12} {:<20} {:<40} {:<20}",
-                truncated_id, container.name, container.image, container.state
+                "{:<12} {:<20} {:<40} {:<15} {:<10}",
+                truncated_id, container.name, container.image, container.state, transport
             );
         }
 

@@ -352,6 +352,7 @@ impl ContainerRuntime for PodmanClient {
         // Create container configuration
         let create_config = PodmanCreateContainerConfig {
             image: image.to_string(),
+            name: name.to_string(),
             command: Some(command),
             env: Some(env_vars),
             labels: Some(labels),
@@ -365,7 +366,7 @@ impl ContainerRuntime for PodmanClient {
         };
 
         // Create container
-        let path = format!("containers/create?name={}", name);
+        let path = "containers/create";
         let create_response: PodmanCreateContainerResponse = self.request(
             Method::POST,
             &path,
@@ -724,6 +725,8 @@ impl ContainerRuntime for PodmanClient {
 struct PodmanCreateContainerConfig {
     #[serde(rename = "Image")]
     image: String,
+    #[serde(rename = "Name")]
+    name: String,
     #[serde(skip_serializing_if = "Option::is_none", rename = "Command")]
     command: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "Env")]

@@ -110,6 +110,9 @@ impl RunCommand {
 
     /// Run the command
     pub async fn execute(&self) -> Result<()> {
+        // Select a port
+        let port = self.select_port()?;
+
         // Parse transport mode
         let transport_mode = TransportMode::from_str(&self.transport)
             .ok_or_else(|| {
@@ -119,9 +122,6 @@ impl RunCommand {
                 ))
             })?;
 
-        // Select a port
-        let port = self.select_port()?;
-
         // Load permission profile
         let permission_profile = match self.permission_profile.as_str() {
             "stdio" => PermissionProfile::builtin_stdio_profile(),
@@ -129,8 +129,8 @@ impl RunCommand {
             path => PermissionProfile::from_file(&PathBuf::from(path))?,
         };
 
-        // Convert permission profile to container config
-        let permission_config = permission_profile.to_container_config()?;
+        // Convert permission profile to container config with transport mode
+        let permission_config = permission_profile.to_container_config_with_transport(&transport_mode)?;
 
         // Create container runtime
         let runtime = ContainerRuntimeFactory::create().await?;

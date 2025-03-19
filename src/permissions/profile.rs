@@ -226,6 +226,19 @@ impl PermissionProfile {
             security_opt,
         })
     }
+    
+    /// Convert the permission profile to a container configuration with transport mode
+    pub fn to_container_config_with_transport(&self, transport_mode: &crate::transport::TransportMode) -> Result<ContainerPermissionConfig> {
+        // Get the base container config
+        let mut config = self.to_container_config()?;
+        
+        // Override network_mode to "bridge" if using SSE transport
+        if *transport_mode == crate::transport::TransportMode::SSE {
+            config.network_mode = "bridge".to_string();
+        }
+        
+        Ok(config)
+    }
 }
 
 #[cfg(test)]
@@ -342,5 +355,45 @@ mod tests {
         // In a real implementation, we would create a temporary file
         // For now, we'll just test that the function exists
         assert!(PermissionProfile::from_file("nonexistent").is_err());
+    }
+    
+    #[test]
+    fn test_to_container_config_with_transport() {
+        // Create a profile with no network permissions
+        let profile = PermissionProfile {
+            read: vec!["/var/run/mcp.sock".to_string()],
+            write: vec!["/var/run/mcp.sock".to_string()],
+            network: None,
+        };
+        
+        // Test with STDIO transport (should not change network mode)
+        let config = profile.to_container_config_with_transport(&crate::transport::TransportMode::STDIO).unwrap();
+        assert_eq!(config.network_mode, "none");
+        
+        // Test with SSE transport (should set network mode to bridge)
+        let config = profile.to_container_config_with_transport(&crate::transport::TransportMode::SSE).unwrap();
+        assert_eq!(config.network_mode, "bridge");
+        
+        // Create a profile with network permissions
+        let profile_with_network = PermissionProfile {
+            read: vec!["/var/run/mcp.sock".to_string()],
+            write: vec!["/var/run/mcp.sock".to_string()],
+            network: Some(NetworkPermissions {
+                outbound: Some(OutboundNetworkPermissions {
+                    insecure_allow_all: true,
+                    allow_transport: vec![],
+                    allow_host: vec![],
+                    allow_port: vec![],
+                }),
+            }),
+        };
+        
+        // Test with STDIO transport (should keep bridge network mode from profile)
+        let config = profile_with_network.to_container_config_with_transport(&crate::transport::TransportMode::STDIO).unwrap();
+        assert_eq!(config.network_mode, "bridge");
+        
+        // Test with SSE transport (should keep bridge network mode)
+        let config = profile_with_network.to_container_config_with_transport(&crate::transport::TransportMode::SSE).unwrap();
+        assert_eq!(config.network_mode, "bridge");
     }
 }

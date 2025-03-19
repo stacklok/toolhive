@@ -206,17 +206,22 @@ impl RunCommand {
             )
             .await?;
 
-        // Get the container IP address
-        log::debug!("Getting container IP address for {}", container_id);
-        let container_ip = match runtime.get_container_ip(&container_id).await {
-            Ok(ip) => {
-                log::debug!("Container IP address: {}", ip);
-                Some(ip)
+        // Get the container IP address only for SSE transport
+        let container_ip = match transport.mode() {
+            TransportMode::SSE => {
+                log::debug!("Getting container IP address for {}", container_id);
+                match runtime.get_container_ip(&container_id).await {
+                    Ok(ip) => {
+                        log::debug!("Container IP address: {}", ip);
+                        Some(ip)
+                    },
+                    Err(e) => {
+                        log::error!("Failed to get container IP address: {}", e);
+                        None
+                    }
+                }
             },
-            Err(e) => {
-                log::error!("Failed to get container IP address: {}", e);
-                None
-            }
+            _ => None, // Don't need container IP for other transport modes
         };
 
         // Start the transport

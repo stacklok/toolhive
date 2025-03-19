@@ -256,6 +256,109 @@ impl Transport for SseTransport {
         
         println!("SSE proxy is now ready to handle requests");
 
+        // Send initialization message to the MCP server as required by the protocol
+        println!("Sending initialization message to MCP server");
+        
+        // Create a client for sending the initialization message
+        let client = hyper::Client::new();
+        
+        // Build the target URL using the container's IP address
+        let target_url = format!("http://{}:{}", container_ip, container_port);
+        
+        // Create the initialization message
+        let init_message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "roots": { "listChanged": true },
+                    "sampling": {}
+                },
+                "clientInfo": {
+                    "name": "vibetool",
+                    "version": "0.1.0"
+                }
+            }
+        });
+        
+        // Format as SSE for the SSE transport
+        let event_type = "initialize";
+        let data = serde_json::to_string(&init_message["params"]).unwrap_or_default();
+        let id = "1";
+        
+        let sse_body = format!(
+            "event: {}\ndata: {}\nid: {}\n\n",
+            event_type,
+            data,
+            id
+        );
+        
+        // Create the request
+        let req = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri(target_url.parse::<hyper::Uri>().map_err(|e| Error::Transport(format!("Failed to parse target URI: {}", e)))?)
+            .header("Content-Type", "text/event-stream")
+            .body(Body::from(sse_body))
+            .map_err(|e| Error::Transport(format!("Failed to create request: {}", e)))?;
+            
+        // Send the initialization message
+        let response = match client.request(req).await {
+                Ok(res) => res,
+                Err(e) => {
+                    eprintln!("Failed to send initialization message: {}", e);
+                    return Err(Error::Transport(format!("Failed to send initialization message: {}", e)));
+                }
+            };
+        
+        if !response.status().is_success() {
+            eprintln!("Initialization failed with status: {}", response.status());
+            return Err(Error::Transport(format!("Initialization failed with status: {}", response.status())));
+        }
+        
+        println!("Initialization message sent successfully");
+        
+        // Wait a moment for the server to process the initialization
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
+        // Send the initialized notification
+        println!("Sending initialized notification to MCP server");
+        
+        // Format as SSE for the SSE transport
+        let event_type = "notifications/initialized";
+        let data = "{}"; // Empty params for the notification
+        
+        let sse_body = format!(
+            "event: {}\ndata: {}\n\n",
+            event_type,
+            data
+        );
+        
+        // Create the request
+        let req = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri(target_url.parse::<hyper::Uri>().map_err(|e| Error::Transport(format!("Failed to parse target URI: {}", e)))?)
+            .header("Content-Type", "text/event-stream")
+            .body(Body::from(sse_body))
+            .map_err(|e| Error::Transport(format!("Failed to create request: {}", e)))?;
+            
+        // Send the initialized notification
+        let response = match client.request(req).await {
+                Ok(res) => res,
+                Err(e) => {
+                    eprintln!("Failed to send initialized notification: {}", e);
+                    return Err(Error::Transport(format!("Failed to send initialized notification: {}", e)));
+                }
+            };
+        
+        if !response.status().is_success() {
+            eprintln!("Initialized notification failed with status: {}", response.status());
+            return Err(Error::Transport(format!("Initialized notification failed with status: {}", response.status())));
+        }
+        
+        println!("Initialized notification sent successfully");
+
         Ok(())
     }
 

@@ -510,7 +510,7 @@ impl Transport for StdioTransport {
         let (message_tx, message_rx) = mpsc::channel::<JsonRpcMessage>(100);
         {
             let mut guard = self.message_tx.lock().await;
-            *guard = Some(message_tx);
+            *guard = Some(message_tx.clone());
         }
 
         let (response_tx, response_rx) = mpsc::channel::<JsonRpcMessage>(100);
@@ -548,6 +548,45 @@ impl Transport for StdioTransport {
         if let Err(e) = self.start_http_server(self.port).await {
             log::error!("Failed to start HTTP server: {}", e);
             // Continue anyway, as the STDIO transport is still functional
+        }
+
+        // Send initialization message to the MCP server as required by the protocol
+        log::debug!("Sending initialization message to MCP server");
+        let init_message = JsonRpcMessage::new_request(
+            "initialize",
+            Some(serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "roots": { "listChanged": true },
+                    "sampling": {}
+                },
+                "clientInfo": {
+                    "name": "vibetool",
+                    "version": "0.1.0"
+                }
+            })),
+            serde_json::Value::String("1".to_string())
+        );
+
+        // Send the initialization message
+        if let Err(e) = message_tx.send(init_message).await {
+            log::error!("Failed to send initialization message: {}", e);
+            return Err(Error::Transport("Failed to send initialization message".to_string()));
+        }
+
+        // Wait a moment for the server to process the initialization
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Send the initialized notification
+        log::debug!("Sending initialized notification to MCP server");
+        let init_notification = JsonRpcMessage::new_notification(
+            "notifications/initialized",
+            None
+        );
+
+        if let Err(e) = message_tx.send(init_notification).await {
+            log::error!("Failed to send initialized notification: {}", e);
+            return Err(Error::Transport("Failed to send initialized notification".to_string()));
         }
 
         Ok(())

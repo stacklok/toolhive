@@ -436,9 +436,15 @@ async fn test_sse_transport_proxy() -> Result<()> {
     
     // Verify the fake server received the expected requests
     let requests = fake_server.get_requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].method, Some("initialize".to_string()));
-    assert_eq!(requests[1].method, Some("resources/list".to_string()));
+    assert_eq!(requests.len(), 4); // Now we expect 4 requests: 2 from our initialization + 2 from the test
+    
+    // The first two requests should be our initialization messages
+    assert_eq!(requests[0].method, Some("initialize".to_string())); // Our initialization request
+    assert_eq!(requests[1].method, Some("notifications/initialized".to_string())); // Our initialized notification
+    
+    // The next two requests should be the test messages
+    assert_eq!(requests[2].method, Some("initialize".to_string())); // Test's initialize request
+    assert_eq!(requests[3].method, Some("resources/list".to_string())); // Test's resources/list request
     
     // Stop the transport
     transport.stop().await?;
@@ -535,7 +541,7 @@ async fn test_stdio_transport_proxy() -> Result<()> {
     
     // Verify the fake server received the expected requests
     let requests = fake_server.get_requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 2); // This test doesn't use our transport.start() method, so we don't have the automatic initialization
     assert_eq!(requests[0].method, Some("initialize".to_string()));
     assert_eq!(requests[1].method, Some("resources/list".to_string()));
     
@@ -791,19 +797,38 @@ async fn test_stdio_transport_http_proxy() -> Result<()> {
     // Verify that the message was sent to the container's stdin
     {
         let stdin_messages = mock_runtime.stdin_messages.lock().unwrap();
-        assert!(stdin_messages.len() >= 2);
+        assert!(stdin_messages.len() >= 4); // Now we expect at least 4 messages
         
-        // The second message should be a JSON-RPC message with the resources/list method
-        let message = &stdin_messages[1];
-        let json_rpc: JsonRpcMessage = serde_json::from_str(message).expect("Failed to parse JSON-RPC message");
-        assert_eq!(json_rpc.method, Some("resources/list".to_string()));
+        // The first two messages should be our initialization messages
+        let init_message = &stdin_messages[0];
+        let init_json_rpc: JsonRpcMessage = serde_json::from_str(init_message).expect("Failed to parse JSON-RPC message");
+        assert_eq!(init_json_rpc.method, Some("initialize".to_string()));
+        
+        let notification_message = &stdin_messages[1];
+        let notification_json_rpc: JsonRpcMessage = serde_json::from_str(notification_message).expect("Failed to parse JSON-RPC message");
+        assert_eq!(notification_json_rpc.method, Some("notifications/initialized".to_string()));
+        
+        // The next two messages should be the test messages
+        let test_init_message = &stdin_messages[2];
+        let test_init_json_rpc: JsonRpcMessage = serde_json::from_str(test_init_message).expect("Failed to parse JSON-RPC message");
+        assert_eq!(test_init_json_rpc.method, Some("initialize".to_string()));
+        
+        let list_message = &stdin_messages[3];
+        let list_json_rpc: JsonRpcMessage = serde_json::from_str(list_message).expect("Failed to parse JSON-RPC message");
+        assert_eq!(list_json_rpc.method, Some("resources/list".to_string()));
     }
     
     // Verify the fake server received the expected requests
     let requests = fake_server.get_requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].method, Some("initialize".to_string()));
-    assert_eq!(requests[1].method, Some("resources/list".to_string()));
+    assert_eq!(requests.len(), 4); // Now we expect 4 requests
+    
+    // The first two requests should be our initialization messages
+    assert_eq!(requests[0].method, Some("initialize".to_string())); // Our initialization request
+    assert_eq!(requests[1].method, Some("notifications/initialized".to_string())); // Our initialized notification
+    
+    // The next two requests should be the test messages
+    assert_eq!(requests[2].method, Some("initialize".to_string())); // Test's initialize request
+    assert_eq!(requests[3].method, Some("resources/list".to_string())); // Test's resources/list request
     
     // Stop the transport
     transport.stop().await?;

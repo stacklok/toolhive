@@ -16,7 +16,7 @@ use crate::transport::{Transport, TransportMode};
 /// STDIO transport handler for MCP servers
 #[derive(Clone)]
 pub struct StdioTransport {
-    port: Option<u16>,
+    port: u16,
     container_id: Arc<Mutex<Option<String>>>,
     container_name: Arc<Mutex<Option<String>>>,
     runtime: Arc<Mutex<Option<Box<dyn ContainerRuntime>>>>,
@@ -27,24 +27,10 @@ pub struct StdioTransport {
 }
 
 impl StdioTransport {
-    /// Create a new STDIO transport handler
-    pub fn new() -> Self {
-        Self {
-            port: None,
-            container_id: Arc::new(Mutex::new(None)),
-            container_name: Arc::new(Mutex::new(None)),
-            runtime: Arc::new(Mutex::new(None)),
-            shutdown_tx: Arc::new(Mutex::new(None)),
-            message_tx: Arc::new(Mutex::new(None)),
-            response_rx: Arc::new(Mutex::new(None)),
-            http_shutdown_tx: Arc::new(Mutex::new(None)),
-        }
-    }
-
     /// Create a new STDIO transport handler with a specific port
-    pub fn with_port(port: u16) -> Self {
+    pub fn new(port: u16) -> Self {
         Self {
-            port: Some(port),
+            port,
             container_id: Arc::new(Mutex::new(None)),
             container_name: Arc::new(Mutex::new(None)),
             runtime: Arc::new(Mutex::new(None)),
@@ -499,11 +485,14 @@ impl Transport for StdioTransport {
         TransportMode::STDIO
     }
 
+    fn port(&self) -> u16 {
+        self.port
+    }
+
     async fn setup(
         &self,
         container_id: &str,
         container_name: &str,
-        port: Option<u16>,
         env_vars: &mut HashMap<String, String>,
         _container_ip: Option<String>,
     ) -> Result<()> {
@@ -516,15 +505,9 @@ impl Transport for StdioTransport {
         *name_guard = Some(container_name.to_string());
         drop(name_guard);
 
-        // Store port if provided
-        if let Some(p) = port {
-            // Since we're using a non-mutex field, we need to create a mutable clone
-            let mut this = self.clone();
-            this.port = Some(p);
-        }
-
         // Set environment variables for the container
         env_vars.insert("MCP_TRANSPORT".to_string(), "stdio".to_string());
+        env_vars.insert("MCP_PORT".to_string(), self.port.to_string());
 
         Ok(())
     }
@@ -589,15 +572,10 @@ impl Transport for StdioTransport {
 
         println!("STDIO transport started for container {}", container_name);
 
-        // Start the HTTP server if a port is provided
-        if let Some(port) = self.port {
-            if let Err(e) = self.start_http_server(port).await {
-                eprintln!("Failed to start HTTP server: {}", e);
-                // Continue anyway, as the STDIO transport is still functional
-            }
-        } else {
-            println!("No port specified, HTTP reverse proxy not started");
-            println!("To use HTTP reverse proxy with STDIO transport, specify a port with --port");
+        // Start the HTTP server
+        if let Err(e) = self.start_http_server(self.port).await {
+            eprintln!("Failed to start HTTP server: {}", e);
+            // Continue anyway, as the STDIO transport is still functional
         }
 
         Ok(())
@@ -741,17 +719,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_stdio_transport_setup() {
-        let transport = StdioTransport::new();
+        let transport = StdioTransport::new(8080);
         let mut env_vars = HashMap::new();
         
-        transport.setup("test-id", "test-container", None, &mut env_vars, None).await.unwrap();
+        transport.setup("test-id", "test-container", &mut env_vars, None).await.unwrap();
         
         assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "stdio");
+        assert_eq!(env_vars.get("MCP_PORT").unwrap(), "8080");
     }
 
     #[tokio::test]
     async fn test_stdio_transport_start_without_setup() {
-        let transport = StdioTransport::new();
+        let transport = StdioTransport::new(8080);
         let result = transport.start().await;
         
         assert!(result.is_err());
@@ -817,11 +796,11 @@ mod tests {
             });
         
         // Create a transport with the mock runtime
-        let transport = StdioTransport::new().with_runtime(Box::new(mock_runtime));
+        let transport = StdioTransport::new(9001).with_runtime(Box::new(mock_runtime));
         let mut env_vars = HashMap::new();
         
         // Set up the transport
-        transport.setup("test-id", "test-container", Some(9001), &mut env_vars, None).await?;
+        transport.setup("test-id", "test-container", &mut env_vars, None).await?;
         
         // Start the transport
         transport.start().await?;
@@ -943,38 +922,20 @@ mod tests {
     }
     
     #[tokio::test]
-    async fn test_stdio_transport_with_port() -> Result<()> {
+    async fn test_stdio_transport_port() -> Result<()> {
         // Create a transport with a port
-        let transport = StdioTransport::with_port(8080);
+        let transport = StdioTransport::new(8080);
         
         // Check that the port was set correctly
-        assert_eq!(transport.port, Some(8080));
+        assert_eq!(transport.port, 8080);
         
         // Set up the transport
         let mut env_vars = HashMap::new();
-        transport.setup("test-id", "test-container", None, &mut env_vars, None).await?;
+        transport.setup("test-id", "test-container", &mut env_vars, None).await?;
         
         // Check that the environment variables were set correctly
         assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "stdio");
-        
-        Ok(())
-    }
-    
-    #[tokio::test]
-    async fn test_stdio_transport_setup_with_port_override() -> Result<()> {
-        // Create a transport
-        let transport = StdioTransport::with_port(8080);
-        let mut env_vars = HashMap::new();
-        
-        // Set up the transport with a port override
-        transport.setup("test-id", "test-container", Some(9000), &mut env_vars, None).await?;
-        
-        // Check that the environment variables were set correctly
-        assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "stdio");
-        
-        // Note: The port is not updated on the original transport, but on a clone
-        // This is expected behavior based on the implementation
-        assert_eq!(transport.port, Some(8080));
+        assert_eq!(env_vars.get("MCP_PORT").unwrap(), "8080");
         
         Ok(())
     }
@@ -982,7 +943,7 @@ mod tests {
     #[tokio::test]
     async fn test_stdio_transport_stop_when_not_running() -> Result<()> {
         // Create a transport
-        let transport = StdioTransport::new();
+        let transport = StdioTransport::new(8080);
         
         // Stop the transport (should not fail even though it's not running)
         transport.stop().await?;
@@ -996,7 +957,7 @@ mod tests {
     #[tokio::test]
     async fn test_stdio_transport_is_running_with_shutdown_tx() -> Result<()> {
         // Create a transport
-        let transport = StdioTransport::new();
+        let transport = StdioTransport::new(8080);
         
         // Manually set the shutdown_tx to simulate a running transport
         let (tx, _rx) = tokio::sync::oneshot::channel::<()>();
@@ -1017,7 +978,7 @@ mod tests {
     #[tokio::test]
     async fn test_stdio_transport_is_running_with_http_shutdown_tx() -> Result<()> {
         // Create a transport
-        let transport = StdioTransport::new();
+        let transport = StdioTransport::new(8080);
         
         // Manually set the http_shutdown_tx to simulate a running HTTP server
         let (tx, _rx) = tokio::sync::oneshot::channel::<()>();
@@ -1038,7 +999,7 @@ mod tests {
     #[tokio::test]
     async fn test_stdio_transport_handle_request_error() -> Result<()> {
         // Create a transport
-        let transport = StdioTransport::new();
+        let transport = StdioTransport::new(8080);
         
         // Create a request
         let req = hyper::Request::builder()
@@ -1059,7 +1020,7 @@ mod tests {
     #[tokio::test]
     async fn test_stdio_transport_handle_request_with_response() -> Result<()> {
         // Create a transport
-        let transport = StdioTransport::new();
+        let transport = StdioTransport::new(8080);
         
         // Create message channels
         let (message_tx, _message_rx) = mpsc::channel::<SseMessage>(100);

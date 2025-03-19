@@ -337,7 +337,8 @@ async fn test_sse_transport_proxy() -> Result<()> {
     let mut env_vars = HashMap::new();
     
     // Set up the transport to connect to port 9100 (not the default 8080)
-    transport.setup("test-id", "test-container", Some(9100), &mut env_vars, Some("127.0.0.1".to_string())).await?;
+    transport.set_container_port(9100);
+    transport.setup("test-id", "test-container", &mut env_vars, Some("127.0.0.1".to_string())).await?;
     
     // Start the transport
     transport.start().await?;
@@ -438,11 +439,11 @@ async fn test_stdio_transport_proxy() -> Result<()> {
     });
     
     // Create a STDIO transport
-    let transport = StdioTransport::new();
+    let transport = StdioTransport::new(8080);
     let mut env_vars = HashMap::new();
     
     // Set up the transport
-    transport.setup("test-id", "test-container", None, &mut env_vars, None).await?;
+    transport.setup("test-id", "test-container", &mut env_vars, None).await?;
     
     // Start the transport (this would normally attach to the container)
     // For testing, we'll manually handle the IO
@@ -683,12 +684,12 @@ async fn test_stdio_transport_http_proxy() -> Result<()> {
     };
     
     // Create a STDIO transport with HTTP proxy on port 8200
-    let transport = StdioTransport::with_port(8200)
+    let transport = StdioTransport::new(8200)
         .with_runtime(Box::new(mock_runtime.clone()));
     
     // Set up the transport
     let mut env_vars = HashMap::new();
-    transport.setup("test-container-id", "test-container", Some(8200), &mut env_vars, None).await?;
+    transport.setup("test-container-id", "test-container", &mut env_vars, None).await?;
     
     // Start the transport
     transport.start().await?;

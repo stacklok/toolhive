@@ -45,6 +45,11 @@ impl SseTransport {
         }
     }
 
+    /// Set the container port
+    pub fn set_container_port(&self, port: u16) {
+        *self.container_port.lock().unwrap() = port;
+    }
+
     /// Set the container IP address
     pub fn with_container_ip(self, ip: &str) -> Self {
         *self.container_ip.lock().unwrap() = Some(ip.to_string());
@@ -129,22 +134,20 @@ impl Transport for SseTransport {
         TransportMode::SSE
     }
 
+    fn port(&self) -> u16 {
+        self.port
+    }
+
     async fn setup(
         &self,
         container_id: &str,
         container_name: &str,
-        port: Option<u16>,
         env_vars: &mut HashMap<String, String>,
         container_ip: Option<String>,
     ) -> Result<()> {
         // Store container ID and name
         *self.container_id.lock().unwrap() = Some(container_id.to_string());
         *self.container_name.lock().unwrap() = Some(container_name.to_string());
-
-        // Set container port if provided
-        if let Some(p) = port {
-            *self.container_port.lock().unwrap() = p;
-        }
         
         // Get the current container port
         let container_port = *self.container_port.lock().unwrap();
@@ -285,7 +288,8 @@ mod tests {
         let transport = SseTransport::new(8080);
         let mut env_vars = HashMap::new();
         
-        transport.setup("test-id", "test-container", Some(9000), &mut env_vars, Some("172.17.0.2".to_string())).await.unwrap();
+        transport.set_container_port(9000);
+        transport.setup("test-id", "test-container", &mut env_vars, Some("172.17.0.2".to_string())).await.unwrap();
         
         assert_eq!(env_vars.get("MCP_TRANSPORT").unwrap(), "sse");
         assert_eq!(env_vars.get("MCP_PORT").unwrap(), "9000");
@@ -311,7 +315,8 @@ mod tests {
         let mut env_vars = HashMap::new();
         
         // Set up the transport
-        transport.setup("test-id", "test-container", Some(9002), &mut env_vars, Some("172.17.0.2".to_string())).await?;
+        transport.set_container_port(9002);
+        transport.setup("test-id", "test-container", &mut env_vars, Some("172.17.0.2".to_string())).await?;
         
         // Set the container IP
         *transport.container_ip.lock().unwrap() = Some("172.17.0.2".to_string());
@@ -338,7 +343,7 @@ mod tests {
         let mut env_vars = HashMap::new();
         
         // Set up the transport
-        transport.setup("test-id", "test-container", None, &mut env_vars, Some("172.17.0.2".to_string())).await?;
+        transport.setup("test-id", "test-container", &mut env_vars, Some("172.17.0.2".to_string())).await?;
         
         // Check that the container port was set correctly
         assert_eq!(*transport.container_port.lock().unwrap(), 9003);
@@ -357,7 +362,8 @@ mod tests {
         let mut env_vars = HashMap::new();
         
         // Set up the transport with a port override
-        transport.setup("test-id", "test-container", Some(9004), &mut env_vars, Some("172.17.0.2".to_string())).await?;
+        transport.set_container_port(9004);
+        transport.setup("test-id", "test-container", &mut env_vars, Some("172.17.0.2".to_string())).await?;
         
         // Check that the container port was set correctly
         assert_eq!(*transport.container_port.lock().unwrap(), 9004);

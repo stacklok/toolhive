@@ -42,12 +42,14 @@ pub trait Transport: Send + Sync {
     /// Get the transport mode
     fn mode(&self) -> TransportMode;
 
+    /// Get the port used by the transport
+    fn port(&self) -> u16;
+
     /// Set up the transport
     async fn setup(
         &self,
         container_id: &str,
         container_name: &str,
-        port: Option<u16>,
         env_vars: &mut HashMap<String, String>,
         container_ip: Option<String>,
     ) -> Result<()>;
@@ -73,13 +75,7 @@ impl TransportFactory {
     pub fn create(mode: TransportMode, port: u16) -> Box<dyn Transport> {
         match mode {
             TransportMode::SSE => Box::new(sse::SseTransport::new(port)),
-            TransportMode::STDIO => {
-                if port > 0 {
-                    Box::new(stdio::StdioTransport::with_port(port))
-                } else {
-                    Box::new(stdio::StdioTransport::new())
-                }
-            },
+            TransportMode::STDIO => Box::new(stdio::StdioTransport::new(port)),
         }
     }
 }

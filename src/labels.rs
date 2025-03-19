@@ -16,20 +16,32 @@ pub const NAME_LABEL: &str = "vibetool-name";
 /// Label for transport mode
 pub const TRANSPORT_LABEL: &str = "vibetool-transport";
 
+/// Label for proxy port
+pub const PORT_LABEL: &str = "vibetool-port";
+
 /// Add standard vibetool labels to a labels HashMap
 pub fn add_standard_labels(
     labels: &mut HashMap<String, String>,
     container_name: &str,
     transport: &str,
+    port: u16,
 ) {
     labels.insert(VIBETOOL_LABEL.to_string(), VIBETOOL_VALUE.to_string());
     labels.insert(NAME_LABEL.to_string(), container_name.to_string());
     labels.insert(TRANSPORT_LABEL.to_string(), transport.to_string());
+    labels.insert(PORT_LABEL.to_string(), port.to_string());
 }
 
 /// Get the transport mode from container labels
 pub fn get_transport(labels: &HashMap<String, String>) -> &str {
     labels.get(TRANSPORT_LABEL).map_or("unknown", |s| s.as_str())
+}
+
+/// Get the proxy port from container labels
+pub fn get_port(labels: &HashMap<String, String>) -> u16 {
+    labels.get(PORT_LABEL)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0) // Default to 0 if not found or invalid
 }
 
 /// Check if a container is managed by vibetool
@@ -56,11 +68,12 @@ mod tests {
     #[test]
     fn test_add_standard_labels() {
         let mut labels = HashMap::new();
-        add_standard_labels(&mut labels, "test-container", "stdio");
+        add_standard_labels(&mut labels, "test-container", "stdio", 8080);
 
         assert_eq!(labels.get(VIBETOOL_LABEL), Some(&VIBETOOL_VALUE.to_string()));
         assert_eq!(labels.get(NAME_LABEL), Some(&"test-container".to_string()));
         assert_eq!(labels.get(TRANSPORT_LABEL), Some(&"stdio".to_string()));
+        assert_eq!(labels.get(PORT_LABEL), Some(&"8080".to_string()));
     }
 
     #[test]
@@ -73,6 +86,23 @@ mod tests {
         // Test with missing transport label
         let empty_labels = HashMap::new();
         assert_eq!(get_transport(&empty_labels), "unknown");
+    }
+
+    #[test]
+    fn test_get_port() {
+        let mut labels = HashMap::new();
+        labels.insert(PORT_LABEL.to_string(), "8080".to_string());
+
+        assert_eq!(get_port(&labels), 8080);
+
+        // Test with missing port label
+        let empty_labels = HashMap::new();
+        assert_eq!(get_port(&empty_labels), 0);
+
+        // Test with invalid port value
+        let mut invalid_labels = HashMap::new();
+        invalid_labels.insert(PORT_LABEL.to_string(), "invalid".to_string());
+        assert_eq!(get_port(&invalid_labels), 0);
     }
 
     #[test]

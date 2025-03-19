@@ -25,6 +25,7 @@ struct ContainerOutput {
     image: String,
     state: String,
     transport: String,
+    port: u16,
 }
 
 impl ListCommand {
@@ -67,8 +68,9 @@ impl ListCommand {
             // Truncate container ID to first 12 characters (similar to Docker)
             let truncated_id = container.id.chars().take(12).collect::<String>();
             
-            // Get transport from labels
+            // Get transport and port from labels
             let transport = labels::get_transport(&container.labels);
+            let port = labels::get_port(&container.labels);
             
             ContainerOutput {
                 id: truncated_id,
@@ -76,6 +78,7 @@ impl ListCommand {
                 image: container.image.clone(),
                 state: container.state.clone(),
                 transport: transport.to_string(),
+                port,
             }
         }).collect();
         
@@ -85,17 +88,18 @@ impl ListCommand {
 
     /// Print container information in text format
     fn print_text_output(&self, containers: &[crate::container::ContainerInfo]) {
-        println!("{:<12} {:<20} {:<40} {:<15} {:<10}", "CONTAINER ID", "NAME", "IMAGE", "STATE", "TRANSPORT");
+        println!("{:<12} {:<20} {:<40} {:<15} {:<10} {:<6}", "CONTAINER ID", "NAME", "IMAGE", "STATE", "TRANSPORT", "PORT");
         for container in containers {
             // Truncate container ID to first 12 characters (similar to Docker)
             let truncated_id = container.id.chars().take(12).collect::<String>();
             
-            // Get transport from labels
+            // Get transport and port from labels
             let transport = labels::get_transport(&container.labels);
+            let port = labels::get_port(&container.labels);
             
             println!(
-                "{:<12} {:<20} {:<40} {:<15} {:<10}",
-                truncated_id, container.name, container.image, container.state, transport
+                "{:<12} {:<20} {:<40} {:<15} {:<10} {:<6}",
+                truncated_id, container.name, container.image, container.state, transport, port
             );
         }
     }

@@ -156,7 +156,7 @@ impl RunCommand {
 
         // Create labels for the container
         let mut labels = HashMap::new();
-        labels::add_standard_labels(&mut labels, &container_name, &self.transport);
+        labels::add_standard_labels(&mut labels, &container_name, &self.transport, transport.port());
 
         // Create environment variables for the container
         let mut env_vars = HashMap::new();
@@ -225,7 +225,7 @@ impl RunCommand {
 
         // Start the transport
         let mut transport_env_vars = HashMap::new();
-        transport.setup(&container_id, &container_name, self.port, &mut transport_env_vars, container_ip).await?;
+        transport.setup(&container_id, &container_name, &mut transport_env_vars, container_ip).await?;
         transport.start().await?;
 
         log::info!("MCP server {} started with container ID {}", container_name, container_id);

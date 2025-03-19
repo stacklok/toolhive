@@ -411,18 +411,57 @@ mod tests {
     // Note: Testing the actual proxy functionality would require more complex setup
     // with a mock HTTP server, which is beyond the scope of this implementation
     
+    // Start a mock HTTP server for testing
+    async fn start_mock_http_server(port: u16) -> oneshot::Sender<()> {
+        let addr = ([127, 0, 0, 1], port).into();
+        
+        // Create a oneshot channel for shutdown
+        let (tx, rx) = oneshot::channel::<()>();
+        
+        // Create a service that responds to all requests with 200 OK
+        let make_svc = make_service_fn(|_conn| async {
+            Ok::<_, hyper::Error>(service_fn(|_req: Request<Body>| async {
+                // Return a simple 200 OK response
+                Ok::<_, hyper::Error>(Response::builder()
+                    .status(StatusCode::OK)
+                    .body(Body::from("OK"))
+                    .unwrap())
+            }))
+        });
+        
+        // Create the server
+        let server = Server::bind(&addr)
+            .serve(make_svc)
+            .with_graceful_shutdown(async {
+                rx.await.ok();
+            });
+        
+        // Spawn the server task
+        tokio::spawn(async move {
+            if let Err(e) = server.await {
+                eprintln!("Mock server error: {}", e);
+            }
+        });
+        
+        // Return the shutdown sender
+        tx
+    }
+
     #[tokio::test]
     async fn test_sse_transport_lifecycle() -> Result<()> {
+        // Start a mock HTTP server on port 9002 to respond to initialization messages
+        let mock_server_shutdown = start_mock_http_server(9002).await;
+        
         // Create a transport
         let transport = SseTransport::new(8082);
         let mut env_vars = HashMap::new();
         
         // Set up the transport
         transport.set_container_port(9002);
-        transport.setup("test-id", "test-container", &mut env_vars, Some("172.17.0.2".to_string())).await?;
+        transport.setup("test-id", "test-container", &mut env_vars, Some("127.0.0.1".to_string())).await?;
         
-        // Set the container IP
-        *transport.container_ip.lock().unwrap() = Some("172.17.0.2".to_string());
+        // Set the container IP to localhost so we can connect to our mock server
+        *transport.container_ip.lock().unwrap() = Some("127.0.0.1".to_string());
         
         // Start the transport
         transport.start().await?;
@@ -435,6 +474,9 @@ mod tests {
         
         // Check if it's stopped
         assert!(!transport.is_running().await?);
+        
+        // Shutdown the mock server
+        let _ = mock_server_shutdown.send(());
         
         Ok(())
     }

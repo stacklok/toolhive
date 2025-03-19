@@ -12,7 +12,7 @@ use crate::transport::{Transport, TransportFactory, TransportMode};
 #[derive(Args, Debug)]
 pub struct RunCommand {
     /// Transport mode (sse or stdio)
-    #[arg(long, default_value = "sse")]
+    #[arg(long, default_value = "stdio")]
     pub transport: String,
 
     /// Name of the MCP server

@@ -198,6 +198,10 @@ impl RunCommand {
         // Log that the container was created
         log::info!("MCP server {} created with container ID {}", container_name, container_id);
 
+        // Start the container - This happens before the transport
+        // so the transport could have an IP allocated.
+        runtime.start_container(&container_id).await?;
+
         // For STDIO transport, attach to the container before starting it
         let (stdin, stdout) = if transport.mode() == TransportMode::STDIO {
             log::debug!("Attaching to container {} for STDIO transport", container_id);
@@ -206,10 +210,6 @@ impl RunCommand {
         } else {
             (None, None)
         };
-
-        // Start the container - This happens before the transport
-        // so the transport could have an IP allocated.
-        runtime.start_container(&container_id).await?;
 
         // Get the container IP address only for SSE transport
         let container_ip = match transport.mode() {

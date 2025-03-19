@@ -437,6 +437,7 @@ impl ContainerRuntime for PodmanClient {
                                 name: c.names.unwrap_or_default().first().cloned().unwrap_or_default(),
                                 image: c.image,
                                 status: c.status,
+                                state: c.state,
                                 created: 0, // Default to 0 for now since we have a string timestamp
                                 labels: c.labels.unwrap_or_default(),
                                 ports,
@@ -665,7 +666,8 @@ impl ContainerRuntime for PodmanClient {
             id: container.id,
             name: container.name,
             image: container.config.image,
-            status: container.state.status,
+            status: container.state.status.clone(),
+            state: container.state.status,
             created: created_timestamp,
             labels: container.config.labels.unwrap_or_default(),
             ports,
@@ -785,6 +787,8 @@ struct PodmanContainer {
     image_id: String,
     #[serde(rename = "Status")]
     status: String,
+    #[serde(rename = "State")]
+    state: String,
     #[serde(default, rename = "Created")]
     #[allow(dead_code)]
     created: String,

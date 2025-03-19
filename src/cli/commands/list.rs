@@ -30,18 +30,18 @@ impl ListCommand {
         let containers = if !self.all {
             containers
                 .into_iter()
-                .filter(|c| c.status.contains("Up"))
+                .filter(|c| c.state.contains("running"))
                 .collect()
         } else {
             containers
         };
 
         // Print container information
-        println!("{:<20} {:<20} {:<40} {:<20}", "CONTAINER ID", "NAME", "IMAGE", "STATUS");
+        println!("{:<20} {:<20} {:<40} {:<20}", "CONTAINER ID", "NAME", "IMAGE", "STATE");
         for container in containers {
             println!(
                 "{:<20} {:<20} {:<40} {:<20}",
-                container.id, container.name, container.image, container.status
+                container.id, container.name, container.image, container.state
             );
         }
 

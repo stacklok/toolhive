@@ -23,6 +23,8 @@ pub struct ContainerInfo {
     pub image: String,
     /// Container status
     pub status: String,
+    /// Container state
+    pub state: String,
     /// Container creation timestamp
     pub created: u64,
     /// Container labels
@@ -264,6 +266,7 @@ mod tests {
                         name: "test-container-1".to_string(),
                         image: "test-image".to_string(),
                         status: "Up 10 minutes".to_string(),
+                        state: "running".to_string(),
                         created: 0,
                         labels: HashMap::new(),
                         ports: vec![],
@@ -324,6 +327,7 @@ mod tests {
                     name: "test-container".to_string(),
                     image: "test-image".to_string(),
                     status: "Exited (1) 5 seconds ago".to_string(),
+                    state: "exited".to_string(),
                     created: 0,
                     labels: HashMap::new(),
                     ports: vec![],

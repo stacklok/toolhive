@@ -49,11 +49,27 @@ mod tests {
     
     // Helper function to create a test container info
     pub fn create_test_container_info(id: &str, name: &str, status: &str) -> ContainerInfo {
+        // Derive state from status string
+        let state = if status.starts_with("Up") {
+            "running".to_string()
+        } else if status.starts_with("Exited") || status.starts_with("Dead") {
+            "exited".to_string()
+        } else if status.starts_with("Created") {
+            "created".to_string()
+        } else if status.starts_with("Restarting") {
+            "restarting".to_string()
+        } else if status.starts_with("Paused") {
+            "paused".to_string()
+        } else {
+            "unknown".to_string()
+        };
+
         ContainerInfo {
             id: id.to_string(),
             name: name.to_string(),
             image: "test-image".to_string(),
             status: status.to_string(),
+            state,
             created: 0,
             labels: HashMap::new(),
             ports: vec![PortMapping {

@@ -12,6 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::container::{ContainerInfo, ContainerRuntime, PortMapping};
 use crate::error::{Error, Result};
+use crate::labels;
 use crate::permissions::profile::ContainerPermissionConfig;
 
 const DOCKER_SOCKET_PATH: &str = "/var/run/docker.sock";
@@ -305,10 +306,13 @@ impl ContainerRuntime for DockerClient {
         self.ping().await?;
 
         // List containers with the vibetool label
-        let path = "containers/json?filters={\"label\":[\"vibetool=true\"]}";
+        let filter = format!("{{\"label\":[\"{}\"]}}",
+            labels::format_vibetool_filter()
+        );
+        let path = format!("containers/json?filters={}", filter);
         let docker_containers: Vec<DockerContainer> = self.request(
             Method::GET,
-            path,
+            &path,
             Option::<()>::None,
         ).await?;
 

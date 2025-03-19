@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::container::{ContainerMonitor, ContainerRuntime, ContainerRuntimeFactory};
 use crate::error::{Error, Result};
+use crate::labels;
 use crate::networking::port;
 use crate::permissions::profile::PermissionProfile;
 use crate::transport::{Transport, TransportFactory, TransportMode};
@@ -155,9 +156,7 @@ impl RunCommand {
 
         // Create labels for the container
         let mut labels = HashMap::new();
-        labels.insert("vibetool".to_string(), "true".to_string());
-        labels.insert("vibetool-name".to_string(), container_name.clone());
-        labels.insert("vibetool-transport".to_string(), self.transport.clone());
+        labels::add_standard_labels(&mut labels, &container_name, &self.transport);
 
         // Create environment variables for the container
         let mut env_vars = HashMap::new();

@@ -13,6 +13,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::container::{ContainerInfo, ContainerRuntime, PortMapping};
 use crate::error::{Error, Result};
+use crate::labels;
 use crate::permissions::profile::ContainerPermissionConfig;
 
 // Podman socket paths
@@ -387,11 +388,14 @@ impl ContainerRuntime for PodmanClient {
 
     async fn list_containers(&self) -> Result<Vec<ContainerInfo>> {
         // Try different endpoints for listing containers
+        let filter = format!("{{\"label\":[\"{}\"]}}", labels::format_vibetool_filter());
+        let encoded_filter = urlencoding::encode(&filter);
+        
         let paths = vec![
             // Standard Docker API endpoint
-            format!("containers/json?filters={}", urlencoding::encode(&serde_json::json!({"label": ["vibetool=true"]}).to_string())),
+            format!("containers/json?filters={}", encoded_filter),
             // Podman specific endpoint
-            format!("libpod/containers/json?filters={}", urlencoding::encode(&serde_json::json!({"label": ["vibetool=true"]}).to_string())),
+            format!("libpod/containers/json?filters={}", encoded_filter),
             // Try without filters
             "containers/json".to_string(),
             "libpod/containers/json".to_string(),
@@ -416,7 +420,7 @@ impl ContainerRuntime for PodmanClient {
                             // Filter for vibetool containers if we're using an endpoint without filters
                             if !path.contains("filters=") {
                                 if let Some(labels) = &c.labels {
-                                    return labels.get("vibetool").map_or(false, |v| v == "true");
+                                    return labels::is_vibetool_container(labels);
                                 }
                                 return false;
                             }

@@ -2,6 +2,7 @@ use clap::Args;
 
 use crate::container::{ContainerRuntime, ContainerRuntimeFactory};
 use crate::error::Result;
+use crate::labels;
 
 /// List running MCP servers
 #[derive(Args, Debug)]
@@ -42,9 +43,8 @@ impl ListCommand {
             // Truncate container ID to first 12 characters (similar to Docker)
             let truncated_id = container.id.chars().take(12).collect::<String>();
             
-            // Get transport from labels (default to "unknown" if not found)
-            let unknown = "unknown".to_string();
-            let transport = container.labels.get("vibetool-transport").unwrap_or(&unknown);
+            // Get transport from labels
+            let transport = labels::get_transport(&container.labels);
             
             println!(
                 "{:<12} {:<20} {:<40} {:<15} {:<10}",

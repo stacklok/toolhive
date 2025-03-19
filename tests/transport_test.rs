@@ -8,7 +8,7 @@ use vibetool::transport::{Transport, TransportMode};
 use vibetool::transport::sse::SseTransport;
 use vibetool::transport::stdio::StdioTransport;
 use vibetool::error::Result;
-use vibetool::transport::stdio::{SseMessage, JsonRpcMessage};
+use vibetool::transport::stdio::JsonRpcMessage;
 
 // Helper function to create a test HTTP server
 async fn create_test_server(port: u16) -> (String, oneshot::Sender<()>) {
@@ -122,31 +122,21 @@ async fn test_transport_mode_as_str() {
     assert_eq!(TransportMode::STDIO.as_str(), "stdio");
 }
 
-// Test SSE message and JSON-RPC conversion
-#[test]
-fn test_sse_message_creation() {
-    let sse = SseMessage {
-        event: "test".to_string(),
-        data: "{\"hello\":\"world\"}".to_string(),
-        id: Some("123".to_string()),
-    };
-    
-    assert_eq!(sse.event, "test");
-    assert_eq!(sse.data, "{\"hello\":\"world\"}");
-    assert_eq!(sse.id, Some("123".to_string()));
-}
+// Test JSON-RPC conversion
 
 #[test]
 fn test_json_rpc_message_creation() {
     let json_rpc = JsonRpcMessage {
         jsonrpc: "2.0".to_string(),
-        method: "test".to_string(),
-        params: serde_json::json!({"hello": "world"}),
+        method: Some("test".to_string()),
+        params: Some(serde_json::json!({"hello": "world"})),
         id: Some(serde_json::Value::String("123".to_string())),
+        result: None,
+        error: None,
     };
     
     assert_eq!(json_rpc.jsonrpc, "2.0");
-    assert_eq!(json_rpc.method, "test");
-    assert_eq!(json_rpc.params.as_object().unwrap().get("hello").unwrap().as_str().unwrap(), "world");
+    assert_eq!(json_rpc.method, Some("test".to_string()));
+    assert_eq!(json_rpc.params.as_ref().unwrap().as_object().unwrap().get("hello").unwrap().as_str().unwrap(), "world");
     assert_eq!(json_rpc.id.unwrap().as_str().unwrap(), "123");
 }

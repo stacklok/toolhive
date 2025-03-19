@@ -13,7 +13,8 @@ use vibetool::error::{Error, Result};
 use vibetool::permissions::profile::ContainerPermissionConfig;
 use vibetool::transport::Transport;
 use vibetool::transport::sse::SseTransport;
-use vibetool::transport::stdio::{JsonRpcMessage, SseMessage, StdioTransport};
+use vibetool::transport::stdio::{JsonRpcMessage, StdioTransport};
+
 
 // Fake MCP server that responds to MCP protocol requests
 struct FakeMcpServer {
@@ -106,17 +107,24 @@ impl FakeMcpServer {
         }
         
         // Create a response based on the method
-        let result = if let Some(response) = self.responses.get(&message.method) {
-            response.clone()
-        } else {
-            json!({})
+        let result = match &message.method {
+            Some(method) => {
+                if let Some(response) = self.responses.get(method) {
+                    response.clone()
+                } else {
+                    json!({})
+                }
+            },
+            None => json!({})
         };
         
         JsonRpcMessage {
             jsonrpc: "2.0".to_string(),
-            method: "response".to_string(),
-            params: result,
+            method: Some("response".to_string()),
+            params: Some(result),
             id: message.id.clone(),
+            result: None,
+            error: None,
         }
     }
     
@@ -170,9 +178,11 @@ async fn start_sse_mcp_server(port: u16) -> (Arc<FakeMcpServer>, oneshot::Sender
                     
                     let json_rpc = JsonRpcMessage {
                         jsonrpc: "2.0".to_string(),
-                        method: event_type,
-                        params,
+                        method: Some(event_type),
+                        params: Some(params),
                         id: id.map(|id| json!(id)),
+                        result: None,
+                        error: None,
                     };
                     
                     // Process the message
@@ -189,9 +199,10 @@ async fn start_sse_mcp_server(port: u16) -> (Arc<FakeMcpServer>, oneshot::Sender
                     });
                     
                     // Format as SSE
+                    let msg = "message".to_string();
                     let sse_response = format!(
                         "event: {}\ndata: {}\n{}\n",
-                        response.method,
+                        response.method.as_ref().unwrap_or(&msg),
                         sse_data,
                         sse_id.map(|id| format!("id: {}", id)).unwrap_or_default()
                     );
@@ -347,19 +358,28 @@ async fn test_sse_transport_proxy() -> Result<()> {
     let client = reqwest::Client::new();
     
     // Send an initialize request
-    let initialize_request = SseMessage {
-        event: "initialize".to_string(),
-        data: r#"{"clientInfo":{"name":"test-client","version":"0.1.0"},"capabilities":{},"protocolVersion":"0.1.0"}"#.to_string(),
-        id: Some("1".to_string()),
+    let initialize_request = JsonRpcMessage {
+        jsonrpc: "2.0".to_string(),
+        method: Some("initialize".to_string()),
+        params: Some(json!({"clientInfo":{"name":"test-client","version":"0.1.0"},"capabilities":{},"protocolVersion":"0.1.0"})),
+        id: Some(json!("1")),
+        result: None,
+        error: None,
     };
+    
+    // Format as SSE for the SSE transport
+    let msg = "message".to_string();
+    let event_type = initialize_request.method.as_ref().unwrap_or(&msg);
+    let data = serde_json::to_string(&initialize_request.params).unwrap_or_default();
+    let id = "1"; // Use a simple string for the ID
     
     let response = client.post("http://localhost:8100")
         .header("Content-Type", "text/event-stream")
         .body(format!(
             "event: {}\ndata: {}\nid: {}\n\n",
-            initialize_request.event,
-            initialize_request.data,
-            initialize_request.id.unwrap()
+            event_type,
+            data,
+            id
         ))
         .send()
         .await
@@ -377,19 +397,28 @@ async fn test_sse_transport_proxy() -> Result<()> {
     assert!(response_text.contains("serverInfo"));
     
     // Send a resources/list request
-    let list_request = SseMessage {
-        event: "resources/list".to_string(),
-        data: "{}".to_string(),
-        id: Some("2".to_string()),
+    let list_request = JsonRpcMessage {
+        jsonrpc: "2.0".to_string(),
+        method: Some("resources/list".to_string()),
+        params: Some(json!({})),
+        id: Some(json!("2")),
+        result: None,
+        error: None,
     };
+    
+    // Format as SSE for the SSE transport
+    let msg = "message".to_string();
+    let event_type = list_request.method.as_ref().unwrap_or(&msg);
+    let data = serde_json::to_string(&list_request.params).unwrap_or_default();
+    let id = "2"; // Use a simple string for the ID
     
     let response = client.post("http://localhost:8100")
         .header("Content-Type", "text/event-stream")
         .body(format!(
             "event: {}\ndata: {}\nid: {}\n\n",
-            list_request.event,
-            list_request.data,
-            list_request.id.unwrap()
+            event_type,
+            data,
+            id
         ))
         .send()
         .await
@@ -408,8 +437,8 @@ async fn test_sse_transport_proxy() -> Result<()> {
     // Verify the fake server received the expected requests
     let requests = fake_server.get_requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].method, "initialize");
-    assert_eq!(requests[1].method, "resources/list");
+    assert_eq!(requests[0].method, Some("initialize".to_string()));
+    assert_eq!(requests[1].method, Some("resources/list".to_string()));
     
     // Stop the transport
     transport.stop().await?;
@@ -451,9 +480,11 @@ async fn test_stdio_transport_proxy() -> Result<()> {
     // Send an initialize request
     let initialize_request = JsonRpcMessage {
         jsonrpc: "2.0".to_string(),
-        method: "initialize".to_string(),
-        params: json!({"clientInfo":{"name":"test-client","version":"0.1.0"},"capabilities":{},"protocolVersion":"0.1.0"}),
+        method: Some("initialize".to_string()),
+        params: Some(json!({"clientInfo":{"name":"test-client","version":"0.1.0"},"capabilities":{},"protocolVersion":"0.1.0"})),
         id: Some(json!("1")),
+        result: None,
+        error: None,
     };
     
     let request_json = serde_json::to_string(&initialize_request).expect("Failed to serialize request");
@@ -470,17 +501,19 @@ async fn test_stdio_transport_proxy() -> Result<()> {
     let response: JsonRpcMessage = serde_json::from_str(response_str.trim()).expect("Failed to parse response");
     
     // Verify the response
-    assert_eq!(response.method, "response");
-    assert!(response.params.get("capabilities").is_some());
-    assert!(response.params.get("protocolVersion").is_some());
-    assert!(response.params.get("serverInfo").is_some());
+    assert_eq!(response.method, Some("response".to_string()));
+    assert!(response.params.as_ref().unwrap().get("capabilities").is_some());
+    assert!(response.params.as_ref().unwrap().get("protocolVersion").is_some());
+    assert!(response.params.as_ref().unwrap().get("serverInfo").is_some());
     
     // Send a resources/list request
     let list_request = JsonRpcMessage {
         jsonrpc: "2.0".to_string(),
-        method: "resources/list".to_string(),
-        params: json!({}),
+        method: Some("resources/list".to_string()),
+        params: Some(json!({})),
         id: Some(json!("2")),
+        result: None,
+        error: None,
     };
     
     let request_json = serde_json::to_string(&list_request).expect("Failed to serialize request");
@@ -497,14 +530,14 @@ async fn test_stdio_transport_proxy() -> Result<()> {
     let response: JsonRpcMessage = serde_json::from_str(response_str.trim()).expect("Failed to parse response");
     
     // Verify the response
-    assert_eq!(response.method, "response");
-    assert!(response.params.get("resources").is_some());
+    assert_eq!(response.method, Some("response".to_string()));
+    assert!(response.params.as_ref().unwrap().get("resources").is_some());
     
     // Verify the fake server received the expected requests
     let requests = fake_server.get_requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].method, "initialize");
-    assert_eq!(requests[1].method, "resources/list");
+    assert_eq!(requests[0].method, Some("initialize".to_string()));
+    assert_eq!(requests[1].method, Some("resources/list".to_string()));
     
     Ok(())
 }
@@ -697,29 +730,28 @@ async fn test_stdio_transport_http_proxy() -> Result<()> {
     // Create a client to send requests to the transport
     let client = reqwest::Client::new();
     
-    // Send an initialize request via HTTP SSE
-    let initialize_request = SseMessage {
-        event: "initialize".to_string(),
-        data: r#"{"clientInfo":{"name":"test-client","version":"0.1.0"},"capabilities":{},"protocolVersion":"0.1.0"}"#.to_string(),
-        id: Some("1".to_string()),
+    // Send an initialize request via HTTP JSON-RPC
+    let initialize_request = JsonRpcMessage {
+        jsonrpc: "2.0".to_string(),
+        method: Some("initialize".to_string()),
+        params: Some(json!({"clientInfo":{"name":"test-client","version":"0.1.0"},"capabilities":{},"protocolVersion":"0.1.0"})),
+        id: Some(json!("1")),
+        result: None,
+        error: None,
     };
     
+    let request_json = serde_json::to_string(&initialize_request).expect("Failed to serialize request");
     let response = client.post("http://localhost:8200")
-        .header("Content-Type", "text/event-stream")
-        .body(format!(
-            "event: {}\ndata: {}\nid: {}\n\n",
-            initialize_request.event,
-            initialize_request.data,
-            initialize_request.id.unwrap()
-        ))
+        .header("Content-Type", "application/json")
+        .body(request_json)
         .send()
         .await
         .expect("Failed to send request");
     
     assert_eq!(response.status(), StatusCode::OK);
     
-    // Give some time for the message to be processed
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Give more time for the message to be processed
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     
     // Verify that the message was sent to the container's stdin
     {
@@ -729,33 +761,32 @@ async fn test_stdio_transport_http_proxy() -> Result<()> {
         // The message should be a JSON-RPC message with the initialize method
         let message = &stdin_messages[0];
         let json_rpc: JsonRpcMessage = serde_json::from_str(message).expect("Failed to parse JSON-RPC message");
-        assert_eq!(json_rpc.method, "initialize");
-        assert!(json_rpc.params.get("clientInfo").is_some());
+        assert_eq!(json_rpc.method, Some("initialize".to_string()));
+        assert!(json_rpc.params.as_ref().unwrap().get("clientInfo").is_some());
     }
     
     // Send a resources/list request
-    let list_request = SseMessage {
-        event: "resources/list".to_string(),
-        data: "{}".to_string(),
-        id: Some("2".to_string()),
+    let list_request = JsonRpcMessage {
+        jsonrpc: "2.0".to_string(),
+        method: Some("resources/list".to_string()),
+        params: Some(json!({})),
+        id: Some(json!("2")),
+        result: None,
+        error: None,
     };
     
+    let request_json = serde_json::to_string(&list_request).expect("Failed to serialize request");
     let response = client.post("http://localhost:8200")
-        .header("Content-Type", "text/event-stream")
-        .body(format!(
-            "event: {}\ndata: {}\nid: {}\n\n",
-            list_request.event,
-            list_request.data,
-            list_request.id.unwrap()
-        ))
+        .header("Content-Type", "application/json")
+        .body(request_json)
         .send()
         .await
         .expect("Failed to send request");
     
     assert_eq!(response.status(), StatusCode::OK);
     
-    // Give some time for the message to be processed
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Give more time for the message to be processed
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     
     // Verify that the message was sent to the container's stdin
     {
@@ -765,14 +796,14 @@ async fn test_stdio_transport_http_proxy() -> Result<()> {
         // The second message should be a JSON-RPC message with the resources/list method
         let message = &stdin_messages[1];
         let json_rpc: JsonRpcMessage = serde_json::from_str(message).expect("Failed to parse JSON-RPC message");
-        assert_eq!(json_rpc.method, "resources/list");
+        assert_eq!(json_rpc.method, Some("resources/list".to_string()));
     }
     
     // Verify the fake server received the expected requests
     let requests = fake_server.get_requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].method, "initialize");
-    assert_eq!(requests[1].method, "resources/list");
+    assert_eq!(requests[0].method, Some("initialize".to_string()));
+    assert_eq!(requests[1].method, Some("resources/list".to_string()));
     
     // Stop the transport
     transport.stop().await?;
@@ -780,52 +811,36 @@ async fn test_stdio_transport_http_proxy() -> Result<()> {
     Ok(())
 }
 
-// Test conversion between SSE and JSON-RPC formats
+// Test JSON-RPC message creation
 #[test]
 fn test_format_conversion() {
-    // Create an SSE message
-    let sse = SseMessage {
-        event: "initialize".to_string(),
-        data: r#"{"clientInfo":{"name":"test-client","version":"0.1.0"},"capabilities":{},"protocolVersion":"0.1.0"}"#.to_string(),
-        id: Some("1".to_string()),
-    };
-    
-    // Convert SSE to JSON-RPC
-    let params = match serde_json::from_str::<Value>(&sse.data) {
-        Ok(value) => value,
-        Err(_) => json!(sse.data),
-    };
-    
+    // Create a JSON-RPC message
     let json_rpc = JsonRpcMessage {
         jsonrpc: "2.0".to_string(),
-        method: sse.event,
-        params,
-        id: sse.id.map(|id| json!(id)),
+        method: Some("initialize".to_string()),
+        params: Some(json!({"clientInfo":{"name":"test-client","version":"0.1.0"},"capabilities":{},"protocolVersion":"0.1.0"})),
+        id: Some(json!("1")),
+        result: None,
+        error: None,
     };
     
-    // Verify the conversion
-    assert_eq!(json_rpc.method, "initialize");
-    assert_eq!(json_rpc.params["clientInfo"]["name"], "test-client");
+    // Verify the message
+    assert_eq!(json_rpc.jsonrpc, "2.0");
+    assert_eq!(json_rpc.method, Some("initialize".to_string()));
+    assert_eq!(json_rpc.params.as_ref().unwrap()["clientInfo"]["name"], "test-client");
     assert_eq!(json_rpc.id.as_ref().unwrap().as_str().unwrap(), "1");
+    assert!(json_rpc.result.is_none());
+    assert!(json_rpc.error.is_none());
     
-    // Convert JSON-RPC back to SSE
-    let sse_data = serde_json::to_string(&json_rpc.params).unwrap_or_default();
-    let sse_id = json_rpc.id.as_ref().map(|id| {
-        if let Value::String(s) = id {
-            s.clone()
-        } else {
-            id.to_string()
-        }
-    });
+    // Serialize and deserialize
+    let json_str = serde_json::to_string(&json_rpc).expect("Failed to serialize");
+    let deserialized: JsonRpcMessage = serde_json::from_str(&json_str).expect("Failed to deserialize");
     
-    let sse_back = SseMessage {
-        event: json_rpc.method,
-        data: sse_data,
-        id: sse_id,
-    };
-    
-    // Verify the conversion back
-    assert_eq!(sse_back.event, "initialize");
-    assert!(sse_back.data.contains("clientInfo"));
-    assert_eq!(sse_back.id.unwrap(), "1");
+    // Verify the deserialized message
+    assert_eq!(deserialized.jsonrpc, "2.0");
+    assert_eq!(deserialized.method, Some("initialize".to_string()));
+    assert_eq!(deserialized.params.as_ref().unwrap()["clientInfo"]["name"], "test-client");
+    assert_eq!(deserialized.id.as_ref().unwrap().as_str().unwrap(), "1");
+    assert!(deserialized.result.is_none());
+    assert!(deserialized.error.is_none());
 }

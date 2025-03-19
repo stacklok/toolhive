@@ -57,5 +57,18 @@ curl -v --max-time 10 -X POST http://localhost:$PORT/messages \
     }
   }'
 
+echo -e "\n\n${YELLOW}Step 4: Sending ping request to the server...${NC}"
+echo -e "Sending JSON-RPC request to: ${GREEN}http://localhost:$PORT/messages${NC}"
+echo -e "Method: ${GREEN}ping${NC}"
+echo -e "Request ID: ${GREEN}2${NC}\n"
+
+curl -v --max-time 10 -X POST http://localhost:$PORT/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "ping"
+  }'
+
 echo -e "\n\n${BLUE}=== Test Complete ===${NC}"
-echo -e "${BLUE}If the request was successful, the MCP server is working correctly${NC}"
+echo -e "${BLUE}If the requests were successful, the MCP server is working correctly${NC}"

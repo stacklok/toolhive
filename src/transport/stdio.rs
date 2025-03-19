@@ -21,7 +21,7 @@ pub struct StdioTransport {
     container_name: Arc<Mutex<Option<String>>>,
     runtime: Arc<Mutex<Option<Box<dyn ContainerRuntime>>>>,
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-    message_tx: Arc<Mutex<Option<mpsc::Sender<SseMessage>>>>,
+    message_tx: Arc<Mutex<Option<mpsc::Sender<JsonRpcMessage>>>>,
     response_rx: Arc<Mutex<Option<mpsc::Receiver<JsonRpcMessage>>>>,
     http_shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
@@ -93,7 +93,7 @@ impl StdioTransport {
             
             async move {
                 Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
-                    let container_id = container_id.clone();
+                    let _container_id = container_id.clone();
                     let message_tx = message_tx.clone();
                     
                     async move {
@@ -101,7 +101,7 @@ impl StdioTransport {
                         let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
                             Ok(bytes) => bytes,
                             Err(e) => {
-                                eprintln!("Error reading request body: {}", e);
+                                log::error!("Error reading request body: {}", e);
                                 return Ok::<_, hyper::Error>(Response::builder()
                                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                                     .body(Body::from(format!("Error: {}", e)))
@@ -111,11 +111,11 @@ impl StdioTransport {
                         
                         let body_str = String::from_utf8_lossy(&body_bytes);
                         
-                        // Parse the SSE message
-                        let sse_message = match StdioTransport::parse_sse_message(&body_str) {
+                        // Parse the JSON-RPC message
+                        let json_rpc_message = match StdioTransport::parse_json_rpc_message(&body_str) {
                             Ok(msg) => msg,
                             Err(e) => {
-                                eprintln!("Error parsing SSE message: {}", e);
+                                log::error!("Error parsing JSON-RPC message: {}", e);
                                 return Ok(Response::builder()
                                     .status(StatusCode::BAD_REQUEST)
                                     .body(Body::from(format!("Error: {}", e)))
@@ -124,15 +124,11 @@ impl StdioTransport {
                         };
                         
                         // Log the message
-                        println!("Received SSE message for container {}: event={}, data={}",
-                            container_id,
-                            sse_message.event,
-                            sse_message.data
-                        );
+                        StdioTransport::log_json_rpc_message(&json_rpc_message);
                         
                         // Send the message to the processor
-                        if let Err(e) = message_tx.send(sse_message).await {
-                            eprintln!("Error sending message: {}", e);
+                        if let Err(e) = message_tx.send(json_rpc_message).await {
+                            log::error!("Error sending message: {}", e);
                             return Ok(Response::builder()
                                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                                 .body(Body::from(format!("Error: {}", e)))
@@ -153,8 +149,8 @@ impl StdioTransport {
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         let server = Server::bind(&addr).serve(make_svc);
         
-        println!("Reverse proxy started for STDIO container {} on port {}", container_name, port);
-        println!("Forwarding SSE events to container's stdin/stdout");
+        log::debug!("Reverse proxy started for STDIO container {} on port {}", container_name, port);
+        log::debug!("Forwarding JSON-RPC messages to container's stdin/stdout");
 
         // Create shutdown channel
         let (tx, rx) = oneshot::channel::<()>();
@@ -171,7 +167,7 @@ impl StdioTransport {
         // Spawn the server task
         tokio::spawn(async move {
             if let Err(e) = server_with_shutdown.await {
-                eprintln!("Proxy server error: {}", e);
+                log::error!("Proxy server error: {}", e);
             }
         });
 
@@ -208,7 +204,7 @@ impl StdioTransport {
             match stdout.read(&mut buf).await {
                 Ok(0) => {
                     // EOF, container process has terminated
-                    println!("Container process terminated");
+                    log::info!("Container process terminated");
                     break;
                 }
                 Ok(n) => {
@@ -218,11 +214,11 @@ impl StdioTransport {
                         &mut line_buffer,
                         &response_tx
                     ).await {
-                        eprintln!("Error processing stdout chunk: {}", e);
+                        log::error!("Error processing stdout chunk: {}", e);
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error reading from container stdout: {}", e);
+                    log::error!("Error reading from container stdout: {}", e);
                     break;
                 }
             }
@@ -238,7 +234,9 @@ impl StdioTransport {
     ) -> Result<()> {
         // Process the data
         buffer.extend_from_slice(data);
-        
+
+        log::debug!("OZZ: Received {} bytes from container stdout", data.len());
+
         // Process complete lines
         let mut start_idx = 0;
         for i in 0..buffer.len() {
@@ -280,33 +278,30 @@ impl StdioTransport {
             Ok(json_rpc) => {
                 // Send the response
                 if let Err(e) = response_tx.send(json_rpc).await {
-                    eprintln!("Failed to send response: {}", e);
+                    log::error!("Failed to send response: {}", e);
                 }
             }
             Err(e) => {
-                eprintln!("Failed to parse JSON-RPC message: {}", e);
-                eprintln!("Message: {}", line);
+                log::error!("Failed to parse JSON-RPC message: {}", e);
+                log::debug!("Message: {}", line);
             }
         }
     }
 
-    /// Send a message to the container's stdin
+    /// Send a JSON-RPC message to the container's stdin
     async fn send_message_to_container(
         stdin: &mut Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
-        sse_message: &SseMessage,
+        json_rpc: &JsonRpcMessage,
     ) -> Result<()> {
-        // Convert SSE message to JSON-RPC
-        let json_rpc = Self::sse_to_json_rpc(sse_message);
-        
         // Serialize to JSON
-        let json_str = serde_json::to_string(&json_rpc)
+        let json_str = serde_json::to_string(json_rpc)
             .map_err(|e| Error::Transport(format!("Failed to serialize JSON-RPC: {}", e)))?;
         
-        // Add newline to ensure proper message separation
+        // Add a newline to ensure proper message separation
         let json_str = format!("{}\n", json_str);
         
         // Log the message for debugging
-        println!("Sending message to container: {}", json_str);
+        log::debug!("Sending JSON-RPC message to container: {}", json_str);
         
         // Write to container stdin
         stdin.write_all(json_str.as_bytes()).await
@@ -319,11 +314,11 @@ impl StdioTransport {
         Ok(())
     }
 
-    /// Process SSE messages and handle bidirectional communication with the container
+    /// Process JSON-RPC messages and handle bidirectional communication with the container
     async fn process_messages(
         container_id: String,
         runtime: Arc<Mutex<Option<Box<dyn ContainerRuntime>>>>,
-        mut message_rx: mpsc::Receiver<SseMessage>,
+        mut message_rx: mpsc::Receiver<JsonRpcMessage>,
         response_tx: mpsc::Sender<JsonRpcMessage>,
         mut shutdown_rx: oneshot::Receiver<()>,
     ) -> Result<()> {
@@ -341,16 +336,16 @@ impl StdioTransport {
             tokio::select! {
                 // Check for shutdown signal
                 _ = &mut shutdown_rx => {
-                    println!("STDIO transport shutting down");
+                    log::debug!("STDIO transport shutting down");
                     // Cancel the stdout task
                     stdout_task.abort();
                     break;
                 }
                 
-                // Process incoming SSE messages
-                Some(sse_message) = message_rx.recv() => {
-                    if let Err(e) = Self::send_message_to_container(&mut stdin, &sse_message).await {
-                        eprintln!("{}", e);
+                // Process incoming JSON-RPC messages
+                Some(json_rpc_message) = message_rx.recv() => {
+                    if let Err(e) = Self::send_message_to_container(&mut stdin, &json_rpc_message).await {
+                        log::error!("{}", e);
                         break;
                     }
                 }
@@ -360,43 +355,27 @@ impl StdioTransport {
         Ok(())
     }
 
-    /// Convert an SSE message to JSON-RPC
-    fn sse_to_json_rpc(sse: &SseMessage) -> JsonRpcMessage {
-        // Parse the data as JSON if possible
-        let params = match serde_json::from_str::<serde_json::Value>(&sse.data) {
-            Ok(value) => value,
-            Err(_) => serde_json::Value::String(sse.data.clone()),
-        };
-        
-        // Create a JSON-RPC message
-        JsonRpcMessage {
-            jsonrpc: "2.0".to_string(),
-            method: sse.event.clone(),
-            params,
-            id: sse.id.clone().map(|id| serde_json::Value::String(id)),
+    /// Log a received JSON-RPC message
+    fn log_json_rpc_message(json_rpc: &JsonRpcMessage) {
+        // Log the message for debugging
+        if json_rpc.is_request() {
+            log::debug!("Received JSON-RPC request: method={}, id={:?}",
+                json_rpc.method.as_ref().unwrap_or(&"none".to_string()),
+                json_rpc.id);
+        } else if json_rpc.is_response() {
+            log::debug!("Received JSON-RPC response: id={:?}, result={:?}, error={:?}",
+                json_rpc.id,
+                json_rpc.result.is_some(),
+                json_rpc.error.is_some());
+        } else if json_rpc.is_notification() {
+            log::debug!("Received JSON-RPC notification: method={}",
+                json_rpc.method.as_ref().unwrap_or(&"none".to_string()));
+        } else {
+            log::debug!("Received unknown JSON-RPC message: {:?}", json_rpc);
         }
     }
 
-    /// Convert a JSON-RPC message to SSE
-    fn json_rpc_to_sse(json_rpc: &JsonRpcMessage) -> SseMessage {
-        // Convert the params to a string
-        let data = serde_json::to_string(&json_rpc.params).unwrap_or_default();
-        
-        // Create an SSE message
-        SseMessage {
-            event: json_rpc.method.clone(),
-            data,
-            id: json_rpc.id.as_ref().and_then(|id| {
-                if let serde_json::Value::String(s) = id {
-                    Some(s.clone())
-                } else {
-                    Some(id.to_string())
-                }
-            }),
-        }
-    }
-
-    /// Handle an HTTP request and convert it to an SSE message
+    /// Handle an HTTP request containing a JSON-RPC message
     pub async fn handle_request(&self, req: Request<Body>) -> Result<Response<Body>> {
         // Get the message sender
         let message_tx = {
@@ -410,14 +389,18 @@ impl StdioTransport {
         };
         
         // Read the request body
-        let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
+        let body_bytes = hyper::body::to_bytes(req.into_body()).await
+            .map_err(|e| Error::Transport(format!("Failed to read request body: {}", e)))?;
         let body_str = String::from_utf8_lossy(&body_bytes);
         
-        // Parse the SSE message
-        let sse_message = Self::parse_sse_message(&body_str)?;
+        // Parse the JSON-RPC message
+        let json_rpc_message = Self::parse_json_rpc_message(&body_str)?;
+        
+        // Log the received message
+        Self::log_json_rpc_message(&json_rpc_message);
         
         // Send the message to the processor
-        if let Err(e) = message_tx.send(sse_message).await {
+        if let Err(e) = message_tx.send(json_rpc_message.clone()).await {
             return Err(Error::Transport(format!("Failed to send message: {}", e)));
         }
         
@@ -425,22 +408,15 @@ impl StdioTransport {
         let mut rx_option = self.response_rx.lock().await;
         if let Some(mut rx) = rx_option.take() {
             if let Some(json_rpc) = rx.recv().await {
-                // Convert to SSE
-                let sse = Self::json_rpc_to_sse(&json_rpc);
-                
-                // Format as SSE
-                let sse_str = format!(
-                    "event: {}\ndata: {}\n{}\n",
-                    sse.event,
-                    sse.data,
-                    sse.id.map(|id| format!("id: {}", id)).unwrap_or_default()
-                );
+                // Serialize the JSON-RPC response
+                let json_str = serde_json::to_string(&json_rpc)
+                    .map_err(|e| Error::Transport(format!("Failed to serialize JSON-RPC response: {}", e)))?;
                 
                 // Return the response
                 return Ok(Response::builder()
                     .status(StatusCode::OK)
-                    .header("Content-Type", "text/event-stream")
-                    .body(Body::from(sse_str))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(json_str))
                     .unwrap());
             }
             
@@ -455,27 +431,23 @@ impl StdioTransport {
             .unwrap())
     }
 
-    /// Parse an SSE message from a string
-    fn parse_sse_message(message: &str) -> Result<SseMessage> {
-        let mut event_type = "message".to_string();
-        let mut data = String::new();
-        let mut id = None;
+    /// Parse a JSON-RPC message from a string
+    fn parse_json_rpc_message(message: &str) -> Result<JsonRpcMessage> {
+        // Parse the JSON-RPC message
+        let json_rpc: JsonRpcMessage = serde_json::from_str(message)
+            .map_err(|e| Error::Transport(format!("Failed to parse JSON-RPC message: {}", e)))?;
         
-        for line in message.lines() {
-            if line.starts_with("event:") {
-                event_type = line[6..].trim().to_string();
-            } else if line.starts_with("data:") {
-                data = line[5..].trim().to_string();
-            } else if line.starts_with("id:") {
-                id = Some(line[3..].trim().to_string());
-            }
+        // Validate the message according to the MCP specification
+        if json_rpc.jsonrpc != "2.0" {
+            return Err(Error::Transport(format!("Invalid JSON-RPC version: {}", json_rpc.jsonrpc)));
         }
         
-        Ok(SseMessage {
-            event: event_type,
-            data,
-            id,
-        })
+        // Validate that the message is a valid request, response, or notification
+        if json_rpc.is_request() || json_rpc.is_response() || json_rpc.is_notification() {
+            Ok(json_rpc)
+        } else {
+            Err(Error::Transport("Invalid JSON-RPC message format".to_string()))
+        }
     }
 }
 
@@ -534,8 +506,8 @@ impl Transport for StdioTransport {
             None => return Err(Error::Transport("Container name not set".to_string())),
         };
 
-        // Create message channels
-        let (message_tx, message_rx) = mpsc::channel::<SseMessage>(100);
+        // Create message channels for JSON-RPC messages
+        let (message_tx, message_rx) = mpsc::channel::<JsonRpcMessage>(100);
         {
             let mut guard = self.message_tx.lock().await;
             *guard = Some(message_tx);
@@ -566,15 +538,15 @@ impl Transport for StdioTransport {
                 response_tx,
                 shutdown_rx,
             ).await {
-                eprintln!("Error processing messages: {}", e);
+                log::error!("Error processing messages: {}", e);
             }
         });
 
-        println!("STDIO transport started for container {}", container_name);
+        log::debug!("STDIO transport started for container {}", container_name);
 
         // Start the HTTP server
         if let Err(e) = self.start_http_server(self.port).await {
-            eprintln!("Failed to start HTTP server: {}", e);
+            log::error!("Failed to start HTTP server: {}", e);
             // Continue anyway, as the STDIO transport is still functional
         }
 
@@ -586,14 +558,14 @@ impl Transport for StdioTransport {
         let mut guard = self.shutdown_tx.lock().await;
         if let Some(tx) = guard.take() {
             let _ = tx.send(());
-            println!("STDIO transport stopped");
+            log::debug!("STDIO transport stopped");
         }
 
         // Stop the HTTP server if it's running
         let mut http_guard = self.http_shutdown_tx.lock().await;
         if let Some(tx) = http_guard.take() {
             let _ = tx.send(());
-            println!("HTTP reverse proxy stopped");
+            log::debug!("HTTP reverse proxy stopped");
         }
 
         Ok(())
@@ -613,22 +585,102 @@ impl Transport for StdioTransport {
     }
 }
 
-/// SSE message structure
-#[derive(Debug, Clone)]
-pub struct SseMessage {
-    pub event: String,
-    pub data: String,
-    pub id: Option<String>,
+/// JSON-RPC error structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcError {
+    pub code: i32,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
-/// JSON-RPC message structure
+/// JSON-RPC message structure that follows the MCP protocol specification
+/// This can represent any of the three message types defined in the MCP spec:
+/// 1. Requests: { jsonrpc: "2.0", id: string|number, method: string, params?: object }
+/// 2. Responses: { jsonrpc: "2.0", id: string|number, result?: object, error?: { code: number, message: string, data?: any } }
+/// 3. Notifications: { jsonrpc: "2.0", method: string, params?: object }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcMessage {
     pub jsonrpc: String,
-    pub method: String,
-    pub params: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<JsonRpcError>,
+}
+
+impl JsonRpcMessage {
+    /// Create a new request message
+    pub fn new_request(method: &str, params: Option<serde_json::Value>, id: serde_json::Value) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            id: Some(id),
+            method: Some(method.to_string()),
+            params,
+            result: None,
+            error: None,
+        }
+    }
+
+    /// Create a new response message
+    pub fn new_response(id: serde_json::Value, result: serde_json::Value) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            id: Some(id),
+            method: None,
+            params: None,
+            result: Some(result),
+            error: None,
+        }
+    }
+
+    /// Create a new error response message
+    pub fn new_error(id: serde_json::Value, code: i32, message: &str, data: Option<serde_json::Value>) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            id: Some(id),
+            method: None,
+            params: None,
+            result: None,
+            error: Some(JsonRpcError {
+                code,
+                message: message.to_string(),
+                data,
+            }),
+        }
+    }
+
+    /// Create a new notification message
+    pub fn new_notification(method: &str, params: Option<serde_json::Value>) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            method: Some(method.to_string()),
+            params,
+            result: None,
+            error: None,
+        }
+    }
+
+    /// Check if this is a request message
+    pub fn is_request(&self) -> bool {
+        self.id.is_some() && self.method.is_some()
+    }
+
+    /// Check if this is a response message
+    pub fn is_response(&self) -> bool {
+        self.id.is_some() && (self.result.is_some() || self.error.is_some())
+    }
+
+    /// Check if this is a notification message
+    pub fn is_notification(&self) -> bool {
+        self.id.is_none() && self.method.is_some()
+    }
 }
 
 /// Dummy container runtime for initialization
@@ -818,107 +870,71 @@ mod tests {
     }
     
     #[test]
-    fn test_sse_to_json_rpc() {
-        // Test with valid JSON data
-        let sse = SseMessage {
-            event: "test-event".to_string(),
-            data: r#"{"key": "value", "number": 42}"#.to_string(),
-            id: Some("123".to_string()),
-        };
+    fn test_json_rpc_message_creation() {
+        // Test request message
+        let request = JsonRpcMessage::new_request(
+            "test-method",
+            Some(serde_json::json!({"key": "value", "number": 42})),
+            serde_json::Value::String("123".to_string())
+        );
         
-        let json_rpc = StdioTransport::sse_to_json_rpc(&sse);
+        assert_eq!(request.jsonrpc, "2.0");
+        assert_eq!(request.method, Some("test-method".to_string()));
+        assert_eq!(request.params.as_ref().unwrap()["key"], "value");
+        assert_eq!(request.params.as_ref().unwrap()["number"], 42);
+        assert_eq!(request.id, Some(serde_json::Value::String("123".to_string())));
+        assert!(request.is_request());
+        assert!(!request.is_response());
+        assert!(!request.is_notification());
         
-        assert_eq!(json_rpc.jsonrpc, "2.0");
-        assert_eq!(json_rpc.method, "test-event");
-        assert_eq!(json_rpc.params["key"], "value");
-        assert_eq!(json_rpc.params["number"], 42);
-        assert_eq!(json_rpc.id, Some(serde_json::Value::String("123".to_string())));
+        // Test response message
+        let response = JsonRpcMessage::new_response(
+            serde_json::Value::String("123".to_string()),
+            serde_json::json!({"result": "success"})
+        );
         
-        // Test with non-JSON data
-        let sse_non_json = SseMessage {
-            event: "plain-text".to_string(),
-            data: "Hello, world!".to_string(),
-            id: None,
-        };
+        assert_eq!(response.jsonrpc, "2.0");
+        assert_eq!(response.method, None);
+        assert_eq!(response.params, None);
+        assert_eq!(response.result.as_ref().unwrap()["result"], "success");
+        assert_eq!(response.id, Some(serde_json::Value::String("123".to_string())));
+        assert!(!response.is_request());
+        assert!(response.is_response());
+        assert!(!response.is_notification());
         
-        let json_rpc_non_json = StdioTransport::sse_to_json_rpc(&sse_non_json);
+        // Test error response message
+        let error_response = JsonRpcMessage::new_error(
+            serde_json::Value::String("123".to_string()),
+            -32600,
+            "Invalid Request",
+            Some(serde_json::json!({"details": "Method not found"}))
+        );
         
-        assert_eq!(json_rpc_non_json.jsonrpc, "2.0");
-        assert_eq!(json_rpc_non_json.method, "plain-text");
-        assert_eq!(json_rpc_non_json.params, serde_json::Value::String("Hello, world!".to_string()));
-        assert_eq!(json_rpc_non_json.id, None);
-    }
-    
-    #[test]
-    fn test_json_rpc_to_sse() {
-        // Test with string ID
-        let json_rpc = JsonRpcMessage {
-            jsonrpc: "2.0".to_string(),
-            method: "test-method".to_string(),
-            params: serde_json::json!({"key": "value", "number": 42}),
-            id: Some(serde_json::Value::String("123".to_string())),
-        };
+        assert_eq!(error_response.jsonrpc, "2.0");
+        assert_eq!(error_response.method, None);
+        assert_eq!(error_response.params, None);
+        assert_eq!(error_response.result, None);
+        assert_eq!(error_response.id, Some(serde_json::Value::String("123".to_string())));
+        assert_eq!(error_response.error.as_ref().unwrap().code, -32600);
+        assert_eq!(error_response.error.as_ref().unwrap().message, "Invalid Request");
+        assert_eq!(error_response.error.as_ref().unwrap().data.as_ref().unwrap()["details"], "Method not found");
+        assert!(!error_response.is_request());
+        assert!(error_response.is_response());
+        assert!(!error_response.is_notification());
         
-        let sse = StdioTransport::json_rpc_to_sse(&json_rpc);
+        // Test notification message
+        let notification = JsonRpcMessage::new_notification(
+            "test-notification",
+            Some(serde_json::json!({"event": "update"}))
+        );
         
-        assert_eq!(sse.event, "test-method");
-        assert_eq!(sse.data, r#"{"key":"value","number":42}"#);
-        assert_eq!(sse.id, Some("123".to_string()));
-        
-        // Test with numeric ID
-        let json_rpc_num_id = JsonRpcMessage {
-            jsonrpc: "2.0".to_string(),
-            method: "test-method".to_string(),
-            params: serde_json::json!({"key": "value"}),
-            id: Some(serde_json::Value::Number(serde_json::Number::from(456))),
-        };
-        
-        let sse_num_id = StdioTransport::json_rpc_to_sse(&json_rpc_num_id);
-        
-        assert_eq!(sse_num_id.event, "test-method");
-        assert_eq!(sse_num_id.data, r#"{"key":"value"}"#);
-        assert_eq!(sse_num_id.id, Some("456".to_string()));
-        
-        // Test without ID
-        let json_rpc_no_id = JsonRpcMessage {
-            jsonrpc: "2.0".to_string(),
-            method: "test-method".to_string(),
-            params: serde_json::json!("simple string"),
-            id: None,
-        };
-        
-        let sse_no_id = StdioTransport::json_rpc_to_sse(&json_rpc_no_id);
-        
-        assert_eq!(sse_no_id.event, "test-method");
-        assert_eq!(sse_no_id.data, r#""simple string""#);
-        assert_eq!(sse_no_id.id, None);
-    }
-    
-    #[test]
-    fn test_parse_sse_message() {
-        // Test with all fields
-        let message = "event: test-event\ndata: {\"key\": \"value\"}\nid: 123";
-        let sse = StdioTransport::parse_sse_message(message).unwrap();
-        
-        assert_eq!(sse.event, "test-event");
-        assert_eq!(sse.data, "{\"key\": \"value\"}");
-        assert_eq!(sse.id, Some("123".to_string()));
-        
-        // Test with only data
-        let message_data_only = "data: Hello, world!";
-        let sse_data_only = StdioTransport::parse_sse_message(message_data_only).unwrap();
-        
-        assert_eq!(sse_data_only.event, "message"); // Default event type
-        assert_eq!(sse_data_only.data, "Hello, world!");
-        assert_eq!(sse_data_only.id, None);
-        
-        // Test with empty message
-        let message_empty = "";
-        let sse_empty = StdioTransport::parse_sse_message(message_empty).unwrap();
-        
-        assert_eq!(sse_empty.event, "message"); // Default event type
-        assert_eq!(sse_empty.data, "");
-        assert_eq!(sse_empty.id, None);
+        assert_eq!(notification.jsonrpc, "2.0");
+        assert_eq!(notification.method, Some("test-notification".to_string()));
+        assert_eq!(notification.params.as_ref().unwrap()["event"], "update");
+        assert_eq!(notification.id, None);
+        assert!(!notification.is_request());
+        assert!(!notification.is_response());
+        assert!(notification.is_notification());
     }
     
     #[tokio::test]
@@ -1001,11 +1017,12 @@ mod tests {
         // Create a transport
         let transport = StdioTransport::new(8080);
         
-        // Create a request
+        // Create a request with invalid JSON-RPC message
         let req = hyper::Request::builder()
             .method("POST")
             .uri("http://localhost:8080/")
-            .body(hyper::Body::from("event: test\ndata: test data"))
+            .header("Content-Type", "application/json")
+            .body(hyper::Body::from("invalid json"))
             .unwrap();
         
         // Try to handle the request (should fail because message_tx is not set)
@@ -1023,14 +1040,25 @@ mod tests {
         let transport = StdioTransport::new(8080);
         
         // Create message channels
-        let (message_tx, _message_rx) = mpsc::channel::<SseMessage>(100);
+        let (message_tx, _message_rx) = mpsc::channel::<JsonRpcMessage>(100);
         *transport.message_tx.lock().await = Some(message_tx);
+        
+        // Create a JSON-RPC request
+        let json_rpc_request = JsonRpcMessage::new_request(
+            "test-method",
+            Some(serde_json::json!({"key": "value"})),
+            serde_json::Value::String("123".to_string())
+        );
+        
+        // Serialize to JSON
+        let json_str = serde_json::to_string(&json_rpc_request).unwrap();
         
         // Create a request
         let req = hyper::Request::builder()
             .method("POST")
             .uri("http://localhost:8080/")
-            .body(hyper::Body::from("event: test\ndata: test data"))
+            .header("Content-Type", "application/json")
+            .body(hyper::Body::from(json_str))
             .unwrap();
         
         // Handle the request (should succeed now that message_tx is set)
@@ -1043,28 +1071,41 @@ mod tests {
     }
     
     #[test]
-    fn test_sse_message_creation() {
-        // Test with all fields
-        let sse = SseMessage {
-            event: "test-event".to_string(),
-            data: "{\"key\": \"value\"}".to_string(),
-            id: Some("123".to_string()),
-        };
+    fn test_parse_json_rpc_message() {
+        // Valid request
+        let request_str = r#"{"jsonrpc":"2.0","id":"1","method":"test","params":{"key":"value"}}"#;
+        let request = StdioTransport::parse_json_rpc_message(request_str).unwrap();
+        assert!(request.is_request());
+        assert_eq!(request.method, Some("test".to_string()));
+        assert_eq!(request.id, Some(serde_json::Value::String("1".to_string())));
         
-        assert_eq!(sse.event, "test-event");
-        assert_eq!(sse.data, "{\"key\": \"value\"}");
-        assert_eq!(sse.id, Some("123".to_string()));
+        // Valid response
+        let response_str = r#"{"jsonrpc":"2.0","id":"1","result":{"status":"success"}}"#;
+        let response = StdioTransport::parse_json_rpc_message(response_str).unwrap();
+        assert!(response.is_response());
+        assert_eq!(response.result.as_ref().unwrap()["status"], "success");
         
-        // Test without ID
-        let sse_no_id = SseMessage {
-            event: "test-event".to_string(),
-            data: "{\"key\": \"value\"}".to_string(),
-            id: None,
-        };
+        // Valid error response
+        let error_str = r#"{"jsonrpc":"2.0","id":"1","error":{"code":-32600,"message":"Invalid Request"}}"#;
+        let error = StdioTransport::parse_json_rpc_message(error_str).unwrap();
+        assert!(error.is_response());
+        assert_eq!(error.error.as_ref().unwrap().code, -32600);
         
-        assert_eq!(sse_no_id.event, "test-event");
-        assert_eq!(sse_no_id.data, "{\"key\": \"value\"}");
-        assert_eq!(sse_no_id.id, None);
+        // Valid notification
+        let notification_str = r#"{"jsonrpc":"2.0","method":"update","params":{"status":"complete"}}"#;
+        let notification = StdioTransport::parse_json_rpc_message(notification_str).unwrap();
+        assert!(notification.is_notification());
+        assert_eq!(notification.method, Some("update".to_string()));
+        
+        // Invalid JSON-RPC version
+        let invalid_version = r#"{"jsonrpc":"1.0","id":"1","method":"test"}"#;
+        let result = StdioTransport::parse_json_rpc_message(invalid_version);
+        assert!(result.is_err());
+        
+        // Invalid message format (neither request, response, nor notification)
+        let invalid_format = r#"{"jsonrpc":"2.0"}"#;
+        let result = StdioTransport::parse_json_rpc_message(invalid_format);
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -1168,8 +1209,8 @@ mod tests {
         let received = rx.recv().await;
         assert!(received.is_some());
         let message = received.unwrap();
-        assert_eq!(message.method, "test");
-        assert_eq!(message.params["key"], "value");
+        assert_eq!(message.method, Some("test".to_string()));
+        assert_eq!(message.params.as_ref().unwrap()["key"], "value");
         
         Ok(())
     }
@@ -1190,8 +1231,8 @@ mod tests {
         assert!(received.is_some());
         let message = received.unwrap();
         assert_eq!(message.jsonrpc, "2.0");
-        assert_eq!(message.method, "test");
-        assert_eq!(message.params["key"], "value");
+        assert_eq!(message.method, Some("test".to_string()));
+        assert_eq!(message.params.as_ref().unwrap()["key"], "value");
         assert_eq!(message.id, Some(serde_json::Value::String("1".to_string())));
         
         // Invalid JSON-RPC message
@@ -1210,15 +1251,15 @@ mod tests {
         // Create a mock stdin
         let mut stdin = Box::new(MockAsyncReadWrite::new()) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
         
-        // Create an SSE message
-        let sse_message = SseMessage {
-            event: "test-event".to_string(),
-            data: r#"{"key":"value"}"#.to_string(),
-            id: Some("123".to_string()),
-        };
+        // Create a JSON-RPC message
+        let json_rpc_message = JsonRpcMessage::new_request(
+            "test-method",
+            Some(serde_json::json!({"key": "value"})),
+            serde_json::Value::String("123".to_string())
+        );
         
         // Send the message
-        let result = StdioTransport::send_message_to_container(&mut stdin, &sse_message).await;
+        let result = StdioTransport::send_message_to_container(&mut stdin, &json_rpc_message).await;
         
         // Check that it succeeded
         assert!(result.is_ok());
@@ -1331,12 +1372,12 @@ mod tests {
         
         // Should receive two messages
         let msg1 = rx.recv().await.unwrap();
-        assert_eq!(msg1.method, "test1");
-        assert_eq!(msg1.params["key"], "value1");
+        assert_eq!(msg1.method, Some("test1".to_string()));
+        assert_eq!(msg1.params.as_ref().unwrap()["key"], "value1");
         
         let msg2 = rx.recv().await.unwrap();
-        assert_eq!(msg2.method, "test2");
-        assert_eq!(msg2.params["key"], "value2");
+        assert_eq!(msg2.method, Some("test2".to_string()));
+        assert_eq!(msg2.params.as_ref().unwrap()["key"], "value2");
         
         Ok(())
     }
@@ -1373,15 +1414,15 @@ mod tests {
         // Create a failing stdin
         let mut stdin = Box::new(FailingAsyncWrite) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
         
-        // Create an SSE message
-        let sse_message = SseMessage {
-            event: "test-event".to_string(),
-            data: r#"{"key":"value"}"#.to_string(),
-            id: Some("123".to_string()),
-        };
+        // Create a JSON-RPC message
+        let json_rpc_message = JsonRpcMessage::new_request(
+            "test-method",
+            Some(serde_json::json!({"key": "value"})),
+            serde_json::Value::String("123".to_string())
+        );
         
         // Send the message
-        let result = StdioTransport::send_message_to_container(&mut stdin, &sse_message).await;
+        let result = StdioTransport::send_message_to_container(&mut stdin, &json_rpc_message).await;
         
         // Should fail with a transport error
         assert!(result.is_err());
@@ -1424,15 +1465,15 @@ mod tests {
         // Create a failing stdin
         let mut stdin = Box::new(FailingFlushAsyncWrite) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
         
-        // Create an SSE message
-        let sse_message = SseMessage {
-            event: "test-event".to_string(),
-            data: r#"{"key":"value"}"#.to_string(),
-            id: Some("123".to_string()),
-        };
+        // Create a JSON-RPC message
+        let json_rpc_message = JsonRpcMessage::new_request(
+            "test-method",
+            Some(serde_json::json!({"key": "value"})),
+            serde_json::Value::String("123".to_string())
+        );
         
         // Send the message
-        let result = StdioTransport::send_message_to_container(&mut stdin, &sse_message).await;
+        let result = StdioTransport::send_message_to_container(&mut stdin, &json_rpc_message).await;
         
         // Should fail with a transport error
         assert!(result.is_err());

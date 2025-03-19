@@ -350,6 +350,9 @@ impl ContainerRuntime for PodmanClient {
             })
             .collect();
 
+        // Check if STDIO transport is being used
+        let is_stdio_transport = env_vars.get("MCP_TRANSPORT").map_or(false, |v| v == "stdio");
+        
         // Create container configuration
         let create_config = PodmanCreateContainerConfig {
             image: image.to_string(),
@@ -357,6 +360,11 @@ impl ContainerRuntime for PodmanClient {
             command: Some(command),
             env: Some(env_vars),
             labels: Some(labels),
+            // Set stdin/stdout attachment options if using STDIO transport
+            attach_stdin: if is_stdio_transport { Some(true) } else { None },
+            attach_stdout: if is_stdio_transport { Some(true) } else { None },
+            attach_stderr: if is_stdio_transport { Some(true) } else { None },
+            open_stdin: if is_stdio_transport { Some(true) } else { None },
             host_config: PodmanHostConfig {
                 mounts: Some(mounts),
                 network_mode: permission_config.network_mode,
@@ -739,6 +747,14 @@ struct PodmanCreateContainerConfig {
     env: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "Labels")]
     labels: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "AttachStdin")]
+    attach_stdin: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "AttachStdout")]
+    attach_stdout: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "AttachStderr")]
+    attach_stderr: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "OpenStdin")]
+    open_stdin: Option<bool>,
     #[serde(rename = "HostConfig")]
     host_config: PodmanHostConfig,
 }

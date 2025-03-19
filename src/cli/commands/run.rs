@@ -15,9 +15,9 @@ pub struct RunCommand {
     #[arg(long, default_value = "stdio")]
     pub transport: String,
 
-    /// Name of the MCP server
-    #[arg(long)]
-    pub name: String,
+    /// Name of the MCP server (auto-generated from image if not provided)
+    #[arg(long, required = false)]
+    pub name: Option<String>,
 
     /// Port to expose (for SSE transport or STDIO reverse proxy)
     #[arg(long)]
@@ -40,6 +40,42 @@ pub struct RunCommand {
 }
 
 impl RunCommand {
+    /// Generate a container name from the image name
+    /// If a name is provided, it will be used
+    /// If no name is provided, one will be generated from the image name
+    fn get_container_name(&self) -> String {
+        if let Some(name) = &self.name {
+            return name.clone();
+        }
+
+        // Extract the base name from the image, preserving registry namespaces
+        // Examples:
+        // - "nginx:latest" -> "nginx"
+        // - "docker.io/library/nginx:latest" -> "docker.io-library-nginx"
+        // - "quay.io/stacklok/mcp-server:v1" -> "quay.io-stacklok-mcp-server"
+        
+        // First, remove the tag part (everything after the colon)
+        let image_without_tag = self.image.split(':').next().unwrap_or(&self.image);
+        
+        // Replace slashes with dashes to preserve namespace structure
+        let namespace_name = image_without_tag.replace('/', "-");
+        
+        // Sanitize the name (allow alphanumeric, dashes, and dots)
+        let sanitized_name: String = namespace_name
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '-' })
+            .collect();
+
+        // Add a random suffix to ensure uniqueness
+        // Use a timestamp-based suffix
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        format!("{}-{}", sanitized_name, timestamp)
+    }
+
     /// Select a port based on the provided port option
     /// If a specific port (not 0) is provided, it will be used if available
     /// If no port is provided or port is 0, a random available port will be selected
@@ -114,10 +150,13 @@ impl RunCommand {
         permission_config: crate::permissions::profile::ContainerPermissionConfig,
         skip_ctrl_c: bool, // For testing
     ) -> Result<()> {
+        // Get the container name (either provided or generated)
+        let container_name = self.get_container_name();
+
         // Create labels for the container
         let mut labels = HashMap::new();
         labels.insert("vibetool".to_string(), "true".to_string());
-        labels.insert("vibetool-name".to_string(), self.name.clone());
+        labels.insert("vibetool-name".to_string(), container_name.clone());
         labels.insert("vibetool-transport".to_string(), self.transport.clone());
 
         // Create environment variables for the container
@@ -159,7 +198,7 @@ impl RunCommand {
         let container_id = runtime
             .create_and_start_container(
                 &self.image,
-                &self.name,
+                &container_name,
                 self.args.clone(),
                 env_vars,
                 labels,
@@ -182,14 +221,14 @@ impl RunCommand {
 
         // Start the transport
         let mut transport_env_vars = HashMap::new();
-        transport.setup(&container_id, &self.name, self.port, &mut transport_env_vars, container_ip).await?;
+        transport.setup(&container_id, &container_name, self.port, &mut transport_env_vars, container_ip).await?;
         transport.start().await?;
 
-        log::info!("MCP server {} started with container ID {}", self.name, container_id);
+        log::info!("MCP server {} started with container ID {}", container_name, container_id);
         
         // Create a container monitor
         let runtime_for_monitor = ContainerRuntimeFactory::create().await?;
-        let mut monitor = ContainerMonitor::new(runtime_for_monitor, &container_id, &self.name);
+        let mut monitor = ContainerMonitor::new(runtime_for_monitor, &container_id, &container_name);
         
         // Start monitoring the container
         let mut error_rx = monitor.start_monitoring().await?;
@@ -220,7 +259,7 @@ impl RunCommand {
             // Try to stop the container (it might already be stopped)
             let _ = runtime.stop_container(&container_id).await;
 
-            log::info!("MCP server {} stopped", self.name);
+            log::info!("MCP server {} stopped", container_name);
         }
 
         Ok(())
@@ -257,12 +296,72 @@ mod tests {
         Ok(())
     }
     
+    #[test]
+    fn test_get_container_name() {
+        // Test with name provided
+        let cmd = RunCommand {
+            transport: "stdio".to_string(),
+            name: Some("my-custom-name".to_string()),
+            port: None,
+            permission_profile: "stdio".to_string(),
+            env: vec![],
+            image: "test-image:latest".to_string(),
+            args: vec![],
+        };
+        
+        assert_eq!(cmd.get_container_name(), "my-custom-name");
+        
+        // Test with no name provided (should generate from image)
+        let cmd = RunCommand {
+            transport: "stdio".to_string(),
+            name: None,
+            port: None,
+            permission_profile: "stdio".to_string(),
+            env: vec![],
+            image: "nginx:latest".to_string(),
+            args: vec![],
+        };
+        
+        let generated_name = cmd.get_container_name();
+        assert!(generated_name.starts_with("nginx-"));
+        
+        // Test with registry namespace
+        let cmd = RunCommand {
+            transport: "stdio".to_string(),
+            name: None,
+            port: None,
+            permission_profile: "stdio".to_string(),
+            env: vec![],
+            image: "docker.io/library/nginx:latest".to_string(),
+            args: vec![],
+        };
+        
+        let generated_name = cmd.get_container_name();
+        println!("Generated name for docker.io/library/nginx:latest: {}", generated_name);
+        // The implementation replaces slashes with dashes
+        assert!(generated_name.contains("docker.io-library-nginx"));
+        
+        // Test with special characters
+        let cmd = RunCommand {
+            transport: "stdio".to_string(),
+            name: None,
+            port: None,
+            permission_profile: "stdio".to_string(),
+            env: vec![],
+            image: "my_special@image:1.0".to_string(),
+            args: vec![],
+        };
+        
+        let generated_name = cmd.get_container_name();
+        assert!(generated_name.starts_with("my-special-image-"));
+    }
+
     #[tokio::test]
     async fn test_port_selection() -> Result<()> {
         // Test with no port specified
         let cmd = RunCommand {
             transport: "sse".to_string(),
-            name: "test-server".to_string(),
+            name: Some("test-server".to_string()),
             port: None,
             permission_profile: "network".to_string(),
             env: vec![],
@@ -279,7 +378,7 @@ mod tests {
         // Test with port 0 (should select a random port)
         let cmd = RunCommand {
             transport: "sse".to_string(),
-            name: "test-server".to_string(),
+            name: Some("test-server".to_string()),
             port: Some(0),
             permission_profile: "network".to_string(),
             env: vec![],
@@ -297,7 +396,7 @@ mod tests {
         let specific_port = 8080;
         let cmd = RunCommand {
             transport: "sse".to_string(),
-            name: "test-server".to_string(),
+            name: Some("test-server".to_string()),
             port: Some(specific_port),
             permission_profile: "network".to_string(),
             env: vec![],
@@ -317,7 +416,7 @@ mod tests {
         // Test invalid transport mode
         let cmd = RunCommand {
             transport: "invalid".to_string(),
-            name: "test-server".to_string(),
+            name: Some("test-server".to_string()),
             port: Some(8080),
             permission_profile: "network".to_string(),
             env: vec![],

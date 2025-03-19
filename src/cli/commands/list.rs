@@ -12,9 +12,9 @@ pub struct ListCommand {
     #[arg(short, long)]
     pub all: bool,
 
-    /// Output in JSON format
-    #[arg(short, long)]
-    pub json: bool,
+    /// Output format (json or text)
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 /// Container information for JSON output
@@ -53,10 +53,9 @@ impl ListCommand {
             containers
         };
 
-        if self.json {
-            self.print_json_output(&containers)?;
-        } else {
-            self.print_text_output(&containers);
+        match self.format.as_str() {
+            "json" => self.print_json_output(&containers)?,
+            _ => self.print_text_output(&containers),
         }
 
         Ok(())
@@ -126,7 +125,7 @@ mod tests {
             });
         
         // Create and execute the command
-        let cmd = ListCommand { all: true, json: false };
+        let cmd = ListCommand { all: true, format: "text".to_string() };
         let result = cmd.execute_with_runtime(Box::new(mock_runtime)).await;
         
         // Verify the result
@@ -151,7 +150,7 @@ mod tests {
             });
         
         // Create and execute the command
-        let cmd = ListCommand { all: false, json: false };
+        let cmd = ListCommand { all: false, format: "text".to_string() };
         let result = cmd.execute_with_runtime(Box::new(mock_runtime)).await;
         
         // Verify the result
@@ -175,7 +174,7 @@ mod tests {
             });
         
         // Create and execute the command with JSON output
-        let cmd = ListCommand { all: true, json: true };
+        let cmd = ListCommand { all: true, format: "json".to_string() };
         let result = cmd.execute_with_runtime(Box::new(mock_runtime)).await;
         
         // Verify the result

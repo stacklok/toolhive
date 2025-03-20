@@ -76,13 +76,11 @@ impl ContainerClient {
         
         // Check if the socket exists
         if !Path::new(socket_path).exists() {
-            log::debug!("{} socket not found at {}", runtime_name, socket_path);
             return Err(Error::ContainerRuntime(format!(
                 "{} socket not found at {}",
                 runtime_name, socket_path
             )));
         }
-        log::debug!("{} socket exists at {}", runtime_name, socket_path);
 
         // Create Docker client with Unix socket support
         // Use the bollard library to connect to the container socket
@@ -93,7 +91,6 @@ impl ContainerClient {
         ) {
             Ok(client) => client,
             Err(e) => {
-                log::debug!("Failed to connect to {} socket: {}", runtime_name, e);
                 return Err(Error::ContainerRuntime(format!(
                     "Failed to connect to {} socket: {}",
                     runtime_name, e
@@ -107,20 +104,18 @@ impl ContainerClient {
         };
 
         // Verify that the container runtime is available by pinging the API
-        log::debug!("Pinging {} API...", runtime_name);
         match container_client.client.ping().await {
-            Ok(_) => log::debug!("{} API ping successful", runtime_name),
+            Ok(_) => {
+                log::debug!("{} client created successfully", runtime_name);
+                Ok(container_client)
+            },
             Err(e) => {
-                log::debug!("{} API ping failed: {}", runtime_name, e);
-                return Err(Error::ContainerRuntime(format!(
+                Err(Error::ContainerRuntime(format!(
                     "{} API ping failed: {}",
                     runtime_name, e
-                )));
+                )))
             }
         }
-
-        log::debug!("{} client created successfully", runtime_name);
-        Ok(container_client)
     }
 
     /// Find a container socket path, preferring Podman over Docker
@@ -130,9 +125,8 @@ impl ContainerClient {
         // Try Podman sockets first
         
         // Check standard Podman location
-        log::debug!("Checking standard Podman location: {}", PODMAN_SOCKET_PATH);
         if Path::new(PODMAN_SOCKET_PATH).exists() {
-            log::debug!("Found Podman socket at standard location: {}", PODMAN_SOCKET_PATH);
+            log::debug!("Found Podman socket at: {}", PODMAN_SOCKET_PATH);
             return Ok((PODMAN_SOCKET_PATH.to_string(), RuntimeType::Podman));
         }
 
@@ -141,13 +135,10 @@ impl ContainerClient {
             let xdg_socket_path = PathBuf::from(xdg_runtime_dir)
                 .join(PODMAN_XDG_RUNTIME_SOCKET_PATH);
             
-            log::debug!("Checking XDG_RUNTIME_DIR location for Podman: {}", xdg_socket_path.display());
             if xdg_socket_path.exists() {
-                log::debug!("Found Podman socket at XDG_RUNTIME_DIR location: {}", xdg_socket_path.display());
+                log::debug!("Found Podman socket at: {}", xdg_socket_path.display());
                 return Ok((xdg_socket_path.to_string_lossy().to_string(), RuntimeType::Podman));
             }
-        } else {
-            log::debug!("XDG_RUNTIME_DIR environment variable not set");
         }
 
         // Check user-specific location for Podman
@@ -155,23 +146,18 @@ impl ContainerClient {
             let user_socket_path = PathBuf::from(home)
                 .join(".local/share/containers/podman/machine/podman.sock");
             
-            log::debug!("Checking user-specific location for Podman: {}", user_socket_path.display());
             if user_socket_path.exists() {
-                log::debug!("Found Podman socket at user-specific location: {}", user_socket_path.display());
+                log::debug!("Found Podman socket at: {}", user_socket_path.display());
                 return Ok((user_socket_path.to_string_lossy().to_string(), RuntimeType::Podman));
             }
-        } else {
-            log::debug!("HOME environment variable not set");
         }
 
         // Try Docker socket as fallback
-        log::debug!("Checking Docker socket location: {}", DOCKER_SOCKET_PATH);
         if Path::new(DOCKER_SOCKET_PATH).exists() {
             log::debug!("Found Docker socket at: {}", DOCKER_SOCKET_PATH);
             return Ok((DOCKER_SOCKET_PATH.to_string(), RuntimeType::Docker));
         }
 
-        log::debug!("No container socket found in any location");
         Err(Error::ContainerRuntime("No container socket found".to_string()))
     }
 }

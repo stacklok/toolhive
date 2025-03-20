@@ -23,21 +23,32 @@ use crate::error::{Error, Result};
 use crate::labels;
 use crate::permissions::profile::ContainerPermissionConfig;
 
+// Container socket paths
 // Podman socket paths
 const PODMAN_SOCKET_PATH: &str = "/var/run/podman/podman.sock";
 const PODMAN_XDG_RUNTIME_SOCKET_PATH: &str = "podman/podman.sock";
+// Docker socket paths
+const DOCKER_SOCKET_PATH: &str = "/var/run/docker.sock";
 
-/// Client for interacting with the Podman API
-pub struct PodmanClient {
-    client: Docker,
+/// Runtime type
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RuntimeType {
+    Podman,
+    Docker,
 }
 
-impl PodmanClient {
-    /// Create a new Podman client
+/// Client for interacting with container runtimes (Podman or Docker)
+pub struct ContainerClient {
+    client: Docker,
+    pub runtime_type: RuntimeType,
+}
+
+impl ContainerClient {
+    /// Create a new container client
     pub async fn new() -> Result<Self> {
-        // Try to find the Podman socket in various locations
-        let socket_path = Self::find_podman_socket()?;
-        Self::with_socket_path(&socket_path).await
+        // Try to find a container socket in various locations
+        let (socket_path, runtime_type) = Self::find_container_socket()?;
+        Self::with_socket_path(&socket_path, runtime_type).await
     }
     
     /// Parse a timestamp string into a Unix timestamp (seconds since epoch)
@@ -54,22 +65,27 @@ impl PodmanClient {
         }
     }
 
-    /// Create a new Podman client with a custom socket path
-    pub async fn with_socket_path(socket_path: &str) -> Result<Self> {
-        log::debug!("Creating Podman client with socket path: {}", socket_path);
+    /// Create a new container client with a custom socket path
+    pub async fn with_socket_path(socket_path: &str, runtime_type: RuntimeType) -> Result<Self> {
+        let runtime_name = match runtime_type {
+            RuntimeType::Podman => "Podman",
+            RuntimeType::Docker => "Docker",
+        };
+        
+        log::debug!("Creating {} client with socket path: {}", runtime_name, socket_path);
         
         // Check if the socket exists
         if !Path::new(socket_path).exists() {
-            log::debug!("Podman socket not found at {}", socket_path);
+            log::debug!("{} socket not found at {}", runtime_name, socket_path);
             return Err(Error::ContainerRuntime(format!(
-                "Podman socket not found at {}",
-                socket_path
+                "{} socket not found at {}",
+                runtime_name, socket_path
             )));
         }
-        log::debug!("Podman socket exists at {}", socket_path);
+        log::debug!("{} socket exists at {}", runtime_name, socket_path);
 
         // Create Docker client with Unix socket support
-        // Use the bollard library to connect to the Podman socket
+        // Use the bollard library to connect to the container socket
         let client = match Docker::connect_with_socket(
             socket_path,
             120, // timeout in seconds
@@ -77,89 +93,101 @@ impl PodmanClient {
         ) {
             Ok(client) => client,
             Err(e) => {
-                log::debug!("Failed to connect to Podman socket: {}", e);
+                log::debug!("Failed to connect to {} socket: {}", runtime_name, e);
                 return Err(Error::ContainerRuntime(format!(
-                    "Failed to connect to Podman socket: {}",
-                    e
+                    "Failed to connect to {} socket: {}",
+                    runtime_name, e
                 )));
             }
         };
 
-        let podman = Self { client };
+        let container_client = Self {
+            client,
+            runtime_type,
+        };
 
-        // Verify that Podman is available by pinging the API
-        log::debug!("Pinging Podman API...");
-        match podman.client.ping().await {
-            Ok(_) => log::debug!("Podman API ping successful"),
+        // Verify that the container runtime is available by pinging the API
+        log::debug!("Pinging {} API...", runtime_name);
+        match container_client.client.ping().await {
+            Ok(_) => log::debug!("{} API ping successful", runtime_name),
             Err(e) => {
-                log::debug!("Podman API ping failed: {}", e);
+                log::debug!("{} API ping failed: {}", runtime_name, e);
                 return Err(Error::ContainerRuntime(format!(
-                    "Podman API ping failed: {}",
-                    e
+                    "{} API ping failed: {}",
+                    runtime_name, e
                 )));
             }
         }
 
-        log::debug!("Podman client created successfully");
-        Ok(podman)
+        log::debug!("{} client created successfully", runtime_name);
+        Ok(container_client)
     }
 
-    /// Find the Podman socket path
-    fn find_podman_socket() -> Result<String> {
-        log::debug!("Searching for Podman socket...");
+    /// Find a container socket path, preferring Podman over Docker
+    fn find_container_socket() -> Result<(String, RuntimeType)> {
+        log::debug!("Searching for container socket...");
         
-        // Check standard location
-        log::debug!("Checking standard location: {}", PODMAN_SOCKET_PATH);
+        // Try Podman sockets first
+        
+        // Check standard Podman location
+        log::debug!("Checking standard Podman location: {}", PODMAN_SOCKET_PATH);
         if Path::new(PODMAN_SOCKET_PATH).exists() {
             log::debug!("Found Podman socket at standard location: {}", PODMAN_SOCKET_PATH);
-            return Ok(PODMAN_SOCKET_PATH.to_string());
+            return Ok((PODMAN_SOCKET_PATH.to_string(), RuntimeType::Podman));
         }
 
-        // Check XDG_RUNTIME_DIR location
+        // Check XDG_RUNTIME_DIR location for Podman
         if let Ok(xdg_runtime_dir) = env::var("XDG_RUNTIME_DIR") {
             let xdg_socket_path = PathBuf::from(xdg_runtime_dir)
                 .join(PODMAN_XDG_RUNTIME_SOCKET_PATH);
             
-            log::debug!("Checking XDG_RUNTIME_DIR location: {}", xdg_socket_path.display());
+            log::debug!("Checking XDG_RUNTIME_DIR location for Podman: {}", xdg_socket_path.display());
             if xdg_socket_path.exists() {
                 log::debug!("Found Podman socket at XDG_RUNTIME_DIR location: {}", xdg_socket_path.display());
-                return Ok(xdg_socket_path.to_string_lossy().to_string());
+                return Ok((xdg_socket_path.to_string_lossy().to_string(), RuntimeType::Podman));
             }
         } else {
             log::debug!("XDG_RUNTIME_DIR environment variable not set");
         }
 
-        // Check user-specific location
+        // Check user-specific location for Podman
         if let Ok(home) = env::var("HOME") {
             let user_socket_path = PathBuf::from(home)
                 .join(".local/share/containers/podman/machine/podman.sock");
             
-            log::debug!("Checking user-specific location: {}", user_socket_path.display());
+            log::debug!("Checking user-specific location for Podman: {}", user_socket_path.display());
             if user_socket_path.exists() {
                 log::debug!("Found Podman socket at user-specific location: {}", user_socket_path.display());
-                return Ok(user_socket_path.to_string_lossy().to_string());
+                return Ok((user_socket_path.to_string_lossy().to_string(), RuntimeType::Podman));
             }
         } else {
             log::debug!("HOME environment variable not set");
         }
 
-        log::debug!("Podman socket not found in any location");
-        Err(Error::ContainerRuntime("Podman socket not found".to_string()))
+        // Try Docker socket as fallback
+        log::debug!("Checking Docker socket location: {}", DOCKER_SOCKET_PATH);
+        if Path::new(DOCKER_SOCKET_PATH).exists() {
+            log::debug!("Found Docker socket at: {}", DOCKER_SOCKET_PATH);
+            return Ok((DOCKER_SOCKET_PATH.to_string(), RuntimeType::Docker));
+        }
+
+        log::debug!("No container socket found in any location");
+        Err(Error::ContainerRuntime("No container socket found".to_string()))
     }
 }
 
-/// Podman container attach stream for reading
-pub struct PodmanAttachReader {
+/// Container attach stream for reading
+pub struct ContainerAttachReader {
     output: Pin<Box<dyn Stream<Item = std::result::Result<bollard::container::LogOutput, bollard::errors::Error>> + Send>>,
     buffer: Vec<u8>,
 }
 
-/// Podman container attach stream for writing
-pub struct PodmanAttachWriter {
+/// Container attach stream for writing
+pub struct ContainerAttachWriter {
     input: Pin<Box<dyn AsyncWrite + Send>>,
 }
 
-impl AsyncRead for PodmanAttachReader {
+impl AsyncRead for ContainerAttachReader {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -206,7 +234,7 @@ impl AsyncRead for PodmanAttachReader {
     }
 }
 
-impl AsyncWrite for PodmanAttachWriter {
+impl AsyncWrite for ContainerAttachWriter {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -231,7 +259,7 @@ impl AsyncWrite for PodmanAttachWriter {
 }
 
 #[async_trait]
-impl ContainerRuntime for PodmanClient {
+impl ContainerRuntime for ContainerClient {
     async fn create_container(
         &self,
         image: &str,
@@ -656,12 +684,12 @@ impl ContainerRuntime for PodmanClient {
         match self.client.attach_container(container_id, Some(options)).await {
             Ok(results) => {
                 // Create reader and writer
-                let reader = PodmanAttachReader {
+                let reader = ContainerAttachReader {
                     output: results.output,
                     buffer: Vec::new(),
                 };
                 
-                let writer = PodmanAttachWriter {
+                let writer = ContainerAttachWriter {
                     input: results.input,
                 };
                 
@@ -687,10 +715,10 @@ mod tests {
 
     // Mock for testing
     mock! {
-        pub PodmanClient {}
+        pub ContainerClient {}
 
         #[async_trait]
-        impl ContainerRuntime for PodmanClient {
+        impl ContainerRuntime for ContainerClient {
             async fn create_container(
                 &self,
                 image: &str,

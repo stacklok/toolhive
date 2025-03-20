@@ -9,8 +9,7 @@ use tokio::task::JoinHandle;
 use crate::error::{Error, Result};
 use crate::permissions::profile::ContainerPermissionConfig;
 
-pub mod docker;
-pub mod podman;
+pub mod client;
 
 /// Container information
 #[derive(Debug, Clone)]
@@ -204,14 +203,9 @@ pub struct ContainerRuntimeFactory;
 impl ContainerRuntimeFactory {
     /// Create a container runtime
     pub async fn create() -> Result<Box<dyn ContainerRuntime>> {
-        // Try to create a Podman client first
-        if let Ok(podman) = podman::PodmanClient::new().await {
-            return Ok(Box::new(podman));
-        }
-
-        // Fall back to Docker
-        let docker = docker::DockerClient::new().await?;
-        Ok(Box::new(docker))
+        // Create a container client that supports both Podman and Docker
+        let client = client::ContainerClient::new().await?;
+        Ok(Box::new(client))
     }
     
     // For testing only

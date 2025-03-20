@@ -18,6 +18,7 @@ use crate::transport::{Transport, TransportMode};
 /// SSE client connection
 struct SseClient {
     tx: mpsc::Sender<String>,
+    #[allow(dead_code)]
     created_at: SystemTime,
 }
 
@@ -426,123 +427,6 @@ impl StdioTransport {
         });
 
         Ok(())
-    }
-    
-    /// Handle an HTTP request containing a JSON-RPC message
-    async fn handle_http_request(
-        &self,
-        req: Request<Body>,
-        message_tx: mpsc::Sender<JsonRpcMessage>,
-    ) -> Result<Response<Body>> {
-        // Read the request body
-        let body_bytes = hyper::body::to_bytes(req.into_body()).await
-            .map_err(|e| Error::Transport(format!("Error reading request body: {}", e)))?;
-        
-        let body_str = String::from_utf8_lossy(&body_bytes);
-        
-        // Parse the JSON-RPC message
-        let json_rpc_message = match Self::parse_json_rpc_message(&body_str) {
-            Ok(msg) => msg,
-            Err(e) => {
-                return Ok(Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(Body::from(format!("Error: {}", e)))
-                    .unwrap());
-            }
-        };
-        
-        // Log the message
-        Self::log_json_rpc_message(&json_rpc_message);
-        
-        // Send the message to the processor
-        if let Err(e) = message_tx.send(json_rpc_message.clone()).await {
-            return Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from(format!("Error: {}", e)))
-                .unwrap());
-        }
-        
-        // Get the request ID for matching responses
-        let req_id = json_rpc_message.id.clone();
-        
-        // Wait for a response with a timeout
-        let mut response_option = None;
-        
-        // Get the response receiver
-        let mut rx_guard = self.response_rx.lock().await;
-        if let Some(mut rx) = rx_guard.take() {
-            // Wait for a response with a timeout
-            let timeout = tokio::time::Duration::from_secs(5);
-            let start = std::time::Instant::now();
-            
-            while start.elapsed() < timeout {
-                // Try to receive a message with a short timeout
-                match tokio::time::timeout(
-                    tokio::time::Duration::from_millis(100),
-                    rx.recv()
-                ).await {
-                    Ok(Some(msg)) => {
-                        log::debug!("Received message: {:?}", msg);
-                        
-                        // Check if this is a response to our request
-                        if msg.is_response() && msg.id == req_id {
-                            response_option = Some(msg);
-                            break;
-                        }
-                    },
-                    Ok(None) => {
-                        // Channel closed
-                        log::debug!("Response channel closed");
-                        break;
-                    },
-                    Err(_) => {
-                        // Short timeout, continue waiting
-                    }
-                }
-            }
-            
-            // Put the receiver back
-            *rx_guard = Some(rx);
-        } else {
-            log::error!("Response receiver not available");
-        }
-        
-        // Process the response
-        if let Some(response) = response_option {
-            // Got a response, return it
-            let json_str = serde_json::to_string(&response)
-                .map_err(|e| Error::Transport(format!("Failed to serialize response: {}", e)))?;
-            
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", "application/json")
-                .body(Body::from(json_str))
-                .unwrap())
-        } else if let Some(id) = req_id {
-            // No response, create an error response
-            let error_response = JsonRpcMessage::new_error(
-                id,
-                -32000,
-                "No response received from container",
-                None
-            );
-            
-            let json_str = serde_json::to_string(&error_response)
-                .map_err(|e| Error::Transport(format!("Failed to serialize error response: {}", e)))?;
-            
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", "application/json")
-                .body(Body::from(json_str))
-                .unwrap())
-        } else {
-            // No request ID, return an empty response
-            log::debug!("No request ID, returning empty response");
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .body(Body::empty())
-                .unwrap())
-        }
     }
 
     /// Forward a JSON-RPC message to SSE clients

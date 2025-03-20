@@ -51,6 +51,7 @@ chrono = "0.4"
 urlencoding = "2.1"
 nix = "0.26"
 rand = "0.8"
+bollard = "0.18.1"
 
 [dev-dependencies]
 mockall = "0.11"
@@ -61,7 +62,6 @@ test-log = "0.2"
 cucumber = { version = "0.21.1", features = ["macros"] }
 async-trait = "0.1"
 futures = "0.3"
-testcontainers = "0.14"
 regex = "1.10"
 rand = "0.8"
 

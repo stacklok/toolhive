@@ -6,12 +6,29 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot, Mutex};
+use uuid::Uuid;
 
 use crate::container::ContainerRuntime;
 use crate::error::{Error, Result};
 use crate::transport::{Transport, TransportMode};
+
+/// SSE client connection
+struct SseClient {
+    tx: mpsc::Sender<String>,
+    created_at: SystemTime,
+}
+
+/// Message type for pending SSE messages
+#[derive(Clone)]
+struct PendingMessage {
+    event_type: String,
+    data: String,
+    // None means broadcast to all clients
+    target_client_id: Option<Uuid>,
+}
 
 /// STDIO transport handler for MCP servers
 #[derive(Clone)]
@@ -24,6 +41,9 @@ pub struct StdioTransport {
     message_tx: Arc<Mutex<Option<mpsc::Sender<JsonRpcMessage>>>>,
     response_rx: Arc<Mutex<Option<mpsc::Receiver<JsonRpcMessage>>>>,
     http_shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    sse_clients: Arc<Mutex<HashMap<Uuid, SseClient>>>,
+    // Queue for messages that need to be forwarded to SSE clients
+    pending_messages: Arc<Mutex<Vec<PendingMessage>>>,
 }
 
 impl StdioTransport {
@@ -38,7 +58,255 @@ impl StdioTransport {
             message_tx: Arc::new(Mutex::new(None)),
             response_rx: Arc::new(Mutex::new(None)),
             http_shutdown_tx: Arc::new(Mutex::new(None)),
+            sse_clients: Arc::new(Mutex::new(HashMap::new())),
+            pending_messages: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Send an SSE event to all connected clients
+    async fn send_sse_event(&self, event_type: &str, data: &str) -> Result<()> {
+        let clients = self.sse_clients.lock().await;
+        
+        if clients.is_empty() {
+            println!("DEBUG: No SSE clients connected, skipping event");
+            log::debug!("No SSE clients connected, skipping event");
+            return Ok(());
+        }
+        
+        println!("DEBUG: Sending SSE event to {} clients", clients.len());
+        
+        for (client_id, client) in clients.iter() {
+            let event = format!("event: {}\ndata: {}\n\n", event_type, data);
+            println!("DEBUG: Sending event to client {}: {}", client_id, event);
+            
+            if let Err(e) = client.tx.send(event).await {
+                println!("DEBUG: Failed to send SSE event to client {}: {}", client_id, e);
+                log::error!("Failed to send SSE event to client {}: {}", client_id, e);
+                // We don't remove the client here to avoid modifying the HashMap while iterating
+                // Failed clients will be removed when their connection is closed
+            } else {
+                println!("DEBUG: Successfully sent SSE event to client {}: {}", client_id, event_type);
+                log::debug!("Sent SSE event to client {}: {}", client_id, event_type);
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Handle an SSE connection
+    async fn handle_sse_connection(&self, req: Request<Body>) -> Result<Response<Body>> {
+        println!("DEBUG: handle_sse_connection called");
+        
+        // Extract query for debugging
+        let uri = req.uri();
+        let query = uri.query().unwrap_or("");
+        println!("DEBUG: SSE connection query: {}", query);
+        
+        // Generate a unique client ID
+        let client_id = Uuid::new_v4();
+        println!("DEBUG: Generated client ID for SSE: {}", client_id);
+        
+        // Create a channel for sending events to this client
+        let (mut sender, body) = Body::channel();
+        
+        // Store the client with a channel for sending events
+        let (tx, mut rx) = mpsc::channel::<String>(100);
+        {
+            let mut clients = self.sse_clients.lock().await;
+            clients.insert(client_id, SseClient {
+                tx: tx.clone(),
+                created_at: SystemTime::now(),
+            });
+            println!("DEBUG: Registered SSE client. Active sessions: {:?}",
+                     clients.keys().map(|k| k.to_string()).collect::<Vec<_>>());
+        }
+        
+        // Process any pending messages for this client
+        let messages_to_send = {
+            let mut pending = self.pending_messages.lock().await;
+            if !pending.is_empty() {
+                println!("DEBUG: Processing {} pending messages for new client", pending.len());
+                
+                // Find messages for this client (targeted or broadcast)
+                let mut messages_for_client = Vec::new();
+                let mut remaining_messages = Vec::new();
+                
+                for msg in pending.drain(..) {
+                    // If the message is for all clients or specifically for this client
+                    if msg.target_client_id.is_none() || msg.target_client_id == Some(client_id) {
+                        messages_for_client.push(msg);
+                    } else {
+                        // Keep messages for other clients
+                        remaining_messages.push(msg);
+                    }
+                }
+                
+                // Put back messages for other clients
+                *pending = remaining_messages;
+                
+                println!("DEBUG: Found {} messages for client {}", messages_for_client.len(), client_id);
+                messages_for_client
+            } else {
+                println!("DEBUG: No pending messages to process");
+                Vec::new()
+            }
+        };
+        
+        // Send the relevant messages to this client
+        for msg in messages_to_send {
+            let event = format!("event: {}\ndata: {}\n\n", msg.event_type, msg.data);
+            if let Err(e) = tx.send(event).await {
+                println!("DEBUG: Failed to send pending message to client {}: {}", client_id, e);
+                log::error!("Failed to send pending message to client {}: {}", client_id, e);
+            } else {
+                println!("DEBUG: Successfully sent pending message to client {}", client_id);
+            }
+        }
+        
+        // Create a response with SSE headers
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .header("Connection", "keep-alive")
+            .body(body)
+            .unwrap();
+        
+        // Get the base URL for the POST endpoint
+        let host = req.headers().get("Host").and_then(|h| h.to_str().ok()).unwrap_or("localhost");
+        let scheme = req.headers().get("X-Forwarded-Proto").and_then(|h| h.to_str().ok()).unwrap_or("http");
+        let base_url = format!("{}://{}", scheme, host);
+        
+        // Send the endpoint event
+        let endpoint_url = format!("{}/mcp/v1/jsonrpc?session_id={}", base_url, client_id);
+        println!("DEBUG: Sending endpoint URL: {}", endpoint_url);
+        let endpoint_event = format!("event: endpoint\ndata: {}\n\n", endpoint_url);
+        
+        // Send the initial event directly to the body
+        if let Err(e) = sender.send_data(endpoint_event.into()).await {
+            log::error!("Failed to send endpoint event to client {}: {}", client_id, e);
+            return Err(Error::Transport(format!("Failed to send endpoint event: {}", e)));
+        }
+        
+        // Spawn a task to forward events from the channel to the body
+        let client_id_clone = client_id.clone();
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if let Err(e) = sender.send_data(event.into()).await {
+                    log::error!("Failed to send event to client {}: {}", client_id_clone, e);
+                    break;
+                }
+            }
+        });
+        
+        // Log the connection
+        log::debug!("SSE client {} connected", client_id);
+        
+        Ok(response)
+    }
+
+    /// Handle a POST request with a JSON-RPC message
+    async fn handle_post_request(&self, req: Request<Body>) -> Result<Response<Body>> {
+        // Extract session ID from query parameters
+        let uri = req.uri();
+        let query = uri.query().unwrap_or("");
+        println!("DEBUG: Query string: {}", query);
+        
+        let session_id = query.split('&')
+            .find_map(|param| {
+                let parts: Vec<&str> = param.split('=').collect();
+                if parts.len() == 2 && parts[0] == "session_id" {
+                    println!("DEBUG: Found session_id param: {}", parts[1]);
+                    let parsed = Uuid::parse_str(parts[1]);
+                    if let Err(e) = &parsed {
+                        println!("DEBUG: Failed to parse UUID: {}", e);
+                    }
+                    parsed.ok()
+                } else {
+                    None
+                }
+            });
+        
+        let session_id = match session_id {
+            Some(id) => {
+                println!("DEBUG: Valid session ID: {}", id);
+                id
+            },
+            None => {
+                println!("DEBUG: Missing or invalid session_id");
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from("session_id is required"))
+                    .unwrap());
+            }
+        };
+        
+        // Check if the session exists
+        let client_exists = {
+            let clients = self.sse_clients.lock().await;
+            println!("DEBUG: Checking if session exists. Active sessions: {:?}",
+                     clients.keys().map(|k| k.to_string()).collect::<Vec<_>>());
+            clients.contains_key(&session_id)
+        };
+        
+        if !client_exists {
+            println!("DEBUG: Session not found: {}", session_id);
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("Could not find session"))
+                .unwrap());
+        }
+        
+        println!("DEBUG: Session found: {}", session_id);
+        
+        // Read the request body
+        let body_bytes = hyper::body::to_bytes(req.into_body()).await
+            .map_err(|e| Error::Transport(format!("Error reading request body: {}", e)))?;
+        
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        
+        // Parse the JSON-RPC message
+        let json_rpc_message = match Self::parse_json_rpc_message(&body_str) {
+            Ok(msg) => msg,
+            Err(e) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from(format!("Error: {}", e)))
+                    .unwrap());
+            }
+        };
+        
+        // Log the message
+        Self::log_json_rpc_message(&json_rpc_message);
+        
+        // Get the message sender
+        let message_tx = {
+            let guard = self.message_tx.lock().await;
+            guard.clone()
+        };
+        
+        let message_tx = match message_tx {
+            Some(tx) => tx,
+            None => return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("Message sender not available"))
+                .unwrap()),
+        };
+        
+        // Send the message to the processor
+        if let Err(e) = message_tx.send(json_rpc_message).await {
+            return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from(format!("Error: {}", e)))
+                .unwrap());
+        }
+        
+        // Return a success response immediately
+        println!("DEBUG: Returning ACCEPTED response for POST request");
+        Ok(Response::builder()
+            .status(StatusCode::ACCEPTED)
+            .body(Body::from("Accepted"))
+            .unwrap())
     }
 
     /// Set the container runtime
@@ -49,7 +317,7 @@ impl StdioTransport {
         self
     }
 
-    /// Start the HTTP server for the reverse proxy
+    /// Start the HTTP server for the HTTP with SSE transport
     async fn start_http_server(&self, port: u16) -> Result<()> {
         // Get container ID and name
         let container_id = {
@@ -57,10 +325,9 @@ impl StdioTransport {
             guard.clone()
         };
         
-        let container_id = match container_id {
-            Some(id) => id,
-            None => return Err(Error::Transport("Container ID not set".to_string())),
-        };
+        if container_id.is_none() {
+            return Err(Error::Transport("Container ID not set".to_string()));
+        }
 
         let container_name = {
             let guard = self.container_name.lock().await;
@@ -72,40 +339,57 @@ impl StdioTransport {
             None => return Err(Error::Transport("Container name not set".to_string())),
         };
 
-        // Clone the message sender for use in the service
-        let message_tx = {
-            let guard = self.message_tx.lock().await;
-            guard.clone()
-        };
-        
-        let message_tx = match message_tx {
-            Some(tx) => tx,
-            None => return Err(Error::Transport("Message sender not available".to_string())),
-        };
-
         // Clone self for use in the service
         let transport = self.clone();
 
         // Create service function for handling requests
         let make_svc = make_service_fn(move |_| {
-            let container_id = container_id.clone();
-            let message_tx = message_tx.clone();
             let transport = transport.clone();
             
             async move {
                 Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
-                    let message_tx = message_tx.clone();
                     let transport = transport.clone();
                     
                     async move {
-                        match transport.handle_http_request(req, message_tx).await {
-                            Ok(response) => Ok::<_, hyper::Error>(response),
-                            Err(e) => {
-                                log::error!("Error handling request: {}", e);
-                                // Convert our error to a hyper response with an error status
+                        // Route based on the request path and method
+                        let path = req.uri().path();
+                        let method = req.method();
+                        
+                        println!("DEBUG: Received request: {} {}", method, path);
+                        
+                        match (method, path) {
+                            // SSE endpoint
+                            (&hyper::Method::GET, "/mcp/v1/events") => {
+                                println!("DEBUG: Routing to SSE endpoint");
+                                match transport.handle_sse_connection(req).await {
+                                    Ok(response) => Ok::<_, hyper::Error>(response),
+                                    Err(e) => {
+                                        log::error!("Error handling SSE connection: {}", e);
+                                        Ok(Response::builder()
+                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                            .body(Body::from(format!("Error: {}", e)))
+                                            .unwrap())
+                                    }
+                                }
+                            },
+                            // JSON-RPC endpoint
+                            (&hyper::Method::POST, "/mcp/v1/jsonrpc") => {
+                                match transport.handle_post_request(req).await {
+                                    Ok(response) => Ok::<_, hyper::Error>(response),
+                                    Err(e) => {
+                                        log::error!("Error handling POST request: {}", e);
+                                        Ok(Response::builder()
+                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                            .body(Body::from(format!("Error: {}", e)))
+                                            .unwrap())
+                                    }
+                                }
+                            },
+                            // Not found for other paths
+                            _ => {
                                 Ok(Response::builder()
-                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                    .body(Body::from(format!("Error: {}", e)))
+                                    .status(StatusCode::NOT_FOUND)
+                                    .body(Body::from("Not found"))
                                     .unwrap())
                             }
                         }
@@ -118,8 +402,9 @@ impl StdioTransport {
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         let server = Server::bind(&addr).serve(make_svc);
         
-        log::debug!("Reverse proxy started for STDIO container {} on port {}", container_name, port);
-        log::debug!("Forwarding JSON-RPC messages to container's stdin/stdout");
+        log::debug!("HTTP with SSE transport started for STDIO container {} on port {}", container_name, port);
+        log::debug!("SSE endpoint: http://localhost:{}/mcp/v1/events", port);
+        log::debug!("JSON-RPC endpoint: http://localhost:{}/mcp/v1/jsonrpc", port);
 
         // Create shutdown channel
         let (tx, rx) = oneshot::channel::<()>();
@@ -136,7 +421,7 @@ impl StdioTransport {
         // Spawn the server task
         tokio::spawn(async move {
             if let Err(e) = server_with_shutdown.await {
-                log::error!("Proxy server error: {}", e);
+                log::error!("HTTP server error: {}", e);
             }
         });
 
@@ -260,8 +545,46 @@ impl StdioTransport {
         }
     }
 
+    /// Forward a JSON-RPC message to SSE clients
+    async fn forward_to_sse_clients(&self, json_rpc: &JsonRpcMessage) -> Result<()> {
+        println!("DEBUG: Forwarding JSON-RPC message to SSE clients: {:?}", json_rpc);
+        
+        // Serialize the message to JSON
+        let json_str = serde_json::to_string(json_rpc)
+            .map_err(|e| Error::Transport(format!("Failed to serialize JSON-RPC: {}", e)))?;
+        
+        println!("DEBUG: Serialized JSON-RPC message: {}", json_str);
+        
+        // Check if there are any connected clients
+        let has_clients = {
+            let clients = self.sse_clients.lock().await;
+            !clients.is_empty()
+        };
+        
+        if has_clients {
+            // Send the message as an SSE event
+            self.send_sse_event("message", &json_str).await?;
+            println!("DEBUG: Successfully forwarded JSON-RPC message to SSE clients");
+        } else {
+            // Queue the message for later delivery
+            println!("DEBUG: No SSE clients connected, queueing message for later delivery");
+            let mut pending = self.pending_messages.lock().await;
+            pending.push(PendingMessage {
+                event_type: "message".to_string(),
+                data: json_str.clone(),
+                target_client_id: None, // Broadcast to all clients
+            });
+            println!("DEBUG: Message queued. Queue size: {}", pending.len());
+        }
+        
+        log::debug!("Forwarded JSON-RPC message to SSE clients");
+        
+        Ok(())
+    }
+
     /// Process container stdout data and parse JSON-RPC messages
     async fn process_stdout(
+        transport: Arc<Self>,
         mut stdout: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
         response_tx: mpsc::Sender<JsonRpcMessage>,
     ) {
@@ -284,6 +607,7 @@ impl StdioTransport {
                     log::debug!("Data: {:?}", String::from_utf8_lossy(&buf[..n]));
                     
                     if let Err(e) = Self::process_stdout_chunk(
+                        &transport,
                         &buf[..n],
                         &mut buffer,
                         &mut line_buffer,
@@ -304,6 +628,7 @@ impl StdioTransport {
 
     /// Process a chunk of data from stdout
     async fn process_stdout_chunk(
+        transport: &Arc<Self>,
         data: &[u8],
         buffer: &mut Vec<u8>,
         line_buffer: &mut String,
@@ -327,7 +652,7 @@ impl StdioTransport {
                     // Try to parse as JSON-RPC
                     if !line_buffer.trim().is_empty() {
                         log::debug!("Attempting to parse line as JSON-RPC: {}", line_buffer);
-                        Self::parse_and_send_json_rpc(line_buffer, response_tx).await;
+                        Self::parse_and_forward_json_rpc(transport, line_buffer, response_tx).await;
                     }
                     
                     // Clear the line buffer
@@ -352,8 +677,9 @@ impl StdioTransport {
         Ok(())
     }
 
-    /// Parse a line as JSON-RPC and send it if valid
-    async fn parse_and_send_json_rpc(
+    /// Parse a line as JSON-RPC, forward it to SSE clients, and send it to the response channel
+    async fn parse_and_forward_json_rpc(
+        transport: &Arc<Self>,
         line: &str,
         response_tx: &mpsc::Sender<JsonRpcMessage>,
     ) {
@@ -363,7 +689,12 @@ impl StdioTransport {
             Ok(json_rpc) => {
                 log::debug!("Successfully parsed JSON-RPC message");
                 
-                // Send the response
+                // Forward to SSE clients
+                if let Err(e) = transport.forward_to_sse_clients(&json_rpc).await {
+                    log::error!("Failed to forward to SSE clients: {}", e);
+                }
+                
+                // Also send to the response channel for backward compatibility
                 if let Err(e) = response_tx.send(json_rpc).await {
                     log::error!("Failed to send response: {}", e);
                 } else {
@@ -412,10 +743,25 @@ impl StdioTransport {
         response_tx: mpsc::Sender<JsonRpcMessage>,
         mut shutdown_rx: oneshot::Receiver<()>,
     ) -> Result<()> {
+        // Create a reference to self for the stdout task
+        let transport = Arc::new(Self {
+            port: 0, // Dummy value, not used in the stdout task
+            container_id: Arc::new(Mutex::new(None)),
+            container_name: Arc::new(Mutex::new(None)),
+            runtime: Arc::new(Mutex::new(None)),
+            shutdown_tx: Arc::new(Mutex::new(None)),
+            message_tx: Arc::new(Mutex::new(None)),
+            response_rx: Arc::new(Mutex::new(None)),
+            http_shutdown_tx: Arc::new(Mutex::new(None)),
+            sse_clients: Arc::new(Mutex::new(HashMap::new())),
+            pending_messages: Arc::new(Mutex::new(Vec::new())),
+        });
+        
         // Spawn a task to read from stdout
         let response_tx_clone = response_tx.clone();
+        let transport_clone = transport.clone();
         let stdout_task = tokio::spawn(async move {
-            Self::process_stdout(stdout, response_tx_clone).await;
+            Self::process_stdout(transport_clone, stdout, response_tx_clone).await;
         });
         
         // Process messages until shutdown signal is received
@@ -642,44 +988,7 @@ impl Transport for StdioTransport {
             // Continue anyway, as the STDIO transport is still functional
         }
 
-        // Send initialization message to the MCP server as required by the protocol
-        log::debug!("Sending initialization message to MCP server");
-        let init_message = JsonRpcMessage::new_request(
-            "initialize",
-            Some(serde_json::json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "roots": { "listChanged": true },
-                    "sampling": {}
-                },
-                "clientInfo": {
-                    "name": "vibetool",
-                    "version": "0.1.0"
-                }
-            })),
-            serde_json::Value::String("1".to_string())
-        );
-
-        // Send the initialization message
-        if let Err(e) = message_tx.send(init_message).await {
-            log::error!("Failed to send initialization message: {}", e);
-            return Err(Error::Transport("Failed to send initialization message".to_string()));
-        }
-
-        // Wait a moment for the server to process the initialization
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        // Send the initialized notification
-        log::debug!("Sending initialized notification to MCP server");
-        let init_notification = JsonRpcMessage::new_notification(
-            "notifications/initialized",
-            None
-        );
-
-        if let Err(e) = message_tx.send(init_notification).await {
-            log::error!("Failed to send initialized notification: {}", e);
-            return Err(Error::Transport("Failed to send initialized notification".to_string()));
-        }
+       // Initialization is handled by the client, not the proxy
 
         Ok(())
     }
@@ -696,7 +1005,7 @@ impl Transport for StdioTransport {
         let mut http_guard = self.http_shutdown_tx.lock().await;
         if let Some(tx) = http_guard.take() {
             let _ = tx.send(());
-            log::debug!("HTTP reverse proxy stopped");
+            log::debug!("HTTP with SSE transport stopped");
         }
 
         Ok(())
@@ -1256,6 +1565,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_stdout_chunk() -> Result<()> {
+        // Create a mock transport
+        let transport = Arc::new(StdioTransport::new(8080));
+        
         // Create test data
         let data = b"test line 1\ntest line 2\n";
         let mut buffer = Vec::new();
@@ -1269,6 +1581,7 @@ mod tests {
         
         // Process the chunk
         StdioTransport::process_stdout_chunk(
+            &transport,
             data,
             &mut buffer,
             &mut line_buffer,
@@ -1293,6 +1606,7 @@ mod tests {
         
         // Process the chunk
         StdioTransport::process_stdout_chunk(
+            &transport,
             &buffer,
             &mut Vec::new(),
             &mut line_buffer,
@@ -1310,15 +1624,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_parse_and_send_json_rpc() {
+    async fn test_parse_and_forward_json_rpc() {
+        // Create a mock transport
+        let transport = Arc::new(StdioTransport::new(8080));
+        
         // Create a channel for testing
         let (tx, mut rx) = mpsc::channel::<JsonRpcMessage>(10);
         
         // Valid JSON-RPC message
         let json_rpc = r#"{"jsonrpc":"2.0","method":"test","params":{"key":"value"},"id":"1"}"#;
         
-        // Parse and send
-        StdioTransport::parse_and_send_json_rpc(json_rpc, &tx).await;
+        // Parse and forward
+        StdioTransport::parse_and_forward_json_rpc(&transport, json_rpc, &tx).await;
         
         // Check that we received the message
         let received = rx.recv().await;
@@ -1332,8 +1649,8 @@ mod tests {
         // Invalid JSON-RPC message
         let invalid_json = "not a json";
         
-        // Parse and send (should not panic)
-        StdioTransport::parse_and_send_json_rpc(invalid_json, &tx).await;
+        // Parse and forward (should not panic)
+        StdioTransport::parse_and_forward_json_rpc(&transport, invalid_json, &tx).await;
         
         // No message should be received
         let timeout = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
@@ -1365,6 +1682,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_stdout_chunk_with_partial_lines() -> Result<()> {
+        // Create a mock transport
+        let transport = Arc::new(StdioTransport::new(8080));
+        
         // Create test data with a partial line at the end
         let data = b"complete line 1\npartial line";
         let mut buffer = Vec::new();
@@ -1375,6 +1695,7 @@ mod tests {
         
         // Process the chunk
         StdioTransport::process_stdout_chunk(
+            &transport,
             data,
             &mut buffer,
             &mut line_buffer,
@@ -1392,6 +1713,7 @@ mod tests {
         
         // Process the second chunk
         StdioTransport::process_stdout_chunk(
+            &transport,
             data2,
             &mut buffer,
             &mut line_buffer,
@@ -1409,6 +1731,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_stdout_chunk_with_empty_data() -> Result<()> {
+        // Create a mock transport
+        let transport = Arc::new(StdioTransport::new(8080));
+        
         // Create empty test data
         let data = b"";
         let mut buffer = Vec::new();
@@ -1419,6 +1744,7 @@ mod tests {
         
         // Process the chunk
         let result = StdioTransport::process_stdout_chunk(
+            &transport,
             data,
             &mut buffer,
             &mut line_buffer,
@@ -1439,6 +1765,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_stdout_chunk_with_multiple_json_messages() -> Result<()> {
+        // Create a mock transport
+        let transport = Arc::new(StdioTransport::new(8080));
+        
         // Create test data with multiple JSON-RPC messages
         let json1 = r#"{"jsonrpc":"2.0","method":"test1","params":{"key":"value1"},"id":"1"}"#;
         let json2 = r#"{"jsonrpc":"2.0","method":"test2","params":{"key":"value2"},"id":"2"}"#;
@@ -1452,6 +1781,7 @@ mod tests {
         
         // Process the chunk
         StdioTransport::process_stdout_chunk(
+            &transport,
             &data,
             &mut buffer,
             &mut line_buffer,

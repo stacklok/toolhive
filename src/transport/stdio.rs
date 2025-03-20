@@ -83,63 +83,32 @@ impl StdioTransport {
             None => return Err(Error::Transport("Message sender not available".to_string())),
         };
 
+        // Clone self for use in the service
+        let transport = self.clone();
+
         // Create service function for handling requests
-        let container_id_clone = container_id.clone();
-        let message_tx_clone = message_tx.clone();
-        
         let make_svc = make_service_fn(move |_| {
-            let container_id = container_id_clone.clone();
-            let message_tx = message_tx_clone.clone();
+            let container_id = container_id.clone();
+            let message_tx = message_tx.clone();
+            let transport = transport.clone();
             
             async move {
                 Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
-                    let _container_id = container_id.clone();
                     let message_tx = message_tx.clone();
+                    let transport = transport.clone();
                     
                     async move {
-                        // Read the request body
-                        let body_bytes = match hyper::body::to_bytes(req.into_body()).await {
-                            Ok(bytes) => bytes,
+                        match transport.handle_http_request(req, message_tx).await {
+                            Ok(response) => Ok::<_, hyper::Error>(response),
                             Err(e) => {
-                                log::error!("Error reading request body: {}", e);
-                                return Ok::<_, hyper::Error>(Response::builder()
+                                log::error!("Error handling request: {}", e);
+                                // Convert our error to a hyper response with an error status
+                                Ok(Response::builder()
                                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                                     .body(Body::from(format!("Error: {}", e)))
-                                    .unwrap());
+                                    .unwrap())
                             }
-                        };
-                        
-                        let body_str = String::from_utf8_lossy(&body_bytes);
-                        
-                        // Parse the JSON-RPC message
-                        let json_rpc_message = match StdioTransport::parse_json_rpc_message(&body_str) {
-                            Ok(msg) => msg,
-                            Err(e) => {
-                                log::error!("Error parsing JSON-RPC message: {}", e);
-                                return Ok(Response::builder()
-                                    .status(StatusCode::BAD_REQUEST)
-                                    .body(Body::from(format!("Error: {}", e)))
-                                    .unwrap());
-                            }
-                        };
-                        
-                        // Log the message
-                        StdioTransport::log_json_rpc_message(&json_rpc_message);
-                        
-                        // Send the message to the processor
-                        if let Err(e) = message_tx.send(json_rpc_message).await {
-                            log::error!("Error sending message: {}", e);
-                            return Ok(Response::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(Body::from(format!("Error: {}", e)))
-                                .unwrap());
                         }
-                        
-                        // Return a success response
-                        Ok(Response::builder()
-                            .status(StatusCode::OK)
-                            .body(Body::empty())
-                            .unwrap())
                     }
                 }))
             }
@@ -173,6 +142,123 @@ impl StdioTransport {
 
         Ok(())
     }
+    
+    /// Handle an HTTP request containing a JSON-RPC message
+    async fn handle_http_request(
+        &self,
+        req: Request<Body>,
+        message_tx: mpsc::Sender<JsonRpcMessage>,
+    ) -> Result<Response<Body>> {
+        // Read the request body
+        let body_bytes = hyper::body::to_bytes(req.into_body()).await
+            .map_err(|e| Error::Transport(format!("Error reading request body: {}", e)))?;
+        
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        
+        // Parse the JSON-RPC message
+        let json_rpc_message = match Self::parse_json_rpc_message(&body_str) {
+            Ok(msg) => msg,
+            Err(e) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from(format!("Error: {}", e)))
+                    .unwrap());
+            }
+        };
+        
+        // Log the message
+        Self::log_json_rpc_message(&json_rpc_message);
+        
+        // Send the message to the processor
+        if let Err(e) = message_tx.send(json_rpc_message.clone()).await {
+            return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from(format!("Error: {}", e)))
+                .unwrap());
+        }
+        
+        // Get the request ID for matching responses
+        let req_id = json_rpc_message.id.clone();
+        
+        // Wait for a response with a timeout
+        let mut response_option = None;
+        
+        // Get the response receiver
+        let mut rx_guard = self.response_rx.lock().await;
+        if let Some(mut rx) = rx_guard.take() {
+            // Wait for a response with a timeout
+            let timeout = tokio::time::Duration::from_secs(5);
+            let start = std::time::Instant::now();
+            
+            while start.elapsed() < timeout {
+                // Try to receive a message with a short timeout
+                match tokio::time::timeout(
+                    tokio::time::Duration::from_millis(100),
+                    rx.recv()
+                ).await {
+                    Ok(Some(msg)) => {
+                        log::debug!("Received message: {:?}", msg);
+                        
+                        // Check if this is a response to our request
+                        if msg.is_response() && msg.id == req_id {
+                            response_option = Some(msg);
+                            break;
+                        }
+                    },
+                    Ok(None) => {
+                        // Channel closed
+                        log::debug!("Response channel closed");
+                        break;
+                    },
+                    Err(_) => {
+                        // Short timeout, continue waiting
+                    }
+                }
+            }
+            
+            // Put the receiver back
+            *rx_guard = Some(rx);
+        } else {
+            log::error!("Response receiver not available");
+        }
+        
+        // Process the response
+        if let Some(response) = response_option {
+            // Got a response, return it
+            let json_str = serde_json::to_string(&response)
+                .map_err(|e| Error::Transport(format!("Failed to serialize response: {}", e)))?;
+            
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/json")
+                .body(Body::from(json_str))
+                .unwrap())
+        } else if let Some(id) = req_id {
+            // No response, create an error response
+            let error_response = JsonRpcMessage::new_error(
+                id,
+                -32000,
+                "No response received from container",
+                None
+            );
+            
+            let json_str = serde_json::to_string(&error_response)
+                .map_err(|e| Error::Transport(format!("Failed to serialize error response: {}", e)))?;
+            
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/json")
+                .body(Body::from(json_str))
+                .unwrap())
+        } else {
+            // No request ID, return an empty response
+            log::debug!("No request ID, returning empty response");
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::empty())
+                .unwrap())
+        }
+    }
 
     /// Process container stdout data and parse JSON-RPC messages
     async fn process_stdout(
@@ -183,14 +269,20 @@ impl StdioTransport {
         let mut line_buffer = String::new();
         let mut buf = [0u8; 1024];
 
+        log::debug!("Starting to process container stdout");
+
         loop {
+            log::debug!("Waiting for data from container stdout");
             match stdout.read(&mut buf).await {
                 Ok(0) => {
                     // EOF, container process has terminated
-                    log::info!("Container process terminated");
+                    log::info!("Container process terminated (EOF)");
                     break;
                 }
                 Ok(n) => {
+                    log::debug!("Received {} bytes from container stdout", n);
+                    log::debug!("Data: {:?}", String::from_utf8_lossy(&buf[..n]));
+                    
                     if let Err(e) = Self::process_stdout_chunk(
                         &buf[..n],
                         &mut buffer,
@@ -206,6 +298,8 @@ impl StdioTransport {
                 }
             }
         }
+        
+        log::debug!("Finished processing container stdout");
     }
 
     /// Process a chunk of data from stdout
@@ -218,7 +312,8 @@ impl StdioTransport {
         // Process the data
         buffer.extend_from_slice(data);
 
-        log::debug!("OZZ: Received {} bytes from container stdout", data.len());
+        log::debug!("Processing {} bytes from container stdout", data.len());
+        log::debug!("Data: {:?}", String::from_utf8_lossy(data));
 
         // Process complete lines
         let mut start_idx = 0;
@@ -226,10 +321,12 @@ impl StdioTransport {
             if buffer[i] == b'\n' {
                 // Extract the line
                 if let Ok(line) = std::str::from_utf8(&buffer[start_idx..i]) {
+                    log::debug!("Found complete line: {}", line);
                     line_buffer.push_str(line);
                     
                     // Try to parse as JSON-RPC
                     if !line_buffer.trim().is_empty() {
+                        log::debug!("Attempting to parse line as JSON-RPC: {}", line_buffer);
                         Self::parse_and_send_json_rpc(line_buffer, response_tx).await;
                     }
                     
@@ -244,9 +341,12 @@ impl StdioTransport {
         
         // Keep any remaining partial line in the buffer
         if start_idx < buffer.len() {
-            *buffer = buffer[start_idx..].to_vec();
+            let remaining = &buffer[start_idx..];
+            log::debug!("Keeping partial line in buffer: {:?}", String::from_utf8_lossy(remaining));
+            *buffer = remaining.to_vec();
         } else {
             buffer.clear();
+            log::debug!("Buffer cleared, no partial line");
         }
 
         Ok(())
@@ -257,11 +357,17 @@ impl StdioTransport {
         line: &str,
         response_tx: &mpsc::Sender<JsonRpcMessage>,
     ) {
+        log::debug!("Parsing line as JSON-RPC");
+        
         match serde_json::from_str::<JsonRpcMessage>(line.trim()) {
             Ok(json_rpc) => {
+                log::debug!("Successfully parsed JSON-RPC message");
+                
                 // Send the response
                 if let Err(e) = response_tx.send(json_rpc).await {
                     log::error!("Failed to send response: {}", e);
+                } else {
+                    log::debug!("Successfully sent JSON-RPC message to response channel");
                 }
             }
             Err(e) => {

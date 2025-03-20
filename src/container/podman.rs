@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio_util;
 
 use crate::container::{ContainerInfo, ContainerRuntime, PortMapping};
 use crate::error::{Error, Result};
@@ -236,13 +237,38 @@ impl PodmanClient {
 pub struct PodmanAttachReader {
     reader: hyper::body::Body,
     buffer: Vec<u8>,
+    header_buffer: [u8; 8],
+    header_pos: usize,
+    payload_size: usize,
+    payload_buffer: Vec<u8>,
+    stream_type: u8,
+    reading_header: bool,
+}
+
+impl PodmanAttachReader {
+    fn new(reader: hyper::body::Body) -> Self {
+        Self {
+            reader,
+            buffer: Vec::new(),
+            header_buffer: [0; 8],
+            header_pos: 0,
+            payload_size: 0,
+            payload_buffer: Vec::new(),
+            stream_type: 0,
+            reading_header: true,
+        }
+    }
 }
 
 /// Podman container attach stream for writing
 pub struct PodmanAttachWriter {
-    client: Client<UnixConnector, Body>,
-    socket_path: String,
-    container_id: String,
+    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+}
+
+impl PodmanAttachWriter {
+    fn new(tx: tokio::sync::mpsc::Sender<Vec<u8>>) -> Self {
+        Self { tx }
+    }
 }
 
 impl AsyncRead for PodmanAttachReader {
@@ -256,31 +282,137 @@ impl AsyncRead for PodmanAttachReader {
             let len = std::cmp::min(buf.remaining(), self.buffer.len());
             buf.put_slice(&self.buffer[..len]);
             self.buffer = self.buffer[len..].to_vec();
+            log::debug!("PodmanAttachReader: Returning {} bytes from buffer", len);
             return Poll::Ready(Ok(()));
         }
         
-        // Poll the reader for data
-        match Pin::new(&mut self.reader).poll_data(cx) {
-            Poll::Ready(Some(Ok(chunk))) => {
-                // Copy the chunk data into the buffer
-                let len = std::cmp::min(buf.remaining(), chunk.len());
-                buf.put_slice(&chunk[..len]);
-                
-                // Store any remaining data in the buffer
-                if len < chunk.len() {
-                    self.buffer = chunk[len..].to_vec();
+        loop {
+            if self.reading_header {
+                // Read the 8-byte header
+                while self.header_pos < 8 {
+                    match Pin::new(&mut self.reader).poll_data(cx) {
+                        Poll::Ready(Some(Ok(chunk))) => {
+                            log::debug!("PodmanAttachReader: Received chunk of size {} while reading header", chunk.len());
+                            let len = std::cmp::min(chunk.len(), 8 - self.header_pos);
+                            let start_pos = self.header_pos;
+                            let end_pos = start_pos + len;
+                            self.header_buffer[start_pos..end_pos].copy_from_slice(&chunk[..len]);
+                            self.header_pos += len;
+                            
+                            // If we have more data than needed for the header, save it
+                            if len < chunk.len() {
+                                self.buffer = chunk[len..].to_vec();
+                                log::debug!("PodmanAttachReader: Saved {} bytes to buffer", self.buffer.len());
+                            }
+                            
+                            // If we've read the full header, parse it
+                            if self.header_pos == 8 {
+                                self.stream_type = self.header_buffer[0];
+                                // Parse the payload size (big endian uint32)
+                                self.payload_size = ((self.header_buffer[4] as usize) << 24)
+                                    | ((self.header_buffer[5] as usize) << 16)
+                                    | ((self.header_buffer[6] as usize) << 8)
+                                    | (self.header_buffer[7] as usize);
+                                log::debug!("PodmanAttachReader: Parsed header - stream_type: {}, payload_size: {}",
+                                    self.stream_type, self.payload_size);
+                                self.reading_header = false;
+                                self.payload_buffer.clear();
+                                break;
+                            }
+                        }
+                        Poll::Ready(Some(Err(e))) => {
+                            log::error!("PodmanAttachReader: Error reading header: {}", e);
+                            return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)));
+                        }
+                        Poll::Ready(None) => {
+                            // End of stream
+                            if self.header_pos == 0 {
+                                log::debug!("PodmanAttachReader: End of stream (no header data)");
+                                return Poll::Ready(Ok(()));
+                            }
+                            log::error!("PodmanAttachReader: Unexpected end of stream while reading header");
+                            return Poll::Ready(Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "Unexpected end of stream while reading header",
+                            )));
+                        }
+                        Poll::Pending => {
+                            log::debug!("PodmanAttachReader: Pending while reading header");
+                            return Poll::Pending;
+                        }
+                    }
                 }
-                
-                Poll::Ready(Ok(()))
+            } else {
+                // Read the payload
+                while self.payload_buffer.len() < self.payload_size {
+                    match Pin::new(&mut self.reader).poll_data(cx) {
+                        Poll::Ready(Some(Ok(chunk))) => {
+                            log::debug!("PodmanAttachReader: Received chunk of size {} while reading payload", chunk.len());
+                            let remaining = self.payload_size - self.payload_buffer.len();
+                            let len = std::cmp::min(chunk.len(), remaining);
+                            self.payload_buffer.extend_from_slice(&chunk[..len]);
+                            
+                            // If we have more data than needed for the payload, save it
+                            if len < chunk.len() {
+                                self.buffer = chunk[len..].to_vec();
+                                log::debug!("PodmanAttachReader: Saved {} bytes to buffer", self.buffer.len());
+                            }
+                            
+                            // If we've read the full payload, process it
+                            if self.payload_buffer.len() == self.payload_size {
+                                log::debug!("PodmanAttachReader: Read full payload of size {}", self.payload_size);
+                                // Only process stdout (1) and stderr (2) streams
+                                if self.stream_type == 1 || self.stream_type == 2 {
+                                    log::debug!("PodmanAttachReader: Processing {} stream data",
+                                        if self.stream_type == 1 { "stdout" } else { "stderr" });
+                                    // Copy payload to output buffer
+                                    let len = std::cmp::min(buf.remaining(), self.payload_buffer.len());
+                                    buf.put_slice(&self.payload_buffer[..len]);
+                                    
+                                    // If we couldn't fit the entire payload, save the rest
+                                    if len < self.payload_buffer.len() {
+                                        self.buffer = self.payload_buffer[len..].to_vec();
+                                        log::debug!("PodmanAttachReader: Saved {} bytes to buffer", self.buffer.len());
+                                    }
+                                    
+                                    // Reset for next frame
+                                    self.reading_header = true;
+                                    self.header_pos = 0;
+                                    
+                                    log::debug!("PodmanAttachReader: Returning {} bytes", len);
+                                    return Poll::Ready(Ok(()));
+                                } else {
+                                    // Skip other stream types (e.g., stdin echoed back)
+                                    log::debug!("PodmanAttachReader: Skipping stream type {}", self.stream_type);
+                                    self.reading_header = true;
+                                    self.header_pos = 0;
+                                }
+                                break;
+                            }
+                        }
+                        Poll::Ready(Some(Err(e))) => {
+                            log::error!("PodmanAttachReader: Error reading payload: {}", e);
+                            return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)));
+                        }
+                        Poll::Ready(None) => {
+                            // End of stream
+                            if self.payload_buffer.is_empty() {
+                                log::debug!("PodmanAttachReader: End of stream (no payload data)");
+                                return Poll::Ready(Ok(()));
+                            }
+                            log::error!("PodmanAttachReader: Unexpected end of stream while reading payload");
+                            return Poll::Ready(Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "Unexpected end of stream while reading payload",
+                            )));
+                        }
+                        Poll::Pending => {
+                            log::debug!("PodmanAttachReader: Pending while reading payload");
+                            return Poll::Pending;
+                        }
+                    }
+                }
             }
-            Poll::Ready(Some(Err(e))) => {
-                Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
-            }
-            Poll::Ready(None) => {
-                // End of stream
-                Poll::Ready(Ok(()))
-            }
-            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -288,34 +420,62 @@ impl AsyncRead for PodmanAttachReader {
 impl AsyncWrite for PodmanAttachWriter {
     fn poll_write(
         self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        // Create a request to write to the container using the correct API version
-        let uri_path = format!("{}/containers/{}/attach?stream=1&stdin=1", PodmanClient::base_uri_path(), self.container_id);
+        log::debug!("PodmanAttachWriter: Writing {} bytes", buf.len());
         
-        let req = match Request::builder()
-            .method(Method::POST)
-            .uri(hyperlocal::Uri::new(&self.socket_path, &uri_path))
-            .header("Content-Type", "application/vnd.docker.raw-stream")
-            .body(Body::from(buf.to_vec())) {
-                Ok(req) => req,
-                Err(e) => return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e))),
-            };
+        // Create the 8-byte header for stdin (stream type 0)
+        let mut header = [0u8; 8];
+        header[0] = 0; // stdin
+        // Set the payload size (big endian uint32)
+        let len = buf.len();
+        header[4] = ((len >> 24) & 0xFF) as u8;
+        header[5] = ((len >> 16) & 0xFF) as u8;
+        header[6] = ((len >> 8) & 0xFF) as u8;
+        header[7] = (len & 0xFF) as u8;
         
-        // Send the request
-        let _ = self.client.request(req);
+        log::debug!("PodmanAttachWriter: Created header for stream type 0, payload size {}", len);
         
-        // Return the number of bytes written
-        Poll::Ready(Ok(buf.len()))
+        // Combine header and payload
+        let mut data = Vec::with_capacity(8 + len);
+        data.extend_from_slice(&header);
+        data.extend_from_slice(buf);
+        
+        // Send the data
+        match self.tx.try_send(data) {
+            Ok(()) => {
+                log::debug!("PodmanAttachWriter: Successfully sent {} bytes", len);
+                Poll::Ready(Ok(len))
+            },
+            Err(e) => {
+                match e {
+                    tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                        log::error!("PodmanAttachWriter: Channel closed");
+                        Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "Channel closed"
+                        )))
+                    },
+                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                        log::debug!("PodmanAttachWriter: Channel full, waiting");
+                        // Channel is full, so we need to wait
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                }
+            }
+        }
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        log::debug!("PodmanAttachWriter: Flushing");
         // No buffering, so flush is a no-op
         Poll::Ready(Ok(()))
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        log::debug!("PodmanAttachWriter: Shutting down");
         // No special shutdown needed
         Poll::Ready(Ok(()))
     }
@@ -693,45 +853,152 @@ impl ContainerRuntime for PodmanClient {
     }
     
     async fn attach_container(&self, container_id: &str) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
-        // Create the attach URL for reading
-        let attach_url = format!("containers/{}/attach?stream=true&stdin=true&stdout=true&stderr=true", container_id);
+        log::debug!("Attaching to container {}", container_id);
         
-        // Create the request
+        // Create the attach URL for reading
+        let attach_url = format!("containers/{}/attach?stream=1&stdin=1&stdout=1&stderr=1", container_id);
+        log::debug!("Attach URL: {}", attach_url);
+        
+        // Create the request with proper headers for connection hijacking
         let req = Request::builder()
             .method(Method::POST)
             .uri(hyperlocal::Uri::new(&self.socket_path, &self.uri_path(&attach_url)))
-            .header("Content-Type", "application/vnd.docker.raw-stream")
+            .header("Content-Type", "application/vnd.docker.multiplexed-stream")
+            .header("Accept", "application/vnd.docker.multiplexed-stream")
+            .header("Upgrade", "tcp")
+            .header("Connection", "Upgrade")
             .body(Body::empty())?;
+        
+        log::debug!("Sending attach request to container {}", container_id);
         
         // Send the request
         let res = self.client.request(req).await
             .map_err(|e| Error::ContainerRuntime(format!("Failed to attach to container: {}", e)))?;
         
+        log::debug!("Received response with status: {}", res.status());
+        
         // Check the status code
-        if !res.status().is_success() {
+        // For connection upgrade, we expect either a 101 Switching Protocols or a 200 OK
+        if res.status() != StatusCode::SWITCHING_PROTOCOLS && !res.status().is_success() {
+            log::error!("Failed to attach to container: {}", res.status());
             return Err(Error::ContainerRuntime(format!(
                 "Failed to attach to container: {}",
                 res.status()
             )));
         }
         
-        // Get the response body as a stream
-        let body = res.into_body();
-        
-        // Create a reader
-        let reader = PodmanAttachReader {
-            reader: body,
-            buffer: Vec::new(),
-        };
-        
-        // Create a writer
-        let writer = PodmanAttachWriter {
-            client: self.client.clone(),
-            socket_path: self.socket_path.clone(),
-            container_id: container_id.to_string(),
+        // Handle the response based on the status code
+        let (reader, writer) = if res.status() == StatusCode::SWITCHING_PROTOCOLS {
+            // For 101 Switching Protocols, we need to upgrade the connection
+            log::debug!("Upgrading connection for container {}", container_id);
+            
+            // Create a channel for writing to the container
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+            
+            // Get the upgraded connection
+            log::debug!("Getting upgraded connection");
+            let upgraded = hyper::upgrade::on(res).await
+                .map_err(|e| Error::ContainerRuntime(format!("Failed to upgrade connection: {}", e)))?;
+            
+            log::debug!("Connection upgraded successfully");
+            
+            // Split the upgraded connection into read and write parts
+            let (read_half, write_half) = tokio::io::split(upgraded);
+            
+            // Create a reader that handles the multiplexed stream format
+            log::debug!("Creating reader for upgraded connection");
+            let reader = PodmanAttachReader::new(Body::wrap_stream(tokio_util::io::ReaderStream::new(read_half)));
+            
+            // Create a writer
+            log::debug!("Creating writer for upgraded connection");
+            let writer = PodmanAttachWriter::new(tx);
+            
+            // Spawn a task to handle writing to the container
+            let container_id_clone = container_id.to_string();
+            log::debug!("Spawning task to handle writing to container {}", container_id);
+            tokio::spawn(async move {
+                // Process messages from the channel
+                let mut write_half = write_half;
+                while let Some(data) = rx.recv().await {
+                    log::debug!("Writing {} bytes to container", data.len());
+                    if let Err(e) = write_half.write_all(&data).await {
+                        log::error!("Failed to write to container: {}", e);
+                        break;
+                    }
+                    
+                    log::debug!("Flushing data to container");
+                    if let Err(e) = write_half.flush().await {
+                        log::error!("Failed to flush data to container: {}", e);
+                        break;
+                    }
+                }
+                log::debug!("Writer task for container {} completed", container_id_clone);
+            });
+            
+            (reader, writer)
+        } else {
+            // For 200 OK, we can use the response body directly
+            log::debug!("Using direct body stream for container {}", container_id);
+            
+            // Get the response body as a stream
+            let body = res.into_body();
+            
+            // Create a channel for writing to the container
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
+            
+            // Create a reader
+            log::debug!("Creating reader for direct body stream");
+            let reader = PodmanAttachReader::new(body);
+            
+            // Create a writer
+            log::debug!("Creating writer for direct body stream");
+            let writer = PodmanAttachWriter::new(tx);
+            
+            // Spawn a task to handle writing to the container
+            let socket_path = self.socket_path.clone();
+            let container_id = container_id.to_string();
+            log::debug!("Spawning task to handle writing to container {}", container_id);
+            tokio::spawn(async move {
+                // Create a client for writing
+                let client = Client::builder().build(UnixConnector::default());
+                
+                // Create a connection for writing
+                let write_url = format!("{}/containers/{}/attach?stream=1&stdin=1",
+                    PodmanClient::base_uri_path(), container_id);
+                log::debug!("Write URL: {}", write_url);
+                
+                // Process messages from the channel
+                while let Some(data) = rx.recv().await {
+                    log::debug!("Creating request to write {} bytes to container", data.len());
+                    // Create a request to write to the container
+                    let req = match Request::builder()
+                        .method(Method::POST)
+                        .uri(hyperlocal::Uri::new(&socket_path, &write_url))
+                        .header("Content-Type", "application/vnd.docker.multiplexed-stream")
+                        .header("Accept", "application/vnd.docker.multiplexed-stream")
+                        .body(Body::from(data)) {
+                            Ok(req) => req,
+                            Err(e) => {
+                                log::error!("Failed to create request: {}", e);
+                                continue;
+                            }
+                        };
+                    
+                    // Send the request
+                    log::debug!("Sending request to write data to container");
+                    match client.request(req).await {
+                        Ok(_) => log::debug!("Successfully wrote data to container"),
+                        Err(e) => log::error!("Failed to send data to container: {}", e)
+                    }
+                }
+                log::debug!("Writer task for container {} completed", container_id);
+            });
+            
+            (reader, writer)
         };
         
         // Return the reader and writer
+        log::debug!("Successfully attached to container {}", container_id);
         let reader_box: Box<dyn AsyncRead + Unpin + Send> = Box::new(reader);
         let writer_box: Box<dyn AsyncWrite + Unpin + Send> = Box::new(writer);
         

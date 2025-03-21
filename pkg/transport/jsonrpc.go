@@ -126,3 +126,35 @@ func (m *JSONRPCMessage) Validate() error {
 
 	return nil
 }
+
+// LogJSONRPCMessage logs a JSON-RPC message for debugging.
+func LogJSONRPCMessage(msg *JSONRPCMessage) {
+	// Determine message type
+	var messageType string
+	if msg.IsRequest() {
+		messageType = "request"
+	} else if msg.IsResponse() {
+		if msg.Error != nil {
+			messageType = "error response"
+		} else {
+			messageType = "success response"
+		}
+	} else if msg.IsNotification() {
+		messageType = "notification"
+	} else {
+		messageType = "unknown"
+	}
+	
+	// Log basic info
+	fmt.Printf("JSON-RPC %s: ", messageType)
+	if msg.Method != "" {
+		fmt.Printf("method=%s ", msg.Method)
+	}
+	if msg.ID != nil {
+		fmt.Printf("id=%v ", msg.ID)
+	}
+	if msg.Error != nil {
+		fmt.Printf("error=%s ", msg.Error.Message)
+	}
+	fmt.Println()
+}

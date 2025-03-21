@@ -73,3 +73,11 @@ func NewPendingSSEMessage(message *SSEMessage) *PendingSSEMessage {
 		CreatedAt: time.Now(),
 	}
 }
+
+// SSEClient represents a connected SSE client
+type SSEClient struct {
+	// MessageCh is the channel for sending messages to the client
+	MessageCh chan string
+	// CreatedAt is the time the client connected
+	CreatedAt time.Time
+}

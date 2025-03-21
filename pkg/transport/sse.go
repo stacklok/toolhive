@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"sync"
 )
 
@@ -18,8 +17,8 @@ type SSETransport struct {
 	// Mutex for protecting shared state
 	mutex         sync.Mutex
 	
-	// HTTP server
-	httpServer    *http.Server
+	// Transparent proxy
+	proxy         Proxy
 	
 	// Shutdown channel
 	shutdownCh    chan struct{}
@@ -84,29 +83,19 @@ func (t *SSETransport) Start(ctx context.Context, stdin io.WriteCloser, stdout i
 		return ErrContainerNameNotSet
 	}
 	
-	// Start the HTTP server
-	mux := http.NewServeMux()
+	// Create and start the transparent proxy
+	// The SSE transport forwards requests to the container's HTTP server
+	// We assume the container is listening on the same port as the transport
+	targetHost := t.host
+	targetPort := t.port
 	
-	// Add a simple health check endpoint
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
-	
-	// Create the server
-	t.httpServer = &http.Server{
-		Addr:    fmt.Sprintf(":%d", t.port),
-		Handler: mux,
+	// Create the transparent proxy
+	t.proxy = NewTransparentProxy(t.port, t.containerName, targetHost, targetPort)
+	if err := t.proxy.Start(ctx); err != nil {
+		return err
 	}
 	
-	// Start the server in a goroutine
-	go func() {
-		fmt.Printf("SSE transport started for container %s on port %d\n", t.containerName, t.port)
-		
-		if err := t.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("HTTP server error: %v\n", err)
-		}
-	}()
+	fmt.Printf("SSE transport started for container %s on port %d\n", t.containerName, t.port)
 	
 	return nil
 }
@@ -119,9 +108,9 @@ func (t *SSETransport) Stop(ctx context.Context) error {
 	// Signal shutdown
 	close(t.shutdownCh)
 	
-	// Stop the HTTP server
-	if t.httpServer != nil {
-		t.httpServer.Shutdown(ctx)
+	// Stop the transparent proxy
+	if t.proxy != nil {
+		return t.proxy.Stop(ctx)
 	}
 	
 	return nil

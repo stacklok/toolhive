@@ -61,13 +61,19 @@ coverage:
 	./coverage.sh
 
 # Run all linters
-lint: lint-fmt lint-security
+lint: lint-fmt lint-clippy lint-security
 
 # Run code formatting check
 lint-fmt:
 	@echo "Checking code formatting..."
-	@cargo fix --allow-dirty --allow-staged --lib
+	@cargo fmt --all -- --check
 	@echo "Code formatting check completed!"
+
+# Run clippy linter
+lint-clippy:
+	@echo "Running clippy checks..."
+	@cargo clippy --all-targets --all-features -- -D warnings
+	@echo "Clippy checks completed!"
 
 # Run security checks
 lint-security: install-security-tools

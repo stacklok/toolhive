@@ -34,12 +34,15 @@ pub fn add_standard_labels(
 
 /// Get the transport mode from container labels
 pub fn get_transport(labels: &HashMap<String, String>) -> &str {
-    labels.get(TRANSPORT_LABEL).map_or("unknown", |s| s.as_str())
+    labels
+        .get(TRANSPORT_LABEL)
+        .map_or("unknown", |s| s.as_str())
 }
 
 /// Get the proxy port from container labels
 pub fn get_port(labels: &HashMap<String, String>) -> u16 {
-    labels.get(PORT_LABEL)
+    labels
+        .get(PORT_LABEL)
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(0) // Default to 0 if not found or invalid
 }
@@ -48,7 +51,7 @@ pub fn get_port(labels: &HashMap<String, String>) -> u16 {
 pub fn is_vibetool_container(labels: &HashMap<String, String>) -> bool {
     labels
         .get(VIBETOOL_LABEL)
-        .map_or(false, |value| value == VIBETOOL_VALUE)
+        .is_some_and(|value| value == VIBETOOL_VALUE)
 }
 
 /// Format a label key-value pair for filtering
@@ -70,7 +73,10 @@ mod tests {
         let mut labels = HashMap::new();
         add_standard_labels(&mut labels, "test-container", "stdio", 8080);
 
-        assert_eq!(labels.get(VIBETOOL_LABEL), Some(&VIBETOOL_VALUE.to_string()));
+        assert_eq!(
+            labels.get(VIBETOOL_LABEL),
+            Some(&VIBETOOL_VALUE.to_string())
+        );
         assert_eq!(labels.get(NAME_LABEL), Some(&"test-container".to_string()));
         assert_eq!(labels.get(TRANSPORT_LABEL), Some(&"stdio".to_string()));
         assert_eq!(labels.get(PORT_LABEL), Some(&"8080".to_string()));
@@ -130,6 +136,9 @@ mod tests {
 
     #[test]
     fn test_format_vibetool_filter() {
-        assert_eq!(format_vibetool_filter(), format!("{}={}", VIBETOOL_LABEL, VIBETOOL_VALUE));
+        assert_eq!(
+            format_vibetool_filter(),
+            format!("{}={}", VIBETOOL_LABEL, VIBETOOL_VALUE)
+        );
     }
 }

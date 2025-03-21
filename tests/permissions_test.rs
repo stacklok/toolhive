@@ -1,4 +1,6 @@
-use vibetool::permissions::profile::{NetworkPermissions, OutboundNetworkPermissions, PermissionProfile};
+use vibetool::permissions::profile::{
+    NetworkPermissions, OutboundNetworkPermissions, PermissionProfile,
+};
 
 #[test]
 fn test_builtin_stdio_profile() {
@@ -19,7 +21,7 @@ fn test_builtin_network_profile() {
     // Check that it has the expected values
     assert!(profile.read.is_empty());
     assert!(profile.write.is_empty());
-    
+
     // Check network permissions
     let network = profile.network.unwrap();
     assert!(network.outbound.is_some());
@@ -38,9 +40,9 @@ fn test_to_container_config() {
         network: Some(NetworkPermissions {
             outbound: Some(OutboundNetworkPermissions {
                 insecure_allow_all: true, // This needs to be true for bridge mode
-                allow_transport: vec![], // Must be empty when insecure_allow_all is true
-                allow_host: vec![],      // Must be empty when insecure_allow_all is true
-                allow_port: vec![],      // Must be empty when insecure_allow_all is true
+                allow_transport: vec![],  // Must be empty when insecure_allow_all is true
+                allow_host: vec![],       // Must be empty when insecure_allow_all is true
+                allow_port: vec![],       // Must be empty when insecure_allow_all is true
             }),
         }),
     };
@@ -50,16 +52,20 @@ fn test_to_container_config() {
 
     // Check that it has the expected values
     assert_eq!(config.mounts.len(), 2);
-    
+
     // Find the read-only mount
-    let hosts_mount = config.mounts.iter().find(|m| m.source == "/etc/hosts").unwrap();
+    let hosts_mount = config
+        .mounts
+        .iter()
+        .find(|m| m.source == "/etc/hosts")
+        .unwrap();
     assert_eq!(hosts_mount.target, "/etc/hosts");
-    assert_eq!(hosts_mount.read_only, true);
-    
+    assert!(hosts_mount.read_only);
+
     // Find the read-write mount
     let tmp_mount = config.mounts.iter().find(|m| m.source == "/tmp").unwrap();
     assert_eq!(tmp_mount.target, "/tmp");
-    assert_eq!(tmp_mount.read_only, false);
+    assert!(!tmp_mount.read_only);
 
     // Check network config
     assert_eq!(config.network_mode, "bridge");
@@ -82,16 +88,20 @@ fn test_to_container_config_no_network() {
 
     // Check that it has the expected values
     assert_eq!(config.mounts.len(), 2);
-    
+
     // Find the read-only mount
-    let hosts_mount = config.mounts.iter().find(|m| m.source == "/etc/hosts").unwrap();
+    let hosts_mount = config
+        .mounts
+        .iter()
+        .find(|m| m.source == "/etc/hosts")
+        .unwrap();
     assert_eq!(hosts_mount.target, "/etc/hosts");
-    assert_eq!(hosts_mount.read_only, true);
-    
+    assert!(hosts_mount.read_only);
+
     // Find the read-write mount
     let tmp_mount = config.mounts.iter().find(|m| m.source == "/tmp").unwrap();
     assert_eq!(tmp_mount.target, "/tmp");
-    assert_eq!(tmp_mount.read_only, false);
+    assert!(!tmp_mount.read_only);
 
     // Check network config
     assert_eq!(config.network_mode, "none");
@@ -109,9 +119,9 @@ fn test_to_container_config_read_only() {
         network: Some(NetworkPermissions {
             outbound: Some(OutboundNetworkPermissions {
                 insecure_allow_all: true, // This needs to be true for bridge mode
-                allow_transport: vec![], // Must be empty when insecure_allow_all is true
-                allow_host: vec![],      // Must be empty when insecure_allow_all is true
-                allow_port: vec![],      // Must be empty when insecure_allow_all is true
+                allow_transport: vec![],  // Must be empty when insecure_allow_all is true
+                allow_host: vec![],       // Must be empty when insecure_allow_all is true
+                allow_port: vec![],       // Must be empty when insecure_allow_all is true
             }),
         }),
     };
@@ -123,7 +133,7 @@ fn test_to_container_config_read_only() {
     assert_eq!(config.mounts.len(), 1);
     assert_eq!(config.mounts[0].source, "/etc/hosts");
     assert_eq!(config.mounts[0].target, "/etc/hosts");
-    assert_eq!(config.mounts[0].read_only, true);
+    assert!(config.mounts[0].read_only);
 
     // Check network config
     assert_eq!(config.network_mode, "bridge");
@@ -136,20 +146,14 @@ fn test_to_container_config_read_only() {
 fn test_to_container_config_multiple_mounts() {
     // Create a profile with multiple mounts
     let profile = PermissionProfile {
-        read: vec![
-            "/etc/hosts".to_string(),
-            "/etc/resolv.conf".to_string(),
-        ],
-        write: vec![
-            "/tmp".to_string(),
-            "/var/log".to_string(),
-        ],
+        read: vec!["/etc/hosts".to_string(), "/etc/resolv.conf".to_string()],
+        write: vec!["/tmp".to_string(), "/var/log".to_string()],
         network: Some(NetworkPermissions {
             outbound: Some(OutboundNetworkPermissions {
                 insecure_allow_all: true, // This needs to be true for bridge mode
-                allow_transport: vec![], // Must be empty when insecure_allow_all is true
-                allow_host: vec![],      // Must be empty when insecure_allow_all is true
-                allow_port: vec![],      // Must be empty when insecure_allow_all is true
+                allow_transport: vec![],  // Must be empty when insecure_allow_all is true
+                allow_host: vec![],       // Must be empty when insecure_allow_all is true
+                allow_port: vec![],       // Must be empty when insecure_allow_all is true
             }),
         }),
     };
@@ -159,26 +163,38 @@ fn test_to_container_config_multiple_mounts() {
 
     // Check that it has the expected values
     assert_eq!(config.mounts.len(), 4);
-    
+
     // Check /etc/hosts mount (read-only)
-    let hosts_mount = config.mounts.iter().find(|m| m.source == "/etc/hosts").unwrap();
+    let hosts_mount = config
+        .mounts
+        .iter()
+        .find(|m| m.source == "/etc/hosts")
+        .unwrap();
     assert_eq!(hosts_mount.target, "/etc/hosts");
-    assert_eq!(hosts_mount.read_only, true);
-    
+    assert!(hosts_mount.read_only);
+
     // Check /etc/resolv.conf mount (read-only)
-    let resolv_mount = config.mounts.iter().find(|m| m.source == "/etc/resolv.conf").unwrap();
+    let resolv_mount = config
+        .mounts
+        .iter()
+        .find(|m| m.source == "/etc/resolv.conf")
+        .unwrap();
     assert_eq!(resolv_mount.target, "/etc/resolv.conf");
-    assert_eq!(resolv_mount.read_only, true);
-    
+    assert!(resolv_mount.read_only);
+
     // Check /tmp mount (read-write)
     let tmp_mount = config.mounts.iter().find(|m| m.source == "/tmp").unwrap();
     assert_eq!(tmp_mount.target, "/tmp");
-    assert_eq!(tmp_mount.read_only, false);
-    
+    assert!(!tmp_mount.read_only);
+
     // Check /var/log mount (read-write)
-    let log_mount = config.mounts.iter().find(|m| m.source == "/var/log").unwrap();
+    let log_mount = config
+        .mounts
+        .iter()
+        .find(|m| m.source == "/var/log")
+        .unwrap();
     assert_eq!(log_mount.target, "/var/log");
-    assert_eq!(log_mount.read_only, false);
+    assert!(!log_mount.read_only);
 
     // Check network config
     assert_eq!(config.network_mode, "bridge");

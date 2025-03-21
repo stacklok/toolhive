@@ -5,7 +5,7 @@ use std::str;
 pub fn assert_output_contains(output: &Output, expected: &str) -> Result<(), String> {
     let stdout = str::from_utf8(&output.stdout).unwrap_or("");
     let stderr = str::from_utf8(&output.stderr).unwrap_or("");
-    
+
     if stdout.contains(expected) || stderr.contains(expected) {
         Ok(())
     } else {
@@ -24,7 +24,8 @@ pub fn assert_command_success(output: &Output) -> Result<(), String> {
         let stderr = str::from_utf8(&output.stderr).unwrap_or("");
         Err(format!(
             "Command failed with exit code {:?}:\nSTDERR: {}",
-            output.status.code(), stderr
+            output.status.code(),
+            stderr
         ))
     }
 }

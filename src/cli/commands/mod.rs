@@ -1,24 +1,24 @@
-pub mod run;
 pub mod list;
-pub mod stop;
 pub mod rm;
+pub mod run;
+pub mod stop;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use async_trait::async_trait;
     use mockall::predicate::*;
     use mockall::*;
-    use async_trait::async_trait;
+    use std::collections::HashMap;
     use tokio::io::{AsyncRead, AsyncWrite};
-    
+
     use crate::container::{ContainerInfo, ContainerRuntime, PortMapping};
     use crate::error::Result;
     use crate::permissions::profile::ContainerPermissionConfig;
-    
+
     // Mock for testing
     mock! {
         pub ContainerRuntime {}
-        
+
         #[async_trait]
         impl ContainerRuntime for ContainerRuntime {
             async fn create_container(
@@ -30,9 +30,9 @@ mod tests {
                 labels: HashMap<String, String>,
                 permission_config: ContainerPermissionConfig,
             ) -> Result<String>;
-            
+
             async fn start_container(&self, container_id: &str) -> Result<()>;
-            
+
             async fn list_containers(&self) -> Result<Vec<ContainerInfo>>;
             async fn stop_container(&self, container_id: &str) -> Result<()>;
             async fn remove_container(&self, container_id: &str) -> Result<()>;
@@ -43,12 +43,12 @@ mod tests {
             async fn attach_container(&self, container_id: &str) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)>;
         }
     }
-    
+
     // Helper function to create a mock container runtime
     pub fn create_mock_runtime() -> MockContainerRuntime {
         MockContainerRuntime::new()
     }
-    
+
     // Helper function to create a test container info
     pub fn create_test_container_info(id: &str, name: &str, status: &str) -> ContainerInfo {
         // Derive state from status string

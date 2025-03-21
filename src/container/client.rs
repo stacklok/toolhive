@@ -8,6 +8,7 @@ use bollard::{
     models::{HostConfig, Mount, MountTypeEnum},
     Docker,
 };
+use futures::stream::Stream;
 use futures::stream::StreamExt;
 use std::collections::HashMap;
 use std::env;
@@ -16,7 +17,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use futures::stream::Stream;
 
 use crate::container::{ContainerInfo, ContainerRuntime, PortMapping};
 use crate::error::{Error, Result};
@@ -50,14 +50,14 @@ impl ContainerClient {
         let (socket_path, runtime_type) = Self::find_container_socket()?;
         Self::with_socket_path(&socket_path, runtime_type).await
     }
-    
+
     /// Parse a timestamp string into a Unix timestamp (seconds since epoch)
     fn parse_timestamp(timestamp: &str) -> u64 {
         // Try to parse the timestamp using chrono
         if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(timestamp) {
             return dt.timestamp() as u64;
         }
-        
+
         // Fallback to current time if parsing fails
         match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(duration) => duration.as_secs(),
@@ -71,9 +71,13 @@ impl ContainerClient {
             RuntimeType::Podman => "Podman",
             RuntimeType::Docker => "Docker",
         };
-        
-        log::debug!("Creating {} client with socket path: {}", runtime_name, socket_path);
-        
+
+        log::debug!(
+            "Creating {} client with socket path: {}",
+            runtime_name,
+            socket_path
+        );
+
         // Check if the socket exists
         if !Path::new(socket_path).exists() {
             return Err(Error::ContainerRuntime(format!(
@@ -86,8 +90,8 @@ impl ContainerClient {
         // Use the bollard library to connect to the container socket
         let client = match Docker::connect_with_socket(
             socket_path,
-            120, // timeout in seconds
-            &bollard::API_DEFAULT_VERSION, // API version
+            120,                          // timeout in seconds
+            bollard::API_DEFAULT_VERSION, // API version
         ) {
             Ok(client) => client,
             Err(e) => {
@@ -108,22 +112,20 @@ impl ContainerClient {
             Ok(_) => {
                 log::debug!("{} client created successfully", runtime_name);
                 Ok(container_client)
-            },
-            Err(e) => {
-                Err(Error::ContainerRuntime(format!(
-                    "{} API ping failed: {}",
-                    runtime_name, e
-                )))
             }
+            Err(e) => Err(Error::ContainerRuntime(format!(
+                "{} API ping failed: {}",
+                runtime_name, e
+            ))),
         }
     }
 
     /// Find a container socket path, preferring Podman over Docker
     fn find_container_socket() -> Result<(String, RuntimeType)> {
         log::debug!("Searching for container socket...");
-        
+
         // Try Podman sockets first
-        
+
         // Check standard Podman location
         if Path::new(PODMAN_SOCKET_PATH).exists() {
             log::debug!("Found Podman socket at: {}", PODMAN_SOCKET_PATH);
@@ -132,23 +134,29 @@ impl ContainerClient {
 
         // Check XDG_RUNTIME_DIR location for Podman
         if let Ok(xdg_runtime_dir) = env::var("XDG_RUNTIME_DIR") {
-            let xdg_socket_path = PathBuf::from(xdg_runtime_dir)
-                .join(PODMAN_XDG_RUNTIME_SOCKET_PATH);
-            
+            let xdg_socket_path =
+                PathBuf::from(xdg_runtime_dir).join(PODMAN_XDG_RUNTIME_SOCKET_PATH);
+
             if xdg_socket_path.exists() {
                 log::debug!("Found Podman socket at: {}", xdg_socket_path.display());
-                return Ok((xdg_socket_path.to_string_lossy().to_string(), RuntimeType::Podman));
+                return Ok((
+                    xdg_socket_path.to_string_lossy().to_string(),
+                    RuntimeType::Podman,
+                ));
             }
         }
 
         // Check user-specific location for Podman
         if let Ok(home) = env::var("HOME") {
-            let user_socket_path = PathBuf::from(home)
-                .join(".local/share/containers/podman/machine/podman.sock");
-            
+            let user_socket_path =
+                PathBuf::from(home).join(".local/share/containers/podman/machine/podman.sock");
+
             if user_socket_path.exists() {
                 log::debug!("Found Podman socket at: {}", user_socket_path.display());
-                return Ok((user_socket_path.to_string_lossy().to_string(), RuntimeType::Podman));
+                return Ok((
+                    user_socket_path.to_string_lossy().to_string(),
+                    RuntimeType::Podman,
+                ));
             }
         }
 
@@ -158,13 +166,24 @@ impl ContainerClient {
             return Ok((DOCKER_SOCKET_PATH.to_string(), RuntimeType::Docker));
         }
 
-        Err(Error::ContainerRuntime("No container socket found".to_string()))
+        Err(Error::ContainerRuntime(
+            "No container socket found".to_string(),
+        ))
     }
 }
 
 /// Container attach stream for reading
 pub struct ContainerAttachReader {
-    output: Pin<Box<dyn Stream<Item = std::result::Result<bollard::container::LogOutput, bollard::errors::Error>> + Send>>,
+    output: Pin<
+        Box<
+            dyn Stream<
+                    Item = std::result::Result<
+                        bollard::container::LogOutput,
+                        bollard::errors::Error,
+                    >,
+                > + Send,
+        >,
+    >,
     buffer: Vec<u8>,
 }
 
@@ -186,7 +205,7 @@ impl AsyncRead for ContainerAttachReader {
             self.buffer = self.buffer[len..].to_vec();
             return Poll::Ready(Ok(()));
         }
-        
+
         // Poll the reader for data
         match self.output.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(log_output))) => {
@@ -196,16 +215,16 @@ impl AsyncRead for ContainerAttachReader {
                     bollard::container::LogOutput::StdErr { message } => message,
                     _ => return Poll::Ready(Ok(())), // Skip other message types
                 };
-                
+
                 // Copy the bytes into the buffer
                 let len = std::cmp::min(buf.remaining(), bytes.len());
                 buf.put_slice(&bytes[..len]);
-                
+
                 // Store any remaining data in the buffer
                 if len < bytes.len() {
                     self.buffer = bytes[len..].to_vec();
                 }
-                
+
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Some(Err(e))) => {
@@ -229,17 +248,11 @@ impl AsyncWrite for ContainerAttachWriter {
         self.input.as_mut().poll_write(cx, buf)
     }
 
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         self.input.as_mut().poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         self.input.as_mut().poll_shutdown(cx)
     }
 }
@@ -275,7 +288,7 @@ impl ContainerRuntime for ContainerClient {
             .collect();
 
         // Check if STDIO transport is being used
-        let is_stdio_transport = env_vars.get("MCP_TRANSPORT").map_or(false, |v| v == "stdio");
+        let is_stdio_transport = env_vars.get("MCP_TRANSPORT").is_some_and(|v| v == "stdio");
 
         // Create container configuration
         let config = Config {
@@ -337,10 +350,7 @@ impl ContainerRuntime for ContainerClient {
     async fn list_containers(&self) -> Result<Vec<ContainerInfo>> {
         // Create filter for vibetool containers
         let mut filters = HashMap::new();
-        filters.insert(
-            "label".to_string(),
-            vec![labels::format_vibetool_filter()],
-        );
+        filters.insert("label".to_string(), vec![labels::format_vibetool_filter()]);
 
         let options = ListContainersOptions {
             all: true,
@@ -363,16 +373,16 @@ impl ContainerRuntime for ContainerClient {
                             .map(|port| {
                                 // Get the container port
                                 let container_port = port.private_port;
-                                
+
                                 // Get the host port
                                 let host_port = port.public_port.unwrap_or(0);
-                                
+
                                 // Get the protocol
                                 let protocol = match port.typ {
                                     Some(port_type) => port_type.to_string(),
                                     None => "tcp".to_string(),
                                 };
-                                
+
                                 PortMapping {
                                     container_port,
                                     host_port,
@@ -435,7 +445,11 @@ impl ContainerRuntime for ContainerClient {
             ..Default::default()
         };
 
-        match self.client.remove_container(container_id, Some(options)).await {
+        match self
+            .client
+            .remove_container(container_id, Some(options))
+            .await
+        {
             Ok(_) => Ok(()),
             Err(e) => Err(Error::ContainerRuntime(format!(
                 "Failed to remove container: {}",
@@ -454,24 +468,22 @@ impl ContainerRuntime for ContainerClient {
 
         // Get logs stream
         let logs_stream = self.client.logs(container_id, Some(options));
-        
+
         // Collect all log messages
         let mut logs = String::new();
         let mut stream = logs_stream;
-        
+
         while let Some(log_result) = stream.next().await {
             match log_result {
-                Ok(log_output) => {
-                    match log_output {
-                        bollard::container::LogOutput::StdOut { message } => {
-                            logs.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        bollard::container::LogOutput::StdErr { message } => {
-                            logs.push_str(&String::from_utf8_lossy(&message));
-                        }
-                        _ => {}
+                Ok(log_output) => match log_output {
+                    bollard::container::LogOutput::StdOut { message } => {
+                        logs.push_str(&String::from_utf8_lossy(&message));
                     }
-                }
+                    bollard::container::LogOutput::StdErr { message } => {
+                        logs.push_str(&String::from_utf8_lossy(&message));
+                    }
+                    _ => {}
+                },
                 Err(e) => {
                     return Err(Error::ContainerRuntime(format!(
                         "Error reading container logs: {}",
@@ -480,7 +492,7 @@ impl ContainerRuntime for ContainerClient {
                 }
             }
         }
-        
+
         Ok(logs)
     }
 
@@ -527,7 +539,7 @@ impl ContainerRuntime for ContainerClient {
                                 }
                             }
                         }
-                        
+
                         // If bridge network doesn't have an IP, try any other network
                         for (_, network) in networks {
                             if let Some(ip) = network.ip_address {
@@ -538,7 +550,7 @@ impl ContainerRuntime for ContainerClient {
                         }
                     }
                 }
-                
+
                 // If we couldn't find an IP address, return an error
                 Err(Error::ContainerRuntime(format!(
                     "No IP address found for container {}",
@@ -578,7 +590,8 @@ impl ContainerRuntime for ContainerClient {
                                             // Parse container port and protocol from the key (e.g., "80/tcp")
                                             let parts: Vec<&str> = port_proto.split('/').collect();
                                             if parts.len() == 2 {
-                                                if let Ok(container_port) = parts[0].parse::<u16>() {
+                                                if let Ok(container_port) = parts[0].parse::<u16>()
+                                                {
                                                     ports.push(PortMapping {
                                                         container_port,
                                                         host_port,
@@ -653,10 +666,16 @@ impl ContainerRuntime for ContainerClient {
             ))),
         }
     }
-    
-    async fn attach_container(&self, container_id: &str) -> Result<(Box<dyn AsyncWrite + Unpin + Send>, Box<dyn AsyncRead + Unpin + Send>)> {
+
+    async fn attach_container(
+        &self,
+        container_id: &str,
+    ) -> Result<(
+        Box<dyn AsyncWrite + Unpin + Send>,
+        Box<dyn AsyncRead + Unpin + Send>,
+    )> {
         log::debug!("Attaching to container {}", container_id);
-        
+
         // Create attach options
         let options = AttachContainerOptions::<String> {
             stdin: Some(true),
@@ -665,24 +684,28 @@ impl ContainerRuntime for ContainerClient {
             stream: Some(true),
             ..Default::default()
         };
-        
+
         // Attach to the container
-        match self.client.attach_container(container_id, Some(options)).await {
+        match self
+            .client
+            .attach_container(container_id, Some(options))
+            .await
+        {
             Ok(results) => {
                 // Create reader and writer
                 let reader = ContainerAttachReader {
                     output: results.output,
                     buffer: Vec::new(),
                 };
-                
+
                 let writer = ContainerAttachWriter {
                     input: results.input,
                 };
-                
+
                 // Return the reader and writer
                 let reader_box: Box<dyn AsyncRead + Unpin + Send> = Box::new(reader);
                 let writer_box: Box<dyn AsyncWrite + Unpin + Send> = Box::new(writer);
-                
+
                 Ok((writer_box, reader_box))
             }
             Err(e) => Err(Error::ContainerRuntime(format!(

@@ -55,17 +55,23 @@ impl RunCommand {
         // - "nginx:latest" -> "nginx"
         // - "docker.io/library/nginx:latest" -> "docker.io-library-nginx"
         // - "quay.io/stacklok/mcp-server:v1" -> "quay.io-stacklok-mcp-server"
-        
+
         // First, remove the tag part (everything after the colon)
         let image_without_tag = self.image.split(':').next().unwrap_or(&self.image);
-        
+
         // Replace slashes with dashes to preserve namespace structure
         let namespace_name = image_without_tag.replace('/', "-");
-        
+
         // Sanitize the name (allow alphanumeric, dashes, and dots)
         let sanitized_name: String = namespace_name
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '-' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '.' {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect();
 
         // Add a random suffix to ensure uniqueness
@@ -87,26 +93,23 @@ impl RunCommand {
             Some(p) if p > 0 => {
                 // Check if the port is available
                 if !port::is_available(p) {
-                    return Err(Error::InvalidArgument(
-                        format!("Port {} is already in use", p)
-                    ));
+                    return Err(Error::InvalidArgument(format!(
+                        "Port {} is already in use",
+                        p
+                    )));
                 }
                 Ok(p)
-            },
-            // If no port is provided or port is 0, find a random available port
-            _ => {
-                match port::find_available() {
-                    Some(p) => {
-                        log::info!("Using randomly selected port: {}", p);
-                        Ok(p)
-                    },
-                    None => {
-                        Err(Error::InvalidArgument(
-                            "Could not find an available port after multiple attempts".to_string(),
-                        ))
-                    }
-                }
             }
+            // If no port is provided or port is 0, find a random available port
+            _ => match port::find_available() {
+                Some(p) => {
+                    log::info!("Using randomly selected port: {}", p);
+                    Ok(p)
+                }
+                None => Err(Error::InvalidArgument(
+                    "Could not find an available port after multiple attempts".to_string(),
+                )),
+            },
         }
     }
 
@@ -116,34 +119,35 @@ impl RunCommand {
         let port = self.select_port()?;
 
         // Parse transport mode
-        let transport_mode = TransportMode::from_str(&self.transport)
-            .ok_or_else(|| {
-                crate::error::Error::InvalidArgument(format!(
-                    "Invalid transport mode: {}. Valid modes are: sse, stdio",
-                    self.transport
-                ))
-            })?;
+        let transport_mode = TransportMode::parse_str(&self.transport).ok_or_else(|| {
+            crate::error::Error::InvalidArgument(format!(
+                "Invalid transport mode: {}. Valid modes are: sse, stdio",
+                self.transport
+            ))
+        })?;
 
         // Load permission profile
         let permission_profile = match self.permission_profile.as_str() {
             "stdio" => PermissionProfile::builtin_stdio_profile(),
             "network" => PermissionProfile::builtin_network_profile(),
-            path => PermissionProfile::from_file(&PathBuf::from(path))?,
+            path => PermissionProfile::from_file(PathBuf::from(path))?,
         };
 
         // Convert permission profile to container config with transport mode
-        let permission_config = permission_profile.to_container_config_with_transport(&transport_mode)?;
+        let permission_config =
+            permission_profile.to_container_config_with_transport(&transport_mode)?;
 
         // Create container runtime
         let runtime = ContainerRuntimeFactory::create().await?;
-        
+
         // Create transport handler
         let transport = TransportFactory::create(transport_mode, port);
-        
+
         // Execute with the runtime and transport
-        self.execute_with_runtime_and_transport(runtime, transport, permission_config, false).await
+        self.execute_with_runtime_and_transport(runtime, transport, permission_config, false)
+            .await
     }
-    
+
     /// Run the command with a specific runtime and transport (for testing)
     pub async fn execute_with_runtime_and_transport(
         &self,
@@ -157,29 +161,44 @@ impl RunCommand {
 
         // Create labels for the container
         let mut labels = HashMap::new();
-        labels::add_standard_labels(&mut labels, &container_name, &self.transport, transport.port());
+        labels::add_standard_labels(
+            &mut labels,
+            &container_name,
+            &self.transport,
+            transport.port(),
+        );
 
         // Parse user-provided environment variables
         let mut env_vars = environment::parse_environment_variables(&self.env)?;
-        
+
         // Set transport-specific environment variables
-        environment::set_transport_environment_variables(&mut env_vars, &transport.mode(), transport.port());
+        environment::set_transport_environment_variables(
+            &mut env_vars,
+            &transport.mode(),
+            transport.port(),
+        );
 
         // If using stdio transport, set the runtime
         let transport = match transport.mode() {
             TransportMode::STDIO => {
-                let stdio_transport = transport.as_any().downcast_ref::<crate::transport::stdio::StdioTransport>()
-                    .ok_or_else(|| crate::error::Error::Transport("Failed to downcast to StdioTransport".to_string()))?;
-                
+                let stdio_transport = transport
+                    .as_any()
+                    .downcast_ref::<crate::transport::stdio::StdioTransport>()
+                    .ok_or_else(|| {
+                        crate::error::Error::Transport(
+                            "Failed to downcast to StdioTransport".to_string(),
+                        )
+                    })?;
+
                 // Clone the transport and set the runtime
                 let stdio_transport = stdio_transport.clone().with_runtime(runtime);
-                
+
                 // Get a new runtime instance
                 runtime = ContainerRuntimeFactory::create().await?;
-                
+
                 // Box the transport
                 Box::new(stdio_transport) as Box<dyn crate::transport::Transport>
-            },
+            }
             _ => transport,
         };
 
@@ -196,7 +215,11 @@ impl RunCommand {
             .await?;
 
         // Log that the container was created
-        log::info!("MCP server {} created with container ID {}", container_name, container_id);
+        log::info!(
+            "MCP server {} created with container ID {}",
+            container_name,
+            container_id
+        );
 
         // Start the container - This happens before the transport
         // so the transport could have an IP allocated.
@@ -204,7 +227,10 @@ impl RunCommand {
 
         // For STDIO transport, attach to the container before starting it
         let (stdin, stdout) = if transport.mode() == TransportMode::STDIO {
-            log::debug!("Attaching to container {} for STDIO transport", container_id);
+            log::debug!(
+                "Attaching to container {} for STDIO transport",
+                container_id
+            );
             let (stdin, stdout) = runtime.attach_container(&container_id).await?;
             (Some(stdin), Some(stdout))
         } else {
@@ -219,39 +245,46 @@ impl RunCommand {
                     Ok(ip) => {
                         log::debug!("Container IP address: {}", ip);
                         Some(ip)
-                    },
+                    }
                     Err(e) => {
                         log::error!("Failed to get container IP address: {}", e);
                         None
                     }
                 }
-            },
+            }
             _ => None, // Don't need container IP for other transport modes
         };
 
         // Set up the transport
         let mut transport_env_vars = HashMap::new();
-        transport.setup(&container_id, &container_name, &mut transport_env_vars, container_ip).await?;
-
+        transport
+            .setup(
+                &container_id,
+                &container_name,
+                &mut transport_env_vars,
+                container_ip,
+            )
+            .await?;
 
         // Start the transport with stdin/stdout if available
         transport.start(stdin, stdout).await?;
 
         log::info!("MCP server {} started successfully", container_name);
-        
+
         // Create a container monitor
         let runtime_for_monitor = ContainerRuntimeFactory::create().await?;
-        let mut monitor = ContainerMonitor::new(runtime_for_monitor, &container_id, &container_name);
-        
+        let mut monitor =
+            ContainerMonitor::new(runtime_for_monitor, &container_id, &container_name);
+
         // Start monitoring the container
         let mut error_rx = monitor.start_monitoring().await?;
-        
+
         if !skip_ctrl_c {
             log::info!("Press Ctrl+C to stop or wait for container to exit");
 
             // Create a future that completes when Ctrl+C is pressed
             let ctrl_c = tokio::signal::ctrl_c();
-            
+
             tokio::select! {
                 // Wait for Ctrl+C
                 _ = ctrl_c => {
@@ -265,7 +298,7 @@ impl RunCommand {
 
             // Stop monitoring
             monitor.stop_monitoring().await;
-            
+
             // Stop the transport
             let _ = transport.stop().await;
 
@@ -282,25 +315,25 @@ impl RunCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
     async fn test_run_command_env_vars() -> Result<()> {
         // Test valid environment variables using the environment module
         let env_vars = vec!["KEY1=value1".to_string(), "KEY2=value2".to_string()];
         let result_map = environment::parse_environment_variables(&env_vars)?;
-        
+
         assert_eq!(result_map.get("KEY1").unwrap(), "value1");
         assert_eq!(result_map.get("KEY2").unwrap(), "value2");
-        
+
         // Test invalid environment variable
         let invalid_env_var = vec!["INVALID_ENV_VAR".to_string()];
         let result = environment::parse_environment_variables(&invalid_env_var);
-        
+
         assert!(result.is_err());
-        
+
         Ok(())
     }
-    
+
     #[test]
     fn test_get_container_name() {
         // Test with name provided
@@ -313,9 +346,9 @@ mod tests {
             image: "test-image:latest".to_string(),
             args: vec![],
         };
-        
+
         assert_eq!(cmd.get_container_name(), "my-custom-name");
-        
+
         // Test with no name provided (should generate from image)
         let cmd = RunCommand {
             transport: "stdio".to_string(),
@@ -326,10 +359,10 @@ mod tests {
             image: "nginx:latest".to_string(),
             args: vec![],
         };
-        
+
         let generated_name = cmd.get_container_name();
         assert!(generated_name.starts_with("nginx-"));
-        
+
         // Test with registry namespace
         let cmd = RunCommand {
             transport: "stdio".to_string(),
@@ -340,12 +373,15 @@ mod tests {
             image: "docker.io/library/nginx:latest".to_string(),
             args: vec![],
         };
-        
+
         let generated_name = cmd.get_container_name();
-        println!("Generated name for docker.io/library/nginx:latest: {}", generated_name);
+        println!(
+            "Generated name for docker.io/library/nginx:latest: {}",
+            generated_name
+        );
         // The implementation replaces slashes with dashes
         assert!(generated_name.contains("docker.io-library-nginx"));
-        
+
         // Test with special characters
         let cmd = RunCommand {
             transport: "stdio".to_string(),
@@ -356,7 +392,7 @@ mod tests {
             image: "my_special@image:1.0".to_string(),
             args: vec![],
         };
-        
+
         let generated_name = cmd.get_container_name();
         assert!(generated_name.starts_with("my-special-image-"));
     }
@@ -373,13 +409,13 @@ mod tests {
             image: "test-image".to_string(),
             args: vec![],
         };
-        
+
         // Select a port
         let port = cmd.select_port()?;
-        
+
         // Verify a port was selected
         assert!(port > 0);
-        
+
         // Test with port 0 (should select a random port)
         let cmd = RunCommand {
             transport: "sse".to_string(),
@@ -390,13 +426,13 @@ mod tests {
             image: "test-image".to_string(),
             args: vec![],
         };
-        
+
         // Select a port
         let port = cmd.select_port()?;
-        
+
         // Verify a port was selected
         assert!(port > 0);
-        
+
         // Test with specific port (assuming port 8080 is available for the test)
         let specific_port = 8080;
         let cmd = RunCommand {
@@ -408,16 +444,16 @@ mod tests {
             image: "test-image".to_string(),
             args: vec![],
         };
-        
+
         // Only proceed with this test if the port is actually available
         if port::is_available(specific_port) {
             // Select a port
             let port = cmd.select_port()?;
-            
+
             // Verify the specific port was selected
             assert_eq!(port, specific_port);
         }
-        
+
         // Test invalid transport mode
         let cmd = RunCommand {
             transport: "invalid".to_string(),
@@ -428,19 +464,18 @@ mod tests {
             image: "test-image".to_string(),
             args: vec![],
         };
-        
+
         // Parse transport mode
-        let result = TransportMode::from_str(&cmd.transport)
-            .ok_or_else(|| {
-                crate::error::Error::InvalidArgument(format!(
-                    "Invalid transport mode: {}. Valid modes are: sse, stdio",
-                    cmd.transport
-                ))
-            });
-        
+        let result = TransportMode::parse_str(&cmd.transport).ok_or_else(|| {
+            crate::error::Error::InvalidArgument(format!(
+                "Invalid transport mode: {}. Valid modes are: sse, stdio",
+                cmd.transport
+            ))
+        });
+
         // Verify the result is an error
         assert!(result.is_err());
-        
+
         Ok(())
     }
 }

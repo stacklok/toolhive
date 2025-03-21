@@ -17,9 +17,11 @@ pub enum TransportMode {
     STDIO,
 }
 
+use std::str::FromStr;
+
 impl TransportMode {
-    /// Convert a string to a transport mode
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Parse a string to a transport mode (legacy method)
+    pub fn parse_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "sse" => Some(Self::SSE),
             "stdio" => Some(Self::STDIO),
@@ -32,6 +34,18 @@ impl TransportMode {
         match self {
             Self::SSE => "sse",
             Self::STDIO => "stdio",
+        }
+    }
+}
+
+impl FromStr for TransportMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "sse" => Ok(Self::SSE),
+            "stdio" => Ok(Self::STDIO),
+            _ => Err(format!("Unknown transport mode: {}", s)),
         }
     }
 }
@@ -68,7 +82,7 @@ pub trait Transport: Send + Sync {
 
     /// Check if the transport is running
     async fn is_running(&self) -> Result<bool>;
-    
+
     /// Convert to Any for downcasting
     fn as_any(&self) -> &dyn Any;
 }
@@ -93,12 +107,33 @@ mod tests {
     use crate::transport::stdio::StdioTransport;
 
     #[test]
-    fn test_transport_mode_from_str() {
-        assert_eq!(TransportMode::from_str("sse"), Some(TransportMode::SSE));
-        assert_eq!(TransportMode::from_str("SSE"), Some(TransportMode::SSE));
-        assert_eq!(TransportMode::from_str("stdio"), Some(TransportMode::STDIO));
-        assert_eq!(TransportMode::from_str("STDIO"), Some(TransportMode::STDIO));
-        assert_eq!(TransportMode::from_str("invalid"), None);
+    fn test_transport_mode_parse_str() {
+        assert_eq!(TransportMode::parse_str("sse"), Some(TransportMode::SSE));
+        assert_eq!(TransportMode::parse_str("SSE"), Some(TransportMode::SSE));
+        assert_eq!(
+            TransportMode::parse_str("stdio"),
+            Some(TransportMode::STDIO)
+        );
+        assert_eq!(
+            TransportMode::parse_str("STDIO"),
+            Some(TransportMode::STDIO)
+        );
+        assert_eq!(TransportMode::parse_str("invalid"), None);
+    }
+
+    #[test]
+    fn test_transport_mode_from_str_trait() {
+        assert_eq!("sse".parse::<TransportMode>().unwrap(), TransportMode::SSE);
+        assert_eq!("SSE".parse::<TransportMode>().unwrap(), TransportMode::SSE);
+        assert_eq!(
+            "stdio".parse::<TransportMode>().unwrap(),
+            TransportMode::STDIO
+        );
+        assert_eq!(
+            "STDIO".parse::<TransportMode>().unwrap(),
+            TransportMode::STDIO
+        );
+        assert!("invalid".parse::<TransportMode>().is_err());
     }
 
     #[test]
@@ -112,13 +147,19 @@ mod tests {
         // Test creating SSE transport
         let sse_transport = TransportFactory::create(TransportMode::SSE, 8080);
         assert_eq!(sse_transport.mode(), TransportMode::SSE);
-        
+
         // Test creating STDIO transport
         let stdio_transport = TransportFactory::create(TransportMode::STDIO, 8081);
         assert_eq!(stdio_transport.mode(), TransportMode::STDIO);
-        
+
         // Verify the correct types were created using downcasting
-        assert!(sse_transport.as_any().downcast_ref::<SseTransport>().is_some());
-        assert!(stdio_transport.as_any().downcast_ref::<StdioTransport>().is_some());
+        assert!(sse_transport
+            .as_any()
+            .downcast_ref::<SseTransport>()
+            .is_some());
+        assert!(stdio_transport
+            .as_any()
+            .downcast_ref::<StdioTransport>()
+            .is_some());
     }
 }

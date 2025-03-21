@@ -1,5 +1,5 @@
-use std::net::{SocketAddr, TcpListener};
 use rand::Rng;
+use std::net::{SocketAddr, TcpListener};
 
 /// Check if a port is available
 pub fn is_available(port: u16) -> bool {
@@ -36,7 +36,8 @@ mod tests {
         // This test is a bit tricky since we can't guarantee a port is available
         // But we can at least test the function runs without errors
         let result = is_available(0); // Port 0 means OS will assign a port
-        assert!(result || !result); // This will always be true, just making sure the function runs
+                                      // Just making sure the function runs without panicking
+        let _ = result;
     }
 
     #[test]

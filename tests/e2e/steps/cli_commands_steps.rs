@@ -1,27 +1,33 @@
 use cucumber::{then, when};
 use regex::Regex;
 
-use crate::VibeToolWorld;
-use crate::common::utils::execute_vt;
 use crate::common::assertions::{assert_command_failure, assert_output_contains};
+use crate::common::utils::execute_vt;
+use crate::VibeToolWorld;
 
 #[when(expr = "I run the {string} command")]
 fn run_command(world: &mut VibeToolWorld, command: String) {
     // Build the command arguments
     let args: Vec<&str> = vec![&command];
-    
+
     println!("Executing command: cargo run -- {}", command);
-    
+
     // Execute the command
     let output = execute_vt(&args).expect("Failed to execute vt command");
-    
+
     // Store the command output
     world.command_output = Some(output);
-    
+
     // Print the command output for debugging
     if let Some(ref output) = world.command_output {
-        println!("Command stdout: {}", String::from_utf8_lossy(&output.stdout));
-        println!("Command stderr: {}", String::from_utf8_lossy(&output.stderr));
+        println!(
+            "Command stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        println!(
+            "Command stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 
@@ -29,25 +35,32 @@ fn run_command(world: &mut VibeToolWorld, command: String) {
 fn run_command_with_args(world: &mut VibeToolWorld, args_str: String) {
     // Split the arguments string by whitespace
     let args: Vec<&str> = args_str.split_whitespace().collect();
-    
+
     println!("Executing command: cargo run -- {}", args_str);
-    
+
     // Execute the command
     let output = execute_vt(&args).expect("Failed to execute vt command");
     // Store the command output
     world.command_output = Some(output);
-    
+
     // Print the command output for debugging
     if let Some(ref output) = world.command_output {
-        println!("Command stdout: {}", String::from_utf8_lossy(&output.stdout));
-        println!("Command stderr: {}", String::from_utf8_lossy(&output.stderr));
+        println!(
+            "Command stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        println!(
+            "Command stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 
 #[then(expr = "the output should contain {string}")]
 fn output_contains(world: &mut VibeToolWorld, expected: String) {
     if let Some(ref output) = world.command_output {
-        assert_output_contains(output, &expected).expect(&format!("Output does not contain '{}'", expected));
+        assert_output_contains(output, &expected)
+            .expect(&format!("Output does not contain '{}'", expected));
     } else {
         panic!("No command output available");
     }
@@ -58,11 +71,11 @@ fn output_contains_version(world: &mut VibeToolWorld) {
     if let Some(ref output) = world.command_output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        
+
         // Check if the output contains a version number pattern (e.g., 0.1.0)
         let version_pattern = r"\d+\.\d+\.\d+";
         let re = Regex::new(version_pattern).unwrap();
-        
+
         assert!(
             re.is_match(&stdout) || re.is_match(&stderr),
             "Expected output to contain a version number (e.g., 0.1.0), but got:\nSTDOUT: {}\nSTDERR: {}",
@@ -87,14 +100,14 @@ fn output_contains_error(world: &mut VibeToolWorld) {
     if let Some(ref output) = world.command_output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        
+
         // Check if the output contains common error terms
         let error_terms = ["error", "invalid", "unknown", "not found", "failed"];
-        
+
         let contains_error = error_terms.iter().any(|term| {
             stdout.to_lowercase().contains(term) || stderr.to_lowercase().contains(term)
         });
-        
+
         assert!(
             contains_error,
             "Expected output to contain an error message, but got:\nSTDOUT: {}\nSTDERR: {}",

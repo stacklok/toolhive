@@ -1,6 +1,6 @@
+use std::env;
 use std::process::{Command, Output};
 use std::str;
-use std::env;
 
 /// Determines which container runtime to use (podman or docker)
 pub fn get_container_runtime() -> String {
@@ -22,9 +22,7 @@ pub fn extract_container_id(output: &str) -> Option<String> {
     let lines: Vec<&str> = output.lines().collect();
     for line in lines {
         if line.contains("container ID") {
-            return line.split_whitespace()
-                .last()
-                .map(|s| s.trim().to_string());
+            return line.split_whitespace().last().map(|s| s.trim().to_string());
         }
     }
     None
@@ -33,18 +31,18 @@ pub fn extract_container_id(output: &str) -> Option<String> {
 /// Creates a Command with the appropriate environment variables for container runtime
 pub fn create_container_runtime_command(cmd: &str) -> Command {
     let mut command = Command::new(cmd);
-    
+
     // Pass through DOCKER_HOST and CONTAINER_HOST environment variables if they exist
     if let Ok(docker_host) = env::var("DOCKER_HOST") {
         println!("Using DOCKER_HOST: {}", docker_host);
         command.env("DOCKER_HOST", docker_host);
     }
-    
+
     if let Ok(container_host) = env::var("CONTAINER_HOST") {
         println!("Using CONTAINER_HOST: {}", container_host);
         command.env("CONTAINER_HOST", container_host);
     }
-    
+
     command
 }
 
@@ -57,8 +55,14 @@ pub fn execute_container_runtime(args: &[&str]) -> std::io::Result<Output> {
 
 /// Checks if a container is running
 pub fn is_container_running(container_id: &str) -> std::io::Result<bool> {
-    let output = execute_container_runtime(&["ps", "--filter", &format!("id={}", container_id), "--format", "{{.ID}}"])?;
-    
+    let output = execute_container_runtime(&[
+        "ps",
+        "--filter",
+        &format!("id={}", container_id),
+        "--format",
+        "{{.ID}}",
+    ])?;
+
     let output_str = str::from_utf8(&output.stdout).unwrap_or("");
     Ok(!output_str.trim().is_empty())
 }
@@ -79,10 +83,10 @@ pub fn exec_in_container(container_id: &str, cmd: &[&str]) -> std::io::Result<Ou
 pub fn cleanup_container(container_id: &str) -> std::io::Result<()> {
     // Try to stop the container if it's running
     let _ = execute_container_runtime(&["stop", container_id]);
-    
+
     // Try to remove the container
     let _ = execute_container_runtime(&["rm", "-f", container_id]);
-    
+
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 use cucumber::then;
 
-use crate::VibeToolWorld;
 use crate::common::utils::cleanup_container;
+use crate::VibeToolWorld;
 
 #[then("I should clean up the test resources")]
 fn cleanup_resources(world: &mut VibeToolWorld) {
@@ -9,7 +9,7 @@ fn cleanup_resources(world: &mut VibeToolWorld) {
     if let Some(ref container_id) = world.container_id {
         let _ = cleanup_container(container_id);
     }
-    
+
     // Reset the world state
     world.command_output = None;
     world.container_id = None;
@@ -24,11 +24,13 @@ fn see_in_output(world: &mut VibeToolWorld, expected: String) {
     if let Some(ref output) = world.command_output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        
+
         assert!(
             stdout.contains(&expected) || stderr.contains(&expected),
             "Expected output to contain '{}', but got:\nSTDOUT: {}\nSTDERR: {}",
-            expected, stdout, stderr
+            expected,
+            stdout,
+            stderr
         );
     } else {
         panic!("No command output available");
@@ -40,11 +42,13 @@ fn not_see_in_output(world: &mut VibeToolWorld, unexpected: String) {
     if let Some(ref output) = world.command_output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        
+
         assert!(
             !stdout.contains(&unexpected) && !stderr.contains(&unexpected),
             "Expected output to not contain '{}', but it did:\nSTDOUT: {}\nSTDERR: {}",
-            unexpected, stdout, stderr
+            unexpected,
+            stdout,
+            stderr
         );
     } else {
         panic!("No command output available");

@@ -12,7 +12,7 @@ use vibetool::error::Result;
 fn main() {
     // Parse command line arguments
     let cli = Cli::parse();
-    
+
     // Initialize logger based on debug flag
     let mut builder = Builder::new();
     builder.filter_level(if cli.debug {
@@ -21,7 +21,7 @@ fn main() {
         LevelFilter::Info
     });
     builder.init();
-    
+
     // Create a tokio runtime
     let rt = Runtime::new().expect("Failed to create tokio runtime");
 

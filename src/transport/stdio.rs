@@ -69,24 +69,21 @@ impl StdioTransport {
         let clients = self.sse_clients.lock().await;
         
         if clients.is_empty() {
-            println!("DEBUG: No SSE clients connected, skipping event");
             log::debug!("No SSE clients connected, skipping event");
             return Ok(());
         }
         
-        println!("DEBUG: Sending SSE event to {} clients", clients.len());
+        log::debug!("Sending SSE event to {} clients", clients.len());
         
         for (client_id, client) in clients.iter() {
             let event = format!("event: {}\ndata: {}\n\n", event_type, data);
-            println!("DEBUG: Sending event to client {}: {}", client_id, event);
+            log::debug!("Sending event to client {}", client_id);
             
             if let Err(e) = client.tx.send(event).await {
-                println!("DEBUG: Failed to send SSE event to client {}: {}", client_id, e);
                 log::error!("Failed to send SSE event to client {}: {}", client_id, e);
                 // We don't remove the client here to avoid modifying the HashMap while iterating
                 // Failed clients will be removed when their connection is closed
             } else {
-                println!("DEBUG: Successfully sent SSE event to client {}: {}", client_id, event_type);
                 log::debug!("Sent SSE event to client {}: {}", client_id, event_type);
             }
         }
@@ -96,16 +93,16 @@ impl StdioTransport {
 
     /// Handle an SSE connection
     async fn handle_sse_connection(&self, req: Request<Body>) -> Result<Response<Body>> {
-        println!("DEBUG: handle_sse_connection called");
+        log::debug!("handle_sse_connection called");
         
         // Extract query for debugging
         let uri = req.uri();
         let query = uri.query().unwrap_or("");
-        println!("DEBUG: SSE connection query: {}", query);
+        log::debug!("SSE connection query: {}", query);
         
         // Generate a unique client ID
         let client_id = Uuid::new_v4();
-        println!("DEBUG: Generated client ID for SSE: {}", client_id);
+        log::debug!("Generated client ID for SSE: {}", client_id);
         
         // Create a channel for sending events to this client
         let (mut sender, body) = Body::channel();
@@ -118,7 +115,7 @@ impl StdioTransport {
                 tx: tx.clone(),
                 created_at: SystemTime::now(),
             });
-            println!("DEBUG: Registered SSE client. Active sessions: {:?}",
+            log::debug!("Registered SSE client. Active sessions: {:?}",
                      clients.keys().map(|k| k.to_string()).collect::<Vec<_>>());
         }
         
@@ -126,7 +123,7 @@ impl StdioTransport {
         let messages_to_send = {
             let mut pending = self.pending_messages.lock().await;
             if !pending.is_empty() {
-                println!("DEBUG: Processing {} pending messages for new client", pending.len());
+                log::debug!("Processing {} pending messages for new client", pending.len());
                 
                 // Find messages for this client (targeted or broadcast)
                 let mut messages_for_client = Vec::new();
@@ -145,10 +142,10 @@ impl StdioTransport {
                 // Put back messages for other clients
                 *pending = remaining_messages;
                 
-                println!("DEBUG: Found {} messages for client {}", messages_for_client.len(), client_id);
+                log::debug!("Found {} messages for client {}", messages_for_client.len(), client_id);
                 messages_for_client
             } else {
-                println!("DEBUG: No pending messages to process");
+                log::debug!("No pending messages to process");
                 Vec::new()
             }
         };
@@ -157,10 +154,9 @@ impl StdioTransport {
         for msg in messages_to_send {
             let event = format!("event: {}\ndata: {}\n\n", msg.event_type, msg.data);
             if let Err(e) = tx.send(event).await {
-                println!("DEBUG: Failed to send pending message to client {}: {}", client_id, e);
                 log::error!("Failed to send pending message to client {}: {}", client_id, e);
             } else {
-                println!("DEBUG: Successfully sent pending message to client {}", client_id);
+                log::debug!("Successfully sent pending message to client {}", client_id);
             }
         }
         
@@ -180,7 +176,7 @@ impl StdioTransport {
         
         // Send the endpoint event
         let endpoint_url = format!("{}/mcp/v1/jsonrpc?session_id={}", base_url, client_id);
-        println!("DEBUG: Sending endpoint URL: {}", endpoint_url);
+        log::debug!("Sending endpoint URL: {}", endpoint_url);
         let endpoint_event = format!("event: endpoint\ndata: {}\n\n", endpoint_url);
         
         // Send the initial event directly to the body
@@ -211,16 +207,16 @@ impl StdioTransport {
         // Extract session ID from query parameters
         let uri = req.uri();
         let query = uri.query().unwrap_or("");
-        println!("DEBUG: Query string: {}", query);
+        log::debug!("Query string: {}", query);
         
         let session_id = query.split('&')
             .find_map(|param| {
                 let parts: Vec<&str> = param.split('=').collect();
                 if parts.len() == 2 && parts[0] == "session_id" {
-                    println!("DEBUG: Found session_id param: {}", parts[1]);
+                    log::debug!("Found session_id param: {}", parts[1]);
                     let parsed = Uuid::parse_str(parts[1]);
                     if let Err(e) = &parsed {
-                        println!("DEBUG: Failed to parse UUID: {}", e);
+                        log::debug!("Failed to parse UUID: {}", e);
                     }
                     parsed.ok()
                 } else {
@@ -230,11 +226,11 @@ impl StdioTransport {
         
         let session_id = match session_id {
             Some(id) => {
-                println!("DEBUG: Valid session ID: {}", id);
+                log::debug!("Valid session ID: {}", id);
                 id
             },
             None => {
-                println!("DEBUG: Missing or invalid session_id");
+                log::debug!("Missing or invalid session_id");
                 return Ok(Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .body(Body::from("session_id is required"))
@@ -245,20 +241,20 @@ impl StdioTransport {
         // Check if the session exists
         let client_exists = {
             let clients = self.sse_clients.lock().await;
-            println!("DEBUG: Checking if session exists. Active sessions: {:?}",
+            log::debug!("Checking if session exists. Active sessions: {:?}",
                      clients.keys().map(|k| k.to_string()).collect::<Vec<_>>());
             clients.contains_key(&session_id)
         };
         
         if !client_exists {
-            println!("DEBUG: Session not found: {}", session_id);
+            log::debug!("Session not found: {}", session_id);
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::from("Could not find session"))
                 .unwrap());
         }
         
-        println!("DEBUG: Session found: {}", session_id);
+        log::debug!("Session found: {}", session_id);
         
         // Read the request body
         let body_bytes = hyper::body::to_bytes(req.into_body()).await
@@ -303,7 +299,7 @@ impl StdioTransport {
         }
         
         // Return a success response immediately
-        println!("DEBUG: Returning ACCEPTED response for POST request");
+        log::debug!("Returning ACCEPTED response for POST request");
         Ok(Response::builder()
             .status(StatusCode::ACCEPTED)
             .body(Body::from("Accepted"))
@@ -356,12 +352,12 @@ impl StdioTransport {
                         let path = req.uri().path();
                         let method = req.method();
                         
-                        println!("DEBUG: Received request: {} {}", method, path);
+                        log::debug!("Received request: {} {}", method, path);
                         
                         match (method, path) {
                             // SSE endpoint
                             (&hyper::Method::GET, "/mcp/v1/events") => {
-                                println!("DEBUG: Routing to SSE endpoint");
+                                log::debug!("Routing to SSE endpoint");
                                 match transport.handle_sse_connection(req).await {
                                     Ok(response) => Ok::<_, hyper::Error>(response),
                                     Err(e) => {
@@ -431,13 +427,11 @@ impl StdioTransport {
 
     /// Forward a JSON-RPC message to SSE clients
     async fn forward_to_sse_clients(&self, json_rpc: &JsonRpcMessage) -> Result<()> {
-        println!("DEBUG: Forwarding JSON-RPC message to SSE clients: {:?}", json_rpc);
+        log::debug!("Forwarding JSON-RPC message to SSE clients");
         
         // Serialize the message to JSON
         let json_str = serde_json::to_string(json_rpc)
             .map_err(|e| Error::Transport(format!("Failed to serialize JSON-RPC: {}", e)))?;
-        
-        println!("DEBUG: Serialized JSON-RPC message: {}", json_str);
         
         // Check if there are any connected clients
         let has_clients = {
@@ -448,20 +442,18 @@ impl StdioTransport {
         if has_clients {
             // Send the message as an SSE event
             self.send_sse_event("message", &json_str).await?;
-            println!("DEBUG: Successfully forwarded JSON-RPC message to SSE clients");
+            log::debug!("Successfully forwarded JSON-RPC message to SSE clients");
         } else {
             // Queue the message for later delivery
-            println!("DEBUG: No SSE clients connected, queueing message for later delivery");
+            log::debug!("No SSE clients connected, queueing message for later delivery");
             let mut pending = self.pending_messages.lock().await;
             pending.push(PendingMessage {
                 event_type: "message".to_string(),
                 data: json_str.clone(),
                 target_client_id: None, // Broadcast to all clients
             });
-            println!("DEBUG: Message queued. Queue size: {}", pending.len());
+            log::debug!("Message queued. Queue size: {}", pending.len());
         }
-        
-        log::debug!("Forwarded JSON-RPC message to SSE clients");
         
         Ok(())
     }

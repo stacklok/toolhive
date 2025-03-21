@@ -613,25 +613,14 @@ impl StdioTransport {
     /// Process JSON-RPC messages and handle bidirectional communication with the container
     /// using provided stdin and stdout
     async fn process_messages_with_io(
+        transport: Arc<Self>,
         mut stdin: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
         stdout: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
         mut message_rx: mpsc::Receiver<JsonRpcMessage>,
         response_tx: mpsc::Sender<JsonRpcMessage>,
         mut shutdown_rx: oneshot::Receiver<()>,
     ) -> Result<()> {
-        // Create a reference to self for the stdout task
-        let transport = Arc::new(Self {
-            port: 0, // Dummy value, not used in the stdout task
-            container_id: Arc::new(Mutex::new(None)),
-            container_name: Arc::new(Mutex::new(None)),
-            runtime: Arc::new(Mutex::new(None)),
-            shutdown_tx: Arc::new(Mutex::new(None)),
-            message_tx: Arc::new(Mutex::new(None)),
-            response_rx: Arc::new(Mutex::new(None)),
-            http_shutdown_tx: Arc::new(Mutex::new(None)),
-            sse_clients: Arc::new(Mutex::new(HashMap::new())),
-            pending_messages: Arc::new(Mutex::new(Vec::new())),
-        });
+        // Use the provided transport instance instead of creating a new one
         
         // Spawn a task to read from stdout
         let response_tx_clone = response_tx.clone();
@@ -844,8 +833,12 @@ impl Transport for StdioTransport {
             return Err(Error::Transport("Stdin/stdout must be provided".to_string()));
         };
         
+        // Create an Arc reference to self for the processing task
+        let transport = Arc::new(self.clone());
+        
         tokio::spawn(async move {
             if let Err(e) = Self::process_messages_with_io(
+                transport,
                 stdin_box,
                 stdout_box,
                 message_rx,

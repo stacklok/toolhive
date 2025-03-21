@@ -12,22 +12,17 @@ use uuid::Uuid;
 
 use crate::container::ContainerRuntime;
 use crate::error::{Error, Result};
-use crate::transport::{jsonrpc::JsonRpcMessage, Transport, TransportMode};
+use crate::transport::{
+    jsonrpc::JsonRpcMessage,
+    sse_common::{PendingSSEMessage, SSEMessage},
+    Transport, TransportMode,
+};
 
 /// SSE client connection
 struct SseClient {
     tx: mpsc::Sender<String>,
     #[allow(dead_code)]
     created_at: SystemTime,
-}
-
-/// Message type for pending SSE messages
-#[derive(Clone)]
-struct PendingMessage {
-    event_type: String,
-    data: String,
-    // None means broadcast to all clients
-    target_client_id: Option<Uuid>,
 }
 
 /// STDIO transport handler for MCP servers
@@ -43,7 +38,7 @@ pub struct StdioTransport {
     http_shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     sse_clients: Arc<Mutex<HashMap<Uuid, SseClient>>>,
     // Queue for messages that need to be forwarded to SSE clients
-    pending_messages: Arc<Mutex<Vec<PendingMessage>>>,
+    pending_messages: Arc<Mutex<Vec<PendingSSEMessage>>>,
 }
 
 impl StdioTransport {
@@ -66,7 +61,8 @@ impl StdioTransport {
     /// Send an SSE event to all connected clients
     async fn send_sse_event(&self, event_type: &str, data: &str) -> Result<()> {
         let mut clients_to_remove = Vec::new();
-        
+        let message = SSEMessage::new(event_type, data);
+
         {
             let clients = self.sse_clients.lock().await;
 
@@ -78,10 +74,10 @@ impl StdioTransport {
             log::debug!("Sending SSE event to {} clients", clients.len());
 
             for (client_id, client) in clients.iter() {
-                let event = format!("event: {}\ndata: {}\n\n", event_type, data);
+                let event_string = message.to_sse_string();
                 log::debug!("Sending event to client {}", client_id);
 
-                if let Err(e) = client.tx.send(event).await {
+                if let Err(e) = client.tx.send(event_string).await {
                     log::error!("Failed to send SSE event to client {}: {}", client_id, e);
                     // Collect client IDs with closed channels for removal after iteration
                     clients_to_remove.push(*client_id);
@@ -90,12 +86,15 @@ impl StdioTransport {
                 }
             }
         }
-        
+
         // Remove failed clients outside the lock to avoid deadlock
         if !clients_to_remove.is_empty() {
             let mut clients = self.sse_clients.lock().await;
             for client_id in &clients_to_remove {
-                log::debug!("Removing disconnected client {} (channel closed)", client_id);
+                log::debug!(
+                    "Removing disconnected client {} (channel closed)",
+                    client_id
+                );
                 clients.remove(client_id);
             }
             log::debug!("Removed {} disconnected clients", clients_to_remove.len());
@@ -152,7 +151,9 @@ impl StdioTransport {
 
                 for msg in pending.drain(..) {
                     // If the message is for all clients or specifically for this client
-                    if msg.target_client_id.is_none() || msg.target_client_id == Some(client_id) {
+                    if msg.message.target_client_id.is_none()
+                        || msg.message.target_client_id == Some(client_id)
+                    {
                         messages_for_client.push(msg);
                     } else {
                         // Keep messages for other clients
@@ -177,8 +178,8 @@ impl StdioTransport {
 
         // Send the relevant messages to this client
         for msg in messages_to_send {
-            let event = format!("event: {}\ndata: {}\n\n", msg.event_type, msg.data);
-            if let Err(e) = tx.send(event).await {
+            let event_string = msg.message.to_sse_string();
+            if let Err(e) = tx.send(event_string).await {
                 log::error!(
                     "Failed to send pending message to client {}: {}",
                     client_id,
@@ -211,13 +212,17 @@ impl StdioTransport {
             .unwrap_or("http");
         let base_url = format!("{}://{}", scheme, host);
 
-        // Send the endpoint event
+        // Create and send the endpoint event
         let endpoint_url = format!("{}/mcp/v1/jsonrpc?session_id={}", base_url, client_id);
         log::debug!("Sending endpoint URL: {}", endpoint_url);
-        let endpoint_event = format!("event: endpoint\ndata: {}\n\n", endpoint_url);
+
+        let endpoint_message = SSEMessage::new("endpoint", &endpoint_url);
 
         // Send the initial event directly to the body
-        if let Err(e) = sender.send_data(endpoint_event.into()).await {
+        if let Err(e) = sender
+            .send_data(endpoint_message.to_sse_string().into())
+            .await
+        {
             log::error!(
                 "Failed to send endpoint event to client {}: {}",
                 client_id,
@@ -239,11 +244,14 @@ impl StdioTransport {
                     break;
                 }
             }
-            
+
             // Client disconnected or channel closed, remove from clients map
             let mut clients = sse_clients_clone.lock().await;
             if clients.remove(&client_id_clone).is_some() {
-                log::debug!("Client {} disconnected, removed from active clients", client_id_clone);
+                log::debug!(
+                    "Client {} disconnected, removed from active clients",
+                    client_id_clone
+                );
                 log::debug!("Remaining active clients: {}", clients.len());
             }
         });
@@ -494,6 +502,9 @@ impl StdioTransport {
         let json_str = serde_json::to_string(json_rpc)
             .map_err(|e| Error::Transport(format!("Failed to serialize JSON-RPC: {}", e)))?;
 
+        // Create an SSE message
+        let sse_message = SSEMessage::new("message", &json_str);
+
         // Check if there are any connected clients
         let has_clients = {
             let clients = self.sse_clients.lock().await;
@@ -508,11 +519,7 @@ impl StdioTransport {
             // Queue the message for later delivery
             log::debug!("No SSE clients connected, queueing message for later delivery");
             let mut pending = self.pending_messages.lock().await;
-            pending.push(PendingMessage {
-                event_type: "message".to_string(),
-                data: json_str.clone(),
-                target_client_id: None, // Broadcast to all clients
-            });
+            pending.push(PendingSSEMessage::from(sse_message));
             log::debug!("Message queued. Queue size: {}", pending.len());
         }
 

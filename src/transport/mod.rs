@@ -7,6 +7,7 @@ use crate::error::Result;
 
 pub mod jsonrpc;
 pub mod sse;
+pub mod sse_common;
 pub mod stdio;
 
 /// Transport mode for MCP servers

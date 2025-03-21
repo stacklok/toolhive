@@ -6,29 +6,17 @@ Under the hood, Vibe Tool acts as a very thin client for the Docker/Podman Unix 
 
 ## Why Vibe Tool?
 
-Existing ways to start MCP servers are viewed as insecure, often granting containers more privileges than necessary. mcp-lok aims to solve this by starting containers in a locked-down environment, granting only the minimal permissions required to run. This significantly reduces the attack surface and enforces best practices for container security.
-
-## Installation
-
-### From Source
-
-```bash
-git clone https://github.com/stacklok/vibetool.git
-cd vibetool
-cargo build --release
-```
-
-The binary will be available at `target/release/vt`.
+Existing ways to start MCP servers are viewed as insecure, often granting containers more privileges than necessary. vibe tool aims to solve this by starting containers in a locked-down environment, granting only the minimal permissions required to run. This significantly reduces the attack surface and enforces best practices for container security.
 
 ## Commands
 
 The vt command-line interface provides the following subcommands:
 
-* `vt run` Runs an MCP server.
+* `vt run` Runs an MCP server using the default STDIO transport.
+
+* `vt run --transport=sse` Runs an SSE MCP server.
 
 * `vt list` Lists running MCP servers.
-
-* `vt start` Starts an MCP server and sends it to the background.
 
 * `vt stop` Stops an MCP server.
 
@@ -69,11 +57,11 @@ This command closely resembles `docker run` but focuses on security and simplici
 
 * **SSE**:
 
-    If the transport is `sse`, Vibe Tool creates a reverse proxy on port `8080` that forwards requests to the container. This means the container itself does not directly expose any ports.
+    If the transport is `sse`, Vibe Tool creates a reverse proxy a random that forwards requests to the container. This means the container itself does not directly expose any ports.
 
 * **STDIO**:
 
-    If the transport is `stdio`, Vibe Tool redirects SEE traffic to the container's standard input and output.
+    If the transport is `stdio`, Vibe Tool redirects SSE traffic to the container's standard input and output.
     This acts as a secure proxy, ensuring that the container does not have direct access to the network nor
     the host machine.
 
@@ -127,111 +115,6 @@ vt list
 ```
 
 This lists all active MCP servers managed by Vibe Tool, along with their current status.
-
-## Development
-### Running Tests
-
-```bash
-# Run all tests
-cargo test
-
-# Run unit tests only
-cargo test --lib
-
-# Run end-to-end tests
-cargo test --test e2e
-```
-
-### Code Formatting
-
-This project uses cargo fix to ensure consistent code formatting and fix common issues:
-
-- **cargo fix** - A tool for automatically fixing lint warnings reported by rustc
-
-Configuration for code style is included in the repository:
-- `rustfmt.toml` - Code style configuration
-
-#### Running Formatter
-
-You can run the formatter using the provided Makefile:
-
-```bash
-# Run code formatting check
-make lint-fmt
-
-# Run all linting (currently just code formatting)
-make lint
-```
-
-#### Automatic Formatting
-
-The project is set up with:
-
-1. **Pre-commit Hook** - Automatically runs code formatting check before each commit
-2. **GitHub Actions** - Runs code formatting check on pull requests and pushes to main branch
-
-To skip the pre-commit hook (not recommended), use:
-
-```bash
-git commit --no-verify
-```
-
-### Running BDD-style End-to-End Tests
-
-The project includes comprehensive BDD-style end-to-end tests using cucumber-rs. These tests verify the functionality of the entire system from a user's perspective.
-
-You can run these tests using the provided Makefile:
-
-```bash
-# Run all tests (unit and e2e)
-make test
-
-# Run only e2e tests
-make test-e2e
-
-# Run a specific feature or tag
-make test-e2e-feature FEATURE=server_lifecycle
-make test-e2e-feature FEATURE=@transport
-
-# Run e2e tests with JUnit reports (for CI integration)
-make test-e2e-junit
-
-# Run e2e tests with verbose output
-make test-e2e-verbose
-
-# Show all available make targets
-make help
-```
-
-The BDD tests are organized into five main feature areas:
-1. Server lifecycle management (starting, stopping, removing servers)
-2. CLI command functionality
-3. Transport mechanisms (SSE and stdio)
-4. Permission profiles and security constraints
-5. MCP protocol implementation
-
-### Building Documentation
-
-```bash
-cargo doc --open
-```
-
-### Code Coverage
-
-This project uses [grcov](https://github.com/mozilla/grcov) to generate code coverage reports. The coverage setup is configured in the `coverage.sh` script and can be run using the `make coverage` command.
-
-#### Running Code Coverage
-
-To generate a code coverage report:
-
-```bash
-make coverage
-```
-
-This will:
-1. Run the unit tests with coverage instrumentation
-2. Generate an HTML coverage report in `target/coverage/html/`
-3. Generate a Markdown summary report in `target/coverage/summary.md`
 
 ## License
 

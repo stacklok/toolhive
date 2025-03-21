@@ -1,9 +1,28 @@
-/target
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 
+# Test binary, built with `go test -c`
+*.test
 
-# Added by cargo
-#
-# already existing elements were commented out
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
 
-#/target
-.tools
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build output
+/bin/
+/dist/

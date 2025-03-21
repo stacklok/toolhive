@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 use vibetool::environment;
 use vibetool::error::Result;
 use vibetool::transport::sse::SseTransport;
-use vibetool::transport::stdio::JsonRpcMessage;
+use vibetool::transport::jsonrpc::JsonRpcMessage;
 use vibetool::transport::stdio::StdioTransport;
 use vibetool::transport::{Transport, TransportMode};
 

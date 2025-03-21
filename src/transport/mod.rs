@@ -5,6 +5,7 @@ use std::fmt::Debug;
 
 use crate::error::Result;
 
+pub mod jsonrpc;
 pub mod sse;
 pub mod stdio;
 

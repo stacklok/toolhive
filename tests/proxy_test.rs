@@ -13,7 +13,8 @@ use vibetool::container::{ContainerInfo, ContainerRuntime};
 use vibetool::error::{Error, Result};
 use vibetool::permissions::profile::ContainerPermissionConfig;
 use vibetool::transport::sse::SseTransport;
-use vibetool::transport::stdio::{JsonRpcMessage, StdioTransport};
+use vibetool::transport::jsonrpc::JsonRpcMessage;
+use vibetool::transport::stdio::StdioTransport;
 use vibetool::transport::Transport;
 
 // Fake MCP server that responds to MCP protocol requests

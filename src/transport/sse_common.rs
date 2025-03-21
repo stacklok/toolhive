@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// HTTP endpoint for SSE events
+pub const HTTP_SSE_ENDPOINT: &str = "/mcp/v1/events";
+
+/// HTTP endpoint for JSON-RPC messages
+pub const HTTP_MESSAGES: &str = "/mcp/v1/jsonrpc";
+
 /// SSE message type for Server-Sent Events
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SSEMessage {

@@ -14,7 +14,7 @@ use crate::container::ContainerRuntime;
 use crate::error::{Error, Result};
 use crate::transport::{
     jsonrpc::JsonRpcMessage,
-    sse_common::{PendingSSEMessage, SSEMessage},
+    sse_common::{HTTP_MESSAGES, HTTP_SSE_ENDPOINT, PendingSSEMessage, SSEMessage},
     Transport, TransportMode,
 };
 
@@ -213,7 +213,7 @@ impl StdioTransport {
         let base_url = format!("{}://{}", scheme, host);
 
         // Create and send the endpoint event
-        let endpoint_url = format!("{}/mcp/v1/jsonrpc?session_id={}", base_url, client_id);
+        let endpoint_url = format!("{}{}?session_id={}", base_url, HTTP_MESSAGES, client_id);
         log::debug!("Sending endpoint URL: {}", endpoint_url);
 
         let endpoint_message = SSEMessage::new("endpoint", &endpoint_url);
@@ -420,7 +420,7 @@ impl StdioTransport {
 
                         match (method, path) {
                             // SSE endpoint
-                            (&hyper::Method::GET, "/mcp/v1/events") => {
+                            (&hyper::Method::GET, HTTP_SSE_ENDPOINT) => {
                                 log::debug!("Routing to SSE endpoint");
                                 match transport.handle_sse_connection(req).await {
                                     Ok(response) => Ok::<_, hyper::Error>(response),
@@ -434,7 +434,7 @@ impl StdioTransport {
                                 }
                             }
                             // JSON-RPC endpoint
-                            (&hyper::Method::POST, "/mcp/v1/jsonrpc") => {
+                            (&hyper::Method::POST, HTTP_MESSAGES) => {
                                 match transport.handle_post_request(req).await {
                                     Ok(response) => Ok::<_, hyper::Error>(response),
                                     Err(e) => {
@@ -466,10 +466,11 @@ impl StdioTransport {
             container_name,
             port
         );
-        log::debug!("SSE endpoint: http://localhost:{}/mcp/v1/events", port);
+        log::debug!("SSE endpoint: http://localhost:{}{}", port, HTTP_SSE_ENDPOINT);
         log::debug!(
-            "JSON-RPC endpoint: http://localhost:{}/mcp/v1/jsonrpc",
-            port
+            "JSON-RPC endpoint: http://localhost:{}{}",
+            port,
+            HTTP_MESSAGES
         );
 
         // Create shutdown channel

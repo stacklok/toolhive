@@ -14,6 +14,7 @@ use vibetool::error::{Error, Result};
 use vibetool::permissions::profile::ContainerPermissionConfig;
 use vibetool::transport::jsonrpc::JsonRpcMessage;
 use vibetool::transport::sse::SseTransport;
+use vibetool::transport::sse_common::{HTTP_MESSAGES, HTTP_SSE_ENDPOINT};
 use vibetool::transport::stdio::StdioTransport;
 use vibetool::transport::Transport;
 
@@ -843,7 +844,7 @@ async fn test_stdio_transport_http_proxy() -> Result<()> {
     println!("DEBUG: Created SSE client");
 
     // Build the request
-    let request = sse_client.get("http://localhost:8300/mcp/v1/events");
+    let request = sse_client.get(format!("http://localhost:8300{}", HTTP_SSE_ENDPOINT));
     println!("DEBUG: Built SSE request: {:?}", request);
 
     // Send the request directly

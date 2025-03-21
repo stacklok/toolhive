@@ -66,26 +66,40 @@ impl StdioTransport {
 
     /// Send an SSE event to all connected clients
     async fn send_sse_event(&self, event_type: &str, data: &str) -> Result<()> {
-        let clients = self.sse_clients.lock().await;
+        let mut clients_to_remove = Vec::new();
+        
+        {
+            let clients = self.sse_clients.lock().await;
 
-        if clients.is_empty() {
-            log::debug!("No SSE clients connected, skipping event");
-            return Ok(());
-        }
-
-        log::debug!("Sending SSE event to {} clients", clients.len());
-
-        for (client_id, client) in clients.iter() {
-            let event = format!("event: {}\ndata: {}\n\n", event_type, data);
-            log::debug!("Sending event to client {}", client_id);
-
-            if let Err(e) = client.tx.send(event).await {
-                log::error!("Failed to send SSE event to client {}: {}", client_id, e);
-                // We don't remove the client here to avoid modifying the HashMap while iterating
-                // Failed clients will be removed when their connection is closed
-            } else {
-                log::debug!("Sent SSE event to client {}: {}", client_id, event_type);
+            if clients.is_empty() {
+                log::debug!("No SSE clients connected, skipping event");
+                return Ok(());
             }
+
+            log::debug!("Sending SSE event to {} clients", clients.len());
+
+            for (client_id, client) in clients.iter() {
+                let event = format!("event: {}\ndata: {}\n\n", event_type, data);
+                log::debug!("Sending event to client {}", client_id);
+
+                if let Err(e) = client.tx.send(event).await {
+                    log::error!("Failed to send SSE event to client {}: {}", client_id, e);
+                    // Collect client IDs with closed channels for removal after iteration
+                    clients_to_remove.push(*client_id);
+                } else {
+                    log::debug!("Sent SSE event to client {}: {}", client_id, event_type);
+                }
+            }
+        }
+        
+        // Remove failed clients outside the lock to avoid deadlock
+        if !clients_to_remove.is_empty() {
+            let mut clients = self.sse_clients.lock().await;
+            for client_id in &clients_to_remove {
+                log::debug!("Removing disconnected client {} (channel closed)", client_id);
+                clients.remove(client_id);
+            }
+            log::debug!("Removed {} disconnected clients", clients_to_remove.len());
         }
 
         Ok(())
@@ -218,12 +232,20 @@ impl StdioTransport {
 
         // Spawn a task to forward events from the channel to the body
         let client_id_clone = client_id;
+        let sse_clients_clone = self.sse_clients.clone();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 if let Err(e) = sender.send_data(event.into()).await {
                     log::error!("Failed to send event to client {}: {}", client_id_clone, e);
                     break;
                 }
+            }
+            
+            // Client disconnected or channel closed, remove from clients map
+            let mut clients = sse_clients_clone.lock().await;
+            if clients.remove(&client_id_clone).is_some() {
+                log::debug!("Client {} disconnected, removed from active clients", client_id_clone);
+                log::debug!("Remaining active clients: {}", clients.len());
             }
         });
 

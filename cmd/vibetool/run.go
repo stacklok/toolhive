@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/vibetool/pkg/client"
 	"github.com/stacklok/vibetool/pkg/container"
 	"github.com/stacklok/vibetool/pkg/environment"
 	"github.com/stacklok/vibetool/pkg/labels"
@@ -30,11 +31,12 @@ The container will be started with minimal permissions and the specified transpo
 }
 
 var (
-	runTransport        string
-	runName             string
-	runPort             int
+	runTransport         string
+	runName              string
+	runPort              int
 	runPermissionProfile string
-	runEnv              []string
+	runEnv               []string
+	runNoClientConfig    bool
 )
 
 func init() {
@@ -43,6 +45,7 @@ func init() {
 	runCmd.Flags().IntVar(&runPort, "port", 0, "Port to expose (for SSE transport or STDIO reverse proxy)")
 	runCmd.Flags().StringVar(&runPermissionProfile, "permission-profile", "stdio", "Permission profile to use (stdio, network, or path to JSON file)")
 	runCmd.Flags().StringArrayVarP(&runEnv, "env", "e", []string{}, "Environment variables to pass to the MCP server (format: KEY=VALUE)")
+	runCmd.Flags().BoolVar(&runNoClientConfig, "no-client-config", false, "Do not update client configuration files with the MCP server URL")
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
@@ -52,8 +55,13 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Generate a container name if not provided
 	containerName := runName
+	var baseName string
 	if containerName == "" {
-		containerName = generateContainerName(image)
+		baseName = generateContainerBaseName(image)
+		containerName = appendTimestamp(baseName)
+	} else {
+		// If container name is provided, use it as the base name
+		baseName = containerName
 	}
 
 	// Select a port
@@ -229,6 +237,14 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("MCP server %s started successfully\n", containerName)
+	
+	// Update client configurations if not disabled
+	if !runNoClientConfig {
+		if err := updateClientConfigurations(baseName, "localhost", port); err != nil {
+			fmt.Printf("Warning: Failed to update client configurations: %v\n", err)
+		}
+	}
+	
 	fmt.Println("Press Ctrl+C to stop or wait for container to exit")
 
 	// Set up signal handling
@@ -274,8 +290,8 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// generateContainerName generates a container name from the image name
-func generateContainerName(image string) string {
+// generateContainerBaseName generates a base name for a container from the image name
+func generateContainerBaseName(image string) string {
 	// Extract the base name from the image, preserving registry namespaces
 	// Examples:
 	// - "nginx:latest" -> "nginx"
@@ -298,7 +314,48 @@ func generateContainerName(image string) string {
 		}
 	}
 
-	// Add a timestamp suffix to ensure uniqueness
+	return sanitizedName.String()
+}
+
+// appendTimestamp appends a timestamp to a base name to ensure uniqueness
+func appendTimestamp(baseName string) string {
 	timestamp := time.Now().Unix()
-	return fmt.Sprintf("%s-%d", sanitizedName.String(), timestamp)
+	return fmt.Sprintf("%s-%d", baseName, timestamp)
+}
+
+// generateContainerName generates a container name from the image name (for backward compatibility)
+func generateContainerName(image string) string {
+	return appendTimestamp(generateContainerBaseName(image))
+}
+
+// updateClientConfigurations updates client configuration files with the MCP server URL
+func updateClientConfigurations(containerName, host string, port int) error {
+	// Find client configuration files
+	configs, err := client.FindClientConfigs()
+	if err != nil {
+		return fmt.Errorf("failed to find client configurations: %w", err)
+	}
+
+	if len(configs) == 0 {
+		fmt.Println("No client configuration files found")
+		return nil
+	}
+
+	// Generate the URL for the MCP server
+	url := client.GenerateMCPServerURL(host, port, containerName)
+
+	// Update each configuration file
+	for _, config := range configs {
+		fmt.Printf("Updating client configuration: %s\n", config.Path)
+		
+		// Update the MCP server configuration with locking
+		if err := config.SaveWithLock(containerName, url); err != nil {
+			fmt.Printf("Warning: Failed to update MCP server configuration in %s: %v\n", config.Path, err)
+			continue
+		}
+		
+		fmt.Printf("Successfully updated client configuration: %s\n", config.Path)
+	}
+
+	return nil
 }

@@ -258,6 +258,18 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Warning: Failed to stop container: %v\n", err)
 	}
 
+	// Remove the container if debug mode is not enabled
+	debugMode, _ := cmd.Flags().GetBool("debug")
+	if !debugMode {
+		fmt.Printf("Removing container %s...\n", containerName)
+		if err := runtime.RemoveContainer(ctx, containerID); err != nil {
+			fmt.Printf("Warning: Failed to remove container: %v\n", err)
+		}
+		fmt.Printf("Container %s removed\n", containerName)
+	} else {
+		fmt.Printf("Debug mode enabled, container %s not removed\n", containerName)
+	}
+
 	fmt.Printf("MCP server %s stopped\n", containerName)
 	return nil
 }

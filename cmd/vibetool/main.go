@@ -31,6 +31,9 @@ var versionCmd = &cobra.Command{
 }
 
 func init() {
+	// Add persistent flags
+	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
+	
 	// Add subcommands
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(listCmd)

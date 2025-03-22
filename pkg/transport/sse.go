@@ -13,6 +13,7 @@ type SSETransport struct {
 	port          int
 	containerID   string
 	containerName string
+	containerIP   string
 	
 	// Mutex for protecting shared state
 	mutex         sync.Mutex
@@ -31,9 +32,10 @@ func NewSSETransport(host string, port int) *SSETransport {
 	}
 	
 	return &SSETransport{
-		host:       host,
-		port:       port,
-		shutdownCh: make(chan struct{}),
+		host:        host,
+		port:        port,
+		containerIP: "",
+		shutdownCh:  make(chan struct{}),
 	}
 }
 
@@ -55,6 +57,9 @@ func (t *SSETransport) Setup(ctx context.Context, containerID, containerName str
 	t.containerID = containerID
 	t.containerName = containerName
 	
+	// Store the container IP for later use in Start
+	t.containerIP = containerIP
+	
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "sse"
 	envVars["MCP_PORT"] = fmt.Sprintf("%d", t.port)
@@ -63,8 +68,10 @@ func (t *SSETransport) Setup(ctx context.Context, containerID, containerName str
 	// If container IP is provided, use it for the host
 	if containerIP != "" {
 		envVars["MCP_HOST"] = containerIP
+		fmt.Printf("Using container IP: %s\n", containerIP)
 	} else {
 		envVars["MCP_HOST"] = t.host
+		fmt.Printf("Container IP not provided, using host: %s\n", t.host)
 	}
 	
 	return nil
@@ -86,9 +93,20 @@ func (t *SSETransport) Start(ctx context.Context, stdin io.WriteCloser, stdout i
 	
 	// Create and start the transparent proxy
 	// The SSE transport forwards requests to the container's HTTP server
-	// We assume the container is listening on the same port as the transport
-	targetHost := t.host
+	// We need to use the container's IP address and the same port as the host
+	
+	// Use the container IP if provided, otherwise use localhost
+	targetHost := t.containerIP
+	if targetHost == "" {
+		targetHost = "localhost"
+	}
+	
+	// Use the same port as the host
+	// The container is exposing the same port as the host
 	targetPort := t.port
+	
+	fmt.Printf("Setting up transparent proxy to forward from host port %d to container port %d on %s\n",
+		t.port, targetPort, targetHost)
 	
 	// Create the transparent proxy
 	t.proxy = NewTransparentProxy(t.port, t.containerName, targetHost, targetPort)

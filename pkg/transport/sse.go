@@ -58,6 +58,7 @@ func (t *SSETransport) Setup(ctx context.Context, containerID, containerName str
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "sse"
 	envVars["MCP_PORT"] = fmt.Sprintf("%d", t.port)
+	envVars["FASTMCP_PORT"] = fmt.Sprintf("%d", t.port)
 	
 	// If container IP is provided, use it for the host
 	if containerIP != "" {

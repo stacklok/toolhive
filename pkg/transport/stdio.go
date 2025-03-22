@@ -258,7 +258,6 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	for _, c := range line {
 		if c < 32 && c != '\t' && c != '\r' && c != '\n' {
 			hasBinaryData = true
-			fmt.Printf("Found binary data or control character: %x\n", c)
 		}
 	}
 	

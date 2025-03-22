@@ -39,7 +39,8 @@ type PortMapping struct {
 // Runtime defines the interface for container runtimes
 type Runtime interface {
 	// CreateContainer creates a container without starting it
-	CreateContainer(ctx context.Context, image, name string, command []string, envVars, labels map[string]string, permissionConfig PermissionConfig) (string, error)
+	// If options is nil, default options will be used
+	CreateContainer(ctx context.Context, image, name string, command []string, envVars, labels map[string]string, permissionConfig PermissionConfig, options *CreateContainerOptions) (string, error)
 
 	// StartContainer starts a container
 	StartContainer(ctx context.Context, containerID string) error
@@ -91,6 +92,40 @@ type PermissionConfig struct {
 	CapAdd []string
 	// SecurityOpt is the list of security options
 	SecurityOpt []string
+}
+
+// CreateContainerOptions represents options for creating a container
+type CreateContainerOptions struct {
+	// ExposedPorts is a map of container ports to expose
+	// The key is in the format "port/protocol" (e.g., "8080/tcp")
+	// The value is an empty struct (not used)
+	ExposedPorts map[string]struct{}
+	
+	// PortBindings is a map of container ports to host ports
+	// The key is in the format "port/protocol" (e.g., "8080/tcp")
+	// The value is a slice of host port bindings
+	PortBindings map[string][]PortBinding
+	
+	// AttachStdio indicates whether to attach stdin/stdout/stderr
+	// This is typically set to true for stdio transport
+	AttachStdio bool
+}
+
+// PortBinding represents a host port binding
+type PortBinding struct {
+	// HostIP is the host IP to bind to (empty for all interfaces)
+	HostIP string
+	// HostPort is the host port to bind to (empty for random port)
+	HostPort string
+}
+
+// NewCreateContainerOptions creates a new CreateContainerOptions with default values
+func NewCreateContainerOptions() *CreateContainerOptions {
+	return &CreateContainerOptions{
+		ExposedPorts: make(map[string]struct{}),
+		PortBindings: make(map[string][]PortBinding),
+		AttachStdio: false,
+	}
 }
 
 // Mount represents a volume mount

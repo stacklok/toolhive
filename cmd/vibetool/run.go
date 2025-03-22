@@ -167,6 +167,23 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Create container options
+	containerOptions := container.NewCreateContainerOptions()
+	
+	// Set options based on transport type
+	if transportType == transport.TransportTypeSSE {
+		// For SSE transport, expose the container port
+		containerPortStr := fmt.Sprintf("%d/tcp", port)
+		containerOptions.ExposedPorts[containerPortStr] = struct{}{}
+		fmt.Printf("Exposing container port %d\n", port)
+		
+		// For SSE transport, we don't need to attach stdio
+		containerOptions.AttachStdio = false
+	} else if transportType == transport.TransportTypeStdio {
+		// For STDIO transport, we need to attach stdio
+		containerOptions.AttachStdio = true
+	}
+	
 	// Create the container
 	fmt.Printf("Creating container %s from image %s...\n", containerName, image)
 	containerID, err := runtime.CreateContainer(
@@ -177,6 +194,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		envVars,
 		containerLabels,
 		containerPermConfig,
+		containerOptions,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create container: %v", err)

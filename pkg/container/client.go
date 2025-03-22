@@ -16,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 )
 
 // Common socket paths
@@ -125,12 +126,14 @@ func findContainerSocket() (string, RuntimeType, error) {
 }
 
 // CreateContainer creates a container without starting it
+// If options is nil, default options will be used
 func (c *Client) CreateContainer(
 	ctx context.Context,
 	image, name string,
 	command []string,
 	envVars, labels map[string]string,
 	permissionConfig PermissionConfig,
+	options *CreateContainerOptions,
 ) (string, error) {
 	// Convert environment variables to slice
 	env := make([]string, 0, len(envVars))
@@ -149,17 +152,33 @@ func (c *Client) CreateContainer(
 		})
 	}
 
+	// Determine if we should attach stdio
+	// Default to true if options is nil, otherwise use options.AttachStdio
+	attachStdio := options == nil || options.AttachStdio
+
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,
 		Cmd:          command,
 		Env:          env,
 		Labels:       labels,
-		AttachStdin:  true,
-		AttachStdout: true,
-		AttachStderr: true,
-		OpenStdin:    true,
+		AttachStdin:  attachStdio,
+		AttachStdout: attachStdio,
+		AttachStderr: attachStdio,
+		OpenStdin:    attachStdio,
 		Tty:          false,
+	}
+
+	// Add exposed ports if provided
+	if options != nil && len(options.ExposedPorts) > 0 {
+		config.ExposedPorts = nat.PortSet{}
+		for port := range options.ExposedPorts {
+			natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
+			if err != nil {
+				return "", NewContainerError(err, "", fmt.Sprintf("failed to parse port: %v", err))
+			}
+			config.ExposedPorts[natPort] = struct{}{}
+		}
 	}
 
 	// Create host configuration
@@ -169,6 +188,26 @@ func (c *Client) CreateContainer(
 		CapAdd:      permissionConfig.CapAdd,
 		CapDrop:     permissionConfig.CapDrop,
 		SecurityOpt: permissionConfig.SecurityOpt,
+	}
+
+	// Add port bindings if provided
+	if options != nil && len(options.PortBindings) > 0 {
+		hostConfig.PortBindings = nat.PortMap{}
+		for port, bindings := range options.PortBindings {
+			natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
+			if err != nil {
+				return "", NewContainerError(err, "", fmt.Sprintf("failed to parse port: %v", err))
+			}
+			
+			natBindings := make([]nat.PortBinding, len(bindings))
+			for i, binding := range bindings {
+				natBindings[i] = nat.PortBinding{
+					HostIP:   binding.HostIP,
+					HostPort: binding.HostPort,
+				}
+			}
+			hostConfig.PortBindings[natPort] = natBindings
+		}
 	}
 
 	// Create network configuration

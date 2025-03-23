@@ -34,6 +34,7 @@ var (
 	runTransport         string
 	runName              string
 	runPort              int
+	runTargetPort        int
 	runPermissionProfile string
 	runEnv               []string
 	runNoClientConfig    bool
@@ -42,7 +43,8 @@ var (
 func init() {
 	runCmd.Flags().StringVar(&runTransport, "transport", "stdio", "Transport mode (sse or stdio)")
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
-	runCmd.Flags().IntVar(&runPort, "port", 0, "Port to expose (for SSE transport or STDIO reverse proxy)")
+	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
+	runCmd.Flags().IntVar(&runTargetPort, "target-port", 0, "Port for the container to expose (only applicable to SSE transport)")
 	runCmd.Flags().StringVar(&runPermissionProfile, "permission-profile", "stdio", "Permission profile to use (stdio, network, or path to JSON file)")
 	runCmd.Flags().StringArrayVarP(&runEnv, "env", "e", []string{}, "Environment variables to pass to the MCP server (format: KEY=VALUE)")
 	runCmd.Flags().BoolVar(&runNoClientConfig, "no-client-config", false, "Do not update client configuration files with the MCP server URL")
@@ -64,22 +66,37 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		baseName = containerName
 	}
 
-	// Select a port
+	// Parse transport mode
+	transportType, err := transport.ParseTransportType(runTransport)
+	if err != nil {
+		return fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", runTransport)
+	}
+	
+	// Select a port for the HTTP proxy (host port)
 	port := runPort
 	if port == 0 {
 		port = networking.FindAvailable()
 		if port == 0 {
 			return fmt.Errorf("could not find an available port")
 		}
-		fmt.Printf("Using port: %d\n", port)
+		fmt.Printf("Using host port: %d\n", port)
 	} else if port > 0 && !networking.IsAvailable(port) {
 		return fmt.Errorf("port %d is already in use", port)
 	}
-
-	// Parse transport mode
-	transportType, err := transport.ParseTransportType(runTransport)
-	if err != nil {
-		return fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", runTransport)
+	
+	// Select a target port for the container (only applicable to SSE transport)
+	targetPort := runTargetPort
+	if transportType == transport.TransportTypeSSE && targetPort == 0 {
+		targetPort = networking.FindAvailable()
+		if targetPort == 0 {
+			return fmt.Errorf("could not find an available target port")
+		}
+		fmt.Printf("Using target port: %d\n", targetPort)
+	} else if transportType == transport.TransportTypeSSE && targetPort > 0 && !networking.IsAvailable(targetPort) {
+		return fmt.Errorf("target port %d is already in use", targetPort)
+	} else if transportType == transport.TransportTypeStdio {
+		// For STDIO transport, target port is not used
+		targetPort = 0
 	}
 
 	// Load permission profile
@@ -127,7 +144,8 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Set transport-specific environment variables
-	environment.SetTransportEnvironmentVariables(envVars, string(transportType), port)
+	// Always pass the targetPort, which will be used for the container's environment variables
+	environment.SetTransportEnvironmentVariables(envVars, string(transportType), targetPort)
 
 	// Create container labels
 	containerLabels := make(map[string]string)
@@ -145,9 +163,10 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Create transport
 	transportConfig := transport.Config{
-		Type: transportType,
-		Port: port,
-		Host: "localhost",
+		Type:       transportType,
+		Port:       port,
+		TargetPort: targetPort,
+		Host:       "localhost",
 	}
 	transportHandler, err := transport.NewFactory().Create(transportConfig)
 	if err != nil {
@@ -172,10 +191,30 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	
 	// Set options based on transport type
 	if transportType == transport.TransportTypeSSE {
-		// For SSE transport, expose the container port
-		containerPortStr := fmt.Sprintf("%d/tcp", port)
+		// For SSE transport, expose the target port in the container
+		containerPortStr := fmt.Sprintf("%d/tcp", targetPort)
 		containerOptions.ExposedPorts[containerPortStr] = struct{}{}
-		fmt.Printf("Exposing container port %d\n", port)
+		
+		// Create port bindings for localhost
+		portBindings := []container.PortBinding{
+			{
+				HostIP:   "127.0.0.1", // IPv4 localhost
+				HostPort: fmt.Sprintf("%d", targetPort),
+			},
+		}
+		
+		// Check if IPv6 is available and add IPv6 localhost binding
+		if networking.IsIPv6Available() {
+			portBindings = append(portBindings, container.PortBinding{
+				HostIP:   "::1", // IPv6 localhost
+				HostPort: fmt.Sprintf("%d", targetPort),
+			})
+		}
+		
+		// Set the port bindings
+		containerOptions.PortBindings[containerPortStr] = portBindings
+		
+		fmt.Printf("Exposing container port %d\n", targetPort)
 		
 		// For SSE transport, we don't need to attach stdio
 		containerOptions.AttachStdio = false

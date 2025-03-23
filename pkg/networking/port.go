@@ -50,6 +50,41 @@ func IsAvailable(port int) bool {
 	return true
 }
 
+// IsIPv6Available checks if IPv6 is available on the system
+// by looking for IPv6 addresses on network interfaces
+func IsIPv6Available() bool {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 {
+			// Interface is down
+			continue
+		}
+		
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			
+			if ipNet.IP.To4() == nil && !ipNet.IP.IsLoopback() {
+				// This is an IPv6 address and not a loopback
+				return true
+			}
+		}
+	}
+	
+	return false
+}
+
 // FindAvailable finds an available port
 func FindAvailable() int {
 	for i := 0; i < MaxAttempts; i++ {

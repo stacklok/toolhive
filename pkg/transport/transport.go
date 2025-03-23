@@ -67,8 +67,12 @@ type Config struct {
 	// Type is the type of transport to use.
 	Type TransportType
 
-	// Port is the port to use for network transports.
+	// Port is the port to use for network transports (host port).
 	Port int
+
+	// TargetPort is the port that the container will expose (container port).
+	// This is only applicable to SSE transport.
+	TargetPort int
 
 	// Host is the host to use for network transports.
 	Host string
@@ -88,7 +92,7 @@ func (f *Factory) Create(config Config) (Transport, error) {
 	case TransportTypeStdio:
 		return NewStdioTransport(config.Port), nil
 	case TransportTypeSSE:
-		return NewSSETransport(config.Host, config.Port), nil
+		return NewSSETransport(config.Host, config.Port, config.TargetPort), nil
 	default:
 		return nil, ErrUnsupportedTransport
 	}

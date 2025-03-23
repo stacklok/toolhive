@@ -11,6 +11,7 @@ import (
 type SSETransport struct {
 	host          string
 	port          int
+	targetPort    int
 	containerID   string
 	containerName string
 	containerIP   string
@@ -26,7 +27,7 @@ type SSETransport struct {
 }
 
 // NewSSETransport creates a new SSE transport.
-func NewSSETransport(host string, port int) *SSETransport {
+func NewSSETransport(host string, port int, targetPort int) *SSETransport {
 	if host == "" {
 		host = "localhost"
 	}
@@ -34,6 +35,7 @@ func NewSSETransport(host string, port int) *SSETransport {
 	return &SSETransport{
 		host:        host,
 		port:        port,
+		targetPort:  targetPort,
 		containerIP: "",
 		shutdownCh:  make(chan struct{}),
 	}
@@ -62,17 +64,14 @@ func (t *SSETransport) Setup(ctx context.Context, containerID, containerName str
 	
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "sse"
-	envVars["MCP_PORT"] = fmt.Sprintf("%d", t.port)
-	envVars["FASTMCP_PORT"] = fmt.Sprintf("%d", t.port)
 	
-	// If container IP is provided, use it for the host
-	if containerIP != "" {
-		envVars["MCP_HOST"] = containerIP
-		fmt.Printf("Using container IP: %s\n", containerIP)
-	} else {
-		envVars["MCP_HOST"] = t.host
-		fmt.Printf("Container IP not provided, using host: %s\n", t.host)
-	}
+	// Use the target port for the container's environment variables
+	envVars["MCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
+	envVars["FASTMCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
+	
+	// Always use localhost for the host
+	// In a Docker bridge network, the container IP is not directly accessible from the host
+	envVars["MCP_HOST"] = "localhost"
 	
 	return nil
 }
@@ -92,24 +91,25 @@ func (t *SSETransport) Start(ctx context.Context, stdin io.WriteCloser, stdout i
 	}
 	
 	// Create and start the transparent proxy
-	// The SSE transport forwards requests to the container's HTTP server
-	// We need to use the container's IP address and the same port as the host
+	// The SSE transport forwards requests from the host port to the container's target port
 	
-	// Use the container IP if provided, otherwise use localhost
-	targetHost := t.containerIP
-	if targetHost == "" {
-		targetHost = "localhost"
+	// In a Docker bridge network, we need to use localhost since the container port is mapped to the host
+	// We ignore containerIP even if it's set, as it's not directly accessible from the host
+	targetHost := "localhost"
+	
+	// Check if target port is set
+	if t.targetPort <= 0 {
+		return fmt.Errorf("target port not set for SSE transport")
 	}
 	
-	// Use the same port as the host
-	// The container is exposing the same port as the host
-	targetPort := t.port
+	// Use the target port for the container
+	containerPort := t.targetPort
 	
-	fmt.Printf("Setting up transparent proxy to forward from host port %d to container port %d on %s\n",
-		t.port, targetPort, targetHost)
+	fmt.Printf("Setting up transparent proxy to forward from host port %d to localhost:%d\n",
+		t.port, containerPort)
 	
 	// Create the transparent proxy
-	t.proxy = NewTransparentProxy(t.port, t.containerName, targetHost, targetPort)
+	t.proxy = NewTransparentProxy(t.port, t.containerName, targetHost, containerPort)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}

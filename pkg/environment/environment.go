@@ -34,12 +34,16 @@ func SetTransportEnvironmentVariables(envVars map[string]string, transportType s
 	// Set common environment variables
 	envVars["MCP_TRANSPORT"] = transportType
 	
-	// Set transport-specific environment variables
-	switch transportType {
-	case "sse":
-		envVars["MCP_PORT"] = fmt.Sprintf("%d", port)
-	case "stdio":
-		// No additional environment variables needed for stdio transport
+	// Set port-related environment variables only if port is greater than 0
+	if port > 0 {
+		// Set transport-specific environment variables
+		switch transportType {
+		case "sse":
+			envVars["MCP_PORT"] = fmt.Sprintf("%d", port)
+			envVars["FASTMCP_PORT"] = fmt.Sprintf("%d", port)
+		case "stdio":
+			// No additional environment variables needed for stdio transport
+		}
 	}
 }
 

@@ -20,16 +20,48 @@ import (
 // lockTimeout is the maximum time to wait for a file lock
 const lockTimeout = 1 * time.Second
 
+// YAML file extensions
+const (
+	YAMLExt = ".yaml"
+	YMLExt  = ".yml"
+)
+
+// IsYAML checks if a file extension is a YAML extension
+func IsYAML(ext string) bool {
+	return ext == YAMLExt || ext == YMLExt
+}
+
 // configPaths defines the standard locations for client configuration files
 var configPaths = []struct {
 	Description string
 	RelPath     []string
 }{
 	{
-		Description: "VSCode Roo extension",
+		Description: "VSCode Roo extension (Linux)",
 		RelPath: []string{
 			".config", "Code", "User", "globalStorage",
 			"rooveterinaryinc.roo-cline", "settings", "cline_mcp_settings.json",
+		},
+	},
+	{
+		Description: "VSCode Roo extension (macOS)",
+		RelPath: []string{
+			"Library", "Application Support", "Code", "User", "globalStorage",
+			"rooveterinaryinc.roo-cline", "settings", "cline_mcp_settings.json",
+		},
+	},
+	{
+		Description: "VSCode Claude extension (Linux)",
+		RelPath: []string{
+			".config", "Code", "User", "globalStorage",
+			"saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json",
+		},
+	},
+	{
+		Description: "VSCode Claude extension (macOS)",
+		RelPath: []string{
+			"Library", "Application Support", "Code", "User", "globalStorage",
+			"saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json",
 		},
 	},
 	{
@@ -104,8 +136,8 @@ func readConfigFile(path string) (ConfigFile, error) {
 	// Determine format based on file extension
 	var contents map[string]interface{}
 	ext := strings.ToLower(filepath.Ext(path))
-	
-	if ext == ".yaml" || ext == ".yml" {
+
+	if IsYAML(ext) {
 		// Parse YAML
 		if err := yaml.Unmarshal(data, &contents); err != nil {
 			return ConfigFile{}, fmt.Errorf("failed to parse YAML: %w", err)
@@ -135,7 +167,7 @@ func (c *ConfigFile) UpdateMCPServerConfig(serverName, url string) error {
 	// Check if this is a Continue config file
 	if isContinueConfig(c.Path) {
 		ext := strings.ToLower(filepath.Ext(c.Path))
-		if ext == ".yaml" || ext == ".yml" {
+		if IsYAML(ext) {
 			return c.updateContinueYAMLMCPServerConfig(serverName, url)
 		}
 	}
@@ -239,11 +271,11 @@ func (c *ConfigFile) updateContinueYAMLMCPServerConfig(serverName, url string) e
 func (c *ConfigFile) Save() error {
 	// Determine format based on file extension
 	ext := strings.ToLower(filepath.Ext(c.Path))
-	
+
 	var data []byte
 	var err error
-	
-	if ext == ".yaml" || ext == ".yml" {
+
+	if IsYAML(ext) {
 		// Marshal YAML
 		data, err = yaml.Marshal(c.Contents)
 		if err != nil {
@@ -298,10 +330,10 @@ func (c *ConfigFile) SaveWithLock(serverName, url string) error {
 
 	// Determine format based on file extension
 	ext := strings.ToLower(filepath.Ext(c.Path))
-	
+
 	var data []byte
-	
-	if ext == ".yaml" || ext == ".yml" {
+
+	if IsYAML(ext) {
 		// Marshal YAML
 		data, err = yaml.Marshal(latestConfig.Contents)
 		if err != nil {

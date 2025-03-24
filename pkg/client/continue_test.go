@@ -11,57 +11,61 @@ import (
 )
 
 func TestContinueYAMLConfig(t *testing.T) {
-	// Create a temporary directory for the test
-	tempDir, err := os.MkdirTemp("", "continue-test")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
-
-	// Create a .continue directory in the temp dir
-	continueDir := filepath.Join(tempDir, ".continue")
-	err = os.Mkdir(continueDir, 0755)
-	require.NoError(t, err)
-
-	// Create a sample Continue YAML config
-	configPath := filepath.Join(continueDir, "config.yaml")
-	initialConfig := map[string]interface{}{
-		"name":    "my-configuration",
-		"version": "0.0.1",
-		"schema":  "v1",
-		"models": []interface{}{
-			map[string]interface{}{
-				"name":     "GPT-4",
-				"provider": "openai",
-				"model":    "gpt-4",
-				"roles":    []string{"chat"},
-			},
-		},
-		"mcpServers": []interface{}{
-			map[string]interface{}{
-				"name":    "existing-server",
-				"command": "node",
-				"args":    []string{"server.js"},
-				"env": map[string]interface{}{
-					"API_KEY": "test-key",
-				},
-			},
-		},
-	}
-
-	// Marshal the initial config to YAML
-	yamlData, err := yaml.Marshal(initialConfig)
-	require.NoError(t, err)
-
-	// Write the YAML to the config file
-	err = os.WriteFile(configPath, yamlData, 0644)
-	require.NoError(t, err)
-
-	// Read the config file
-	config, err := readConfigFile(configPath)
-	require.NoError(t, err)
+	t.Parallel()
 
 	// Test updating an existing server
 	t.Run("UpdateExistingServer", func(t *testing.T) {
-		err := config.UpdateMCPServerConfig("existing-server", "http://localhost:8080/sse#test")
+		t.Parallel()
+
+		// Create a temporary directory for the test
+		tempDir, err := os.MkdirTemp("", "continue-test-update")
+		require.NoError(t, err)
+		defer os.RemoveAll(tempDir)
+
+		// Create a .continue directory in the temp dir
+		continueDir := filepath.Join(tempDir, ".continue")
+		err = os.Mkdir(continueDir, 0750)
+		require.NoError(t, err)
+
+		// Create a sample Continue YAML config
+		configPath := filepath.Join(continueDir, "config.yaml")
+		initialConfig := map[string]interface{}{
+			"name":    "my-configuration",
+			"version": "0.0.1",
+			"schema":  "v1",
+			"models": []interface{}{
+				map[string]interface{}{
+					"name":     "GPT-4",
+					"provider": "openai",
+					"model":    "gpt-4",
+					"roles":    []string{"chat"},
+				},
+			},
+			"mcpServers": []interface{}{
+				map[string]interface{}{
+					"name":    "existing-server",
+					"command": "node",
+					"args":    []string{"server.js"},
+					"env": map[string]interface{}{
+						"API_KEY": "test-key",
+					},
+				},
+			},
+		}
+
+		// Marshal the initial config to YAML
+		yamlData, err := yaml.Marshal(initialConfig)
+		require.NoError(t, err)
+
+		// Write the YAML to the config file
+		err = os.WriteFile(configPath, yamlData, 0600)
+		require.NoError(t, err)
+
+		// Read the config file
+		config, err := readConfigFile(configPath)
+		require.NoError(t, err)
+
+		err = config.UpdateMCPServerConfig("existing-server", "http://localhost:8080/sse#test")
 		require.NoError(t, err)
 
 		// Save the config
@@ -113,7 +117,57 @@ func TestContinueYAMLConfig(t *testing.T) {
 
 	// Test adding a new server
 	t.Run("AddNewServer", func(t *testing.T) {
-		err := config.UpdateMCPServerConfig("new-server", "http://localhost:9090/sse#new")
+		t.Parallel()
+
+		// Create a temporary directory for the test
+		tempDir, err := os.MkdirTemp("", "continue-test-add")
+		require.NoError(t, err)
+		defer os.RemoveAll(tempDir)
+
+		// Create a .continue directory in the temp dir
+		continueDir := filepath.Join(tempDir, ".continue")
+		err = os.Mkdir(continueDir, 0750)
+		require.NoError(t, err)
+
+		// Create a sample Continue YAML config
+		configPath := filepath.Join(continueDir, "config.yaml")
+		initialConfig := map[string]interface{}{
+			"name":    "my-configuration",
+			"version": "0.0.1",
+			"schema":  "v1",
+			"models": []interface{}{
+				map[string]interface{}{
+					"name":     "GPT-4",
+					"provider": "openai",
+					"model":    "gpt-4",
+					"roles":    []string{"chat"},
+				},
+			},
+			"mcpServers": []interface{}{
+				map[string]interface{}{
+					"name":    "existing-server",
+					"command": "node",
+					"args":    []string{"server.js"},
+					"env": map[string]interface{}{
+						"API_KEY": "test-key",
+					},
+				},
+			},
+		}
+
+		// Marshal the initial config to YAML
+		yamlData, err := yaml.Marshal(initialConfig)
+		require.NoError(t, err)
+
+		// Write the YAML to the config file
+		err = os.WriteFile(configPath, yamlData, 0600)
+		require.NoError(t, err)
+
+		// Read the config file
+		config, err := readConfigFile(configPath)
+		require.NoError(t, err)
+
+		err = config.UpdateMCPServerConfig("new-server", "http://localhost:9090/sse#new")
 		require.NoError(t, err)
 
 		// Save the config

@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// Middleware is a function that wraps an http.Handler with additional functionality.
+type Middleware func(http.Handler) http.Handler
+
 // TransparentProxy implements the Proxy interface as a transparent HTTP proxy
 // that forwards requests to a destination.
 // It's used by the SSE transport to forward requests to the container's HTTP server.
@@ -23,6 +26,9 @@ type TransparentProxy struct {
 	// HTTP server
 	server *http.Server
 
+	// Middleware chain
+	middlewares []Middleware
+
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
@@ -31,12 +37,19 @@ type TransparentProxy struct {
 }
 
 // NewTransparentProxy creates a new transparent proxy.
-func NewTransparentProxy(port int, containerName, targetHost string, targetPort int) *TransparentProxy {
+// NewTransparentProxy creates a new transparent proxy with optional middlewares.
+func NewTransparentProxy(
+	port int,
+	containerName, targetHost string,
+	targetPort int,
+	middlewares ...Middleware,
+) *TransparentProxy {
 	return &TransparentProxy{
 		port:          port,
 		containerName: containerName,
 		targetHost:    targetHost,
 		targetPort:    targetPort,
+		middlewares:   middlewares,
 		shutdownCh:    make(chan struct{}),
 	}
 }
@@ -61,10 +74,17 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 		proxy.ServeHTTP(w, r)
 	})
 
+	// Apply middleware chain in reverse order (last middleware is applied first)
+	var finalHandler http.Handler = handler
+	for i := len(p.middlewares) - 1; i >= 0; i-- {
+		finalHandler = p.middlewares[i](finalHandler)
+		fmt.Printf("Applied middleware %d\n", i+1)
+	}
+
 	// Create the server
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf(":%d", p.port),
-		Handler:           handler,
+		Handler:           finalHandler,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 

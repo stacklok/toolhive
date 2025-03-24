@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -83,11 +82,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Get permission configuration
-	containerPermConfig, err := getPermissionConfig(runPermissionProfile, transportType)
-	if err != nil {
-		return err
-	}
+	// We don't need to get permission configuration here anymore as it's handled by the transport
 
 	// Parse environment variables
 	envVars, err := environment.ParseEnvironmentVariables(runEnv)
@@ -113,125 +108,33 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
-	// Create transport
+	// Get debug mode flag
+	debugMode, _ := cmd.Flags().GetBool("debug")
+
+	// Create transport with runtime
 	transportConfig := transport.Config{
 		Type:       transportType,
 		Port:       port,
 		TargetPort: targetPort,
 		Host:       "localhost",
+		Runtime:    runtime,
+		Debug:      debugMode,
 	}
 	transportHandler, err := transport.NewFactory().Create(transportConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create transport: %v", err)
 	}
 
-	// If using stdio transport, set the runtime
-	if transportType == transport.TransportTypeStdio {
-		stdioTransport, ok := transportHandler.(*transport.StdioTransport)
-		if ok {
-			stdioTransport.WithRuntime(runtime)
-			// Get a new runtime instance for creating the container
-			runtime, err = container.NewFactory().Create(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to create container runtime: %v", err)
-			}
-		}
-	}
-
-	// Create container options
-	containerOptions := container.NewCreateContainerOptions()
-	
-	// Set options based on transport type
-	if transportType == transport.TransportTypeSSE {
-		// For SSE transport, expose the target port in the container
-		containerPortStr := fmt.Sprintf("%d/tcp", targetPort)
-		containerOptions.ExposedPorts[containerPortStr] = struct{}{}
-		
-		// Create port bindings for localhost
-		portBindings := []container.PortBinding{
-			{
-				HostIP:   "127.0.0.1", // IPv4 localhost
-				HostPort: fmt.Sprintf("%d", targetPort),
-			},
-		}
-		
-		// Check if IPv6 is available and add IPv6 localhost binding
-		if networking.IsIPv6Available() {
-			portBindings = append(portBindings, container.PortBinding{
-				HostIP:   "::1", // IPv6 localhost
-				HostPort: fmt.Sprintf("%d", targetPort),
-			})
-		}
-		
-		// Set the port bindings
-		containerOptions.PortBindings[containerPortStr] = portBindings
-		
-		fmt.Printf("Exposing container port %d\n", targetPort)
-		
-		// For SSE transport, we don't need to attach stdio
-		containerOptions.AttachStdio = false
-	} else if transportType == transport.TransportTypeStdio {
-		// For STDIO transport, we need to attach stdio
-		containerOptions.AttachStdio = true
-	}
-	
-	// Create the container
-	fmt.Printf("Creating container %s from image %s...\n", containerName, image)
-	containerID, err := runtime.CreateContainer(
-		ctx,
-		image,
-		containerName,
-		cmdArgs,
-		envVars,
-		containerLabels,
-		containerPermConfig,
-		containerOptions,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create container: %v", err)
-	}
-	fmt.Printf("Container created with ID: %s\n", containerID)
-
-	// Start the container
-	fmt.Printf("Starting container %s...\n", containerName)
-	if err := runtime.StartContainer(ctx, containerID); err != nil {
-		return fmt.Errorf("failed to start container: %v", err)
-	}
-
 	// Set up the transport
 	fmt.Printf("Setting up %s transport...\n", transportType)
-	if err := transportHandler.Setup(ctx, containerID, containerName, envVars); err != nil {
+	if err := transportHandler.Setup(ctx, runtime, containerName, image, cmdArgs, envVars, containerLabels, runPermissionProfile); err != nil {
 		return fmt.Errorf("failed to set up transport: %v", err)
 	}
 
-	// For STDIO transport, attach to the container
-	var stdin io.WriteCloser
-	var stdout io.ReadCloser
-	if transportType == transport.TransportTypeStdio {
-		var err error
-		stdin, stdout, err = runtime.AttachContainer(ctx, containerID)
-		if err != nil {
-			return fmt.Errorf("failed to attach to container: %v", err)
-		}
-	}
-
-	// Start the transport
+	// Start the transport (which also starts the container and monitoring)
 	fmt.Printf("Starting %s transport...\n", transportType)
-	if err := transportHandler.Start(ctx, stdin, stdout); err != nil {
+	if err := transportHandler.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start transport: %v", err)
-	}
-
-	// Create a container monitor
-	monitorRuntime, err := container.NewFactory().Create(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create container monitor: %v", err)
-	}
-	monitor := container.NewMonitor(monitorRuntime, containerID, containerName)
-
-	// Start monitoring the container
-	errorCh, err := monitor.StartMonitoring(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to start container monitoring: %v", err)
 	}
 
 	fmt.Printf("MCP server %s started successfully\n", containerName)
@@ -247,31 +150,10 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	stopMCPServer := func(reason string) {
 		fmt.Printf("Stopping MCP server: %s\n", reason)
 		
-		// Stop monitoring
-		monitor.StopMonitoring()
-		
-		// Stop the transport
+		// Stop the transport (which also stops the container, monitoring, and handles removal)
 		fmt.Printf("Stopping %s transport...\n", transportType)
 		if err := transportHandler.Stop(ctx); err != nil {
 			fmt.Printf("Warning: Failed to stop transport: %v\n", err)
-		}
-		
-		// Stop the container
-		fmt.Printf("Stopping container %s...\n", containerName)
-		if err := runtime.StopContainer(ctx, containerID); err != nil {
-			fmt.Printf("Warning: Failed to stop container: %v\n", err)
-		}
-		
-		// Remove the container if debug mode is not enabled
-		debugMode, _ := cmd.Flags().GetBool("debug")
-		if !debugMode {
-			fmt.Printf("Removing container %s...\n", containerName)
-			if err := runtime.RemoveContainer(ctx, containerID); err != nil {
-				fmt.Printf("Warning: Failed to remove container: %v\n", err)
-			}
-			fmt.Printf("Container %s removed\n", containerName)
-		} else {
-			fmt.Printf("Debug mode enabled, container %s not removed\n", containerName)
 		}
 		
 		// Remove the PID file if it exists
@@ -297,13 +179,9 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	
-	// Wait for signal or container exit
-	select {
-	case sig := <-sigCh:
-		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
-	case err := <-errorCh:
-		stopMCPServer(fmt.Sprintf("Container exited unexpectedly: %v", err))
-	}
+	// Wait for signal
+	sig := <-sigCh
+	stopMCPServer(fmt.Sprintf("Received signal %s", sig))
 	return nil
 }
 

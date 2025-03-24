@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/stacklok/vibetool/pkg/container"
+	"github.com/stacklok/vibetool/pkg/permissions"
 )
 
 // StdioTransport implements the Transport interface using standard input/output.
@@ -19,32 +20,34 @@ type StdioTransport struct {
 	containerID   string
 	containerName string
 	runtime       container.Runtime
+	debug         bool
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
 	// Channels for communication
 	shutdownCh chan struct{}
+	errorCh    <-chan error
 
 	// HTTP SSE proxy
 	httpProxy Proxy
+	
+	// Container I/O
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	
+	// Container monitor
+	monitor *container.Monitor
 }
 
 // NewStdioTransport creates a new stdio transport.
-func NewStdioTransport(port int) *StdioTransport {
+func NewStdioTransport(port int, runtime container.Runtime, debug bool) *StdioTransport {
 	return &StdioTransport{
 		port:       port,
+		runtime:    runtime,
+		debug:      debug,
 		shutdownCh: make(chan struct{}),
 	}
-}
-
-// WithRuntime sets the container runtime for the transport.
-func (t *StdioTransport) WithRuntime(runtime container.Runtime) *StdioTransport {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-
-	t.runtime = runtime
-	return t
 }
 
 // Mode returns the transport mode.
@@ -57,24 +60,86 @@ func (t *StdioTransport) Port() int {
 	return t.port
 }
 
-// Setup prepares the transport for use with a specific container.
-func (t *StdioTransport) Setup(ctx context.Context, containerID, containerName string, envVars map[string]string) error {
+// Setup prepares the transport for use.
+func (t *StdioTransport) Setup(ctx context.Context, runtime container.Runtime, containerName string, image string, cmdArgs []string,
+	envVars, labels map[string]string, permissionProfile string) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	t.containerID = containerID
+	t.runtime = runtime
 	t.containerName = containerName
 
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "stdio"
 
+	// Load permission profile
+	var profile *permissions.Profile
+	var err error
+	
+	switch permissionProfile {
+	case "stdio":
+		profile = permissions.BuiltinStdioProfile()
+	case "network":
+		profile = permissions.BuiltinNetworkProfile()
+	default:
+		// Try to load from file
+		profile, err = permissions.FromFile(permissionProfile)
+		if err != nil {
+			return fmt.Errorf("failed to load permission profile: %v", err)
+		}
+	}
+
+	// Convert permission profile to container config
+	permissionConfig, err := profile.ToContainerConfigWithTransport("stdio")
+	if err != nil {
+		return fmt.Errorf("failed to convert permission profile: %v", err)
+	}
+
+	// Convert permissions.ContainerConfig to container.PermissionConfig
+	containerPermConfig := container.PermissionConfig{
+		NetworkMode: permissionConfig.NetworkMode,
+		CapDrop:     permissionConfig.CapDrop,
+		CapAdd:      permissionConfig.CapAdd,
+		SecurityOpt: permissionConfig.SecurityOpt,
+	}
+
+	// Convert mounts
+	for _, m := range permissionConfig.Mounts {
+		containerPermConfig.Mounts = append(containerPermConfig.Mounts, container.Mount{
+			Source:   m.Source,
+			Target:   m.Target,
+			ReadOnly: m.ReadOnly,
+		})
+	}
+
+	// Create container options
+	containerOptions := container.NewCreateContainerOptions()
+	containerOptions.AttachStdio = true
+
+	// Create the container
+	fmt.Printf("Creating container %s from image %s...\n", containerName, image)
+	containerID, err := t.runtime.CreateContainer(
+		ctx,
+		image,
+		containerName,
+		cmdArgs,
+		envVars,
+		labels,
+		containerPermConfig,
+		containerOptions,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create container: %v", err)
+	}
+	t.containerID = containerID
+	fmt.Printf("Container created with ID: %s\n", containerID)
+
 	return nil
 }
 
 // Start initializes the transport and begins processing messages.
-// The stdin and stdout parameters are provided by the caller (run command)
-// and are already attached to the container.
-func (t *StdioTransport) Start(ctx context.Context, stdin io.WriteCloser, stdout io.ReadCloser) error {
+// The transport is responsible for starting the container and attaching to it.
+func (t *StdioTransport) Start(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -86,6 +151,23 @@ func (t *StdioTransport) Start(ctx context.Context, stdin io.WriteCloser, stdout
 		return ErrContainerNameNotSet
 	}
 
+	if t.runtime == nil {
+		return fmt.Errorf("container runtime not set")
+	}
+
+	// Start the container
+	fmt.Printf("Starting container %s...\n", t.containerName)
+	if err := t.runtime.StartContainer(ctx, t.containerID); err != nil {
+		return fmt.Errorf("failed to start container: %v", err)
+	}
+
+	// Attach to the container
+	var err error
+	t.stdin, t.stdout, err = t.runtime.AttachContainer(ctx, t.containerID)
+	if err != nil {
+		return fmt.Errorf("failed to attach to container: %w", err)
+	}
+
 	// Create and start the HTTP SSE proxy
 	t.httpProxy = NewHTTPSSEProxy(t.port, t.containerName)
 	if err := t.httpProxy.Start(ctx); err != nil {
@@ -93,12 +175,28 @@ func (t *StdioTransport) Start(ctx context.Context, stdin io.WriteCloser, stdout
 	}
 
 	// Start processing messages in a goroutine
-	go t.processMessages(ctx, stdin, stdout)
+	go t.processMessages(ctx, t.stdin, t.stdout)
+
+	// Create a container monitor
+	monitorRuntime, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container monitor: %v", err)
+	}
+	t.monitor = container.NewMonitor(monitorRuntime, t.containerID, t.containerName)
+
+	// Start monitoring the container
+	t.errorCh, err = t.monitor.StartMonitoring(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to start container monitoring: %v", err)
+	}
+
+	// Start a goroutine to handle container exit
+	go t.handleContainerExit(ctx)
 
 	return nil
 }
 
-// Stop gracefully shuts down the transport.
+// Stop gracefully shuts down the transport and the container.
 func (t *StdioTransport) Stop(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -106,9 +204,41 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 	// Signal shutdown
 	close(t.shutdownCh)
 
+	// Stop the monitor if it's running
+	if t.monitor != nil {
+		t.monitor.StopMonitoring()
+		t.monitor = nil
+	}
+
 	// Stop the HTTP proxy
 	if t.httpProxy != nil {
-		return t.httpProxy.Stop(ctx)
+		if err := t.httpProxy.Stop(ctx); err != nil {
+			fmt.Printf("Warning: Failed to stop HTTP proxy: %v\n", err)
+		}
+	}
+
+	// Close stdin and stdout if they're open
+	if t.stdin != nil {
+		t.stdin.Close()
+		t.stdin = nil
+	}
+	
+	// Stop the container if runtime is available
+	if t.runtime != nil && t.containerID != "" {
+		if err := t.runtime.StopContainer(ctx, t.containerID); err != nil {
+			return fmt.Errorf("failed to stop container: %w", err)
+		}
+		
+		// Remove the container if debug mode is not enabled
+		if !t.debug {
+			fmt.Printf("Removing container %s...\n", t.containerName)
+			if err := t.runtime.RemoveContainer(ctx, t.containerID); err != nil {
+				fmt.Printf("Warning: Failed to remove container: %v\n", err)
+			}
+			fmt.Printf("Container %s removed\n", t.containerName)
+		} else {
+			fmt.Printf("Debug mode enabled, container %s not removed\n", t.containerName)
+		}
 	}
 
 	return nil
@@ -314,4 +444,18 @@ func (t *StdioTransport) sendMessageToContainer(ctx context.Context, stdin io.Wr
 	}
 
 	return nil
+}
+
+// handleContainerExit handles container exit events.
+func (t *StdioTransport) handleContainerExit(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		return
+	case err := <-t.errorCh:
+		fmt.Printf("Container %s exited: %v\n", t.containerName, err)
+		// Stop the transport when the container exits
+		if stopErr := t.Stop(ctx); stopErr != nil {
+			fmt.Printf("Error stopping transport after container exit: %v\n", stopErr)
+		}
+	}
 }

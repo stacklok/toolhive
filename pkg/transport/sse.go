@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	
+	"github.com/stacklok/vibetool/pkg/container"
+	"github.com/stacklok/vibetool/pkg/networking"
+	"github.com/stacklok/vibetool/pkg/permissions"
 )
 
 // SSETransport implements the Transport interface using Server-Sent Events.
@@ -14,6 +18,8 @@ type SSETransport struct {
 	targetPort    int
 	containerID   string
 	containerName string
+	runtime       container.Runtime
+	debug         bool
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -23,10 +29,14 @@ type SSETransport struct {
 
 	// Shutdown channel
 	shutdownCh chan struct{}
+	
+	// Container monitor
+	monitor *container.Monitor
+	errorCh <-chan error
 }
 
 // NewSSETransport creates a new SSE transport.
-func NewSSETransport(host string, port int, targetPort int) *SSETransport {
+func NewSSETransport(host string, port int, targetPort int, runtime container.Runtime, debug bool) *SSETransport {
 	if host == "" {
 		host = "localhost"
 	}
@@ -35,6 +45,8 @@ func NewSSETransport(host string, port int, targetPort int) *SSETransport {
 		host:       host,
 		port:       port,
 		targetPort: targetPort,
+		runtime:    runtime,
+		debug:      debug,
 		shutdownCh: make(chan struct{}),
 	}
 }
@@ -49,12 +61,13 @@ func (t *SSETransport) Port() int {
 	return t.port
 }
 
-// Setup prepares the transport for use with a specific container.
-func (t *SSETransport) Setup(ctx context.Context, containerID, containerName string, envVars map[string]string) error {
+// Setup prepares the transport for use.
+func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, containerName string, image string, cmdArgs []string,
+	envVars, labels map[string]string, permissionProfile string) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	t.containerID = containerID
+	t.runtime = runtime
 	t.containerName = containerName
 
 	// Add transport-specific environment variables
@@ -68,12 +81,101 @@ func (t *SSETransport) Setup(ctx context.Context, containerID, containerName str
 	// In a Docker bridge network, the container IP is not directly accessible from the host
 	envVars["MCP_HOST"] = "localhost"
 
+	// Load permission profile
+	var profile *permissions.Profile
+	var err error
+	
+	switch permissionProfile {
+	case "stdio":
+		profile = permissions.BuiltinStdioProfile()
+	case "network":
+		profile = permissions.BuiltinNetworkProfile()
+	default:
+		// Try to load from file
+		profile, err = permissions.FromFile(permissionProfile)
+		if err != nil {
+			return fmt.Errorf("failed to load permission profile: %v", err)
+		}
+	}
+
+	// Convert permission profile to container config
+	permissionConfig, err := profile.ToContainerConfigWithTransport("sse")
+	if err != nil {
+		return fmt.Errorf("failed to convert permission profile: %v", err)
+	}
+
+	// Convert permissions.ContainerConfig to container.PermissionConfig
+	containerPermConfig := container.PermissionConfig{
+		NetworkMode: permissionConfig.NetworkMode,
+		CapDrop:     permissionConfig.CapDrop,
+		CapAdd:      permissionConfig.CapAdd,
+		SecurityOpt: permissionConfig.SecurityOpt,
+	}
+
+	// Convert mounts
+	for _, m := range permissionConfig.Mounts {
+		containerPermConfig.Mounts = append(containerPermConfig.Mounts, container.Mount{
+			Source:   m.Source,
+			Target:   m.Target,
+			ReadOnly: m.ReadOnly,
+		})
+	}
+
+	// Create container options
+	containerOptions := container.NewCreateContainerOptions()
+	
+	// For SSE transport, expose the target port in the container
+	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)
+	containerOptions.ExposedPorts[containerPortStr] = struct{}{}
+	
+	// Create port bindings for localhost
+	portBindings := []container.PortBinding{
+		{
+			HostIP:   "127.0.0.1", // IPv4 localhost
+			HostPort: fmt.Sprintf("%d", t.targetPort),
+		},
+	}
+	
+	// Check if IPv6 is available and add IPv6 localhost binding
+	if networking.IsIPv6Available() {
+		portBindings = append(portBindings, container.PortBinding{
+			HostIP:   "::1", // IPv6 localhost
+			HostPort: fmt.Sprintf("%d", t.targetPort),
+		})
+	}
+	
+	// Set the port bindings
+	containerOptions.PortBindings[containerPortStr] = portBindings
+	
+	fmt.Printf("Exposing container port %d\n", t.targetPort)
+	
+	// For SSE transport, we don't need to attach stdio
+	containerOptions.AttachStdio = false
+
+	// Create the container
+	fmt.Printf("Creating container %s from image %s...\n", containerName, image)
+	containerID, err := t.runtime.CreateContainer(
+		ctx,
+		image,
+		containerName,
+		cmdArgs,
+		envVars,
+		labels,
+		containerPermConfig,
+		containerOptions,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create container: %v", err)
+	}
+	t.containerID = containerID
+	fmt.Printf("Container created with ID: %s\n", containerID)
+
 	return nil
 }
 
 // Start initializes the transport and begins processing messages.
-// For SSE transport, stdin and stdout are not used.
-func (t *SSETransport) Start(ctx context.Context, stdin io.WriteCloser, stdout io.ReadCloser) error {
+// The transport is responsible for starting the container.
+func (t *SSETransport) Start(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -83,6 +185,16 @@ func (t *SSETransport) Start(ctx context.Context, stdin io.WriteCloser, stdout i
 
 	if t.containerName == "" {
 		return ErrContainerNameNotSet
+	}
+
+	if t.runtime == nil {
+		return fmt.Errorf("container runtime not set")
+	}
+
+	// Start the container
+	fmt.Printf("Starting container %s...\n", t.containerName)
+	if err := t.runtime.StartContainer(ctx, t.containerID); err != nil {
+		return fmt.Errorf("failed to start container: %v", err)
 	}
 
 	// Create and start the transparent proxy
@@ -111,10 +223,26 @@ func (t *SSETransport) Start(ctx context.Context, stdin io.WriteCloser, stdout i
 
 	fmt.Printf("SSE transport started for container %s on port %d\n", t.containerName, t.port)
 
+	// Create a container monitor
+	monitorRuntime, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container monitor: %v", err)
+	}
+	t.monitor = container.NewMonitor(monitorRuntime, t.containerID, t.containerName)
+
+	// Start monitoring the container
+	t.errorCh, err = t.monitor.StartMonitoring(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to start container monitoring: %v", err)
+	}
+
+	// Start a goroutine to handle container exit
+	go t.handleContainerExit(ctx)
+
 	return nil
 }
 
-// Stop gracefully shuts down the transport.
+// Stop gracefully shuts down the transport and the container.
 func (t *SSETransport) Stop(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -122,12 +250,52 @@ func (t *SSETransport) Stop(ctx context.Context) error {
 	// Signal shutdown
 	close(t.shutdownCh)
 
+	// Stop the monitor if it's running
+	if t.monitor != nil {
+		t.monitor.StopMonitoring()
+		t.monitor = nil
+	}
+
 	// Stop the transparent proxy
 	if t.proxy != nil {
-		return t.proxy.Stop(ctx)
+		if err := t.proxy.Stop(ctx); err != nil {
+			fmt.Printf("Warning: Failed to stop proxy: %v\n", err)
+		}
+	}
+	
+	// Stop the container if runtime is available
+	if t.runtime != nil && t.containerID != "" {
+		if err := t.runtime.StopContainer(ctx, t.containerID); err != nil {
+			return fmt.Errorf("failed to stop container: %w", err)
+		}
+		
+		// Remove the container if debug mode is not enabled
+		if !t.debug {
+			fmt.Printf("Removing container %s...\n", t.containerName)
+			if err := t.runtime.RemoveContainer(ctx, t.containerID); err != nil {
+				fmt.Printf("Warning: Failed to remove container: %v\n", err)
+			}
+			fmt.Printf("Container %s removed\n", t.containerName)
+		} else {
+			fmt.Printf("Debug mode enabled, container %s not removed\n", t.containerName)
+		}
 	}
 
 	return nil
+}
+
+// handleContainerExit handles container exit events.
+func (t *SSETransport) handleContainerExit(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		return
+	case err := <-t.errorCh:
+		fmt.Printf("Container %s exited: %v\n", t.containerName, err)
+		// Stop the transport when the container exits
+		if stopErr := t.Stop(ctx); stopErr != nil {
+			fmt.Printf("Error stopping transport after container exit: %v\n", stopErr)
+		}
+	}
 }
 
 // IsRunning checks if the transport is currently running.

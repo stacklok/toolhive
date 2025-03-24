@@ -3,6 +3,8 @@ package transport
 import (
 	"context"
 	"io"
+	
+	"github.com/stacklok/vibetool/pkg/container"
 )
 
 // Transport defines the interface for MCP transport implementations.
@@ -14,12 +16,15 @@ type Transport interface {
 	// Port returns the port used by the transport.
 	Port() int
 
-	// Setup prepares the transport for use with a specific container.
-	Setup(ctx context.Context, containerID, containerName string, envVars map[string]string) error
+	// Setup prepares the transport for use.
+	// The runtime parameter provides access to container operations.
+	// The permissionProfile is used to configure container permissions.
+	Setup(ctx context.Context, runtime container.Runtime, containerName string, image string, cmdArgs []string,
+		envVars, labels map[string]string, permissionProfile string) error
 
 	// Start initializes the transport and begins processing messages.
-	// For STDIO transport, stdin and stdout are provided by the caller and are already attached to the container.
-	Start(ctx context.Context, stdin io.WriteCloser, stdout io.ReadCloser) error
+	// The transport is responsible for container operations like attaching to stdin/stdout if needed.
+	Start(ctx context.Context) error
 
 	// Stop gracefully shuts down the transport.
 	Stop(ctx context.Context) error
@@ -76,6 +81,14 @@ type Config struct {
 
 	// Host is the host to use for network transports.
 	Host string
+
+	// Runtime is the container runtime to use.
+	// This is used for container operations like creating, starting, and attaching.
+	Runtime container.Runtime
+
+	// Debug indicates whether debug mode is enabled.
+	// If debug mode is enabled, containers will not be removed when stopped.
+	Debug bool
 }
 
 // Factory creates transports
@@ -90,9 +103,9 @@ func NewFactory() *Factory {
 func (f *Factory) Create(config Config) (Transport, error) {
 	switch config.Type {
 	case TransportTypeStdio:
-		return NewStdioTransport(config.Port), nil
+		return NewStdioTransport(config.Port, config.Runtime, config.Debug), nil
 	case TransportTypeSSE:
-		return NewSSETransport(config.Host, config.Port, config.TargetPort), nil
+		return NewSSETransport(config.Host, config.Port, config.TargetPort, config.Runtime, config.Debug), nil
 	default:
 		return nil, ErrUnsupportedTransport
 	}

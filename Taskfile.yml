@@ -1,0 +1,17 @@
+version: '3'
+
+tasks:
+  lint:
+    desc: Run linting tools
+    cmds:
+      - golangci-lint run ./...
+      - go vet ./...
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test -v ./...
+
+  all:
+    desc: Run linting and tests
+    deps: [lint, test]

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	
+	"github.com/stacklok/vibetool/pkg/container"
 )
 
 // Profile represents a permission profile for a container
@@ -215,4 +217,69 @@ func (p *Profile) ToContainerConfigWithTransport(transportType string) (*Contain
 	}
 	
 	return config, nil
+}
+
+// GetContainerPermissionConfig loads and converts a permission profile to a container permission config
+// This is a utility function that can be used by both the main code and transport implementations
+func GetContainerPermissionConfig(profileName string, transportType string) (*ContainerConfig, error) {
+	// Load permission profile
+	var profile *Profile
+	var err error
+	
+	switch profileName {
+	case "stdio":
+		profile = BuiltinStdioProfile()
+	case "network":
+		profile = BuiltinNetworkProfile()
+	default:
+		// Try to load from file
+		profile, err = FromFile(profileName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load permission profile: %v", err)
+		}
+	}
+
+	// Convert permission profile to container config
+	permissionConfig, err := profile.ToContainerConfigWithTransport(transportType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert permission profile: %v", err)
+	}
+
+	return permissionConfig, nil
+}
+
+// ToContainerPermissionConfig converts a permissions.ContainerConfig to a container.PermissionConfig
+// This is needed because the container package has its own PermissionConfig type
+func ToContainerPermissionConfig(config *ContainerConfig) container.PermissionConfig {
+	// Convert permissions.ContainerConfig to container.PermissionConfig
+	containerPermConfig := container.PermissionConfig{
+		NetworkMode: config.NetworkMode,
+		CapDrop:     config.CapDrop,
+		CapAdd:      config.CapAdd,
+		SecurityOpt: config.SecurityOpt,
+	}
+
+	// Convert mounts
+	for _, m := range config.Mounts {
+		containerPermConfig.Mounts = append(containerPermConfig.Mounts, container.Mount{
+			Source:   m.Source,
+			Target:   m.Target,
+			ReadOnly: m.ReadOnly,
+		})
+	}
+	
+	return containerPermConfig
+}
+
+// GetContainerPermConfig is a convenience function that loads a permission profile
+// and converts it to a container.PermissionConfig in one step
+func GetContainerPermConfig(profileName string, transportType string) (container.PermissionConfig, error) {
+	// Get the permission config
+	permConfig, err := GetContainerPermissionConfig(profileName, transportType)
+	if err != nil {
+		return container.PermissionConfig{}, err
+	}
+	
+	// Convert to container.PermissionConfig
+	return ToContainerPermissionConfig(permConfig), nil
 }

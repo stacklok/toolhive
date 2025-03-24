@@ -15,7 +15,6 @@ import (
 	"github.com/stacklok/vibetool/pkg/environment"
 	"github.com/stacklok/vibetool/pkg/labels"
 	"github.com/stacklok/vibetool/pkg/networking"
-	"github.com/stacklok/vibetool/pkg/permissions"
 	"github.com/stacklok/vibetool/pkg/process"
 	"github.com/stacklok/vibetool/pkg/transport"
 )
@@ -217,50 +216,6 @@ func updateClientConfigurations(containerName, host string, port int) error {
 	return nil
 }
 
-// getPermissionConfig loads and converts a permission profile to a container permission config
-func getPermissionConfig(profileName string, transportType transport.TransportType) (container.PermissionConfig, error) {
-	// Load permission profile
-	var profile *permissions.Profile
-	var err error
-	
-	switch profileName {
-	case "stdio":
-		profile = permissions.BuiltinStdioProfile()
-	case "network":
-		profile = permissions.BuiltinNetworkProfile()
-	default:
-		// Try to load from file
-		profile, err = permissions.FromFile(profileName)
-		if err != nil {
-			return container.PermissionConfig{}, fmt.Errorf("failed to load permission profile: %v", err)
-		}
-	}
-
-	// Convert permission profile to container config
-	permissionConfig, err := profile.ToContainerConfigWithTransport(string(transportType))
-	if err != nil {
-		return container.PermissionConfig{}, fmt.Errorf("failed to convert permission profile: %v", err)
-	}
-
-	// Convert permissions.ContainerConfig to container.PermissionConfig
-	containerPermConfig := container.PermissionConfig{
-		NetworkMode: permissionConfig.NetworkMode,
-		CapDrop:     permissionConfig.CapDrop,
-		CapAdd:      permissionConfig.CapAdd,
-		SecurityOpt: permissionConfig.SecurityOpt,
-	}
-
-	// Convert mounts
-	for _, m := range permissionConfig.Mounts {
-		containerPermConfig.Mounts = append(containerPermConfig.Mounts, container.Mount{
-			Source:   m.Source,
-			Target:   m.Target,
-			ReadOnly: m.ReadOnly,
-		})
-	}
-	
-	return containerPermConfig, nil
-}
 
 // getTargetPort selects a target port for the container based on the transport type
 // For SSE transport, it finds an available port if none is provided

@@ -81,44 +81,10 @@ func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, con
 	// In a Docker bridge network, the container IP is not directly accessible from the host
 	envVars["MCP_HOST"] = "localhost"
 
-	// Load permission profile
-	var profile *permissions.Profile
-	var err error
-	
-	switch permissionProfile {
-	case "stdio":
-		profile = permissions.BuiltinStdioProfile()
-	case "network":
-		profile = permissions.BuiltinNetworkProfile()
-	default:
-		// Try to load from file
-		profile, err = permissions.FromFile(permissionProfile)
-		if err != nil {
-			return fmt.Errorf("failed to load permission profile: %v", err)
-		}
-	}
-
-	// Convert permission profile to container config
-	permissionConfig, err := profile.ToContainerConfigWithTransport("sse")
+	// Get container permission config
+	containerPermConfig, err := permissions.GetContainerPermConfig(permissionProfile, "sse")
 	if err != nil {
-		return fmt.Errorf("failed to convert permission profile: %v", err)
-	}
-
-	// Convert permissions.ContainerConfig to container.PermissionConfig
-	containerPermConfig := container.PermissionConfig{
-		NetworkMode: permissionConfig.NetworkMode,
-		CapDrop:     permissionConfig.CapDrop,
-		CapAdd:      permissionConfig.CapAdd,
-		SecurityOpt: permissionConfig.SecurityOpt,
-	}
-
-	// Convert mounts
-	for _, m := range permissionConfig.Mounts {
-		containerPermConfig.Mounts = append(containerPermConfig.Mounts, container.Mount{
-			Source:   m.Source,
-			Target:   m.Target,
-			ReadOnly: m.ReadOnly,
-		})
+		return fmt.Errorf("failed to get permission configuration: %v", err)
 	}
 
 	// Create container options

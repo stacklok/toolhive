@@ -1,3 +1,5 @@
+// Package main provides the entry point for the vibetool command-line application.
+// This file contains the implementation of the 'list' command.
 package main
 
 import (
@@ -40,7 +42,7 @@ func init() {
 	listCmd.Flags().StringVar(&listFormat, "format", "text", "Output format (json or text)")
 }
 
-func listCmdFunc(cmd *cobra.Command, args []string) error {
+func listCmdFunc(_ *cobra.Command, _ []string) error {
 	// Create context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -185,5 +187,7 @@ func printTextOutput(containers []container.ContainerInfo) {
 	}
 
 	// Flush the tabwriter
-	w.Flush()
+	if err := w.Flush(); err != nil {
+		fmt.Printf("Warning: Failed to flush tabwriter: %v\n", err)
+	}
 }

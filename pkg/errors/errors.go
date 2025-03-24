@@ -1,3 +1,4 @@
+// Package errors provides error types and utilities for the vibetool application.
 package errors
 
 import (
@@ -8,28 +9,28 @@ import (
 const (
 	// ErrInvalidArgument is returned when an invalid argument is provided
 	ErrInvalidArgument = "invalid_argument"
-	
+
 	// ErrContainerRuntime is returned when there is an error with the container runtime
 	ErrContainerRuntime = "container_runtime"
-	
+
 	// ErrContainerNotFound is returned when a container is not found
 	ErrContainerNotFound = "container_not_found"
-	
+
 	// ErrContainerAlreadyExists is returned when a container already exists
 	ErrContainerAlreadyExists = "container_already_exists"
-	
+
 	// ErrContainerNotRunning is returned when a container is not running
 	ErrContainerNotRunning = "container_not_running"
-	
+
 	// ErrContainerAlreadyRunning is returned when a container is already running
 	ErrContainerAlreadyRunning = "container_already_running"
-	
+
 	// ErrTransport is returned when there is an error with the transport
 	ErrTransport = "transport"
-	
+
 	// ErrPermissions is returned when there is an error with permissions
 	ErrPermissions = "permissions"
-	
+
 	// ErrInternal is returned when there is an internal error
 	ErrInternal = "internal"
 )
@@ -38,10 +39,10 @@ const (
 type Error struct {
 	// Type is the error type
 	Type string
-	
+
 	// Message is the error message
 	Message string
-	
+
 	// Cause is the underlying error
 	Cause error
 }

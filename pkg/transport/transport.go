@@ -2,8 +2,7 @@ package transport
 
 import (
 	"context"
-	"io"
-	
+
 	"github.com/stacklok/vibetool/pkg/container"
 )
 
@@ -31,15 +30,11 @@ type Transport interface {
 
 	// IsRunning checks if the transport is currently running.
 	IsRunning(ctx context.Context) (bool, error)
-
-	// GetReader returns a reader for receiving messages from the transport.
-	GetReader() io.Reader
-
-	// GetWriter returns a writer for sending messages to the transport.
-	GetWriter() io.Writer
 }
 
 // TransportType represents the type of transport to use.
+//
+//nolint:revive // Intentionally named TransportType despite package name
 type TransportType string
 
 const (
@@ -100,7 +95,7 @@ func NewFactory() *Factory {
 }
 
 // Create creates a transport based on the provided configuration
-func (f *Factory) Create(config Config) (Transport, error) {
+func (_ *Factory) Create(config Config) (Transport, error) {
 	switch config.Type {
 	case TransportTypeStdio:
 		return NewStdioTransport(config.Port, config.Runtime, config.Debug), nil

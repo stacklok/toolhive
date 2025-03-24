@@ -1,3 +1,5 @@
+// Package container provides utilities for managing containers,
+// including creating, starting, stopping, and monitoring containers.
 package container
 
 import (
@@ -7,6 +9,8 @@ import (
 )
 
 // ContainerInfo represents information about a container
+//
+//nolint:revive // Intentionally named ContainerInfo despite package name
 type ContainerInfo struct {
 	// ID is the container ID
 	ID string
@@ -40,7 +44,14 @@ type PortMapping struct {
 type Runtime interface {
 	// CreateContainer creates a container without starting it
 	// If options is nil, default options will be used
-	CreateContainer(ctx context.Context, image, name string, command []string, envVars, labels map[string]string, permissionConfig PermissionConfig, options *CreateContainerOptions) (string, error)
+	CreateContainer(
+		ctx context.Context,
+		image, name string,
+		command []string,
+		envVars, labels map[string]string,
+		permissionConfig PermissionConfig,
+		options *CreateContainerOptions,
+	) (string, error)
 
 	// StartContainer starts a container
 	StartContainer(ctx context.Context, containerID string) error
@@ -100,12 +111,12 @@ type CreateContainerOptions struct {
 	// The key is in the format "port/protocol" (e.g., "8080/tcp")
 	// The value is an empty struct (not used)
 	ExposedPorts map[string]struct{}
-	
+
 	// PortBindings is a map of container ports to host ports
 	// The key is in the format "port/protocol" (e.g., "8080/tcp")
 	// The value is a slice of host port bindings
 	PortBindings map[string][]PortBinding
-	
+
 	// AttachStdio indicates whether to attach stdin/stdout/stderr
 	// This is typically set to true for stdio transport
 	AttachStdio bool
@@ -124,7 +135,7 @@ func NewCreateContainerOptions() *CreateContainerOptions {
 	return &CreateContainerOptions{
 		ExposedPorts: make(map[string]struct{}),
 		PortBindings: make(map[string][]PortBinding),
-		AttachStdio: false,
+		AttachStdio:  false,
 	}
 }
 

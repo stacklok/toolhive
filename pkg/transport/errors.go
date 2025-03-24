@@ -1,3 +1,5 @@
+// Package transport provides utilities for handling different transport modes
+// for communication between the client and MCP server.
 package transport
 
 import (
@@ -17,6 +19,8 @@ var (
 )
 
 // TransportError represents an error related to transport operations
+//
+//nolint:revive // Intentionally named TransportError despite package name
 type TransportError struct {
 	// Err is the underlying error
 	Err error
@@ -34,11 +38,11 @@ func (e *TransportError) Error() string {
 		}
 		return fmt.Sprintf("%s: %s", e.Err, e.Message)
 	}
-	
+
 	if e.ContainerID != "" {
 		return fmt.Sprintf("%s (container: %s)", e.Err, e.ContainerID)
 	}
-	
+
 	return e.Err.Error()
 }
 

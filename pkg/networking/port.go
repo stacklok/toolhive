@@ -1,10 +1,12 @@
+// Package networking provides utilities for network operations,
+// such as finding available ports and checking network connectivity.
 package networking
 
 import (
+	"crypto/rand"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"net"
-	"time"
 )
 
 const (
@@ -16,11 +18,6 @@ const (
 	MaxAttempts = 10
 )
 
-// init initializes the random number generator
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
-
 // IsAvailable checks if a port is available
 func IsAvailable(port int) bool {
 	// Check TCP
@@ -28,25 +25,31 @@ func IsAvailable(port int) bool {
 	if err != nil {
 		return false
 	}
-	
+
 	tcpListener, err := net.ListenTCP("tcp", tcpAddr)
 	if err != nil {
 		return false
 	}
-	tcpListener.Close()
-	
+	if err := tcpListener.Close(); err != nil {
+		// Log the error but continue, as we're just checking if the port is available
+		fmt.Printf("Warning: Failed to close TCP listener: %v\n", err)
+	}
+
 	// Check UDP
 	udpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return false
 	}
-	
+
 	udpConn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
 		return false
 	}
-	udpConn.Close()
-	
+	if err := udpConn.Close(); err != nil {
+		// Log the error but continue, as we're just checking if the port is available
+		fmt.Printf("Warning: Failed to close UDP connection: %v\n", err)
+	}
+
 	return true
 }
 
@@ -57,50 +60,56 @@ func IsIPv6Available() bool {
 	if err != nil {
 		return false
 	}
-	
+
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagUp == 0 {
 			// Interface is down
 			continue
 		}
-		
+
 		addrs, err := iface.Addrs()
 		if err != nil {
 			continue
 		}
-		
+
 		for _, addr := range addrs {
 			ipNet, ok := addr.(*net.IPNet)
 			if !ok {
 				continue
 			}
-			
+
 			if ipNet.IP.To4() == nil && !ipNet.IP.IsLoopback() {
 				// This is an IPv6 address and not a loopback
 				return true
 			}
 		}
 	}
-	
+
 	return false
 }
 
 // FindAvailable finds an available port
 func FindAvailable() int {
 	for i := 0; i < MaxAttempts; i++ {
-		port := rand.Intn(MaxPort-MinPort) + MinPort
+		// Generate a cryptographically secure random number
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(MaxPort-MinPort)))
+		if err != nil {
+			// Fall back to sequential search if random generation fails
+			break
+		}
+		port := int(n.Int64()) + MinPort
 		if IsAvailable(port) {
 			return port
 		}
 	}
-	
+
 	// If we can't find a random port, try sequential ports
 	for port := MinPort; port <= MaxPort; port++ {
 		if IsAvailable(port) {
 			return port
 		}
 	}
-	
+
 	// If we still can't find a port, return 0
 	return 0
 }
@@ -121,7 +130,7 @@ func FindOrUsePort(port int) (int, error) {
 		// Check if the provided port is available
 		return 0, fmt.Errorf("port %d is already in use", port)
 	}
-	
+
 	// Port is available
 	return port, nil
 }

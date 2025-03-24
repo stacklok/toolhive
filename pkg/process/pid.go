@@ -1,8 +1,9 @@
+// Package process provides utilities for managing process-related operations,
+// such as PID file handling and process management.
 package process
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,9 +22,9 @@ func GetPIDFilePath(containerBaseName string) string {
 func WritePIDFile(containerBaseName string, pid int) error {
 	// Get the PID file path
 	pidFilePath := GetPIDFilePath(containerBaseName)
-	
+
 	// Write the PID to the file
-	return ioutil.WriteFile(pidFilePath, []byte(fmt.Sprintf("%d", pid)), 0644)
+	return os.WriteFile(pidFilePath, []byte(fmt.Sprintf("%d", pid)), 0600)
 }
 
 // WriteCurrentPIDFile writes the current process ID to a file
@@ -35,20 +36,21 @@ func WriteCurrentPIDFile(containerBaseName string) error {
 func ReadPIDFile(containerBaseName string) (int, error) {
 	// Get the PID file path
 	pidFilePath := GetPIDFilePath(containerBaseName)
-	
+
 	// Read the PID from the file
-	pidBytes, err := ioutil.ReadFile(pidFilePath)
+	// #nosec G304 - This is safe as the path is constructed from a known prefix and container name
+	pidBytes, err := os.ReadFile(pidFilePath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read PID file: %w", err)
 	}
-	
+
 	// Parse the PID
 	pidStr := strings.TrimSpace(string(pidBytes))
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
 		return 0, fmt.Errorf("failed to parse PID: %w", err)
 	}
-	
+
 	return pid, nil
 }
 
@@ -56,7 +58,7 @@ func ReadPIDFile(containerBaseName string) (int, error) {
 func RemovePIDFile(containerBaseName string) error {
 	// Get the PID file path
 	pidFilePath := GetPIDFilePath(containerBaseName)
-	
+
 	// Remove the file
 	return os.Remove(pidFilePath)
 }
@@ -68,11 +70,11 @@ func KillProcess(pid int) error {
 	if err != nil {
 		return fmt.Errorf("failed to find process: %w", err)
 	}
-	
+
 	// Send a SIGTERM signal to the process
 	if err := process.Signal(syscall.SIGTERM); err != nil {
 		return fmt.Errorf("failed to send SIGTERM to process: %w", err)
 	}
-	
+
 	return nil
 }

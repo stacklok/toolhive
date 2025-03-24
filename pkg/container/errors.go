@@ -1,3 +1,5 @@
+// Package container provides utilities for managing containers,
+// including creating, starting, stopping, and monitoring containers.
 package container
 
 import (
@@ -8,30 +10,32 @@ import (
 var (
 	// ErrContainerNotFound is returned when a container is not found
 	ErrContainerNotFound = fmt.Errorf("container not found")
-	
+
 	// ErrContainerAlreadyExists is returned when a container already exists
 	ErrContainerAlreadyExists = fmt.Errorf("container already exists")
-	
+
 	// ErrContainerNotRunning is returned when a container is not running
 	ErrContainerNotRunning = fmt.Errorf("container not running")
-	
+
 	// ErrContainerAlreadyRunning is returned when a container is already running
 	ErrContainerAlreadyRunning = fmt.Errorf("container already running")
-	
+
 	// ErrRuntimeNotFound is returned when a container runtime is not found
 	ErrRuntimeNotFound = fmt.Errorf("container runtime not found")
-	
+
 	// ErrInvalidRuntimeType is returned when an invalid runtime type is specified
 	ErrInvalidRuntimeType = fmt.Errorf("invalid runtime type")
-	
+
 	// ErrAttachFailed is returned when attaching to a container fails
 	ErrAttachFailed = fmt.Errorf("failed to attach to container")
-	
+
 	// ErrContainerExited is returned when a container has exited unexpectedly
 	ErrContainerExited = fmt.Errorf("container exited unexpectedly")
 )
 
 // ContainerError represents an error related to container operations
+//
+//nolint:revive // Intentionally named ContainerError despite package name
 type ContainerError struct {
 	// Err is the underlying error
 	Err error
@@ -49,11 +53,11 @@ func (e *ContainerError) Error() string {
 		}
 		return fmt.Sprintf("%s: %s", e.Err, e.Message)
 	}
-	
+
 	if e.ContainerID != "" {
 		return fmt.Sprintf("%s (container: %s)", e.Err, e.ContainerID)
 	}
-	
+
 	return e.Err.Error()
 }
 

@@ -27,7 +27,7 @@ func init() {
 	rmCmd.Flags().BoolVarP(&rmForce, "force", "f", false, "Force removal of a running container")
 }
 
-func rmCmdFunc(cmd *cobra.Command, args []string) error {
+func rmCmdFunc(_ *cobra.Command, args []string) error {
 	// Get container name
 	containerName := args[0]
 

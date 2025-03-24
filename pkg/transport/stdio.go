@@ -31,11 +31,11 @@ type StdioTransport struct {
 
 	// HTTP SSE proxy
 	httpProxy Proxy
-	
+
 	// Container I/O
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
-	
+
 	// Container monitor
 	monitor *container.Monitor
 }
@@ -51,7 +51,7 @@ func NewStdioTransport(port int, runtime container.Runtime, debug bool) *StdioTr
 }
 
 // Mode returns the transport mode.
-func (t *StdioTransport) Mode() TransportType {
+func (_ *StdioTransport) Mode() TransportType {
 	return TransportTypeStdio
 }
 
@@ -61,8 +61,15 @@ func (t *StdioTransport) Port() int {
 }
 
 // Setup prepares the transport for use.
-func (t *StdioTransport) Setup(ctx context.Context, runtime container.Runtime, containerName string, image string, cmdArgs []string,
-	envVars, labels map[string]string, permissionProfile string) error {
+func (t *StdioTransport) Setup(
+	ctx context.Context,
+	runtime container.Runtime,
+	containerName string,
+	image string,
+	cmdArgs []string,
+	envVars, labels map[string]string,
+	permissionProfile string,
+) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -185,16 +192,18 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 
 	// Close stdin and stdout if they're open
 	if t.stdin != nil {
-		t.stdin.Close()
+		if err := t.stdin.Close(); err != nil {
+			fmt.Printf("Warning: Failed to close stdin: %v\n", err)
+		}
 		t.stdin = nil
 	}
-	
+
 	// Stop the container if runtime is available
 	if t.runtime != nil && t.containerID != "" {
 		if err := t.runtime.StopContainer(ctx, t.containerID); err != nil {
 			return fmt.Errorf("failed to stop container: %w", err)
 		}
-		
+
 		// Remove the container if debug mode is not enabled
 		if !t.debug {
 			fmt.Printf("Removing container %s...\n", t.containerName)
@@ -211,7 +220,7 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 }
 
 // IsRunning checks if the transport is currently running.
-func (t *StdioTransport) IsRunning(ctx context.Context) (bool, error) {
+func (t *StdioTransport) IsRunning(_ context.Context) (bool, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -222,18 +231,6 @@ func (t *StdioTransport) IsRunning(ctx context.Context) (bool, error) {
 	default:
 		return true, nil
 	}
-}
-
-// GetReader returns a reader for receiving messages from the transport.
-func (t *StdioTransport) GetReader() io.Reader {
-	// This is not used in the StdioTransport implementation
-	return nil
-}
-
-// GetWriter returns a writer for sending messages to the transport.
-func (t *StdioTransport) GetWriter() io.Writer {
-	// This is not used in the StdioTransport implementation
-	return nil
 }
 
 // processMessages handles the message exchange between the client and container.
@@ -394,7 +391,7 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 }
 
 // sendMessageToContainer sends a JSON-RPC message to the container.
-func (t *StdioTransport) sendMessageToContainer(ctx context.Context, stdin io.Writer, msg *JSONRPCMessage) error {
+func (_ *StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer, msg *JSONRPCMessage) error {
 	// Serialize the message
 	data, err := json.Marshal(msg)
 	if err != nil {

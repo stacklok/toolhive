@@ -144,7 +144,7 @@ func LogJSONRPCMessage(msg *JSONRPCMessage) {
 	} else {
 		messageType = "unknown"
 	}
-	
+
 	// Log basic info
 	fmt.Printf("JSON-RPC %s: ", messageType)
 	if msg.Method != "" {

@@ -1,3 +1,5 @@
+// Package client provides utilities for managing client configurations
+// and interacting with MCP servers.
 package client
 
 import (
@@ -42,7 +44,7 @@ func TestUpdateMCPServerConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to marshal JSON: %v", err)
 	}
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
+	if err := os.WriteFile(configPath, data, 0600); err != nil {
 		t.Fatalf("Failed to write file: %v", err)
 	}
 
@@ -133,6 +135,7 @@ func TestUpdateMCPServerConfig(t *testing.T) {
 }
 
 func TestGenerateMCPServerURL(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		host          string
@@ -158,6 +161,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			url := GenerateMCPServerURL(tt.host, tt.port, tt.containerName)
 			if url != tt.expected {
 				t.Errorf("GenerateMCPServerURL() = %v, want %v", url, tt.expected)

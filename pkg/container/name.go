@@ -12,7 +12,7 @@ import (
 // If containerName is empty, a name will be generated based on the image.
 func GetOrGenerateContainerName(containerName, image string) (string, string) {
 	var baseName string
-	
+
 	if containerName == "" {
 		// Generate a container name from the image
 		baseName = generateContainerBaseName(image)
@@ -21,7 +21,7 @@ func GetOrGenerateContainerName(containerName, image string) (string, string) {
 		// If container name is provided, use it as the base name
 		baseName = containerName
 	}
-	
+
 	return containerName, baseName
 }
 

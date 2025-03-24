@@ -16,16 +16,18 @@ It is written in Go and has extensive test coverage—including input validation
 Under the hood, Vibe Tool acts as a very thin client for the Docker/Podman Unix socket API.
 This design choice allows it to remain both efficient and lightweight while still providing powerful,
 container-based isolation for running MCP servers.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(cmd *cobra.Command, _ []string) {
 		// If no subcommand is provided, print help
-		cmd.Help()
+		if err := cmd.Help(); err != nil {
+			fmt.Printf("Error displaying help: %v\n", err)
+		}
 	},
 }
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show the version of Vibe Tool",
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		fmt.Println("Vibe Tool v0.1.0")
 	},
 }
@@ -33,7 +35,7 @@ var versionCmd = &cobra.Command{
 func init() {
 	// Add persistent flags
 	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
-	
+
 	// Add subcommands
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(listCmd)

@@ -28,9 +28,9 @@ type SSEMessage struct {
 // NewSSEMessage creates a new SSE message
 func NewSSEMessage(eventType, data string) *SSEMessage {
 	return &SSEMessage{
-		EventType:  eventType,
-		Data:       data,
-		CreatedAt:  time.Now(),
+		EventType: eventType,
+		Data:      data,
+		CreatedAt: time.Now(),
 	}
 }
 
@@ -43,18 +43,18 @@ func (m *SSEMessage) WithTargetClientID(clientID string) *SSEMessage {
 // ToSSEString converts the message to an SSE-formatted string
 func (m *SSEMessage) ToSSEString() string {
 	var sb strings.Builder
-	
+
 	// Add event type
 	sb.WriteString(fmt.Sprintf("event: %s\n", m.EventType))
-	
+
 	// Add data (split by newlines to ensure proper formatting)
 	for _, line := range strings.Split(m.Data, "\n") {
 		sb.WriteString(fmt.Sprintf("data: %s\n", line))
 	}
-	
+
 	// End the message with a blank line
 	sb.WriteString("\n")
-	
+
 	return sb.String()
 }
 

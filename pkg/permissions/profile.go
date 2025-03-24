@@ -1,3 +1,5 @@
+// Package permissions provides utilities for managing container permissions
+// and permission profiles for the vibetool application.
 package permissions
 
 import (
@@ -5,7 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	
+
 	"github.com/stacklok/vibetool/pkg/container"
 )
 
@@ -13,10 +15,10 @@ import (
 type Profile struct {
 	// Read is a list of paths that the container can read from
 	Read []string `json:"read,omitempty"`
-	
+
 	// Write is a list of paths that the container can write to
 	Write []string `json:"write,omitempty"`
-	
+
 	// Network defines network permissions
 	Network *NetworkPermissions `json:"network,omitempty"`
 }
@@ -31,13 +33,13 @@ type NetworkPermissions struct {
 type OutboundNetworkPermissions struct {
 	// InsecureAllowAll allows all outbound network connections
 	InsecureAllowAll bool `json:"insecure_allow_all,omitempty"`
-	
+
 	// AllowTransport is a list of allowed transport protocols (tcp, udp)
 	AllowTransport []string `json:"allow_transport,omitempty"`
-	
+
 	// AllowHost is a list of allowed hosts
 	AllowHost []string `json:"allow_host,omitempty"`
-	
+
 	// AllowPort is a list of allowed ports
 	AllowPort []int `json:"allow_port,omitempty"`
 }
@@ -46,10 +48,10 @@ type OutboundNetworkPermissions struct {
 type Mount struct {
 	// Source is the source path on the host
 	Source string
-	
+
 	// Target is the target path in the container
 	Target string
-	
+
 	// ReadOnly indicates if the mount is read-only
 	ReadOnly bool
 }
@@ -58,16 +60,16 @@ type Mount struct {
 type ContainerConfig struct {
 	// Mounts is the list of volume mounts
 	Mounts []Mount
-	
+
 	// NetworkMode is the network mode
 	NetworkMode string
-	
+
 	// CapDrop is the list of capabilities to drop
 	CapDrop []string
-	
+
 	// CapAdd is the list of capabilities to add
 	CapAdd []string
-	
+
 	// SecurityOpt is the list of security options
 	SecurityOpt []string
 }
@@ -75,8 +77,8 @@ type ContainerConfig struct {
 // NewProfile creates a new permission profile
 func NewProfile() *Profile {
 	return &Profile{
-		Read:    []string{},
-		Write:   []string{},
+		Read:  []string{},
+		Write: []string{},
 		Network: &NetworkPermissions{
 			Outbound: &OutboundNetworkPermissions{
 				InsecureAllowAll: false,
@@ -91,17 +93,18 @@ func NewProfile() *Profile {
 // FromFile loads a permission profile from a file
 func FromFile(path string) (*Profile, error) {
 	// Read the file
+	// #nosec G304 - This is intentional as we're reading a user-specified permission profile
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read permission profile: %w", err)
 	}
-	
+
 	// Parse the JSON
 	var profile Profile
 	if err := json.Unmarshal(data, &profile); err != nil {
 		return nil, fmt.Errorf("failed to parse permission profile: %w", err)
 	}
-	
+
 	return &profile, nil
 }
 
@@ -146,28 +149,28 @@ func (p *Profile) ToContainerConfig() *ContainerConfig {
 		CapAdd:      []string{},
 		SecurityOpt: []string{},
 	}
-	
+
 	// Add read-only mounts
 	for _, path := range p.Read {
 		if !filepath.IsAbs(path) {
 			// Skip relative paths
 			continue
 		}
-		
+
 		config.Mounts = append(config.Mounts, Mount{
 			Source:   path,
 			Target:   path,
 			ReadOnly: true,
 		})
 	}
-	
+
 	// Add read-write mounts
 	for _, path := range p.Write {
 		if !filepath.IsAbs(path) {
 			// Skip relative paths
 			continue
 		}
-		
+
 		// Check if the path is already mounted read-only
 		alreadyMounted := false
 		for i, mount := range config.Mounts {
@@ -178,7 +181,7 @@ func (p *Profile) ToContainerConfig() *ContainerConfig {
 				break
 			}
 		}
-		
+
 		// If not already mounted, add a new mount
 		if !alreadyMounted {
 			config.Mounts = append(config.Mounts, Mount{
@@ -188,14 +191,14 @@ func (p *Profile) ToContainerConfig() *ContainerConfig {
 			})
 		}
 	}
-	
+
 	// Configure network
 	if p.Network != nil && p.Network.Outbound != nil {
 		if p.Network.Outbound.InsecureAllowAll {
 			config.NetworkMode = "bridge"
 		}
 	}
-	
+
 	return config
 }
 
@@ -203,7 +206,7 @@ func (p *Profile) ToContainerConfig() *ContainerConfig {
 // with transport-specific settings
 func (p *Profile) ToContainerConfigWithTransport(transportType string) (*ContainerConfig, error) {
 	config := p.ToContainerConfig()
-	
+
 	// Add transport-specific settings
 	switch transportType {
 	case "sse":
@@ -215,7 +218,7 @@ func (p *Profile) ToContainerConfigWithTransport(transportType string) (*Contain
 	default:
 		return nil, fmt.Errorf("unsupported transport type: %s", transportType)
 	}
-	
+
 	return config, nil
 }
 
@@ -225,7 +228,7 @@ func GetContainerPermissionConfig(profileName string, transportType string) (*Co
 	// Load permission profile
 	var profile *Profile
 	var err error
-	
+
 	switch profileName {
 	case "stdio":
 		profile = BuiltinStdioProfile()
@@ -267,7 +270,7 @@ func ToContainerPermissionConfig(config *ContainerConfig) container.PermissionCo
 			ReadOnly: m.ReadOnly,
 		})
 	}
-	
+
 	return containerPermConfig
 }
 
@@ -279,7 +282,7 @@ func GetContainerPermConfig(profileName string, transportType string) (container
 	if err != nil {
 		return container.PermissionConfig{}, err
 	}
-	
+
 	// Convert to container.PermissionConfig
 	return ToContainerPermissionConfig(permConfig), nil
 }

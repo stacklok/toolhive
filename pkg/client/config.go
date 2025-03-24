@@ -1,3 +1,5 @@
+// Package client provides utilities for managing client configurations
+// and interacting with MCP servers.
 package client
 
 import (
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+
 	"github.com/stacklok/vibetool/pkg/transport"
 )
 
@@ -39,7 +42,10 @@ func FindClientConfigs() ([]ConfigFile, error) {
 	// Define potential configuration file paths
 	paths := []string{
 		// VSCode Roo extension
-		filepath.Join(home, ".config", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "cline_mcp_settings.json"),
+		filepath.Join(
+			home, ".config", "Code", "User", "globalStorage",
+			"rooveterinaryinc.roo-cline", "settings", "cline_mcp_settings.json",
+		),
 		// Claude desktop app
 		filepath.Join(home, ".config", "Claude", "claude_desktop_config.json"),
 		// Add more paths as needed
@@ -64,7 +70,8 @@ func readConfigFile(path string) (ConfigFile, error) {
 	}
 
 	// Read file
-	data, err := os.ReadFile(path)
+	cleanpath := filepath.Clean(path)
+	data, err := os.ReadFile(cleanpath)
 	if err != nil {
 		return ConfigFile{}, fmt.Errorf("failed to read file: %w", err)
 	}
@@ -134,7 +141,7 @@ func (c *ConfigFile) Save() error {
 	}
 
 	// Write file
-	if err := os.WriteFile(c.Path, data, 0644); err != nil {
+	if err := os.WriteFile(c.Path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -179,7 +186,7 @@ func (c *ConfigFile) SaveWithLock(serverName, url string) error {
 	}
 
 	// Write file
-	if err := os.WriteFile(c.Path, data, 0644); err != nil {
+	if err := os.WriteFile(c.Path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 

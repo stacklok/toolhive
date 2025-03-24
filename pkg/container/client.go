@@ -1,3 +1,5 @@
+// Package container provides utilities for managing containers,
+// including creating, starting, stopping, and monitoring containers.
 package container
 
 import (
@@ -198,7 +200,7 @@ func (c *Client) CreateContainer(
 			if err != nil {
 				return "", NewContainerError(err, "", fmt.Sprintf("failed to parse port: %v", err))
 			}
-			
+
 			natBindings := make([]nat.PortBinding, len(bindings))
 			for i, binding := range bindings {
 				natBindings[i] = nat.PortBinding{
@@ -260,9 +262,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerInfo, error) {
 		name := ""
 		if len(c.Names) > 0 {
 			name = c.Names[0]
-			if strings.HasPrefix(name, "/") {
-				name = name[1:]
-			}
+			name = strings.TrimPrefix(name, "/")
 		}
 
 		// Extract port mappings
@@ -370,7 +370,10 @@ func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (Cont
 	for containerPort, bindings := range info.NetworkSettings.Ports {
 		for _, binding := range bindings {
 			hostPort := 0
-			fmt.Sscanf(binding.HostPort, "%d", &hostPort)
+			if _, err := fmt.Sscanf(binding.HostPort, "%d", &hostPort); err != nil {
+				// If we can't parse the port, just use 0
+				fmt.Printf("Warning: Failed to parse host port %s: %v\n", binding.HostPort, err)
+			}
 
 			ports = append(ports, PortMapping{
 				ContainerPort: containerPort.Int(),
@@ -411,9 +414,9 @@ func (c *Client) GetContainerIP(ctx context.Context, containerID string) (string
 	}
 
 	// Get IP address from the default network
-	for _, network := range info.NetworkSettings.Networks {
-		if network.IPAddress != "" {
-			return network.IPAddress, nil
+	for _, netInfo := range info.NetworkSettings.Networks {
+		if netInfo.IPAddress != "" {
+			return netInfo.IPAddress, nil
 		}
 	}
 
@@ -429,7 +432,7 @@ func (r *readCloserWrapper) Read(p []byte) (n int, err error) {
 	return r.reader.Read(p)
 }
 
-func (r *readCloserWrapper) Close() error {
+func (_ *readCloserWrapper) Close() error {
 	// No-op close for readers that don't need closing
 	return nil
 }

@@ -104,7 +104,7 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 			} else {
 				fmt.Printf("Proxy process stopped\n")
 			}
-			
+
 			// Remove the PID file
 			if err := process.RemovePIDFile(containerBaseName); err != nil {
 				fmt.Printf("Warning: Failed to remove PID file: %v\n", err)

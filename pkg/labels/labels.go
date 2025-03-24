@@ -1,3 +1,5 @@
+// Package labels provides utilities for managing container labels
+// used by the vibetool application.
 package labels
 
 import (
@@ -8,19 +10,19 @@ import (
 const (
 	// LabelPrefix is the prefix for all Vibe Tool labels
 	LabelPrefix = "vibetool"
-	
+
 	// LabelEnabled is the label that indicates a container is managed by Vibe Tool
 	LabelEnabled = "vibetool"
-	
+
 	// LabelName is the label that contains the container name
 	LabelName = "vibetool-name"
-	
+
 	// LabelBaseName is the label that contains the base container name (without timestamp)
 	LabelBaseName = "vibetool-basename"
-	
+
 	// LabelTransport is the label that contains the transport mode
 	LabelTransport = "vibetool-transport"
-	
+
 	// LabelPort is the label that contains the port
 	LabelPort = "vibetool-port"
 )
@@ -67,11 +69,11 @@ func GetPort(labels map[string]string) (int, error) {
 	if !ok {
 		return 0, fmt.Errorf("port label not found")
 	}
-	
+
 	var port int
 	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
 		return 0, fmt.Errorf("invalid port: %s", portStr)
 	}
-	
+
 	return port, nil
 }

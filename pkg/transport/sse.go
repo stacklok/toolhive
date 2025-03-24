@@ -3,12 +3,16 @@ package transport
 import (
 	"context"
 	"fmt"
-	"io"
 	"sync"
-	
+
 	"github.com/stacklok/vibetool/pkg/container"
 	"github.com/stacklok/vibetool/pkg/networking"
 	"github.com/stacklok/vibetool/pkg/permissions"
+)
+
+const (
+	// LocalhostName is the standard hostname for localhost
+	LocalhostName = "localhost"
 )
 
 // SSETransport implements the Transport interface using Server-Sent Events.
@@ -29,7 +33,7 @@ type SSETransport struct {
 
 	// Shutdown channel
 	shutdownCh chan struct{}
-	
+
 	// Container monitor
 	monitor *container.Monitor
 	errorCh <-chan error
@@ -38,7 +42,7 @@ type SSETransport struct {
 // NewSSETransport creates a new SSE transport.
 func NewSSETransport(host string, port int, targetPort int, runtime container.Runtime, debug bool) *SSETransport {
 	if host == "" {
-		host = "localhost"
+		host = LocalhostName
 	}
 
 	return &SSETransport{
@@ -52,7 +56,7 @@ func NewSSETransport(host string, port int, targetPort int, runtime container.Ru
 }
 
 // Mode returns the transport mode.
-func (t *SSETransport) Mode() TransportType {
+func (_ *SSETransport) Mode() TransportType {
 	return TransportTypeSSE
 }
 
@@ -79,7 +83,7 @@ func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, con
 
 	// Always use localhost for the host
 	// In a Docker bridge network, the container IP is not directly accessible from the host
-	envVars["MCP_HOST"] = "localhost"
+	envVars["MCP_HOST"] = LocalhostName
 
 	// Get container permission config
 	containerPermConfig, err := permissions.GetContainerPermConfig(permissionProfile, "sse")
@@ -89,11 +93,11 @@ func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, con
 
 	// Create container options
 	containerOptions := container.NewCreateContainerOptions()
-	
+
 	// For SSE transport, expose the target port in the container
 	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)
 	containerOptions.ExposedPorts[containerPortStr] = struct{}{}
-	
+
 	// Create port bindings for localhost
 	portBindings := []container.PortBinding{
 		{
@@ -101,7 +105,7 @@ func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, con
 			HostPort: fmt.Sprintf("%d", t.targetPort),
 		},
 	}
-	
+
 	// Check if IPv6 is available and add IPv6 localhost binding
 	if networking.IsIPv6Available() {
 		portBindings = append(portBindings, container.PortBinding{
@@ -109,12 +113,12 @@ func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, con
 			HostPort: fmt.Sprintf("%d", t.targetPort),
 		})
 	}
-	
+
 	// Set the port bindings
 	containerOptions.PortBindings[containerPortStr] = portBindings
-	
+
 	fmt.Printf("Exposing container port %d\n", t.targetPort)
-	
+
 	// For SSE transport, we don't need to attach stdio
 	containerOptions.AttachStdio = false
 
@@ -168,7 +172,7 @@ func (t *SSETransport) Start(ctx context.Context) error {
 
 	// In a Docker bridge network, we need to use localhost since the container port is mapped to the host
 	// We ignore containerIP even if it's set, as it's not directly accessible from the host
-	targetHost := "localhost"
+	targetHost := LocalhostName
 
 	// Check if target port is set
 	if t.targetPort <= 0 {
@@ -228,13 +232,13 @@ func (t *SSETransport) Stop(ctx context.Context) error {
 			fmt.Printf("Warning: Failed to stop proxy: %v\n", err)
 		}
 	}
-	
+
 	// Stop the container if runtime is available
 	if t.runtime != nil && t.containerID != "" {
 		if err := t.runtime.StopContainer(ctx, t.containerID); err != nil {
 			return fmt.Errorf("failed to stop container: %w", err)
 		}
-		
+
 		// Remove the container if debug mode is not enabled
 		if !t.debug {
 			fmt.Printf("Removing container %s...\n", t.containerName)
@@ -265,7 +269,7 @@ func (t *SSETransport) handleContainerExit(ctx context.Context) {
 }
 
 // IsRunning checks if the transport is currently running.
-func (t *SSETransport) IsRunning(ctx context.Context) (bool, error) {
+func (t *SSETransport) IsRunning(_ context.Context) (bool, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -276,16 +280,4 @@ func (t *SSETransport) IsRunning(ctx context.Context) (bool, error) {
 	default:
 		return true, nil
 	}
-}
-
-// GetReader returns a reader for receiving messages from the transport.
-func (t *SSETransport) GetReader() io.Reader {
-	// This is not used in the SSETransport implementation
-	return nil
-}
-
-// GetWriter returns a writer for sending messages to the transport.
-func (t *SSETransport) GetWriter() io.Writer {
-	// This is not used in the SSETransport implementation
-	return nil
 }

@@ -18,6 +18,29 @@ import (
 // lockTimeout is the maximum time to wait for a file lock
 const lockTimeout = 1 * time.Second
 
+// configPaths defines the standard locations for client configuration files
+var configPaths = []struct {
+	Description string
+	RelPath     []string
+}{
+	{
+		Description: "VSCode Roo extension",
+		RelPath: []string{
+			".config", "Code", "User", "globalStorage",
+			"rooveterinaryinc.roo-cline", "settings", "cline_mcp_settings.json",
+		},
+	},
+	{
+		Description: "Claude desktop app (Linux)",
+		RelPath:     []string{".config", "Claude", "claude_desktop_config.json"},
+	},
+	{
+		Description: "Claude desktop app (macOS)",
+		RelPath:     []string{"Library", "Application Support", "Claude", "claude_desktop_config.json"},
+	},
+	// Add more paths as needed
+}
+
 // ConfigFile represents a client configuration file
 type ConfigFile struct {
 	Path     string
@@ -39,20 +62,12 @@ func FindClientConfigs() ([]ConfigFile, error) {
 		return nil, fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	// Define potential configuration file paths
-	paths := []string{
-		// VSCode Roo extension
-		filepath.Join(
-			home, ".config", "Code", "User", "globalStorage",
-			"rooveterinaryinc.roo-cline", "settings", "cline_mcp_settings.json",
-		),
-		// Claude desktop app
-		filepath.Join(home, ".config", "Claude", "claude_desktop_config.json"),
-		// Add more paths as needed
-	}
-
 	// Check each path
-	for _, path := range paths {
+	for _, pathInfo := range configPaths {
+		// Construct the full path
+		elements := append([]string{home}, pathInfo.RelPath...)
+		path := filepath.Join(elements...)
+
 		config, err := readConfigFile(path)
 		if err == nil {
 			configs = append(configs, config)

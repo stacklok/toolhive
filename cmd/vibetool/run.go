@@ -198,20 +198,9 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start container: %v", err)
 	}
 
-	// Get container IP for SSE transport
-	var containerIP string
-	if transportType == transport.TransportTypeSSE {
-		ip, err := runtime.GetContainerIP(ctx, containerID)
-		if err != nil {
-			fmt.Printf("Warning: Failed to get container IP: %v\n", err)
-		} else {
-			containerIP = ip
-		}
-	}
-
 	// Set up the transport
 	fmt.Printf("Setting up %s transport...\n", transportType)
-	if err := transportHandler.Setup(ctx, containerID, containerName, envVars, containerIP); err != nil {
+	if err := transportHandler.Setup(ctx, containerID, containerName, envVars); err != nil {
 		return fmt.Errorf("failed to set up transport: %v", err)
 	}
 

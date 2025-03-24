@@ -15,7 +15,7 @@ type Transport interface {
 	Port() int
 
 	// Setup prepares the transport for use with a specific container.
-	Setup(ctx context.Context, containerID, containerName string, envVars map[string]string, containerIP string) error
+	Setup(ctx context.Context, containerID, containerName string, envVars map[string]string) error
 
 	// Start initializes the transport and begins processing messages.
 	// For STDIO transport, stdin and stdout are provided by the caller and are already attached to the container.

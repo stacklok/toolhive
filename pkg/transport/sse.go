@@ -14,16 +14,15 @@ type SSETransport struct {
 	targetPort    int
 	containerID   string
 	containerName string
-	containerIP   string
-	
+
 	// Mutex for protecting shared state
-	mutex         sync.Mutex
-	
+	mutex sync.Mutex
+
 	// Transparent proxy
-	proxy         Proxy
-	
+	proxy Proxy
+
 	// Shutdown channel
-	shutdownCh    chan struct{}
+	shutdownCh chan struct{}
 }
 
 // NewSSETransport creates a new SSE transport.
@@ -31,13 +30,12 @@ func NewSSETransport(host string, port int, targetPort int) *SSETransport {
 	if host == "" {
 		host = "localhost"
 	}
-	
+
 	return &SSETransport{
-		host:        host,
-		port:        port,
-		targetPort:  targetPort,
-		containerIP: "",
-		shutdownCh:  make(chan struct{}),
+		host:       host,
+		port:       port,
+		targetPort: targetPort,
+		shutdownCh: make(chan struct{}),
 	}
 }
 
@@ -52,27 +50,24 @@ func (t *SSETransport) Port() int {
 }
 
 // Setup prepares the transport for use with a specific container.
-func (t *SSETransport) Setup(ctx context.Context, containerID, containerName string, envVars map[string]string, containerIP string) error {
+func (t *SSETransport) Setup(ctx context.Context, containerID, containerName string, envVars map[string]string) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	
+
 	t.containerID = containerID
 	t.containerName = containerName
-	
-	// Store the container IP for later use in Start
-	t.containerIP = containerIP
-	
+
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "sse"
-	
+
 	// Use the target port for the container's environment variables
 	envVars["MCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
 	envVars["FASTMCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
-	
+
 	// Always use localhost for the host
 	// In a Docker bridge network, the container IP is not directly accessible from the host
 	envVars["MCP_HOST"] = "localhost"
-	
+
 	return nil
 }
 
@@ -81,41 +76,41 @@ func (t *SSETransport) Setup(ctx context.Context, containerID, containerName str
 func (t *SSETransport) Start(ctx context.Context, stdin io.WriteCloser, stdout io.ReadCloser) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	
+
 	if t.containerID == "" {
 		return ErrContainerIDNotSet
 	}
-	
+
 	if t.containerName == "" {
 		return ErrContainerNameNotSet
 	}
-	
+
 	// Create and start the transparent proxy
 	// The SSE transport forwards requests from the host port to the container's target port
-	
+
 	// In a Docker bridge network, we need to use localhost since the container port is mapped to the host
 	// We ignore containerIP even if it's set, as it's not directly accessible from the host
 	targetHost := "localhost"
-	
+
 	// Check if target port is set
 	if t.targetPort <= 0 {
 		return fmt.Errorf("target port not set for SSE transport")
 	}
-	
+
 	// Use the target port for the container
 	containerPort := t.targetPort
-	
+
 	fmt.Printf("Setting up transparent proxy to forward from host port %d to localhost:%d\n",
 		t.port, containerPort)
-	
+
 	// Create the transparent proxy
 	t.proxy = NewTransparentProxy(t.port, t.containerName, targetHost, containerPort)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}
-	
+
 	fmt.Printf("SSE transport started for container %s on port %d\n", t.containerName, t.port)
-	
+
 	return nil
 }
 
@@ -123,15 +118,15 @@ func (t *SSETransport) Start(ctx context.Context, stdin io.WriteCloser, stdout i
 func (t *SSETransport) Stop(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	
+
 	// Signal shutdown
 	close(t.shutdownCh)
-	
+
 	// Stop the transparent proxy
 	if t.proxy != nil {
 		return t.proxy.Stop(ctx)
 	}
-	
+
 	return nil
 }
 
@@ -139,7 +134,7 @@ func (t *SSETransport) Stop(ctx context.Context) error {
 func (t *SSETransport) IsRunning(ctx context.Context) (bool, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	
+
 	// Check if the shutdown channel is closed
 	select {
 	case <-t.shutdownCh:

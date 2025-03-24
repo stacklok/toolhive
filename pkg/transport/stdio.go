@@ -19,15 +19,15 @@ type StdioTransport struct {
 	containerID   string
 	containerName string
 	runtime       container.Runtime
-	
+
 	// Mutex for protecting shared state
-	mutex         sync.Mutex
-	
+	mutex sync.Mutex
+
 	// Channels for communication
-	shutdownCh    chan struct{}
-	
+	shutdownCh chan struct{}
+
 	// HTTP SSE proxy
-	httpProxy     Proxy
+	httpProxy Proxy
 }
 
 // NewStdioTransport creates a new stdio transport.
@@ -42,7 +42,7 @@ func NewStdioTransport(port int) *StdioTransport {
 func (t *StdioTransport) WithRuntime(runtime container.Runtime) *StdioTransport {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	
+
 	t.runtime = runtime
 	return t
 }
@@ -58,16 +58,16 @@ func (t *StdioTransport) Port() int {
 }
 
 // Setup prepares the transport for use with a specific container.
-func (t *StdioTransport) Setup(ctx context.Context, containerID, containerName string, envVars map[string]string, containerIP string) error {
+func (t *StdioTransport) Setup(ctx context.Context, containerID, containerName string, envVars map[string]string) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	
+
 	t.containerID = containerID
 	t.containerName = containerName
-	
+
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "stdio"
-	
+
 	return nil
 }
 
@@ -77,24 +77,24 @@ func (t *StdioTransport) Setup(ctx context.Context, containerID, containerName s
 func (t *StdioTransport) Start(ctx context.Context, stdin io.WriteCloser, stdout io.ReadCloser) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	
+
 	if t.containerID == "" {
 		return ErrContainerIDNotSet
 	}
-	
+
 	if t.containerName == "" {
 		return ErrContainerNameNotSet
 	}
-	
+
 	// Create and start the HTTP SSE proxy
 	t.httpProxy = NewHTTPSSEProxy(t.port, t.containerName)
 	if err := t.httpProxy.Start(ctx); err != nil {
 		return err
 	}
-	
+
 	// Start processing messages in a goroutine
 	go t.processMessages(ctx, stdin, stdout)
-	
+
 	return nil
 }
 
@@ -102,15 +102,15 @@ func (t *StdioTransport) Start(ctx context.Context, stdin io.WriteCloser, stdout
 func (t *StdioTransport) Stop(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	
+
 	// Signal shutdown
 	close(t.shutdownCh)
-	
+
 	// Stop the HTTP proxy
 	if t.httpProxy != nil {
 		return t.httpProxy.Stop(ctx)
 	}
-	
+
 	return nil
 }
 
@@ -118,7 +118,7 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 func (t *StdioTransport) IsRunning(ctx context.Context) (bool, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	
+
 	// Check if the shutdown channel is closed
 	select {
 	case <-t.shutdownCh:
@@ -145,7 +145,7 @@ func (t *StdioTransport) processMessages(ctx context.Context, stdin io.WriteClos
 	// Create a context that will be canceled when shutdown is signaled
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	
+
 	// Monitor for shutdown signal
 	go func() {
 		select {
@@ -155,13 +155,13 @@ func (t *StdioTransport) processMessages(ctx context.Context, stdin io.WriteClos
 			// Context was canceled elsewhere
 		}
 	}()
-	
+
 	// Start a goroutine to read from stdout
 	go t.processStdout(ctx, stdout)
-	
+
 	// Process incoming messages and send them to the container
 	messageCh := t.httpProxy.GetMessageChannel()
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -178,10 +178,10 @@ func (t *StdioTransport) processMessages(ctx context.Context, stdin io.WriteClos
 func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser) {
 	// Create a buffer for accumulating data
 	var buffer bytes.Buffer
-	
+
 	// Create a buffer for reading
 	readBuffer := make([]byte, 4096)
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -197,11 +197,11 @@ func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser
 				}
 				return
 			}
-			
+
 			if n > 0 {
 				// Write the data to the buffer
 				buffer.Write(readBuffer[:n])
-				
+
 				// Process the buffer
 				t.processBuffer(ctx, &buffer)
 			}
@@ -219,10 +219,10 @@ func (t *StdioTransport) processBuffer(ctx context.Context, buffer *bytes.Buffer
 			buffer.WriteString(line)
 			break
 		}
-		
+
 		// Remove the trailing newline
 		line = line[:len(line)-1]
-		
+
 		// Try to parse as JSON-RPC
 		if line != "" {
 			t.parseAndForwardJSONRPC(ctx, line)
@@ -237,13 +237,13 @@ func sanitizeJSONString(input string) string {
 	if startIdx == -1 {
 		return input // No JSON object found
 	}
-	
+
 	// Find the last closing brace
 	endIdx := strings.LastIndex(input, "}")
 	if endIdx == -1 || endIdx < startIdx {
 		return input // No valid JSON object found
 	}
-	
+
 	// Extract the JSON object
 	return input[startIdx : endIdx+1]
 }
@@ -252,7 +252,7 @@ func sanitizeJSONString(input string) string {
 func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string) {
 	// Log the raw line for debugging
 	fmt.Printf("JSON-RPC raw: %s\n", line)
-	
+
 	// Check if the line contains binary data
 	hasBinaryData := false
 	for _, c := range line {
@@ -260,7 +260,7 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 			hasBinaryData = true
 		}
 	}
-	
+
 	// If the line contains binary data, try to sanitize it
 	var jsonData string
 	if hasBinaryData {
@@ -269,28 +269,28 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	} else {
 		jsonData = line
 	}
-	
+
 	// Try to parse the JSON
 	var msg JSONRPCMessage
 	if err := json.Unmarshal([]byte(jsonData), &msg); err != nil {
 		fmt.Printf("Error parsing JSON-RPC message: %v\n", err)
 		return
 	}
-	
+
 	// Validate the message
 	if err := msg.Validate(); err != nil {
 		fmt.Printf("Invalid JSON-RPC message: %v\n", err)
 		return
 	}
-	
+
 	// Log the message
 	LogJSONRPCMessage(&msg)
-	
+
 	// Forward to SSE clients via the HTTP proxy
 	if err := t.httpProxy.ForwardResponseToClients(ctx, &msg); err != nil {
 		fmt.Printf("Error forwarding to SSE clients: %v\n", err)
 	}
-	
+
 	// Send to the response channel
 	if err := t.httpProxy.SendResponseMessage(&msg); err != nil {
 		fmt.Printf("Error sending to response channel: %v\n", err)
@@ -304,14 +304,14 @@ func (t *StdioTransport) sendMessageToContainer(ctx context.Context, stdin io.Wr
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON-RPC message: %w", err)
 	}
-	
+
 	// Add newline
 	data = append(data, '\n')
-	
+
 	// Write to stdin
 	if _, err := stdin.Write(data); err != nil {
 		return fmt.Errorf("failed to write to container stdin: %w", err)
 	}
-	
+
 	return nil
 }

@@ -71,92 +71,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	
 	// If not running in foreground mode, start a new detached process and exit
 	if !runForeground {
-		// Get the current executable path
-		execPath, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("failed to get executable path: %v", err)
-		}
-		
-		// Create a log file for the detached process
-		logFilePath := fmt.Sprintf("/tmp/vibetool-%s.log", baseName)
-		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			fmt.Printf("Warning: Failed to create log file: %v\n", err)
-		} else {
-			defer logFile.Close()
-			fmt.Printf("Logging to: %s\n", logFilePath)
-		}
-		
-		// Prepare the command arguments for the detached process
-		// We'll run the same command but with the --foreground flag
-		detachedArgs := []string{"run", "--foreground"}
-		
-		// Add all the original flags
-		if runTransport != "stdio" {
-			detachedArgs = append(detachedArgs, "--transport", runTransport)
-		}
-		if runName != "" {
-			detachedArgs = append(detachedArgs, "--name", runName)
-		}
-		if runPort != 0 {
-			detachedArgs = append(detachedArgs, "--port", fmt.Sprintf("%d", runPort))
-		}
-		if runTargetPort != 0 {
-			detachedArgs = append(detachedArgs, "--target-port", fmt.Sprintf("%d", runTargetPort))
-		}
-		if runPermissionProfile != "stdio" {
-			detachedArgs = append(detachedArgs, "--permission-profile", runPermissionProfile)
-		}
-		for _, env := range runEnv {
-			detachedArgs = append(detachedArgs, "--env", env)
-		}
-		if runNoClientConfig {
-			detachedArgs = append(detachedArgs, "--no-client-config")
-		}
-		
-		// Add the image and any arguments
-		detachedArgs = append(detachedArgs, image)
-		if len(cmdArgs) > 0 {
-			detachedArgs = append(detachedArgs, cmdArgs...)
-		}
-		
-		// Create a new command
-		detachedCmd := exec.Command(execPath, detachedArgs...)
-		
-		// Set environment variables for the detached process
-		detachedCmd.Env = append(os.Environ(), "VIBETOOL_DETACHED=1")
-		
-		// Redirect stdout and stderr to the log file if it was created successfully
-		if logFile != nil {
-			detachedCmd.Stdout = logFile
-			detachedCmd.Stderr = logFile
-		} else {
-			// Otherwise, discard the output
-			detachedCmd.Stdout = nil
-			detachedCmd.Stderr = nil
-		}
-		
-		// Detach the process from the terminal
-		detachedCmd.Stdin = nil
-		detachedCmd.SysProcAttr = &syscall.SysProcAttr{
-			Setsid: true, // Create a new session
-		}
-		
-		// Start the detached process
-		if err := detachedCmd.Start(); err != nil {
-			return fmt.Errorf("failed to start detached process: %v", err)
-		}
-		
-		// Write the PID to a file so the stop command can kill the process
-		if err := process.WritePIDFile(baseName, detachedCmd.Process.Pid); err != nil {
-			fmt.Printf("Warning: Failed to write PID file: %v\n", err)
-		}
-		
-		fmt.Printf("MCP server %s is running in the background (PID: %d)\n", containerName, detachedCmd.Process.Pid)
-		fmt.Printf("Use 'vibetool stop %s' to stop the server\n", containerName)
-		
-		// Exit the parent process
-		return nil
+		return detachProcess(cmd, image, baseName, containerName, cmdArgs)
 	}
 
 	// Parse transport mode
@@ -526,5 +441,94 @@ func updateClientConfigurations(containerName, host string, port int) error {
 		fmt.Printf("Successfully updated client configuration: %s\n", config.Path)
 	}
 
+	return nil
+}
+
+// detachProcess starts a new detached process with the same command but with the --foreground flag
+func detachProcess(cmd *cobra.Command, image, baseName, containerName string, cmdArgs []string) error {
+	// Get the current executable path
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get executable path: %v", err)
+	}
+	
+	// Create a log file for the detached process
+	logFilePath := fmt.Sprintf("/tmp/vibetool-%s.log", baseName)
+	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Printf("Warning: Failed to create log file: %v\n", err)
+	} else {
+		defer logFile.Close()
+		fmt.Printf("Logging to: %s\n", logFilePath)
+	}
+	
+	// Prepare the command arguments for the detached process
+	// We'll run the same command but with the --foreground flag
+	detachedArgs := []string{"run", "--foreground"}
+	
+	// Add all the original flags
+	if runTransport != "stdio" {
+		detachedArgs = append(detachedArgs, "--transport", runTransport)
+	}
+	if runName != "" {
+		detachedArgs = append(detachedArgs, "--name", runName)
+	}
+	if runPort != 0 {
+		detachedArgs = append(detachedArgs, "--port", fmt.Sprintf("%d", runPort))
+	}
+	if runTargetPort != 0 {
+		detachedArgs = append(detachedArgs, "--target-port", fmt.Sprintf("%d", runTargetPort))
+	}
+	if runPermissionProfile != "stdio" {
+		detachedArgs = append(detachedArgs, "--permission-profile", runPermissionProfile)
+	}
+	for _, env := range runEnv {
+		detachedArgs = append(detachedArgs, "--env", env)
+	}
+	if runNoClientConfig {
+		detachedArgs = append(detachedArgs, "--no-client-config")
+	}
+	
+	// Add the image and any arguments
+	detachedArgs = append(detachedArgs, image)
+	if len(cmdArgs) > 0 {
+		detachedArgs = append(detachedArgs, cmdArgs...)
+	}
+	
+	// Create a new command
+	detachedCmd := exec.Command(execPath, detachedArgs...)
+	
+	// Set environment variables for the detached process
+	detachedCmd.Env = append(os.Environ(), "VIBETOOL_DETACHED=1")
+	
+	// Redirect stdout and stderr to the log file if it was created successfully
+	if logFile != nil {
+		detachedCmd.Stdout = logFile
+		detachedCmd.Stderr = logFile
+	} else {
+		// Otherwise, discard the output
+		detachedCmd.Stdout = nil
+		detachedCmd.Stderr = nil
+	}
+	
+	// Detach the process from the terminal
+	detachedCmd.Stdin = nil
+	detachedCmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true, // Create a new session
+	}
+	
+	// Start the detached process
+	if err := detachedCmd.Start(); err != nil {
+		return fmt.Errorf("failed to start detached process: %v", err)
+	}
+	
+	// Write the PID to a file so the stop command can kill the process
+	if err := process.WritePIDFile(baseName, detachedCmd.Process.Pid); err != nil {
+		fmt.Printf("Warning: Failed to write PID file: %v\n", err)
+	}
+	
+	fmt.Printf("MCP server %s is running in the background (PID: %d)\n", containerName, detachedCmd.Process.Pid)
+	fmt.Printf("Use 'vibetool stop %s' to stop the server\n", containerName)
+	
 	return nil
 }

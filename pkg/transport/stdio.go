@@ -336,20 +336,20 @@ func sanitizeBinaryString(input string) string {
 	if startIdx == -1 {
 		return "" // No JSON object found
 	}
-	
+
 	// Find the last closing brace
 	endIdx := strings.LastIndex(input, "}")
 	if endIdx == -1 || endIdx < startIdx {
 		return "" // No valid JSON object found
 	}
-	
+
 	// Extract just the JSON object, discarding everything else
 	jsonObj := input[startIdx : endIdx+1]
-	
+
 	// Remove all whitespace and control characters
 	var buffer bytes.Buffer
 	inString := false
-	
+
 	for _, r := range jsonObj {
 		if r == '"' {
 			inString = !inString
@@ -366,7 +366,7 @@ func sanitizeBinaryString(input string) string {
 			}
 		}
 	}
-	
+
 	return buffer.String()
 }
 

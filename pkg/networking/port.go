@@ -104,3 +104,24 @@ func FindAvailable() int {
 	// If we still can't find a port, return 0
 	return 0
 }
+
+// FindOrUsePort checks if the provided port is available or finds an available port if none is provided.
+// If port is 0, it will find an available port.
+// If port is not 0, it will check if the port is available.
+// Returns the selected port and an error if any.
+func FindOrUsePort(port int) (int, error) {
+	if port == 0 {
+		// Find an available port
+		port = FindAvailable()
+		if port == 0 {
+			return 0, fmt.Errorf("could not find an available port")
+		}
+		return port, nil
+	} else if port > 0 && !IsAvailable(port) {
+		// Check if the provided port is available
+		return 0, fmt.Errorf("port %d is already in use", port)
+	}
+	
+	// Port is available
+	return port, nil
+}

@@ -7,9 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -59,15 +57,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	cmdArgs := args[1:]
 
 	// Generate a container name if not provided
-	containerName := runName
-	var baseName string
-	if containerName == "" {
-		baseName = generateContainerBaseName(image)
-		containerName = appendTimestamp(baseName)
-	} else {
-		// If container name is provided, use it as the base name
-		baseName = containerName
-	}
+	containerName, baseName := container.GetOrGenerateContainerName(runName, image)
 	
 	// If not running in foreground mode, start a new detached process and exit
 	if !runForeground {
@@ -81,30 +71,16 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	
 	// Select a port for the HTTP proxy (host port)
-	port := runPort
-	if port == 0 {
-		port = networking.FindAvailable()
-		if port == 0 {
-			return fmt.Errorf("could not find an available port")
-		}
-		fmt.Printf("Using host port: %d\n", port)
-	} else if port > 0 && !networking.IsAvailable(port) {
-		return fmt.Errorf("port %d is already in use", port)
+	port, err := networking.FindOrUsePort(runPort)
+	if err != nil {
+		return err
 	}
+	fmt.Printf("Using host port: %d\n", port)
 	
-	// Select a target port for the container (only applicable to SSE transport)
-	targetPort := runTargetPort
-	if transportType == transport.TransportTypeSSE && targetPort == 0 {
-		targetPort = networking.FindAvailable()
-		if targetPort == 0 {
-			return fmt.Errorf("could not find an available target port")
-		}
-		fmt.Printf("Using target port: %d\n", targetPort)
-	} else if transportType == transport.TransportTypeSSE && targetPort > 0 && !networking.IsAvailable(targetPort) {
-		return fmt.Errorf("target port %d is already in use", targetPort)
-	} else if transportType == transport.TransportTypeStdio {
-		// For STDIO transport, target port is not used
-		targetPort = 0
+	// Select a target port for the container
+	targetPort, err := getTargetPort(transportType, runTargetPort)
+	if err != nil {
+		return err
 	}
 
 	// Load permission profile
@@ -374,44 +350,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// generateContainerBaseName generates a base name for a container from the image name
-func generateContainerBaseName(image string) string {
-	// Extract the base name from the image, preserving registry namespaces
-	// Examples:
-	// - "nginx:latest" -> "nginx"
-	// - "docker.io/library/nginx:latest" -> "docker.io-library-nginx"
-	// - "quay.io/stacklok/mcp-server:v1" -> "quay.io-stacklok-mcp-server"
-
-	// First, remove the tag part (everything after the colon)
-	imageWithoutTag := strings.Split(image, ":")[0]
-
-	// Replace slashes with dashes to preserve namespace structure
-	namespaceName := strings.ReplaceAll(imageWithoutTag, "/", "-")
-
-	// Sanitize the name (allow alphanumeric, dashes, and dots)
-	var sanitizedName strings.Builder
-	for _, c := range namespaceName {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' {
-			sanitizedName.WriteRune(c)
-		} else {
-			sanitizedName.WriteRune('-')
-		}
-	}
-
-	return sanitizedName.String()
-}
-
-// appendTimestamp appends a timestamp to a base name to ensure uniqueness
-func appendTimestamp(baseName string) string {
-	timestamp := time.Now().Unix()
-	return fmt.Sprintf("%s-%d", baseName, timestamp)
-}
-
-// generateContainerName generates a container name from the image name (for backward compatibility)
-func generateContainerName(image string) string {
-	return appendTimestamp(generateContainerBaseName(image))
-}
-
 // updateClientConfigurations updates client configuration files with the MCP server URL
 func updateClientConfigurations(containerName, host string, port int) error {
 	// Find client configuration files
@@ -442,6 +380,23 @@ func updateClientConfigurations(containerName, host string, port int) error {
 	}
 
 	return nil
+}
+
+// getTargetPort selects a target port for the container based on the transport type
+// For SSE transport, it finds an available port if none is provided
+// For STDIO transport, it returns 0 as no port is needed
+func getTargetPort(transportType transport.TransportType, requestedPort int) (int, error) {
+	if transportType == transport.TransportTypeSSE {
+		targetPort, err := networking.FindOrUsePort(requestedPort)
+		if err != nil {
+			return 0, fmt.Errorf("target port error: %w", err)
+		}
+		fmt.Printf("Using target port: %d\n", targetPort)
+		return targetPort, nil
+	}
+	
+	// For STDIO transport, target port is not used
+	return 0, nil
 }
 
 // detachProcess starts a new detached process with the same command but with the --foreground flag

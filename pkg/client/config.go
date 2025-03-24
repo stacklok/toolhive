@@ -80,6 +80,14 @@ var configPaths = []struct {
 		Description: "Continue config (YAML) - macOS",
 		RelPath:     []string{"Library", "Application Support", ".continue", "config.yaml"},
 	},
+	{
+		Description: "Cursor editor (Linux/macOS)",
+		RelPath:     []string{".cursor", "mcp.json"},
+	},
+	{
+		Description: "Windsurf (Linux/macOS)",
+		RelPath:     []string{".codeium", "windsurf", "mcp_config.json"},
+	},
 	// Add more paths as needed
 }
 

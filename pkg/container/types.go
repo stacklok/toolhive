@@ -79,6 +79,12 @@ type Runtime interface {
 
 	// AttachContainer attaches to a container
 	AttachContainer(ctx context.Context, containerID string) (io.WriteCloser, io.ReadCloser, error)
+
+	// ImageExists checks if an image exists locally
+	ImageExists(ctx context.Context, image string) (bool, error)
+
+	// PullImage pulls an image from a registry
+	PullImage(ctx context.Context, image string) error
 }
 
 // RuntimeType represents the type of container runtime

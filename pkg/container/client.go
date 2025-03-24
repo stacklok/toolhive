@@ -15,6 +15,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -463,4 +464,40 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 	readCloser := &readCloserWrapper{reader: resp.Reader}
 
 	return resp.Conn, readCloser, nil
+}
+
+// ImageExists checks if an image exists locally
+func (c *Client) ImageExists(ctx context.Context, imageName string) (bool, error) {
+	// List images with the specified name
+	filterArgs := filters.NewArgs()
+	filterArgs.Add("reference", imageName)
+	
+	images, err := c.client.ImageList(ctx, dockerimage.ListOptions{
+		Filters: filterArgs,
+	})
+	if err != nil {
+		return false, NewContainerError(err, "", fmt.Sprintf("failed to list images: %v", err))
+	}
+	
+	return len(images) > 0, nil
+}
+
+// PullImage pulls an image from a registry
+func (c *Client) PullImage(ctx context.Context, imageName string) error {
+	fmt.Printf("Pulling image: %s\n", imageName)
+	
+	// Pull the image
+	reader, err := c.client.ImagePull(ctx, imageName, dockerimage.PullOptions{})
+	if err != nil {
+		return NewContainerError(err, "", fmt.Sprintf("failed to pull image: %v", err))
+	}
+	defer reader.Close()
+	
+	// Read the output to ensure the pull completes
+	_, err = io.Copy(os.Stdout, reader)
+	if err != nil {
+		return NewContainerError(err, "", fmt.Sprintf("failed to read pull output: %v", err))
+	}
+	
+	return nil
 }

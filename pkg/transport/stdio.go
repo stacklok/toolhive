@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/stacklok/vibetool/pkg/container"
 	"github.com/stacklok/vibetool/pkg/permissions"
@@ -323,22 +324,50 @@ func (t *StdioTransport) processBuffer(ctx context.Context, buffer *bytes.Buffer
 	}
 }
 
-// sanitizeJSONString removes control characters and finds the first valid JSON object
+// sanitizeJSONString extracts the first valid JSON object from a string
 func sanitizeJSONString(input string) string {
+	return sanitizeBinaryString(input)
+}
+
+// sanitizeBinaryString removes all non-JSON characters and whitespace from a string
+func sanitizeBinaryString(input string) string {
 	// Find the first opening brace
 	startIdx := strings.Index(input, "{")
 	if startIdx == -1 {
-		return input // No JSON object found
+		return "" // No JSON object found
 	}
-
+	
 	// Find the last closing brace
 	endIdx := strings.LastIndex(input, "}")
 	if endIdx == -1 || endIdx < startIdx {
-		return input // No valid JSON object found
+		return "" // No valid JSON object found
 	}
-
-	// Extract the JSON object
-	return input[startIdx : endIdx+1]
+	
+	// Extract just the JSON object, discarding everything else
+	jsonObj := input[startIdx : endIdx+1]
+	
+	// Remove all whitespace and control characters
+	var buffer bytes.Buffer
+	inString := false
+	
+	for _, r := range jsonObj {
+		if r == '"' {
+			inString = !inString
+			buffer.WriteRune(r)
+		} else if inString {
+			// Inside string literals, only keep printable characters
+			if unicode.IsPrint(r) && !unicode.IsSpace(r) {
+				buffer.WriteRune(r)
+			}
+		} else {
+			// Outside string literals, remove whitespace
+			if !unicode.IsSpace(r) {
+				buffer.WriteRune(r)
+			}
+		}
+	}
+	
+	return buffer.String()
 }
 
 // parseAndForwardJSONRPC parses a JSON-RPC message and forwards it.

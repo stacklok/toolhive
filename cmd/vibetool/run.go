@@ -65,6 +65,8 @@ func init() {
 	)
 	runCmd.Flags().BoolVarP(&runForeground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
 }
+
+//nolint:gocyclo // This function is complex but manageable
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get the image and command arguments
 	image := args[0]

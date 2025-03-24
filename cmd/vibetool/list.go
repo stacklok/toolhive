@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/vibetool/pkg/client"
 	"github.com/stacklok/vibetool/pkg/container"
 	"github.com/stacklok/vibetool/pkg/labels"
 )
@@ -35,6 +36,7 @@ type ContainerOutput struct {
 	State     string `json:"state"`
 	Transport string `json:"transport"`
 	Port      int    `json:"port"`
+	URL       string `json:"url"`
 }
 
 func init() {
@@ -122,6 +124,13 @@ func printJSONOutput(containers []container.ContainerInfo) error {
 			port = 0
 		}
 
+		// Generate URL for the MCP server
+		host := "localhost" // Default to localhost
+		url := ""
+		if port > 0 {
+			url = client.GenerateMCPServerURL(host, port, name)
+		}
+
 		output = append(output, ContainerOutput{
 			ID:        truncatedID,
 			Name:      name,
@@ -129,6 +138,7 @@ func printJSONOutput(containers []container.ContainerInfo) error {
 			State:     c.State,
 			Transport: transport,
 			Port:      port,
+			URL:       url,
 		})
 	}
 
@@ -147,7 +157,7 @@ func printJSONOutput(containers []container.ContainerInfo) error {
 func printTextOutput(containers []container.ContainerInfo) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "CONTAINER ID\tNAME\tIMAGE\tSTATE\tTRANSPORT\tPORT")
+	fmt.Fprintln(w, "CONTAINER ID\tNAME\tIMAGE\tSTATE\tTRANSPORT\tPORT\tURL")
 
 	// Print container information
 	for _, c := range containers {
@@ -175,14 +185,22 @@ func printTextOutput(containers []container.ContainerInfo) {
 			port = 0
 		}
 
+		// Generate URL for the MCP server
+		host := "localhost" // Default to localhost
+		url := ""
+		if port > 0 {
+			url = client.GenerateMCPServerURL(host, port, name)
+		}
+
 		// Print container information
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
 			truncatedID,
 			name,
 			c.Image,
 			c.State,
 			transport,
 			port,
+			url,
 		)
 	}
 

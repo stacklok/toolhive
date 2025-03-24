@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/vibetool/pkg/container"
 	"github.com/stacklok/vibetool/pkg/labels"
+	"github.com/stacklok/vibetool/pkg/process"
 )
 
 var stopCmd = &cobra.Command{
@@ -81,6 +82,38 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 	if !running {
 		fmt.Printf("Container %s is not running\n", containerName)
 		return nil
+	}
+
+	// Get the base container name from the labels
+	var containerBaseName string
+	for _, c := range containers {
+		if c.ID == containerID {
+			containerBaseName = labels.GetContainerBaseName(c.Labels)
+			break
+		}
+	}
+
+	if containerBaseName != "" {
+		// Try to read the PID file and kill the process
+		pid, err := process.ReadPIDFile(containerBaseName)
+		if err == nil {
+			// PID file found, try to kill the process
+			fmt.Printf("Stopping proxy process (PID: %d)...\n", pid)
+			if err := process.KillProcess(pid); err != nil {
+				fmt.Printf("Warning: Failed to kill proxy process: %v\n", err)
+			} else {
+				fmt.Printf("Proxy process stopped\n")
+			}
+			
+			// Remove the PID file
+			if err := process.RemovePIDFile(containerBaseName); err != nil {
+				fmt.Printf("Warning: Failed to remove PID file: %v\n", err)
+			}
+		} else {
+			fmt.Printf("No PID file found for %s, proxy may not be running in detached mode\n", containerBaseName)
+		}
+	} else {
+		fmt.Printf("Warning: Could not find base container name in labels\n")
 	}
 
 	// Stop the container

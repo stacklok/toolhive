@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -18,6 +19,7 @@ import (
 	"github.com/stacklok/vibetool/pkg/labels"
 	"github.com/stacklok/vibetool/pkg/networking"
 	"github.com/stacklok/vibetool/pkg/permissions"
+	"github.com/stacklok/vibetool/pkg/process"
 	"github.com/stacklok/vibetool/pkg/transport"
 )
 
@@ -38,6 +40,7 @@ var (
 	runPermissionProfile string
 	runEnv               []string
 	runNoClientConfig    bool
+	runForeground        bool
 )
 
 func init() {
@@ -48,8 +51,8 @@ func init() {
 	runCmd.Flags().StringVar(&runPermissionProfile, "permission-profile", "stdio", "Permission profile to use (stdio, network, or path to JSON file)")
 	runCmd.Flags().StringArrayVarP(&runEnv, "env", "e", []string{}, "Environment variables to pass to the MCP server (format: KEY=VALUE)")
 	runCmd.Flags().BoolVar(&runNoClientConfig, "no-client-config", false, "Do not update client configuration files with the MCP server URL")
+	runCmd.Flags().BoolVarP(&runForeground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
 }
-
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get the image and command arguments
 	image := args[0]
@@ -64,6 +67,96 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	} else {
 		// If container name is provided, use it as the base name
 		baseName = containerName
+	}
+	
+	// If not running in foreground mode, start a new detached process and exit
+	if !runForeground {
+		// Get the current executable path
+		execPath, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("failed to get executable path: %v", err)
+		}
+		
+		// Create a log file for the detached process
+		logFilePath := fmt.Sprintf("/tmp/vibetool-%s.log", baseName)
+		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			fmt.Printf("Warning: Failed to create log file: %v\n", err)
+		} else {
+			defer logFile.Close()
+			fmt.Printf("Logging to: %s\n", logFilePath)
+		}
+		
+		// Prepare the command arguments for the detached process
+		// We'll run the same command but with the --foreground flag
+		detachedArgs := []string{"run", "--foreground"}
+		
+		// Add all the original flags
+		if runTransport != "stdio" {
+			detachedArgs = append(detachedArgs, "--transport", runTransport)
+		}
+		if runName != "" {
+			detachedArgs = append(detachedArgs, "--name", runName)
+		}
+		if runPort != 0 {
+			detachedArgs = append(detachedArgs, "--port", fmt.Sprintf("%d", runPort))
+		}
+		if runTargetPort != 0 {
+			detachedArgs = append(detachedArgs, "--target-port", fmt.Sprintf("%d", runTargetPort))
+		}
+		if runPermissionProfile != "stdio" {
+			detachedArgs = append(detachedArgs, "--permission-profile", runPermissionProfile)
+		}
+		for _, env := range runEnv {
+			detachedArgs = append(detachedArgs, "--env", env)
+		}
+		if runNoClientConfig {
+			detachedArgs = append(detachedArgs, "--no-client-config")
+		}
+		
+		// Add the image and any arguments
+		detachedArgs = append(detachedArgs, image)
+		if len(cmdArgs) > 0 {
+			detachedArgs = append(detachedArgs, cmdArgs...)
+		}
+		
+		// Create a new command
+		detachedCmd := exec.Command(execPath, detachedArgs...)
+		
+		// Set environment variables for the detached process
+		detachedCmd.Env = append(os.Environ(), "VIBETOOL_DETACHED=1")
+		
+		// Redirect stdout and stderr to the log file if it was created successfully
+		if logFile != nil {
+			detachedCmd.Stdout = logFile
+			detachedCmd.Stderr = logFile
+		} else {
+			// Otherwise, discard the output
+			detachedCmd.Stdout = nil
+			detachedCmd.Stderr = nil
+		}
+		
+		// Detach the process from the terminal
+		detachedCmd.Stdin = nil
+		detachedCmd.SysProcAttr = &syscall.SysProcAttr{
+			Setsid: true, // Create a new session
+		}
+		
+		// Start the detached process
+		if err := detachedCmd.Start(); err != nil {
+			return fmt.Errorf("failed to start detached process: %v", err)
+		}
+		
+		// Write the PID to a file so the stop command can kill the process
+		if err := process.WritePIDFile(baseName, detachedCmd.Process.Pid); err != nil {
+			fmt.Printf("Warning: Failed to write PID file: %v\n", err)
+		}
+		
+		fmt.Printf("MCP server %s is running in the background (PID: %d)\n", containerName, detachedCmd.Process.Pid)
+		fmt.Printf("Use 'vibetool stop %s' to stop the server\n", containerName)
+		
+		// Exit the parent process
+		return nil
 	}
 
 	// Parse transport mode
@@ -149,7 +242,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Create container labels
 	containerLabels := make(map[string]string)
-	labels.AddStandardLabels(containerLabels, containerName, string(transportType), port)
+	labels.AddStandardLabels(containerLabels, containerName, baseName, string(transportType), port)
 
 	// Create context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -302,48 +395,67 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 	}
 	
+	// Define a function to stop the MCP server
+	stopMCPServer := func(reason string) {
+		fmt.Printf("Stopping MCP server: %s\n", reason)
+		
+		// Stop monitoring
+		monitor.StopMonitoring()
+		
+		// Stop the transport
+		fmt.Printf("Stopping %s transport...\n", transportType)
+		if err := transportHandler.Stop(ctx); err != nil {
+			fmt.Printf("Warning: Failed to stop transport: %v\n", err)
+		}
+		
+		// Stop the container
+		fmt.Printf("Stopping container %s...\n", containerName)
+		if err := runtime.StopContainer(ctx, containerID); err != nil {
+			fmt.Printf("Warning: Failed to stop container: %v\n", err)
+		}
+		
+		// Remove the container if debug mode is not enabled
+		debugMode, _ := cmd.Flags().GetBool("debug")
+		if !debugMode {
+			fmt.Printf("Removing container %s...\n", containerName)
+			if err := runtime.RemoveContainer(ctx, containerID); err != nil {
+				fmt.Printf("Warning: Failed to remove container: %v\n", err)
+			}
+			fmt.Printf("Container %s removed\n", containerName)
+		} else {
+			fmt.Printf("Debug mode enabled, container %s not removed\n", containerName)
+		}
+		
+		// Remove the PID file if it exists
+		process.RemovePIDFile(baseName)
+		
+		fmt.Printf("MCP server %s stopped\n", containerName)
+	}
+	
+	// Check if we're a detached process
+	if os.Getenv("VIBETOOL_DETACHED") == "1" {
+		// We're a detached process running in foreground mode
+		// Write the PID to a file so the stop command can kill the process
+		if err := process.WriteCurrentPIDFile(baseName); err != nil {
+			fmt.Printf("Warning: Failed to write PID file: %v\n", err)
+		}
+		
+		fmt.Printf("Running as detached process (PID: %d)\n", os.Getpid())
+	}
+	
 	fmt.Println("Press Ctrl+C to stop or wait for container to exit")
-
+	
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
+	
 	// Wait for signal or container exit
 	select {
 	case sig := <-sigCh:
-		fmt.Printf("Received signal %s, stopping MCP server...\n", sig)
+		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
 	case err := <-errorCh:
-		fmt.Printf("Container exited unexpectedly: %v\n", err)
+		stopMCPServer(fmt.Sprintf("Container exited unexpectedly: %v", err))
 	}
-
-	// Stop monitoring
-	monitor.StopMonitoring()
-
-	// Stop the transport
-	fmt.Printf("Stopping %s transport...\n", transportType)
-	if err := transportHandler.Stop(ctx); err != nil {
-		fmt.Printf("Warning: Failed to stop transport: %v\n", err)
-	}
-
-	// Stop the container
-	fmt.Printf("Stopping container %s...\n", containerName)
-	if err := runtime.StopContainer(ctx, containerID); err != nil {
-		fmt.Printf("Warning: Failed to stop container: %v\n", err)
-	}
-
-	// Remove the container if debug mode is not enabled
-	debugMode, _ := cmd.Flags().GetBool("debug")
-	if !debugMode {
-		fmt.Printf("Removing container %s...\n", containerName)
-		if err := runtime.RemoveContainer(ctx, containerID); err != nil {
-			fmt.Printf("Warning: Failed to remove container: %v\n", err)
-		}
-		fmt.Printf("Container %s removed\n", containerName)
-	} else {
-		fmt.Printf("Debug mode enabled, container %s not removed\n", containerName)
-	}
-
-	fmt.Printf("MCP server %s stopped\n", containerName)
 	return nil
 }
 

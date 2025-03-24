@@ -15,6 +15,9 @@ const (
 	// LabelName is the label that contains the container name
 	LabelName = "vibetool-name"
 	
+	// LabelBaseName is the label that contains the base container name (without timestamp)
+	LabelBaseName = "vibetool-basename"
+	
 	// LabelTransport is the label that contains the transport mode
 	LabelTransport = "vibetool-transport"
 	
@@ -23,10 +26,11 @@ const (
 )
 
 // AddStandardLabels adds standard labels to a container
-func AddStandardLabels(labels map[string]string, containerName, transportType string, port int) {
+func AddStandardLabels(labels map[string]string, containerName, containerBaseName, transportType string, port int) {
 	// Add standard labels
 	labels[LabelEnabled] = "true"
 	labels[LabelName] = containerName
+	labels[LabelBaseName] = containerBaseName
 	labels[LabelTransport] = transportType
 	labels[LabelPort] = fmt.Sprintf("%d", port)
 }
@@ -45,6 +49,11 @@ func IsVibeToolContainer(labels map[string]string) bool {
 // GetContainerName gets the container name from labels
 func GetContainerName(labels map[string]string) string {
 	return labels[LabelName]
+}
+
+// GetContainerBaseName gets the base container name from labels
+func GetContainerBaseName(labels map[string]string) string {
+	return labels[LabelBaseName]
 }
 
 // GetTransportType gets the transport type from labels

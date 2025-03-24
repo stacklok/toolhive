@@ -24,9 +24,8 @@ This command creates a standalone proxy without starting a container.`,
 }
 
 var (
-	proxyPort       int
-	proxyTargetPort int
-	proxyTargetHost string
+	proxyPort      int
+	proxyTargetURI string
 
 	// OIDC validation flags
 	proxyOIDCIssuer   string
@@ -37,8 +36,12 @@ var (
 
 func init() {
 	proxyCmd.Flags().IntVar(&proxyPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
-	proxyCmd.Flags().IntVar(&proxyTargetPort, "target-port", 0, "Port for the target MCP server (required)")
-	proxyCmd.Flags().StringVar(&proxyTargetHost, "target-host", "localhost", "Host for the target MCP server")
+	proxyCmd.Flags().StringVar(
+		&proxyTargetURI,
+		"target-uri",
+		"",
+		"URI for the target MCP server (e.g., http://localhost:8080) (required)",
+	)
 
 	// OIDC validation flags
 	proxyCmd.Flags().StringVar(&proxyOIDCIssuer, "oidc-issuer", "", "OIDC issuer URL (e.g., https://accounts.google.com)")
@@ -46,8 +49,8 @@ func init() {
 	proxyCmd.Flags().StringVar(&proxyOIDCJWKSURL, "oidc-jwks-url", "", "URL to fetch the JWKS from")
 	proxyCmd.Flags().StringVar(&proxyOIDCClientID, "oidc-client-id", "", "OIDC client ID")
 
-	// Mark target-port as required
-	if err := proxyCmd.MarkFlagRequired("target-port"); err != nil {
+	// Mark target-uri as required
+	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
 		fmt.Printf("Warning: Failed to mark flag as required: %v\n", err)
 	}
 }
@@ -92,17 +95,17 @@ func proxyCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Create the transparent proxy
-	fmt.Printf("Setting up transparent proxy to forward from host port %d to %s:%d\n",
-		port, proxyTargetHost, proxyTargetPort)
+	fmt.Printf("Setting up transparent proxy to forward from host port %d to %s\n",
+		port, proxyTargetURI)
 
 	// Create the transparent proxy with middlewares
-	proxy := transport.NewTransparentProxy(port, serverName, proxyTargetHost, proxyTargetPort, middlewares...)
+	proxy := transport.NewTransparentProxy(port, serverName, proxyTargetURI, middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %v", err)
 	}
 
-	fmt.Printf("Transparent proxy started for server %s on port %d -> %s:%d\n",
-		serverName, port, proxyTargetHost, proxyTargetPort)
+	fmt.Printf("Transparent proxy started for server %s on port %d -> %s\n",
+		serverName, port, proxyTargetURI)
 	fmt.Println("Press Ctrl+C to stop")
 
 	// Set up signal handling

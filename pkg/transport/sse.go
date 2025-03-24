@@ -182,11 +182,12 @@ func (t *SSETransport) Start(ctx context.Context) error {
 	// Use the target port for the container
 	containerPort := t.targetPort
 
-	fmt.Printf("Setting up transparent proxy to forward from host port %d to localhost:%d\n",
-		t.port, containerPort)
+	targetURI := fmt.Sprintf("http://%s:%d", targetHost, containerPort)
+	fmt.Printf("Setting up transparent proxy to forward from host port %d to %s\n",
+		t.port, targetURI)
 
 	// Create the transparent proxy
-	t.proxy = NewTransparentProxy(t.port, t.containerName, targetHost, containerPort)
+	t.proxy = NewTransparentProxy(t.port, t.containerName, targetURI)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}

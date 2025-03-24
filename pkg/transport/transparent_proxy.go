@@ -20,8 +20,7 @@ type TransparentProxy struct {
 	// Basic configuration
 	port          int
 	containerName string
-	targetHost    string
-	targetPort    int
+	targetURI     string
 
 	// HTTP server
 	server *http.Server
@@ -36,19 +35,17 @@ type TransparentProxy struct {
 	shutdownCh chan struct{}
 }
 
-// NewTransparentProxy creates a new transparent proxy.
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
 func NewTransparentProxy(
 	port int,
-	containerName, targetHost string,
-	targetPort int,
+	containerName string,
+	targetURI string,
 	middlewares ...Middleware,
 ) *TransparentProxy {
 	return &TransparentProxy{
 		port:          port,
 		containerName: containerName,
-		targetHost:    targetHost,
-		targetPort:    targetPort,
+		targetURI:     targetURI,
 		middlewares:   middlewares,
 		shutdownCh:    make(chan struct{}),
 	}
@@ -59,10 +56,10 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
-	// Create the target URL
-	targetURL, err := url.Parse(fmt.Sprintf("http://%s:%d", p.targetHost, p.targetPort))
+	// Parse the target URI
+	targetURL, err := url.Parse(p.targetURI)
 	if err != nil {
-		return fmt.Errorf("failed to parse target URL: %w", err)
+		return fmt.Errorf("failed to parse target URI: %w", err)
 	}
 
 	// Create a reverse proxy
@@ -90,8 +87,8 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 
 	// Start the server in a goroutine
 	go func() {
-		fmt.Printf("Transparent proxy started for container %s on port %d -> %s:%d\n",
-			p.containerName, p.port, p.targetHost, p.targetPort)
+		fmt.Printf("Transparent proxy started for container %s on port %d -> %s\n",
+			p.containerName, p.port, p.targetURI)
 
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("Transparent proxy error: %v\n", err)

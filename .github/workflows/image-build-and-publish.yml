@@ -53,7 +53,7 @@ jobs:
       - name: Build and Push Image to GHCR
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
-          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --tags $TAG ./cmd/vibetool \
+          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 -t $TAG ./cmd/vibetool \
             --image-label=org.opencontainers.image.source=https://github.com/stacklok/vibetool,org.opencontainers.image.title="Vibetool",org.opencontainers.image.vendor=Stacklok
 
       - name: Sign Image with Cosign
@@ -62,4 +62,4 @@ jobs:
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           # Sign the ko image
-          cosign sign --yes $BASE_REPO:$TAG
+          cosign sign -y $BASE_REPO:$TAG

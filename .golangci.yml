@@ -1,96 +1,101 @@
+version: "2"
 run:
   issues-exit-code: 1
-  timeout: 5m
-
-linters-settings:
-  lll:
-    line-length: 130
-  gocyclo:
-    min-complexity: 15
-  gci:
-    sections:
-      - standard
-      - default
-      - prefix(github.com/stacklok/vibetool)
-  revive:
-    # see https://github.com/mgechev/revive#available-rules for details.
-    ignore-generated-header: true
-    severity: warning
-    rules:
-      - name: blank-imports
-        severity: warning
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: duplicated-imports
-      - name: error-naming
-      # - name: error-strings #BDG: This was enabled for months, but it suddenly started working on 3/2/2022.. come to find out we have TONS of error messages starting with capital... disabling for now(ever?)
-      - name: error-return
-      - name: exported
-        severity: error
-      - name: if-return
-      # - name: get-return // BDG: We have a lot of API endpoint handlers named like getFoos but write to response vs return... maybe later can figure that out
-      - name: identical-branches
-      - name: indent-error-flow
-      - name: import-shadowing
-      - name: package-comments
-      # NOTE: range-val-address and range-val-in-closure are irrelevant in Go 1.22 and later
-      - name: redefines-builtin-id
-      - name: struct-tag
-      - name: unconditional-recursion
-      - name: unnecessary-stmt
-      - name: unreachable-code
-      - name: unused-parameter
-      - name: unused-receiver
-      - name: unhandled-error
-        disabled: true
-  gosec:
-    excludes:
-      - G601 # Irrelevant for Go 1.22 and later, see: https://github.com/securego/gosec/issues/1099
-
-  depguard:
-    rules:
-      prevent_unmaintained_packages:
-        list-mode: lax # allow unless explicitely denied
-        files:
-          - $all
-          - "!$test"
-        deny:
-          - pkg: io/ioutil
-            desc: "this is deprecated"
-
+output:
+  formats:
+    text:
+      path: stdout
+      print-linter-name: true
+      print-issued-lines: true
 linters:
-  disable-all: true
+  default: none
   enable:
-    - lll
-    - exhaustive
     - depguard
+    - exhaustive
     - goconst
     - gocyclo
-    - gofmt
     - gosec
-    - gci
-    - unparam
-    - gosimple
     - govet
     - ineffassign
+    - lll
     - paralleltest
     - promlinter
     - revive
     - staticcheck
-    - unused
     - thelper
     - tparallel
-
-issues:
-  exclude-use-default: false
-  exclude-rules:
-    - path: '(.+)_test\.go'
-      linters:
-        - lll
-
-output:
-  formats:
-    - format: colored-line-number
-  print-issued-lines: true
-  print-linter-name: true
-  sort-results: true
+    - unparam
+    - unused
+  settings:
+    depguard:
+      rules:
+        prevent_unmaintained_packages:
+          list-mode: lax
+          files:
+            - $all
+            - '!$test'
+          deny:
+            - pkg: io/ioutil
+              desc: this is deprecated
+    gocyclo:
+      min-complexity: 15
+    gosec:
+      excludes:
+        - G601
+    lll:
+      line-length: 130
+    revive:
+      severity: warning
+      rules:
+        - name: blank-imports
+          severity: warning
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: duplicated-imports
+        - name: error-naming
+        - name: error-return
+        - name: exported
+          severity: error
+        - name: if-return
+        - name: identical-branches
+        - name: indent-error-flow
+        - name: import-shadowing
+        - name: package-comments
+        - name: redefines-builtin-id
+        - name: struct-tag
+        - name: unconditional-recursion
+        - name: unnecessary-stmt
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: unused-receiver
+        - name: unhandled-error
+          disabled: true
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - lll
+        path: (.+)_test\.go
+      - linters:
+          - lll
+        path: .golangci.yml
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gci
+    - gofmt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/stacklok/vibetool)
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

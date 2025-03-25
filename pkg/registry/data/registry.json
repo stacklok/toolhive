@@ -1,0 +1,1719 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2025-03-25 16:58:54",
+  "servers": {
+    "fetch": {
+      "image": "mcp/fetch:latest",
+      "description": "A Model Context Protocol server that provides web content fetching capabilities",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": true,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [
+              "github.com"
+            ],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Fetch",
+        "Available",
+        "fetch",
+        "Prompts",
+        "Configuration",
+        "json",
+        "Customization",
+        "Customization",
+        "ModelContextProtocol",
+        "This",
+        "License"
+      ],
+      "env_vars": [
+        {
+          "name": "MCP",
+          "description": "Server",
+          "required": false
+        },
+        {
+          "name": "HTML",
+          "description": "to markdown for easier consumption",
+          "required": false
+        },
+        {
+          "name": "URL",
+          "description": "from the internet and extracts its contents as markdown",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 1,
+        "pulls": 3966,
+        "last_updated": "2024-12-20T01:01:51.559934Z"
+      },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "tags": [
+        "available",
+        "capabilities",
+        "configuration",
+        "content",
+        "customization",
+        "fetch",
+        "fetching",
+        "json",
+        "license",
+        "modelcontextprotocol"
+      ]
+    },
+    "git": {
+      "image": "mcp/git:latest",
+      "description": "A Model Context Protocol server for Git repository interaction and automation",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools",
+        "Shows",
+        "Shows",
+        "Shows",
+        "Shows",
+        "Records",
+        "Adds",
+        "Unstages",
+        "Shows"
+      ],
+      "env_vars": [
+        {
+          "name": "MCP",
+          "description": "server",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 1,
+        "pulls": 1746,
+        "last_updated": "2024-12-20T01:00:10.05033Z"
+      },
+      "tags": [
+        "adds",
+        "automation",
+        "git",
+        "interaction",
+        "records",
+        "repository",
+        "shows",
+        "tools",
+        "unstages"
+      ]
+    },
+    "time": {
+      "image": "mcp/time:latest",
+      "description": "MCP server for time info and IANA timezone conversions with auto system timezone detection.\n\n\n\n\n",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Time",
+        "Available",
+        "get_current_time",
+        "Required",
+        "convert_time",
+        "Configuration",
+        "json",
+        "details",
+        "Customization",
+        "Example",
+        "Example",
+        "json",
+        "Response",
+        "json",
+        "Response",
+        "Examples",
+        "License"
+      ],
+      "env_vars": [
+        {
+          "name": "MCP",
+          "description": "Server",
+          "required": false
+        },
+        {
+          "name": "IANA",
+          "description": "timezone names, with automatic system timezone detection",
+          "required": false
+        },
+        {
+          "name": "HH",
+          "description": "MM)",
+          "required": false
+        },
+        {
+          "name": "PM",
+          "description": "in New York, what time is it in London?\"",
+          "required": false
+        },
+        {
+          "name": "AM",
+          "description": "Tokyo time to New York time\"",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 1,
+        "pulls": 1509,
+        "last_updated": "2024-12-20T01:00:35.453956Z"
+      },
+      "tags": [
+        "auto",
+        "available",
+        "configuration",
+        "conversions",
+        "convert_time",
+        "customization",
+        "details",
+        "detection",
+        "example",
+        "examples"
+      ]
+    },
+    "sentry": {
+      "image": "mcp/sentry:latest",
+      "description": "A Model Context Protocol server for retrieving and analyzing issues from Sentry.io",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools"
+      ],
+      "env_vars": [
+        {
+          "name": "MCP",
+          "description": "server",
+          "required": false
+        },
+        {
+          "name": "ID",
+          "description": "or URL",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 1,
+        "pulls": 255,
+        "last_updated": "2024-12-20T01:00:56.261511Z"
+      },
+      "tags": [
+        "analyzing",
+        "issues",
+        "retrieving",
+        "sentry",
+        "tools"
+      ]
+    },
+    "sqlite": {
+      "image": "mcp/sqlite:latest",
+      "description": "MCP server with SQLite for SQL queries, data analysis, and auto-generated business insights.\n\n\n\n\n",
+      "transport": "stdio",
+      "permissions": {
+        "read": [
+          "/tmp/db"
+        ],
+        "write": [
+          "/tmp/db"
+        ],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools"
+      ],
+      "env_vars": [
+        {
+          "name": "MCP",
+          "description": "Server",
+          "required": false
+        },
+        {
+          "name": "SQL",
+          "description": "queries, analyzing business data, and automatically generating business insight memos",
+          "required": false
+        },
+        {
+          "name": "SELECT",
+          "description": "queries to read data from the database",
+          "required": false
+        },
+        {
+          "name": "DELETE",
+          "description": "queries",
+          "required": false
+        },
+        {
+          "name": "CREATE",
+          "description": "TABLE SQL statement",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 2,
+        "pulls": 1986,
+        "last_updated": "2024-12-20T01:01:15.906956Z"
+      },
+      "tags": [
+        "analysis",
+        "auto",
+        "business",
+        "data",
+        "generated",
+        "insights",
+        "queries",
+        "sql",
+        "sqlite",
+        "tools"
+      ]
+    },
+    "aws-kb-retrieval-server": {
+      "image": "mcp/aws-kb-retrieval-server:latest",
+      "description": "MCP server for retrieving information from the AWS Knowledge Base using the Bedrock Agent Runtime.",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": true,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools"
+      ],
+      "env_vars": [
+        {
+          "name": "AWS_ACCESS_KEY_ID",
+          "description": "Found in configuration example: YOUR_ACCESS_KEY_HERE",
+          "required": true
+        },
+        {
+          "name": "AWS_SECRET_ACCESS_KEY",
+          "description": "Found in configuration example: YOUR_SECRET_ACCESS_KEY_HERE",
+          "required": true
+        },
+        {
+          "name": "AWS_REGION",
+          "description": "Found in configuration example: YOUR_AWS_REGION_HERE",
+          "required": true
+        },
+        {
+          "name": "AWS",
+          "description": "Knowledge Base Retrieval MCP Server",
+          "required": false
+        },
+        {
+          "name": "MCP",
+          "description": "server implementation for retrieving information from the AWS Knowledge Base using the Bedrock Agent Runtime",
+          "required": false
+        },
+        {
+          "name": "RAG",
+          "description": "(Retrieval-Augmented Generation)**: Retrieve context from the AWS Knowledge Base based on a query and a Knowledge Base ID",
+          "required": false
+        },
+        {
+          "name": "ID",
+          "description": "of the AWS Knowledge Base",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        },
+        {
+          "name": "README",
+          "description": "assumes that your server package is named `@modelcontextprotocol/server-aws-kb-retrieval`",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 4,
+        "pulls": 279,
+        "last_updated": "2024-12-20T16:14:06.482533Z"
+      },
+      "tags": [
+        "agent",
+        "aws",
+        "aws-kb-retrieval-server",
+        "base",
+        "bedrock",
+        "information",
+        "knowledge",
+        "retrieval",
+        "retrieving",
+        "runtime"
+      ]
+    },
+    "brave-search": {
+      "image": "mcp/brave-search:latest",
+      "description": "MCP server that integrates the Brave Search API, providing both web and local search capabilities.",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [
+              "brave.com",
+              "api.search.brave.com",
+              "search.com",
+              "an.com",
+              "your.com"
+            ],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools",
+        "Execute",
+        "brave_local_search"
+      ],
+      "env_vars": [
+        {
+          "name": "BRAVE_API_KEY",
+          "description": "Found in configuration example: YOUR_API_KEY_HERE",
+          "required": true
+        },
+        {
+          "name": "MCP",
+          "description": "Server",
+          "required": false
+        },
+        {
+          "name": "API",
+          "description": "Key",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 1,
+        "pulls": 4220,
+        "last_updated": "2024-12-20T16:14:13.058756Z"
+      },
+      "tags": [
+        "api",
+        "both",
+        "brave",
+        "brave-search",
+        "brave_local_search",
+        "capabilities",
+        "execute",
+        "integrates",
+        "local",
+        "providing"
+      ]
+    },
+    "everart": {
+      "image": "mcp/everart:latest",
+      "description": "Image generation server for Claude Desktop using EverArt's API.",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools"
+      ],
+      "env_vars": [
+        {
+          "name": "EVERART_API_KEY",
+          "description": "Found in configuration example: your_key_here",
+          "required": false
+        },
+        {
+          "name": "MCP",
+          "description": "Server",
+          "required": false
+        },
+        {
+          "name": "ID",
+          "description": "(default: \"207910310772879360\")",
+          "required": false
+        },
+        {
+          "name": "URL",
+          "description": "https://storage",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 0,
+        "pulls": 163,
+        "last_updated": "2024-12-20T16:14:22.715917Z"
+      },
+      "tags": [
+        "api",
+        "claude",
+        "desktop",
+        "everart",
+        "generation",
+        "image",
+        "tools",
+        "using"
+      ]
+    },
+    "everything": {
+      "image": "mcp/everything:latest",
+      "description": "This MCP server attempts to exercise all the features of the MCP protocol",
+      "transport": "sse",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools",
+        "Simple",
+        "Adds",
+        "Demonstrates",
+        "Demonstrates",
+        "Returns"
+      ],
+      "env_vars": [
+        {
+          "name": "MCP",
+          "description": "Server",
+          "required": false
+        },
+        {
+          "name": "LLM",
+          "description": "sampling capability using MCP sampling feature",
+          "required": false
+        },
+        {
+          "name": "PNG",
+          "description": "image data",
+          "required": false
+        },
+        {
+          "name": "JSON",
+          "description": "string of all environment variables",
+          "required": false
+        },
+        {
+          "name": "URI",
+          "description": "pattern: `test://static/resource/{even_number}`",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 2,
+        "pulls": 288,
+        "last_updated": "2024-12-20T16:14:33.343336Z"
+      },
+      "tags": [
+        "adds",
+        "all",
+        "attempts",
+        "demonstrates",
+        "everything",
+        "exercise",
+        "features",
+        "returns",
+        "simple",
+        "tools"
+      ]
+    },
+    "filesystem": {
+      "image": "mcp/filesystem:latest",
+      "description": "Node.js server implementing Model Context Protocol (MCP) for filesystem operations.",
+      "transport": "stdio",
+      "permissions": {
+        "read": [
+          "/tmp"
+        ],
+        "write": [
+          "/tmp"
+        ],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools",
+        "Read",
+        "read_multiple_files",
+        "write_file",
+        "edit_file",
+        "create_directory",
+        "list_directory",
+        "move_file",
+        "search_files",
+        "get_file_info",
+        "list_allowed_directories"
+      ],
+      "env_vars": [
+        {
+          "name": "MCP",
+          "description": "Server",
+          "required": false
+        },
+        {
+          "name": "API",
+          "description": "### Resources",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 1,
+        "pulls": 4031,
+        "last_updated": "2024-12-20T16:14:44.067824Z"
+      },
+      "tags": [
+        "create_directory",
+        "edit_file",
+        "filesystem",
+        "get_file_info",
+        "implementing",
+        "list_allowed_directories",
+        "list_directory",
+        "move_file",
+        "node",
+        "operations"
+      ]
+    },
+    "gdrive": {
+      "image": "mcp/gdrive:latest",
+      "description": "This MCP server integrates with Google Drive to allow listing, reading, and searching over files.",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools"
+      ],
+      "env_vars": [
+        {
+          "name": "MCP",
+          "description": "server integrates with Google Drive to allow listing, reading, and searching over files",
+          "required": false
+        },
+        {
+          "name": "MIME",
+          "description": "types of matching files",
+          "required": false
+        },
+        {
+          "name": "CSV",
+          "description": "- Presentations \u2192 Plain text",
+          "required": false
+        },
+        {
+          "name": "PNG",
+          "description": "- Other files are provided in their native format",
+          "required": false
+        },
+        {
+          "name": "JSON",
+          "description": "file of your client's OAuth keys",
+          "required": false
+        },
+        {
+          "name": "URL",
+          "description": "to open in your browser",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 2,
+        "pulls": 647,
+        "last_updated": "2024-12-20T21:45:48.670733Z"
+      },
+      "tags": [
+        "allow",
+        "drive",
+        "files",
+        "gdrive",
+        "google",
+        "integrates",
+        "listing",
+        "over",
+        "reading",
+        "searching"
+      ]
+    },
+    "github": {
+      "image": "mcp/github:latest",
+      "description": "MCP Server for the GitHub API",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [
+              "docs.github.com",
+              "github.com"
+            ],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools",
+        "Create",
+        "Push",
+        "Search",
+        "Create",
+        "Create",
+        "Create",
+        "Fork",
+        "Create",
+        "List",
+        "Update",
+        "Search",
+        "Search",
+        "Search",
+        "Gets",
+        "Inputs",
+        "Returns",
+        "Gets",
+        "Inputs",
+        "Returns"
+      ],
+      "env_vars": [
+        {
+          "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
+          "description": "Found in configuration example: <YOUR_TOKEN>",
+          "required": true
+        },
+        {
+          "name": "MCP",
+          "description": "Server",
+          "required": false
+        },
+        {
+          "name": "SHA",
+          "description": "of file being replaced (for updates)",
+          "required": false
+        },
+        {
+          "name": "README",
+          "description": "- Returns: Created repository details",
+          "required": false
+        },
+        {
+          "name": "PR",
+          "description": "title",
+          "required": false
+        },
+        {
+          "name": "ISO",
+          "description": "8601 timestamp)",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 2,
+        "pulls": 4563,
+        "last_updated": "2024-12-20T16:14:56.311561Z"
+      },
+      "repository_url": "https://github.com/settings/tokens",
+      "tags": [
+        "api",
+        "create",
+        "fork",
+        "gets",
+        "github",
+        "inputs",
+        "list",
+        "push",
+        "returns",
+        "search"
+      ]
+    },
+    "gitlab": {
+      "image": "mcp/gitlab:latest",
+      "description": "\nMCP Server for the GitLab API, enabling project management, file operations, and more.",
+      "transport": "sse",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [
+              "docs.gitlab.com",
+              "gitlab.com",
+              "full.com"
+            ],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools",
+        "Create",
+        "Push",
+        "Search",
+        "Create",
+        "Create",
+        "Create",
+        "Fork"
+      ],
+      "env_vars": [
+        {
+          "name": "E",
+          "description": "nvironment Variables",
+          "required": false
+        },
+        {
+          "name": "GITLAB_PERSONAL_ACCESS_TOKEN",
+          "description": "`: Your GitLab personal access token (required)",
+          "required": true
+        },
+        {
+          "name": "GITLAB_API_URL",
+          "description": "`: Base URL for GitLab API (optional, defaults to `https://gitlab.com/api/v4`)",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 2,
+        "pulls": 844,
+        "last_updated": "2024-12-20T16:15:05.628096Z"
+      },
+      "repository_url": "https://gitlab.com/api/v4",
+      "tags": [
+        "api",
+        "create",
+        "enabling",
+        "file",
+        "fork",
+        "gitlab",
+        "management",
+        "more",
+        "operations",
+        "project"
+      ]
+    },
+    "google-maps": {
+      "image": "mcp/google-maps:latest",
+      "description": "MCP Server for the Google Maps API.",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [
+              "developers.google.com",
+              "maps.com"
+            ],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools",
+        "Convert",
+        "Convert",
+        "Search",
+        "Calculate"
+      ],
+      "env_vars": [
+        {
+          "name": "GOOGLE_MAPS_API_KEY",
+          "description": "Found in configuration example: <YOUR_API_KEY>",
+          "required": true
+        },
+        {
+          "name": "MCP",
+          "description": "Server",
+          "required": false
+        },
+        {
+          "name": "API",
+          "description": "Key",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 0,
+        "pulls": 551,
+        "last_updated": "2024-12-20T16:15:13.552248Z"
+      },
+      "tags": [
+        "api",
+        "calculate",
+        "convert",
+        "google",
+        "google-maps",
+        "maps",
+        "search",
+        "tools"
+      ]
+    },
+    "memory": {
+      "image": "mcp/memory:latest",
+      "description": "A basic implementation of persistent memory using a local knowledge graph. ",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools",
+        "Create",
+        "create_relations",
+        "add_observations",
+        "delete_entities",
+        "delete_observations",
+        "delete_relations",
+        "read_graph",
+        "search_nodes",
+        "open_nodes",
+        "Usage"
+      ],
+      "env_vars": [
+        {
+          "name": "API",
+          "description": "### Tools",
+          "required": false
+        },
+        {
+          "name": "MCP",
+          "description": "server is licensed under the MIT License",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 0,
+        "pulls": 2514,
+        "last_updated": "2024-12-20T16:15:23.817084Z"
+      },
+      "tags": [
+        "add_observations",
+        "basic",
+        "create",
+        "create_relations",
+        "delete_entities",
+        "delete_observations",
+        "delete_relations",
+        "graph",
+        "implementation",
+        "knowledge"
+      ]
+    },
+    "postgres": {
+      "image": "mcp/postgres:latest",
+      "description": "A Model Context Protocol server that provides read-only access to PostgreSQL databases",
+      "transport": "stdio",
+      "permissions": {
+        "read": [
+          "/tmp/db"
+        ],
+        "write": [
+          "/tmp/db"
+        ],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools"
+      ],
+      "env_vars": [
+        {
+          "name": "SQL",
+          "description": "A Model Context Protocol server that provides read-only access to PostgreSQL databases",
+          "required": false
+        },
+        {
+          "name": "READ",
+          "description": "ONLY transaction",
+          "required": false
+        },
+        {
+          "name": "JSON",
+          "description": "schema information for each table",
+          "required": false
+        },
+        {
+          "name": "MCP",
+          "description": "server is licensed under the MIT License",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 2,
+        "pulls": 3341,
+        "last_updated": "2024-12-20T16:15:32.154691Z"
+      },
+      "tags": [
+        "access",
+        "databases",
+        "only",
+        "postgres",
+        "postgresql",
+        "provides",
+        "read",
+        "tools"
+      ]
+    },
+    "puppeteer": {
+      "image": "mcp/puppeteer:latest",
+      "description": "A Model Context Protocol server that provides browser automation capabilities using Puppeteer",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools",
+        "Navigate",
+        "puppeteer_screenshot",
+        "puppeteer_click",
+        "puppeteer_hover",
+        "puppeteer_fill",
+        "puppeteer_select",
+        "puppeteer_evaluate"
+      ],
+      "env_vars": [
+        {
+          "name": "URL",
+          "description": "in the browser",
+          "required": false
+        },
+        {
+          "name": "CSS",
+          "description": "selector for element to screenshot",
+          "required": false
+        },
+        {
+          "name": "SELECT",
+          "description": "tag",
+          "required": false
+        },
+        {
+          "name": "PNG",
+          "description": "images of captured screenshots",
+          "required": false
+        },
+        {
+          "name": "NPX",
+          "description": "version will open a browser window",
+          "required": false
+        },
+        {
+          "name": "MCP",
+          "description": "server is licensed under the MIT License",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 4,
+        "pulls": 6995,
+        "last_updated": "2024-12-20T16:15:48.067162Z"
+      },
+      "tags": [
+        "automation",
+        "browser",
+        "capabilities",
+        "navigate",
+        "provides",
+        "puppeteer",
+        "puppeteer_click",
+        "puppeteer_evaluate",
+        "puppeteer_fill",
+        "puppeteer_hover"
+      ]
+    },
+    "sequentialthinking": {
+      "image": "mcp/sequentialthinking:latest",
+      "description": "MCP server enabling dynamic problem-solving with a structured, reflective approach.\n\n\n\n\n",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tool"
+      ],
+      "env_vars": [
+        {
+          "name": "MCP",
+          "description": "Server",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 0,
+        "pulls": 4031,
+        "last_updated": "2024-12-20T16:15:56.759355Z"
+      },
+      "tags": [
+        "approach",
+        "dynamic",
+        "enabling",
+        "problem",
+        "reflective",
+        "sequentialthinking",
+        "solving",
+        "structured",
+        "tool"
+      ]
+    },
+    "slack": {
+      "image": "mcp/slack:latest",
+      "description": "MCP Server for the Slack API, enabling Claude to interact with Slack workspaces",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [
+              "api.slack.com",
+              "slack.com"
+            ],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "Tools",
+        "List",
+        "Post",
+        "Reply"
+      ],
+      "env_vars": [
+        {
+          "name": "SLACK_BOT_TOKEN",
+          "description": "Found in configuration example: xoxb-your-bot-token",
+          "required": false
+        },
+        {
+          "name": "SLACK_TEAM_ID",
+          "description": "Found in configuration example: T01234567",
+          "required": false
+        },
+        {
+          "name": "MCP",
+          "description": "Server",
+          "required": false
+        },
+        {
+          "name": "ID",
+          "description": "of the channel to post to",
+          "required": false
+        },
+        {
+          "name": "MIT",
+          "description": "License",
+          "required": false
+        },
+        {
+          "name": "LICENSE",
+          "description": "file in the project repository",
+          "required": false
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 2,
+        "pulls": 627,
+        "last_updated": "2024-12-20T16:16:05.464285Z"
+      },
+      "tags": [
+        "api",
+        "claude",
+        "enabling",
+        "interact",
+        "list",
+        "post",
+        "reply",
+        "slack",
+        "tools",
+        "workspaces"
+      ]
+    },
+    "inspector": {
+      "image": "mcp/inspector:latest",
+      "description": "",
+      "transport": "sse",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [],
+      "env_vars": [],
+      "args": [],
+      "metadata": {
+        "stars": 0,
+        "pulls": 319,
+        "last_updated": "2025-01-11T00:50:50.836572Z"
+      },
+      "tags": [
+        "inspector"
+      ]
+    },
+    "docker": {
+      "image": "mcp/docker:latest",
+      "description": "",
+      "transport": "sse",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [],
+      "env_vars": [],
+      "args": [],
+      "metadata": {
+        "stars": 4,
+        "pulls": 10024,
+        "last_updated": "2025-03-23T06:24:28.608684Z"
+      },
+      "tags": [
+        "docker"
+      ]
+    },
+    "run": {
+      "image": "mcp/run:latest",
+      "description": "",
+      "transport": "sse",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [],
+      "env_vars": [],
+      "args": [],
+      "metadata": {
+        "stars": 0,
+        "pulls": 626,
+        "last_updated": "2025-03-21T22:37:36.366924Z"
+      },
+      "tags": [
+        "run"
+      ]
+    },
+    "redis": {
+      "image": "mcp/redis:latest",
+      "description": "",
+      "transport": "sse",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [],
+      "env_vars": [],
+      "args": [],
+      "metadata": {
+        "stars": 0,
+        "pulls": 421,
+        "last_updated": "2025-03-05T21:16:07.523715Z"
+      },
+      "tags": [
+        "redis"
+      ]
+    },
+    "perplexity-ask": {
+      "image": "mcp/perplexity-ask:latest",
+      "description": "",
+      "transport": "sse",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [],
+      "env_vars": [],
+      "args": [],
+      "metadata": {
+        "stars": 0,
+        "pulls": 556,
+        "last_updated": "2025-03-13T00:32:21.85191Z"
+      },
+      "tags": [
+        "ask",
+        "perplexity",
+        "perplexity-ask"
+      ]
+    },
+    "notion-server": {
+      "image": "mcp/notion-server:latest",
+      "description": "",
+      "transport": "sse",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [],
+      "env_vars": [],
+      "args": [],
+      "metadata": {
+        "stars": 0,
+        "pulls": 54,
+        "last_updated": "2025-03-16T17:26:31.491661Z"
+      },
+      "tags": [
+        "notion",
+        "notion-server",
+        "server"
+      ]
+    },
+    "atlassian": {
+      "image": "mcp/atlassian:latest",
+      "description": "",
+      "transport": "sse",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": false,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [],
+      "env_vars": [],
+      "args": [],
+      "metadata": {
+        "stars": 0,
+        "pulls": 89,
+        "last_updated": "2025-03-21T21:32:38.626915Z"
+      },
+      "tags": [
+        "atlassian"
+      ]
+    }
+  }
+}

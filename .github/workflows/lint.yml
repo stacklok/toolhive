@@ -2,11 +2,6 @@ name: Linting
 
 on:
   workflow_call:
-# on:
-#   push:
-#     branches: [ main, master ]
-#   pull_request:
-#     branches: [ main, master ]
 
 permissions:
   contents: read

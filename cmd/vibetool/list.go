@@ -87,6 +87,7 @@ func listCmdFunc(_ *cobra.Command, _ []string) error {
 
 	// Output based on format
 	switch listFormat {
+	//nolint:goconst
 	case "json":
 		return printJSONOutput(vibeToolContainers)
 	default:

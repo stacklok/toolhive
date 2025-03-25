@@ -59,7 +59,7 @@ func NewStdioTransport(
 }
 
 // Mode returns the transport mode.
-func (_ *StdioTransport) Mode() TransportType {
+func (*StdioTransport) Mode() TransportType {
 	return TransportTypeStdio
 }
 
@@ -427,7 +427,7 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 }
 
 // sendMessageToContainer sends a JSON-RPC message to the container.
-func (_ *StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer, msg *JSONRPCMessage) error {
+func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer, msg *JSONRPCMessage) error {
 	// Serialize the message
 	data, err := json.Marshal(msg)
 	if err != nil {

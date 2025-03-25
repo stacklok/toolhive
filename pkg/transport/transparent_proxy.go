@@ -130,30 +130,30 @@ func (p *TransparentProxy) IsRunning(_ context.Context) (bool, error) {
 
 // GetMessageChannel returns the channel for messages to/from the destination.
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (_ *TransparentProxy) GetMessageChannel() chan *JSONRPCMessage {
+func (*TransparentProxy) GetMessageChannel() chan *JSONRPCMessage {
 	return nil
 }
 
 // GetResponseChannel returns the channel for receiving messages from the destination.
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (_ *TransparentProxy) GetResponseChannel() <-chan *JSONRPCMessage {
+func (*TransparentProxy) GetResponseChannel() <-chan *JSONRPCMessage {
 	return nil
 }
 
 // SendMessageToDestination sends a message to the destination.
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (_ *TransparentProxy) SendMessageToDestination(_ *JSONRPCMessage) error {
+func (*TransparentProxy) SendMessageToDestination(_ *JSONRPCMessage) error {
 	return fmt.Errorf("SendMessageToDestination not implemented for TransparentProxy")
 }
 
 // ForwardResponseToClients forwards a response from the destination to clients.
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (_ *TransparentProxy) ForwardResponseToClients(_ context.Context, _ *JSONRPCMessage) error {
+func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ *JSONRPCMessage) error {
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
 }
 
 // SendResponseMessage sends a message to the response channel.
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (_ *TransparentProxy) SendResponseMessage(_ *JSONRPCMessage) error {
+func (*TransparentProxy) SendResponseMessage(_ *JSONRPCMessage) error {
 	return fmt.Errorf("SendResponseMessage not implemented for TransparentProxy")
 }

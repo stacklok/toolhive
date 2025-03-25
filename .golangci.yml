@@ -75,6 +75,11 @@ linters:
     rules:
       - linters:
           - lll
+          - gocyclo
+          - errcheck
+          - dupl
+          - gosec
+          - paralleltest
         path: (.+)_test\.go
       - linters:
           - lll

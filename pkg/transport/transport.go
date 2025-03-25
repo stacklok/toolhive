@@ -99,7 +99,7 @@ func NewFactory() *Factory {
 }
 
 // Create creates a transport based on the provided configuration
-func (_ *Factory) Create(config Config) (Transport, error) {
+func (*Factory) Create(config Config) (Transport, error) {
 	switch config.Type {
 	case TransportTypeStdio:
 		return NewStdioTransport(config.Port, config.Runtime, config.Debug, config.Middlewares...), nil

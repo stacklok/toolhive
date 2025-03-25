@@ -65,7 +65,7 @@ func NewSSETransport(
 }
 
 // Mode returns the transport mode.
-func (_ *SSETransport) Mode() TransportType {
+func (*SSETransport) Mode() TransportType {
 	return TransportTypeSSE
 }
 

@@ -433,7 +433,7 @@ func (r *readCloserWrapper) Read(p []byte) (n int, err error) {
 	return r.reader.Read(p)
 }
 
-func (_ *readCloserWrapper) Close() error {
+func (*readCloserWrapper) Close() error {
 	// No-op close for readers that don't need closing
 	return nil
 }

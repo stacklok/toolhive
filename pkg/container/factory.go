@@ -13,7 +13,7 @@ func NewFactory() *Factory {
 }
 
 // Create creates a container runtime
-func (_ *Factory) Create(ctx context.Context) (Runtime, error) {
+func (*Factory) Create(ctx context.Context) (Runtime, error) {
 	// Try to create a container client
 	client, err := NewClient(ctx)
 	if err != nil {

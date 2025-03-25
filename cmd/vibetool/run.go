@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/vibetool/pkg/auth"
 	"github.com/stacklok/vibetool/pkg/client"
 	"github.com/stacklok/vibetool/pkg/container"
 	"github.com/stacklok/vibetool/pkg/environment"
@@ -64,6 +65,9 @@ func init() {
 		"Do not update client configuration files with the MCP server URL",
 	)
 	runCmd.Flags().BoolVarP(&runForeground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
+
+	// Add OIDC validation flags
+	AddOIDCFlags(runCmd)
 }
 
 //nolint:gocyclo // This function is complex but manageable
@@ -100,7 +104,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// If not running in foreground mode, start a new detached process and exit
 	if !runForeground {
-		return detachProcess(image, baseName, containerName, cmdArgs)
+		return detachProcess(cmd, image, baseName, containerName, cmdArgs)
 	}
 
 	// Parse transport mode
@@ -150,6 +154,32 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		Runtime:    runtime,
 		Debug:      debugMode,
 	}
+
+	// Add OIDC middleware if OIDC validation is enabled
+	if IsOIDCEnabled(cmd) {
+		fmt.Println("OIDC validation enabled for transport")
+
+		// Get OIDC flag values
+		issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
+		audience := GetStringFlagOrEmpty(cmd, "oidc-audience")
+		jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
+		clientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
+
+		// Create JWT validator
+		jwtValidator, err := auth.NewJWTValidator(ctx, auth.JWTValidatorConfig{
+			Issuer:   issuer,
+			Audience: audience,
+			JWKSURL:  jwksURL,
+			ClientID: clientID,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create JWT validator: %v", err)
+		}
+
+		// Add JWT validation middleware to transport config
+		transportConfig.Middlewares = append(transportConfig.Middlewares, jwtValidator.Middleware)
+	}
+
 	transportHandler, err := transport.NewFactory().Create(transportConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create transport: %v", err)
@@ -270,7 +300,9 @@ func getTargetPort(transportType transport.TransportType, requestedPort int) (in
 }
 
 // detachProcess starts a new detached process with the same command but with the --foreground flag
-func detachProcess(image, baseName, containerName string, cmdArgs []string) error {
+//
+//nolint:gocyclo // This function is complex but manageable
+func detachProcess(cmd *cobra.Command, image, baseName, containerName string, cmdArgs []string) error {
 	// Get the current executable path
 	execPath, err := os.Executable()
 	if err != nil {
@@ -313,6 +345,24 @@ func detachProcess(image, baseName, containerName string, cmdArgs []string) erro
 	}
 	if runNoClientConfig {
 		detachedArgs = append(detachedArgs, "--no-client-config")
+	}
+
+	// Add OIDC flags if they were provided
+	oidcIssuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
+	if oidcIssuer != "" {
+		detachedArgs = append(detachedArgs, "--oidc-issuer", oidcIssuer)
+	}
+	oidcAudience := GetStringFlagOrEmpty(cmd, "oidc-audience")
+	if oidcAudience != "" {
+		detachedArgs = append(detachedArgs, "--oidc-audience", oidcAudience)
+	}
+	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
+	if oidcJwksURL != "" {
+		detachedArgs = append(detachedArgs, "--oidc-jwks-url", oidcJwksURL)
+	}
+	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
+	if oidcClientID != "" {
+		detachedArgs = append(detachedArgs, "--oidc-client-id", oidcClientID)
 	}
 
 	// Add the image and any arguments

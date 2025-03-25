@@ -84,6 +84,10 @@ type Config struct {
 	// Debug indicates whether debug mode is enabled.
 	// If debug mode is enabled, containers will not be removed when stopped.
 	Debug bool
+
+	// Middlewares is a list of middleware functions to apply to the transport.
+	// These are applied in order, with the first middleware being the outermost wrapper.
+	Middlewares []Middleware
 }
 
 // Factory creates transports
@@ -100,7 +104,7 @@ func (_ *Factory) Create(config Config) (Transport, error) {
 	case TransportTypeStdio:
 		return NewStdioTransport(config.Port, config.Runtime, config.Debug), nil
 	case TransportTypeSSE:
-		return NewSSETransport(config.Host, config.Port, config.TargetPort, config.Runtime, config.Debug), nil
+		return NewSSETransport(config.Host, config.Port, config.TargetPort, config.Runtime, config.Debug, config.Middlewares...), nil
 	default:
 		return nil, ErrUnsupportedTransport
 	}

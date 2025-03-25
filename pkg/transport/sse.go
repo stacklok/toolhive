@@ -24,6 +24,7 @@ type SSETransport struct {
 	containerName string
 	runtime       container.Runtime
 	debug         bool
+	middlewares   []Middleware
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -40,18 +41,26 @@ type SSETransport struct {
 }
 
 // NewSSETransport creates a new SSE transport.
-func NewSSETransport(host string, port int, targetPort int, runtime container.Runtime, debug bool) *SSETransport {
+func NewSSETransport(
+	host string,
+	port int,
+	targetPort int,
+	runtime container.Runtime,
+	debug bool,
+	middlewares ...Middleware,
+) *SSETransport {
 	if host == "" {
 		host = LocalhostName
 	}
 
 	return &SSETransport{
-		host:       host,
-		port:       port,
-		targetPort: targetPort,
-		runtime:    runtime,
-		debug:      debug,
-		shutdownCh: make(chan struct{}),
+		host:        host,
+		port:        port,
+		middlewares: middlewares,
+		targetPort:  targetPort,
+		runtime:     runtime,
+		debug:       debug,
+		shutdownCh:  make(chan struct{}),
 	}
 }
 
@@ -186,8 +195,8 @@ func (t *SSETransport) Start(ctx context.Context) error {
 	fmt.Printf("Setting up transparent proxy to forward from host port %d to %s\n",
 		t.port, targetURI)
 
-	// Create the transparent proxy
-	t.proxy = NewTransparentProxy(t.port, t.containerName, targetURI)
+	// Create the transparent proxy with middlewares
+	t.proxy = NewTransparentProxy(t.port, t.containerName, targetURI, t.middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}

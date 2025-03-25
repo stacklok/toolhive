@@ -51,7 +51,8 @@ type Runtime interface {
 		image, name string,
 		command []string,
 		envVars, labels map[string]string,
-		permissionConfig PermissionConfig,
+		permissionProfile *permissions.Profile,
+		transportType string,
 		options *CreateContainerOptions,
 	) (string, error)
 
@@ -88,9 +89,6 @@ type Runtime interface {
 	// PullImage pulls an image from a registry
 	PullImage(ctx context.Context, image string) error
 
-	// GetPermissionConfigFromProfile converts a permission profile to a container permission config
-	// with transport-specific settings
-	GetPermissionConfigFromProfile(profile *permissions.Profile, transportType string) (PermissionConfig, error)
 }
 
 // RuntimeType represents the type of container runtime

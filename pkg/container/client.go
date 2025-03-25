@@ -137,13 +137,20 @@ func (c *Client) CreateContainer(
 	image, name string,
 	command []string,
 	envVars, labels map[string]string,
-	permissionConfig PermissionConfig,
+	permissionProfile *permissions.Profile,
+	transportType string,
 	options *CreateContainerOptions,
 ) (string, error) {
 	// Convert environment variables to slice
 	env := make([]string, 0, len(envVars))
 	for k, v := range envVars {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	// Get permission config from profile
+	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType)
+	if err != nil {
+		return "", fmt.Errorf("failed to get permission config: %w", err)
 	}
 
 	// Convert mounts
@@ -504,12 +511,12 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 	return nil
 }
 
-// GetPermissionConfigFromProfile converts a permission profile to a container permission config
-// with transport-specific settings
-func (Client) GetPermissionConfigFromProfile(profile *permissions.Profile, transportType string) (PermissionConfig, error) {
+// getPermissionConfigFromProfile converts a permission profile to a container permission config
+// with transport-specific settings (internal function)
+func (c *Client) getPermissionConfigFromProfile(profile *permissions.Profile, transportType string) (*PermissionConfig, error) {
 
 	// Start with a default permission config
-	config := PermissionConfig{
+	config := &PermissionConfig{
 		Mounts:      []Mount{},
 		NetworkMode: "none",
 		CapDrop:     []string{"ALL"},
@@ -559,23 +566,47 @@ func (Client) GetPermissionConfigFromProfile(profile *permissions.Profile, trans
 		}
 	}
 
-	// Configure network based on profile and transport type
+	// Determine if we need network access
+	needsNetwork := false
+
+	// Check if the profile has network settings that require network access
 	if profile.Network != nil && profile.Network.Outbound != nil {
-		if profile.Network.Outbound.InsecureAllowAll {
-			config.NetworkMode = "bridge"
+		outbound := profile.Network.Outbound
+		
+		// Check if InsecureAllowAll is true
+		if outbound.InsecureAllowAll {
+			needsNetwork = true
+		}
+		
+		// Check if any transport protocols are allowed
+		if len(outbound.AllowTransport) > 0 {
+			needsNetwork = true
+		}
+		
+		// Check if any hosts are allowed
+		if len(outbound.AllowHost) > 0 {
+			needsNetwork = true
+		}
+		
+		// Check if any ports are allowed
+		if len(outbound.AllowPort) > 0 {
+			needsNetwork = true
 		}
 	}
 
-	// Add transport-specific settings
-	switch transportType {
-	case "sse":
-		// For SSE transport, we need network access
+	// Check if the transport type requires network access
+	if transportType == "sse" {
+		needsNetwork = true
+	}
+
+	// Set network mode based on whether we need network access
+	if needsNetwork {
 		config.NetworkMode = "bridge"
-	case "stdio":
-		// For STDIO transport, we don't need network access
-		// but we need to ensure the container has access to stdin/stdout
-	default:
-		return PermissionConfig{}, fmt.Errorf("unsupported transport type: %s", transportType)
+	}
+
+	// Validate transport type
+	if transportType != "sse" && transportType != "stdio" {
+		return nil, fmt.Errorf("unsupported transport type: %s", transportType)
 	}
 
 	return config, nil

@@ -94,11 +94,6 @@ func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, con
 	// In a Docker bridge network, the container IP is not directly accessible from the host
 	envVars["MCP_HOST"] = LocalhostName
 
-	// Get container permission config from the runtime
-	containerPermConfig, err := runtime.GetPermissionConfigFromProfile(permissionProfile, "sse")
-	if err != nil {
-		return fmt.Errorf("failed to get permission configuration: %v", err)
-	}
 
 	// Create container options
 	containerOptions := container.NewCreateContainerOptions()
@@ -140,7 +135,8 @@ func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, con
 		cmdArgs,
 		envVars,
 		labels,
-		containerPermConfig,
+		permissionProfile,
+		"sse",
 		containerOptions,
 	)
 	if err != nil {

@@ -20,6 +20,8 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
+
+	"github.com/stacklok/vibetool/pkg/permissions"
 )
 
 // Common socket paths
@@ -500,4 +502,81 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 	}
 
 	return nil
+}
+
+// GetPermissionConfigFromProfile converts a permission profile to a container permission config
+// with transport-specific settings
+func (Client) GetPermissionConfigFromProfile(profile *permissions.Profile, transportType string) (PermissionConfig, error) {
+
+	// Start with a default permission config
+	config := PermissionConfig{
+		Mounts:      []Mount{},
+		NetworkMode: "none",
+		CapDrop:     []string{"ALL"},
+		CapAdd:      []string{},
+		SecurityOpt: []string{},
+	}
+
+	// Add read-only mounts
+	for _, path := range profile.Read {
+		// Skip relative paths
+		if !filepath.IsAbs(path) {
+			continue
+		}
+
+		config.Mounts = append(config.Mounts, Mount{
+			Source:   path,
+			Target:   path,
+			ReadOnly: true,
+		})
+	}
+
+	// Add read-write mounts
+	for _, path := range profile.Write {
+		// Skip relative paths
+		if !filepath.IsAbs(path) {
+			continue
+		}
+
+		// Check if the path is already mounted read-only
+		alreadyMounted := false
+		for i, m := range config.Mounts {
+			if m.Target == path {
+				// Update the mount to be read-write
+				config.Mounts[i].ReadOnly = false
+				alreadyMounted = true
+				break
+			}
+		}
+
+		// If not already mounted, add a new mount
+		if !alreadyMounted {
+			config.Mounts = append(config.Mounts, Mount{
+				Source:   path,
+				Target:   path,
+				ReadOnly: false,
+			})
+		}
+	}
+
+	// Configure network based on profile and transport type
+	if profile.Network != nil && profile.Network.Outbound != nil {
+		if profile.Network.Outbound.InsecureAllowAll {
+			config.NetworkMode = "bridge"
+		}
+	}
+
+	// Add transport-specific settings
+	switch transportType {
+	case "sse":
+		// For SSE transport, we need network access
+		config.NetworkMode = "bridge"
+	case "stdio":
+		// For STDIO transport, we don't need network access
+		// but we need to ensure the container has access to stdin/stdout
+	default:
+		return PermissionConfig{}, fmt.Errorf("unsupported transport type: %s", transportType)
+	}
+
+	return config, nil
 }

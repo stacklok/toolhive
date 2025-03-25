@@ -76,7 +76,7 @@ func (t *SSETransport) Port() int {
 
 // Setup prepares the transport for use.
 func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, containerName string, image string, cmdArgs []string,
-	envVars, labels map[string]string, permissionProfile string) error {
+	envVars, labels map[string]string, permissionProfile *permissions.Profile) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -94,8 +94,8 @@ func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, con
 	// In a Docker bridge network, the container IP is not directly accessible from the host
 	envVars["MCP_HOST"] = LocalhostName
 
-	// Get container permission config
-	containerPermConfig, err := permissions.GetContainerPermConfig(permissionProfile, "sse")
+	// Get container permission config from the runtime
+	containerPermConfig, err := runtime.GetPermissionConfigFromProfile(permissionProfile, "sse")
 	if err != nil {
 		return fmt.Errorf("failed to get permission configuration: %v", err)
 	}

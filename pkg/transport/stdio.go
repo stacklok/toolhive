@@ -76,7 +76,7 @@ func (t *StdioTransport) Setup(
 	image string,
 	cmdArgs []string,
 	envVars, labels map[string]string,
-	permissionProfile string,
+	permissionProfile *permissions.Profile,
 ) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -87,8 +87,8 @@ func (t *StdioTransport) Setup(
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "stdio"
 
-	// Get container permission config
-	containerPermConfig, err := permissions.GetContainerPermConfig(permissionProfile, "stdio")
+	// Get container permission config from the runtime
+	containerPermConfig, err := runtime.GetPermissionConfigFromProfile(permissionProfile, "stdio")
 	if err != nil {
 		return fmt.Errorf("failed to get permission configuration: %v", err)
 	}

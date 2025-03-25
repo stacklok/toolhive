@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -44,8 +45,28 @@ var registryInfoCmd = &cobra.Command{
 	RunE:  registryInfoCmdFunc,
 }
 
+var registryRunCmd = &cobra.Command{
+	Use:   "run [server] [-- ARGS...]",
+	Short: "Run an MCP server using registry defaults",
+	Long: `Run an MCP server using defaults from the registry.
+This command simplifies running MCP servers by automatically using the correct transport,
+permissions, and other settings from the registry. You can still override any setting
+with flags.`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: registryRunCmdFunc,
+}
+
 var (
 	registryFormat string
+
+	// Flags for registry run command
+	registryRunTransport         string
+	registryRunPort              int
+	registryRunTargetPort        int
+	registryRunPermissionProfile string
+	registryRunEnv               []string
+	registryRunNoClientConfig    bool
+	registryRunForeground        bool
 )
 
 func init() {
@@ -56,11 +77,56 @@ func init() {
 	registryCmd.AddCommand(registryListCmd)
 	registryCmd.AddCommand(registrySearchCmd)
 	registryCmd.AddCommand(registryInfoCmd)
+	registryCmd.AddCommand(registryRunCmd)
 
-	// Add flags
+	// Add flags for list, search, and info commands
 	registryListCmd.Flags().StringVar(&registryFormat, "format", "text", "Output format (json or text)")
 	registrySearchCmd.Flags().StringVar(&registryFormat, "format", "text", "Output format (json or text)")
 	registryInfoCmd.Flags().StringVar(&registryFormat, "format", "text", "Output format (json or text)")
+
+	// Add flags for run command (same as the main run command)
+	registryRunCmd.Flags().StringVar(
+		&registryRunTransport,
+		"transport",
+		"",
+		"Transport mode (sse or stdio) - defaults to registry value",
+	)
+	registryRunCmd.Flags().IntVar(&registryRunPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
+	registryRunCmd.Flags().IntVar(
+		&registryRunTargetPort,
+		"target-port",
+		0,
+		"Port for the container to expose (only applicable to SSE transport)",
+	)
+	registryRunCmd.Flags().StringVar(
+		&registryRunPermissionProfile,
+		"permission-profile",
+		"",
+		"Permission profile to use (stdio, network, or path to JSON file) - defaults to registry value",
+	)
+	registryRunCmd.Flags().StringArrayVarP(
+		&registryRunEnv,
+		"env",
+		"e",
+		[]string{},
+		"Environment variables to pass to the MCP server (format: KEY=VALUE)",
+	)
+	registryRunCmd.Flags().BoolVar(
+		&registryRunNoClientConfig,
+		"no-client-config",
+		false,
+		"Do not update client configuration files with the MCP server URL",
+	)
+	registryRunCmd.Flags().BoolVarP(
+		&registryRunForeground,
+		"foreground",
+		"f",
+		false,
+		"Run in foreground mode (block until container exits)",
+	)
+
+	// Add OIDC validation flags
+	AddOIDCFlags(registryRunCmd)
 }
 
 func registryListCmdFunc(_ *cobra.Command, _ []string) error {
@@ -281,4 +347,101 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// registryRunCmdFunc handles the registry run command
+func registryRunCmdFunc(cmd *cobra.Command, args []string) error {
+	// Get the server name from arguments
+	serverName := args[0]
+
+	// Get additional command arguments (after --)
+	cmdArgs := []string{}
+	if len(args) > 1 {
+		cmdArgs = args[1:]
+	}
+
+	// Get server information from registry
+	server, err := registry.GetServer(serverName)
+	if err != nil {
+		return fmt.Errorf("failed to get server information: %v", err)
+	}
+
+	// Extract image name from server
+	image := server.Image
+
+	// Get debug mode flag
+	debugMode, _ := cmd.Flags().GetBool("debug")
+
+	// Process environment variables
+	// First add required environment variables from registry
+	envVars := make([]string, 0, len(registryRunEnv)+len(server.EnvVars))
+
+	// Copy existing env vars
+	envVars = append(envVars, registryRunEnv...)
+
+	// Add required environment variables from registry if not already provided
+	for _, envVar := range server.EnvVars {
+		if envVar.Required {
+			// Check if the environment variable is already provided in the command line
+			found := false
+			for _, env := range envVars {
+				if strings.HasPrefix(env, envVar.Name+"=") {
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				// Ask the user for the required environment variable
+				fmt.Printf("Required environment variable: %s (%s)\n", envVar.Name, envVar.Description)
+				fmt.Printf("Enter value for %s: ", envVar.Name)
+				var value string
+				if _, err := fmt.Scanln(&value); err != nil {
+					fmt.Printf("Warning: Failed to read input: %v\n", err)
+				}
+
+				if value != "" {
+					envVars = append(envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
+				}
+			}
+		}
+	}
+
+	// Get OIDC flag values
+	oidcIssuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
+	oidcAudience := GetStringFlagOrEmpty(cmd, "oidc-audience")
+	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
+	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
+
+	// Determine transport
+	transport := server.Transport
+	if registryRunTransport != "" {
+		transport = registryRunTransport
+	}
+
+	// Create run options
+	options := RunOptions{
+		Image:             image,
+		CmdArgs:           cmdArgs,
+		Transport:         transport,
+		Name:              serverName,
+		Port:              registryRunPort,
+		TargetPort:        registryRunTargetPort,
+		PermissionProfile: server.Permissions,
+		EnvVars:           envVars,
+		NoClientConfig:    registryRunNoClientConfig,
+		Foreground:        registryRunForeground,
+		OIDCIssuer:        oidcIssuer,
+		OIDCAudience:      oidcAudience,
+		OIDCJwksURL:       oidcJwksURL,
+		OIDCClientID:      oidcClientID,
+		Debug:             debugMode,
+	}
+
+	// Create context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Run the MCP server
+	return RunMCPServer(ctx, cmd, options)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/stacklok/vibetool/pkg/container"
+	"github.com/stacklok/vibetool/pkg/permissions"
 )
 
 // Transport defines the interface for MCP transport implementations.
@@ -19,7 +20,7 @@ type Transport interface {
 	// The runtime parameter provides access to container operations.
 	// The permissionProfile is used to configure container permissions.
 	Setup(ctx context.Context, runtime container.Runtime, containerName string, image string, cmdArgs []string,
-		envVars, labels map[string]string, permissionProfile string) error
+		envVars, labels map[string]string, permissionProfile *permissions.Profile) error
 
 	// Start initializes the transport and begins processing messages.
 	// The transport is responsible for container operations like attaching to stdin/stdout if needed.

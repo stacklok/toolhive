@@ -62,4 +62,14 @@ jobs:
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           # Sign the ko image
-          cosign sign -y $BASE_REPO:$TAG
+          # cosign sign -y $BASE_REPO:$TAG
+          cosign version
+          echo "${BASE_REPO}:${TAG}" | xargs -I {} cosign sign --yes {}
+
+      # - name: Sign the published Docker image
+      #   env:
+      #     TAGS: ${{ steps.meta.outputs.tags }}
+      #     DIGEST: ${{ steps.build-and-push.outputs.digest }}
+      #   run: |
+      #     cosign version
+      #     echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}

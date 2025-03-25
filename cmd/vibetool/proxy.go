@@ -46,7 +46,7 @@ func init() {
 	}
 }
 
-func proxyCmdFunc(_ *cobra.Command, args []string) error {
+func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get the server name
 	serverName := args[0]
 
@@ -65,15 +65,21 @@ func proxyCmdFunc(_ *cobra.Command, args []string) error {
 	var middlewares []transport.Middleware
 
 	// Create JWT validator if OIDC flags are provided
-	if proxyOIDCJWKSURL != "" {
+	if IsOIDCEnabled(cmd) {
 		fmt.Println("OIDC validation enabled")
+
+		// Get OIDC flag values
+		issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
+		audience := GetStringFlagOrEmpty(cmd, "oidc-audience")
+		jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
+		clientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
 
 		// Create JWT validator
 		jwtValidator, err := auth.NewJWTValidator(ctx, auth.JWTValidatorConfig{
-			Issuer:   proxyOIDCIssuer,
-			Audience: proxyOIDCAudience,
-			JWKSURL:  proxyOIDCJWKSURL,
-			ClientID: proxyOIDCClientID,
+			Issuer:   issuer,
+			Audience: audience,
+			JWKSURL:  jwksURL,
+			ClientID: clientID,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create JWT validator: %v", err)

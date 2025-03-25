@@ -26,12 +26,6 @@ This command creates a standalone proxy without starting a container.`,
 var (
 	proxyPort      int
 	proxyTargetURI string
-
-	// OIDC validation flags
-	proxyOIDCIssuer   string
-	proxyOIDCAudience string
-	proxyOIDCJWKSURL  string
-	proxyOIDCClientID string
 )
 
 func init() {
@@ -43,11 +37,8 @@ func init() {
 		"URI for the target MCP server (e.g., http://localhost:8080) (required)",
 	)
 
-	// OIDC validation flags
-	proxyCmd.Flags().StringVar(&proxyOIDCIssuer, "oidc-issuer", "", "OIDC issuer URL (e.g., https://accounts.google.com)")
-	proxyCmd.Flags().StringVar(&proxyOIDCAudience, "oidc-audience", "", "Expected audience for the token")
-	proxyCmd.Flags().StringVar(&proxyOIDCJWKSURL, "oidc-jwks-url", "", "URL to fetch the JWKS from")
-	proxyCmd.Flags().StringVar(&proxyOIDCClientID, "oidc-client-id", "", "OIDC client ID")
+	// Add OIDC validation flags
+	AddOIDCFlags(proxyCmd)
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {

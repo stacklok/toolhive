@@ -16,7 +16,7 @@ tasks:
     desc: Build the binary
     cmds:
       - mkdir -p bin
-      - go build -o bin/vibetool ./cmd/vibetool
+      - go build -o bin/vt ./cmd/vibetool
 
   all:
     desc: Run linting, tests, and build

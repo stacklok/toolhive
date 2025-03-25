@@ -88,7 +88,6 @@ type Runtime interface {
 
 	// PullImage pulls an image from a registry
 	PullImage(ctx context.Context, image string) error
-
 }
 
 // RuntimeType represents the type of container runtime

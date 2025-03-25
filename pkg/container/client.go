@@ -132,6 +132,76 @@ func findContainerSocket() (string, RuntimeType, error) {
 
 // CreateContainer creates a container without starting it
 // If options is nil, default options will be used
+// convertEnvVars converts a map of environment variables to a slice
+func convertEnvVars(envVars map[string]string) []string {
+	env := make([]string, 0, len(envVars))
+	for k, v := range envVars {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+	return env
+}
+
+// convertMounts converts internal mount format to Docker mount format
+func convertMounts(mounts []Mount) []mount.Mount {
+	result := make([]mount.Mount, 0, len(mounts))
+	for _, m := range mounts {
+		result = append(result, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   m.Source,
+			Target:   m.Target,
+			ReadOnly: m.ReadOnly,
+		})
+	}
+	return result
+}
+
+// setupExposedPorts configures exposed ports for a container
+func setupExposedPorts(config *container.Config, exposedPorts map[string]struct{}) error {
+	if len(exposedPorts) == 0 {
+		return nil
+	}
+
+	config.ExposedPorts = nat.PortSet{}
+	for port := range exposedPorts {
+		natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
+		if err != nil {
+			return fmt.Errorf("failed to parse port: %v", err)
+		}
+		config.ExposedPorts[natPort] = struct{}{}
+	}
+
+	return nil
+}
+
+// setupPortBindings configures port bindings for a container
+func setupPortBindings(hostConfig *container.HostConfig, portBindings map[string][]PortBinding) error {
+	if len(portBindings) == 0 {
+		return nil
+	}
+
+	hostConfig.PortBindings = nat.PortMap{}
+	for port, bindings := range portBindings {
+		natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
+		if err != nil {
+			return fmt.Errorf("failed to parse port: %v", err)
+		}
+
+		natBindings := make([]nat.PortBinding, len(bindings))
+		for i, binding := range bindings {
+			natBindings[i] = nat.PortBinding{
+				HostIP:   binding.HostIP,
+				HostPort: binding.HostPort,
+			}
+		}
+		hostConfig.PortBindings[natPort] = natBindings
+	}
+
+	return nil
+}
+
+// CreateContainer creates a container without starting it.
+// It configures the container based on the provided permission profile and transport type.
+// If options is nil, default options will be used.
 func (c *Client) CreateContainer(
 	ctx context.Context,
 	image, name string,
@@ -141,38 +211,20 @@ func (c *Client) CreateContainer(
 	transportType string,
 	options *CreateContainerOptions,
 ) (string, error) {
-	// Convert environment variables to slice
-	env := make([]string, 0, len(envVars))
-	for k, v := range envVars {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
-
 	// Get permission config from profile
 	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType)
 	if err != nil {
 		return "", fmt.Errorf("failed to get permission config: %w", err)
 	}
 
-	// Convert mounts
-	mounts := make([]mount.Mount, 0, len(permissionConfig.Mounts))
-	for _, m := range permissionConfig.Mounts {
-		mounts = append(mounts, mount.Mount{
-			Type:     mount.TypeBind,
-			Source:   m.Source,
-			Target:   m.Target,
-			ReadOnly: m.ReadOnly,
-		})
-	}
-
 	// Determine if we should attach stdio
-	// Default to true if options is nil, otherwise use options.AttachStdio
 	attachStdio := options == nil || options.AttachStdio
 
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,
 		Cmd:          command,
-		Env:          env,
+		Env:          convertEnvVars(envVars),
 		Labels:       labels,
 		AttachStdin:  attachStdio,
 		AttachStdout: attachStdio,
@@ -181,56 +233,34 @@ func (c *Client) CreateContainer(
 		Tty:          false,
 	}
 
-	// Add exposed ports if provided
-	if options != nil && len(options.ExposedPorts) > 0 {
-		config.ExposedPorts = nat.PortSet{}
-		for port := range options.ExposedPorts {
-			natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
-			if err != nil {
-				return "", NewContainerError(err, "", fmt.Sprintf("failed to parse port: %v", err))
-			}
-			config.ExposedPorts[natPort] = struct{}{}
-		}
-	}
-
 	// Create host configuration
 	hostConfig := &container.HostConfig{
-		Mounts:      mounts,
+		Mounts:      convertMounts(permissionConfig.Mounts),
 		NetworkMode: container.NetworkMode(permissionConfig.NetworkMode),
 		CapAdd:      permissionConfig.CapAdd,
 		CapDrop:     permissionConfig.CapDrop,
 		SecurityOpt: permissionConfig.SecurityOpt,
 	}
 
-	// Add port bindings if provided
-	if options != nil && len(options.PortBindings) > 0 {
-		hostConfig.PortBindings = nat.PortMap{}
-		for port, bindings := range options.PortBindings {
-			natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
-			if err != nil {
-				return "", NewContainerError(err, "", fmt.Sprintf("failed to parse port: %v", err))
-			}
+	// Configure ports if options are provided
+	if options != nil {
+		// Setup exposed ports
+		if err := setupExposedPorts(config, options.ExposedPorts); err != nil {
+			return "", NewContainerError(err, "", err.Error())
+		}
 
-			natBindings := make([]nat.PortBinding, len(bindings))
-			for i, binding := range bindings {
-				natBindings[i] = nat.PortBinding{
-					HostIP:   binding.HostIP,
-					HostPort: binding.HostPort,
-				}
-			}
-			hostConfig.PortBindings[natPort] = natBindings
+		// Setup port bindings
+		if err := setupPortBindings(hostConfig, options.PortBindings); err != nil {
+			return "", NewContainerError(err, "", err.Error())
 		}
 	}
-
-	// Create network configuration
-	networkConfig := &network.NetworkingConfig{}
 
 	// Create the container
 	resp, err := c.client.ContainerCreate(
 		ctx,
 		config,
 		hostConfig,
-		networkConfig,
+		&network.NetworkingConfig{},
 		nil,
 		name,
 	)
@@ -513,19 +543,9 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 
 // getPermissionConfigFromProfile converts a permission profile to a container permission config
 // with transport-specific settings (internal function)
-func (c *Client) getPermissionConfigFromProfile(profile *permissions.Profile, transportType string) (*PermissionConfig, error) {
-
-	// Start with a default permission config
-	config := &PermissionConfig{
-		Mounts:      []Mount{},
-		NetworkMode: "none",
-		CapDrop:     []string{"ALL"},
-		CapAdd:      []string{},
-		SecurityOpt: []string{},
-	}
-
-	// Add read-only mounts
-	for _, path := range profile.Read {
+// addReadOnlyMounts adds read-only mounts to the permission config
+func (*Client) addReadOnlyMounts(config *PermissionConfig, paths []string) {
+	for _, path := range paths {
 		// Skip relative paths
 		if !filepath.IsAbs(path) {
 			continue
@@ -537,9 +557,11 @@ func (c *Client) getPermissionConfigFromProfile(profile *permissions.Profile, tr
 			ReadOnly: true,
 		})
 	}
+}
 
-	// Add read-write mounts
-	for _, path := range profile.Write {
+// addReadWriteMounts adds read-write mounts to the permission config
+func (*Client) addReadWriteMounts(config *PermissionConfig, paths []string) {
+	for _, path := range paths {
 		// Skip relative paths
 		if !filepath.IsAbs(path) {
 			continue
@@ -565,42 +587,47 @@ func (c *Client) getPermissionConfigFromProfile(profile *permissions.Profile, tr
 			})
 		}
 	}
+}
 
-	// Determine if we need network access
-	needsNetwork := false
+// needsNetworkAccess determines if the container needs network access
+func (*Client) needsNetworkAccess(profile *permissions.Profile, transportType string) bool {
+	// SSE transport always needs network access
+	if transportType == "sse" {
+		return true
+	}
 
 	// Check if the profile has network settings that require network access
 	if profile.Network != nil && profile.Network.Outbound != nil {
 		outbound := profile.Network.Outbound
-		
-		// Check if InsecureAllowAll is true
-		if outbound.InsecureAllowAll {
-			needsNetwork = true
-		}
-		
-		// Check if any transport protocols are allowed
-		if len(outbound.AllowTransport) > 0 {
-			needsNetwork = true
-		}
-		
-		// Check if any hosts are allowed
-		if len(outbound.AllowHost) > 0 {
-			needsNetwork = true
-		}
-		
-		// Check if any ports are allowed
-		if len(outbound.AllowPort) > 0 {
-			needsNetwork = true
+
+		// Any of these conditions require network access
+		if outbound.InsecureAllowAll ||
+			len(outbound.AllowTransport) > 0 ||
+			len(outbound.AllowHost) > 0 ||
+			len(outbound.AllowPort) > 0 {
+			return true
 		}
 	}
 
-	// Check if the transport type requires network access
-	if transportType == "sse" {
-		needsNetwork = true
+	return false
+}
+
+func (c *Client) getPermissionConfigFromProfile(profile *permissions.Profile, transportType string) (*PermissionConfig, error) {
+	// Start with a default permission config
+	config := &PermissionConfig{
+		Mounts:      []Mount{},
+		NetworkMode: "none",
+		CapDrop:     []string{"ALL"},
+		CapAdd:      []string{},
+		SecurityOpt: []string{},
 	}
 
-	// Set network mode based on whether we need network access
-	if needsNetwork {
+	// Add mounts
+	c.addReadOnlyMounts(config, profile.Read)
+	c.addReadWriteMounts(config, profile.Write)
+
+	// Determine network mode
+	if c.needsNetworkAccess(profile, transportType) {
 		config.NetworkMode = "bridge"
 	}
 

@@ -41,8 +41,8 @@ type RunOptions struct {
 	// TargetPort is the port for the container to expose (only applicable to SSE transport)
 	TargetPort int
 
-	// PermissionProfile is the permission profile to use
-	PermissionProfile *permissions.Profile
+	// PermissionProfile is the permission profile to use (stdio, network, or path to JSON file)
+	PermissionProfile string
 
 	// EnvVars are the environment variables to pass to the MCP server
 	EnvVars []string
@@ -123,8 +123,6 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 		fmt.Printf("Using target port: %d\n", targetPort)
 	}
 
-	// We don't need to get the permission config here, it's handled by the transport
-
 	// Parse environment variables
 	envVars, err := environment.ParseEnvironmentVariables(options.EnvVars)
 	if err != nil {
@@ -173,11 +171,27 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 		return fmt.Errorf("failed to create transport: %v", err)
 	}
 
+	// Load permission profile
+	var permProfile *permissions.Profile
+
+	switch options.PermissionProfile {
+	case "stdio":
+		permProfile = permissions.BuiltinStdioProfile()
+	case "network":
+		permProfile = permissions.BuiltinNetworkProfile()
+	default:
+		// Try to load from file
+		permProfile, err = permissions.FromFile(options.PermissionProfile)
+		if err != nil {
+			return fmt.Errorf("failed to load permission profile: %v", err)
+		}
+	}
+
 	// Set up the transport
 	fmt.Printf("Setting up %s transport...\n", transportType)
 	if err := transportHandler.Setup(
 		ctx, runtime, containerName, options.Image, options.CmdArgs,
-		envVars, containerLabels, options.PermissionProfile,
+		envVars, containerLabels, permProfile,
 	); err != nil {
 		return fmt.Errorf("failed to set up transport: %v", err)
 	}
@@ -312,8 +326,10 @@ func detachProcess(_ *cobra.Command, options RunOptions) error {
 		detachedArgs = append(detachedArgs, "--target-port", fmt.Sprintf("%d", options.TargetPort))
 	}
 
-	// Note: We can't pass the permission profile object directly to the detached process
-	// So we'll need to handle this in the run command implementation
+	// Pass the permission profile to the detached process
+	if options.PermissionProfile != "" {
+		detachedArgs = append(detachedArgs, "--permission-profile", options.PermissionProfile)
+	}
 
 	for _, env := range options.EnvVars {
 		detachedArgs = append(detachedArgs, "--env", env)

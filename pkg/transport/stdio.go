@@ -87,7 +87,6 @@ func (t *StdioTransport) Setup(
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "stdio"
 
-
 	// Create container options
 	containerOptions := container.NewCreateContainerOptions()
 	containerOptions.AttachStdio = true

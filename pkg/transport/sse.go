@@ -94,7 +94,6 @@ func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, con
 	// In a Docker bridge network, the container IP is not directly accessible from the host
 	envVars["MCP_HOST"] = LocalhostName
 
-
 	// Create container options
 	containerOptions := container.NewCreateContainerOptions()
 

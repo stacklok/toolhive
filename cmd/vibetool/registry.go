@@ -419,6 +419,32 @@ func registryRunCmdFunc(cmd *cobra.Command, args []string) error {
 		transport = registryRunTransport
 	}
 
+	// Create a temporary file for the permission profile
+	tempFile, err := os.CreateTemp("", fmt.Sprintf("vibetool-%s-permissions-*.json", serverName))
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %v", err)
+	}
+	defer tempFile.Close()
+
+	// Get the temporary file path
+	permProfilePath := tempFile.Name()
+
+	// Serialize the permission profile to JSON
+	permProfileJSON, err := json.Marshal(server.Permissions)
+	if err != nil {
+		return fmt.Errorf("failed to serialize permission profile: %v", err)
+	}
+
+	// Write the permission profile to the temporary file
+	if _, err := tempFile.Write(permProfileJSON); err != nil {
+		return fmt.Errorf("failed to write permission profile to file: %v", err)
+	}
+
+	// Only print debug message if debug mode is enabled
+	if debugMode {
+		fmt.Printf("Wrote permission profile to temporary file: %s\n", permProfilePath)
+	}
+
 	// Create run options
 	options := RunOptions{
 		Image:             image,
@@ -427,7 +453,7 @@ func registryRunCmdFunc(cmd *cobra.Command, args []string) error {
 		Name:              serverName,
 		Port:              registryRunPort,
 		TargetPort:        registryRunTargetPort,
-		PermissionProfile: server.Permissions,
+		PermissionProfile: permProfilePath,
 		EnvVars:           envVars,
 		NoClientConfig:    registryRunNoClientConfig,
 		Foreground:        registryRunForeground,

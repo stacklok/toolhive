@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/spf13/cobra"
-
-	"github.com/stacklok/vibetool/pkg/permissions"
 )
 
 var runCmd = &cobra.Command{
@@ -72,23 +69,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
-	// Load permission profile
-	var permProfile *permissions.Profile
-	var err error
-
-	switch runPermissionProfile {
-	case "stdio":
-		permProfile = permissions.BuiltinStdioProfile()
-	case "network":
-		permProfile = permissions.BuiltinNetworkProfile()
-	default:
-		// Try to load from file
-		permProfile, err = permissions.FromFile(runPermissionProfile)
-		if err != nil {
-			return fmt.Errorf("failed to load permission profile: %v", err)
-		}
-	}
-
 	// Get OIDC flag values
 	oidcIssuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
 	oidcAudience := GetStringFlagOrEmpty(cmd, "oidc-audience")
@@ -103,7 +83,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		Name:              runName,
 		Port:              runPort,
 		TargetPort:        runTargetPort,
-		PermissionProfile: permProfile,
+		PermissionProfile: runPermissionProfile,
 		EnvVars:           runEnv,
 		NoClientConfig:    runNoClientConfig,
 		Foreground:        runForeground,

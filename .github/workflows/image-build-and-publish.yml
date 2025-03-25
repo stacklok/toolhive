@@ -52,10 +52,8 @@ jobs:
 
       - name: Build and Push Image to GHCR
         run: |
-          ko build --platform=linux/amd64,linux/arm64 --push=false ./cmd/vibetool \
+          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --push=false ./cmd/vibetool \
             --image-label=org.opencontainers.image.source=https://github.com/stacklok/vibetool,org.opencontainers.image.title="Vibetool",org.opencontainers.image.vendor=Stacklok
-        env:
-          KO_DOCKER_REPO: "$BASE_REPO"
 
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate

@@ -42,6 +42,7 @@ type HTTPSSEProxy struct {
 	// Basic configuration
 	port          int
 	containerName string
+	middlewares   []Middleware
 
 	// HTTP server
 	server     *http.Server
@@ -61,8 +62,9 @@ type HTTPSSEProxy struct {
 }
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
-func NewHTTPSSEProxy(port int, containerName string) *HTTPSSEProxy {
+func NewHTTPSSEProxy(port int, containerName string, middlewares ...Middleware) *HTTPSSEProxy {
 	return &HTTPSSEProxy{
+		middlewares:     middlewares,
 		port:            port,
 		containerName:   containerName,
 		shutdownCh:      make(chan struct{}),
@@ -73,16 +75,25 @@ func NewHTTPSSEProxy(port int, containerName string) *HTTPSSEProxy {
 	}
 }
 
+// applyMiddlewares applies a chain of middlewares to a handler
+func applyMiddlewares(handler http.Handler, middlewares ...Middleware) http.Handler {
+	// Apply middleware chain in reverse order (last middleware is applied first)
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		handler = middlewares[i](handler)
+	}
+	return handler
+}
+
 // Start starts the HTTP SSE proxy.
 func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Create a new HTTP server
 	mux := http.NewServeMux()
 
-	// Add handlers for SSE and JSON-RPC
-	mux.HandleFunc(HTTPSSEEndpoint, p.handleSSEConnection)
-	mux.HandleFunc(HTTPMessagesEndpoint, p.handlePostRequest)
+	// Add handlers for SSE and JSON-RPC with middlewares
+	mux.Handle(HTTPSSEEndpoint, applyMiddlewares(http.HandlerFunc(p.handleSSEConnection), p.middlewares...))
+	mux.Handle(HTTPMessagesEndpoint, applyMiddlewares(http.HandlerFunc(p.handlePostRequest), p.middlewares...))
 
-	// Add a simple health check endpoint
+	// Add a simple health check endpoint (no middlewares)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("OK")); err != nil {

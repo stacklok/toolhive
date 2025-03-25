@@ -102,7 +102,7 @@ func NewFactory() *Factory {
 func (_ *Factory) Create(config Config) (Transport, error) {
 	switch config.Type {
 	case TransportTypeStdio:
-		return NewStdioTransport(config.Port, config.Runtime, config.Debug), nil
+		return NewStdioTransport(config.Port, config.Runtime, config.Debug, config.Middlewares...), nil
 	case TransportTypeSSE:
 		return NewSSETransport(config.Host, config.Port, config.TargetPort, config.Runtime, config.Debug, config.Middlewares...), nil
 	default:

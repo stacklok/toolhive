@@ -22,6 +22,7 @@ type StdioTransport struct {
 	containerName string
 	runtime       container.Runtime
 	debug         bool
+	middlewares   []Middleware
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -42,12 +43,18 @@ type StdioTransport struct {
 }
 
 // NewStdioTransport creates a new stdio transport.
-func NewStdioTransport(port int, runtime container.Runtime, debug bool) *StdioTransport {
+func NewStdioTransport(
+	port int,
+	runtime container.Runtime,
+	debug bool,
+	middlewares ...Middleware,
+) *StdioTransport {
 	return &StdioTransport{
-		port:       port,
-		runtime:    runtime,
-		debug:      debug,
-		shutdownCh: make(chan struct{}),
+		port:        port,
+		runtime:     runtime,
+		debug:       debug,
+		middlewares: middlewares,
+		shutdownCh:  make(chan struct{}),
 	}
 }
 
@@ -142,8 +149,8 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to attach to container: %w", err)
 	}
 
-	// Create and start the HTTP SSE proxy
-	t.httpProxy = NewHTTPSSEProxy(t.port, t.containerName)
+	// Create and start the HTTP SSE proxy with middlewares
+	t.httpProxy = NewHTTPSSEProxy(t.port, t.containerName, t.middlewares...)
 	if err := t.httpProxy.Start(ctx); err != nil {
 		return err
 	}

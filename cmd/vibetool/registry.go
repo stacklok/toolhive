@@ -225,7 +225,7 @@ func printTextServerInfo(name string, server *registry.Server) {
 	// Print permissions
 	if server.Permissions != nil {
 		fmt.Println("\nPermissions:")
-		
+
 		// Print read permissions
 		if len(server.Permissions.Read) > 0 {
 			fmt.Println("  Read:")
@@ -233,7 +233,7 @@ func printTextServerInfo(name string, server *registry.Server) {
 				fmt.Printf("    - %s\n", path)
 			}
 		}
-		
+
 		// Print write permissions
 		if len(server.Permissions.Write) > 0 {
 			fmt.Println("  Write:")
@@ -241,24 +241,24 @@ func printTextServerInfo(name string, server *registry.Server) {
 				fmt.Printf("    - %s\n", path)
 			}
 		}
-		
+
 		// Print network permissions
 		if server.Permissions.Network != nil && server.Permissions.Network.Outbound != nil {
 			fmt.Println("  Network:")
 			outbound := server.Permissions.Network.Outbound
-			
+
 			if outbound.InsecureAllowAll {
 				fmt.Println("    Insecure Allow All: true")
 			}
-			
+
 			if len(outbound.AllowTransport) > 0 {
 				fmt.Printf("    Allow Transport: %s\n", strings.Join(outbound.AllowTransport, ", "))
 			}
-			
+
 			if len(outbound.AllowHost) > 0 {
 				fmt.Printf("    Allow Host: %s\n", strings.Join(outbound.AllowHost, ", "))
 			}
-			
+
 			if len(outbound.AllowPort) > 0 {
 				ports := make([]string, len(outbound.AllowPort))
 				for i, port := range outbound.AllowPort {

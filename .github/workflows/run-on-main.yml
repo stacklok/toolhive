@@ -1,0 +1,20 @@
+# These set of workflows run on every push to the main branch
+name: Main build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  linting:
+    name: Linting
+    uses: ./.github/workflows/lint.yml
+  tests:
+    name: Tests
+    uses: ./.github/workflows/test.yml
+  image-build-and-push:
+    name: Build and Sign Image
+    needs: [ linting, tests ]
+    uses: ./.github/workflows/image-build-and-publish.yml
+    

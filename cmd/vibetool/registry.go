@@ -187,6 +187,7 @@ func printTextServers(servers []*registry.Server) {
 }
 
 // printTextServerInfo prints detailed information about a server in text format
+// nolint:gocyclo
 func printTextServerInfo(name string, server *registry.Server) {
 	fmt.Printf("Name: %s\n", name)
 	fmt.Printf("Image: %s\n", server.Image)

@@ -261,7 +261,7 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 				close(doneCh)
 				return
 			}
-			
+
 			// Sleep for a short time before checking again
 			time.Sleep(1 * time.Second)
 		}
@@ -279,7 +279,7 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 		}
 		fmt.Printf("MCP server %s stopped\n", containerName)
 	}
-	
+
 	return nil
 }
 

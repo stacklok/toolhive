@@ -480,9 +480,9 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 			fmt.Printf("Container monitor channel closed for %s\n", t.containerName)
 			return
 		}
-		
+
 		fmt.Printf("Container %s exited: %v\n", t.containerName, err)
-		
+
 		// Check if the transport is already stopped before trying to stop it
 		select {
 		case <-t.shutdownCh:
@@ -494,7 +494,7 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 			// Create a context with timeout for stopping the transport
 			stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			
+
 			if stopErr := t.Stop(stopCtx); stopErr != nil {
 				fmt.Printf("Error stopping transport after container exit: %v\n", stopErr)
 			}

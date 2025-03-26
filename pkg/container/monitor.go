@@ -83,12 +83,18 @@ func (m *Monitor) monitor(ctx context.Context) {
 
 	for {
 		select {
+		case <-ctx.Done():
+			// Context canceled
+			return
 		case <-m.stopCh:
 			// Monitoring stopped
 			return
 		case <-ticker.C:
 			// Check if the container is still running
-			running, err := m.runtime.IsContainerRunning(ctx, m.containerID)
+			// Create a short timeout context for this check
+			checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			running, err := m.runtime.IsContainerRunning(checkCtx, m.containerID)
+			cancel() // Always cancel the context to avoid leaks
 			if err != nil {
 				// If the container is not found, it may have been removed
 				if IsContainerNotFound(err) {
@@ -107,8 +113,11 @@ func (m *Monitor) monitor(ctx context.Context) {
 
 			if !running {
 				// Container has exited, get logs and info
-				logs, _ := m.runtime.ContainerLogs(ctx, m.containerID)
-				info, _ := m.runtime.GetContainerInfo(ctx, m.containerID)
+				// Create a short timeout context for these operations
+				infoCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				logs, _ := m.runtime.ContainerLogs(infoCtx, m.containerID)
+				info, _ := m.runtime.GetContainerInfo(infoCtx, m.containerID)
+				cancel() // Always cancel the context to avoid leaks
 
 				exitErr := NewContainerError(
 					ErrContainerExited,

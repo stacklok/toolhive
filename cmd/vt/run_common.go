@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -246,9 +247,39 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Wait for signal
-	sig := <-sigCh
-	stopMCPServer(fmt.Sprintf("Received signal %s", sig))
+	// Create a done channel to signal when the server has been stopped
+	doneCh := make(chan struct{})
+
+	// Start a goroutine to monitor the transport's running state
+	go func() {
+		for {
+			// Check if the transport is still running
+			running, _ := transportHandler.IsRunning(ctx)
+			if !running {
+				// Transport is no longer running (container exited or was stopped)
+				fmt.Println("Transport is no longer running, exiting...")
+				close(doneCh)
+				return
+			}
+			
+			// Sleep for a short time before checking again
+			time.Sleep(1 * time.Second)
+		}
+	}()
+
+	// Wait for either a signal or the done channel to be closed
+	select {
+	case sig := <-sigCh:
+		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
+	case <-doneCh:
+		// The transport has already been stopped (likely by the container monitor)
+		// Just clean up the PID file
+		if err := process.RemovePIDFile(baseName); err != nil {
+			fmt.Printf("Warning: Failed to remove PID file: %v\n", err)
+		}
+		fmt.Printf("MCP server %s stopped\n", containerName)
+	}
+	
 	return nil
 }
 

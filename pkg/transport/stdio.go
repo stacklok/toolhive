@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"github.com/stacklok/vibetool/pkg/container"
@@ -174,13 +175,32 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 
 // Stop gracefully shuts down the transport and the container.
 func (t *StdioTransport) Stop(ctx context.Context) error {
+	// First check if the transport is already stopped without locking
+	// to avoid deadlocks if Stop is called from multiple goroutines
+	select {
+	case <-t.shutdownCh:
+		// Channel is already closed, transport is already stopping or stopped
+		// Just return without doing anything else
+		return nil
+	default:
+		// Channel is still open, proceed with stopping
+	}
+
+	// Now lock the mutex for the actual stopping process
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	// Signal shutdown
-	close(t.shutdownCh)
+	// Check again after locking to handle race conditions
+	select {
+	case <-t.shutdownCh:
+		// Channel was closed between our first check and acquiring the lock
+		return nil
+	default:
+		// Channel is still open, close it to signal shutdown
+		close(t.shutdownCh)
+	}
 
-	// Stop the monitor if it's running
+	// Stop the monitor if it's running and we haven't already stopped it
 	if t.monitor != nil {
 		t.monitor.StopMonitoring()
 		t.monitor = nil
@@ -201,10 +221,18 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 		t.stdin = nil
 	}
 
-	// Stop the container if runtime is available
+	// Stop the container if runtime is available and we haven't already stopped it
 	if t.runtime != nil && t.containerID != "" {
-		if err := t.runtime.StopContainer(ctx, t.containerID); err != nil {
-			return fmt.Errorf("failed to stop container: %w", err)
+		// Check if the container is still running before trying to stop it
+		running, err := t.runtime.IsContainerRunning(ctx, t.containerID)
+		if err != nil {
+			// If there's an error checking the container status, it might be gone already
+			fmt.Printf("Warning: Failed to check container status: %v\n", err)
+		} else if running {
+			// Only try to stop the container if it's still running
+			if err := t.runtime.StopContainer(ctx, t.containerID); err != nil {
+				fmt.Printf("Warning: Failed to stop container: %v\n", err)
+			}
 		}
 
 		// Remove the container if debug mode is not enabled
@@ -212,8 +240,9 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 			fmt.Printf("Removing container %s...\n", t.containerName)
 			if err := t.runtime.RemoveContainer(ctx, t.containerID); err != nil {
 				fmt.Printf("Warning: Failed to remove container: %v\n", err)
+			} else {
+				fmt.Printf("Container %s removed\n", t.containerName)
 			}
-			fmt.Printf("Container %s removed\n", t.containerName)
 		} else {
 			fmt.Printf("Debug mode enabled, container %s not removed\n", t.containerName)
 		}
@@ -445,11 +474,30 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 	select {
 	case <-ctx.Done():
 		return
-	case err := <-t.errorCh:
+	case err, ok := <-t.errorCh:
+		// Check if the channel is closed
+		if !ok {
+			fmt.Printf("Container monitor channel closed for %s\n", t.containerName)
+			return
+		}
+		
 		fmt.Printf("Container %s exited: %v\n", t.containerName, err)
-		// Stop the transport when the container exits
-		if stopErr := t.Stop(ctx); stopErr != nil {
-			fmt.Printf("Error stopping transport after container exit: %v\n", stopErr)
+		
+		// Check if the transport is already stopped before trying to stop it
+		select {
+		case <-t.shutdownCh:
+			// Transport is already stopping or stopped
+			fmt.Printf("Transport for %s is already stopping or stopped\n", t.containerName)
+			return
+		default:
+			// Transport is still running, stop it
+			// Create a context with timeout for stopping the transport
+			stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			
+			if stopErr := t.Stop(stopCtx); stopErr != nil {
+				fmt.Printf("Error stopping transport after container exit: %v\n", stopErr)
+			}
 		}
 	}
 }

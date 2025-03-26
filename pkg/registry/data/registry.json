@@ -195,10 +195,8 @@
       "transport": "stdio",
       "permissions": {
         "read": [
-          "/tmp/db"
         ],
         "write": [
-          "/tmp/db"
         ],
         "network": {
           "outbound": {
@@ -218,7 +216,7 @@
         "write_query",
         "create_table",
         "list_tables",
-        "describe-table",
+        "describe_table",
         "append_insight"
       ],
       "env_vars": [],

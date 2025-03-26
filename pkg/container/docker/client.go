@@ -560,10 +560,18 @@ func (*Client) addReadOnlyMounts(config *runtime.PermissionConfig, mounts []perm
 			continue
 		}
 
-		// Skip relative paths
+		// Convert relative paths to absolute paths
 		if !filepath.IsAbs(source) {
-			fmt.Printf("Warning: Skipping relative source path: %s\n", source)
-			continue
+			// Get the current working directory
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Printf("Warning: Failed to get current working directory: %v\n", err)
+				continue
+			}
+
+			// Convert relative path to absolute path
+			source = filepath.Join(cwd, source)
+			fmt.Printf("Converting relative path to absolute: %s -> %s\n", mountDecl, source)
 		}
 
 		config.Mounts = append(config.Mounts, runtime.Mount{
@@ -590,10 +598,18 @@ func (*Client) addReadWriteMounts(config *runtime.PermissionConfig, mounts []per
 			continue
 		}
 
-		// Skip relative paths
+		// Convert relative paths to absolute paths
 		if !filepath.IsAbs(source) {
-			fmt.Printf("Warning: Skipping relative source path: %s\n", source)
-			continue
+			// Get the current working directory
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Printf("Warning: Failed to get current working directory: %v\n", err)
+				continue
+			}
+
+			// Convert relative path to absolute path
+			source = filepath.Join(cwd, source)
+			fmt.Printf("Converting relative path to absolute: %s -> %s\n", mountDecl, source)
 		}
 
 		// Check if the path is already mounted read-only

@@ -29,6 +29,11 @@ var (
 	listFormat string
 )
 
+// Constants for list command
+const (
+	defaultHost = "localhost"
+)
+
 // ContainerOutput represents container information for JSON output
 type ContainerOutput struct {
 	ID        string `json:"id"`
@@ -36,13 +41,14 @@ type ContainerOutput struct {
 	Image     string `json:"image"`
 	State     string `json:"state"`
 	Transport string `json:"transport"`
+	ToolType  string `json:"tool_type,omitempty"`
 	Port      int    `json:"port"`
 	URL       string `json:"url"`
 }
 
 func init() {
 	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all containers (default shows just running)")
-	listCmd.Flags().StringVar(&listFormat, "format", "text", "Output format (json or text)")
+	listCmd.Flags().StringVar(&listFormat, "format", "text", "Output format (json, text, or mcpservers)")
 }
 
 func listCmdFunc(_ *cobra.Command, _ []string) error {
@@ -91,6 +97,8 @@ func listCmdFunc(_ *cobra.Command, _ []string) error {
 	//nolint:goconst
 	case "json":
 		return printJSONOutput(vibeToolContainers)
+	case "mcpservers":
+		return printMCPServersOutput(vibeToolContainers)
 	default:
 		printTextOutput(vibeToolContainers)
 		return nil
@@ -120,6 +128,9 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 			transport = "unknown"
 		}
 
+		// Get tool type from labels
+		toolType := labels.GetToolType(c.Labels)
+
 		// Get port from labels
 		port, err := labels.GetPort(c.Labels)
 		if err != nil {
@@ -127,10 +138,9 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 		}
 
 		// Generate URL for the MCP server
-		host := "localhost" // Default to localhost
 		url := ""
 		if port > 0 {
-			url = client.GenerateMCPServerURL(host, port, name)
+			url = client.GenerateMCPServerURL(defaultHost, port, name)
 		}
 
 		output = append(output, ContainerOutput{
@@ -139,6 +149,7 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 			Image:     c.Image,
 			State:     c.State,
 			Transport: transport,
+			ToolType:  toolType,
 			Port:      port,
 			URL:       url,
 		})
@@ -146,6 +157,58 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(output, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %v", err)
+	}
+
+	// Print JSON
+	fmt.Println(string(jsonData))
+	return nil
+}
+
+// printMCPServersOutput prints MCP servers configuration in JSON format
+// This format is compatible with client configuration files
+func printMCPServersOutput(containers []rt.ContainerInfo) error {
+	// Create a map to hold the MCP servers configuration
+	mcpServers := make(map[string]map[string]string)
+
+	for _, c := range containers {
+		// Get container name from labels
+		name := labels.GetContainerName(c.Labels)
+		if name == "" {
+			name = c.Name // Fallback to container name
+		}
+
+		// Get tool type from labels
+		toolType := labels.GetToolType(c.Labels)
+
+		// Only include containers with tool type "mcp"
+		if toolType != "mcp" {
+			continue
+		}
+
+		// Get port from labels
+		port, err := labels.GetPort(c.Labels)
+		if err != nil {
+			port = 0
+		}
+
+		// Generate URL for the MCP server
+		url := ""
+		if port > 0 {
+			url = client.GenerateMCPServerURL(defaultHost, port, name)
+		}
+
+		// Add the MCP server to the map
+		mcpServers[name] = map[string]string{
+			"url": url,
+		}
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.MarshalIndent(map[string]interface{}{
+		"mcpServers": mcpServers,
+	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}
@@ -188,10 +251,9 @@ func printTextOutput(containers []rt.ContainerInfo) {
 		}
 
 		// Generate URL for the MCP server
-		host := "localhost" // Default to localhost
 		url := ""
 		if port > 0 {
-			url = client.GenerateMCPServerURL(host, port, name)
+			url = client.GenerateMCPServerURL(defaultHost, port, name)
 		}
 
 		// Print container information

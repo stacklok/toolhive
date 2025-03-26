@@ -561,21 +561,13 @@ func (*Client) addReadOnlyMounts(config *runtime.PermissionConfig, mounts []perm
 		}
 
 		// Convert relative paths to absolute paths
-		if !filepath.IsAbs(source) {
-			// Get the current working directory
-			cwd, err := os.Getwd()
-			if err != nil {
-				fmt.Printf("Warning: Failed to get current working directory: %v\n", err)
-				continue
-			}
-
-			// Convert relative path to absolute path
-			source = filepath.Join(cwd, source)
-			fmt.Printf("Converting relative path to absolute: %s -> %s\n", mountDecl, source)
+		absPath, ok := convertRelativePathToAbsolute(source, mountDecl)
+		if !ok {
+			continue
 		}
 
 		config.Mounts = append(config.Mounts, runtime.Mount{
-			Source:   source,
+			Source:   absPath,
 			Target:   target,
 			ReadOnly: true,
 		})
@@ -599,17 +591,9 @@ func (*Client) addReadWriteMounts(config *runtime.PermissionConfig, mounts []per
 		}
 
 		// Convert relative paths to absolute paths
-		if !filepath.IsAbs(source) {
-			// Get the current working directory
-			cwd, err := os.Getwd()
-			if err != nil {
-				fmt.Printf("Warning: Failed to get current working directory: %v\n", err)
-				continue
-			}
-
-			// Convert relative path to absolute path
-			source = filepath.Join(cwd, source)
-			fmt.Printf("Converting relative path to absolute: %s -> %s\n", mountDecl, source)
+		absPath, ok := convertRelativePathToAbsolute(source, mountDecl)
+		if !ok {
+			continue
 		}
 
 		// Check if the path is already mounted read-only
@@ -626,12 +610,33 @@ func (*Client) addReadWriteMounts(config *runtime.PermissionConfig, mounts []per
 		// If not already mounted, add a new mount
 		if !alreadyMounted {
 			config.Mounts = append(config.Mounts, runtime.Mount{
-				Source:   source,
+				Source:   absPath,
 				Target:   target,
 				ReadOnly: false,
 			})
 		}
 	}
+}
+
+// convertRelativePathToAbsolute converts a relative path to an absolute path
+// Returns the absolute path and a boolean indicating if the conversion was successful
+func convertRelativePathToAbsolute(source string, mountDecl permissions.MountDeclaration) (string, bool) {
+	// If it's already an absolute path, return it as is
+	if filepath.IsAbs(source) {
+		return source, true
+	}
+
+	// Get the current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Printf("Warning: Failed to get current working directory: %v\n", err)
+		return "", false
+	}
+
+	// Convert relative path to absolute path
+	absPath := filepath.Join(cwd, source)
+	fmt.Printf("Converting relative path to absolute: %s -> %s\n", mountDecl, absPath)
+	return absPath, true
 }
 
 // needsNetworkAccess determines if the container needs network access

@@ -24,6 +24,7 @@ var (
 	runEnv               []string
 	runNoClientConfig    bool
 	runForeground        bool
+	runVolumes           []string
 )
 
 func init() {
@@ -51,6 +52,13 @@ func init() {
 		"Do not update client configuration files with the MCP server URL",
 	)
 	runCmd.Flags().BoolVarP(&runForeground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
+	runCmd.Flags().StringArrayVarP(
+		&runVolumes,
+		"volume",
+		"v",
+		[]string{},
+		"Mount a volume into the container (format: host-path:container-path[:ro])",
+	)
 
 	// Add OIDC validation flags
 	AddOIDCFlags(runCmd)
@@ -92,6 +100,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		OIDCJwksURL:       oidcJwksURL,
 		OIDCClientID:      oidcClientID,
 		Debug:             debugMode,
+		Volumes:           runVolumes,
 	}
 
 	// Run the MCP server

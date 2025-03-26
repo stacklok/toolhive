@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -68,6 +69,10 @@ type RunOptions struct {
 
 	// Debug indicates whether debug mode is enabled
 	Debug bool
+
+	// Volumes are the directory mounts to pass to the container
+	// Format: "host-path:container-path[:ro]"
+	Volumes []string
 }
 
 // RunMCPServer runs an MCP server with the specified options
@@ -188,6 +193,11 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 		}
 	}
 
+	// Process volume mounts if provided
+	if err := processVolumeMounts(options.Volumes, permProfile); err != nil {
+		return err
+	}
+
 	// Set up the transport
 	fmt.Printf("Setting up %s transport...\n", transportType)
 	if err := transportHandler.Setup(
@@ -283,6 +293,47 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 	return nil
 }
 
+// processVolumeMounts processes volume mounts and adds them to the permission profile
+// Volume format: "host-path:container-path[:ro]"
+func processVolumeMounts(volumes []string, profile *permissions.Profile) error {
+	if len(volumes) == 0 {
+		return nil
+	}
+
+	for _, volume := range volumes {
+		// Check if the volume has a read-only flag
+		readOnly := false
+		volumeSpec := volume
+
+		if strings.HasSuffix(volume, ":ro") {
+			readOnly = true
+			volumeSpec = strings.TrimSuffix(volume, ":ro")
+		}
+
+		// Create a mount declaration
+		mount := permissions.MountDeclaration(volumeSpec)
+		source, target, err := mount.Parse()
+		if err != nil {
+			return fmt.Errorf("invalid volume format: %s (%v)", volume, err)
+		}
+
+		// Add the mount to the appropriate permission list
+		if readOnly {
+			// For read-only mounts, add to Read list
+			profile.Read = append(profile.Read, mount)
+		} else {
+			// For read-write mounts, add to Write list
+			profile.Write = append(profile.Write, mount)
+		}
+
+		fmt.Printf("Adding volume mount: %s -> %s (%s)\n",
+			source, target,
+			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
+	}
+
+	return nil
+}
+
 // updateClientConfigurations updates client configuration files with the MCP server URL
 func updateClientConfigurations(containerName, host string, port int) error {
 	// Find client configuration files
@@ -367,6 +418,11 @@ func detachProcess(_ *cobra.Command, options RunOptions) error {
 	}
 	if options.NoClientConfig {
 		detachedArgs = append(detachedArgs, "--no-client-config")
+	}
+
+	// Add volume mounts if they were provided
+	for _, volume := range options.Volumes {
+		detachedArgs = append(detachedArgs, "--volume", volume)
 	}
 
 	// Add OIDC flags if they were provided

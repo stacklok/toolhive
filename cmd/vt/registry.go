@@ -67,6 +67,7 @@ var (
 	registryRunEnv               []string
 	registryRunNoClientConfig    bool
 	registryRunForeground        bool
+	registryRunVolumes           []string
 )
 
 func init() {
@@ -123,6 +124,13 @@ func init() {
 		"f",
 		false,
 		"Run in foreground mode (block until container exits)",
+	)
+	registryRunCmd.Flags().StringArrayVarP(
+		&registryRunVolumes,
+		"volume",
+		"v",
+		[]string{},
+		"Mount a volume into the container (format: host-path:container-path[:ro])",
 	)
 
 	// Add OIDC validation flags
@@ -462,6 +470,7 @@ func registryRunCmdFunc(cmd *cobra.Command, args []string) error {
 		OIDCJwksURL:       oidcJwksURL,
 		OIDCClientID:      oidcClientID,
 		Debug:             debugMode,
+		Volumes:           registryRunVolumes,
 	}
 
 	// Create context

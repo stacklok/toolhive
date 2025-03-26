@@ -544,33 +544,61 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 // getPermissionConfigFromProfile converts a permission profile to a container permission config
 // with transport-specific settings (internal function)
 // addReadOnlyMounts adds read-only mounts to the permission config
-func (*Client) addReadOnlyMounts(config *PermissionConfig, paths []string) {
-	for _, path := range paths {
+func (*Client) addReadOnlyMounts(config *PermissionConfig, mounts []permissions.MountDeclaration) {
+	for _, mountDecl := range mounts {
+		source, target, err := mountDecl.Parse()
+		if err != nil {
+			// Skip invalid mounts
+			fmt.Printf("Warning: Skipping invalid mount declaration: %s (%v)\n", mountDecl, err)
+			continue
+		}
+
+		// Skip resource URIs for now (they need special handling)
+		if strings.Contains(source, "://") {
+			fmt.Printf("Warning: Resource URI mounts not yet supported: %s\n", source)
+			continue
+		}
+
 		// Skip relative paths
-		if !filepath.IsAbs(path) {
+		if !filepath.IsAbs(source) {
+			fmt.Printf("Warning: Skipping relative source path: %s\n", source)
 			continue
 		}
 
 		config.Mounts = append(config.Mounts, Mount{
-			Source:   path,
-			Target:   path,
+			Source:   source,
+			Target:   target,
 			ReadOnly: true,
 		})
 	}
 }
 
 // addReadWriteMounts adds read-write mounts to the permission config
-func (*Client) addReadWriteMounts(config *PermissionConfig, paths []string) {
-	for _, path := range paths {
+func (*Client) addReadWriteMounts(config *PermissionConfig, mounts []permissions.MountDeclaration) {
+	for _, mountDecl := range mounts {
+		source, target, err := mountDecl.Parse()
+		if err != nil {
+			// Skip invalid mounts
+			fmt.Printf("Warning: Skipping invalid mount declaration: %s (%v)\n", mountDecl, err)
+			continue
+		}
+
+		// Skip resource URIs for now (they need special handling)
+		if strings.Contains(source, "://") {
+			fmt.Printf("Warning: Resource URI mounts not yet supported: %s\n", source)
+			continue
+		}
+
 		// Skip relative paths
-		if !filepath.IsAbs(path) {
+		if !filepath.IsAbs(source) {
+			fmt.Printf("Warning: Skipping relative source path: %s\n", source)
 			continue
 		}
 
 		// Check if the path is already mounted read-only
 		alreadyMounted := false
 		for i, m := range config.Mounts {
-			if m.Target == path {
+			if m.Target == target {
 				// Update the mount to be read-write
 				config.Mounts[i].ReadOnly = false
 				alreadyMounted = true
@@ -581,8 +609,8 @@ func (*Client) addReadWriteMounts(config *PermissionConfig, paths []string) {
 		// If not already mounted, add a new mount
 		if !alreadyMounted {
 			config.Mounts = append(config.Mounts, Mount{
-				Source:   path,
-				Target:   path,
+				Source:   source,
+				Target:   target,
 				ReadOnly: false,
 			})
 		}

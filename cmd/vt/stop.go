@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/vibetool/pkg/container"
+	rt "github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/labels"
 	"github.com/stacklok/vibetool/pkg/process"
 )
@@ -29,7 +30,7 @@ func init() {
 }
 
 // findContainerID finds the container ID by name or ID prefix
-func findContainerID(ctx context.Context, runtime container.Runtime, containerName string) (string, error) {
+func findContainerID(ctx context.Context, runtime rt.Runtime, containerName string) (string, error) {
 	// List containers to find the one with the given name
 	containers, err := runtime.ListContainers(ctx)
 	if err != nil {
@@ -59,7 +60,7 @@ func findContainerID(ctx context.Context, runtime container.Runtime, containerNa
 }
 
 // getContainerBaseName gets the base container name from the container labels
-func getContainerBaseName(ctx context.Context, runtime container.Runtime, containerID string) (string, error) {
+func getContainerBaseName(ctx context.Context, runtime rt.Runtime, containerID string) (string, error) {
 	containers, err := runtime.ListContainers(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to list containers: %v", err)
@@ -103,7 +104,7 @@ func stopProxyProcess(containerBaseName string) {
 }
 
 // stopContainer stops the container
-func stopContainer(ctx context.Context, runtime container.Runtime, containerID, containerName string) error {
+func stopContainer(ctx context.Context, runtime rt.Runtime, containerID, containerName string) error {
 	fmt.Printf("Stopping container %s...\n", containerName)
 	if err := runtime.StopContainer(ctx, containerID); err != nil {
 		return fmt.Errorf("failed to stop container: %v", err)

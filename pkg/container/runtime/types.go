@@ -1,6 +1,6 @@
-// Package container provides utilities for managing containers,
+// Package runtime provides interfaces and types for container runtimes,
 // including creating, starting, stopping, and monitoring containers.
-package container
+package runtime
 
 import (
 	"context"
@@ -11,8 +11,6 @@ import (
 )
 
 // ContainerInfo represents information about a container
-//
-//nolint:revive // Intentionally named ContainerInfo despite package name
 type ContainerInfo struct {
 	// ID is the container ID
 	ID string
@@ -90,14 +88,24 @@ type Runtime interface {
 	PullImage(ctx context.Context, image string) error
 }
 
-// RuntimeType represents the type of container runtime
-type RuntimeType string
+// Monitor defines the interface for container monitoring
+type Monitor interface {
+	// StartMonitoring starts monitoring the container
+	// Returns a channel that will receive an error if the container exits unexpectedly
+	StartMonitoring(ctx context.Context) (<-chan error, error)
+
+	// StopMonitoring stops monitoring the container
+	StopMonitoring()
+}
+
+// Type represents the type of container runtime
+type Type string
 
 const (
-	// RuntimeTypePodman represents the Podman runtime
-	RuntimeTypePodman RuntimeType = "podman"
-	// RuntimeTypeDocker represents the Docker runtime
-	RuntimeTypeDocker RuntimeType = "docker"
+	// TypePodman represents the Podman runtime
+	TypePodman Type = "podman"
+	// TypeDocker represents the Docker runtime
+	TypeDocker Type = "docker"
 )
 
 // PermissionConfig represents container permission configuration

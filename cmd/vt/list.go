@@ -13,6 +13,7 @@ import (
 
 	"github.com/stacklok/vibetool/pkg/client"
 	"github.com/stacklok/vibetool/pkg/container"
+	rt "github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/labels"
 )
 
@@ -62,7 +63,7 @@ func listCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Filter containers to only show those managed by Vibe Tool
-	var vibeToolContainers []container.ContainerInfo
+	var vibeToolContainers []rt.ContainerInfo
 	for _, c := range containers {
 		if labels.IsVibeToolContainer(c.Labels) {
 			vibeToolContainers = append(vibeToolContainers, c)
@@ -71,7 +72,7 @@ func listCmdFunc(_ *cobra.Command, _ []string) error {
 
 	// Filter containers if not showing all
 	if !listAll {
-		var runningContainers []container.ContainerInfo
+		var runningContainers []rt.ContainerInfo
 		for _, c := range vibeToolContainers {
 			if c.State == "running" {
 				runningContainers = append(runningContainers, c)
@@ -97,7 +98,7 @@ func listCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 // printJSONOutput prints container information in JSON format
-func printJSONOutput(containers []container.ContainerInfo) error {
+func printJSONOutput(containers []rt.ContainerInfo) error {
 	var output []ContainerOutput
 
 	for _, c := range containers {
@@ -155,7 +156,7 @@ func printJSONOutput(containers []container.ContainerInfo) error {
 }
 
 // printTextOutput prints container information in text format
-func printTextOutput(containers []container.ContainerInfo) {
+func printTextOutput(containers []rt.ContainerInfo) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "CONTAINER ID\tNAME\tIMAGE\tSTATE\tTRANSPORT\tPORT\tURL")

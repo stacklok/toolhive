@@ -1,15 +1,17 @@
-package container
+package docker
 
 import (
 	"context"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/stacklok/vibetool/pkg/container/runtime"
 )
 
-// Monitor watches a container's state and reports when it exits
-type Monitor struct {
-	runtime       Runtime
+// ContainerMonitor watches a container's state and reports when it exits
+type ContainerMonitor struct {
+	runtime       runtime.Runtime
 	containerID   string
 	containerName string
 	stopCh        chan struct{}
@@ -20,9 +22,9 @@ type Monitor struct {
 }
 
 // NewMonitor creates a new container monitor
-func NewMonitor(runtime Runtime, containerID, containerName string) *Monitor {
-	return &Monitor{
-		runtime:       runtime,
+func NewMonitor(rt runtime.Runtime, containerID, containerName string) runtime.Monitor {
+	return &ContainerMonitor{
+		runtime:       rt,
 		containerID:   containerID,
 		containerName: containerName,
 		stopCh:        make(chan struct{}),
@@ -31,7 +33,7 @@ func NewMonitor(runtime Runtime, containerID, containerName string) *Monitor {
 }
 
 // StartMonitoring starts monitoring the container
-func (m *Monitor) StartMonitoring(ctx context.Context) (<-chan error, error) {
+func (m *ContainerMonitor) StartMonitoring(ctx context.Context) (<-chan error, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -58,7 +60,7 @@ func (m *Monitor) StartMonitoring(ctx context.Context) (<-chan error, error) {
 }
 
 // StopMonitoring stops monitoring the container
-func (m *Monitor) StopMonitoring() {
+func (m *ContainerMonitor) StopMonitoring() {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -72,7 +74,7 @@ func (m *Monitor) StopMonitoring() {
 }
 
 // monitor checks the container status periodically
-func (m *Monitor) monitor(ctx context.Context) {
+func (m *ContainerMonitor) monitor(ctx context.Context) {
 	defer m.wg.Done()
 
 	// Check interval
@@ -130,4 +132,9 @@ func (m *Monitor) monitor(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// IsContainerNotFound checks if the error is a container not found error
+func IsContainerNotFound(err error) bool {
+	return err == ErrContainerNotFound || (err != nil && err.Error() == ErrContainerNotFound.Error())
 }

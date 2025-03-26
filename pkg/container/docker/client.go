@@ -1,6 +1,6 @@
-// Package container provides utilities for managing containers,
+// Package docker provides Docker-specific implementation of container runtime,
 // including creating, starting, stopping, and monitoring containers.
-package container
+package docker
 
 import (
 	"context"
@@ -21,6 +21,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 
+	"github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/permissions"
 )
 
@@ -36,7 +37,7 @@ const (
 
 // Client implements the Runtime interface for container operations
 type Client struct {
-	runtimeType RuntimeType
+	runtimeType runtime.Type
 	socketPath  string
 	client      *client.Client
 }
@@ -53,7 +54,7 @@ func NewClient(ctx context.Context) (*Client, error) {
 }
 
 // NewClientWithSocketPath creates a new container client with a specific socket path
-func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType RuntimeType) (*Client, error) {
+func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType runtime.Type) (*Client, error) {
 	// Create a custom HTTP client that uses the Unix socket
 	httpClient := &http.Client{
 		Transport: &http.Transport{
@@ -99,18 +100,18 @@ func (c *Client) ping(ctx context.Context) error {
 }
 
 // findContainerSocket finds a container socket path, preferring Podman over Docker
-func findContainerSocket() (string, RuntimeType, error) {
+func findContainerSocket() (string, runtime.Type, error) {
 	// Try Podman sockets first
 	// Check standard Podman location
 	if _, err := os.Stat(PodmanSocketPath); err == nil {
-		return PodmanSocketPath, RuntimeTypePodman, nil
+		return PodmanSocketPath, runtime.TypePodman, nil
 	}
 
 	// Check XDG_RUNTIME_DIR location for Podman
 	if xdgRuntimeDir := os.Getenv("XDG_RUNTIME_DIR"); xdgRuntimeDir != "" {
 		xdgSocketPath := filepath.Join(xdgRuntimeDir, PodmanXDGRuntimeSocketPath)
 		if _, err := os.Stat(xdgSocketPath); err == nil {
-			return xdgSocketPath, RuntimeTypePodman, nil
+			return xdgSocketPath, runtime.TypePodman, nil
 		}
 	}
 
@@ -118,13 +119,13 @@ func findContainerSocket() (string, RuntimeType, error) {
 	if home := os.Getenv("HOME"); home != "" {
 		userSocketPath := filepath.Join(home, ".local/share/containers/podman/machine/podman.sock")
 		if _, err := os.Stat(userSocketPath); err == nil {
-			return userSocketPath, RuntimeTypePodman, nil
+			return userSocketPath, runtime.TypePodman, nil
 		}
 	}
 
 	// Try Docker socket as fallback
 	if _, err := os.Stat(DockerSocketPath); err == nil {
-		return DockerSocketPath, RuntimeTypeDocker, nil
+		return DockerSocketPath, runtime.TypeDocker, nil
 	}
 
 	return "", "", ErrRuntimeNotFound
@@ -142,7 +143,7 @@ func convertEnvVars(envVars map[string]string) []string {
 }
 
 // convertMounts converts internal mount format to Docker mount format
-func convertMounts(mounts []Mount) []mount.Mount {
+func convertMounts(mounts []runtime.Mount) []mount.Mount {
 	result := make([]mount.Mount, 0, len(mounts))
 	for _, m := range mounts {
 		result = append(result, mount.Mount{
@@ -174,7 +175,7 @@ func setupExposedPorts(config *container.Config, exposedPorts map[string]struct{
 }
 
 // setupPortBindings configures port bindings for a container
-func setupPortBindings(hostConfig *container.HostConfig, portBindings map[string][]PortBinding) error {
+func setupPortBindings(hostConfig *container.HostConfig, portBindings map[string][]runtime.PortBinding) error {
 	if len(portBindings) == 0 {
 		return nil
 	}
@@ -209,7 +210,7 @@ func (c *Client) CreateContainer(
 	envVars, labels map[string]string,
 	permissionProfile *permissions.Profile,
 	transportType string,
-	options *CreateContainerOptions,
+	options *runtime.CreateContainerOptions,
 ) (string, error) {
 	// Get permission config from profile
 	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType)
@@ -281,7 +282,7 @@ func (c *Client) StartContainer(ctx context.Context, containerID string) error {
 }
 
 // ListContainers lists containers
-func (c *Client) ListContainers(ctx context.Context) ([]ContainerInfo, error) {
+func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, error) {
 	// Create filter for vibetool containers
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("label", "vibetool=true")
@@ -296,7 +297,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerInfo, error) {
 	}
 
 	// Convert to our ContainerInfo format
-	result := make([]ContainerInfo, 0, len(containers))
+	result := make([]runtime.ContainerInfo, 0, len(containers))
 	for _, c := range containers {
 		// Extract container name (remove leading slash)
 		name := ""
@@ -306,9 +307,9 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerInfo, error) {
 		}
 
 		// Extract port mappings
-		ports := make([]PortMapping, 0, len(c.Ports))
+		ports := make([]runtime.PortMapping, 0, len(c.Ports))
 		for _, p := range c.Ports {
-			ports = append(ports, PortMapping{
+			ports = append(ports, runtime.PortMapping{
 				ContainerPort: int(p.PrivatePort),
 				HostPort:      int(p.PublicPort),
 				Protocol:      p.Type,
@@ -318,7 +319,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerInfo, error) {
 		// Convert creation time
 		created := time.Unix(c.Created, 0)
 
-		result = append(result, ContainerInfo{
+		result = append(result, runtime.ContainerInfo{
 			ID:      c.ID,
 			Name:    name,
 			Image:   c.Image,
@@ -394,19 +395,19 @@ func (c *Client) IsContainerRunning(ctx context.Context, containerID string) (bo
 }
 
 // GetContainerInfo gets container information
-func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (ContainerInfo, error) {
+func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runtime.ContainerInfo, error) {
 	// Inspect container
 	info, err := c.client.ContainerInspect(ctx, containerID)
 	if err != nil {
 		// Check if the error is because the container doesn't exist
 		if client.IsErrNotFound(err) {
-			return ContainerInfo{}, NewContainerError(ErrContainerNotFound, containerID, "container not found")
+			return runtime.ContainerInfo{}, NewContainerError(ErrContainerNotFound, containerID, "container not found")
 		}
-		return ContainerInfo{}, NewContainerError(err, containerID, fmt.Sprintf("failed to inspect container: %v", err))
+		return runtime.ContainerInfo{}, NewContainerError(err, containerID, fmt.Sprintf("failed to inspect container: %v", err))
 	}
 
 	// Extract port mappings
-	ports := make([]PortMapping, 0)
+	ports := make([]runtime.PortMapping, 0)
 	for containerPort, bindings := range info.NetworkSettings.Ports {
 		for _, binding := range bindings {
 			hostPort := 0
@@ -415,7 +416,7 @@ func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (Cont
 				fmt.Printf("Warning: Failed to parse host port %s: %v\n", binding.HostPort, err)
 			}
 
-			ports = append(ports, PortMapping{
+			ports = append(ports, runtime.PortMapping{
 				ContainerPort: containerPort.Int(),
 				HostPort:      hostPort,
 				Protocol:      containerPort.Proto(),
@@ -429,7 +430,7 @@ func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (Cont
 		created = time.Time{} // Use zero time if parsing fails
 	}
 
-	return ContainerInfo{
+	return runtime.ContainerInfo{
 		ID:      info.ID,
 		Name:    strings.TrimPrefix(info.Name, "/"),
 		Image:   info.Config.Image,
@@ -544,7 +545,7 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 // getPermissionConfigFromProfile converts a permission profile to a container permission config
 // with transport-specific settings (internal function)
 // addReadOnlyMounts adds read-only mounts to the permission config
-func (*Client) addReadOnlyMounts(config *PermissionConfig, mounts []permissions.MountDeclaration) {
+func (*Client) addReadOnlyMounts(config *runtime.PermissionConfig, mounts []permissions.MountDeclaration) {
 	for _, mountDecl := range mounts {
 		source, target, err := mountDecl.Parse()
 		if err != nil {
@@ -565,7 +566,7 @@ func (*Client) addReadOnlyMounts(config *PermissionConfig, mounts []permissions.
 			continue
 		}
 
-		config.Mounts = append(config.Mounts, Mount{
+		config.Mounts = append(config.Mounts, runtime.Mount{
 			Source:   source,
 			Target:   target,
 			ReadOnly: true,
@@ -574,7 +575,7 @@ func (*Client) addReadOnlyMounts(config *PermissionConfig, mounts []permissions.
 }
 
 // addReadWriteMounts adds read-write mounts to the permission config
-func (*Client) addReadWriteMounts(config *PermissionConfig, mounts []permissions.MountDeclaration) {
+func (*Client) addReadWriteMounts(config *runtime.PermissionConfig, mounts []permissions.MountDeclaration) {
 	for _, mountDecl := range mounts {
 		source, target, err := mountDecl.Parse()
 		if err != nil {
@@ -608,7 +609,7 @@ func (*Client) addReadWriteMounts(config *PermissionConfig, mounts []permissions
 
 		// If not already mounted, add a new mount
 		if !alreadyMounted {
-			config.Mounts = append(config.Mounts, Mount{
+			config.Mounts = append(config.Mounts, runtime.Mount{
 				Source:   source,
 				Target:   target,
 				ReadOnly: false,
@@ -640,10 +641,14 @@ func (*Client) needsNetworkAccess(profile *permissions.Profile, transportType st
 	return false
 }
 
-func (c *Client) getPermissionConfigFromProfile(profile *permissions.Profile, transportType string) (*PermissionConfig, error) {
+// getPermissionConfigFromProfile converts a permission profile to a container permission config
+func (c *Client) getPermissionConfigFromProfile(
+	profile *permissions.Profile,
+	transportType string,
+) (*runtime.PermissionConfig, error) {
 	// Start with a default permission config
-	config := &PermissionConfig{
-		Mounts:      []Mount{},
+	config := &runtime.PermissionConfig{
+		Mounts:      []runtime.Mount{},
 		NetworkMode: "none",
 		CapDrop:     []string{"ALL"},
 		CapAdd:      []string{},
@@ -665,4 +670,71 @@ func (c *Client) getPermissionConfigFromProfile(profile *permissions.Profile, tr
 	}
 
 	return config, nil
+}
+
+// Error types for container operations
+var (
+	// ErrContainerNotFound is returned when a container is not found
+	ErrContainerNotFound = fmt.Errorf("container not found")
+
+	// ErrContainerAlreadyExists is returned when a container already exists
+	ErrContainerAlreadyExists = fmt.Errorf("container already exists")
+
+	// ErrContainerNotRunning is returned when a container is not running
+	ErrContainerNotRunning = fmt.Errorf("container not running")
+
+	// ErrContainerAlreadyRunning is returned when a container is already running
+	ErrContainerAlreadyRunning = fmt.Errorf("container already running")
+
+	// ErrRuntimeNotFound is returned when a container runtime is not found
+	ErrRuntimeNotFound = fmt.Errorf("container runtime not found")
+
+	// ErrInvalidRuntimeType is returned when an invalid runtime type is specified
+	ErrInvalidRuntimeType = fmt.Errorf("invalid runtime type")
+
+	// ErrAttachFailed is returned when attaching to a container fails
+	ErrAttachFailed = fmt.Errorf("failed to attach to container")
+
+	// ErrContainerExited is returned when a container has exited unexpectedly
+	ErrContainerExited = fmt.Errorf("container exited unexpectedly")
+)
+
+// ContainerError represents an error related to container operations
+type ContainerError struct {
+	// Err is the underlying error
+	Err error
+	// ContainerID is the ID of the container
+	ContainerID string
+	// Message is an optional error message
+	Message string
+}
+
+// Error returns the error message
+func (e *ContainerError) Error() string {
+	if e.Message != "" {
+		if e.ContainerID != "" {
+			return fmt.Sprintf("%s: %s (container: %s)", e.Err, e.Message, e.ContainerID)
+		}
+		return fmt.Sprintf("%s: %s", e.Err, e.Message)
+	}
+
+	if e.ContainerID != "" {
+		return fmt.Sprintf("%s (container: %s)", e.Err, e.ContainerID)
+	}
+
+	return e.Err.Error()
+}
+
+// Unwrap returns the underlying error
+func (e *ContainerError) Unwrap() error {
+	return e.Err
+}
+
+// NewContainerError creates a new container error
+func NewContainerError(err error, containerID, message string) *ContainerError {
+	return &ContainerError{
+		Err:         err,
+		ContainerID: containerID,
+		Message:     message,
+	}
 }

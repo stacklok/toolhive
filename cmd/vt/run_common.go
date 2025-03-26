@@ -10,8 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/stacklok/vibetool/pkg/secrets"
-
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/vibetool/pkg/auth"
@@ -22,6 +20,7 @@ import (
 	"github.com/stacklok/vibetool/pkg/networking"
 	"github.com/stacklok/vibetool/pkg/permissions"
 	"github.com/stacklok/vibetool/pkg/process"
+	"github.com/stacklok/vibetool/pkg/secrets"
 	"github.com/stacklok/vibetool/pkg/transport"
 )
 

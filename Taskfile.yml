@@ -7,6 +7,11 @@ tasks:
       - golangci-lint run ./...
       - go vet ./...
 
+  lint-fix:
+    desc: Run linting tools, and apply fixes.
+    cmds:
+      - golangci-lint run --fix ./...
+
   test:
     desc: Run tests
     cmds:

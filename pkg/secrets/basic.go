@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"sync"
 
 	"github.com/adrg/xdg"
@@ -19,6 +20,7 @@ type BasicManager struct {
 	mu       sync.RWMutex // Protects concurrent access to secrets map
 }
 
+// GetSecret retrieves a secret from the secret store.
 func (b *BasicManager) GetSecret(name string) (string, error) {
 	if name == "" {
 		return "", errors.New("secret name cannot be empty")
@@ -34,6 +36,7 @@ func (b *BasicManager) GetSecret(name string) (string, error) {
 	return value, nil
 }
 
+// SetSecret stores a secret in the secret store.
 func (b *BasicManager) SetSecret(name, value string) error {
 	if name == "" {
 		return errors.New("secret name cannot be empty")
@@ -46,6 +49,7 @@ func (b *BasicManager) SetSecret(name, value string) error {
 	return b.updateFile()
 }
 
+// DeleteSecret removes a secret from the secret store.
 func (b *BasicManager) DeleteSecret(name string) error {
 	if name == "" {
 		return errors.New("secret name cannot be empty")
@@ -102,7 +106,8 @@ type fileStructure struct {
 // BasicManagerFactory is an implementation of the ManagerFactory interface for BasicManager.
 type BasicManagerFactory struct{}
 
-func (b BasicManagerFactory) Build(config map[string]interface{}) (Manager, error) {
+// Build creates an instance of BasicManager.
+func (BasicManagerFactory) Build(config map[string]interface{}) (Manager, error) {
 	filePath, ok := config["secretsFile"].(string)
 	if !ok {
 		return nil, errors.New("secretsFile is required")
@@ -113,6 +118,8 @@ func (b BasicManagerFactory) Build(config map[string]interface{}) (Manager, erro
 		log.Println("WARNING: BasicManager is not secure for production use")
 	}
 
+	filePath = path.Clean(filePath)
+	// #nosec G304: File path is not configurable at this time.
 	secretsFile, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open secrets file: %w", err)
@@ -147,9 +154,9 @@ func (b BasicManagerFactory) Build(config map[string]interface{}) (Manager, erro
 // TODO: Remove once we support more than one provider
 func CreateDefaultSecretsManager() (Manager, error) {
 	// TODO: make this configurable?
-	path, err := xdg.DataFile("vibetool/secrets")
+	secretsPath, err := xdg.DataFile("vibetool/secrets")
 	if err != nil {
 		return nil, fmt.Errorf("unable to access secrets file path %v", err)
 	}
-	return BasicManagerFactory{}.Build(map[string]any{"secretsFile": path})
+	return BasicManagerFactory{}.Build(map[string]any{"secretsFile": secretsPath})
 }

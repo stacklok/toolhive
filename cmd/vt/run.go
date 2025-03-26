@@ -25,6 +25,7 @@ var (
 	runNoClientConfig    bool
 	runForeground        bool
 	runVolumes           []string
+	runSecrets           []string
 )
 
 func init() {
@@ -58,6 +59,12 @@ func init() {
 		"v",
 		[]string{},
 		"Mount a volume into the container (format: host-path:container-path[:ro])",
+	)
+	runCmd.Flags().StringArrayVar(
+		&runSecrets,
+		"secret",
+		[]string{},
+		"Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)",
 	)
 
 	// Add OIDC validation flags
@@ -101,6 +108,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		OIDCClientID:      oidcClientID,
 		Debug:             debugMode,
 		Volumes:           runVolumes,
+		Secrets:           runSecrets,
 	}
 
 	// Run the MCP server

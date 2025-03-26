@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/stacklok/vibetool/pkg/secrets"
+
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/vibetool/pkg/auth"
@@ -73,6 +75,10 @@ type RunOptions struct {
 	// Volumes are the directory mounts to pass to the container
 	// Format: "host-path:container-path[:ro]"
 	Volumes []string
+
+	// Secrets are the secret parameters to pass to the container
+	// Format: "<secret name>,target=<target environment variable>"
+	Secrets []string
 }
 
 // RunMCPServer runs an MCP server with the specified options
@@ -105,6 +111,22 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 
 	// Generate a container name if not provided
 	containerName, baseName := container.GetOrGenerateContainerName(options.Name, options.Image)
+
+	// If any secrets are specified, attempt to load them, and add to list of environment variables.
+	if len(runSecrets) > 0 {
+		secretManager, err := secrets.CreateDefaultSecretsManager()
+		if err != nil {
+			return fmt.Errorf("error instantiating secret manager %v", err)
+		}
+		secretVariables, err := environment.ParseSecretParameters(runSecrets, secretManager)
+		if err != nil {
+			return fmt.Errorf("failed to get secrets: %v", err)
+		}
+
+		for key, value := range secretVariables {
+			runEnv = append(runEnv, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
 
 	// Parse transport mode
 	transportType, err := transport.ParseTransportType(options.Transport)

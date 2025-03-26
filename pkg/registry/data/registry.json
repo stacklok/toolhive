@@ -760,7 +760,7 @@
     },
     "memory": {
       "image": "mcp/memory:latest",
-      "description": "A basic implementation of persistent memory using a local knowledge graph. ",
+      "description": "A basic implementation of persistent memory using a local knowledge graph. This lets Claude remember information about the user across chats.",
       "transport": "stdio",
       "permissions": {
         "read": [],
@@ -779,8 +779,7 @@
         }
       },
       "tools": [
-        "Tools",
-        "Create",
+        "create_entities",
         "create_relations",
         "add_observations",
         "delete_entities",
@@ -788,28 +787,12 @@
         "delete_relations",
         "read_graph",
         "search_nodes",
-        "open_nodes",
-        "Usage"
+        "open_nodes"
       ],
       "env_vars": [
         {
-          "name": "API",
-          "description": "### Tools",
-          "required": false
-        },
-        {
-          "name": "MCP",
-          "description": "server is licensed under the MIT License",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
+          "name": "MEMORY_FILE_PATH",
+          "description": "Path to the memory storage JSON file (default: memory.json in the server directory)",
           "required": false
         }
       ],
@@ -821,21 +804,18 @@
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
-        "add_observations",
-        "basic",
-        "create",
-        "create_relations",
-        "delete_entities",
-        "delete_observations",
-        "delete_relations",
+        "entities",
         "graph",
-        "implementation",
-        "knowledge"
+        "knowledge",
+        "memory",
+        "observations",
+        "persistent",
+        "relations"
       ]
     },
     "postgres": {
       "image": "mcp/postgres:latest",
-      "description": "A Model Context Protocol server that provides read-only access to PostgreSQL databases",
+      "description": "A Model Context Protocol server that provides read-only access to PostgreSQL databases. This server enables LLMs to inspect database schemas and execute read-only queries.",
       "transport": "stdio",
       "permissions": {
         "read": [
@@ -858,41 +838,12 @@
         }
       },
       "tools": [
-        "Tools"
+        "query"
       ],
-      "env_vars": [
-        {
-          "name": "SQL",
-          "description": "A Model Context Protocol server that provides read-only access to PostgreSQL databases",
-          "required": false
-        },
-        {
-          "name": "READ",
-          "description": "ONLY transaction",
-          "required": false
-        },
-        {
-          "name": "JSON",
-          "description": "schema information for each table",
-          "required": false
-        },
-        {
-          "name": "MCP",
-          "description": "server is licensed under the MIT License",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
-        }
+      "env_vars": [],
+      "args": [
+        "postgresql://host:port/db-name"
       ],
-      "args": [],
       "metadata": {
         "stars": 2,
         "pulls": 3341,
@@ -900,14 +851,13 @@
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
-        "access",
-        "databases",
-        "only",
+        "database",
         "postgres",
         "postgresql",
-        "provides",
-        "read",
-        "tools"
+        "query",
+        "read-only",
+        "schema",
+        "sql"
       ]
     },
     "puppeteer": {

@@ -26,3 +26,4 @@ go.work
 # Build output
 /bin/
 /dist/
+/coverage/

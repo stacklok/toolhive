@@ -17,6 +17,15 @@ tasks:
     cmds:
       - go test -v ./...
 
+  test-coverage:
+    desc: Run tests with coverage analysis
+    cmds:
+      - mkdir -p coverage
+      - go test -coverprofile=coverage/coverage.out ./...
+      - go tool cover -func=coverage/coverage.out
+      - echo "Generating HTML coverage report in coverage/coverage.html"
+      - go tool cover -html=coverage/coverage.out -o coverage/coverage.html
+
   build:
     desc: Build the binary
     cmds:
@@ -31,3 +40,7 @@ tasks:
   all:
     desc: Run linting, tests, and build
     deps: [lint, test, build]
+
+  all-with-coverage:
+    desc: Run linting, tests with coverage, and build
+    deps: [lint, test-coverage, build]

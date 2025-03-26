@@ -112,18 +112,18 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 	containerName, baseName := container.GetOrGenerateContainerName(options.Name, options.Image)
 
 	// If any secrets are specified, attempt to load them, and add to list of environment variables.
-	if len(runSecrets) > 0 {
+	if len(options.Secrets) > 0 {
 		secretManager, err := secrets.CreateDefaultSecretsManager()
 		if err != nil {
 			return fmt.Errorf("error instantiating secret manager %v", err)
 		}
-		secretVariables, err := environment.ParseSecretParameters(runSecrets, secretManager)
+		secretVariables, err := environment.ParseSecretParameters(options.Secrets, secretManager)
 		if err != nil {
 			return fmt.Errorf("failed to get secrets: %v", err)
 		}
 
 		for key, value := range secretVariables {
-			runEnv = append(runEnv, fmt.Sprintf("%s=%s", key, value))
+			options.EnvVars = append(options.EnvVars, fmt.Sprintf("%s=%s", key, value))
 		}
 	}
 
@@ -446,6 +446,11 @@ func detachProcess(_ *cobra.Command, options RunOptions) error {
 		detachedArgs = append(detachedArgs, "--volume", volume)
 	}
 
+	// Add secrets if they were provided
+	for _, secret := range options.Secrets {
+		detachedArgs = append(detachedArgs, "--secret", secret)
+	}
+
 	// Add OIDC flags if they were provided
 	if options.OIDCIssuer != "" {
 		detachedArgs = append(detachedArgs, "--oidc-issuer", options.OIDCIssuer)
@@ -503,4 +508,32 @@ func detachProcess(_ *cobra.Command, options RunOptions) error {
 	fmt.Printf("Use 'vibetool stop %s' to stop the server\n", options.Name)
 
 	return nil
+}
+
+func findEnvironmentVariableFromSecrets(secs []string, envVarName string) bool {
+	for _, secret := range secs {
+		if isSecretReferenceEnvVar(secret, envVarName) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isSecretReferenceEnvVar(secret, envVarName string) bool {
+	parts := strings.Split(secret, ",")
+	if len(parts) != 2 {
+		return false
+	}
+
+	targetSplit := strings.Split(parts[1], "=")
+	if len(targetSplit) != 2 {
+		return false
+	}
+
+	if targetSplit[1] == envVarName {
+		return true
+	}
+
+	return false
 }

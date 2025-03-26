@@ -68,6 +68,7 @@ var (
 	registryRunNoClientConfig    bool
 	registryRunForeground        bool
 	registryRunVolumes           []string
+	registryRunSecrets           []string
 )
 
 func init() {
@@ -131,6 +132,12 @@ func init() {
 		"v",
 		[]string{},
 		"Mount a volume into the container (format: host-path:container-path[:ro])",
+	)
+	registryRunCmd.Flags().StringArrayVar(
+		&registryRunSecrets,
+		"secret",
+		[]string{},
+		"Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)",
 	)
 
 	// Add OIDC validation flags
@@ -358,6 +365,8 @@ func truncateString(s string, maxLen int) string {
 }
 
 // registryRunCmdFunc handles the registry run command
+//
+//nolint:gocyclo // This function is complex due to the number of steps involved
 func registryRunCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get the server name from arguments
 	serverName := args[0]
@@ -397,6 +406,11 @@ func registryRunCmdFunc(cmd *cobra.Command, args []string) error {
 					found = true
 					break
 				}
+			}
+
+			// This might be set as a secret
+			if !found {
+				found = findEnvironmentVariableFromSecrets(registryRunSecrets, envVar.Name)
 			}
 
 			if !found {
@@ -471,6 +485,7 @@ func registryRunCmdFunc(cmd *cobra.Command, args []string) error {
 		OIDCClientID:      oidcClientID,
 		Debug:             debugMode,
 		Volumes:           registryRunVolumes,
+		Secrets:           registryRunSecrets,
 	}
 
 	// Create context

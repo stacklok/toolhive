@@ -73,12 +73,3 @@ func SetTransportEnvironmentVariables(envVars map[string]string, transportType s
 		}
 	}
 }
-
-// AddStandardLabels adds standard labels to a container
-func AddStandardLabels(labels map[string]string, containerName, transportType string, port int) {
-	// Add standard labels
-	labels["vibetool"] = "true"
-	labels["vibetool-name"] = containerName
-	labels["vibetool-transport"] = transportType
-	labels["vibetool-port"] = fmt.Sprintf("%d", port)
-}

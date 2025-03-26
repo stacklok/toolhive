@@ -25,6 +25,9 @@ const (
 
 	// LabelPort is the label that contains the port
 	LabelPort = "vibetool-port"
+
+	// LabelToolType is the label that indicates the type of tool
+	LabelToolType = "vibetool-tool-type"
 )
 
 // AddStandardLabels adds standard labels to a container
@@ -35,6 +38,9 @@ func AddStandardLabels(labels map[string]string, containerName, containerBaseNam
 	labels[LabelBaseName] = containerBaseName
 	labels[LabelTransport] = transportType
 	labels[LabelPort] = fmt.Sprintf("%d", port)
+
+	// TODO: In the future, we'll support different tool types beyond just "mcp"
+	labels[LabelToolType] = "mcp"
 }
 
 // FormatVibeToolFilter formats a filter for Vibe Tool containers
@@ -76,4 +82,9 @@ func GetPort(labels map[string]string) (int, error) {
 	}
 
 	return port, nil
+}
+
+// GetToolType gets the tool type from labels
+func GetToolType(labels map[string]string) string {
+	return labels[LabelToolType]
 }

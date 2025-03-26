@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/stacklok/vibetool/pkg/container"
+	rt "github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/networking"
 	"github.com/stacklok/vibetool/pkg/permissions"
 )
@@ -22,7 +23,7 @@ type SSETransport struct {
 	targetPort    int
 	containerID   string
 	containerName string
-	runtime       container.Runtime
+	runtime       rt.Runtime
 	debug         bool
 	middlewares   []Middleware
 
@@ -36,7 +37,7 @@ type SSETransport struct {
 	shutdownCh chan struct{}
 
 	// Container monitor
-	monitor *container.Monitor
+	monitor rt.Monitor
 	errorCh <-chan error
 }
 
@@ -45,7 +46,7 @@ func NewSSETransport(
 	host string,
 	port int,
 	targetPort int,
-	runtime container.Runtime,
+	runtime rt.Runtime,
 	debug bool,
 	middlewares ...Middleware,
 ) *SSETransport {
@@ -75,7 +76,7 @@ func (t *SSETransport) Port() int {
 }
 
 // Setup prepares the transport for use.
-func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, containerName string, image string, cmdArgs []string,
+func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerName string, image string, cmdArgs []string,
 	envVars, labels map[string]string, permissionProfile *permissions.Profile) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -95,14 +96,14 @@ func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, con
 	envVars["MCP_HOST"] = LocalhostName
 
 	// Create container options
-	containerOptions := container.NewCreateContainerOptions()
+	containerOptions := rt.NewCreateContainerOptions()
 
 	// For SSE transport, expose the target port in the container
 	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)
 	containerOptions.ExposedPorts[containerPortStr] = struct{}{}
 
 	// Create port bindings for localhost
-	portBindings := []container.PortBinding{
+	portBindings := []rt.PortBinding{
 		{
 			HostIP:   "127.0.0.1", // IPv4 localhost
 			HostPort: fmt.Sprintf("%d", t.targetPort),
@@ -111,7 +112,7 @@ func (t *SSETransport) Setup(ctx context.Context, runtime container.Runtime, con
 
 	// Check if IPv6 is available and add IPv6 localhost binding
 	if networking.IsIPv6Available() {
-		portBindings = append(portBindings, container.PortBinding{
+		portBindings = append(portBindings, rt.PortBinding{
 			HostIP:   "::1", // IPv6 localhost
 			HostPort: fmt.Sprintf("%d", t.targetPort),
 		})

@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/stacklok/vibetool/pkg/container"
+	rt "github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/permissions"
 )
 
@@ -21,7 +22,7 @@ type StdioTransport struct {
 	port          int
 	containerID   string
 	containerName string
-	runtime       container.Runtime
+	runtime       rt.Runtime
 	debug         bool
 	middlewares   []Middleware
 
@@ -40,13 +41,13 @@ type StdioTransport struct {
 	stdout io.ReadCloser
 
 	// Container monitor
-	monitor *container.Monitor
+	monitor rt.Monitor
 }
 
 // NewStdioTransport creates a new stdio transport.
 func NewStdioTransport(
 	port int,
-	runtime container.Runtime,
+	runtime rt.Runtime,
 	debug bool,
 	middlewares ...Middleware,
 ) *StdioTransport {
@@ -72,7 +73,7 @@ func (t *StdioTransport) Port() int {
 // Setup prepares the transport for use.
 func (t *StdioTransport) Setup(
 	ctx context.Context,
-	runtime container.Runtime,
+	runtime rt.Runtime,
 	containerName string,
 	image string,
 	cmdArgs []string,
@@ -89,7 +90,7 @@ func (t *StdioTransport) Setup(
 	envVars["MCP_TRANSPORT"] = "stdio"
 
 	// Create container options
-	containerOptions := container.NewCreateContainerOptions()
+	containerOptions := rt.NewCreateContainerOptions()
 	containerOptions.AttachStdio = true
 
 	// Create the container

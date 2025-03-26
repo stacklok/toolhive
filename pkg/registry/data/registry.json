@@ -25,44 +25,9 @@
         }
       },
       "tools": [
-        "Fetch",
-        "Available",
-        "fetch",
-        "Prompts",
-        "Configuration",
-        "json",
-        "Customization",
-        "Customization",
-        "ModelContextProtocol",
-        "This",
-        "License"
+        "fetch"
       ],
       "env_vars": [
-        {
-          "name": "MCP",
-          "description": "Server",
-          "required": false
-        },
-        {
-          "name": "HTML",
-          "description": "to markdown for easier consumption",
-          "required": false
-        },
-        {
-          "name": "URL",
-          "description": "from the internet and extracts its contents as markdown",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
-        }
       ],
       "args": [],
       "metadata": {
@@ -72,15 +37,15 @@
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
-        "available",
-        "capabilities",
-        "configuration",
         "content",
-        "customization",
+        "html",
+        "markdown",
         "fetch",
         "fetching",
+        "get",
+        "wget",
         "json",
-        "license",
+        "curl",
         "modelcontextprotocol"
       ]
     },
@@ -105,39 +70,27 @@
         }
       },
       "tools": [
-        "Tools",
-        "Shows",
-        "Shows",
-        "Shows",
-        "Shows",
-        "Records",
-        "Adds",
-        "Unstages",
-        "Shows"
+        "git_status",
+        "git_diff_unstaged",
+        "git_diff_staged",
+        "git_diff",
+        "git_commit",
+        "git_add",
+        "git_reset",
+        "git_log",
+        "git_create_branch",
+        "git_checkout",
+        "git_show",
+        "git_init"
       ],
-      "env_vars": [
-        {
-          "name": "MCP",
-          "description": "server",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
-        }
-      ],
+      "env_vars": [],
       "args": [],
       "metadata": {
         "stars": 1,
         "pulls": 1746,
         "last_updated": "2024-12-20T01:00:10.05033Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "adds",
         "automation",
@@ -171,67 +124,17 @@
         }
       },
       "tools": [
-        "Time",
-        "Available",
         "get_current_time",
-        "Required",
-        "convert_time",
-        "Configuration",
-        "json",
-        "details",
-        "Customization",
-        "Example",
-        "Example",
-        "json",
-        "Response",
-        "json",
-        "Response",
-        "Examples",
-        "License"
+        "convert_time"
       ],
-      "env_vars": [
-        {
-          "name": "MCP",
-          "description": "Server",
-          "required": false
-        },
-        {
-          "name": "IANA",
-          "description": "timezone names, with automatic system timezone detection",
-          "required": false
-        },
-        {
-          "name": "HH",
-          "description": "MM)",
-          "required": false
-        },
-        {
-          "name": "PM",
-          "description": "in New York, what time is it in London?\"",
-          "required": false
-        },
-        {
-          "name": "AM",
-          "description": "Tokyo time to New York time\"",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
-        }
-      ],
+      "env_vars": [],
       "args": [],
       "metadata": {
         "stars": 1,
         "pulls": 1509,
         "last_updated": "2024-12-20T01:00:35.453956Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "auto",
         "available",
@@ -266,28 +169,13 @@
         }
       },
       "tools": [
-        "Tools"
+        "get_sentry_issue"
       ],
       "env_vars": [
         {
-          "name": "MCP",
-          "description": "server",
-          "required": false
-        },
-        {
-          "name": "ID",
-          "description": "or URL",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
+          "name": "SENTRY_TOKEN",
+          "description": "Sentry authentication token for API access",
+          "required": true
         }
       ],
       "args": [],
@@ -296,6 +184,7 @@
         "pulls": 255,
         "last_updated": "2024-12-20T01:00:56.261511Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "analyzing",
         "issues",
@@ -329,51 +218,21 @@
         }
       },
       "tools": [
-        "Tools"
+        "read_query",
+        "write_query",
+        "create_table",
+        "list_tables",
+        "describe-table",
+        "append_insight"
       ],
-      "env_vars": [
-        {
-          "name": "MCP",
-          "description": "Server",
-          "required": false
-        },
-        {
-          "name": "SQL",
-          "description": "queries, analyzing business data, and automatically generating business insight memos",
-          "required": false
-        },
-        {
-          "name": "SELECT",
-          "description": "queries to read data from the database",
-          "required": false
-        },
-        {
-          "name": "DELETE",
-          "description": "queries",
-          "required": false
-        },
-        {
-          "name": "CREATE",
-          "description": "TABLE SQL statement",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
-        }
-      ],
+      "env_vars": [],
       "args": [],
       "metadata": {
         "stars": 2,
         "pulls": 1986,
         "last_updated": "2024-12-20T01:01:15.906956Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "analysis",
         "auto",
@@ -408,58 +267,23 @@
         }
       },
       "tools": [
-        "Tools"
+        "retrieve_from_aws_kb"
       ],
       "env_vars": [
         {
           "name": "AWS_ACCESS_KEY_ID",
-          "description": "Found in configuration example: YOUR_ACCESS_KEY_HERE",
+          "description": "AWS access key ID for Bedrock Agent Runtime operations",
           "required": true
         },
         {
           "name": "AWS_SECRET_ACCESS_KEY",
-          "description": "Found in configuration example: YOUR_SECRET_ACCESS_KEY_HERE",
+          "description": "AWS secret access key for Bedrock Agent Runtime operations",
           "required": true
         },
         {
           "name": "AWS_REGION",
-          "description": "Found in configuration example: YOUR_AWS_REGION_HERE",
+          "description": "AWS region where the Knowledge Base is located",
           "required": true
-        },
-        {
-          "name": "AWS",
-          "description": "Knowledge Base Retrieval MCP Server",
-          "required": false
-        },
-        {
-          "name": "MCP",
-          "description": "server implementation for retrieving information from the AWS Knowledge Base using the Bedrock Agent Runtime",
-          "required": false
-        },
-        {
-          "name": "RAG",
-          "description": "(Retrieval-Augmented Generation)**: Retrieve context from the AWS Knowledge Base based on a query and a Knowledge Base ID",
-          "required": false
-        },
-        {
-          "name": "ID",
-          "description": "of the AWS Knowledge Base",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
-        },
-        {
-          "name": "README",
-          "description": "assumes that your server package is named `@modelcontextprotocol/server-aws-kb-retrieval`",
-          "required": false
         }
       ],
       "args": [],
@@ -468,6 +292,7 @@
         "pulls": 279,
         "last_updated": "2024-12-20T16:14:06.482533Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "agent",
         "aws",
@@ -508,35 +333,14 @@
         }
       },
       "tools": [
-        "Tools",
-        "Execute",
+        "brave_web_search",
         "brave_local_search"
       ],
       "env_vars": [
         {
           "name": "BRAVE_API_KEY",
-          "description": "Found in configuration example: YOUR_API_KEY_HERE",
+          "description": "Brave Search API key for web and local search capabilities",
           "required": true
-        },
-        {
-          "name": "MCP",
-          "description": "Server",
-          "required": false
-        },
-        {
-          "name": "API",
-          "description": "Key",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
         }
       ],
       "args": [],
@@ -545,6 +349,7 @@
         "pulls": 4220,
         "last_updated": "2024-12-20T16:14:13.058756Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "api",
         "both",
@@ -579,28 +384,13 @@
         }
       },
       "tools": [
-        "Tools"
+        "generate_image"
       ],
       "env_vars": [
         {
           "name": "EVERART_API_KEY",
-          "description": "Found in configuration example: your_key_here",
-          "required": false
-        },
-        {
-          "name": "MCP",
-          "description": "Server",
-          "required": false
-        },
-        {
-          "name": "ID",
-          "description": "(default: \"207910310772879360\")",
-          "required": false
-        },
-        {
-          "name": "URL",
-          "description": "https://storage",
-          "required": false
+          "description": "EverArt API key for image generation",
+          "required": true
         }
       ],
       "args": [],
@@ -609,6 +399,7 @@
         "pulls": 163,
         "last_updated": "2024-12-20T16:14:22.715917Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "api",
         "claude",
@@ -641,46 +432,22 @@
         }
       },
       "tools": [
-        "Tools",
-        "Simple",
-        "Adds",
-        "Demonstrates",
-        "Demonstrates",
-        "Returns"
+        "echo",
+        "add",
+        "longRunningOperation",
+        "sampleLLM",
+        "getTinyImage",
+        "printEnv",
+        "annotatedMessage"
       ],
-      "env_vars": [
-        {
-          "name": "MCP",
-          "description": "Server",
-          "required": false
-        },
-        {
-          "name": "LLM",
-          "description": "sampling capability using MCP sampling feature",
-          "required": false
-        },
-        {
-          "name": "PNG",
-          "description": "image data",
-          "required": false
-        },
-        {
-          "name": "JSON",
-          "description": "string of all environment variables",
-          "required": false
-        },
-        {
-          "name": "URI",
-          "description": "pattern: `test://static/resource/{even_number}`",
-          "required": false
-        }
-      ],
+      "env_vars": [],
       "args": [],
       "metadata": {
         "stars": 2,
         "pulls": 288,
         "last_updated": "2024-12-20T16:14:33.343336Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "adds",
         "all",
@@ -719,8 +486,7 @@
         }
       },
       "tools": [
-        "Tools",
-        "Read",
+        "read_file",
         "read_multiple_files",
         "write_file",
         "edit_file",
@@ -731,34 +497,14 @@
         "get_file_info",
         "list_allowed_directories"
       ],
-      "env_vars": [
-        {
-          "name": "MCP",
-          "description": "Server",
-          "required": false
-        },
-        {
-          "name": "API",
-          "description": "### Resources",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
-        }
-      ],
+      "env_vars": [],
       "args": [],
       "metadata": {
         "stars": 1,
         "pulls": 4031,
         "last_updated": "2024-12-20T16:14:44.067824Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "create_directory",
         "edit_file",
@@ -843,6 +589,7 @@
         "pulls": 647,
         "last_updated": "2024-12-20T21:45:48.670733Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "allow",
         "drive",
@@ -949,7 +696,7 @@
         "pulls": 4563,
         "last_updated": "2024-12-20T16:14:56.311561Z"
       },
-      "repository_url": "https://github.com/settings/tokens",
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "api",
         "create",
@@ -1020,7 +767,7 @@
         "pulls": 844,
         "last_updated": "2024-12-20T16:15:05.628096Z"
       },
-      "repository_url": "https://gitlab.com/api/v4",
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "api",
         "create",
@@ -1097,6 +844,7 @@
         "pulls": 551,
         "last_updated": "2024-12-20T16:15:13.552248Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "api",
         "calculate",
@@ -1169,6 +917,7 @@
         "pulls": 2514,
         "last_updated": "2024-12-20T16:15:23.817084Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "add_observations",
         "basic",
@@ -1247,6 +996,7 @@
         "pulls": 3341,
         "last_updated": "2024-12-20T16:15:32.154691Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "access",
         "databases",
@@ -1336,6 +1086,7 @@
         "pulls": 6995,
         "last_updated": "2024-12-20T16:15:48.067162Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "automation",
         "browser",
@@ -1395,6 +1146,7 @@
         "pulls": 4031,
         "last_updated": "2024-12-20T16:15:56.759355Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "approach",
         "dynamic",
@@ -1474,6 +1226,7 @@
         "pulls": 627,
         "last_updated": "2024-12-20T16:16:05.464285Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "api",
         "claude",
@@ -1515,6 +1268,7 @@
         "pulls": 319,
         "last_updated": "2025-01-11T00:50:50.836572Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "inspector"
       ]
@@ -1547,6 +1301,7 @@
         "pulls": 10024,
         "last_updated": "2025-03-23T06:24:28.608684Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "docker"
       ]
@@ -1579,6 +1334,7 @@
         "pulls": 626,
         "last_updated": "2025-03-21T22:37:36.366924Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "run"
       ]
@@ -1611,6 +1367,7 @@
         "pulls": 421,
         "last_updated": "2025-03-05T21:16:07.523715Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "redis"
       ]
@@ -1643,6 +1400,7 @@
         "pulls": 556,
         "last_updated": "2025-03-13T00:32:21.85191Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "ask",
         "perplexity",
@@ -1677,6 +1435,7 @@
         "pulls": 54,
         "last_updated": "2025-03-16T17:26:31.491661Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "notion",
         "notion-server",
@@ -1711,6 +1470,7 @@
         "pulls": 89,
         "last_updated": "2025-03-21T21:32:38.626915Z"
       },
+      "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "atlassian"
       ]

@@ -397,10 +397,9 @@ func sanitizeBinaryString(input string) string {
 // isSpace reports whether r is a space character as defined by JSON.
 // These are the valid space characters in this implementation:
 //   - ' ' (U+0020, SPACE)
-//   - '\t' (U+0009, CHARACTER TABULATION)
 //   - '\n' (U+000A, LINE FEED)
 func isSpace(r rune) bool {
-	return r == ' ' || r == '\t' || r == '\n'
+	return r == ' ' || r == '\n'
 }
 
 // parseAndForwardJSONRPC parses a JSON-RPC message and forwards it.

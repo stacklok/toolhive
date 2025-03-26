@@ -1013,7 +1013,7 @@
         "write": [],
         "network": {
           "outbound": {
-            "insecure_allow_all": false,
+            "insecure_allow_all": true,
             "allow_transport": [
               "tcp"
             ],
@@ -1025,8 +1025,7 @@
         }
       },
       "tools": [
-        "Tools",
-        "Navigate",
+        "puppeteer_navigate",
         "puppeteer_screenshot",
         "puppeteer_click",
         "puppeteer_hover",
@@ -1036,43 +1035,8 @@
       ],
       "env_vars": [
         {
-          "name": "URL",
-          "description": "in the browser",
-          "required": false
-        },
-        {
-          "name": "CSS",
-          "description": "selector for element to screenshot",
-          "required": false
-        },
-        {
-          "name": "SELECT",
-          "description": "tag",
-          "required": false
-        },
-        {
-          "name": "PNG",
-          "description": "images of captured screenshots",
-          "required": false
-        },
-        {
-          "name": "NPX",
-          "description": "version will open a browser window",
-          "required": false
-        },
-        {
-          "name": "MCP",
-          "description": "server is licensed under the MIT License",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
+          "name": "DOCKER_CONTAINER",
+          "description": "Set to true when running in Docker to use headless mode",
           "required": false
         }
       ],
@@ -1179,41 +1143,25 @@
         }
       },
       "tools": [
-        "Tools",
-        "List",
-        "Post",
-        "Reply"
+        "slack_list_channels",
+        "slack_post_message",
+        "slack_reply_to_thread",
+        "slack_add_reaction",
+        "slack_get_channel_history",
+        "slack_get_thread_replies",
+        "slack_get_users",
+        "slack_get_user_profile"
       ],
       "env_vars": [
         {
           "name": "SLACK_BOT_TOKEN",
-          "description": "Found in configuration example: xoxb-your-bot-token",
-          "required": false
+          "description": "Bot User OAuth Token that starts with xoxb-",
+          "required": true
         },
         {
           "name": "SLACK_TEAM_ID",
-          "description": "Found in configuration example: T01234567",
-          "required": false
-        },
-        {
-          "name": "MCP",
-          "description": "Server",
-          "required": false
-        },
-        {
-          "name": "ID",
-          "description": "of the channel to post to",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
+          "description": "Slack Team ID that starts with T",
+          "required": true
         }
       ],
       "args": [],

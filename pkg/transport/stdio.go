@@ -345,8 +345,12 @@ func (t *StdioTransport) processBuffer(ctx context.Context, buffer *bytes.Buffer
 			break
 		}
 
-		// Remove the trailing newline
-		line = line[:len(line)-1]
+		// Verify if new line character is present as last character
+		// If so, remove it
+		if len(line) > 0 && line[len(line)-1] == '\n' {
+			// Remove the trailing newline
+			line = line[:len(line)-1]
+		}
 
 		// Try to parse as JSON-RPC
 		if line != "" {
@@ -379,26 +383,23 @@ func sanitizeBinaryString(input string) string {
 
 	// Remove all whitespace and control characters
 	var buffer bytes.Buffer
-	inString := false
 
 	for _, r := range jsonObj {
-		if r == '"' {
-			inString = !inString
+		if unicode.IsPrint(r) || isSpace(r) {
 			buffer.WriteRune(r)
-		} else if inString {
-			// Inside string literals, only keep printable characters
-			if unicode.IsPrint(r) && !unicode.IsSpace(r) {
-				buffer.WriteRune(r)
-			}
-		} else {
-			// Outside string literals, remove whitespace
-			if !unicode.IsSpace(r) {
-				buffer.WriteRune(r)
-			}
 		}
 	}
 
 	return buffer.String()
+}
+
+// isSpace reports whether r is a space character as defined by JSON.
+// These are the valid space characters in this implementation:
+//   - ' ' (U+0020, SPACE)
+//   - '\t' (U+0009, CHARACTER TABULATION)
+//   - '\n' (U+000A, LINE FEED)
+func isSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n'
 }
 
 // parseAndForwardJSONRPC parses a JSON-RPC message and forwards it.
@@ -409,7 +410,7 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	// Check if the line contains binary data
 	hasBinaryData := false
 	for _, c := range line {
-		if c < 32 && c != '\t' && c != '\r' && c != '\n' {
+		if !unicode.IsPrint(c) && !isSpace(c) {
 			hasBinaryData = true
 		}
 	}

@@ -535,48 +535,18 @@
         }
       },
       "tools": [
-        "Tools"
+        "search"
       ],
       "env_vars": [
         {
-          "name": "MCP",
-          "description": "server integrates with Google Drive to allow listing, reading, and searching over files",
-          "required": false
+          "name": "GDRIVE_OAUTH_PATH",
+          "description": "Path to the OAuth keys file for Google Drive API authentication",
+          "required": true
         },
         {
-          "name": "MIME",
-          "description": "types of matching files",
-          "required": false
-        },
-        {
-          "name": "CSV",
-          "description": "- Presentations \u2192 Plain text",
-          "required": false
-        },
-        {
-          "name": "PNG",
-          "description": "- Other files are provided in their native format",
-          "required": false
-        },
-        {
-          "name": "JSON",
-          "description": "file of your client's OAuth keys",
-          "required": false
-        },
-        {
-          "name": "URL",
-          "description": "to open in your browser",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
+          "name": "GDRIVE_CREDENTIALS_PATH",
+          "description": "Path to save/load Google Drive API credentials",
+          "required": true
         }
       ],
       "args": [],
@@ -587,21 +557,22 @@
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
-        "allow",
         "drive",
         "files",
         "gdrive",
         "google",
         "integrates",
         "listing",
-        "over",
         "reading",
-        "searching"
+        "searching",
+        "documents",
+        "spreadsheets",
+        "presentations"
       ]
     },
     "github": {
       "image": "mcp/github:latest",
-      "description": "MCP Server for the GitHub API",
+      "description": "MCP Server for the GitHub API, providing repository management and code operations",
       "transport": "stdio",
       "permissions": {
         "read": [],
@@ -623,67 +594,23 @@
         }
       },
       "tools": [
-        "Tools",
-        "Create",
-        "Push",
-        "Search",
-        "Create",
-        "Create",
-        "Create",
-        "Fork",
-        "Create",
-        "List",
-        "Update",
-        "Search",
-        "Search",
-        "Search",
-        "Gets",
-        "Inputs",
-        "Returns",
-        "Gets",
-        "Inputs",
-        "Returns"
+        "create_repository",
+        "list_repositories",
+        "search_repositories",
+        "search_code",
+        "search_issues",
+        "create_file",
+        "update_file",
+        "create_pull_request",
+        "fork_repository",
+        "get_repository",
+        "get_file_contents"
       ],
       "env_vars": [
         {
           "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
-          "description": "Found in configuration example: <YOUR_TOKEN>",
+          "description": "GitHub personal access token with appropriate permissions",
           "required": true
-        },
-        {
-          "name": "MCP",
-          "description": "Server",
-          "required": false
-        },
-        {
-          "name": "SHA",
-          "description": "of file being replaced (for updates)",
-          "required": false
-        },
-        {
-          "name": "README",
-          "description": "- Returns: Created repository details",
-          "required": false
-        },
-        {
-          "name": "PR",
-          "description": "title",
-          "required": false
-        },
-        {
-          "name": "ISO",
-          "description": "8601 timestamp)",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
         }
       ],
       "args": [],
@@ -697,18 +624,18 @@
         "api",
         "create",
         "fork",
-        "gets",
         "github",
-        "inputs",
         "list",
+        "pull-request",
         "push",
-        "returns",
-        "search"
+        "repository",
+        "search",
+        "update"
       ]
     },
     "gitlab": {
       "image": "mcp/gitlab:latest",
-      "description": "\nMCP Server for the GitLab API, enabling project management, file operations, and more.",
+      "description": "MCP Server for the GitLab API, enabling project management, file operations, and more.",
       "transport": "sse",
       "permissions": {
         "read": [],
@@ -731,29 +658,25 @@
         }
       },
       "tools": [
-        "Tools",
-        "Create",
-        "Push",
-        "Search",
-        "Create",
-        "Create",
-        "Create",
-        "Fork"
+        "create_or_update_file",
+        "push_files",
+        "search_repositories",
+        "create_repository",
+        "get_file_contents",
+        "create_issue",
+        "create_merge_request",
+        "fork_repository",
+        "create_branch"
       ],
       "env_vars": [
         {
-          "name": "E",
-          "description": "nvironment Variables",
-          "required": false
-        },
-        {
           "name": "GITLAB_PERSONAL_ACCESS_TOKEN",
-          "description": "`: Your GitLab personal access token (required)",
+          "description": "GitLab personal access token with appropriate permissions",
           "required": true
         },
         {
           "name": "GITLAB_API_URL",
-          "description": "`: Base URL for GitLab API (optional, defaults to `https://gitlab.com/api/v4`)",
+          "description": "Base URL for GitLab API (optional, defaults to https://gitlab.com/api/v4)",
           "required": false
         }
       ],
@@ -767,14 +690,14 @@
       "tags": [
         "api",
         "create",
-        "enabling",
         "file",
         "fork",
         "gitlab",
         "management",
-        "more",
+        "merge-request",
         "operations",
-        "project"
+        "project",
+        "search"
       ]
     },
     "google-maps": {
@@ -801,37 +724,19 @@
         }
       },
       "tools": [
-        "Tools",
-        "Convert",
-        "Convert",
-        "Search",
-        "Calculate"
+        "maps_geocode",
+        "maps_reverse_geocode",
+        "maps_search_places",
+        "maps_place_details",
+        "maps_distance_matrix",
+        "maps_elevation",
+        "maps_directions"
       ],
       "env_vars": [
         {
           "name": "GOOGLE_MAPS_API_KEY",
-          "description": "Found in configuration example: <YOUR_API_KEY>",
+          "description": "Google Maps API key with appropriate permissions",
           "required": true
-        },
-        {
-          "name": "MCP",
-          "description": "Server",
-          "required": false
-        },
-        {
-          "name": "API",
-          "description": "Key",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
         }
       ],
       "args": [],
@@ -843,13 +748,14 @@
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "api",
-        "calculate",
-        "convert",
+        "directions",
+        "distance",
+        "geocode",
         "google",
         "google-maps",
         "maps",
-        "search",
-        "tools"
+        "places",
+        "search"
       ]
     },
     "memory": {
@@ -1063,7 +969,7 @@
     },
     "sequentialthinking": {
       "image": "mcp/sequentialthinking:latest",
-      "description": "MCP server enabling dynamic problem-solving with a structured, reflective approach.\n\n\n\n\n",
+      "description": "MCP server enabling dynamic problem-solving with a structured, reflective approach that can adapt and evolve as understanding deepens.",
       "transport": "stdio",
       "permissions": {
         "read": [],
@@ -1082,25 +988,9 @@
         }
       },
       "tools": [
-        "Tool"
+        "sequentialthinking"
       ],
-      "env_vars": [
-        {
-          "name": "MCP",
-          "description": "Server",
-          "required": false
-        },
-        {
-          "name": "MIT",
-          "description": "License",
-          "required": false
-        },
-        {
-          "name": "LICENSE",
-          "description": "file in the project repository",
-          "required": false
-        }
-      ],
+      "env_vars": [],
       "args": [],
       "metadata": {
         "stars": 0,
@@ -1117,7 +1007,10 @@
         "sequentialthinking",
         "solving",
         "structured",
-        "tool"
+        "step-by-step",
+        "revision",
+        "branching",
+        "chain-of-thought"
       ]
     },
     "slack": {

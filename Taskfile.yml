@@ -16,7 +16,12 @@ tasks:
     desc: Build the binary
     cmds:
       - mkdir -p bin
-      - go build -o bin/vt ./cmd/vibetool
+      - go build -o bin/vt ./cmd/vt
+
+  install:
+    desc: Install the vt binary to GOPATH/bin
+    cmds:
+      - go install -v ./cmd/vt
 
   all:
     desc: Run linting, tests, and build

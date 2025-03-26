@@ -40,14 +40,14 @@ var configPaths = []struct {
 		Description: "VSCode Roo extension (Linux)",
 		RelPath: []string{
 			".config", "Code", "User", "globalStorage",
-			"rooveterinaryinc.roo-cline", "settings", "cline_mcp_settings.json",
+			"rooveterinaryinc.roo-cline", "settings", "mcp_settings.json",
 		},
 	},
 	{
 		Description: "VSCode Roo extension (macOS)",
 		RelPath: []string{
 			"Library", "Application Support", "Code", "User", "globalStorage",
-			"rooveterinaryinc.roo-cline", "settings", "cline_mcp_settings.json",
+			"rooveterinaryinc.roo-cline", "settings", "mcp_settings.json",
 		},
 	},
 	{

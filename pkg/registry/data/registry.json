@@ -1037,7 +1037,8 @@
         {
           "name": "DOCKER_CONTAINER",
           "description": "Set to true when running in Docker to use headless mode",
-          "required": false
+          "required": false,
+          "default": "true"
         }
       ],
       "args": [],

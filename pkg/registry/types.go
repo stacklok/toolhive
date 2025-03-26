@@ -34,6 +34,7 @@ type EnvVar struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Required    bool   `json:"required"`
+	Default     string `json:"default,omitempty"`
 }
 
 // Metadata represents metadata about an MCP server

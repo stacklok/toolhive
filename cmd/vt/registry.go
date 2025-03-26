@@ -294,7 +294,11 @@ func printTextServerInfo(name string, server *registry.Server) {
 			if envVar.Required {
 				required = " (required)"
 			}
-			fmt.Printf("  - %s%s: %s\n", envVar.Name, required, envVar.Description)
+			defaultValue := ""
+			if envVar.Default != "" {
+				defaultValue = fmt.Sprintf(" [default: %s]", envVar.Default)
+			}
+			fmt.Printf("  - %s%s%s: %s\n", envVar.Name, required, defaultValue, envVar.Description)
 		}
 	}
 
@@ -398,22 +402,22 @@ func registryRunCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Add required environment variables from registry if not already provided
 	for _, envVar := range server.EnvVars {
-		if envVar.Required {
-			// Check if the environment variable is already provided in the command line
-			found := false
-			for _, env := range envVars {
-				if strings.HasPrefix(env, envVar.Name+"=") {
-					found = true
-					break
-				}
+		// Check if the environment variable is already provided in the command line
+		found := false
+		for _, env := range envVars {
+			if strings.HasPrefix(env, envVar.Name+"=") {
+				found = true
+				break
 			}
+		}
 
-			// This might be set as a secret
-			if !found {
-				found = findEnvironmentVariableFromSecrets(registryRunSecrets, envVar.Name)
-			}
+		// This might be set as a secret
+		if !found {
+			found = findEnvironmentVariableFromSecrets(registryRunSecrets, envVar.Name)
+		}
 
-			if !found {
+		if !found {
+			if envVar.Required {
 				// Ask the user for the required environment variable
 				fmt.Printf("Required environment variable: %s (%s)\n", envVar.Name, envVar.Description)
 				fmt.Printf("Enter value for %s: ", envVar.Name)
@@ -424,6 +428,12 @@ func registryRunCmdFunc(cmd *cobra.Command, args []string) error {
 
 				if value != "" {
 					envVars = append(envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
+				}
+			} else if envVar.Default != "" {
+				// Apply default value for non-required environment variables
+				envVars = append(envVars, fmt.Sprintf("%s=%s", envVar.Name, envVar.Default))
+				if debugMode {
+					fmt.Printf("Using default value for %s: %s\n", envVar.Name, envVar.Default)
 				}
 			}
 		}

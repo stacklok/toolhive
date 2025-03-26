@@ -59,13 +59,9 @@
         "network": {
           "outbound": {
             "insecure_allow_all": false,
-            "allow_transport": [
-              "tcp"
-            ],
+            "allow_transport": [],
             "allow_host": [],
-            "allow_port": [
-              443
-            ]
+            "allow_port": []
           }
         }
       },

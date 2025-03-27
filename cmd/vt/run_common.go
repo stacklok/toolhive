@@ -104,8 +104,16 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 
 	// If any secrets are specified, attempt to load them, and add to list of environment variables.
 	if len(options.Secrets) > 0 {
-		secretManager, err := secrets.CreateDefaultSecretsManager()
+		providerType, err := GetSecretsProviderType(cmd)
 		if err != nil {
+			return fmt.Errorf("error determining secrets provider type: %w", err)
+		}
+
+		secretManager, err := secrets.CreateSecretManager(providerType)
+		if err != nil {
+			if strings.Contains(err.Error(), "incorrect password") {
+				return fmt.Errorf("error: %v", err)
+			}
 			return fmt.Errorf("error instantiating secret manager %v", err)
 		}
 		secretVariables, err := environment.ParseSecretParameters(options.Secrets, secretManager)

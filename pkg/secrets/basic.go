@@ -7,17 +7,15 @@ import (
 	"log"
 	"os"
 	"path"
-	"sync"
 
-	"github.com/adrg/xdg"
+	"golang.org/x/sync/syncmap"
 )
 
 // BasicManager is a simple secrets manager that stores secrets in an
 // unencrypted file. This is for testing/development purposes only.
 type BasicManager struct {
 	filePath string
-	secrets  map[string]string
-	mu       sync.RWMutex // Protects concurrent access to secrets map
+	secrets  syncmap.Map // Thread-safe map for storing secrets
 }
 
 // GetSecret retrieves a secret from the secret store.
@@ -26,14 +24,11 @@ func (b *BasicManager) GetSecret(name string) (string, error) {
 		return "", errors.New("secret name cannot be empty")
 	}
 
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	value, ok := b.secrets[name]
+	value, ok := b.secrets.Load(name)
 	if !ok {
 		return "", fmt.Errorf("secret not found: %s", name)
 	}
-	return value, nil
+	return value.(string), nil
 }
 
 // SetSecret stores a secret in the secret store.
@@ -42,10 +37,7 @@ func (b *BasicManager) SetSecret(name, value string) error {
 		return errors.New("secret name cannot be empty")
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	b.secrets[name] = value
+	b.secrets.Store(name, value)
 	return b.updateFile()
 }
 
@@ -55,32 +47,46 @@ func (b *BasicManager) DeleteSecret(name string) error {
 		return errors.New("secret name cannot be empty")
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if _, exists := b.secrets[name]; !exists {
+	// Check if the secret exists first
+	_, ok := b.secrets.Load(name)
+	if !ok {
 		return fmt.Errorf("cannot delete non-existent secret: %s", name)
 	}
 
-	delete(b.secrets, name)
+	b.secrets.Delete(name)
 	return b.updateFile()
 }
 
 // ListSecrets returns a list of all secret names stored in the manager.
 func (b *BasicManager) ListSecrets() ([]string, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	var secretNames []string
 
-	secretNames := make([]string, 0, len(b.secrets))
-	for name := range b.secrets {
-		secretNames = append(secretNames, name)
-	}
+	b.secrets.Range(func(key, _ interface{}) bool {
+		secretNames = append(secretNames, key.(string))
+		return true
+	})
 
 	return secretNames, nil
 }
 
+// Cleanup removes all secrets managed by this manager.
+func (b *BasicManager) Cleanup() error {
+	// Create a new empty syncmap.Map
+	b.secrets = syncmap.Map{}
+
+	// Update the file to reflect the empty state
+	return b.updateFile()
+}
+
 func (b *BasicManager) updateFile() error {
-	contents, err := json.Marshal(fileStructure{Secrets: b.secrets})
+	// Convert syncmap.Map to map[string]string for JSON marshaling
+	secretsMap := make(map[string]string)
+	b.secrets.Range(func(key, value interface{}) bool {
+		secretsMap[key.(string)] = value.(string)
+		return true
+	})
+
+	contents, err := json.Marshal(fileStructure{Secrets: secretsMap})
 	if err != nil {
 		return fmt.Errorf("failed to marshal secrets: %w", err)
 	}
@@ -103,16 +109,8 @@ type fileStructure struct {
 	Secrets map[string]string `json:"secrets"`
 }
 
-// BasicManagerFactory is an implementation of the ManagerFactory interface for BasicManager.
-type BasicManagerFactory struct{}
-
-// Build creates an instance of BasicManager.
-func (BasicManagerFactory) Build(config map[string]interface{}) (Manager, error) {
-	filePath, ok := config["secretsFile"].(string)
-	if !ok {
-		return nil, errors.New("secretsFile is required")
-	}
-
+// NewBasicManager creates an instance of BasicManager.
+func NewBasicManager(filePath string) (Manager, error) {
 	// Add warning for production use
 	if os.Getenv("ENVIRONMENT") == "production" {
 		log.Println("WARNING: BasicManager is not secure for production use")
@@ -131,32 +129,25 @@ func (BasicManagerFactory) Build(config map[string]interface{}) (Manager, error)
 		return nil, fmt.Errorf("failed to stat secrets file: %w", err)
 	}
 
-	var secrets map[string]string
-	if stat.Size() == 0 {
-		secrets = make(map[string]string)
-	} else {
+	// Create a new BasicManager with an empty syncmap.Map
+	manager := &BasicManager{
+		filePath: filePath,
+		secrets:  syncmap.Map{},
+	}
+
+	// If the file is not empty, load the secrets into the syncmap.Map
+	if stat.Size() > 0 {
 		var contents fileStructure
 		err := json.NewDecoder(secretsFile).Decode(&contents)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode secrets file: %w", err)
 		}
-		secrets = contents.Secrets
+
+		// Store each secret in the syncmap.Map
+		for key, value := range contents.Secrets {
+			manager.secrets.Store(key, value)
+		}
 	}
 
-	return &BasicManager{
-		filePath: filePath,
-		secrets:  secrets,
-		mu:       sync.RWMutex{},
-	}, nil
-}
-
-// CreateDefaultSecretsManager creates a secret manager instance with a default config.
-// TODO: Remove once we support more than one provider
-func CreateDefaultSecretsManager() (Manager, error) {
-	// TODO: make this configurable?
-	secretsPath, err := xdg.DataFile("vibetool/secrets")
-	if err != nil {
-		return nil, fmt.Errorf("unable to access secrets file path %v", err)
-	}
-	return BasicManagerFactory{}.Build(map[string]any{"secretsFile": secretsPath})
+	return manager, nil
 }

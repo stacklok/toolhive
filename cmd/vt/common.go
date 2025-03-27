@@ -1,7 +1,11 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
+
+	"github.com/stacklok/vibetool/pkg/secrets"
 )
 
 // AddOIDCFlags adds OIDC validation flags to the provided command.
@@ -29,4 +33,20 @@ func IsOIDCEnabled(cmd *cobra.Command) bool {
 	issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
 
 	return jwksURL != "" || issuer != ""
+}
+
+// GetSecretsProviderType returns the secrets provider type from the command flags
+func GetSecretsProviderType(cmd *cobra.Command) (secrets.ManagerType, error) {
+	provider, err := cmd.Flags().GetString("secrets-provider")
+	if err != nil {
+		return "", fmt.Errorf("failed to get secrets-provider flag: %w", err)
+	}
+
+	switch provider {
+	case string(secrets.BasicType), "":
+		return secrets.BasicType, nil
+	default:
+		// TODO: auto-generate the set of valid values.
+		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: basic)", provider)
+	}
 }

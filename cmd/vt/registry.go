@@ -22,10 +22,11 @@ var registryCmd = &cobra.Command{
 }
 
 var registryListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List available MCP servers",
-	Long:  `List all available MCP servers in the registry.`,
-	RunE:  registryListCmdFunc,
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List available MCP servers",
+	Long:    `List all available MCP servers in the registry.`,
+	RunE:    registryListCmdFunc,
 }
 
 var registryInfoCmd = &cobra.Command{

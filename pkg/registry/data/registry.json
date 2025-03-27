@@ -1260,6 +1260,71 @@
       "tags": [
         "atlassian"
       ]
+    },
+    "hass-mcp": {
+      "image": "voska/hass-mcp:latest",
+      "description": "A Model Context Protocol (MCP) server for Home Assistant integration with Claude and other LLMs, enabling direct interaction with smart home devices, sensors, and automations.",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": true,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [
+            ],
+            "allow_port": [
+            ]
+          }
+        }
+      },
+      "tools": [
+        "get_version",
+        "get_entity",
+        "entity_action",
+        "list_entities",
+        "search_entities_tool",
+        "domain_summary_tool",
+        "list_automations",
+        "call_service_tool",
+        "restart_ha",
+        "get_history",
+        "get_error_log"
+      ],
+      "env_vars": [
+        {
+          "name": "HA_URL",
+          "description": "Home Assistant instance URL (e.g. http://homeassistant.local:8123)",
+          "required": true
+        },
+        {
+          "name": "HA_TOKEN",
+          "description": "Home Assistant Long-Lived Access Token",
+          "required": true
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 19,
+        "pulls": 0,
+        "last_updated": "2025-03-25T16:58:54Z"
+      },
+      "repository_url": "https://github.com/voska/hass-mcp",
+      "tags": [
+        "home-assistant",
+        "smart-home",
+        "automation",
+        "iot",
+        "sensors",
+        "devices",
+        "control",
+        "monitoring",
+        "home-automation",
+        "domotics"
+      ]
     }
   }
 }

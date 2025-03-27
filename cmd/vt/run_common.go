@@ -88,6 +88,29 @@ type RunOptions struct {
 //
 //nolint:gocyclo // This function is complex but manageable
 func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) error {
+	// If any secrets are specified, attempt to load them, and add to list of environment variables.
+	// Since the encrypted provider currently reads the key from stdin, we do this secret lookup here
+	// and pass the secrets as env vars to the detached process.
+	if len(options.Secrets) > 0 {
+		providerType, err := GetSecretsProviderType(cmd)
+		if err != nil {
+			return fmt.Errorf("error determining secrets provider type: %w", err)
+		}
+
+		secretManager, err := secrets.CreateSecretManager(providerType)
+		if err != nil {
+			return fmt.Errorf("error instantiating secret manager %v", err)
+		}
+		secretVariables, err := environment.ParseSecretParameters(options.Secrets, secretManager)
+		if err != nil {
+			return fmt.Errorf("failed to get secrets: %v", err)
+		}
+
+		for key, value := range secretVariables {
+			options.EnvVars = append(options.EnvVars, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
 	// If not running in foreground mode, start a new detached process and exit
 	if !options.Foreground {
 		return detachProcess(cmd, options)
@@ -101,30 +124,6 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 
 	// Generate a container name if not provided
 	containerName, baseName := container.GetOrGenerateContainerName(options.Name, options.Image)
-
-	// If any secrets are specified, attempt to load them, and add to list of environment variables.
-	if len(options.Secrets) > 0 {
-		providerType, err := GetSecretsProviderType(cmd)
-		if err != nil {
-			return fmt.Errorf("error determining secrets provider type: %w", err)
-		}
-
-		secretManager, err := secrets.CreateSecretManager(providerType)
-		if err != nil {
-			if strings.Contains(err.Error(), "incorrect password") {
-				return fmt.Errorf("error: %v", err)
-			}
-			return fmt.Errorf("error instantiating secret manager %v", err)
-		}
-		secretVariables, err := environment.ParseSecretParameters(options.Secrets, secretManager)
-		if err != nil {
-			return fmt.Errorf("failed to get secrets: %v", err)
-		}
-
-		for key, value := range secretVariables {
-			options.EnvVars = append(options.EnvVars, fmt.Sprintf("%s=%s", key, value))
-		}
-	}
 
 	// Parse transport mode
 	transportType, err := transport.ParseTransportType(options.Transport)
@@ -459,11 +458,6 @@ func detachProcess(_ *cobra.Command, options RunOptions) error {
 		detachedArgs = append(detachedArgs, "--volume", volume)
 	}
 
-	// Add secrets if they were provided
-	for _, secret := range options.Secrets {
-		detachedArgs = append(detachedArgs, "--secret", secret)
-	}
-
 	// Add OIDC flags if they were provided
 	if options.OIDCIssuer != "" {
 		detachedArgs = append(detachedArgs, "--oidc-issuer", options.OIDCIssuer)
@@ -489,6 +483,7 @@ func detachProcess(_ *cobra.Command, options RunOptions) error {
 	detachedCmd := exec.Command(execPath, detachedArgs...)
 
 	// Set environment variables for the detached process
+	// This includes any secrets which were loaded
 	detachedCmd.Env = append(os.Environ(), "VIBETOOL_DETACHED=1")
 
 	// Redirect stdout and stderr to the log file if it was created successfully

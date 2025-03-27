@@ -43,10 +43,12 @@ func GetSecretsProviderType(cmd *cobra.Command) (secrets.ManagerType, error) {
 	}
 
 	switch provider {
-	case string(secrets.BasicType), "":
+	case string(secrets.BasicType):
 		return secrets.BasicType, nil
+	case string(secrets.EncryptedType):
+		return secrets.EncryptedType, nil
 	default:
 		// TODO: auto-generate the set of valid values.
-		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: basic)", provider)
+		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: basic, encrypted)", provider)
 	}
 }

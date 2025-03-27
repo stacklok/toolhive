@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 

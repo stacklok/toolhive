@@ -18,7 +18,7 @@ import (
 var registryCmd = &cobra.Command{
 	Use:   "registry",
 	Short: "Manage MCP server registry",
-	Long:  `Manage the MCP server registry, including listing, searching, and getting information about available MCP servers.`,
+	Long:  `Manage the MCP server registry, including listing and getting information about available MCP servers.`,
 }
 
 var registryListCmd = &cobra.Command{
@@ -26,14 +26,6 @@ var registryListCmd = &cobra.Command{
 	Short: "List available MCP servers",
 	Long:  `List all available MCP servers in the registry.`,
 	RunE:  registryListCmdFunc,
-}
-
-var registrySearchCmd = &cobra.Command{
-	Use:   "search [query]",
-	Short: "Search for MCP servers",
-	Long:  `Search for MCP servers in the registry by name, description, or tags.`,
-	Args:  cobra.ExactArgs(1),
-	RunE:  registrySearchCmdFunc,
 }
 
 var registryInfoCmd = &cobra.Command{
@@ -54,12 +46,10 @@ func init() {
 
 	// Add subcommands to registry command
 	registryCmd.AddCommand(registryListCmd)
-	registryCmd.AddCommand(registrySearchCmd)
 	registryCmd.AddCommand(registryInfoCmd)
 
-	// Add flags for list, search, and info commands
+	// Add flags for list and info commands
 	registryListCmd.Flags().StringVar(&registryFormat, "format", "text", "Output format (json or text)")
-	registrySearchCmd.Flags().StringVar(&registryFormat, "format", "text", "Output format (json or text)")
 	registryInfoCmd.Flags().StringVar(&registryFormat, "format", "text", "Output format (json or text)")
 }
 
@@ -80,35 +70,6 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 	case "json":
 		return printJSONServers(servers)
 	default:
-		printTextServers(servers)
-		return nil
-	}
-}
-
-func registrySearchCmdFunc(_ *cobra.Command, args []string) error {
-	// Search for servers
-	query := args[0]
-	servers, err := registry.SearchServers(query)
-	if err != nil {
-		return fmt.Errorf("failed to search servers: %v", err)
-	}
-
-	if len(servers) == 0 {
-		fmt.Printf("No servers found matching query: %s\n", query)
-		return nil
-	}
-
-	// Sort servers by name
-	sort.Slice(servers, func(i, j int) bool {
-		return servers[i].Image < servers[j].Image
-	})
-
-	// Output based on format
-	switch registryFormat {
-	case "json":
-		return printJSONServers(servers)
-	default:
-		fmt.Printf("Found %d servers matching query: %s\n", len(servers), query)
 		printTextServers(servers)
 		return nil
 	}

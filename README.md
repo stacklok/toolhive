@@ -118,6 +118,13 @@ vt list
 
 This lists all active MCP servers managed by Vibe Tool, along with their current status.
 
+## Running Against Local Kind Cluster
+
+In order to run this against a local Kind Cluster, run:
+- `task build-image` to build the image into the local registry, it should spit out the image URL
+- `kind load docker-image $IMAGE_URL  --name $KIND_CLUSTER_NAME` to load it into the Kind cluster
+- Create a `pod.yaml` spec for the pod, using the URL above as the image URL and `args:` field with the args you want to run. kind should create and run the pod.
+
 ## License
 
 This project is licensed under the Apache 2.0 License. See the LICENSE file for details.

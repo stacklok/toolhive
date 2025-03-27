@@ -44,3 +44,8 @@ tasks:
   all-with-coverage:
     desc: Run linting, tests with coverage, and build
     deps: [lint, test-coverage, build]
+
+  build-image:
+    desc: Build the image with ko
+    cmds:
+      - ko build --platform linux/amd64,linux/arm64 --local ./cmd/vt

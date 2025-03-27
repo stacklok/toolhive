@@ -68,7 +68,8 @@ archives:
 #           branch: master
 # This section defines how to release to homebrew.
 brews:
-  - homepage: 'https://github.com/stacklok/vibetool'
+  - name: vt
+    homepage: 'https://github.com/stacklok/vibetool'
     description: 'vibetool is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
     directory: Formula
     commit_author:

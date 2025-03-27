@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/vibetool/pkg/auth"
+	"github.com/stacklok/vibetool/pkg/authz"
 	"github.com/stacklok/vibetool/pkg/client"
 	"github.com/stacklok/vibetool/pkg/container"
 	"github.com/stacklok/vibetool/pkg/environment"
@@ -78,6 +79,9 @@ type RunOptions struct {
 	// Secrets are the secret parameters to pass to the container
 	// Format: "<secret name>,target=<target environment variable>"
 	Secrets []string
+
+	// AuthzConfigPath is the path to the authorization configuration file
+	AuthzConfigPath string
 }
 
 // RunMCPServer runs an MCP server with the specified options
@@ -191,6 +195,20 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 
 		// Add JWT validation middleware to transport config
 		transportConfig.Middlewares = append(transportConfig.Middlewares, jwtValidator.Middleware)
+	}
+
+	// Add authorization middleware if authorization configuration is provided
+	if options.AuthzConfigPath != "" {
+		fmt.Println("Authorization enabled for transport")
+
+		// Get the middleware from the configuration file
+		middleware, err := authz.GetMiddlewareFromFile(options.AuthzConfigPath)
+		if err != nil {
+			return fmt.Errorf("failed to get authorization middleware: %v", err)
+		}
+
+		// Add authorization middleware to transport config
+		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
 	}
 
 	transportHandler, err := transport.NewFactory().Create(transportConfig)

@@ -69,6 +69,7 @@ var (
 	registryRunForeground        bool
 	registryRunVolumes           []string
 	registryRunSecrets           []string
+	registryRunAuthzConfig       string
 )
 
 func init() {
@@ -138,6 +139,12 @@ func init() {
 		"secret",
 		[]string{},
 		"Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)",
+	)
+	registryRunCmd.Flags().StringVar(
+		&registryRunAuthzConfig,
+		"authz-config",
+		"",
+		"Path to the authorization configuration file",
 	)
 
 	// Add OIDC validation flags
@@ -496,6 +503,7 @@ func registryRunCmdFunc(cmd *cobra.Command, args []string) error {
 		Debug:             debugMode,
 		Volumes:           registryRunVolumes,
 		Secrets:           registryRunSecrets,
+		AuthzConfigPath:   registryRunAuthzConfig,
 	}
 
 	// Create context

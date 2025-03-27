@@ -26,6 +26,7 @@ var (
 	runForeground        bool
 	runVolumes           []string
 	runSecrets           []string
+	runAuthzConfig       string
 )
 
 func init() {
@@ -65,6 +66,12 @@ func init() {
 		"secret",
 		[]string{},
 		"Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)",
+	)
+	runCmd.Flags().StringVar(
+		&runAuthzConfig,
+		"authz-config",
+		"",
+		"Path to the authorization configuration file",
 	)
 
 	// Add OIDC validation flags
@@ -109,6 +116,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		Debug:             debugMode,
 		Volumes:           runVolumes,
 		Secrets:           runSecrets,
+		AuthzConfigPath:   runAuthzConfig,
 	}
 
 	// Run the MCP server

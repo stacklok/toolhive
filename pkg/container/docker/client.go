@@ -4,6 +4,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -522,6 +523,40 @@ func (c *Client) ImageExists(ctx context.Context, imageName string) (bool, error
 	return len(images) > 0, nil
 }
 
+// parsePullOutput parses the Docker image pull output and formats it in a more readable way
+func parsePullOutput(reader io.Reader, writer io.Writer) error {
+	decoder := json.NewDecoder(reader)
+	for {
+		var pullStatus struct {
+			Status         string          `json:"status"`
+			ID             string          `json:"id,omitempty"`
+			ProgressDetail json.RawMessage `json:"progressDetail,omitempty"`
+			Progress       string          `json:"progress,omitempty"`
+		}
+
+		if err := decoder.Decode(&pullStatus); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("failed to decode pull output: %w", err)
+		}
+
+		// Format the output based on the type of message
+		if pullStatus.Progress != "" {
+			// This is a progress update
+			fmt.Fprintf(writer, "%s: %s %s\n", pullStatus.Status, pullStatus.ID, pullStatus.Progress)
+		} else if pullStatus.ID != "" {
+			// This is a layer-specific status update
+			fmt.Fprintf(writer, "%s: %s\n", pullStatus.Status, pullStatus.ID)
+		} else {
+			// This is a general status update
+			fmt.Fprintf(writer, "%s\n", pullStatus.Status)
+		}
+	}
+
+	return nil
+}
+
 // PullImage pulls an image from a registry
 func (c *Client) PullImage(ctx context.Context, imageName string) error {
 	fmt.Printf("Pulling image: %s\n", imageName)
@@ -533,10 +568,9 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 	}
 	defer reader.Close()
 
-	// Read the output to ensure the pull completes
-	_, err = io.Copy(os.Stdout, reader)
-	if err != nil {
-		return NewContainerError(err, "", fmt.Sprintf("failed to read pull output: %v", err))
+	// Parse and filter the pull output
+	if err := parsePullOutput(reader, os.Stdout); err != nil {
+		return NewContainerError(err, "", fmt.Sprintf("failed to process pull output: %v", err))
 	}
 
 	return nil

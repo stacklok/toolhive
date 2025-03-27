@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"strings"
+
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/vibetool/pkg/secrets"
@@ -37,7 +40,13 @@ func newSecretSetCommand() *cobra.Command {
 				return
 			}
 
-			manager, err := secrets.CreateDefaultSecretsManager()
+			providerType, err := GetSecretsProviderType(cmd)
+			if err != nil {
+				cmd.Printf("Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			manager, err := secrets.CreateSecretManager(providerType)
 			if err != nil {
 				cmd.Printf("Failed to create secrets manager: %v\n", err)
 				return
@@ -67,7 +76,13 @@ func newSecretGetCommand() *cobra.Command {
 				return
 			}
 
-			manager, err := secrets.CreateDefaultSecretsManager()
+			providerType, err := GetSecretsProviderType(cmd)
+			if err != nil {
+				cmd.Printf("Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			manager, err := secrets.CreateSecretManager(providerType)
 			if err != nil {
 				cmd.Printf("Failed to create secrets manager: %v\n", err)
 				return
@@ -97,7 +112,13 @@ func newSecretDeleteCommand() *cobra.Command {
 				return
 			}
 
-			manager, err := secrets.CreateDefaultSecretsManager()
+			providerType, err := GetSecretsProviderType(cmd)
+			if err != nil {
+				cmd.Printf("Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			manager, err := secrets.CreateSecretManager(providerType)
 			if err != nil {
 				cmd.Printf("Failed to create secrets manager: %v\n", err)
 				return
@@ -119,7 +140,13 @@ func newSecretListCommand() *cobra.Command {
 		Short: "List all available secrets",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
-			manager, err := secrets.CreateDefaultSecretsManager()
+			providerType, err := GetSecretsProviderType(cmd)
+			if err != nil {
+				cmd.Printf("Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			manager, err := secrets.CreateSecretManager(providerType)
 			if err != nil {
 				cmd.Printf("Failed to create secrets manager: %v\n", err)
 				return

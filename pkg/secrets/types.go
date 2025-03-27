@@ -15,11 +15,7 @@ type Manager interface {
 	SetSecret(name, value string) error
 	DeleteSecret(name string) error
 	ListSecrets() ([]string, error)
-}
-
-// ManagerFactory is responsible for creating an instance of Manager from config.
-type ManagerFactory interface {
-	Build(config map[string]any) (Manager, error)
+	Cleanup() error
 }
 
 // SecretParameter represents a parsed `--secret` parameter.

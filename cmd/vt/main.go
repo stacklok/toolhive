@@ -35,6 +35,7 @@ var versionCmd = &cobra.Command{
 func init() {
 	// Add persistent flags
 	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
+	rootCmd.PersistentFlags().String("secrets-provider", "basic", "Secrets provider to use (basic)")
 
 	// Add subcommands
 	rootCmd.AddCommand(runCmd)

@@ -29,8 +29,9 @@ var MCPMethodToFeatureOperation = map[string]struct {
 	"initialize":      {Feature: "", Operation: ""}, // Always allowed
 }
 
-// shouldSkipAuthorization checks if the request should skip authorization.
-func shouldSkipAuthorization(r *http.Request, method string) bool {
+// shouldSkipInitialAuthorization checks if the request should skip authorization
+// before reading the request body.
+func shouldSkipInitialAuthorization(r *http.Request) bool {
 	// Skip authorization for non-POST requests and non-JSON content types
 	if r.Method != http.MethodPost || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		return true
@@ -41,11 +42,12 @@ func shouldSkipAuthorization(r *http.Request, method string) bool {
 		return true
 	}
 
-	// Skip authorization for non-request messages
-	if method == "" {
-		return true
-	}
+	return false
+}
 
+// shouldSkipSubsequentAuthorization checks if the request should skip authorization
+// after parsing the JSON-RPC message.
+func shouldSkipSubsequentAuthorization(method string) bool {
 	// Skip authorization for methods that don't require it
 	if method == "ping" || method == "progress/update" || method == "initialize" {
 		return true
@@ -139,6 +141,12 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 //	proxy.Start(context.Background())
 func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if we should skip authorization before reading the request body
+		if shouldSkipInitialAuthorization(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Read the request body
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -163,8 +171,8 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Check if we should skip authorization
-		if shouldSkipAuthorization(r, msg.Method) {
+		// Check if we should skip authorization after parsing the message
+		if shouldSkipSubsequentAuthorization(msg.Method) {
 			next.ServeHTTP(w, r)
 			return
 		}

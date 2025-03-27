@@ -200,3 +200,39 @@ func TestMiddleware(t *testing.T) {
 		})
 	}
 }
+
+// TestMiddlewareWithGETRequest tests that the middleware doesn't panic with GET requests.
+func TestMiddlewareWithGETRequest(t *testing.T) {
+	// Create a Cedar authorizer
+	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: `[]`,
+	})
+	require.NoError(t, err, "Failed to create Cedar authorizer")
+
+	// Create a handler that records if it was called
+	var handlerCalled bool
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Apply the middleware
+	middleware := authorizer.Middleware(handler)
+
+	// Create a GET request
+	req, err := http.NewRequest(http.MethodGet, "/messages", nil)
+	require.NoError(t, err, "Failed to create HTTP request")
+
+	// Create a response recorder
+	rr := httptest.NewRecorder()
+
+	// Serve the request
+	middleware.ServeHTTP(rr, req)
+
+	// Check that the handler was called and the response is OK
+	assert.True(t, handlerCalled, "Handler should be called for GET requests")
+	assert.Equal(t, http.StatusOK, rr.Code, "Response status code should be OK")
+}

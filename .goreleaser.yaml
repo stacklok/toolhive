@@ -19,12 +19,13 @@ builds:
 #      - "-X github.com/stacklok/vibetool/---/cli.CLIVersion={{ .Env.VERSION }}"
     goos:
       - linux
-      - windows
+#      - windows
       - darwin
     goarch:
       - amd64
       - arm64
     main: ./cmd/vt
+    binary: vt
 # This section defines the release format.
 archives:
   - format: tar.gz # we can use binary, but it seems there's an issue where goreleaser skips the sboms

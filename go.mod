@@ -3,6 +3,7 @@ module github.com/stacklok/vibetool
 go 1.23.7
 
 require (
+	github.com/cedar-policy/cedar-go v1.1.1
 	github.com/docker/docker v28.0.2+incompatible
 	github.com/docker/go-connections v0.5.0
 	github.com/gofrs/flock v0.12.1
@@ -85,6 +86,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.35.0 // indirect
 	go.opentelemetry.io/otel/trace v1.35.0 // indirect
 	golang.org/x/crypto v0.33.0 // indirect
+	golang.org/x/exp v0.0.0-20240222234643-814bf88cf225 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	k8s.io/client-go v0.32.3
 )

@@ -1,0 +1,108 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+project_name: vibetool
+version: 2
+# This section defines the build matrix.
+builds:
+  - env:
+      - GO111MODULE=on
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -tags=netgo
+    ldflags:
+      - "-s -w"
+      - "-X main.Version={{ .Env.VERSION }}"
+      - "-X main.Commit={{ .Env.COMMIT }}"
+      - "-X main.CommitDate={{ .Env.COMMIT_DATE }}"
+      - "-X main.TreeState={{ .Env.TREE_STATE }}"
+#      - "-X github.com/stacklok/vibetool/---/cli.CLIVersion={{ .Env.VERSION }}"
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    main: ./cmd/vt
+# This section defines the release format.
+archives:
+  - format: tar.gz # we can use binary, but it seems there's an issue where goreleaser skips the sboms
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+# This section defines how to release to winget.
+# winget:
+#   - name: vibetool
+#     publisher: stacklok
+#     license: Apache-2.0
+#     license_url: "https://github.com/stacklok/vibetool/blob/main/LICENSE"
+#     copyright: Stacklok, Inc.
+#     homepage: https://stacklok.com
+#     short_description: 'vibetool is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
+#     publisher_support_url: "https://github.com/stacklok/vibetool/issues/new/choose"
+#     package_identifier: "stacklok.vibetool"
+#     url_template: "https://github.com/stacklok/vibetool/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+#     skip_upload: auto
+#     release_notes: "{{.Changelog}}"
+#     tags:
+#       - golang
+#       - cli
+#     commit_author:
+#       name: stacklokbot
+#       email: info@stacklok.com
+#     goamd64: v1
+#     repository:
+#       owner: stacklok
+#       name: winget-pkgs
+#       branch: "vibetool-{{.Version}}"
+#       token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
+#       pull_request:
+#         enabled: true
+#         draft: false
+#         base:
+#           owner: microsoft
+#           name: winget-pkgs
+#           branch: master
+# This section defines how to release to homebrew.
+brews:
+  - homepage: 'https://github.com/stacklok/vibetool'
+    description: 'vibetool is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
+    directory: Formula
+    commit_author:
+      name: stacklokbot
+      email: info@stacklok.com
+    repository:
+      owner: stacklok
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    test: |
+      system "#{bin}/vt --help"
+# This section defines whether we want to release the source code too.
+source:
+  enabled: true
+# This section defines how to generate the changelog
+changelog:
+  sort: asc
+  use: github
+# This section defines for which artifact types to generate SBOMs.
+sboms:
+  - artifacts: archive
+# This section defines the release policy.
+release:
+  github:
+    owner: stacklok
+    name: vibetool
+# This section defines how and which artifacts we want to sign for the release.
+signs:
+  - cmd: cosign
+    args:
+      - "sign-blob"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+      - "--yes" # needed on cosign 2.0.0+
+    artifacts: archive
+    output: true
+    certificate: '{{ trimsuffix (trimsuffix .Env.artifact ".zip") ".tar.gz" }}.pem'

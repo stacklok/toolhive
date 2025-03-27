@@ -405,6 +405,63 @@
         "using"
       ]
     },
+    "firecrawl": {
+      "image": "mendableai/firecrawl-mcp-server:latest",
+      "description": "A powerful web scraping and content extraction MCP server that provides advanced crawling, search, and structured data extraction capabilities with LLM integration.",
+      "transport": "stdio",
+      "permissions": {
+        "read": [],
+        "write": [],
+        "network": {
+          "outbound": {
+            "insecure_allow_all": true,
+            "allow_transport": [
+              "tcp"
+            ],
+            "allow_host": [],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "tools": [
+        "firecrawl_scrape",
+        "firecrawl_batch_scrape",
+        "firecrawl_check_batch_status",
+        "firecrawl_search",
+        "firecrawl_crawl",
+        "firecrawl_extract",
+        "firecrawl_deep_research",
+        "firecrawl_generate_llmstxt"
+      ],
+      "env_vars": [
+        {
+          "name": "FIRECRAWL_API_KEY",
+          "description": "API key for FireCrawl service authentication",
+          "required": true
+        }
+      ],
+      "args": [],
+      "metadata": {
+        "stars": 1900,
+        "pulls": 0,
+        "last_updated": "2025-03-25T16:58:54Z"
+      },
+      "repository_url": "https://github.com/mendableai/firecrawl-mcp-server",
+      "tags": [
+        "web-crawler",
+        "web-scraping",
+        "data-collection",
+        "batch-processing",
+        "content-extraction",
+        "search-api",
+        "llm-tools",
+        "javascript-rendering",
+        "research",
+        "automation"
+      ]
+    },
     "everything": {
       "image": "mcp/everything:latest",
       "description": "This MCP server attempts to exercise all the features of the MCP protocol",

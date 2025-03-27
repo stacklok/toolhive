@@ -86,6 +86,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           VERSION: ${{ needs.ldflags_args.outputs.version }}
           COMMIT: ${{ needs.ldflags_args.outputs.commit }}
           COMMIT_DATE: ${{ needs.ldflags_args.outputs.commit-date }}

@@ -2,14 +2,24 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/stacklok/vibetool/pkg/permissions"
+	"github.com/stacklok/vibetool/pkg/registry"
 )
 
 var runCmd = &cobra.Command{
-	Use:   "run [flags] IMAGE [-- ARGS...]",
+	Use:   "run [flags] SERVER_OR_IMAGE [-- ARGS...]",
 	Short: "Run an MCP server",
-	Long: `Run an MCP server in a container with the specified image and arguments.
+	Long: `Run an MCP server in a container with the specified server name or image and arguments.
+If a server name is provided, it will first try to find it in the registry.
+If found, it will use the registry defaults for transport, permissions, etc.
+If not found, it will treat the argument as a Docker image and run it directly.
 The container will be started with minimal permissions and the specified transport mode.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runCmdFunc,
@@ -78,10 +88,9 @@ func init() {
 	AddOIDCFlags(runCmd)
 }
 
-//nolint:gocyclo // This function is complex but manageable
 func runCmdFunc(cmd *cobra.Command, args []string) error {
-	// Get the image and command arguments
-	image := args[0]
+	// Get the server name or image and command arguments
+	serverOrImage := args[0]
 	cmdArgs := args[1:]
 
 	// Create context
@@ -97,9 +106,8 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
 
-	// Create run options
+	// Initialize run options with command line flags
 	options := RunOptions{
-		Image:             image,
 		CmdArgs:           cmdArgs,
 		Transport:         runTransport,
 		Name:              runName,
@@ -119,6 +127,145 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		AuthzConfigPath:   runAuthzConfig,
 	}
 
+	// Try to find the server in the registry
+	server, err := registry.GetServer(serverOrImage)
+
+	// Set the image based on whether we found a registry entry
+	if err == nil {
+		// Server found in registry
+		logDebug(debugMode, "Found server '%s' in registry", serverOrImage)
+
+		// Apply registry settings to options
+		applyRegistrySettings(cmd, serverOrImage, server, &options, debugMode)
+	} else {
+		// Server not found in registry, treat as direct image
+		logDebug(debugMode, "Server '%s' not found in registry, treating as Docker image", serverOrImage)
+		options.Image = serverOrImage
+	}
+
 	// Run the MCP server
 	return RunMCPServer(ctx, cmd, options)
+}
+
+// applyRegistrySettings applies settings from a registry server to the run options
+func applyRegistrySettings(cmd *cobra.Command, serverName string, server *registry.Server, options *RunOptions, debugMode bool) {
+	// Use the image from the registry
+	options.Image = server.Image
+
+	// If name is not provided, use the server name from registry
+	if options.Name == "" {
+		options.Name = serverName
+	}
+
+	// Use registry transport if not overridden
+	if !cmd.Flags().Changed("transport") {
+		options.Transport = server.Transport
+		logDebug(debugMode, "Using registry transport: %s", options.Transport)
+	} else {
+		logDebug(debugMode, "Using provided transport: %s (overriding registry default: %s)",
+			options.Transport, server.Transport)
+	}
+
+	// Process environment variables from registry
+	options.EnvVars = processEnvironmentVariables(server.EnvVars, options.EnvVars, options.Secrets, debugMode)
+
+	// Create a temporary file for the permission profile if not explicitly provided
+	if !cmd.Flags().Changed("permission-profile") {
+		permProfilePath, err := createPermissionProfileFile(serverName, server.Permissions, debugMode)
+		if err != nil {
+			// Just log the error and continue with the default permission profile
+			fmt.Printf("Warning: Failed to create permission profile file: %v\n", err)
+		} else {
+			options.PermissionProfile = permProfilePath
+		}
+	}
+}
+
+// processEnvironmentVariables processes environment variables from the registry
+func processEnvironmentVariables(
+	registryEnvVars []*registry.EnvVar,
+	cmdEnvVars []string,
+	secrets []string,
+	debugMode bool,
+) []string {
+	// Create a new slice with capacity for all env vars
+	envVars := make([]string, 0, len(cmdEnvVars)+len(registryEnvVars))
+
+	// Copy existing env vars
+	envVars = append(envVars, cmdEnvVars...)
+
+	// Add required environment variables from registry if not already provided
+	for _, envVar := range registryEnvVars {
+		// Check if the environment variable is already provided
+		found := isEnvVarProvided(envVar.Name, envVars, secrets)
+
+		if !found {
+			if envVar.Required {
+				// Ask the user for the required environment variable
+				fmt.Printf("Required environment variable: %s (%s)\n", envVar.Name, envVar.Description)
+				fmt.Printf("Enter value for %s: ", envVar.Name)
+				var value string
+				if _, err := fmt.Scanln(&value); err != nil {
+					fmt.Printf("Warning: Failed to read input: %v\n", err)
+				}
+
+				if value != "" {
+					envVars = append(envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
+				}
+			} else if envVar.Default != "" {
+				// Apply default value for non-required environment variables
+				envVars = append(envVars, fmt.Sprintf("%s=%s", envVar.Name, envVar.Default))
+				logDebug(debugMode, "Using default value for %s: %s", envVar.Name, envVar.Default)
+			}
+		}
+	}
+
+	return envVars
+}
+
+// isEnvVarProvided checks if an environment variable is already provided
+func isEnvVarProvided(name string, envVars []string, secrets []string) bool {
+	// Check if the environment variable is already provided in the command line
+	for _, env := range envVars {
+		if strings.HasPrefix(env, name+"=") {
+			return true
+		}
+	}
+
+	// Check if the environment variable is provided as a secret
+	return findEnvironmentVariableFromSecrets(secrets, name)
+}
+
+// createPermissionProfileFile creates a temporary file with the permission profile
+func createPermissionProfileFile(serverName string, permProfile *permissions.Profile, debugMode bool) (string, error) {
+	tempFile, err := os.CreateTemp("", fmt.Sprintf("vibetool-%s-permissions-*.json", serverName))
+	if err != nil {
+		return "", fmt.Errorf("failed to create temporary file: %v", err)
+	}
+	defer tempFile.Close()
+
+	// Get the temporary file path
+	permProfilePath := tempFile.Name()
+
+	// Serialize the permission profile to JSON
+	permProfileJSON, err := json.Marshal(permProfile)
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize permission profile: %v", err)
+	}
+
+	// Write the permission profile to the temporary file
+	if _, err := tempFile.Write(permProfileJSON); err != nil {
+		return "", fmt.Errorf("failed to write permission profile to file: %v", err)
+	}
+
+	logDebug(debugMode, "Wrote permission profile to temporary file: %s", permProfilePath)
+
+	return permProfilePath, nil
+}
+
+// logDebug logs a message if debug mode is enabled
+func logDebug(debugMode bool, format string, args ...interface{}) {
+	if debugMode {
+		fmt.Printf(format+"\n", args...)
+	}
 }

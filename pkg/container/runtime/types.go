@@ -44,6 +44,7 @@ type PortMapping struct {
 type Runtime interface {
 	// CreateContainer creates a container without starting it
 	// If options is nil, default options will be used
+	//todo: make args a struct to reduce number of args (linter going crazy)
 	CreateContainer(
 		ctx context.Context,
 		image, name string,

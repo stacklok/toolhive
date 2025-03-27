@@ -1,3 +1,5 @@
+// Package kubernetes provides a client for the Kubernetes runtime
+// including creating, starting, stopping, and retrieving container information.
 package kubernetes
 
 import (
@@ -5,11 +7,12 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/permissions"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
+	"github.com/stacklok/vibetool/pkg/container/runtime"
+	"github.com/stacklok/vibetool/pkg/permissions"
 )
 
 // Client implements the Runtime interface for container operations
@@ -19,7 +22,7 @@ type Client struct {
 }
 
 // NewClient creates a new container client
-func NewClient(ctx context.Context) (*Client, error) {
+func NewClient(_ context.Context) (*Client, error) {
 	// creates the in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -38,42 +41,50 @@ func NewClient(ctx context.Context) (*Client, error) {
 }
 
 // AttachContainer implements runtime.Runtime.
-func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.WriteCloser, io.ReadCloser, error) {
+func (*Client) AttachContainer(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, error) {
 	panic("unimplemented")
 }
 
 // ContainerLogs implements runtime.Runtime.
-func (c *Client) ContainerLogs(ctx context.Context, containerID string) (string, error) {
+func (*Client) ContainerLogs(_ context.Context, _ string) (string, error) {
 	panic("unimplemented")
 }
 
 // CreateContainer implements runtime.Runtime.
-func (c *Client) CreateContainer(ctx context.Context, image string, name string, command []string, envVars map[string]string, labels map[string]string, permissionProfile *permissions.Profile, transportType string, options *runtime.CreateContainerOptions) (string, error) {
+func (*Client) CreateContainer(_ context.Context,
+	_ string,
+	_ string,
+	_ []string,
+	_ map[string]string,
+	_ map[string]string,
+	_ *permissions.Profile,
+	_ string,
+	_ *runtime.CreateContainerOptions) (string, error) {
 	panic("unimplemented")
 }
 
 // GetContainerIP implements runtime.Runtime.
-func (c *Client) GetContainerIP(ctx context.Context, containerID string) (string, error) {
+func (*Client) GetContainerIP(_ context.Context, _ string) (string, error) {
 	panic("unimplemented")
 }
 
 // GetContainerInfo implements runtime.Runtime.
-func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runtime.ContainerInfo, error) {
+func (*Client) GetContainerInfo(_ context.Context, _ string) (runtime.ContainerInfo, error) {
 	panic("unimplemented")
 }
 
 // ImageExists implements runtime.Runtime.
-func (c *Client) ImageExists(ctx context.Context, image string) (bool, error) {
+func (*Client) ImageExists(_ context.Context, _ string) (bool, error) {
 	panic("unimplemented")
 }
 
 // IsContainerRunning implements runtime.Runtime.
-func (c *Client) IsContainerRunning(ctx context.Context, containerID string) (bool, error) {
+func (*Client) IsContainerRunning(_ context.Context, _ string) (bool, error) {
 	panic("unimplemented")
 }
 
 // ListContainers implements runtime.Runtime.
-func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, error) {
+func (c *Client) ListContainers(_ context.Context) ([]runtime.ContainerInfo, error) {
 	pods, err := c.client.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		panic(err.Error())
@@ -88,21 +99,21 @@ func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, e
 }
 
 // PullImage implements runtime.Runtime.
-func (c *Client) PullImage(ctx context.Context, image string) error {
+func (*Client) PullImage(_ context.Context, _ string) error {
 	panic("unimplemented")
 }
 
 // RemoveContainer implements runtime.Runtime.
-func (c *Client) RemoveContainer(ctx context.Context, containerID string) error {
+func (*Client) RemoveContainer(_ context.Context, _ string) error {
 	panic("unimplemented")
 }
 
 // StartContainer implements runtime.Runtime.
-func (c *Client) StartContainer(ctx context.Context, containerID string) error {
+func (*Client) StartContainer(_ context.Context, _ string) error {
 	panic("unimplemented")
 }
 
 // StopContainer implements runtime.Runtime.
-func (c *Client) StopContainer(ctx context.Context, containerID string) error {
+func (*Client) StopContainer(_ context.Context, _ string) error {
 	panic("unimplemented")
 }

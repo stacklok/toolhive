@@ -48,4 +48,4 @@ tasks:
   build-image:
     desc: Build the image with ko
     cmds:
-      - ko build --platform linux/arm64 --local ./cmd/vt
+      - ko build --platform linux/amd64,linux/arm64 --local ./cmd/vt

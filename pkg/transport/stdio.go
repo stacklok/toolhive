@@ -71,20 +71,22 @@ func (t *StdioTransport) Port() int {
 }
 
 // Setup prepares the transport for use.
-func (t *StdioTransport) Setup(
-	ctx context.Context,
-	runtime rt.Runtime,
-	containerName string,
-	image string,
-	cmdArgs []string,
-	envVars, labels map[string]string,
-	permissionProfile *permissions.Profile,
-) error {
+func (t *StdioTransport) Setup(ctx context.Context, runtime rt.Runtime, containerName string, containerInfo rt.ContainerInfo,
+	cmdArgs []string, permissionProfile *permissions.Profile) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
 	t.runtime = runtime
 	t.containerName = containerName
+
+	// Create environment variables map
+	envVars := make(map[string]string)
+	for _, env := range containerInfo.Env {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) == 2 {
+			envVars[parts[0]] = parts[1]
+		}
+	}
 
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "stdio"
@@ -94,14 +96,14 @@ func (t *StdioTransport) Setup(
 	containerOptions.AttachStdio = true
 
 	// Create the container
-	fmt.Printf("Creating container %s from image %s...\n", containerName, image)
+	fmt.Printf("Creating container %s from image %s...\n", containerName, containerInfo.Image)
 	containerID, err := t.runtime.CreateContainer(
 		ctx,
-		image,
+		containerInfo.Image,
 		containerName,
 		cmdArgs,
 		envVars,
-		labels,
+		containerInfo.Labels,
 		permissionProfile,
 		"stdio",
 		containerOptions,

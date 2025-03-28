@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/vibetool/pkg/authz"
 	"github.com/stacklok/vibetool/pkg/client"
 	"github.com/stacklok/vibetool/pkg/container"
+	rt "github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/environment"
 	"github.com/stacklok/vibetool/pkg/labels"
 	"github.com/stacklok/vibetool/pkg/networking"
@@ -232,11 +233,18 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 		return err
 	}
 
+	// Create a ContainerInfo for the initial setup
+	containerInfo := rt.ContainerInfo{
+		Image:  options.Image,
+		Labels: containerLabels,
+		Env:    options.EnvVars,
+	}
+
 	// Set up the transport
 	fmt.Printf("Setting up %s transport...\n", transportType)
 	if err := transportHandler.Setup(
-		ctx, runtime, containerName, options.Image, options.CmdArgs,
-		envVars, containerLabels, permProfile,
+		ctx, runtime, containerName, containerInfo, options.CmdArgs,
+		permProfile,
 	); err != nil {
 		return fmt.Errorf("failed to set up transport: %v", err)
 	}

@@ -19,8 +19,8 @@ type Transport interface {
 	// Setup prepares the transport for use.
 	// The runtime parameter provides access to container operations.
 	// The permissionProfile is used to configure container permissions.
-	Setup(ctx context.Context, runtime rt.Runtime, containerName string, image string, cmdArgs []string,
-		envVars, labels map[string]string, permissionProfile *permissions.Profile) error
+	Setup(ctx context.Context, runtime rt.Runtime, containerName string, containerInfo rt.ContainerInfo, cmdArgs []string,
+		permissionProfile *permissions.Profile) error
 
 	// Start initializes the transport and begins processing messages.
 	// The transport is responsible for container operations like attaching to stdin/stdout if needed.
@@ -109,4 +109,23 @@ func (*Factory) Create(config Config) (Transport, error) {
 	default:
 		return nil, ErrUnsupportedTransport
 	}
+}
+
+// GetPortConfiguration returns the target port for a transport based on container info
+func GetPortConfiguration(transportType TransportType, containerInfo rt.ContainerInfo) (targetPort int) {
+	// For stdio transport we don't need any ports
+	if transportType == TransportTypeStdio {
+		return 0
+	}
+
+	// For SSE transport, we need to find the HostPort
+	if transportType == TransportTypeSSE {
+		for _, port := range containerInfo.Ports {
+			if port.Protocol == "tcp" {
+				return port.HostPort
+			}
+		}
+	}
+
+	return 0
 }

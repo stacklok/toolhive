@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/stacklok/vibetool/pkg/container"
@@ -76,13 +77,22 @@ func (t *SSETransport) Port() int {
 }
 
 // Setup prepares the transport for use.
-func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerName string, image string, cmdArgs []string,
-	envVars, labels map[string]string, permissionProfile *permissions.Profile) error {
+func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerName string, containerInfo rt.ContainerInfo,
+	cmdArgs []string, permissionProfile *permissions.Profile) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
 	t.runtime = runtime
 	t.containerName = containerName
+
+	// Create environment variables map
+	envVars := make(map[string]string)
+	for _, env := range containerInfo.Env {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) == 2 {
+			envVars[parts[0]] = parts[1]
+		}
+	}
 
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "sse"
@@ -127,14 +137,14 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	containerOptions.AttachStdio = false
 
 	// Create the container
-	fmt.Printf("Creating container %s from image %s...\n", containerName, image)
+	fmt.Printf("Creating container %s from image %s...\n", containerName, containerInfo.Image)
 	containerID, err := t.runtime.CreateContainer(
 		ctx,
-		image,
+		containerInfo.Image,
 		containerName,
 		cmdArgs,
 		envVars,
-		labels,
+		containerInfo.Labels,
 		permissionProfile,
 		"sse",
 		containerOptions,
@@ -172,22 +182,11 @@ func (t *SSETransport) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start container: %v", err)
 	}
 
-	// Create and start the transparent proxy
-	// The SSE transport forwards requests from the host port to the container's target port
-
 	// In a Docker bridge network, we need to use localhost since the container port is mapped to the host
 	// We ignore containerIP even if it's set, as it's not directly accessible from the host
 	targetHost := LocalhostName
 
-	// Check if target port is set
-	if t.targetPort <= 0 {
-		return fmt.Errorf("target port not set for SSE transport")
-	}
-
-	// Use the target port for the container
-	containerPort := t.targetPort
-
-	targetURI := fmt.Sprintf("http://%s:%d", targetHost, containerPort)
+	targetURI := fmt.Sprintf("http://%s:%d", targetHost, t.port)
 	fmt.Printf("Setting up transparent proxy to forward from host port %d to %s\n",
 		t.port, targetURI)
 

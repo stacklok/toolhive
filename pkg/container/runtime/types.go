@@ -28,6 +28,8 @@ type ContainerInfo struct {
 	Labels map[string]string
 	// Ports is the container port mappings
 	Ports []PortMapping
+	// Env is the container environment variables
+	Env []string
 }
 
 // PortMapping represents a port mapping for a container

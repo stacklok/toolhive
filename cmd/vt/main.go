@@ -45,6 +45,7 @@ func init() {
 	rootCmd.AddCommand(proxyCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(newSecretCommand())
+	rootCmd.AddCommand(restartCmd)
 }
 
 func main() {

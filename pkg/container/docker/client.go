@@ -1,5 +1,17 @@
 // Package docker provides Docker-specific implementation of container runtime,
 // including creating, starting, stopping, and monitoring containers.
+//
+// The package is designed around idempotent operations that ensure consistent
+// container state without requiring explicit restart operations. Key methods
+// like CreateContainer and StartContainer are implemented to be idempotent,
+// meaning they can be safely called multiple times with the same parameters
+// and will produce the same result.
+//
+// This design eliminates the need for explicit restart operations:
+//   - To "restart" a container, simply call CreateContainer (which verifies or creates
+//     with the desired configuration) followed by StartContainer
+//   - If configuration changes are needed, CreateContainer will return an error,
+//     indicating that manual cleanup is required before applying new configuration
 package docker
 
 import (
@@ -17,16 +29,14 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	dockerimage "github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
-	"github.com/docker/go-connections/nat"
 
 	"github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/permissions"
 )
 
-// Common socket paths
+// Common socket paths for container runtimes
 const (
 	// PodmanSocketPath is the default Podman socket path
 	PodmanSocketPath = "/var/run/podman/podman.sock"
@@ -36,14 +46,18 @@ const (
 	DockerSocketPath = "/var/run/docker.sock"
 )
 
-// Client implements the Runtime interface for container operations
+// Client implements the Runtime interface for container operations.
+// It provides methods for managing containers using either Docker or Podman
+// as the underlying container runtime.
 type Client struct {
 	runtimeType runtime.Type
 	socketPath  string
 	client      *client.Client
 }
 
-// NewClient creates a new container client
+// NewClient creates a new container client by automatically detecting
+// and selecting an available container runtime (Podman or Docker).
+// It will prefer Podman if both runtimes are available.
 func NewClient(ctx context.Context) (*Client, error) {
 	// Try to find a container socket in various locations
 	socketPath, runtimeType, err := findContainerSocket()
@@ -54,7 +68,17 @@ func NewClient(ctx context.Context) (*Client, error) {
 	return NewClientWithSocketPath(ctx, socketPath, runtimeType)
 }
 
-// NewClientWithSocketPath creates a new container client with a specific socket path
+// NewClientWithSocketPath creates a new container client with a specific socket path.
+// This allows for custom socket locations or explicit runtime selection.
+//
+// Parameters:
+//   - ctx: Context for the operation
+//   - socketPath: Path to the container runtime socket
+//   - runtimeType: Type of container runtime (Docker or Podman)
+//
+// Returns:
+//   - A new Client instance
+//   - Error if the client creation fails or the runtime is not available
 func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType runtime.Type) (*Client, error) {
 	// Create a custom HTTP client that uses the Unix socket
 	httpClient := &http.Client{
@@ -132,78 +156,76 @@ func findContainerSocket() (string, runtime.Type, error) {
 	return "", "", ErrRuntimeNotFound
 }
 
-// CreateContainer creates a container without starting it
-// If options is nil, default options will be used
-// convertEnvVars converts a map of environment variables to a slice
-func convertEnvVars(envVars map[string]string) []string {
-	env := make([]string, 0, len(envVars))
-	for k, v := range envVars {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
-	return env
-}
-
-// convertMounts converts internal mount format to Docker mount format
-func convertMounts(mounts []runtime.Mount) []mount.Mount {
-	result := make([]mount.Mount, 0, len(mounts))
-	for _, m := range mounts {
-		result = append(result, mount.Mount{
-			Type:     mount.TypeBind,
-			Source:   m.Source,
-			Target:   m.Target,
-			ReadOnly: m.ReadOnly,
-		})
-	}
-	return result
-}
-
-// setupExposedPorts configures exposed ports for a container
-func setupExposedPorts(config *container.Config, exposedPorts map[string]struct{}) error {
-	if len(exposedPorts) == 0 {
-		return nil
+// findAndVerifyContainer checks if a container with the given name exists and verifies its configuration.
+// Returns the container ID if found and verified, or an error if the container doesn't exist or has mismatched config.
+func (c *Client) findAndVerifyContainer(
+	ctx context.Context,
+	name string,
+	image string,
+	command []string,
+	envVars map[string]string,
+	permissionProfile *permissions.Profile,
+	transportType string,
+	options *runtime.CreateContainerOptions,
+) (string, error) {
+	// List containers with exact name match
+	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("name", "^/?"+name+"$"), // Match exact name with optional leading slash
+		),
+	})
+	if err != nil {
+		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
 	}
 
-	config.ExposedPorts = nat.PortSet{}
-	for port := range exposedPorts {
-		natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
-		if err != nil {
-			return fmt.Errorf("failed to parse port: %v", err)
-		}
-		config.ExposedPorts[natPort] = struct{}{}
-	}
-
-	return nil
-}
-
-// setupPortBindings configures port bindings for a container
-func setupPortBindings(hostConfig *container.HostConfig, portBindings map[string][]runtime.PortBinding) error {
-	if len(portBindings) == 0 {
-		return nil
-	}
-
-	hostConfig.PortBindings = nat.PortMap{}
-	for port, bindings := range portBindings {
-		natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
-		if err != nil {
-			return fmt.Errorf("failed to parse port: %v", err)
-		}
-
-		natBindings := make([]nat.PortBinding, len(bindings))
-		for i, binding := range bindings {
-			natBindings[i] = nat.PortBinding{
-				HostIP:   binding.HostIP,
-				HostPort: binding.HostPort,
+	// Check each matching container
+	for _, existingContainer := range containers {
+		for _, containerName := range existingContainer.Names {
+			// Docker prefixes container names with '/', so handle both cases
+			if containerName == "/"+name || containerName == name {
+				// Verify the container configuration
+				if err := c.verifyContainerConfig(ctx, existingContainer.ID, image, command, envVars,
+					permissionProfile, transportType, options); err != nil {
+					if err == ErrContainerAlreadyExists {
+						return "", err // Return as is for configuration mismatch
+					}
+					return "", NewContainerError(err, existingContainer.ID,
+						fmt.Sprintf("failed to verify container configuration: %v", err))
+				}
+				return existingContainer.ID, nil
 			}
 		}
-		hostConfig.PortBindings[natPort] = natBindings
 	}
 
-	return nil
+	return "", nil // Container not found
 }
 
-// CreateContainer creates a container without starting it.
-// It configures the container based on the provided permission profile and transport type.
-// If options is nil, default options will be used.
+// CreateContainer creates a new container with the specified configuration.
+// If a container with the same name already exists and has matching configuration,
+// it returns the existing container's ID. If the configuration doesn't match,
+// it returns an error.
+//
+// The operation is idempotent: repeated calls with the same configuration
+// will return the same container ID. This design choice eliminates the need
+// for explicit restart operations - to "restart" a container, simply ensure
+// it exists with the desired configuration using this method, then call
+// StartContainer.
+//
+// Parameters:
+//   - ctx: Context for the operation
+//   - image: Container image to use
+//   - name: Name for the container
+//   - command: Command to run in the container
+//   - envVars: Environment variables to set
+//   - labels: Labels to apply to the container
+//   - permissionProfile: Security and permission settings
+//   - transportType: Type of transport (stdio or sse)
+//   - options: Additional container creation options
+//
+// Returns:
+//   - Container ID on success
+//   - Error if the operation fails or if an existing container has different configuration
 func (c *Client) CreateContainer(
 	ctx context.Context,
 	image, name string,
@@ -213,6 +235,14 @@ func (c *Client) CreateContainer(
 	transportType string,
 	options *runtime.CreateContainerOptions,
 ) (string, error) {
+	// Check if container exists and verify configuration
+	if containerID, err := c.findAndVerifyContainer(ctx, name, image, command, envVars,
+		permissionProfile, transportType, options); err != nil {
+		return "", err
+	} else if containerID != "" {
+		return containerID, nil
+	}
+
 	// Get permission config from profile
 	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType)
 	if err != nil {
@@ -267,16 +297,66 @@ func (c *Client) CreateContainer(
 		name,
 	)
 	if err != nil {
+		// Handle race condition where container was created between our check and create
+		if client.IsErrNotFound(err) || strings.Contains(err.Error(), "Conflict") {
+			// Try to find and verify the container again
+			if containerID, verifyErr := c.findAndVerifyContainer(ctx, name, image, command, envVars,
+				permissionProfile, transportType, options); verifyErr == nil && containerID != "" {
+				return containerID, nil
+			}
+			// If we get here, something unexpected happened
+			return "", NewContainerError(err, "", fmt.Sprintf("container name conflict: %v", err))
+		}
 		return "", NewContainerError(err, "", fmt.Sprintf("failed to create container: %v", err))
 	}
 
 	return resp.ID, nil
 }
 
-// StartContainer starts a container
+// StartContainer starts a container with the given ID.
+//
+// The operation is idempotent: if the container is already running,
+// it will return success without doing anything. This behavior,
+// combined with CreateContainer's idempotency, provides a simple
+// way to ensure a container is running with the desired configuration
+// without needing explicit restart operations.
+//
+// To "restart" a container:
+// 1. Call CreateContainer to ensure correct configuration
+// 2. Call StartContainer to ensure the container is running
+//
+// If configuration changes are needed, CreateContainer will return
+// an error, preventing inconsistent states.
+//
+// Parameters:
+//   - ctx: Context for the operation
+//   - containerID: ID of the container to start
+//
+// Returns:
+//   - Error if the operation fails or if the container doesn't exist
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {
-	err := c.client.ContainerStart(ctx, containerID, container.StartOptions{})
+	// Check if container is already running
+	info, err := c.client.ContainerInspect(ctx, containerID)
 	if err != nil {
+		if client.IsErrNotFound(err) {
+			return NewContainerError(ErrContainerNotFound, containerID, "container not found")
+		}
+		return NewContainerError(err, containerID, fmt.Sprintf("failed to inspect container: %v", err))
+	}
+
+	// If container is already running, return success
+	if info.State.Running {
+		return nil
+	}
+
+	// Start the container
+	err = c.client.ContainerStart(ctx, containerID, container.StartOptions{})
+	if err != nil {
+		// Check again in case the container was started between our check and start
+		// This handles race conditions
+		if strings.Contains(err.Error(), "already started") {
+			return nil
+		}
 		return NewContainerError(err, containerID, fmt.Sprintf("failed to start container: %v", err))
 	}
 	return nil
@@ -431,7 +511,14 @@ func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runt
 		created = time.Time{} // Use zero time if parsing fails
 	}
 
-	return runtime.ContainerInfo{
+	// Extract environment variables
+	envVars := make([]string, 0)
+	if info.Config != nil {
+		envVars = append(envVars, info.Config.Env...)
+	}
+
+	// Create container info
+	containerInfo := runtime.ContainerInfo{
 		ID:      info.ID,
 		Name:    strings.TrimPrefix(info.Name, "/"),
 		Image:   info.Config.Image,
@@ -440,7 +527,10 @@ func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runt
 		Created: created,
 		Labels:  info.Config.Labels,
 		Ports:   ports,
-	}, nil
+		Env:     envVars,
+	}
+
+	return containerInfo, nil
 }
 
 // GetContainerIP gets container IP address
@@ -727,69 +817,82 @@ func (c *Client) getPermissionConfigFromProfile(
 	return config, nil
 }
 
-// Error types for container operations
-var (
-	// ErrContainerNotFound is returned when a container is not found
-	ErrContainerNotFound = fmt.Errorf("container not found")
+// verifyContainerConfig checks if an existing container's configuration matches the expected configuration
+//
+//nolint:gocyclo // This is a complex function, but it's not too bad
+func (c *Client) verifyContainerConfig(ctx context.Context, containerID, image string, command []string,
+	envVars map[string]string, permissionProfile *permissions.Profile,
+	transportType string, options *runtime.CreateContainerOptions) error {
 
-	// ErrContainerAlreadyExists is returned when a container already exists
-	ErrContainerAlreadyExists = fmt.Errorf("container already exists")
+	containerInfo, err := c.client.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return NewContainerError(err, containerID, "failed to inspect container")
+	}
 
-	// ErrContainerNotRunning is returned when a container is not running
-	ErrContainerNotRunning = fmt.Errorf("container not running")
+	// Get permission config from profile for verification
+	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType)
+	if err != nil {
+		return fmt.Errorf("failed to get permission config: %w", err)
+	}
 
-	// ErrContainerAlreadyRunning is returned when a container is already running
-	ErrContainerAlreadyRunning = fmt.Errorf("container already running")
+	// Check image
+	if !strings.HasPrefix(containerInfo.Image, "sha256:") && !strings.HasPrefix(containerInfo.Image, image) {
+		return NewContainerError(ErrContainerAlreadyExists, containerID,
+			fmt.Sprintf("container exists with different image: %s", containerInfo.Image))
+	}
 
-	// ErrRuntimeNotFound is returned when a container runtime is not found
-	ErrRuntimeNotFound = fmt.Errorf("container runtime not found")
+	// Check command
+	if !compareStringSlices(containerInfo.Config.Cmd, command) {
+		return NewContainerError(ErrContainerAlreadyExists, containerID,
+			fmt.Sprintf("container exists with different command: %v", containerInfo.Config.Cmd))
+	}
 
-	// ErrInvalidRuntimeType is returned when an invalid runtime type is specified
-	ErrInvalidRuntimeType = fmt.Errorf("invalid runtime type")
+	// Check environment variables
+	if !compareEnvVars(containerInfo.Config.Env, convertEnvVars(envVars)) {
+		return NewContainerError(ErrContainerAlreadyExists, containerID,
+			"container exists with different environment variables")
+	}
 
-	// ErrAttachFailed is returned when attaching to a container fails
-	ErrAttachFailed = fmt.Errorf("failed to attach to container")
+	// Check network mode
+	expectedNetworkMode := container.NetworkMode(permissionConfig.NetworkMode)
+	if containerInfo.HostConfig.NetworkMode != expectedNetworkMode {
+		return NewContainerError(ErrContainerAlreadyExists, containerID,
+			fmt.Sprintf("container exists with different network mode: %s", containerInfo.HostConfig.NetworkMode))
+	}
 
-	// ErrContainerExited is returned when a container has exited unexpectedly
-	ErrContainerExited = fmt.Errorf("container exited unexpectedly")
-)
+	// Check capabilities
+	if !compareStringSlices(containerInfo.HostConfig.CapAdd, permissionConfig.CapAdd) ||
+		!compareStringSlices(containerInfo.HostConfig.CapDrop, permissionConfig.CapDrop) {
+		return NewContainerError(ErrContainerAlreadyExists, containerID,
+			"container exists with different capabilities")
+	}
 
-// ContainerError represents an error related to container operations
-type ContainerError struct {
-	// Err is the underlying error
-	Err error
-	// ContainerID is the ID of the container
-	ContainerID string
-	// Message is an optional error message
-	Message string
-}
+	// Check security options
+	if !compareStringSlices(containerInfo.HostConfig.SecurityOpt, permissionConfig.SecurityOpt) {
+		return NewContainerError(ErrContainerAlreadyExists, containerID,
+			"container exists with different security options")
+	}
 
-// Error returns the error message
-func (e *ContainerError) Error() string {
-	if e.Message != "" {
-		if e.ContainerID != "" {
-			return fmt.Sprintf("%s: %s (container: %s)", e.Err, e.Message, e.ContainerID)
+	// Check mounts
+	if !compareMounts(containerInfo.Mounts, permissionConfig.Mounts) {
+		return NewContainerError(ErrContainerAlreadyExists, containerID,
+			"container exists with different mounts")
+	}
+
+	// Check port configuration if options are provided
+	if options != nil {
+		// Check exposed ports
+		if !compareExposedPorts(containerInfo.Config.ExposedPorts, options.ExposedPorts) {
+			return NewContainerError(ErrContainerAlreadyExists, containerID,
+				"container exists with different exposed ports")
 		}
-		return fmt.Sprintf("%s: %s", e.Err, e.Message)
+
+		// Check port bindings
+		if !comparePortBindings(containerInfo.HostConfig.PortBindings, options.PortBindings) {
+			return NewContainerError(ErrContainerAlreadyExists, containerID,
+				"container exists with different port bindings")
+		}
 	}
 
-	if e.ContainerID != "" {
-		return fmt.Sprintf("%s (container: %s)", e.Err, e.ContainerID)
-	}
-
-	return e.Err.Error()
-}
-
-// Unwrap returns the underlying error
-func (e *ContainerError) Unwrap() error {
-	return e.Err
-}
-
-// NewContainerError creates a new container error
-func NewContainerError(err error, containerID, message string) *ContainerError {
-	return &ContainerError{
-		Err:         err,
-		ContainerID: containerID,
-		Message:     message,
-	}
+	return nil
 }

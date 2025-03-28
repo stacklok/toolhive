@@ -1,5 +1,4 @@
 // Package kubernetes provides a client for the Kubernetes runtime
-// including creating, starting, stopping, and retrieving container information.
 package kubernetes
 
 import (

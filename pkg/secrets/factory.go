@@ -10,6 +10,7 @@ import (
 	"golang.org/x/term"
 )
 
+// SecretsPasswordEnvVar is the environment variable used to specify the password for encrypting and decrypting secrets.
 const SecretsPasswordEnvVar = "VIBETOOL_SECRETS_PASSWORD"
 
 // ManagerType represents an enum of the types of available secrets providers.
@@ -51,6 +52,9 @@ func CreateSecretManager(managerType ManagerType) (Manager, error) {
 	}
 }
 
+// GetSecretsPassword returns the password to use for encrypting and decrypting secrets.
+// It will attempt to retrieve it from the environment variable VIBETOOL_SECRETS_PASSWORD.
+// If the environment variable is not set, it will prompt the user to enter a password.
 func GetSecretsPassword() ([]byte, error) {
 	var err error
 	password := []byte(os.Getenv(SecretsPasswordEnvVar))

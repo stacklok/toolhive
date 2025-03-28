@@ -91,13 +91,7 @@ func (b *BasicManager) updateFile() error {
 		return fmt.Errorf("failed to marshal secrets: %w", err)
 	}
 
-	secretsFile, err := os.OpenFile(b.filePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("failed to open secrets file: %w", err)
-	}
-	defer secretsFile.Close()
-
-	_, err = secretsFile.Write(contents)
+	err = os.WriteFile(b.filePath, contents, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to write secrets to file: %w", err)
 	}

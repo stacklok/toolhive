@@ -97,18 +97,12 @@ func (e *EncryptedManager) updateFile() error {
 		return fmt.Errorf("failed to marshal secrets: %w", err)
 	}
 
-	secretsFile, err := os.OpenFile(e.filePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("failed to open secrets file: %w", err)
-	}
-	defer secretsFile.Close()
-
 	encryptedContents, err := aes.Encrypt(contents, e.key)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt secrets: %w", err)
 	}
 
-	_, err = secretsFile.Write(encryptedContents)
+	err = os.WriteFile(e.filePath, encryptedContents, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to write secrets to file: %w", err)
 	}

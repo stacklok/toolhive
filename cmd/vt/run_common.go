@@ -302,8 +302,21 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 	// Start a goroutine to monitor the transport's running state
 	go func() {
 		for {
+			// Safely check if transportHandler is nil
+			if transportHandler == nil {
+				fmt.Println("Transport handler is nil, exiting monitoring routine...")
+				close(doneCh)
+				return
+			}
+
 			// Check if the transport is still running
-			running, _ := transportHandler.IsRunning(ctx)
+			running, err := transportHandler.IsRunning(ctx)
+			if err != nil {
+				fmt.Printf("Error checking transport status: %v\n", err)
+				// Don't exit immediately on error, try again after pause
+				time.Sleep(1 * time.Second)
+				continue
+			}
 			if !running {
 				// Transport is no longer running (container exited or was stopped)
 				fmt.Println("Transport is no longer running, exiting...")

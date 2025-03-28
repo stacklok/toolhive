@@ -15,8 +15,8 @@ import (
 	"github.com/stacklok/vibetool/pkg/secrets/aes"
 )
 
-// EncryptedManager is a simple secrets manager that stores secrets in an
-// unencrypted file. This is for testing/development purposes only.
+// EncryptedManager stores secrets in an encrypted file.
+// AES-256-GCM is used for encryption.
 type EncryptedManager struct {
 	filePath string
 	// Key used to re-encrypt the secrets file if changes are needed.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/vibetool/pkg/container"
 	"github.com/stacklok/vibetool/pkg/permissions"
 	"github.com/stacklok/vibetool/pkg/registry"
 )
@@ -141,6 +142,25 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		// Server not found in registry, treat as direct image
 		logDebug(debugMode, "Server '%s' not found in registry, treating as Docker image", serverOrImage)
 		options.Image = serverOrImage
+	}
+
+	// Create container runtime
+	runtime, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container runtime: %v", err)
+	}
+
+	// Check if the image exists locally, and pull it if not
+	imageExists, err := runtime.ImageExists(ctx, options.Image)
+	if err != nil {
+		return fmt.Errorf("failed to check if image exists: %v", err)
+	}
+	if !imageExists {
+		fmt.Printf("Image %s not found locally, pulling...\n", options.Image)
+		if err := runtime.PullImage(ctx, options.Image); err != nil {
+			return fmt.Errorf("failed to pull image: %v", err)
+		}
+		fmt.Printf("Successfully pulled image: %s\n", options.Image)
 	}
 
 	// Run the MCP server

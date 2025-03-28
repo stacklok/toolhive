@@ -1,0 +1,159 @@
+#
+# Copyright 2025 Stacklok, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# This workflow compiles vibetool using a SLSA3 compliant
+# build and then verifies the provenance of the built artifacts.
+# It releases the following architectures: amd64, arm64, and armv7 on Linux,
+# Windows, and macOS.
+# The provenance file can be verified using https://github.com/slsa-framework/slsa-verifier.
+# For more information about SLSA and how it improves the supply-chain, visit slsa.dev.
+
+name: Release
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+jobs:
+  ldflags_args:
+    runs-on: ubuntu-latest
+    outputs:
+      commit-date: ${{ steps.ldflags.outputs.commit-date }}
+      commit: ${{ steps.ldflags.outputs.commit }}
+      version: ${{ steps.ldflags.outputs.version }}
+      tree-state: ${{ steps.ldflags.outputs.tree-state }}
+    steps:
+      - id: checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
+        with:
+          fetch-depth: 0
+      - id: ldflags
+        run: |
+          echo "commit=$GITHUB_SHA" >> $GITHUB_OUTPUT
+          echo "commit-date=$(git log --date=iso8601-strict -1 --pretty=%ct)" >> $GITHUB_OUTPUT
+          echo "version=$(git describe --tags --always --dirty | cut -c2-)" >> $GITHUB_OUTPUT
+          echo "tree-state=$(if git diff --quiet; then echo "clean"; else echo "dirty"; fi)" >> $GITHUB_OUTPUT
+  release:
+    needs:
+      - ldflags_args
+    name: Build and release
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    permissions:
+      contents: write # To add assets to a release.
+      id-token: write # To do keyless signing with cosign
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v4
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@61119d458adab75f756bc0b9e4bde25725f86a7a # v0.17.2
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@4959ce089c160fddf62f7b42464195ba1a56d382 # v3.6.0
+
+      - name: Run GoReleaser
+        id: run-goreleaser
+        uses: goreleaser/goreleaser-action@286f3b13b1b49da4ac219696163fb8c1c93e1200 # v5
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          VERSION: ${{ needs.ldflags_args.outputs.version }}
+          COMMIT: ${{ needs.ldflags_args.outputs.commit }}
+          COMMIT_DATE: ${{ needs.ldflags_args.outputs.commit-date }}
+          TREE_STATE: ${{ needs.ldflags_args.outputs.tree-state }}
+
+      - name: Generate subject
+        id: hash
+        env:
+          ARTIFACTS: "${{ steps.run-goreleaser.outputs.artifacts }}"
+        run: |
+          set -euo pipefail
+          hashes=$(echo $ARTIFACTS | jq --raw-output '.[] | {name, "digest": (.extra.Digest // .extra.Checksum)} | select(.digest) | {digest} + {name} | join("  ") | sub("^sha256:";"")' | base64 -w0)
+          if test "$hashes" = ""; then # goreleaser < v1.13.0
+            checksum_file=$(echo "$ARTIFACTS" | jq -r '.[] | select (.type=="Checksum") | .path')
+            hashes=$(cat $checksum_file | base64 -w0)
+          fi
+          echo "hashes=$hashes" >> $GITHUB_OUTPUT
+
+#  provenance:
+#    name: Generate provenance (SLSA3)
+#    needs:
+#      - release
+#    permissions:
+#      actions: read # To read the workflow path.
+#      id-token: write # To sign the provenance.
+#      contents: write # To add assets to a release.
+#    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+#    with:
+#      base64-subjects: "${{ needs.release.outputs.hashes }}"
+#      upload-assets: true # upload to a new release
+
+#  verification:
+#    name: Verify provenance of assets (SLSA3)
+#    needs:
+#      - release
+#      - provenance
+#    runs-on: ubuntu-latest
+#    permissions: read-all
+#    steps:
+#      - name: Install the SLSA verifier
+#        uses: slsa-framework/slsa-verifier/actions/installer@3714a2a4684014deb874a0e737dffa0ee02dd647 # v2.6.0
+#      - name: Download assets
+#        env:
+#          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+#          CHECKSUMS: "${{ needs.release.outputs.hashes }}"
+#          ATT_FILE_NAME: "${{ needs.provenance.outputs.provenance-name }}"
+#        run: |
+#          set -euo pipefail
+#          checksums=$(echo "$CHECKSUMS" | base64 -d)
+#          while read -r line; do
+#              fn=$(echo $line | cut -d ' ' -f2)
+#              echo "Downloading $fn"
+#              gh -R "$GITHUB_REPOSITORY" release download "$GITHUB_REF_NAME" -p "$fn"
+#          done <<<"$checksums"
+#          gh -R "$GITHUB_REPOSITORY" release download "$GITHUB_REF_NAME" -p "$ATT_FILE_NAME"
+#      - name: Verify assets
+#        env:
+#          CHECKSUMS: "${{ needs.release.outputs.hashes }}"
+#          PROVENANCE: "${{ needs.provenance.outputs.provenance-name }}"
+#        run: |
+#          set -euo pipefail
+#          checksums=$(echo "$CHECKSUMS" | base64 -d)
+#          while read -r line; do
+#              fn=$(echo $line | cut -d ' ' -f2)
+#              echo "Verifying SLSA provenance for $fn"
+#              slsa-verifier verify-artifact --provenance-path "$PROVENANCE" \
+#                                            --source-uri "github.com/$GITHUB_REPOSITORY" \
+#                                            --source-tag "$GITHUB_REF_NAME" \
+#                                            "$fn"
+#          done <<<"$checksums"

@@ -14,7 +14,6 @@ import (
 // their environment variable names.
 func ParseSecretParameters(parameters []string, secretsManager secrets.Manager) (map[string]string, error) {
 	secretVariables := make(map[string]string, len(parameters))
-
 	for _, param := range parameters {
 		parameter, err := secrets.ParseSecretParameter(param)
 		if err != nil {

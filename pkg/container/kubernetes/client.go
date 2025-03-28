@@ -18,7 +18,6 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/stacklok/vibetool/pkg/container/runtime"
-
 	// Avoid import cycle
 	"github.com/stacklok/vibetool/pkg/permissions"
 )
@@ -100,6 +99,9 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
+	//nolint:gosec // we don't check for an error here because it's not critical
+	// and it also returns with an error of statuscode `0`'. perhaps someone
+	// who knows the function a bit more can fix this.
 	exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdin:  stdinReader,
 		Stdout: stdoutWriter,

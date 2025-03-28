@@ -10,6 +10,8 @@ import (
 	"golang.org/x/term"
 )
 
+const SecretsPasswordEnvVar = "VIBETOOL_SECRETS_PASSWORD"
+
 // ManagerType represents an enum of the types of available secrets providers.
 type ManagerType string
 
@@ -33,17 +35,9 @@ func CreateSecretManager(managerType ManagerType) (Manager, error) {
 		}
 		return NewBasicManager(secretsPath)
 	case EncryptedType:
-		// Prompt the user for a password to encrypt the secrets file.
-		// TODO: Consider integration with a keychain.
-		fmt.Print("Enter a password to encrypt the secrets file: ")
-		password, err := term.ReadPassword(int(os.Stdin.Fd()))
-		// Start new line after receiving password.
-		fmt.Printf("\n")
+		password, err := GetSecretsPassword()
 		if err != nil {
-			return nil, fmt.Errorf("failed to read password: %w", err)
-		}
-		if len(password) == 0 {
-			return nil, errors.New("password cannot be empty")
+			return nil, fmt.Errorf("failed to get secrets password: %w", err)
 		}
 		// Convert to 256-bit hash for use with AES-GCM.
 		key := sha256.Sum256(password)
@@ -55,4 +49,24 @@ func CreateSecretManager(managerType ManagerType) (Manager, error) {
 	default:
 		return nil, ErrUnknownManagerType
 	}
+}
+
+func GetSecretsPassword() ([]byte, error) {
+	var err error
+	password := []byte(os.Getenv(SecretsPasswordEnvVar))
+	if len(password) == 0 {
+		// Prompt the user for a password to encrypt the secrets file.
+		// TODO: Consider integration with a keychain.
+		fmt.Print("Enter a password for secrets encryption and decryption: ")
+		password, err = term.ReadPassword(int(os.Stdin.Fd()))
+		// Start new line after receiving password.
+		fmt.Printf("\n")
+		if err != nil {
+			return nil, fmt.Errorf("failed to read password: %w", err)
+		}
+		if len(password) == 0 {
+			return nil, errors.New("password cannot be empty")
+		}
+	}
+	return password, nil
 }

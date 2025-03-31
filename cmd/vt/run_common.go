@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/vibetool/pkg/process"
 	"github.com/stacklok/vibetool/pkg/secrets"
 	"github.com/stacklok/vibetool/pkg/transport"
+	"github.com/stacklok/vibetool/pkg/transport/types"
 )
 
 // RunOptions contains all the options for running an MCP server
@@ -124,7 +125,7 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 	}
 
 	// Parse transport mode
-	transportType, err := transport.ParseTransportType(options.Transport)
+	transportType, err := types.ParseTransportType(options.Transport)
 	if err != nil {
 		return fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", options.Transport)
 	}
@@ -138,7 +139,7 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 
 	// Select a target port for the container
 	targetPort := 0
-	if transportType == transport.TransportTypeSSE {
+	if transportType == types.TransportTypeSSE {
 		targetPort, err = networking.FindOrUsePort(options.TargetPort)
 		if err != nil {
 			return fmt.Errorf("target port error: %w", err)
@@ -161,7 +162,7 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 	labels.AddStandardLabels(containerLabels, containerName, baseName, string(transportType), port)
 
 	// Create transport with runtime
-	transportConfig := transport.Config{
+	transportConfig := types.Config{
 		Type:       transportType,
 		Port:       port,
 		TargetPort: targetPort,

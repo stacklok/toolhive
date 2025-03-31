@@ -9,7 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/stacklok/vibetool/pkg/transport"
+	"github.com/stacklok/vibetool/pkg/transport/jsonrpc"
+	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
 )
 
 // MCPMethodToFeatureOperation maps MCP method names to feature and operation pairs.
@@ -38,7 +39,7 @@ func shouldSkipInitialAuthorization(r *http.Request) bool {
 	}
 
 	// Skip authorization for the SSE endpoint
-	if strings.HasSuffix(r.URL.Path, transport.HTTPSSEEndpoint) {
+	if strings.HasSuffix(r.URL.Path, ssecommon.HTTPSSEEndpoint) {
 		return true
 	}
 
@@ -98,7 +99,7 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	}
 
 	// Create a JSON-RPC error response
-	errorResponse, _ := transport.NewErrorMessage(
+	errorResponse, _ := jsonrpc.NewErrorMessage(
 		msgID,
 		403, // Forbidden
 		errorMsg,
@@ -132,12 +133,12 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 //	})
 //
 //	// Create a transport with the middleware
-//	middlewares := []transport.Middleware{
+//	middlewares := []types.Middleware{
 //	    jwtValidator.Middleware, // JWT middleware should be applied first
 //	    cedarAuthorizer.Middleware, // Cedar middleware is applied second
 //	}
 //
-//	proxy := transport.NewHTTPSSEProxy(8080, "my-container", middlewares...)
+//	proxy := httpsse.NewHTTPSSEProxy(8080, "my-container", middlewares...)
 //	proxy.Start(context.Background())
 func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -158,7 +159,7 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 		// Parse the JSON-RPC message
-		var msg transport.JSONRPCMessage
+		var msg jsonrpc.JSONRPCMessage
 		if err := json.Unmarshal(bodyBytes, &msg); err != nil {
 			// If we can't parse the message, let the next handler deal with it
 			next.ServeHTTP(w, r)

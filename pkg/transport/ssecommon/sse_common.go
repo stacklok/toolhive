@@ -1,4 +1,6 @@
-package transport
+// Package ssecommon provides common types and utilities for Server-Sent Events (SSE)
+// used in communication between the client and MCP server.
+package ssecommon
 
 import (
 	"fmt"

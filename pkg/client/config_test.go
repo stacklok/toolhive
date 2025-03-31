@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stacklok/vibetool/pkg/transport"
+	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
 )
 
 // setupTestConfig creates a temporary directory and config file for testing
@@ -84,7 +84,7 @@ func getMCPServers(t *testing.T, configPath string) map[string]interface{} {
 func testUpdateExistingServer(t *testing.T, config ConfigFile, configPath string) {
 	t.Helper()
 	// Test updating an existing server with lock
-	expectedURL := "http://localhost:54321" + transport.HTTPSSEEndpoint + "#test-container"
+	expectedURL := "http://localhost:54321" + ssecommon.HTTPSSEEndpoint + "#test-container"
 	err := config.SaveWithLock("existing-server", expectedURL)
 	if err != nil {
 		t.Fatalf("Failed to update MCP server config: %v", err)
@@ -111,7 +111,7 @@ func testUpdateExistingServer(t *testing.T, config ConfigFile, configPath string
 func testAddNewServer(t *testing.T, config ConfigFile, configPath string) {
 	t.Helper()
 	// Test adding a new server with lock
-	expectedURL := "http://localhost:9876" + transport.HTTPSSEEndpoint + "#new-container"
+	expectedURL := "http://localhost:9876" + ssecommon.HTTPSSEEndpoint + "#new-container"
 	err := config.SaveWithLock("new-server", expectedURL)
 	if err != nil {
 		t.Fatalf("Failed to add new MCP server config: %v", err)
@@ -229,14 +229,14 @@ func TestGenerateMCPServerURL(t *testing.T) {
 			host:          "localhost",
 			port:          12345,
 			containerName: "test-container",
-			expected:      "http://localhost:12345" + transport.HTTPSSEEndpoint + "#test-container",
+			expected:      "http://localhost:12345" + ssecommon.HTTPSSEEndpoint + "#test-container",
 		},
 		{
 			name:          "Different host",
 			host:          "192.168.1.100",
 			port:          54321,
 			containerName: "another-container",
-			expected:      "http://192.168.1.100:54321" + transport.HTTPSSEEndpoint + "#another-container",
+			expected:      "http://192.168.1.100:54321" + ssecommon.HTTPSSEEndpoint + "#another-container",
 		},
 	}
 

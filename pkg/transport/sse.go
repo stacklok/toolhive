@@ -9,6 +9,9 @@ import (
 	rt "github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/networking"
 	"github.com/stacklok/vibetool/pkg/permissions"
+	"github.com/stacklok/vibetool/pkg/transport/errors"
+	"github.com/stacklok/vibetool/pkg/transport/proxy/transparent"
+	"github.com/stacklok/vibetool/pkg/transport/types"
 )
 
 const (
@@ -25,13 +28,13 @@ type SSETransport struct {
 	containerName string
 	runtime       rt.Runtime
 	debug         bool
-	middlewares   []Middleware
+	middlewares   []types.Middleware
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
 	// Transparent proxy
-	proxy Proxy
+	proxy types.Proxy
 
 	// Shutdown channel
 	shutdownCh chan struct{}
@@ -48,7 +51,7 @@ func NewSSETransport(
 	targetPort int,
 	runtime rt.Runtime,
 	debug bool,
-	middlewares ...Middleware,
+	middlewares ...types.Middleware,
 ) *SSETransport {
 	if host == "" {
 		host = LocalhostName
@@ -66,8 +69,8 @@ func NewSSETransport(
 }
 
 // Mode returns the transport mode.
-func (*SSETransport) Mode() TransportType {
-	return TransportTypeSSE
+func (*SSETransport) Mode() types.TransportType {
+	return types.TransportTypeSSE
 }
 
 // Port returns the port used by the transport.
@@ -155,11 +158,11 @@ func (t *SSETransport) Start(ctx context.Context) error {
 	defer t.mutex.Unlock()
 
 	if t.containerID == "" {
-		return ErrContainerIDNotSet
+		return errors.ErrContainerIDNotSet
 	}
 
 	if t.containerName == "" {
-		return ErrContainerNameNotSet
+		return errors.ErrContainerNameNotSet
 	}
 
 	if t.runtime == nil {
@@ -192,7 +195,7 @@ func (t *SSETransport) Start(ctx context.Context) error {
 		t.port, targetURI)
 
 	// Create the transparent proxy with middlewares
-	t.proxy = NewTransparentProxy(t.port, t.containerName, targetURI, t.middlewares...)
+	t.proxy = transparent.NewTransparentProxy(t.port, t.containerName, targetURI, t.middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}

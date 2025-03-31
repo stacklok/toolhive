@@ -1,4 +1,6 @@
-package transport
+// Package transparent provides a transparent HTTP proxy implementation
+// that forwards requests to a destination without modifying them.
+package transparent
 
 import (
 	"context"
@@ -8,14 +10,16 @@ import (
 	"net/url"
 	"sync"
 	"time"
-)
 
-// Middleware is a function that wraps an http.Handler with additional functionality.
-type Middleware func(http.Handler) http.Handler
+	"github.com/stacklok/vibetool/pkg/transport/jsonrpc"
+	"github.com/stacklok/vibetool/pkg/transport/types"
+)
 
 // TransparentProxy implements the Proxy interface as a transparent HTTP proxy
 // that forwards requests to a destination.
 // It's used by the SSE transport to forward requests to the container's HTTP server.
+//
+//nolint:revive // Intentionally named TransparentProxy despite package name
 type TransparentProxy struct {
 	// Basic configuration
 	port          int
@@ -26,7 +30,7 @@ type TransparentProxy struct {
 	server *http.Server
 
 	// Middleware chain
-	middlewares []Middleware
+	middlewares []types.Middleware
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -40,7 +44,7 @@ func NewTransparentProxy(
 	port int,
 	containerName string,
 	targetURI string,
-	middlewares ...Middleware,
+	middlewares ...types.Middleware,
 ) *TransparentProxy {
 	return &TransparentProxy{
 		port:          port,
@@ -130,30 +134,30 @@ func (p *TransparentProxy) IsRunning(_ context.Context) (bool, error) {
 
 // GetMessageChannel returns the channel for messages to/from the destination.
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (*TransparentProxy) GetMessageChannel() chan *JSONRPCMessage {
+func (*TransparentProxy) GetMessageChannel() chan *jsonrpc.JSONRPCMessage {
 	return nil
 }
 
 // GetResponseChannel returns the channel for receiving messages from the destination.
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (*TransparentProxy) GetResponseChannel() <-chan *JSONRPCMessage {
+func (*TransparentProxy) GetResponseChannel() <-chan *jsonrpc.JSONRPCMessage {
 	return nil
 }
 
 // SendMessageToDestination sends a message to the destination.
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (*TransparentProxy) SendMessageToDestination(_ *JSONRPCMessage) error {
+func (*TransparentProxy) SendMessageToDestination(_ *jsonrpc.JSONRPCMessage) error {
 	return fmt.Errorf("SendMessageToDestination not implemented for TransparentProxy")
 }
 
 // ForwardResponseToClients forwards a response from the destination to clients.
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ *JSONRPCMessage) error {
+func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ *jsonrpc.JSONRPCMessage) error {
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
 }
 
 // SendResponseMessage sends a message to the response channel.
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (*TransparentProxy) SendResponseMessage(_ *JSONRPCMessage) error {
+func (*TransparentProxy) SendResponseMessage(_ *jsonrpc.JSONRPCMessage) error {
 	return fmt.Errorf("SendResponseMessage not implemented for TransparentProxy")
 }

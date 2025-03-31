@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/vibetool/pkg/auth"
-	"github.com/stacklok/vibetool/pkg/transport"
+	"github.com/stacklok/vibetool/pkg/transport/jsonrpc"
 )
 
 func TestMiddleware(t *testing.T) {
@@ -163,7 +163,7 @@ func TestMiddleware(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create a JSON-RPC request
-			request, err := transport.NewRequestMessage(tc.method, tc.params, 1)
+			request, err := jsonrpc.NewRequestMessage(tc.method, tc.params, 1)
 			require.NoError(t, err, "Failed to create JSON-RPC request")
 
 			// Marshal the request to JSON

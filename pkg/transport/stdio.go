@@ -14,6 +14,10 @@ import (
 	"github.com/stacklok/vibetool/pkg/container"
 	rt "github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/permissions"
+	"github.com/stacklok/vibetool/pkg/transport/errors"
+	"github.com/stacklok/vibetool/pkg/transport/jsonrpc"
+	"github.com/stacklok/vibetool/pkg/transport/proxy/httpsse"
+	"github.com/stacklok/vibetool/pkg/transport/types"
 )
 
 // StdioTransport implements the Transport interface using standard input/output.
@@ -24,7 +28,7 @@ type StdioTransport struct {
 	containerName string
 	runtime       rt.Runtime
 	debug         bool
-	middlewares   []Middleware
+	middlewares   []types.Middleware
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -34,7 +38,7 @@ type StdioTransport struct {
 	errorCh    <-chan error
 
 	// HTTP SSE proxy
-	httpProxy Proxy
+	httpProxy types.Proxy
 
 	// Container I/O
 	stdin  io.WriteCloser
@@ -49,7 +53,7 @@ func NewStdioTransport(
 	port int,
 	runtime rt.Runtime,
 	debug bool,
-	middlewares ...Middleware,
+	middlewares ...types.Middleware,
 ) *StdioTransport {
 	return &StdioTransport{
 		port:        port,
@@ -61,8 +65,8 @@ func NewStdioTransport(
 }
 
 // Mode returns the transport mode.
-func (*StdioTransport) Mode() TransportType {
-	return TransportTypeStdio
+func (*StdioTransport) Mode() types.TransportType {
+	return types.TransportTypeStdio
 }
 
 // Port returns the port used by the transport.
@@ -122,11 +126,11 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	defer t.mutex.Unlock()
 
 	if t.containerID == "" {
-		return ErrContainerIDNotSet
+		return errors.ErrContainerIDNotSet
 	}
 
 	if t.containerName == "" {
-		return ErrContainerNameNotSet
+		return errors.ErrContainerNameNotSet
 	}
 
 	if t.runtime == nil {
@@ -147,7 +151,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	}
 
 	// Create and start the HTTP SSE proxy with middlewares
-	t.httpProxy = NewHTTPSSEProxy(t.port, t.containerName, t.middlewares...)
+	t.httpProxy = httpsse.NewHTTPSSEProxy(t.port, t.containerName, t.middlewares...)
 	if err := t.httpProxy.Start(ctx); err != nil {
 		return err
 	}
@@ -425,7 +429,7 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	}
 
 	// Try to parse the JSON
-	var msg JSONRPCMessage
+	var msg jsonrpc.JSONRPCMessage
 	if err := json.Unmarshal([]byte(jsonData), &msg); err != nil {
 		fmt.Printf("Error parsing JSON-RPC message: %v\n", err)
 		return
@@ -438,7 +442,7 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	}
 
 	// Log the message
-	LogJSONRPCMessage(&msg)
+	jsonrpc.LogJSONRPCMessage(&msg)
 
 	// Forward to SSE clients via the HTTP proxy
 	if err := t.httpProxy.ForwardResponseToClients(ctx, &msg); err != nil {
@@ -452,7 +456,7 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 }
 
 // sendMessageToContainer sends a JSON-RPC message to the container.
-func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer, msg *JSONRPCMessage) error {
+func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer, msg *jsonrpc.JSONRPCMessage) error {
 	// Serialize the message
 	data, err := json.Marshal(msg)
 	if err != nil {

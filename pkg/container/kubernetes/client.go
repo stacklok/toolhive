@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -89,7 +90,6 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 		panic(fmt.Errorf("failed to create k8s config: %v", err))
 	}
 	// Create a SPDY executor
-	// fmt.Println("Request URL:", req.URL().String())
 	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create SPDY executor: %v", err)
@@ -102,12 +102,31 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 	//nolint:gosec // we don't check for an error here because it's not critical
 	// and it also returns with an error of statuscode `0`'. perhaps someone
 	// who knows the function a bit more can fix this.
-	exec.StreamWithContext(ctx, remotecommand.StreamOptions{
-		Stdin:  stdinReader,
-		Stdout: stdoutWriter,
-		Stderr: stdoutWriter,
-		Tty:    false,
-	})
+	go func() {
+		err := exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+			Stdin:  stdinReader,
+			Stdout: stdoutWriter,
+			Stderr: stdoutWriter,
+			Tty:    false,
+		})
+		if err != nil {
+			if statusErr, ok := err.(*errors.StatusError); ok {
+				fmt.Printf("Kubernetes API error: Status=%s, Message=%s, Reason=%s, Code=%d\n",
+					statusErr.ErrStatus.Status,
+					statusErr.ErrStatus.Message,
+					statusErr.ErrStatus.Reason,
+					statusErr.ErrStatus.Code)
+
+				if statusErr.ErrStatus.Code == 0 && statusErr.ErrStatus.Message == "" {
+					fmt.Println("Empty status error - this typically means the connection was closed unexpectedly")
+					fmt.Println("This often happens when the container terminates or doesn't read from stdin")
+				}
+			} else {
+				fmt.Printf("Non-status error: %v\n", err)
+			}
+		}
+	}()
+
 	return stdinWriter, stdoutReader, nil
 }
 
@@ -162,7 +181,7 @@ func (c *Client) CreateContainer(ctx context.Context,
 							Image: image,
 							Args:  command,
 							Stdin: true,
-							TTY:   true,
+							TTY:   false,
 						},
 					},
 					RestartPolicy: corev1.RestartPolicyAlways,

@@ -27,3 +27,5 @@ go.work
 /bin/
 /dist/
 /coverage/
+
+.roo/

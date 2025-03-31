@@ -11,7 +11,8 @@ import (
 
 	"github.com/stacklok/vibetool/pkg/auth"
 	"github.com/stacklok/vibetool/pkg/networking"
-	"github.com/stacklok/vibetool/pkg/transport"
+	"github.com/stacklok/vibetool/pkg/transport/proxy/transparent"
+	"github.com/stacklok/vibetool/pkg/transport/types"
 )
 
 var proxyCmd = &cobra.Command{
@@ -62,7 +63,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	// Create middlewares slice
-	var middlewares []transport.Middleware
+	var middlewares []types.Middleware
 
 	// Create JWT validator if OIDC flags are provided
 	if IsOIDCEnabled(cmd) {
@@ -96,7 +97,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		port, proxyTargetURI)
 
 	// Create the transparent proxy with middlewares
-	proxy := transport.NewTransparentProxy(port, serverName, proxyTargetURI, middlewares...)
+	proxy := transparent.NewTransparentProxy(port, serverName, proxyTargetURI, middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %v", err)
 	}

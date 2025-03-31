@@ -1,4 +1,6 @@
-package transport
+// Package jsonrpc provides utilities for handling JSON-RPC messages
+// used in communication between the client and MCP server.
+package jsonrpc
 
 import (
 	"encoding/json"
@@ -6,6 +8,8 @@ import (
 )
 
 // JSONRPCMessage represents a JSON-RPC message
+//
+//nolint:revive // Intentionally named JSONRPCMessage despite package name
 type JSONRPCMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      interface{}     `json:"id,omitempty"`
@@ -16,6 +20,8 @@ type JSONRPCMessage struct {
 }
 
 // JSONRPCError represents a JSON-RPC error
+//
+//nolint:revive // Intentionally named JSONRPCError despite package name
 type JSONRPCError struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`

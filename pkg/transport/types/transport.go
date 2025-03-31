@@ -1,11 +1,19 @@
-package transport
+// Package types provides common types and interfaces for the transport package
+// used in communication between the client and MCP server.
+package types
 
 import (
 	"context"
+	"net/http"
 
 	rt "github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/permissions"
+	"github.com/stacklok/vibetool/pkg/transport/errors"
+	"github.com/stacklok/vibetool/pkg/transport/jsonrpc"
 )
+
+// Middleware is a function that wraps an http.Handler with additional functionality.
+type Middleware func(http.Handler) http.Handler
 
 // Transport defines the interface for MCP transport implementations.
 // It provides methods for handling communication between the client and server.
@@ -59,8 +67,32 @@ func ParseTransportType(s string) (TransportType, error) {
 	case "sse", "SSE":
 		return TransportTypeSSE, nil
 	default:
-		return "", ErrUnsupportedTransport
+		return "", errors.ErrUnsupportedTransport
 	}
+}
+
+// Proxy defines the interface for proxying messages between clients and destinations.
+type Proxy interface {
+	// Start starts the proxy.
+	Start(ctx context.Context) error
+
+	// Stop stops the proxy.
+	Stop(ctx context.Context) error
+
+	// GetMessageChannel returns the channel for messages to/from the destination.
+	GetMessageChannel() chan *jsonrpc.JSONRPCMessage
+
+	// GetResponseChannel returns the channel for receiving messages from the destination.
+	GetResponseChannel() <-chan *jsonrpc.JSONRPCMessage
+
+	// SendMessageToDestination sends a message to the destination.
+	SendMessageToDestination(msg *jsonrpc.JSONRPCMessage) error
+
+	// ForwardResponseToClients forwards a response from the destination to clients.
+	ForwardResponseToClients(ctx context.Context, msg *jsonrpc.JSONRPCMessage) error
+
+	// SendResponseMessage sends a message to the response channel.
+	SendResponseMessage(msg *jsonrpc.JSONRPCMessage) error
 }
 
 // Config contains configuration options for a transport.
@@ -89,24 +121,4 @@ type Config struct {
 	// Middlewares is a list of middleware functions to apply to the transport.
 	// These are applied in order, with the first middleware being the outermost wrapper.
 	Middlewares []Middleware
-}
-
-// Factory creates transports
-type Factory struct{}
-
-// NewFactory creates a new transport factory
-func NewFactory() *Factory {
-	return &Factory{}
-}
-
-// Create creates a transport based on the provided configuration
-func (*Factory) Create(config Config) (Transport, error) {
-	switch config.Type {
-	case TransportTypeStdio:
-		return NewStdioTransport(config.Port, config.Runtime, config.Debug, config.Middlewares...), nil
-	case TransportTypeSSE:
-		return NewSSETransport(config.Host, config.Port, config.TargetPort, config.Runtime, config.Debug, config.Middlewares...), nil
-	default:
-		return nil, ErrUnsupportedTransport
-	}
 }

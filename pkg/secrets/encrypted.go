@@ -1,30 +1,36 @@
 package secrets
 
+// TODO: this file duplicates logic with basic.go. Refactor to share common code.
+
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"path"
 
 	"golang.org/x/sync/syncmap"
+
+	"github.com/stacklok/vibetool/pkg/secrets/aes"
 )
 
-// BasicManager is a simple secrets manager that stores secrets in an
-// unencrypted file. This is for testing/development purposes only.
-type BasicManager struct {
+// EncryptedManager stores secrets in an encrypted file.
+// AES-256-GCM is used for encryption.
+type EncryptedManager struct {
 	filePath string
-	secrets  syncmap.Map // Thread-safe map for storing secrets
+	// Key used to re-encrypt the secrets file if changes are needed.
+	key     []byte
+	secrets syncmap.Map // Thread-safe map for storing secrets
 }
 
 // GetSecret retrieves a secret from the secret store.
-func (b *BasicManager) GetSecret(name string) (string, error) {
+func (e *EncryptedManager) GetSecret(name string) (string, error) {
 	if name == "" {
 		return "", errors.New("secret name cannot be empty")
 	}
 
-	value, ok := b.secrets.Load(name)
+	value, ok := e.secrets.Load(name)
 	if !ok {
 		return "", fmt.Errorf("secret not found: %s", name)
 	}
@@ -32,36 +38,36 @@ func (b *BasicManager) GetSecret(name string) (string, error) {
 }
 
 // SetSecret stores a secret in the secret store.
-func (b *BasicManager) SetSecret(name, value string) error {
+func (e *EncryptedManager) SetSecret(name, value string) error {
 	if name == "" {
 		return errors.New("secret name cannot be empty")
 	}
 
-	b.secrets.Store(name, value)
-	return b.updateFile()
+	e.secrets.Store(name, value)
+	return e.updateFile()
 }
 
 // DeleteSecret removes a secret from the secret store.
-func (b *BasicManager) DeleteSecret(name string) error {
+func (e *EncryptedManager) DeleteSecret(name string) error {
 	if name == "" {
 		return errors.New("secret name cannot be empty")
 	}
 
 	// Check if the secret exists first
-	_, ok := b.secrets.Load(name)
+	_, ok := e.secrets.Load(name)
 	if !ok {
 		return fmt.Errorf("cannot delete non-existent secret: %s", name)
 	}
 
-	b.secrets.Delete(name)
-	return b.updateFile()
+	e.secrets.Delete(name)
+	return e.updateFile()
 }
 
 // ListSecrets returns a list of all secret names stored in the manager.
-func (b *BasicManager) ListSecrets() ([]string, error) {
+func (e *EncryptedManager) ListSecrets() ([]string, error) {
 	var secretNames []string
 
-	b.secrets.Range(func(key, _ interface{}) bool {
+	e.secrets.Range(func(key, _ interface{}) bool {
 		secretNames = append(secretNames, key.(string))
 		return true
 	})
@@ -70,18 +76,18 @@ func (b *BasicManager) ListSecrets() ([]string, error) {
 }
 
 // Cleanup removes all secrets managed by this manager.
-func (b *BasicManager) Cleanup() error {
+func (e *EncryptedManager) Cleanup() error {
 	// Create a new empty syncmap.Map
-	b.secrets = syncmap.Map{}
+	e.secrets = syncmap.Map{}
 
 	// Update the file to reflect the empty state
-	return b.updateFile()
+	return e.updateFile()
 }
 
-func (b *BasicManager) updateFile() error {
+func (e *EncryptedManager) updateFile() error {
 	// Convert syncmap.Map to map[string]string for JSON marshaling
 	secretsMap := make(map[string]string)
-	b.secrets.Range(func(key, value interface{}) bool {
+	e.secrets.Range(func(key, value interface{}) bool {
 		secretsMap[key.(string)] = value.(string)
 		return true
 	})
@@ -91,23 +97,22 @@ func (b *BasicManager) updateFile() error {
 		return fmt.Errorf("failed to marshal secrets: %w", err)
 	}
 
-	err = os.WriteFile(b.filePath, contents, 0600)
+	encryptedContents, err := aes.Encrypt(contents, e.key)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt secrets: %w", err)
+	}
+
+	err = os.WriteFile(e.filePath, encryptedContents, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to write secrets to file: %w", err)
 	}
 	return nil
 }
 
-// fileStructure is the structure of the secrets file.
-type fileStructure struct {
-	Secrets map[string]string `json:"secrets"`
-}
-
-// NewBasicManager creates an instance of BasicManager.
-func NewBasicManager(filePath string) (Manager, error) {
-	// Add warning for production use
-	if os.Getenv("ENVIRONMENT") == "production" {
-		log.Println("WARNING: BasicManager is not secure for production use")
+// NewEncryptedManager creates an instance of EncryptedManager.
+func NewEncryptedManager(filePath string, key []byte) (Manager, error) {
+	if len(key) == 0 {
+		return nil, errors.New("key cannot be empty")
 	}
 
 	filePath = path.Clean(filePath)
@@ -123,16 +128,27 @@ func NewBasicManager(filePath string) (Manager, error) {
 		return nil, fmt.Errorf("failed to stat secrets file: %w", err)
 	}
 
-	// Create a new BasicManager with an empty syncmap.Map
-	manager := &BasicManager{
+	// Create a new EncryptedManager with an empty syncmap.Map
+	manager := &EncryptedManager{
 		filePath: filePath,
 		secrets:  syncmap.Map{},
+		key:      key,
 	}
 
 	// If the file is not empty, load the secrets into the syncmap.Map
 	if stat.Size() > 0 {
+		// Attempt to load encrypted contents and decrypt them
+		encryptedContents, err := io.ReadAll(secretsFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read secrets file: %w", err)
+		}
+		decryptedContents, err := aes.Decrypt(encryptedContents, key)
+		if err != nil {
+			return nil, fmt.Errorf("unable to decrypt secrets file: %w", err)
+		}
+
 		var contents fileStructure
-		err := json.NewDecoder(secretsFile).Decode(&contents)
+		err = json.Unmarshal(decryptedContents, &contents)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode secrets file: %w", err)
 		}

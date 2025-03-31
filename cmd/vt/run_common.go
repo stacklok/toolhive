@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/vibetool/pkg/process"
 	"github.com/stacklok/vibetool/pkg/secrets"
 	"github.com/stacklok/vibetool/pkg/transport"
+	"github.com/stacklok/vibetool/pkg/transport/types"
 )
 
 // RunOptions contains all the options for running an MCP server
@@ -111,9 +112,6 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 
 		secretManager, err := secrets.CreateSecretManager(providerType)
 		if err != nil {
-			if strings.Contains(err.Error(), "incorrect password") {
-				return fmt.Errorf("error: %v", err)
-			}
 			return fmt.Errorf("error instantiating secret manager %v", err)
 		}
 		secretVariables, err := environment.ParseSecretParameters(options.Secrets, secretManager)
@@ -127,7 +125,7 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 	}
 
 	// Parse transport mode
-	transportType, err := transport.ParseTransportType(options.Transport)
+	transportType, err := types.ParseTransportType(options.Transport)
 	if err != nil {
 		return fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", options.Transport)
 	}
@@ -141,7 +139,7 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 
 	// Select a target port for the container
 	targetPort := 0
-	if transportType == transport.TransportTypeSSE {
+	if transportType == types.TransportTypeSSE {
 		targetPort, err = networking.FindOrUsePort(options.TargetPort)
 		if err != nil {
 			return fmt.Errorf("target port error: %w", err)
@@ -164,7 +162,7 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 	labels.AddStandardLabels(containerLabels, containerName, baseName, string(transportType), port)
 
 	// Create transport with runtime
-	transportConfig := transport.Config{
+	transportConfig := types.Config{
 		Type:       transportType,
 		Port:       port,
 		TargetPort: targetPort,
@@ -416,7 +414,7 @@ func updateClientConfigurations(containerName, host string, port int) error {
 // detachProcess starts a new detached process with the same command but with the --foreground flag
 //
 //nolint:gocyclo // This function is complex but manageable
-func detachProcess(_ *cobra.Command, options RunOptions) error {
+func detachProcess(cmd *cobra.Command, options RunOptions) error {
 	// Get the current executable path
 	execPath, err := os.Executable()
 	if err != nil {
@@ -440,6 +438,12 @@ func detachProcess(_ *cobra.Command, options RunOptions) error {
 	// Prepare the command arguments for the detached process
 	// We'll run the same command but with the --foreground flag
 	detachedArgs := []string{"run", "--foreground"}
+
+	// Add the secrets provider flag if it's defined.
+	secretsProvider := GetStringFlagOrEmpty(cmd, "secrets-provider")
+	if secretsProvider != "" {
+		detachedArgs = append(detachedArgs, "--secrets-provider", secretsProvider)
+	}
 
 	// Add all the original flags
 	if options.Transport != "stdio" {
@@ -503,6 +507,16 @@ func detachProcess(_ *cobra.Command, options RunOptions) error {
 
 	// Set environment variables for the detached process
 	detachedCmd.Env = append(os.Environ(), "VIBETOOL_DETACHED=1")
+
+	// If the process needs the decrypt password, pass it as an environment variable.
+	if NeedSecretsPassword(cmd) {
+		password, err := secrets.GetSecretsPassword()
+		if err != nil {
+			return fmt.Errorf("failed to get secrets password: %v", err)
+		}
+
+		detachedCmd.Env = append(detachedCmd.Env, fmt.Sprintf("%s=%s", secrets.SecretsPasswordEnvVar, password))
+	}
 
 	// Redirect stdout and stderr to the log file if it was created successfully
 	if logFile != nil {

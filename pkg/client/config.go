@@ -14,7 +14,7 @@ import (
 	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/vibetool/pkg/transport"
+	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
 )
 
 // lockTimeout is the maximum time to wait for a file lock
@@ -370,5 +370,5 @@ func (c *ConfigFile) SaveWithLock(serverName, url string) error {
 func GenerateMCPServerURL(host string, port int, containerName string) string {
 	// The URL format is: http://host:port/sse#container-name
 	// Both SSE and STDIO transport types use an SSE proxy
-	return fmt.Sprintf("http://%s:%d%s#%s", host, port, transport.HTTPSSEEndpoint, containerName)
+	return fmt.Sprintf("http://%s:%d%s#%s", host, port, ssecommon.HTTPSSEEndpoint, containerName)
 }

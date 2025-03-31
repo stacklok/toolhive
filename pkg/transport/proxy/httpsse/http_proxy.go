@@ -1,4 +1,6 @@
-package transport
+// Package httpsse provides an HTTP proxy implementation for Server-Sent Events (SSE)
+// used in communication between the client and MCP server.
+package httpsse
 
 import (
 	"context"
@@ -10,6 +12,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/stacklok/vibetool/pkg/transport/jsonrpc"
+	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
+	"github.com/stacklok/vibetool/pkg/transport/types"
 )
 
 // Proxy defines the interface for proxying messages between clients and destinations.
@@ -21,62 +27,64 @@ type Proxy interface {
 	Stop(ctx context.Context) error
 
 	// GetMessageChannel returns the channel for messages to/from the destination.
-	GetMessageChannel() chan *JSONRPCMessage
+	GetMessageChannel() chan *jsonrpc.JSONRPCMessage
 
 	// GetResponseChannel returns the channel for receiving messages from the destination.
-	GetResponseChannel() <-chan *JSONRPCMessage
+	GetResponseChannel() <-chan *jsonrpc.JSONRPCMessage
 
 	// SendMessageToDestination sends a message to the destination.
-	SendMessageToDestination(msg *JSONRPCMessage) error
+	SendMessageToDestination(msg *jsonrpc.JSONRPCMessage) error
 
 	// ForwardResponseToClients forwards a response from the destination to clients.
-	ForwardResponseToClients(ctx context.Context, msg *JSONRPCMessage) error
+	ForwardResponseToClients(ctx context.Context, msg *jsonrpc.JSONRPCMessage) error
 
 	// SendResponseMessage sends a message to the response channel.
-	SendResponseMessage(msg *JSONRPCMessage) error
+	SendResponseMessage(msg *jsonrpc.JSONRPCMessage) error
 }
 
 // HTTPSSEProxy encapsulates the HTTP proxy functionality for SSE transports.
 // It provides SSE endpoints and JSON-RPC message handling.
+//
+//nolint:revive // Intentionally named HTTPSSEProxy despite package name
 type HTTPSSEProxy struct {
 	// Basic configuration
 	port          int
 	containerName string
-	middlewares   []Middleware
+	middlewares   []types.Middleware
 
 	// HTTP server
 	server     *http.Server
 	shutdownCh chan struct{}
 
 	// SSE clients
-	sseClients      map[string]*SSEClient
+	sseClients      map[string]*ssecommon.SSEClient
 	sseClientsMutex sync.Mutex
 
 	// Pending messages for SSE clients
-	pendingMessages []*PendingSSEMessage
+	pendingMessages []*ssecommon.PendingSSEMessage
 	pendingMutex    sync.Mutex
 
 	// Message channels
-	messageCh  chan *JSONRPCMessage
-	responseCh chan *JSONRPCMessage
+	messageCh  chan *jsonrpc.JSONRPCMessage
+	responseCh chan *jsonrpc.JSONRPCMessage
 }
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
-func NewHTTPSSEProxy(port int, containerName string, middlewares ...Middleware) *HTTPSSEProxy {
+func NewHTTPSSEProxy(port int, containerName string, middlewares ...types.Middleware) *HTTPSSEProxy {
 	return &HTTPSSEProxy{
 		middlewares:     middlewares,
 		port:            port,
 		containerName:   containerName,
 		shutdownCh:      make(chan struct{}),
-		messageCh:       make(chan *JSONRPCMessage, 100),
-		responseCh:      make(chan *JSONRPCMessage, 100),
-		sseClients:      make(map[string]*SSEClient),
-		pendingMessages: []*PendingSSEMessage{},
+		messageCh:       make(chan *jsonrpc.JSONRPCMessage, 100),
+		responseCh:      make(chan *jsonrpc.JSONRPCMessage, 100),
+		sseClients:      make(map[string]*ssecommon.SSEClient),
+		pendingMessages: []*ssecommon.PendingSSEMessage{},
 	}
 }
 
 // applyMiddlewares applies a chain of middlewares to a handler
-func applyMiddlewares(handler http.Handler, middlewares ...Middleware) http.Handler {
+func applyMiddlewares(handler http.Handler, middlewares ...types.Middleware) http.Handler {
 	// Apply middleware chain in reverse order (last middleware is applied first)
 	for i := len(middlewares) - 1; i >= 0; i-- {
 		handler = middlewares[i](handler)
@@ -90,8 +98,8 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	mux := http.NewServeMux()
 
 	// Add handlers for SSE and JSON-RPC with middlewares
-	mux.Handle(HTTPSSEEndpoint, applyMiddlewares(http.HandlerFunc(p.handleSSEConnection), p.middlewares...))
-	mux.Handle(HTTPMessagesEndpoint, applyMiddlewares(http.HandlerFunc(p.handlePostRequest), p.middlewares...))
+	mux.Handle(ssecommon.HTTPSSEEndpoint, applyMiddlewares(http.HandlerFunc(p.handleSSEConnection), p.middlewares...))
+	mux.Handle(ssecommon.HTTPMessagesEndpoint, applyMiddlewares(http.HandlerFunc(p.handlePostRequest), p.middlewares...))
 
 	// Add a simple health check endpoint (no middlewares)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -111,8 +119,8 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Start the server in a goroutine
 	go func() {
 		fmt.Printf("HTTP proxy started for container %s on port %d\n", p.containerName, p.port)
-		fmt.Printf("SSE endpoint: http://localhost:%d%s\n", p.port, HTTPSSEEndpoint)
-		fmt.Printf("JSON-RPC endpoint: http://localhost:%d%s\n", p.port, HTTPMessagesEndpoint)
+		fmt.Printf("SSE endpoint: http://localhost:%d%s\n", p.port, ssecommon.HTTPSSEEndpoint)
+		fmt.Printf("JSON-RPC endpoint: http://localhost:%d%s\n", p.port, ssecommon.HTTPMessagesEndpoint)
 
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("HTTP server error: %v\n", err)
@@ -136,17 +144,17 @@ func (p *HTTPSSEProxy) Stop(ctx context.Context) error {
 }
 
 // GetMessageChannel returns the channel for messages to/from the destination.
-func (p *HTTPSSEProxy) GetMessageChannel() chan *JSONRPCMessage {
+func (p *HTTPSSEProxy) GetMessageChannel() chan *jsonrpc.JSONRPCMessage {
 	return p.messageCh
 }
 
 // GetResponseChannel returns the channel for receiving messages from the destination.
-func (p *HTTPSSEProxy) GetResponseChannel() <-chan *JSONRPCMessage {
+func (p *HTTPSSEProxy) GetResponseChannel() <-chan *jsonrpc.JSONRPCMessage {
 	return p.responseCh
 }
 
 // SendMessageToDestination sends a message to the destination via the message channel.
-func (p *HTTPSSEProxy) SendMessageToDestination(msg *JSONRPCMessage) error {
+func (p *HTTPSSEProxy) SendMessageToDestination(msg *jsonrpc.JSONRPCMessage) error {
 	select {
 	case p.messageCh <- msg:
 		// Message sent successfully
@@ -158,7 +166,7 @@ func (p *HTTPSSEProxy) SendMessageToDestination(msg *JSONRPCMessage) error {
 }
 
 // SendResponseMessage sends a message to the response channel.
-func (p *HTTPSSEProxy) SendResponseMessage(msg *JSONRPCMessage) error {
+func (p *HTTPSSEProxy) SendResponseMessage(msg *jsonrpc.JSONRPCMessage) error {
 	select {
 	case p.responseCh <- msg:
 		// Message sent successfully
@@ -170,7 +178,7 @@ func (p *HTTPSSEProxy) SendResponseMessage(msg *JSONRPCMessage) error {
 }
 
 // ForwardResponseToClients forwards a response from the destination to all connected SSE clients.
-func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg *JSONRPCMessage) error {
+func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg *jsonrpc.JSONRPCMessage) error {
 	// Serialize the message to JSON
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -178,7 +186,7 @@ func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg *JSONRPCM
 	}
 
 	// Create an SSE message
-	sseMsg := NewSSEMessage("message", string(data))
+	sseMsg := ssecommon.NewSSEMessage("message", string(data))
 
 	// Check if there are any connected clients
 	p.sseClientsMutex.Lock()
@@ -192,7 +200,7 @@ func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg *JSONRPCM
 
 	// Queue the message for later delivery
 	p.pendingMutex.Lock()
-	p.pendingMessages = append(p.pendingMessages, NewPendingSSEMessage(sseMsg))
+	p.pendingMessages = append(p.pendingMessages, ssecommon.NewPendingSSEMessage(sseMsg))
 	p.pendingMutex.Unlock()
 
 	return nil
@@ -214,7 +222,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 
 	// Register the client
 	p.sseClientsMutex.Lock()
-	p.sseClients[clientID] = &SSEClient{
+	p.sseClients[clientID] = &ssecommon.SSEClient{
 		MessageCh: messageCh,
 		CreatedAt: time.Now(),
 	}
@@ -243,8 +251,8 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	baseURL := fmt.Sprintf("%s://%s", scheme, host)
 
 	// Create and send the endpoint event
-	endpointURL := fmt.Sprintf("%s%s?session_id=%s", baseURL, HTTPMessagesEndpoint, clientID)
-	endpointMsg := NewSSEMessage("endpoint", endpointURL)
+	endpointURL := fmt.Sprintf("%s%s?session_id=%s", baseURL, ssecommon.HTTPMessagesEndpoint, clientID)
+	endpointMsg := ssecommon.NewSSEMessage("endpoint", endpointURL)
 
 	// Send the initial event
 	fmt.Fprint(w, endpointMsg.ToSSEString())
@@ -313,7 +321,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Parse the JSON-RPC message
-	var msg JSONRPCMessage
+	var msg jsonrpc.JSONRPCMessage
 	if err := json.Unmarshal(body, &msg); err != nil {
 		http.Error(w, fmt.Sprintf("Error parsing JSON-RPC message: %v", err), http.StatusBadRequest)
 		return
@@ -326,7 +334,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Log the message
-	LogJSONRPCMessage(&msg)
+	jsonrpc.LogJSONRPCMessage(&msg)
 
 	// Send the message to the destination
 	if err := p.SendMessageToDestination(&msg); err != nil {
@@ -342,7 +350,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 }
 
 // sendSSEEvent sends an SSE event to all connected clients.
-func (p *HTTPSSEProxy) sendSSEEvent(msg *SSEMessage) error {
+func (p *HTTPSSEProxy) sendSSEEvent(msg *ssecommon.SSEMessage) error {
 	// Convert the message to an SSE-formatted string
 	sseString := msg.ToSSEString()
 

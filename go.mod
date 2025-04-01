@@ -1,8 +1,10 @@
 module github.com/stacklok/vibetool
 
 go 1.24.1
+
 require (
 	github.com/cedar-policy/cedar-go v1.1.1
+	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/docker/docker v28.0.4+incompatible
 	github.com/docker/go-connections v0.5.0
 	github.com/gofrs/flock v0.12.1

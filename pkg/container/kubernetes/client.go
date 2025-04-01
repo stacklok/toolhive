@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	backoff "github.com/cenkalti/backoff/v4"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -103,11 +104,20 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 	// and it also returns with an error of statuscode `0`'. perhaps someone
 	// who knows the function a bit more can fix this.
 	go func() {
-		err := exec.StreamWithContext(ctx, remotecommand.StreamOptions{
-			Stdin:  stdinReader,
-			Stdout: stdoutWriter,
-			Stderr: stdoutWriter,
-			Tty:    false,
+		// wrap with retry so we can retry if the connection fails
+		// Create exponential backoff with max 5 retries
+		expBackoff := backoff.NewExponentialBackOff()
+		backoffWithRetries := backoff.WithMaxRetries(expBackoff, 5)
+
+		err := backoff.RetryNotify(func() error {
+			return exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+				Stdin:  stdinReader,
+				Stdout: stdoutWriter,
+				Stderr: stdoutWriter,
+				Tty:    false,
+			})
+		}, backoffWithRetries, func(err error, duration time.Duration) {
+			fmt.Printf("Error attaching to container %s: %v. Retrying in %s...\n", containerID, err, duration)
 		})
 		if err != nil {
 			if statusErr, ok := err.(*errors.StatusError); ok {

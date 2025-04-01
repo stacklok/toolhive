@@ -100,7 +100,7 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 	// This is a more complex operation in Kubernetes compared to Docker/Podman
 	// as it requires setting up an exec session to the pod
 
-	// First, we need to find the pod associated with the containerID (which is actually the deployment name)
+	// First, we need to find the pod associated with the containerID (which is actually the statefulset name)
 	namespace := getCurrentNamespace()
 	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app=%s", containerID),
@@ -203,11 +203,11 @@ func (c *Client) CreateContainer(ctx context.Context,
 	options *runtime.CreateContainerOptions) (string, error) {
 
 	fmt.Printf("Checking if container exists...\n")
-	// Check if a deployment with this name already exists
+	// Check if a statefulset with this name already exists
 	namespace := getCurrentNamespace()
-	_, err := c.client.AppsV1().Deployments(namespace).Get(ctx, containerName, metav1.GetOptions{})
+	_, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, containerName, metav1.GetOptions{})
 	if err == nil {
-		return "", fmt.Errorf("deployment %s already exists", containerName)
+		return "", fmt.Errorf("statefulset %s already exists", containerName)
 	}
 	fmt.Printf("Container doesn't exist, creating container %s from image %s...\n", containerName, image)
 
@@ -216,15 +216,16 @@ func (c *Client) CreateContainer(ctx context.Context,
 
 	attachStdio := options == nil || options.AttachStdio
 
-	// Create an apply configuration for the deployment
-	deploymentApply := appsv1apply.Deployment(containerName, namespace).
+	// Create an apply configuration for the statefulset
+	statefulSetApply := appsv1apply.StatefulSet(containerName, namespace).
 		WithLabels(containerLabels).
-		WithSpec(appsv1apply.DeploymentSpec().
+		WithSpec(appsv1apply.StatefulSetSpec().
 			WithReplicas(1).
 			WithSelector(metav1apply.LabelSelector().
 				WithMatchLabels(map[string]string{
 					"app": containerName,
 				})).
+			WithServiceName(containerName).
 			WithTemplate(corev1apply.PodTemplateSpec().
 				WithLabels(containerLabels).
 				WithSpec(corev1apply.PodSpec().
@@ -236,26 +237,26 @@ func (c *Client) CreateContainer(ctx context.Context,
 						WithTTY(false)).
 					WithRestartPolicy(corev1.RestartPolicyAlways))))
 
-	// Apply the deployment using server-side apply
+	// Apply the statefulset using server-side apply
 	fieldManager := "vibetool-container-manager"
-	createdDeployment, err := c.client.AppsV1().Deployments(namespace).
-		Apply(ctx, deploymentApply, metav1.ApplyOptions{
+	createdStatefulSet, err := c.client.AppsV1().StatefulSets(namespace).
+		Apply(ctx, statefulSetApply, metav1.ApplyOptions{
 			FieldManager: fieldManager,
 			Force:        true,
 		})
 	if err != nil {
-		return "", fmt.Errorf("failed to apply deployment: %v", err)
+		return "", fmt.Errorf("failed to apply statefulset: %v", err)
 	}
 
-	fmt.Printf("Applied deployment %s\n", createdDeployment.Name)
+	fmt.Printf("Applied statefulset %s\n", createdStatefulSet.Name)
 
-	// Wait for the deployment to be ready
-	err = waitForDeploymentReady(ctx, c.client, namespace, createdDeployment.Name)
+	// Wait for the statefulset to be ready
+	err = waitForStatefulSetReady(ctx, c.client, namespace, createdStatefulSet.Name)
 	if err != nil {
-		return createdDeployment.Name, fmt.Errorf("deployment applied but failed to become ready: %w", err)
+		return createdStatefulSet.Name, fmt.Errorf("statefulset applied but failed to become ready: %w", err)
 	}
 
-	return createdDeployment.Name, nil
+	return createdStatefulSet.Name, nil
 }
 
 // GetContainerIP implements runtime.Runtime.
@@ -358,35 +359,35 @@ func (*Client) StopContainer(_ context.Context, _ string) error {
 	return nil
 }
 
-// waitForDeploymentReady waits for a deployment to be ready using the watch API
-func waitForDeploymentReady(ctx context.Context, clientset *kubernetes.Clientset, namespace, name string) error {
-	// Create a field selector to watch only this specific deployment
+// waitForStatefulSetReady waits for a statefulset to be ready using the watch API
+func waitForStatefulSetReady(ctx context.Context, clientset *kubernetes.Clientset, namespace, name string) error {
+	// Create a field selector to watch only this specific statefulset
 	fieldSelector := fmt.Sprintf("metadata.name=%s", name)
 
 	// Set up the watch
-	watcher, err := clientset.AppsV1().Deployments(namespace).Watch(ctx, metav1.ListOptions{
+	watcher, err := clientset.AppsV1().StatefulSets(namespace).Watch(ctx, metav1.ListOptions{
 		FieldSelector: fieldSelector,
 		Watch:         true,
 	})
 	if err != nil {
-		return fmt.Errorf("error watching deployment: %w", err)
+		return fmt.Errorf("error watching statefulset: %w", err)
 	}
 
-	// Define the condition function that checks if the deployment is ready
-	isDeploymentReady := func(event apimwatch.Event) (bool, error) {
-		// Check if the event is a deployment
-		deployment, ok := event.Object.(*appsv1.Deployment)
+	// Define the condition function that checks if the statefulset is ready
+	isStatefulSetReady := func(event apimwatch.Event) (bool, error) {
+		// Check if the event is a statefulset
+		statefulSet, ok := event.Object.(*appsv1.StatefulSet)
 		if !ok {
 			return false, fmt.Errorf("unexpected object type: %T", event.Object)
 		}
 
-		// Check if the deployment is ready
-		if deployment.Status.ReadyReplicas == *deployment.Spec.Replicas {
+		// Check if the statefulset is ready
+		if statefulSet.Status.ReadyReplicas == *statefulSet.Spec.Replicas {
 			return true, nil
 		}
 
-		fmt.Printf("Waiting for deployment %s to be ready (%d/%d replicas ready)...\n",
-			name, deployment.Status.ReadyReplicas, *deployment.Spec.Replicas)
+		fmt.Printf("Waiting for statefulset %s to be ready (%d/%d replicas ready)...\n",
+			name, statefulSet.Status.ReadyReplicas, *statefulSet.Spec.Replicas)
 		return false, nil
 	}
 
@@ -394,10 +395,10 @@ func waitForDeploymentReady(ctx context.Context, clientset *kubernetes.Clientset
 	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	// Wait for the deployment to be ready
-	_, err = watch.UntilWithoutRetry(timeoutCtx, watcher, isDeploymentReady)
+	// Wait for the statefulset to be ready
+	_, err = watch.UntilWithoutRetry(timeoutCtx, watcher, isStatefulSetReady)
 	if err != nil {
-		return fmt.Errorf("error waiting for deployment to be ready: %w", err)
+		return fmt.Errorf("error waiting for statefulset to be ready: %w", err)
 	}
 
 	return nil

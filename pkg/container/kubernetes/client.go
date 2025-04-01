@@ -15,12 +15,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apimwatch "k8s.io/apimachinery/pkg/watch"
+	appsv1apply "k8s.io/client-go/applyconfigurations/apps/v1"
+	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
+	metav1apply "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/tools/watch"
-	"k8s.io/utils/ptr"
 
 	"github.com/stacklok/vibetool/pkg/container/runtime"
 	// Avoid import cycle
@@ -214,51 +216,43 @@ func (c *Client) CreateContainer(ctx context.Context,
 
 	attachStdio := options == nil || options.AttachStdio
 
-	// Create a deployment with the given image and args
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   containerName,
-			Labels: containerLabels,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: ptr.To(int32(1)),
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
+	// Create an apply configuration for the deployment
+	deploymentApply := appsv1apply.Deployment(containerName, namespace).
+		WithLabels(containerLabels).
+		WithSpec(appsv1apply.DeploymentSpec().
+			WithReplicas(1).
+			WithSelector(metav1apply.LabelSelector().
+				WithMatchLabels(map[string]string{
 					"app": containerName,
-				},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: containerLabels,
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  containerName,
-							Image: image,
-							Args:  command,
-							Stdin: attachStdio,
-							TTY:   false,
-						},
-					},
-					RestartPolicy: corev1.RestartPolicyAlways,
-				},
-			},
-		},
-	}
+				})).
+			WithTemplate(corev1apply.PodTemplateSpec().
+				WithLabels(containerLabels).
+				WithSpec(corev1apply.PodSpec().
+					WithContainers(corev1apply.Container().
+						WithName(containerName).
+						WithImage(image).
+						WithArgs(command...).
+						WithStdin(attachStdio).
+						WithTTY(false)).
+					WithRestartPolicy(corev1.RestartPolicyAlways))))
 
-	// Create the deployment in the default namespace
-	createdDeployment, err := c.client.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{})
+	// Apply the deployment using server-side apply
+	fieldManager := "vibetool-container-manager"
+	createdDeployment, err := c.client.AppsV1().Deployments(namespace).
+		Apply(ctx, deploymentApply, metav1.ApplyOptions{
+			FieldManager: fieldManager,
+			Force:        true,
+		})
 	if err != nil {
-		return "", fmt.Errorf("failed to create deployment: %v %s", err, "this is a test")
+		return "", fmt.Errorf("failed to apply deployment: %v", err)
 	}
 
-	fmt.Printf("Created deployment %s\n", createdDeployment.Name)
+	fmt.Printf("Applied deployment %s\n", createdDeployment.Name)
 
 	// Wait for the deployment to be ready
-	err = waitForDeploymentReady(ctx, c.client, "default", createdDeployment.Name)
+	err = waitForDeploymentReady(ctx, c.client, namespace, createdDeployment.Name)
 	if err != nil {
-		return createdDeployment.Name, fmt.Errorf("deployment created but failed to become ready: %w", err)
+		return createdDeployment.Name, fmt.Errorf("deployment applied but failed to become ready: %w", err)
 	}
 
 	return createdDeployment.Name, nil

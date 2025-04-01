@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -48,6 +49,46 @@ func NewClient(_ context.Context) (*Client, error) {
 	}, nil
 }
 
+// getNamespaceFromServiceAccount attempts to read the namespace from the service account token file
+func getNamespaceFromServiceAccount() (string, error) {
+	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	if err != nil {
+		return "", fmt.Errorf("failed to read namespace file: %w", err)
+	}
+	return string(data), nil
+}
+
+// getNamespaceFromEnv attempts to get the namespace from environment variables
+func getNamespaceFromEnv() (string, error) {
+	ns := os.Getenv("POD_NAMESPACE")
+	if ns == "" {
+		return "", fmt.Errorf("POD_NAMESPACE environment variable not set")
+	}
+	return ns, nil
+}
+
+// getCurrentNamespace returns the namespace the pod is running in.
+// It tries multiple methods in order:
+// 1. Reading from the service account token file
+// 2. Getting the namespace from environment variables
+// 3. Falling back to "default" if both methods fail
+func getCurrentNamespace() string {
+	// Method 1: Try to read from the service account namespace file
+	ns, err := getNamespaceFromServiceAccount()
+	if err == nil {
+		return ns
+	}
+
+	// Method 2: Try to get the namespace from environment variables
+	ns, err = getNamespaceFromEnv()
+	if err == nil {
+		return ns
+	}
+
+	// Method 3: Fall back to default
+	return "default"
+}
+
 // AttachContainer implements runtime.Runtime.
 func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.WriteCloser, io.ReadCloser, error) {
 	// AttachContainer attaches to a container in Kubernetes
@@ -55,7 +96,8 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 	// as it requires setting up an exec session to the pod
 
 	// First, we need to find the pod associated with the containerID (which is actually the deployment name)
-	pods, err := c.client.CoreV1().Pods("default").List(ctx, metav1.ListOptions{
+	namespace := getCurrentNamespace()
+	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app=%s", containerID),
 	})
 	if err != nil {
@@ -81,7 +123,7 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 	req := c.client.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
-		Namespace("default").
+		Namespace(getCurrentNamespace()).
 		SubResource("attach").
 		VersionedParams(attachOpts, scheme.ParameterCodec)
 
@@ -148,7 +190,8 @@ func (c *Client) CreateContainer(ctx context.Context,
 
 	fmt.Printf("Checking if container exists...\n")
 	// Check if a deployment with this name already exists
-	_, err := c.client.AppsV1().Deployments("default").Get(ctx, containerName, metav1.GetOptions{})
+	namespace := getCurrentNamespace()
+	_, err := c.client.AppsV1().Deployments(namespace).Get(ctx, containerName, metav1.GetOptions{})
 	if err == nil {
 		return "", fmt.Errorf("deployment %s already exists", containerName)
 	}
@@ -191,7 +234,7 @@ func (c *Client) CreateContainer(ctx context.Context,
 	}
 
 	// Create the deployment in the default namespace
-	createdDeployment, err := c.client.AppsV1().Deployments("default").Create(ctx, deployment, metav1.CreateOptions{})
+	createdDeployment, err := c.client.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to create deployment: %v %s", err, "this is a test")
 	}

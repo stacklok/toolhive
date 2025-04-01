@@ -155,6 +155,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	if err := t.httpProxy.Start(ctx); err != nil {
 		return err
 	}
+	fmt.Println("HTTP SSE proxy started, processing messages...")
 
 	// Start processing messages in a goroutine
 	go t.processMessages(ctx, t.stdin, t.stdout)
@@ -288,7 +289,6 @@ func (t *StdioTransport) processMessages(ctx context.Context, stdin io.WriteClos
 
 	// Start a goroutine to read from stdout
 	go t.processStdout(ctx, stdout)
-
 	// Process incoming messages and send them to the container
 	messageCh := t.httpProxy.GetMessageChannel()
 
@@ -297,9 +297,11 @@ func (t *StdioTransport) processMessages(ctx context.Context, stdin io.WriteClos
 		case <-ctx.Done():
 			return
 		case msg := <-messageCh:
+			fmt.Println("Process incoming messages and sending message to container")
 			if err := t.sendMessageToContainer(ctx, stdin, msg); err != nil {
 				fmt.Printf("Error sending message to container: %v\n", err)
 			}
+			fmt.Println("Messages processed")
 		}
 	}
 }
@@ -467,9 +469,11 @@ func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer
 	data = append(data, '\n')
 
 	// Write to stdin
+	fmt.Println("Writing to container stdin")
 	if _, err := stdin.Write(data); err != nil {
 		return fmt.Errorf("failed to write to container stdin: %w", err)
 	}
+	fmt.Println("Wrote to container stdin")
 
 	return nil
 }

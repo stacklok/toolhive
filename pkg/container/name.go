@@ -39,10 +39,10 @@ func generateContainerBaseName(image string) string {
 	// Replace slashes with dashes to preserve namespace structure
 	namespaceName := strings.ReplaceAll(imageWithoutTag, "/", "-")
 
-	// Sanitize the name (allow alphanumeric, dashes, and dots)
+	// Sanitize the name (allow alphanumeric, dashes)
 	var sanitizedName strings.Builder
 	for _, c := range namespaceName {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' {
 			sanitizedName.WriteRune(c)
 		} else {
 			sanitizedName.WriteRune('-')

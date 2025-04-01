@@ -144,7 +144,7 @@ func (c *Client) CreateContainer(ctx context.Context,
 	containerLabels map[string]string,
 	_ *permissions.Profile,
 	_ string,
-	_ *runtime.CreateContainerOptions) (string, error) {
+	options *runtime.CreateContainerOptions) (string, error) {
 
 	fmt.Printf("Checking if container exists...\n")
 	// Check if a deployment with this name already exists
@@ -156,6 +156,8 @@ func (c *Client) CreateContainer(ctx context.Context,
 
 	containerLabels["app"] = containerName
 	containerLabels["vibetool"] = "true"
+
+	attachStdio := options == nil || options.AttachStdio
 
 	// Create a deployment with the given image and args
 	deployment := &appsv1.Deployment{
@@ -180,7 +182,7 @@ func (c *Client) CreateContainer(ctx context.Context,
 							Name:  containerName,
 							Image: image,
 							Args:  command,
-							Stdin: true,
+							Stdin: attachStdio,
 							TTY:   false,
 						},
 					},

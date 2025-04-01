@@ -13,21 +13,21 @@ import (
 // SecretsPasswordEnvVar is the environment variable used to specify the password for encrypting and decrypting secrets.
 const SecretsPasswordEnvVar = "VIBETOOL_SECRETS_PASSWORD"
 
-// ManagerType represents an enum of the types of available secrets providers.
-type ManagerType string
+// ProviderType represents an enum of the types of available secrets providers.
+type ProviderType string
 
 const (
 	// BasicType represents the basic secret provider.
-	BasicType ManagerType = "basic"
+	BasicType ProviderType = "basic"
 	// EncryptedType represents the encrypted secret provider.
-	EncryptedType ManagerType = "encrypted"
+	EncryptedType ProviderType = "encrypted"
 )
 
-// ErrUnknownManagerType is returned when an invalid value for ManagerType is specified.
+// ErrUnknownManagerType is returned when an invalid value for ProviderType is specified.
 var ErrUnknownManagerType = errors.New("unknown secret manager type")
 
 // CreateSecretManager creates the specified type of secret manager.
-func CreateSecretManager(managerType ManagerType) (Manager, error) {
+func CreateSecretManager(managerType ProviderType) (Manager, error) {
 	switch managerType {
 	case BasicType:
 		secretsPath, err := xdg.DataFile("vibetool/secrets")

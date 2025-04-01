@@ -36,12 +36,8 @@ func IsOIDCEnabled(cmd *cobra.Command) bool {
 }
 
 // GetSecretsProviderType returns the secrets provider type from the command flags
-func GetSecretsProviderType(cmd *cobra.Command) (secrets.ManagerType, error) {
-	provider, err := cmd.Flags().GetString("secrets-provider")
-	if err != nil {
-		return "", fmt.Errorf("failed to get secrets-provider flag: %w", err)
-	}
-
+func GetSecretsProviderType(_ *cobra.Command) (secrets.ProviderType, error) {
+	provider := GetConfig().Secrets.ProviderType
 	switch provider {
 	case string(secrets.BasicType):
 		return secrets.BasicType, nil

@@ -439,12 +439,6 @@ func detachProcess(cmd *cobra.Command, options RunOptions) error {
 	// We'll run the same command but with the --foreground flag
 	detachedArgs := []string{"run", "--foreground"}
 
-	// Add the secrets provider flag if it's defined.
-	secretsProvider := GetStringFlagOrEmpty(cmd, "secrets-provider")
-	if secretsProvider != "" {
-		detachedArgs = append(detachedArgs, "--secrets-provider", secretsProvider)
-	}
-
 	// Add all the original flags
 	if options.Transport != "stdio" {
 		detachedArgs = append(detachedArgs, "--transport", options.Transport)

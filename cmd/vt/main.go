@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/stacklok/vibetool/pkg/config"
 )
 
 var rootCmd = &cobra.Command{
@@ -32,10 +34,29 @@ var versionCmd = &cobra.Command{
 	},
 }
 
+// Singleton value - should only be written to by the init function.
+var appConfig *config.Config
+
+// GetConfig returns the application configuration.
+// This can only be called after it is initialized in the init function.
+func GetConfig() *config.Config {
+	if appConfig == nil {
+		panic("configuration is not initialized")
+	}
+	return appConfig
+}
+
 func init() {
+	// Initialize the application configuration.
+	var err error
+	appConfig, err = config.LoadOrCreateConfig()
+	if err != nil {
+		fmt.Printf("error loading configuration: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Add persistent flags
 	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
-	rootCmd.PersistentFlags().String("secrets-provider", "basic", "Secrets provider to use (basic)")
 
 	// Add subcommands
 	rootCmd.AddCommand(runCmd)

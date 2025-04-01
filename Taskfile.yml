@@ -63,5 +63,3 @@ tasks:
       - echo "Applying Kubernetes manifest..."
       - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/k8s/vt.yml)
       # Wait for the deployment to be available
-      - echo "Waiting for deployment to be available..."
-      - kubectl wait --for=condition=ready --timeout=60s statefulset/vibetool

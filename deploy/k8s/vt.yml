@@ -1,0 +1,48 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vibetool
+  labels:
+    app: vibetool
+    app.kubernetes.io/name: vibetool
+spec:
+  serviceName: vibetool
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vibetool
+  template:
+    metadata:
+      labels:
+        app: vibetool
+        app.kubernetes.io/name: vibetool
+    spec:
+      containers:
+      - name: vibetool
+        image: ko://github.com/stacklok/vibetool/cmd/vt
+        args: ["run", "--foreground=true", "--port=8080", "--name=mcp-fetch", "docker.io/mcp/fetch"]
+        resources:
+          limits:
+            cpu: "100m"
+            memory: "128Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vibetool
+spec:
+  selector:
+    app.kubernetes.io/name: vibetool
+  ports:
+    - protocol: TCP
+      appProtocol: kubernetes.io/h2c
+      port: 8080
+      targetPort: 8080

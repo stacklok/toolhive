@@ -29,6 +29,12 @@ import (
 	"github.com/stacklok/vibetool/pkg/permissions"
 )
 
+// Constants for container status
+const (
+	// UnknownStatus represents an unknown container status
+	UnknownStatus = "unknown"
+)
+
 // Client implements the Runtime interface for container operations
 type Client struct {
 	runtimeType runtime.Type
@@ -187,8 +193,47 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 }
 
 // ContainerLogs implements runtime.Runtime.
-func (*Client) ContainerLogs(_ context.Context, _ string) (string, error) {
-	return "", nil
+func (c *Client) ContainerLogs(ctx context.Context, containerID string) (string, error) {
+	// In Kubernetes, containerID is the statefulset name
+	namespace := getCurrentNamespace()
+
+	// Get the pods associated with this statefulset
+	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", containerID),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to list pods for statefulset %s: %w", containerID, err)
+	}
+
+	if len(pods.Items) == 0 {
+		return "", fmt.Errorf("no pods found for statefulset %s", containerID)
+	}
+
+	// Use the first pod
+	podName := pods.Items[0].Name
+
+	// Get logs from the pod
+	logOptions := &corev1.PodLogOptions{
+		Container:  containerID, // Use the container name within the pod
+		Follow:     false,
+		Previous:   false,
+		Timestamps: true,
+	}
+
+	req := c.client.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
+	podLogs, err := req.Stream(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get logs for pod %s: %w", podName, err)
+	}
+	defer podLogs.Close()
+
+	// Read logs
+	logBytes, err := io.ReadAll(podLogs)
+	if err != nil {
+		return "", fmt.Errorf("failed to read logs for pod %s: %w", podName, err)
+	}
+
+	return string(logBytes), nil
 }
 
 // CreateContainer implements runtime.Runtime.
@@ -251,23 +296,134 @@ func (c *Client) CreateContainer(ctx context.Context,
 }
 
 // GetContainerIP implements runtime.Runtime.
-func (*Client) GetContainerIP(_ context.Context, _ string) (string, error) {
-	panic("unimplemented")
+func (c *Client) GetContainerIP(ctx context.Context, containerID string) (string, error) {
+	// In Kubernetes, containerID is the statefulset name
+	namespace := getCurrentNamespace()
+
+	// Get the pods associated with this statefulset
+	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", containerID),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to list pods for statefulset %s: %w", containerID, err)
+	}
+
+	if len(pods.Items) == 0 {
+		return "", fmt.Errorf("no pods found for statefulset %s", containerID)
+	}
+
+	// Use the first pod's IP
+	podIP := pods.Items[0].Status.PodIP
+	if podIP == "" {
+		return "", fmt.Errorf("pod for statefulset %s has no IP address", containerID)
+	}
+
+	return podIP, nil
 }
 
 // GetContainerInfo implements runtime.Runtime.
-func (*Client) GetContainerInfo(_ context.Context, _ string) (runtime.ContainerInfo, error) {
-	panic("unimplemented")
+func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runtime.ContainerInfo, error) {
+	// In Kubernetes, containerID is the statefulset name
+	namespace := getCurrentNamespace()
+
+	// Get the statefulset
+	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, containerID, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return runtime.ContainerInfo{}, fmt.Errorf("statefulset %s not found", containerID)
+		}
+		return runtime.ContainerInfo{}, fmt.Errorf("failed to get statefulset %s: %w", containerID, err)
+	}
+
+	// Get the pods associated with this statefulset
+	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", containerID),
+	})
+	if err != nil {
+		return runtime.ContainerInfo{}, fmt.Errorf("failed to list pods for statefulset %s: %w", containerID, err)
+	}
+
+	// Extract port mappings if available
+	ports := make([]runtime.PortMapping, 0)
+	if len(pods.Items) > 0 {
+		for _, container := range pods.Items[0].Spec.Containers {
+			for _, port := range container.Ports {
+				ports = append(ports, runtime.PortMapping{
+					ContainerPort: int(port.ContainerPort),
+					HostPort:      int(port.HostPort),
+					Protocol:      string(port.Protocol),
+				})
+			}
+		}
+	}
+
+	// Determine status and state
+	var status, state string
+	if statefulset.Status.ReadyReplicas > 0 {
+		status = "Running"
+		state = "running"
+	} else if statefulset.Status.Replicas > 0 {
+		status = "Pending"
+		state = "pending"
+	} else {
+		status = "Stopped"
+		state = "stopped"
+	}
+
+	// Get the image from the pod template
+	image := ""
+	if len(statefulset.Spec.Template.Spec.Containers) > 0 {
+		image = statefulset.Spec.Template.Spec.Containers[0].Image
+	}
+
+	return runtime.ContainerInfo{
+		ID:      string(statefulset.UID),
+		Name:    statefulset.Name,
+		Image:   image,
+		Status:  status,
+		State:   state,
+		Created: statefulset.CreationTimestamp.Time,
+		Labels:  statefulset.Labels,
+		Ports:   ports,
+	}, nil
 }
 
 // ImageExists implements runtime.Runtime.
-func (*Client) ImageExists(_ context.Context, _ string) (bool, error) {
-	return false, nil
+func (*Client) ImageExists(_ context.Context, imageName string) (bool, error) {
+	// In Kubernetes, we can't directly check if an image exists in the cluster
+	// without trying to use it. For simplicity, we'll assume the image exists
+	// if it's a valid image name.
+	//
+	// In a more complete implementation, we could:
+	// 1. Create a temporary pod with the image to see if it can be pulled
+	// 2. Use the Kubernetes API to check node status for the image
+	// 3. Use an external registry API to check if the image exists
+
+	// For now, just return true if the image name is not empty
+	if imageName == "" {
+		return false, fmt.Errorf("image name cannot be empty")
+	}
+
+	// We could add more validation here if needed
+	return true, nil
 }
 
 // IsContainerRunning implements runtime.Runtime.
-func (*Client) IsContainerRunning(_ context.Context, _ string) (bool, error) {
-	return true, nil
+func (c *Client) IsContainerRunning(ctx context.Context, containerID string) (bool, error) {
+	// In Kubernetes, containerID is the statefulset name
+	namespace := getCurrentNamespace()
+
+	// Get the statefulset
+	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, containerID, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return false, fmt.Errorf("statefulset %s not found", containerID)
+		}
+		return false, fmt.Errorf("failed to get statefulset %s: %w", containerID, err)
+	}
+
+	// Check if the statefulset has at least one ready replica
+	return statefulset.Status.ReadyReplicas > 0, nil
 }
 
 // ListContainers implements runtime.Runtime.
@@ -299,8 +455,8 @@ func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, e
 		}
 
 		// Get container status
-		status := "unknown"
-		state := "unknown"
+		status := UnknownStatus
+		state := UnknownStatus
 		if len(pod.Status.ContainerStatuses) > 0 {
 			containerStatus := pod.Status.ContainerStatuses[0]
 			if containerStatus.State.Running != nil {
@@ -331,17 +487,44 @@ func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, e
 }
 
 // PullImage implements runtime.Runtime.
-func (*Client) PullImage(_ context.Context, _ string) error {
+func (*Client) PullImage(_ context.Context, imageName string) error {
+	// In Kubernetes, we don't need to explicitly pull images as they are pulled
+	// automatically when creating pods. The kubelet on each node will pull the
+	// image when needed.
+
+	// Log that we're skipping the pull operation
+	fmt.Printf("Skipping explicit image pull for %s in Kubernetes - "+
+		"images are pulled automatically when pods are created\n", imageName)
+
 	return nil
 }
 
 // RemoveContainer implements runtime.Runtime.
-func (*Client) RemoveContainer(_ context.Context, _ string) error {
+func (c *Client) RemoveContainer(ctx context.Context, containerID string) error {
+	// In Kubernetes, we remove a container by deleting the statefulset
+	namespace := getCurrentNamespace()
+
+	// Delete the statefulset
+	deleteOptions := metav1.DeleteOptions{}
+	err := c.client.AppsV1().StatefulSets(namespace).Delete(ctx, containerID, deleteOptions)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// If the statefulset doesn't exist, that's fine
+			fmt.Printf("Statefulset %s not found, nothing to remove\n", containerID)
+			return nil
+		}
+		return fmt.Errorf("failed to delete statefulset %s: %w", containerID, err)
+	}
+
+	fmt.Printf("Deleted statefulset %s\n", containerID)
 	return nil
 }
 
 // StartContainer implements runtime.Runtime.
-func (*Client) StartContainer(_ context.Context, _ string) error {
+func (*Client) StartContainer(_ context.Context, containerID string) error {
+	// In Kubernetes, we don't need to explicitly start containers as they are started
+	// automatically when created. However, we could scale up a statefulset if it's scaled to 0.
+	fmt.Printf("Container %s is managed by Kubernetes and started automatically\n", containerID)
 	return nil
 }
 

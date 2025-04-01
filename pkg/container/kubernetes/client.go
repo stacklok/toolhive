@@ -14,10 +14,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apimwatch "k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
+	"k8s.io/client-go/tools/watch"
 	"k8s.io/utils/ptr"
 
 	"github.com/stacklok/vibetool/pkg/container/runtime"
@@ -252,8 +254,13 @@ func (c *Client) CreateContainer(ctx context.Context,
 	}
 
 	fmt.Printf("Created deployment %s\n", createdDeployment.Name)
-	// remove this later on when we have a better way to wait for the deployment to be ready
-	time.Sleep(10 * time.Second)
+
+	// Wait for the deployment to be ready
+	err = waitForDeploymentReady(ctx, c.client, "default", createdDeployment.Name)
+	if err != nil {
+		return createdDeployment.Name, fmt.Errorf("deployment created but failed to become ready: %w", err)
+	}
+
 	return createdDeployment.Name, nil
 }
 
@@ -354,5 +361,50 @@ func (*Client) StartContainer(_ context.Context, _ string) error {
 
 // StopContainer implements runtime.Runtime.
 func (*Client) StopContainer(_ context.Context, _ string) error {
+	return nil
+}
+
+// waitForDeploymentReady waits for a deployment to be ready using the watch API
+func waitForDeploymentReady(ctx context.Context, clientset *kubernetes.Clientset, namespace, name string) error {
+	// Create a field selector to watch only this specific deployment
+	fieldSelector := fmt.Sprintf("metadata.name=%s", name)
+
+	// Set up the watch
+	watcher, err := clientset.AppsV1().Deployments(namespace).Watch(ctx, metav1.ListOptions{
+		FieldSelector: fieldSelector,
+		Watch:         true,
+	})
+	if err != nil {
+		return fmt.Errorf("error watching deployment: %w", err)
+	}
+
+	// Define the condition function that checks if the deployment is ready
+	isDeploymentReady := func(event apimwatch.Event) (bool, error) {
+		// Check if the event is a deployment
+		deployment, ok := event.Object.(*appsv1.Deployment)
+		if !ok {
+			return false, fmt.Errorf("unexpected object type: %T", event.Object)
+		}
+
+		// Check if the deployment is ready
+		if deployment.Status.ReadyReplicas == *deployment.Spec.Replicas {
+			return true, nil
+		}
+
+		fmt.Printf("Waiting for deployment %s to be ready (%d/%d replicas ready)...\n",
+			name, deployment.Status.ReadyReplicas, *deployment.Spec.Replicas)
+		return false, nil
+	}
+
+	// Create a context with timeout
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	// Wait for the deployment to be ready
+	_, err = watch.UntilWithoutRetry(timeoutCtx, watcher, isDeploymentReady)
+	if err != nil {
+		return fmt.Errorf("error waiting for deployment to be ready: %w", err)
+	}
+
 	return nil
 }

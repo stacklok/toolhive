@@ -84,7 +84,7 @@ func (c *Config) WriteConfig() error {
 		return fmt.Errorf("unable to fetch config path: %w", err)
 	}
 
-	configBytes, err := yaml.Marshal(*c)
+	configBytes, err := yaml.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("error serializing config file: %w", err)
 	}

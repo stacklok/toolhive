@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/vibetool/pkg/container"
 	"github.com/stacklok/vibetool/pkg/labels"
+	"github.com/stacklok/vibetool/pkg/runner"
 )
 
 var rmCmd = &cobra.Command{
@@ -50,6 +51,7 @@ func rmCmdFunc(_ *cobra.Command, args []string) error {
 	// Find the container with the given name
 	var containerID string
 	var isRunning bool
+	var containerLabels map[string]string
 	for _, c := range containers {
 		// Check if the container is managed by Vibe Tool
 		if !labels.IsVibeToolContainer(c.Labels) {
@@ -66,6 +68,7 @@ func rmCmdFunc(_ *cobra.Command, args []string) error {
 		if name == containerName || strings.HasPrefix(c.ID, containerName) {
 			containerID = c.ID
 			isRunning = strings.Contains(strings.ToLower(c.State), "running")
+			containerLabels = c.Labels
 			break
 		}
 	}
@@ -83,6 +86,17 @@ func rmCmdFunc(_ *cobra.Command, args []string) error {
 	fmt.Printf("Removing container %s...\n", containerName)
 	if err := runtime.RemoveContainer(ctx, containerID); err != nil {
 		return fmt.Errorf("failed to remove container: %v", err)
+	}
+
+	// Get the base name from the container labels
+	baseName := labels.GetContainerBaseName(containerLabels)
+	if baseName != "" {
+		// Delete the saved state if it exists
+		if err := runner.DeleteSavedConfig(ctx, baseName); err != nil {
+			fmt.Printf("Warning: Failed to delete saved state: %v\n", err)
+		} else {
+			fmt.Printf("Saved state for %s removed\n", baseName)
+		}
 	}
 
 	fmt.Printf("Container %s removed\n", containerName)

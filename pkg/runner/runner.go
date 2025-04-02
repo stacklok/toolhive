@@ -184,10 +184,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container monitor)
-		// Just clean up the PID file
+		// Clean up the PID file and state
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
 			fmt.Printf("Warning: Failed to remove PID file: %v\n", err)
 		}
+
 		fmt.Printf("MCP server %s stopped\n", r.Config.ContainerName)
 	}
 

@@ -409,7 +409,7 @@ func createRunConfig(ctx context.Context, cmd *cobra.Command, options RunOptions
 	config.WithContainerLabels(containerLabels)
 
 	// Set NoClientConfig flag
-	config.WithNoClientConfig(options.NoClientConfig)
+	config.WithNoClientConfig(options.NoClientConfig || !GetConfig().Clients.AutoDiscovery)
 
 	// Add authorization configuration if provided
 	if options.AuthzConfigPath != "" {

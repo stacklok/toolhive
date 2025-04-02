@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -17,11 +18,17 @@ import (
 // Config represents the configuration of the application.
 type Config struct {
 	Secrets Secrets `yaml:"secrets"`
+	Clients Clients `yaml:"clients"`
 }
 
-// Secrets contains the configuration for secrets management.
+// Secrets contains the settings for secrets management.
 type Secrets struct {
 	ProviderType string `yaml:"provider_type"`
+}
+
+// Clients contains settings for client configuration.
+type Clients struct {
+	AutoDiscovery bool `yaml:"auto_discovery"`
 }
 
 // LoadOrCreateConfig fetches the application configuration.
@@ -53,6 +60,23 @@ func LoadOrCreateConfig() (*Config, error) {
 			Secrets: Secrets{
 				ProviderType: string(secrets.BasicType),
 			},
+			Clients: Clients{
+				AutoDiscovery: true,
+			},
+		}
+
+		// Prompt user explicitly for auto discovery behaviour.
+		fmt.Printf("Would you like to enable auto discovery and configuraion of MCP clients? (y/n) [n]: ")
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Printf("Unable to read input, defaulting to No.\n")
+		}
+		// Treat anything except y/Y as n.
+		if input == "y\n" || input == "Y\n" {
+			config.Clients.AutoDiscovery = true
+		} else {
+			config.Clients.AutoDiscovery = false
 		}
 
 		// Persist the new default to disk.

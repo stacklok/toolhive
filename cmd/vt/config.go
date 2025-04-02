@@ -25,12 +25,23 @@ Valid providers are:
 	RunE: secretsProviderCmdFunc,
 }
 
+var autoDiscoveryCmd = &cobra.Command{
+	Use:   "auto-discovery [true|false]",
+	Short: "Set whether to enable auto-discovery of MCP clients",
+	Long: `Set whether to enable auto-discovery and configuration of MCP clients.
+When enabled, Vibe Tool will automatically update client configuration files
+with the URLs of running MCP servers.`,
+	Args: cobra.ExactArgs(1),
+	RunE: autoDiscoveryCmdFunc,
+}
+
 func init() {
 	// Add config command to root command
 	rootCmd.AddCommand(configCmd)
 
-	// Add secrets-provider subcommand to config command
+	// Add subcommands to config command
 	configCmd.AddCommand(secretsProviderCmd)
+	configCmd.AddCommand(autoDiscoveryCmd)
 }
 
 func secretsProviderCmdFunc(cmd *cobra.Command, args []string) error {
@@ -56,5 +67,34 @@ func secretsProviderCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	cmd.Printf("Secrets provider type updated to: %s\n", provider)
+	return nil
+}
+
+func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {
+	value := args[0]
+
+	// Validate the boolean value
+	var enabled bool
+	switch value {
+	case "true", "1", "yes":
+		enabled = true
+	case "false", "0", "no":
+		enabled = false
+	default:
+		return fmt.Errorf("invalid boolean value: %s (valid values: true, false)", value)
+	}
+
+	// Get the current config
+	cfg := GetConfig()
+
+	// Update the auto-discovery setting
+	cfg.Clients.AutoDiscovery = enabled
+
+	// Save the updated config
+	if err := cfg.WriteConfig(); err != nil {
+		return fmt.Errorf("failed to save configuration: %w", err)
+	}
+
+	cmd.Printf("Auto-discovery of MCP clients %s\n", map[bool]string{true: "enabled", false: "disabled"}[enabled])
 	return nil
 }

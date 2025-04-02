@@ -201,16 +201,7 @@ func (c *Client) CreateContainer(ctx context.Context,
 	_ *permissions.Profile,
 	_ string,
 	options *runtime.CreateContainerOptions) (string, error) {
-
-	fmt.Printf("Checking if container exists...\n")
-	// Check if a statefulset with this name already exists
 	namespace := getCurrentNamespace()
-	_, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, containerName, metav1.GetOptions{})
-	if err == nil {
-		return "", fmt.Errorf("statefulset %s already exists", containerName)
-	}
-	fmt.Printf("Container doesn't exist, creating container %s from image %s...\n", containerName, image)
-
 	containerLabels["app"] = containerName
 	containerLabels["vibetool"] = "true"
 

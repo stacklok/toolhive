@@ -141,7 +141,7 @@ func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
 			return fmt.Errorf("failed to get secrets password: %v", err)
 		}
 
-		detachedCmd.Env = append(detachedCmd.Env, fmt.Sprintf("%s=%s", secrets.SecretsPasswordEnvVar, password))
+		detachedCmd.Env = append(detachedCmd.Env, fmt.Sprintf("%s=%s", secrets.PasswordEnvVar, password))
 	}
 
 	// Redirect stdout and stderr to the log file if it was created successfully

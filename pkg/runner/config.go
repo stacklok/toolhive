@@ -3,8 +3,7 @@ package runner
 
 import (
 	"encoding/json"
-
-	"gopkg.in/yaml.v3"
+	"io"
 
 	"github.com/stacklok/vibetool/pkg/auth"
 	"github.com/stacklok/vibetool/pkg/authz"
@@ -66,29 +65,18 @@ type RunConfig struct {
 	Runtime rt.Runtime `json:"-" yaml:"-"`
 }
 
-// ToJSON serializes the RunConfig to JSON
-func (c *RunConfig) ToJSON() ([]byte, error) {
-	return json.MarshalIndent(c, "", "  ")
+// WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
+func (c *RunConfig) WriteJSON(w io.Writer) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(c)
 }
 
-// FromJSON deserializes the RunConfig from JSON
-func FromJSON(data []byte) (*RunConfig, error) {
+// ReadJSON deserializes the RunConfig from JSON read from the provided reader
+func ReadJSON(r io.Reader) (*RunConfig, error) {
 	var config RunConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, err
-	}
-	return &config, nil
-}
-
-// ToYAML serializes the RunConfig to YAML
-func (c *RunConfig) ToYAML() ([]byte, error) {
-	return yaml.Marshal(c)
-}
-
-// FromYAML deserializes the RunConfig from YAML
-func FromYAML(data []byte) (*RunConfig, error) {
-	var config RunConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	decoder := json.NewDecoder(r)
+	if err := decoder.Decode(&config); err != nil {
 		return nil, err
 	}
 	return &config, nil

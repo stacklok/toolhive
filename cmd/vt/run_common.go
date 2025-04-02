@@ -5,24 +5,20 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/auth"
 	"github.com/stacklok/vibetool/pkg/authz"
-	"github.com/stacklok/vibetool/pkg/client"
 	"github.com/stacklok/vibetool/pkg/container"
 	"github.com/stacklok/vibetool/pkg/environment"
 	"github.com/stacklok/vibetool/pkg/labels"
 	"github.com/stacklok/vibetool/pkg/networking"
 	"github.com/stacklok/vibetool/pkg/permissions"
 	"github.com/stacklok/vibetool/pkg/process"
+	"github.com/stacklok/vibetool/pkg/runner"
 	"github.com/stacklok/vibetool/pkg/secrets"
-	"github.com/stacklok/vibetool/pkg/transport"
 	"github.com/stacklok/vibetool/pkg/transport/types"
 )
 
@@ -94,248 +90,17 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 		return detachProcess(cmd, options)
 	}
 
-	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
-	}
-
-	// Generate a container name if not provided
-	containerName, baseName := container.GetOrGenerateContainerName(options.Name, options.Image)
-
-	// If any secrets are specified, attempt to load them, and add to list of environment variables.
-	if len(options.Secrets) > 0 {
-		providerType, err := GetSecretsProviderType(cmd)
-		if err != nil {
-			return fmt.Errorf("error determining secrets provider type: %w", err)
-		}
-
-		secretManager, err := secrets.CreateSecretManager(providerType)
-		if err != nil {
-			return fmt.Errorf("error instantiating secret manager %v", err)
-		}
-		secretVariables, err := environment.ParseSecretParameters(options.Secrets, secretManager)
-		if err != nil {
-			return fmt.Errorf("failed to get secrets: %v", err)
-		}
-
-		for key, value := range secretVariables {
-			options.EnvVars = append(options.EnvVars, fmt.Sprintf("%s=%s", key, value))
-		}
-	}
-
-	// Parse transport mode
-	transportType, err := types.ParseTransportType(options.Transport)
-	if err != nil {
-		return fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", options.Transport)
-	}
-
-	// Select a port for the HTTP proxy (host port)
-	port, err := networking.FindOrUsePort(options.Port)
+	// Create a RunConfig from the RunOptions
+	config, err := createRunConfig(ctx, cmd, options)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Using host port: %d\n", port)
 
-	// Select a target port for the container
-	targetPort := 0
-	if transportType == types.TransportTypeSSE {
-		targetPort, err = networking.FindOrUsePort(options.TargetPort)
-		if err != nil {
-			return fmt.Errorf("target port error: %w", err)
-		}
-		fmt.Printf("Using target port: %d\n", targetPort)
-	}
+	// Create a Runner with the RunConfig
+	mcpRunner := runner.NewRunner(config)
 
-	// Parse environment variables
-	envVars, err := environment.ParseEnvironmentVariables(options.EnvVars)
-	if err != nil {
-		return fmt.Errorf("failed to parse environment variables: %v", err)
-	}
-
-	// Set transport-specific environment variables
-	// Always pass the targetPort, which will be used for the container's environment variables
-	environment.SetTransportEnvironmentVariables(envVars, string(transportType), targetPort)
-
-	// Create container labels
-	containerLabels := make(map[string]string)
-	labels.AddStandardLabels(containerLabels, containerName, baseName, string(transportType), port)
-
-	// Create transport with runtime
-	transportConfig := types.Config{
-		Type:       transportType,
-		Port:       port,
-		TargetPort: targetPort,
-		Host:       "localhost",
-		Runtime:    runtime,
-		Debug:      options.Debug,
-	}
-
-	// Add OIDC middleware if OIDC validation is enabled
-	if options.OIDCIssuer != "" || options.OIDCAudience != "" || options.OIDCJwksURL != "" || options.OIDCClientID != "" {
-		fmt.Println("OIDC validation enabled for transport")
-
-		// Create JWT validator
-		jwtValidator, err := auth.NewJWTValidator(ctx, auth.JWTValidatorConfig{
-			Issuer:   options.OIDCIssuer,
-			Audience: options.OIDCAudience,
-			JWKSURL:  options.OIDCJwksURL,
-			ClientID: options.OIDCClientID,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create JWT validator: %v", err)
-		}
-
-		// Add JWT validation middleware to transport config
-		transportConfig.Middlewares = append(transportConfig.Middlewares, jwtValidator.Middleware)
-	}
-
-	// Add authorization middleware if authorization configuration is provided
-	if options.AuthzConfigPath != "" {
-		fmt.Println("Authorization enabled for transport")
-
-		// Get the middleware from the configuration file
-		middleware, err := authz.GetMiddlewareFromFile(options.AuthzConfigPath)
-		if err != nil {
-			return fmt.Errorf("failed to get authorization middleware: %v", err)
-		}
-
-		// Add authorization middleware to transport config
-		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
-	}
-
-	transportHandler, err := transport.NewFactory().Create(transportConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create transport: %v", err)
-	}
-
-	// Load permission profile
-	var permProfile *permissions.Profile
-
-	switch options.PermissionProfile {
-	case "stdio":
-		permProfile = permissions.BuiltinStdioProfile()
-	case "network":
-		permProfile = permissions.BuiltinNetworkProfile()
-	default:
-		// Try to load from file
-		permProfile, err = permissions.FromFile(options.PermissionProfile)
-		if err != nil {
-			return fmt.Errorf("failed to load permission profile: %v", err)
-		}
-	}
-
-	// Process volume mounts if provided
-	if err := processVolumeMounts(options.Volumes, permProfile); err != nil {
-		return err
-	}
-
-	// Set up the transport
-	fmt.Printf("Setting up %s transport...\n", transportType)
-	if err := transportHandler.Setup(
-		ctx, runtime, containerName, options.Image, options.CmdArgs,
-		envVars, containerLabels, permProfile,
-	); err != nil {
-		return fmt.Errorf("failed to set up transport: %v", err)
-	}
-
-	// Start the transport (which also starts the container and monitoring)
-	fmt.Printf("Starting %s transport...\n", transportType)
-	if err := transportHandler.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start transport: %v", err)
-	}
-
-	fmt.Printf("MCP server %s started successfully\n", containerName)
-
-	// Update client configurations if not disabled
-	if !options.NoClientConfig {
-		if err := updateClientConfigurations(baseName, "localhost", port); err != nil {
-			fmt.Printf("Warning: Failed to update client configurations: %v\n", err)
-		}
-	}
-
-	// Define a function to stop the MCP server
-	stopMCPServer := func(reason string) {
-		fmt.Printf("Stopping MCP server: %s\n", reason)
-
-		// Stop the transport (which also stops the container, monitoring, and handles removal)
-		fmt.Printf("Stopping %s transport...\n", transportType)
-		if err := transportHandler.Stop(ctx); err != nil {
-			fmt.Printf("Warning: Failed to stop transport: %v\n", err)
-		}
-
-		// Remove the PID file if it exists
-		if err := process.RemovePIDFile(baseName); err != nil {
-			fmt.Printf("Warning: Failed to remove PID file: %v\n", err)
-		}
-
-		fmt.Printf("MCP server %s stopped\n", containerName)
-	}
-
-	// Check if we're a detached process
-	if os.Getenv("VIBETOOL_DETACHED") == "1" {
-		// We're a detached process running in foreground mode
-		// Write the PID to a file so the stop command can kill the process
-		if err := process.WriteCurrentPIDFile(baseName); err != nil {
-			fmt.Printf("Warning: Failed to write PID file: %v\n", err)
-		}
-
-		fmt.Printf("Running as detached process (PID: %d)\n", os.Getpid())
-	}
-
-	fmt.Println("Press Ctrl+C to stop or wait for container to exit")
-
-	// Set up signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	// Create a done channel to signal when the server has been stopped
-	doneCh := make(chan struct{})
-
-	// Start a goroutine to monitor the transport's running state
-	go func() {
-		for {
-			// Safely check if transportHandler is nil
-			if transportHandler == nil {
-				fmt.Println("Transport handler is nil, exiting monitoring routine...")
-				close(doneCh)
-				return
-			}
-
-			// Check if the transport is still running
-			running, err := transportHandler.IsRunning(ctx)
-			if err != nil {
-				fmt.Printf("Error checking transport status: %v\n", err)
-				// Don't exit immediately on error, try again after pause
-				time.Sleep(1 * time.Second)
-				continue
-			}
-			if !running {
-				// Transport is no longer running (container exited or was stopped)
-				fmt.Println("Transport is no longer running, exiting...")
-				close(doneCh)
-				return
-			}
-
-			// Sleep for a short time before checking again
-			time.Sleep(1 * time.Second)
-		}
-	}()
-
-	// Wait for either a signal or the done channel to be closed
-	select {
-	case sig := <-sigCh:
-		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
-	case <-doneCh:
-		// The transport has already been stopped (likely by the container monitor)
-		// Just clean up the PID file
-		if err := process.RemovePIDFile(baseName); err != nil {
-			fmt.Printf("Warning: Failed to remove PID file: %v\n", err)
-		}
-		fmt.Printf("MCP server %s stopped\n", containerName)
-	}
-
-	return nil
+	// Run the MCP server
+	return mcpRunner.Run(ctx)
 }
 
 // processVolumeMounts processes volume mounts and adds them to the permission profile
@@ -374,38 +139,6 @@ func processVolumeMounts(volumes []string, profile *permissions.Profile) error {
 		fmt.Printf("Adding volume mount: %s -> %s (%s)\n",
 			source, target,
 			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
-	}
-
-	return nil
-}
-
-// updateClientConfigurations updates client configuration files with the MCP server URL
-func updateClientConfigurations(containerName, host string, port int) error {
-	// Find client configuration files
-	configs, err := client.FindClientConfigs()
-	if err != nil {
-		return fmt.Errorf("failed to find client configurations: %w", err)
-	}
-
-	if len(configs) == 0 {
-		fmt.Println("No client configuration files found")
-		return nil
-	}
-
-	// Generate the URL for the MCP server
-	url := client.GenerateMCPServerURL(host, port, containerName)
-
-	// Update each configuration file
-	for _, config := range configs {
-		fmt.Printf("Updating client configuration: %s\n", config.Path)
-
-		// Update the MCP server configuration with locking
-		if err := config.SaveWithLock(containerName, url); err != nil {
-			fmt.Printf("Warning: Failed to update MCP server configuration in %s: %v\n", config.Path, err)
-			continue
-		}
-
-		fmt.Printf("Successfully updated client configuration: %s\n", config.Path)
 	}
 
 	return nil
@@ -552,6 +285,142 @@ func findEnvironmentVariableFromSecrets(secs []string, envVarName string) bool {
 	}
 
 	return false
+}
+
+// createRunConfig creates a RunConfig from the provided RunOptions
+//
+//nolint:gocyclo // This function is complex but manageable
+func createRunConfig(ctx context.Context, cmd *cobra.Command, options RunOptions) (*runner.RunConfig, error) {
+	// Create container runtime
+	runtime, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create container runtime: %v", err)
+	}
+
+	// Generate a container name if not provided
+	containerName, baseName := container.GetOrGenerateContainerName(options.Name, options.Image)
+
+	// If any secrets are specified, attempt to load them, and add to list of environment variables.
+	if len(options.Secrets) > 0 {
+		providerType, err := GetSecretsProviderType(cmd)
+		if err != nil {
+			return nil, fmt.Errorf("error determining secrets provider type: %w", err)
+		}
+
+		secretManager, err := secrets.CreateSecretManager(providerType)
+		if err != nil {
+			return nil, fmt.Errorf("error instantiating secret manager %v", err)
+		}
+		secretVariables, err := environment.ParseSecretParameters(options.Secrets, secretManager)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get secrets: %v", err)
+		}
+
+		for key, value := range secretVariables {
+			options.EnvVars = append(options.EnvVars, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
+	// Parse transport mode
+	transportType, err := types.ParseTransportType(options.Transport)
+	if err != nil {
+		return nil, fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", options.Transport)
+	}
+
+	// Select a port for the HTTP proxy (host port)
+	port, err := networking.FindOrUsePort(options.Port)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("Using host port: %d\n", port)
+
+	// Select a target port for the container
+	targetPort := 0
+	if transportType == types.TransportTypeSSE {
+		targetPort, err = networking.FindOrUsePort(options.TargetPort)
+		if err != nil {
+			return nil, fmt.Errorf("target port error: %w", err)
+		}
+		fmt.Printf("Using target port: %d\n", targetPort)
+	}
+
+	// Parse environment variables
+	envVars, err := environment.ParseEnvironmentVariables(options.EnvVars)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse environment variables: %v", err)
+	}
+
+	// Set transport-specific environment variables
+	// Always pass the targetPort, which will be used for the container's environment variables
+	environment.SetTransportEnvironmentVariables(envVars, string(transportType), targetPort)
+
+	// Load permission profile
+	var permProfile *permissions.Profile
+
+	switch options.PermissionProfile {
+	case "stdio":
+		permProfile = permissions.BuiltinStdioProfile()
+	case "network":
+		permProfile = permissions.BuiltinNetworkProfile()
+	default:
+		// Try to load from file
+		permProfile, err = permissions.FromFile(options.PermissionProfile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load permission profile: %v", err)
+		}
+	}
+
+	// Process volume mounts if provided
+	if err := processVolumeMounts(options.Volumes, permProfile); err != nil {
+		return nil, err
+	}
+
+	// Create container labels
+	containerLabels := make(map[string]string)
+	labels.AddStandardLabels(containerLabels, containerName, baseName, string(transportType), port)
+
+	// Create the RunConfig
+	config := runner.NewRunConfig(
+		options.Image,
+		options.CmdArgs,
+		containerName,
+		baseName,
+		transportType,
+		port,
+		targetPort,
+		permProfile,
+		envVars,
+		options.Debug,
+		options.Volumes,
+		runtime,
+	)
+
+	// Add OIDC configuration if any OIDC parameters are provided
+	if options.OIDCIssuer != "" || options.OIDCAudience != "" || options.OIDCJwksURL != "" || options.OIDCClientID != "" {
+		config.WithOIDC(
+			options.OIDCIssuer,
+			options.OIDCAudience,
+			options.OIDCJwksURL,
+			options.OIDCClientID,
+		)
+	}
+
+	// Add container labels
+	config.WithContainerLabels(containerLabels)
+
+	// Set NoClientConfig flag
+	config.WithNoClientConfig(options.NoClientConfig)
+
+	// Add authorization configuration if provided
+	if options.AuthzConfigPath != "" {
+		authzConfig, err := authz.LoadConfig(options.AuthzConfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load authorization configuration: %v", err)
+		}
+		config.WithAuthz(authzConfig)
+	}
+
+	return config, nil
 }
 
 func isSecretReferenceEnvVar(secret, envVarName string) bool {

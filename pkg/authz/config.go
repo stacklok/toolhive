@@ -55,39 +55,39 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	// Validate the configuration
-	if err := validateConfig(&config); err != nil {
+	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 
 	return &config, nil
 }
 
-// validateConfig validates the authorization configuration.
-func validateConfig(config *Config) error {
+// Validate validates the authorization configuration.
+func (c *Config) Validate() error {
 	// Check if the version is provided
-	if config.Version == "" {
+	if c.Version == "" {
 		return fmt.Errorf("version is required")
 	}
 
 	// Check if the type is provided
-	if config.Type == "" {
+	if c.Type == "" {
 		return fmt.Errorf("type is required")
 	}
 
 	// Validate based on the type
-	switch config.Type {
+	switch c.Type {
 	case ConfigTypeCedarV1:
 		// Check if the Cedar configuration is provided
-		if config.Cedar == nil {
-			return fmt.Errorf("cedar configuration is required for type %s", config.Type)
+		if c.Cedar == nil {
+			return fmt.Errorf("cedar configuration is required for type %s", c.Type)
 		}
 
 		// Check if policies are provided
-		if len(config.Cedar.Policies) == 0 {
-			return fmt.Errorf("at least one policy is required for type %s", config.Type)
+		if len(c.Cedar.Policies) == 0 {
+			return fmt.Errorf("at least one policy is required for type %s", c.Type)
 		}
 	default:
-		return fmt.Errorf("unsupported configuration type: %s", config.Type)
+		return fmt.Errorf("unsupported configuration type: %s", c.Type)
 	}
 
 	return nil

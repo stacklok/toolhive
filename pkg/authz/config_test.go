@@ -137,7 +137,7 @@ func TestValidateConfig(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateConfig(tc.config)
+			err := tc.config.Validate()
 			if tc.expectError {
 				assert.Error(t, err, "Expected an error but got none")
 			} else {

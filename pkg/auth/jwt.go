@@ -51,6 +51,21 @@ type JWTValidatorConfig struct {
 	ClientID string
 }
 
+// NewJWTValidatorConfig creates a new JWTValidatorConfig with the provided parameters
+func NewJWTValidatorConfig(issuer, audience, jwksURL, clientID string) *JWTValidatorConfig {
+	// Only create a config if at least one parameter is provided
+	if issuer == "" && audience == "" && jwksURL == "" && clientID == "" {
+		return nil
+	}
+
+	return &JWTValidatorConfig{
+		Issuer:   issuer,
+		Audience: audience,
+		JWKSURL:  jwksURL,
+		ClientID: clientID,
+	}
+}
+
 // NewJWTValidator creates a new JWT validator.
 func NewJWTValidator(ctx context.Context, config JWTValidatorConfig) (*JWTValidator, error) {
 	if config.JWKSURL == "" {

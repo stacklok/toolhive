@@ -6,6 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/vibetool/pkg/auth"
 	"github.com/stacklok/vibetool/pkg/authz"
 	rt "github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/permissions"
@@ -53,7 +54,7 @@ type RunConfig struct {
 	ContainerLabels map[string]string `json:"container_labels,omitempty" yaml:"container_labels,omitempty"`
 
 	// OIDCConfig contains OIDC configuration
-	OIDCConfig *OIDCConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
+	OIDCConfig *auth.JWTValidatorConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
 
 	// AuthzConfig contains the authorization configuration
 	AuthzConfig *authz.Config `json:"authz_config,omitempty" yaml:"authz_config,omitempty"`
@@ -63,21 +64,6 @@ type RunConfig struct {
 
 	// Runtime is the container runtime to use (not serialized)
 	Runtime rt.Runtime `json:"-" yaml:"-"`
-}
-
-// OIDCConfig contains OIDC configuration for the MCP server
-type OIDCConfig struct {
-	// Issuer is the OIDC issuer URL
-	Issuer string `json:"issuer,omitempty" yaml:"issuer,omitempty"`
-
-	// Audience is the OIDC audience
-	Audience string `json:"audience,omitempty" yaml:"audience,omitempty"`
-
-	// JwksURL is the OIDC JWKS URL
-	JwksURL string `json:"jwks_url,omitempty" yaml:"jwks_url,omitempty"`
-
-	// ClientID is the OIDC client ID
-	ClientID string `json:"client_id,omitempty" yaml:"client_id,omitempty"`
 }
 
 // ToJSON serializes the RunConfig to JSON
@@ -142,14 +128,7 @@ func NewRunConfig(
 
 // WithOIDC adds OIDC configuration to the RunConfig
 func (c *RunConfig) WithOIDC(issuer, audience, jwksURL, clientID string) *RunConfig {
-	if issuer != "" || audience != "" || jwksURL != "" || clientID != "" {
-		c.OIDCConfig = &OIDCConfig{
-			Issuer:   issuer,
-			Audience: audience,
-			JwksURL:  jwksURL,
-			ClientID: clientID,
-		}
-	}
+	c.OIDCConfig = auth.NewJWTValidatorConfig(issuer, audience, jwksURL, clientID)
 	return c
 }
 

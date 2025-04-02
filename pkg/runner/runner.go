@@ -51,7 +51,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		jwtValidator, err := auth.NewJWTValidator(ctx, auth.JWTValidatorConfig{
 			Issuer:   r.Config.OIDCConfig.Issuer,
 			Audience: r.Config.OIDCConfig.Audience,
-			JWKSURL:  r.Config.OIDCConfig.JwksURL,
+			JWKSURL:  r.Config.OIDCConfig.JWKSURL,
 			ClientID: r.Config.OIDCConfig.ClientID,
 		})
 		if err != nil {

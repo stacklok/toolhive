@@ -129,24 +129,9 @@ func readConfigFile(path string) (ConfigFile, error) {
 	}, nil
 }
 
-// isContinueConfig checks if the file is a Continue configuration file
-func isContinueConfig(path string) bool {
-	// Check if the file is in the .continue directory
-	return strings.Contains(path, ".continue")
-}
-
 // UpdateMCPServerConfig updates the MCP server configuration in memory
 // This does not save the changes to the file
 func (c *ConfigFile) UpdateMCPServerConfig(serverName, url string) error {
-	// Check if this is a Continue config file
-	if isContinueConfig(c.Path) {
-		ext := strings.ToLower(filepath.Ext(c.Path))
-		if IsYAML(ext) {
-			return c.updateContinueYAMLMCPServerConfig(serverName, url)
-		}
-	}
-
-	// Default behavior for non-Continue configs or Continue JSON configs
 	// Get mcpServers object
 	mcpServers, ok := c.Contents["mcpServers"]
 	if !ok {
@@ -182,59 +167,6 @@ func (c *ConfigFile) UpdateMCPServerConfig(serverName, url string) error {
 		mcpServersMap[serverName] = map[string]interface{}{
 			"url": url,
 		}
-	}
-
-	return nil
-}
-
-// updateContinueYAMLMCPServerConfig updates the MCP server configuration in Continue YAML format
-// In Continue YAML, mcpServers is an array of objects with a name field
-func (c *ConfigFile) updateContinueYAMLMCPServerConfig(serverName, url string) error {
-	// Get mcpServers array
-	mcpServers, ok := c.Contents["mcpServers"]
-	if !ok {
-		// Create mcpServers array if it doesn't exist
-		c.Contents["mcpServers"] = []interface{}{}
-		mcpServers = c.Contents["mcpServers"]
-	}
-
-	// Convert to array
-	mcpServersArray, ok := mcpServers.([]interface{})
-	if !ok {
-		// If it's not an array, convert it to an array
-		c.Contents["mcpServers"] = []interface{}{}
-		mcpServersArray = c.Contents["mcpServers"].([]interface{})
-	}
-
-	// Look for the server by name
-	serverFound := false
-	for i, server := range mcpServersArray {
-		serverMap, ok := server.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		name, ok := serverMap["name"].(string)
-		if !ok {
-			continue
-		}
-
-		if name == serverName {
-			// Update the URL field
-			serverMap["url"] = url
-			mcpServersArray[i] = serverMap
-			serverFound = true
-			break
-		}
-	}
-
-	// If server not found, add it
-	if !serverFound {
-		mcpServersArray = append(mcpServersArray, map[string]interface{}{
-			"name": serverName,
-			"url":  url,
-		})
-		c.Contents["mcpServers"] = mcpServersArray
 	}
 
 	return nil

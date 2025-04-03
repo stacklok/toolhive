@@ -232,9 +232,18 @@ func (c *RunConfig) WithEnvironmentVariables(envVarStrings []string) (*RunConfig
 		return c, fmt.Errorf("failed to parse environment variables: %v", err)
 	}
 
+	// Initialize EnvVars if it's nil
+	if c.EnvVars == nil {
+		c.EnvVars = make(map[string]string)
+	}
+
+	// Merge the parsed environment variables with existing ones
+	for key, value := range envVars {
+		c.EnvVars[key] = value
+	}
+
 	// Set transport-specific environment variables
-	environment.SetTransportEnvironmentVariables(envVars, string(c.Transport), c.TargetPort)
-	c.EnvVars = envVars
+	environment.SetTransportEnvironmentVariables(c.EnvVars, string(c.Transport), c.TargetPort)
 	return c, nil
 }
 
@@ -249,11 +258,13 @@ func (c *RunConfig) WithSecrets(secretManager secrets.Manager) (*RunConfig, erro
 		return c, fmt.Errorf("failed to get secrets: %v", err)
 	}
 
+	// Initialize EnvVars if it's nil
+	if c.EnvVars == nil {
+		c.EnvVars = make(map[string]string)
+	}
+
 	// Add secret variables to environment variables
 	for key, value := range secretVariables {
-		if c.EnvVars == nil {
-			c.EnvVars = make(map[string]string)
-		}
 		c.EnvVars[key] = value
 	}
 

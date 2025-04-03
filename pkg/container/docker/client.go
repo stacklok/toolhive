@@ -257,6 +257,26 @@ func (c *Client) CreateContainer(
 		}
 	}
 
+	// Check if container with this name already exists
+	existingID, err := c.findExistingContainer(ctx, name)
+	if err != nil {
+		return "", err
+	}
+
+	// If container exists, check if we need to recreate it
+	if existingID != "" {
+		canReuse, err := c.handleExistingContainer(ctx, existingID, config, hostConfig)
+		if err != nil {
+			return "", err
+		}
+
+		if canReuse {
+			// Container exists with the right configuration, return its ID
+			return existingID, nil
+		}
+		// Container was removed and needs to be recreated
+	}
+
 	// Create the container
 	resp, err := c.client.ContainerCreate(
 		ctx,
@@ -274,8 +294,21 @@ func (c *Client) CreateContainer(
 }
 
 // StartContainer starts a container
+// If the container is already running, it returns success
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {
-	err := c.client.ContainerStart(ctx, containerID, container.StartOptions{})
+	// Check if the container is already running
+	running, err := c.IsContainerRunning(ctx, containerID)
+	if err != nil {
+		return err
+	}
+
+	// If the container is already running, return success
+	if running {
+		return nil
+	}
+
+	// Start the container
+	err = c.client.ContainerStart(ctx, containerID, container.StartOptions{})
 	if err != nil {
 		return NewContainerError(err, containerID, fmt.Sprintf("failed to start container: %v", err))
 	}
@@ -336,10 +369,26 @@ func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, e
 }
 
 // StopContainer stops a container
+// If the container is already stopped, it returns success
 func (c *Client) StopContainer(ctx context.Context, containerID string) error {
+	// Check if the container is running
+	running, err := c.IsContainerRunning(ctx, containerID)
+	if err != nil {
+		// If the container doesn't exist, that's fine - it's already "stopped"
+		if err, ok := err.(*ContainerError); ok && err.Err == ErrContainerNotFound {
+			return nil
+		}
+		return err
+	}
+
+	// If the container is not running, return success
+	if !running {
+		return nil
+	}
+
 	// Use a reasonable timeout
 	timeoutSeconds := 30
-	err := c.client.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeoutSeconds})
+	err = c.client.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeoutSeconds})
 	if err != nil {
 		return NewContainerError(err, containerID, fmt.Sprintf("failed to stop container: %v", err))
 	}
@@ -347,11 +396,16 @@ func (c *Client) StopContainer(ctx context.Context, containerID string) error {
 }
 
 // RemoveContainer removes a container
+// If the container doesn't exist, it returns success
 func (c *Client) RemoveContainer(ctx context.Context, containerID string) error {
 	err := c.client.ContainerRemove(ctx, containerID, container.RemoveOptions{
 		Force: true,
 	})
 	if err != nil {
+		// If the container doesn't exist, that's fine - it's already removed
+		if client.IsErrNotFound(err) {
+			return nil
+		}
 		return NewContainerError(err, containerID, fmt.Sprintf("failed to remove container: %v", err))
 	}
 	return nil
@@ -792,4 +846,265 @@ func NewContainerError(err error, containerID, message string) *ContainerError {
 		ContainerID: containerID,
 		Message:     message,
 	}
+}
+
+// findExistingContainer finds a container with the exact name
+func (c *Client) findExistingContainer(ctx context.Context, name string) (string, error) {
+	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+		All: true, // Include stopped containers
+		Filters: filters.NewArgs(
+			filters.Arg("name", name),
+		),
+	})
+	if err != nil {
+		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
+	}
+
+	// Find exact name match (filter can return partial matches)
+	for _, cont := range containers {
+		for _, containerName := range cont.Names {
+			// Container names in the API have a leading slash
+			if containerName == "/"+name || containerName == name {
+				return cont.ID, nil
+			}
+		}
+	}
+
+	return "", nil
+}
+
+// compareBasicConfig compares basic container configuration (image, command, env vars, labels, stdio settings)
+func compareBasicConfig(existing *container.InspectResponse, desired *container.Config) bool {
+	// Compare image
+	if existing.Config.Image != desired.Image {
+		return false
+	}
+
+	// Compare command
+	if len(existing.Config.Cmd) != len(desired.Cmd) {
+		return false
+	}
+	for i, cmd := range existing.Config.Cmd {
+		if i >= len(desired.Cmd) || cmd != desired.Cmd[i] {
+			return false
+		}
+	}
+
+	// Compare environment variables
+	if !compareEnvVars(existing.Config.Env, desired.Env) {
+		return false
+	}
+
+	// Compare labels
+	if !compareLabels(existing.Config.Labels, desired.Labels) {
+		return false
+	}
+
+	// Compare stdio settings
+	if existing.Config.AttachStdin != desired.AttachStdin ||
+		existing.Config.AttachStdout != desired.AttachStdout ||
+		existing.Config.AttachStderr != desired.AttachStderr ||
+		existing.Config.OpenStdin != desired.OpenStdin {
+		return false
+	}
+
+	return true
+}
+
+// compareEnvVars compares environment variables
+func compareEnvVars(existingEnv, desiredEnv []string) bool {
+	// Convert to maps for easier comparison
+	existingMap := envSliceToMap(existingEnv)
+	desiredMap := envSliceToMap(desiredEnv)
+
+	// Check if all desired env vars are in existing env with correct values
+	for k, v := range desiredMap {
+		existingVal, exists := existingMap[k]
+		if !exists || existingVal != v {
+			return false
+		}
+	}
+
+	return true
+}
+
+// envSliceToMap converts a slice of environment variables to a map
+func envSliceToMap(env []string) map[string]string {
+	result := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			result[parts[0]] = parts[1]
+		}
+	}
+	return result
+}
+
+// compareLabels compares container labels
+func compareLabels(existingLabels, desiredLabels map[string]string) bool {
+	// Check if all desired labels are in existing labels with correct values
+	for k, v := range desiredLabels {
+		existingVal, exists := existingLabels[k]
+		if !exists || existingVal != v {
+			return false
+		}
+	}
+	return true
+}
+
+// compareHostConfig compares host configuration (network mode, capabilities, security options)
+func compareHostConfig(existing *container.InspectResponse, desired *container.HostConfig) bool {
+	// Compare network mode
+	if string(existing.HostConfig.NetworkMode) != string(desired.NetworkMode) {
+		return false
+	}
+
+	// Compare capabilities
+	if !compareStringSlices(existing.HostConfig.CapAdd, desired.CapAdd) {
+		return false
+	}
+	if !compareStringSlices(existing.HostConfig.CapDrop, desired.CapDrop) {
+		return false
+	}
+
+	// Compare security options
+	if !compareStringSlices(existing.HostConfig.SecurityOpt, desired.SecurityOpt) {
+		return false
+	}
+
+	return true
+}
+
+// compareStringSlices compares two string slices
+func compareStringSlices(existing, desired []string) bool {
+	if len(existing) != len(desired) {
+		return false
+	}
+	for i, s := range existing {
+		if i >= len(desired) || s != desired[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// compareMounts compares volume mounts
+func compareMounts(existing *container.InspectResponse, desired *container.HostConfig) bool {
+	if len(existing.HostConfig.Mounts) != len(desired.Mounts) {
+		return false
+	}
+
+	// Create maps by target path for easier comparison
+	existingMountsMap := make(map[string]mount.Mount)
+	for _, m := range existing.HostConfig.Mounts {
+		existingMountsMap[m.Target] = m
+	}
+
+	// Check if all desired mounts exist in the container with matching source and read-only flag
+	for _, desiredMount := range desired.Mounts {
+		existingMount, exists := existingMountsMap[desiredMount.Target]
+		if !exists || existingMount.Source != desiredMount.Source || existingMount.ReadOnly != desiredMount.ReadOnly {
+			return false
+		}
+	}
+
+	return true
+}
+
+// comparePortConfig compares port configuration (exposed ports and port bindings)
+func comparePortConfig(existing *container.InspectResponse, desired *container.Config, desiredHost *container.HostConfig) bool {
+	// Compare exposed ports
+	if len(existing.Config.ExposedPorts) != len(desired.ExposedPorts) {
+		return false
+	}
+	for port := range desired.ExposedPorts {
+		if _, exists := existing.Config.ExposedPorts[port]; !exists {
+			return false
+		}
+	}
+
+	// Compare port bindings
+	if len(existing.HostConfig.PortBindings) != len(desiredHost.PortBindings) {
+		return false
+	}
+	for port, bindings := range desiredHost.PortBindings {
+		existingBindings, exists := existing.HostConfig.PortBindings[port]
+		if !exists || len(existingBindings) != len(bindings) {
+			return false
+		}
+		for i, binding := range bindings {
+			if i >= len(existingBindings) ||
+				existingBindings[i].HostIP != binding.HostIP ||
+				existingBindings[i].HostPort != binding.HostPort {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+// compareContainerConfig compares an existing container's configuration with the desired configuration
+func compareContainerConfig(
+	existing *container.InspectResponse,
+	desired *container.Config,
+	desiredHost *container.HostConfig,
+) bool {
+	// Compare basic configuration
+	if !compareBasicConfig(existing, desired) {
+		return false
+	}
+
+	// Compare host configuration
+	if !compareHostConfig(existing, desiredHost) {
+		return false
+	}
+
+	// Compare mounts
+	if !compareMounts(existing, desiredHost) {
+		return false
+	}
+
+	// Compare port configuration
+	if !comparePortConfig(existing, desired, desiredHost) {
+		return false
+	}
+
+	// All checks passed, configurations match
+	return true
+}
+
+// handleExistingContainer checks if an existing container's configuration matches the desired configuration
+// Returns true if the container can be reused, false if it was removed and needs to be recreated
+func (c *Client) handleExistingContainer(
+	ctx context.Context,
+	containerID string,
+	desiredConfig *container.Config,
+	desiredHostConfig *container.HostConfig,
+) (bool, error) {
+	// Get container info
+	info, err := c.client.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return false, NewContainerError(err, containerID, fmt.Sprintf("failed to inspect container: %v", err))
+	}
+
+	// Compare configurations
+	if compareContainerConfig(&info, desiredConfig, desiredHostConfig) {
+		// Configurations match, container can be reused
+		return true, nil
+	}
+
+	// Configurations don't match, need to recreate the container
+	// Stop the container
+	if err := c.StopContainer(ctx, containerID); err != nil {
+		return false, err
+	}
+
+	// Remove the container
+	if err := c.RemoveContainer(ctx, containerID); err != nil {
+		return false, err
+	}
+
+	// Container was removed and needs to be recreated
+	return false, nil
 }

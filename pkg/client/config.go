@@ -51,42 +51,8 @@ var configPaths = []struct {
 		},
 	},
 	{
-		Description: "VSCode Claude extension (Linux)",
-		RelPath: []string{
-			".config", "Code", "User", "globalStorage",
-			"saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json",
-		},
-	},
-	{
-		Description: "VSCode Claude extension (macOS)",
-		RelPath: []string{
-			"Library", "Application Support", "Code", "User", "globalStorage",
-			"saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json",
-		},
-	},
-	{
-		Description: "Claude desktop app (Linux)",
-		RelPath:     []string{".config", "Claude", "claude_desktop_config.json"},
-	},
-	{
-		Description: "Claude desktop app (macOS)",
-		RelPath:     []string{"Library", "Application Support", "Claude", "claude_desktop_config.json"},
-	},
-	{
-		Description: "Continue config (YAML) - Linux",
-		RelPath:     []string{".continue", "config.yaml"},
-	},
-	{
-		Description: "Continue config (YAML) - macOS",
-		RelPath:     []string{"Library", "Application Support", ".continue", "config.yaml"},
-	},
-	{
 		Description: "Cursor editor (Linux/macOS)",
 		RelPath:     []string{".cursor", "mcp.json"},
-	},
-	{
-		Description: "Windsurf (Linux/macOS)",
-		RelPath:     []string{".codeium", "windsurf", "mcp_config.json"},
 	},
 	// Add more paths as needed
 }

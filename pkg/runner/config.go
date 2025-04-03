@@ -153,18 +153,6 @@ func NewRunConfigFromFlags(
 	return config
 }
 
-// WithRuntime sets the runtime for the RunConfig
-func (c *RunConfig) WithRuntime(runtime rt.Runtime) *RunConfig {
-	c.Runtime = runtime
-	return c
-}
-
-// WithOIDC adds OIDC configuration to the RunConfig
-func (c *RunConfig) WithOIDC(issuer, audience, jwksURL, clientID string) *RunConfig {
-	c.OIDCConfig = auth.NewJWTValidatorConfig(issuer, audience, jwksURL, clientID)
-	return c
-}
-
 // WithAuthz adds authorization configuration to the RunConfig
 func (c *RunConfig) WithAuthz(config *authz.Config) *RunConfig {
 	c.AuthzConfig = config
@@ -220,6 +208,7 @@ func (c *RunConfig) ParsePermissionProfile() (*RunConfig, error) {
 	var err error
 
 	switch c.PermissionProfileNameOrPath {
+	//nolint:goconst // Let's do this later
 	case "stdio":
 		permProfile = permissions.BuiltinStdioProfile()
 	case "network":
@@ -283,11 +272,15 @@ func (c *RunConfig) WithContainerName() *RunConfig {
 
 // WithStandardLabels adds standard labels to the container
 func (c *RunConfig) WithStandardLabels() *RunConfig {
-	if len(c.ContainerLabels) == 0 {
-		containerLabels := make(map[string]string)
-		labels.AddStandardLabels(containerLabels, c.ContainerName, c.BaseName, string(c.Transport), c.Port)
-		c.ContainerLabels = containerLabels
+	if c.ContainerLabels == nil {
+		c.ContainerLabels = make(map[string]string)
 	}
+	// Use Name if ContainerName is not set
+	containerName := c.ContainerName
+	if containerName == "" {
+		containerName = c.Name
+	}
+	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, string(c.Transport), c.Port)
 	return c
 }
 
@@ -341,12 +334,4 @@ func (c *RunConfig) ProcessVolumeMounts() error {
 	}
 
 	return nil
-}
-
-// WithContainerLabels adds container labels to the RunConfig
-func (c *RunConfig) WithContainerLabels(containerLabels map[string]string) *RunConfig {
-	for k, v := range containerLabels {
-		c.ContainerLabels[k] = v
-	}
-	return c
 }

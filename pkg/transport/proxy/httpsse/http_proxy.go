@@ -4,7 +4,6 @@ package httpsse
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,8 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/exp/jsonrpc2"
 
-	"github.com/stacklok/vibetool/pkg/transport/jsonrpc"
 	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
 	"github.com/stacklok/vibetool/pkg/transport/types"
 )
@@ -27,19 +26,19 @@ type Proxy interface {
 	Stop(ctx context.Context) error
 
 	// GetMessageChannel returns the channel for messages to/from the destination.
-	GetMessageChannel() chan *jsonrpc.JSONRPCMessage
+	GetMessageChannel() chan jsonrpc2.Message
 
 	// GetResponseChannel returns the channel for receiving messages from the destination.
-	GetResponseChannel() <-chan *jsonrpc.JSONRPCMessage
+	GetResponseChannel() <-chan jsonrpc2.Message
 
 	// SendMessageToDestination sends a message to the destination.
-	SendMessageToDestination(msg *jsonrpc.JSONRPCMessage) error
+	SendMessageToDestination(msg jsonrpc2.Message) error
 
 	// ForwardResponseToClients forwards a response from the destination to clients.
-	ForwardResponseToClients(ctx context.Context, msg *jsonrpc.JSONRPCMessage) error
+	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
 
 	// SendResponseMessage sends a message to the response channel.
-	SendResponseMessage(msg *jsonrpc.JSONRPCMessage) error
+	SendResponseMessage(msg jsonrpc2.Message) error
 }
 
 // HTTPSSEProxy encapsulates the HTTP proxy functionality for SSE transports.
@@ -65,8 +64,8 @@ type HTTPSSEProxy struct {
 	pendingMutex    sync.Mutex
 
 	// Message channels
-	messageCh  chan *jsonrpc.JSONRPCMessage
-	responseCh chan *jsonrpc.JSONRPCMessage
+	messageCh  chan jsonrpc2.Message
+	responseCh chan jsonrpc2.Message
 }
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
@@ -76,8 +75,8 @@ func NewHTTPSSEProxy(port int, containerName string, middlewares ...types.Middle
 		port:            port,
 		containerName:   containerName,
 		shutdownCh:      make(chan struct{}),
-		messageCh:       make(chan *jsonrpc.JSONRPCMessage, 100),
-		responseCh:      make(chan *jsonrpc.JSONRPCMessage, 100),
+		messageCh:       make(chan jsonrpc2.Message, 100),
+		responseCh:      make(chan jsonrpc2.Message, 100),
 		sseClients:      make(map[string]*ssecommon.SSEClient),
 		pendingMessages: []*ssecommon.PendingSSEMessage{},
 	}
@@ -144,17 +143,17 @@ func (p *HTTPSSEProxy) Stop(ctx context.Context) error {
 }
 
 // GetMessageChannel returns the channel for messages to/from the destination.
-func (p *HTTPSSEProxy) GetMessageChannel() chan *jsonrpc.JSONRPCMessage {
+func (p *HTTPSSEProxy) GetMessageChannel() chan jsonrpc2.Message {
 	return p.messageCh
 }
 
 // GetResponseChannel returns the channel for receiving messages from the destination.
-func (p *HTTPSSEProxy) GetResponseChannel() <-chan *jsonrpc.JSONRPCMessage {
+func (p *HTTPSSEProxy) GetResponseChannel() <-chan jsonrpc2.Message {
 	return p.responseCh
 }
 
 // SendMessageToDestination sends a message to the destination via the message channel.
-func (p *HTTPSSEProxy) SendMessageToDestination(msg *jsonrpc.JSONRPCMessage) error {
+func (p *HTTPSSEProxy) SendMessageToDestination(msg jsonrpc2.Message) error {
 	select {
 	case p.messageCh <- msg:
 		// Message sent successfully
@@ -166,7 +165,7 @@ func (p *HTTPSSEProxy) SendMessageToDestination(msg *jsonrpc.JSONRPCMessage) err
 }
 
 // SendResponseMessage sends a message to the response channel.
-func (p *HTTPSSEProxy) SendResponseMessage(msg *jsonrpc.JSONRPCMessage) error {
+func (p *HTTPSSEProxy) SendResponseMessage(msg jsonrpc2.Message) error {
 	select {
 	case p.responseCh <- msg:
 		// Message sent successfully
@@ -178,11 +177,11 @@ func (p *HTTPSSEProxy) SendResponseMessage(msg *jsonrpc.JSONRPCMessage) error {
 }
 
 // ForwardResponseToClients forwards a response from the destination to all connected SSE clients.
-func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg *jsonrpc.JSONRPCMessage) error {
+func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg jsonrpc2.Message) error {
 	// Serialize the message to JSON
-	data, err := json.Marshal(msg)
+	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON-RPC message: %w", err)
+		return fmt.Errorf("failed to encode JSON-RPC message: %w", err)
 	}
 
 	// Create an SSE message
@@ -321,23 +320,17 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Parse the JSON-RPC message
-	var msg jsonrpc.JSONRPCMessage
-	if err := json.Unmarshal(body, &msg); err != nil {
+	msg, err := jsonrpc2.DecodeMessage(body)
+	if err != nil {
 		http.Error(w, fmt.Sprintf("Error parsing JSON-RPC message: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	// Validate the message
-	if err := msg.Validate(); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid JSON-RPC message: %v", err), http.StatusBadRequest)
-		return
-	}
-
 	// Log the message
-	jsonrpc.LogJSONRPCMessage(&msg)
+	fmt.Printf("Received JSON-RPC message: %T\n", msg)
 
 	// Send the message to the destination
-	if err := p.SendMessageToDestination(&msg); err != nil {
+	if err := p.SendMessageToDestination(msg); err != nil {
 		http.Error(w, "Failed to send message to destination", http.StatusInternalServerError)
 		return
 	}

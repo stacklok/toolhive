@@ -6,10 +6,11 @@ import (
 	"context"
 	"net/http"
 
+	"golang.org/x/exp/jsonrpc2"
+
 	rt "github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/permissions"
 	"github.com/stacklok/vibetool/pkg/transport/errors"
-	"github.com/stacklok/vibetool/pkg/transport/jsonrpc"
 )
 
 // Middleware is a function that wraps an http.Handler with additional functionality.
@@ -80,19 +81,19 @@ type Proxy interface {
 	Stop(ctx context.Context) error
 
 	// GetMessageChannel returns the channel for messages to/from the destination.
-	GetMessageChannel() chan *jsonrpc.JSONRPCMessage
+	GetMessageChannel() chan jsonrpc2.Message
 
 	// GetResponseChannel returns the channel for receiving messages from the destination.
-	GetResponseChannel() <-chan *jsonrpc.JSONRPCMessage
+	GetResponseChannel() <-chan jsonrpc2.Message
 
 	// SendMessageToDestination sends a message to the destination.
-	SendMessageToDestination(msg *jsonrpc.JSONRPCMessage) error
+	SendMessageToDestination(msg jsonrpc2.Message) error
 
 	// ForwardResponseToClients forwards a response from the destination to clients.
-	ForwardResponseToClients(ctx context.Context, msg *jsonrpc.JSONRPCMessage) error
+	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
 
 	// SendResponseMessage sends a message to the response channel.
-	SendResponseMessage(msg *jsonrpc.JSONRPCMessage) error
+	SendResponseMessage(msg jsonrpc2.Message) error
 }
 
 // Config contains configuration options for a transport.

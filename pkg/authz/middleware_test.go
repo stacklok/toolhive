@@ -10,9 +10,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/vibetool/pkg/auth"
-	"github.com/stacklok/vibetool/pkg/transport/jsonrpc"
 )
 
 func TestMiddleware(t *testing.T) {
@@ -163,12 +163,15 @@ func TestMiddleware(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create a JSON-RPC request
-			request, err := jsonrpc.NewRequestMessage(tc.method, tc.params, 1)
+			paramsJSON, err := json.Marshal(tc.params)
+			require.NoError(t, err, "Failed to marshal params")
+
+			request, err := jsonrpc2.NewCall(jsonrpc2.Int64ID(1), tc.method, json.RawMessage(paramsJSON))
 			require.NoError(t, err, "Failed to create JSON-RPC request")
 
 			// Marshal the request to JSON
-			requestJSON, err := json.Marshal(request)
-			require.NoError(t, err, "Failed to marshal JSON-RPC request")
+			requestJSON, err := jsonrpc2.EncodeMessage(request)
+			require.NoError(t, err, "Failed to encode JSON-RPC request")
 
 			// Create an HTTP request
 			req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(requestJSON))

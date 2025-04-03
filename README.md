@@ -8,7 +8,23 @@ Under the hood, Vibe Tool acts as a very thin client for the Docker/Podman Unix 
 
 ## Why Vibe Tool?
 
-Existing ways to start MCP servers are viewed as insecure, often granting containers more privileges than necessary. vibe tool aims to solve this by starting containers in a locked-down environment, granting only the minimal permissions required to run. This significantly reduces the attack surface and enforces best practices for container security.
+Deploying MCP servers requires complex multi-step processes with a lot of friction: involving running random potentially harmful commands (e.g. using `uv` or `npx`), manually managing security credentials (e.g. putting an api token into a text file), and wrestling with inconsistent packaging methods. vibe tool aims to solve this by starting containers in a locked-down environment, granting only the minimal permissions required to run. This significantly reduces the attack surface, imporves usability, and enforces best practices for container security.
+
+Vibe Tool radically simplifies MCP deployment by:
+ - Ease of Use: Instantly deploy MCP servers through Docker containers. Users can start their MCP servers with a single, straightforward command. No need to install and fight with different versions of python / node / etc.
+
+- Enhanced Security: Secure by default: the tool securely manages secrets and configurations, greatly reducing leaks & risks. No more plaintext secrets in configuration files
+
+- Standardized Packaging: Leveraging OCI container standards, the project provides a repeatable, standardized packaging method for MCP servers, ensuring compatibility and reliability.
+
+
+## Key Benefits
+- Curated MCP Registry: Includes a registry of curated MCPs with verified configurations — users can effortlessly discover and deploy MCP servers without any manual setup. Just select one from the list and safely run it with just one command.
+
+- Enterprise-Ready Authorization: Offers robust authorization controls tailored for enterprise environments, securely managing tool access and integrating seamlessly with existing infrastructures (e.g., Kubernetes).
+
+- Seamless Integration: Compatible with popular development tools such as Copilot, Continue, Claude Desktop, Stitch, and more, streamlining your workflow.
+
 
 ## Commands
 

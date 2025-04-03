@@ -11,89 +11,18 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/vibetool/pkg/authz"
-	"github.com/stacklok/vibetool/pkg/container"
-	"github.com/stacklok/vibetool/pkg/environment"
-	"github.com/stacklok/vibetool/pkg/labels"
-	"github.com/stacklok/vibetool/pkg/networking"
-	"github.com/stacklok/vibetool/pkg/permissions"
 	"github.com/stacklok/vibetool/pkg/process"
 	"github.com/stacklok/vibetool/pkg/runner"
 	"github.com/stacklok/vibetool/pkg/secrets"
-	"github.com/stacklok/vibetool/pkg/transport/types"
 )
 
-// RunOptions contains all the options for running an MCP server
-type RunOptions struct {
-	// Image is the Docker image to run
-	Image string
-
-	// CmdArgs are the arguments to pass to the container
-	CmdArgs []string
-
-	// Transport is the transport mode (sse or stdio)
-	Transport string
-
-	// Name is the name of the MCP server
-	Name string
-
-	// Port is the port for the HTTP proxy to listen on (host port)
-	Port int
-
-	// TargetPort is the port for the container to expose (only applicable to SSE transport)
-	TargetPort int
-
-	// PermissionProfile is the permission profile to use (stdio, network, or path to JSON file)
-	PermissionProfile string
-
-	// EnvVars are the environment variables to pass to the MCP server
-	EnvVars []string
-
-	// NoClientConfig indicates whether to update client configuration files
-	NoClientConfig bool
-
-	// Foreground indicates whether to run in foreground mode
-	Foreground bool
-
-	// OIDCIssuer is the OIDC issuer URL
-	OIDCIssuer string
-
-	// OIDCAudience is the OIDC audience
-	OIDCAudience string
-
-	// OIDCJwksURL is the OIDC JWKS URL
-	OIDCJwksURL string
-
-	// OIDCClientID is the OIDC client ID
-	OIDCClientID string
-
-	// Debug indicates whether debug mode is enabled
-	Debug bool
-
-	// Volumes are the directory mounts to pass to the container
-	// Format: "host-path:container-path[:ro]"
-	Volumes []string
-
-	// Secrets are the secret parameters to pass to the container
-	// Format: "<secret name>,target=<target environment variable>"
-	Secrets []string
-
-	// AuthzConfigPath is the path to the authorization configuration file
-	AuthzConfigPath string
-}
-
-// RunMCPServer runs an MCP server with the specified options
+// RunMCPServer runs an MCP server with the specified config
 //
 //nolint:gocyclo // This function is complex but manageable
-func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) error {
+func RunMCPServer(ctx context.Context, cmd *cobra.Command, config *runner.RunConfig, foreground bool) error {
 	// If not running in foreground mode, start a new detached process and exit
-	if !options.Foreground {
-		return detachProcess(cmd, options)
-	}
-
-	// Create a RunConfig from the RunOptions
-	config, err := createRunConfig(ctx, cmd, options)
-	if err != nil {
-		return err
+	if !foreground {
+		return detachProcess(cmd, config)
 	}
 
 	// Create a Runner with the RunConfig
@@ -103,62 +32,18 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, options RunOptions) e
 	return mcpRunner.Run(ctx)
 }
 
-// processVolumeMounts processes volume mounts and adds them to the permission profile
-// Volume format: "host-path:container-path[:ro]"
-func processVolumeMounts(volumes []string, profile *permissions.Profile) error {
-	if len(volumes) == 0 {
-		return nil
-	}
-
-	for _, volume := range volumes {
-		// Check if the volume has a read-only flag
-		readOnly := false
-		volumeSpec := volume
-
-		if strings.HasSuffix(volume, ":ro") {
-			readOnly = true
-			volumeSpec = strings.TrimSuffix(volume, ":ro")
-		}
-
-		// Create a mount declaration
-		mount := permissions.MountDeclaration(volumeSpec)
-		source, target, err := mount.Parse()
-		if err != nil {
-			return fmt.Errorf("invalid volume format: %s (%v)", volume, err)
-		}
-
-		// Add the mount to the appropriate permission list
-		if readOnly {
-			// For read-only mounts, add to Read list
-			profile.Read = append(profile.Read, mount)
-		} else {
-			// For read-write mounts, add to Write list
-			profile.Write = append(profile.Write, mount)
-		}
-
-		fmt.Printf("Adding volume mount: %s -> %s (%s)\n",
-			source, target,
-			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
-	}
-
-	return nil
-}
-
 // detachProcess starts a new detached process with the same command but with the --foreground flag
 //
 //nolint:gocyclo // This function is complex but manageable
-func detachProcess(cmd *cobra.Command, options RunOptions) error {
+func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
 	// Get the current executable path
 	execPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %v", err)
 	}
 
-	// Generate a container name if not provided
-	_, baseName := container.GetOrGenerateContainerName(options.Name, options.Image)
-
 	// Create a log file for the detached process
-	logFilePath := fmt.Sprintf("/tmp/vibetool-%s.log", baseName)
+	logFilePath := fmt.Sprintf("/tmp/vibetool-%s.log", options.BaseName)
 	// #nosec G304 - This is safe as baseName is generated by the application
 	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
@@ -174,11 +59,14 @@ func detachProcess(cmd *cobra.Command, options RunOptions) error {
 
 	// Add all the original flags
 	if options.Transport != "stdio" {
-		detachedArgs = append(detachedArgs, "--transport", options.Transport)
+		detachedArgs = append(detachedArgs, "--transport", string(options.Transport))
 	}
+
+	// Use Name if available
 	if options.Name != "" {
 		detachedArgs = append(detachedArgs, "--name", options.Name)
 	}
+
 	if options.Port != 0 {
 		detachedArgs = append(detachedArgs, "--port", fmt.Sprintf("%d", options.Port))
 	}
@@ -187,13 +75,21 @@ func detachProcess(cmd *cobra.Command, options RunOptions) error {
 	}
 
 	// Pass the permission profile to the detached process
-	if options.PermissionProfile != "" {
-		detachedArgs = append(detachedArgs, "--permission-profile", options.PermissionProfile)
+	if options.PermissionProfile != nil {
+		// We need to create a temporary file for the permission profile
+		permProfilePath, err := createPermissionProfileFile(options.BaseName, options.PermissionProfile, options.Debug)
+		if err != nil {
+			fmt.Printf("Warning: Failed to create permission profile file: %v\n", err)
+		} else {
+			detachedArgs = append(detachedArgs, "--permission-profile", permProfilePath)
+		}
 	}
 
-	for _, env := range options.EnvVars {
-		detachedArgs = append(detachedArgs, "--env", env)
+	// Add environment variables
+	for key, value := range options.EnvVars {
+		detachedArgs = append(detachedArgs, "--env", fmt.Sprintf("%s=%s", key, value))
 	}
+
 	if options.NoClientConfig {
 		detachedArgs = append(detachedArgs, "--no-client-config")
 	}
@@ -209,17 +105,19 @@ func detachProcess(cmd *cobra.Command, options RunOptions) error {
 	}
 
 	// Add OIDC flags if they were provided
-	if options.OIDCIssuer != "" {
-		detachedArgs = append(detachedArgs, "--oidc-issuer", options.OIDCIssuer)
-	}
-	if options.OIDCAudience != "" {
-		detachedArgs = append(detachedArgs, "--oidc-audience", options.OIDCAudience)
-	}
-	if options.OIDCJwksURL != "" {
-		detachedArgs = append(detachedArgs, "--oidc-jwks-url", options.OIDCJwksURL)
-	}
-	if options.OIDCClientID != "" {
-		detachedArgs = append(detachedArgs, "--oidc-client-id", options.OIDCClientID)
+	if options.OIDCConfig != nil {
+		if options.OIDCConfig.Issuer != "" {
+			detachedArgs = append(detachedArgs, "--oidc-issuer", options.OIDCConfig.Issuer)
+		}
+		if options.OIDCConfig.Audience != "" {
+			detachedArgs = append(detachedArgs, "--oidc-audience", options.OIDCConfig.Audience)
+		}
+		if options.OIDCConfig.JWKSURL != "" {
+			detachedArgs = append(detachedArgs, "--oidc-jwks-url", options.OIDCConfig.JWKSURL)
+		}
+		if options.OIDCConfig.ClientID != "" {
+			detachedArgs = append(detachedArgs, "--oidc-client-id", options.OIDCConfig.ClientID)
+		}
 	}
 
 	// Add the image and any arguments
@@ -267,7 +165,7 @@ func detachProcess(cmd *cobra.Command, options RunOptions) error {
 	}
 
 	// Write the PID to a file so the stop command can kill the process
-	if err := process.WritePIDFile(baseName, detachedCmd.Process.Pid); err != nil {
+	if err := process.WritePIDFile(options.BaseName, detachedCmd.Process.Pid); err != nil {
 		fmt.Printf("Warning: Failed to write PID file: %v\n", err)
 	}
 
@@ -287,140 +185,86 @@ func findEnvironmentVariableFromSecrets(secs []string, envVarName string) bool {
 	return false
 }
 
-// createRunConfig creates a RunConfig from the provided RunOptions
-//
-//nolint:gocyclo // This function is complex but manageable
-func createRunConfig(ctx context.Context, cmd *cobra.Command, options RunOptions) (*runner.RunConfig, error) {
-	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create container runtime: %v", err)
+// configureRunConfig configures a RunConfig with transport, ports, permissions, etc.
+func configureRunConfig(
+	cmd *cobra.Command,
+	config *runner.RunConfig,
+	transport string,
+	port int,
+	targetPort int,
+	envVarStrings []string,
+) error {
+	var err error
+
+	// Check if permission profile is provided
+	if config.PermissionProfileNameOrPath == "" {
+		return fmt.Errorf("permission profile is required")
 	}
 
-	// Generate a container name if not provided
-	containerName, baseName := container.GetOrGenerateContainerName(options.Name, options.Image)
-
-	// If any secrets are specified, attempt to load them, and add to list of environment variables.
-	if len(options.Secrets) > 0 {
+	// Process secrets if provided
+	if len(config.Secrets) > 0 {
 		providerType, err := GetSecretsProviderType(cmd)
 		if err != nil {
-			return nil, fmt.Errorf("error determining secrets provider type: %w", err)
+			return fmt.Errorf("error determining secrets provider type: %w", err)
 		}
 
 		secretManager, err := secrets.CreateSecretManager(providerType)
 		if err != nil {
-			return nil, fmt.Errorf("error instantiating secret manager %v", err)
-		}
-		secretVariables, err := environment.ParseSecretParameters(options.Secrets, secretManager)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get secrets: %v", err)
+			return fmt.Errorf("error instantiating secret manager %v", err)
 		}
 
-		for key, value := range secretVariables {
-			options.EnvVars = append(options.EnvVars, fmt.Sprintf("%s=%s", key, value))
+		// Process secrets
+		if _, err = config.WithSecrets(secretManager); err != nil {
+			return err
 		}
 	}
 
-	// Parse transport mode
-	transportType, err := types.ParseTransportType(options.Transport)
-	if err != nil {
-		return nil, fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", options.Transport)
+	// Set transport
+	if _, err = config.WithTransport(transport); err != nil {
+		return err
 	}
 
-	// Select a port for the HTTP proxy (host port)
-	port, err := networking.FindOrUsePort(options.Port)
-	if err != nil {
-		return nil, err
-	}
-	fmt.Printf("Using host port: %d\n", port)
-
-	// Select a target port for the container
-	targetPort := 0
-	if transportType == types.TransportTypeSSE {
-		targetPort, err = networking.FindOrUsePort(options.TargetPort)
-		if err != nil {
-			return nil, fmt.Errorf("target port error: %w", err)
-		}
-		fmt.Printf("Using target port: %d\n", targetPort)
+	// Configure ports
+	if _, err = config.WithPorts(port, targetPort); err != nil {
+		return err
 	}
 
-	// Parse environment variables
-	envVars, err := environment.ParseEnvironmentVariables(options.EnvVars)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse environment variables: %v", err)
+	// Set permission profile (mandatory)
+	if _, err = config.ParsePermissionProfile(); err != nil {
+		return err
 	}
 
-	// Set transport-specific environment variables
-	// Always pass the targetPort, which will be used for the container's environment variables
-	environment.SetTransportEnvironmentVariables(envVars, string(transportType), targetPort)
-
-	// Load permission profile
-	var permProfile *permissions.Profile
-
-	switch options.PermissionProfile {
-	case "stdio":
-		permProfile = permissions.BuiltinStdioProfile()
-	case "network":
-		permProfile = permissions.BuiltinNetworkProfile()
-	default:
-		// Try to load from file
-		permProfile, err = permissions.FromFile(options.PermissionProfile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load permission profile: %v", err)
-		}
+	// Process volume mounts
+	if err = config.ProcessVolumeMounts(); err != nil {
+		return err
 	}
 
-	// Process volume mounts if provided
-	if err := processVolumeMounts(options.Volumes, permProfile); err != nil {
-		return nil, err
+	// Parse and set environment variables
+	if _, err = config.WithEnvironmentVariables(envVarStrings); err != nil {
+		return err
 	}
 
-	// Create container labels
-	containerLabels := make(map[string]string)
-	labels.AddStandardLabels(containerLabels, containerName, baseName, string(transportType), port)
+	// Generate container name if not already set
+	config.WithContainerName()
 
-	// Create the RunConfig
-	config := runner.NewRunConfig(
-		options.Image,
-		options.CmdArgs,
-		containerName,
-		baseName,
-		transportType,
-		port,
-		targetPort,
-		permProfile,
-		envVars,
-		options.Debug,
-		options.Volumes,
-		runtime,
-	)
-
-	// Add OIDC configuration if any OIDC parameters are provided
-	if options.OIDCIssuer != "" || options.OIDCAudience != "" || options.OIDCJwksURL != "" || options.OIDCClientID != "" {
-		config.WithOIDC(
-			options.OIDCIssuer,
-			options.OIDCAudience,
-			options.OIDCJwksURL,
-			options.OIDCClientID,
-		)
-	}
-
-	// Add container labels
-	config.WithContainerLabels(containerLabels)
-
-	// Set NoClientConfig flag
-	config.WithNoClientConfig(options.NoClientConfig || !GetConfig().Clients.AutoDiscovery)
+	// Add standard labels
+	config.WithStandardLabels()
 
 	// Add authorization configuration if provided
-	if options.AuthzConfigPath != "" {
-		authzConfig, err := authz.LoadConfig(options.AuthzConfigPath)
+	if config.AuthzConfigPath != "" {
+		authzConfig, err := authz.LoadConfig(config.AuthzConfigPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load authorization configuration: %v", err)
+			return fmt.Errorf("failed to load authorization configuration: %v", err)
 		}
 		config.WithAuthz(authzConfig)
 	}
 
-	return config, nil
+	// Set NoClientConfig flag if not already set
+	if !config.NoClientConfig {
+		config.NoClientConfig = !GetConfig().Clients.AutoDiscovery
+	}
+
+	return nil
 }
 
 func isSecretReferenceEnvVar(secret, envVarName string) bool {

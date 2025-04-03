@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/vibetool/pkg/container"
 	"github.com/stacklok/vibetool/pkg/permissions"
 	"github.com/stacklok/vibetool/pkg/registry"
+	"github.com/stacklok/vibetool/pkg/runner"
 )
 
 var runCmd = &cobra.Command{
@@ -107,26 +108,28 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
 
-	// Initialize run options with command line flags
-	options := RunOptions{
-		CmdArgs:           cmdArgs,
-		Transport:         runTransport,
-		Name:              runName,
-		Port:              runPort,
-		TargetPort:        runTargetPort,
-		PermissionProfile: runPermissionProfile,
-		EnvVars:           runEnv,
-		NoClientConfig:    runNoClientConfig,
-		Foreground:        runForeground,
-		OIDCIssuer:        oidcIssuer,
-		OIDCAudience:      oidcAudience,
-		OIDCJwksURL:       oidcJwksURL,
-		OIDCClientID:      oidcClientID,
-		Debug:             debugMode,
-		Volumes:           runVolumes,
-		Secrets:           runSecrets,
-		AuthzConfigPath:   runAuthzConfig,
+	// Create container runtime
+	runtime, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
+
+	// Initialize a new RunConfig with values from command-line flags
+	config := runner.NewRunConfigFromFlags(
+		runtime,
+		cmdArgs,
+		runName,
+		debugMode,
+		runVolumes,
+		runSecrets,
+		runAuthzConfig,
+		runNoClientConfig,
+		runPermissionProfile,
+		oidcIssuer,
+		oidcAudience,
+		oidcJwksURL,
+		oidcClientID,
+	)
 
 	// Try to find the server in the registry
 	server, err := registry.GetServer(serverOrImage)
@@ -136,58 +139,65 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		// Server found in registry
 		logDebug(debugMode, "Found server '%s' in registry", serverOrImage)
 
-		// Apply registry settings to options
-		applyRegistrySettings(cmd, serverOrImage, server, &options, debugMode)
+		// Apply registry settings to config
+		applyRegistrySettings(cmd, serverOrImage, server, config, debugMode)
 	} else {
 		// Server not found in registry, treat as direct image
 		logDebug(debugMode, "Server '%s' not found in registry, treating as Docker image", serverOrImage)
-		options.Image = serverOrImage
-	}
-
-	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		config.Image = serverOrImage
 	}
 
 	// Check if the image exists locally, and pull it if not
-	imageExists, err := runtime.ImageExists(ctx, options.Image)
+	imageExists, err := runtime.ImageExists(ctx, config.Image)
 	if err != nil {
 		return fmt.Errorf("failed to check if image exists: %v", err)
 	}
 	if !imageExists {
-		fmt.Printf("Image %s not found locally, pulling...\n", options.Image)
-		if err := runtime.PullImage(ctx, options.Image); err != nil {
+		fmt.Printf("Image %s not found locally, pulling...\n", config.Image)
+		if err := runtime.PullImage(ctx, config.Image); err != nil {
 			return fmt.Errorf("failed to pull image: %v", err)
 		}
-		fmt.Printf("Successfully pulled image: %s\n", options.Image)
+		fmt.Printf("Successfully pulled image: %s\n", config.Image)
+	}
+
+	// Configure the RunConfig with transport, ports, permissions, etc.
+	if err := configureRunConfig(cmd, config, runTransport, runPort, runTargetPort, runEnv); err != nil {
+		return err
 	}
 
 	// Run the MCP server
-	return RunMCPServer(ctx, cmd, options)
+	return RunMCPServer(ctx, cmd, config, runForeground)
 }
 
-// applyRegistrySettings applies settings from a registry server to the run options
-func applyRegistrySettings(cmd *cobra.Command, serverName string, server *registry.Server, options *RunOptions, debugMode bool) {
+// applyRegistrySettings applies settings from a registry server to the run config
+func applyRegistrySettings(
+	cmd *cobra.Command,
+	serverName string,
+	server *registry.Server,
+	config *runner.RunConfig,
+	debugMode bool,
+) {
 	// Use the image from the registry
-	options.Image = server.Image
+	config.Image = server.Image
 
 	// If name is not provided, use the server name from registry
-	if options.Name == "" {
-		options.Name = serverName
+	if config.Name == "" {
+		config.Name = serverName
 	}
 
 	// Use registry transport if not overridden
 	if !cmd.Flags().Changed("transport") {
-		options.Transport = server.Transport
-		logDebug(debugMode, "Using registry transport: %s", options.Transport)
+		logDebug(debugMode, "Using registry transport: %s", server.Transport)
+		// The actual transport setting will be handled by configureRunConfig
 	} else {
 		logDebug(debugMode, "Using provided transport: %s (overriding registry default: %s)",
-			options.Transport, server.Transport)
+			runTransport, server.Transport)
 	}
 
 	// Process environment variables from registry
-	options.EnvVars = processEnvironmentVariables(server.EnvVars, options.EnvVars, options.Secrets, debugMode)
+	// This will be merged with command-line env vars in configureRunConfig
+	envVarStrings := processEnvironmentVariables(server.EnvVars, runEnv, config.Secrets, debugMode)
+	runEnv = envVarStrings
 
 	// Create a temporary file for the permission profile if not explicitly provided
 	if !cmd.Flags().Changed("permission-profile") {
@@ -196,7 +206,8 @@ func applyRegistrySettings(cmd *cobra.Command, serverName string, server *regist
 			// Just log the error and continue with the default permission profile
 			fmt.Printf("Warning: Failed to create permission profile file: %v\n", err)
 		} else {
-			options.PermissionProfile = permProfilePath
+			// Update the permission profile path
+			config.PermissionProfileNameOrPath = permProfilePath
 		}
 	}
 }

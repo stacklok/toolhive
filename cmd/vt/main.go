@@ -64,6 +64,7 @@ func init() {
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(rmCmd)
 	rootCmd.AddCommand(proxyCmd)
+	rootCmd.AddCommand(restartCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(newSecretCommand())
 }

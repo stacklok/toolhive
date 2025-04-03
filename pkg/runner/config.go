@@ -3,12 +3,19 @@ package runner
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"strings"
 
 	"github.com/stacklok/vibetool/pkg/auth"
 	"github.com/stacklok/vibetool/pkg/authz"
+	"github.com/stacklok/vibetool/pkg/container"
 	rt "github.com/stacklok/vibetool/pkg/container/runtime"
+	"github.com/stacklok/vibetool/pkg/environment"
+	"github.com/stacklok/vibetool/pkg/labels"
+	"github.com/stacklok/vibetool/pkg/networking"
 	"github.com/stacklok/vibetool/pkg/permissions"
+	"github.com/stacklok/vibetool/pkg/secrets"
 	"github.com/stacklok/vibetool/pkg/transport/types"
 )
 
@@ -20,6 +27,9 @@ type RunConfig struct {
 
 	// CmdArgs are the arguments to pass to the container
 	CmdArgs []string `json:"cmd_args,omitempty" yaml:"cmd_args,omitempty"`
+
+	// Name is the name of the MCP server
+	Name string `json:"name" yaml:"name"`
 
 	// ContainerName is the name of the container
 	ContainerName string `json:"container_name" yaml:"container_name"`
@@ -35,6 +45,9 @@ type RunConfig struct {
 
 	// TargetPort is the port for the container to expose (only applicable to SSE transport)
 	TargetPort int `json:"target_port,omitempty" yaml:"target_port,omitempty"`
+
+	// PermissionProfileNameOrPath is the name or path of the permission profile
+	PermissionProfileNameOrPath string `json:"permission_profile_name_or_path,omitempty" yaml:"permission_profile_name_or_path,omitempty"` //nolint:lll
 
 	// PermissionProfile is the permission profile to use
 	PermissionProfile *permissions.Profile `json:"permission_profile" yaml:"permission_profile"`
@@ -58,8 +71,15 @@ type RunConfig struct {
 	// AuthzConfig contains the authorization configuration
 	AuthzConfig *authz.Config `json:"authz_config,omitempty" yaml:"authz_config,omitempty"`
 
+	// AuthzConfigPath is the path to the authorization configuration file
+	AuthzConfigPath string `json:"authz_config_path,omitempty" yaml:"authz_config_path,omitempty"`
+
 	// NoClientConfig indicates whether to update client configuration files
 	NoClientConfig bool `json:"no_client_config,omitempty" yaml:"no_client_config,omitempty"`
+
+	// Secrets are the secret parameters to pass to the container
+	// Format: "<secret name>,target=<target environment variable>"
+	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 
 	// Runtime is the container runtime to use (not serialized)
 	Runtime rt.Runtime `json:"-" yaml:"-"`
@@ -82,42 +102,55 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	return &config, nil
 }
 
-// NewRunConfig creates a new RunConfig with the provided parameters
-func NewRunConfig(
-	image string,
-	cmdArgs []string,
-	containerName string,
-	baseName string,
-	transport types.TransportType,
-	port int,
-	targetPort int,
-	permProfile *permissions.Profile,
-	envVars map[string]string,
-	debug bool,
-	volumes []string,
-	runtime rt.Runtime,
-) *RunConfig {
+// NewRunConfig creates a new RunConfig with default values
+func NewRunConfig() *RunConfig {
 	return &RunConfig{
-		Image:             image,
-		CmdArgs:           cmdArgs,
-		ContainerName:     containerName,
-		BaseName:          baseName,
-		Transport:         transport,
-		Port:              port,
-		TargetPort:        targetPort,
-		PermissionProfile: permProfile,
-		EnvVars:           envVars,
-		Debug:             debug,
-		Volumes:           volumes,
-		ContainerLabels:   make(map[string]string),
-		Runtime:           runtime,
+		ContainerLabels: make(map[string]string),
+		EnvVars:         make(map[string]string),
 	}
 }
 
-// WithOIDC adds OIDC configuration to the RunConfig
-func (c *RunConfig) WithOIDC(issuer, audience, jwksURL, clientID string) *RunConfig {
-	c.OIDCConfig = auth.NewJWTValidatorConfig(issuer, audience, jwksURL, clientID)
-	return c
+// NewRunConfigFromFlags creates a new RunConfig with values from command-line flags
+func NewRunConfigFromFlags(
+	runtime rt.Runtime,
+	cmdArgs []string,
+	name string,
+	debug bool,
+	volumes []string,
+	secretsList []string,
+	authzConfigPath string,
+	noClientConfig bool,
+	permissionProfile string,
+	oidcIssuer string,
+	oidcAudience string,
+	oidcJwksURL string,
+	oidcClientID string,
+) *RunConfig {
+	config := &RunConfig{
+		Runtime:                     runtime,
+		CmdArgs:                     cmdArgs,
+		Name:                        name,
+		Debug:                       debug,
+		Volumes:                     volumes,
+		Secrets:                     secretsList,
+		AuthzConfigPath:             authzConfigPath,
+		NoClientConfig:              noClientConfig,
+		PermissionProfileNameOrPath: permissionProfile,
+		ContainerLabels:             make(map[string]string),
+		EnvVars:                     make(map[string]string),
+	}
+
+	// Set OIDC config if any values are provided
+	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
+		config.OIDCConfig = &auth.JWTValidatorConfig{
+			Issuer:   oidcIssuer,
+			Audience: oidcAudience,
+			JWKSURL:  oidcJwksURL,
+			ClientID: oidcClientID,
+		}
+	}
+
+	return config
 }
 
 // WithAuthz adds authorization configuration to the RunConfig
@@ -132,10 +165,184 @@ func (c *RunConfig) WithNoClientConfig(noClientConfig bool) *RunConfig {
 	return c
 }
 
-// WithContainerLabels adds container labels to the RunConfig
-func (c *RunConfig) WithContainerLabels(labels map[string]string) *RunConfig {
-	for k, v := range labels {
-		c.ContainerLabels[k] = v
+// WithTransport parses and sets the transport type
+func (c *RunConfig) WithTransport(transport string) (*RunConfig, error) {
+	transportType, err := types.ParseTransportType(transport)
+	if err != nil {
+		return c, fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", transport)
+	}
+	c.Transport = transportType
+	return c, nil
+}
+
+// WithPorts configures the host and target ports
+func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
+	// Select a port for the HTTP proxy (host port)
+	selectedPort, err := networking.FindOrUsePort(port)
+	if err != nil {
+		return c, err
+	}
+	fmt.Printf("Using host port: %d\n", selectedPort)
+	c.Port = selectedPort
+
+	// Select a target port for the container if using SSE transport
+	if c.Transport == types.TransportTypeSSE {
+		selectedTargetPort, err := networking.FindOrUsePort(targetPort)
+		if err != nil {
+			return c, fmt.Errorf("target port error: %w", err)
+		}
+		fmt.Printf("Using target port: %d\n", selectedTargetPort)
+		c.TargetPort = selectedTargetPort
+	}
+
+	return c, nil
+}
+
+// ParsePermissionProfile loads and sets the permission profile
+func (c *RunConfig) ParsePermissionProfile() (*RunConfig, error) {
+	if c.PermissionProfileNameOrPath == "" {
+		return c, fmt.Errorf("permission profile name or path is required")
+	}
+
+	var permProfile *permissions.Profile
+	var err error
+
+	switch c.PermissionProfileNameOrPath {
+	//nolint:goconst // Let's do this later
+	case "stdio":
+		permProfile = permissions.BuiltinStdioProfile()
+	case "network":
+		permProfile = permissions.BuiltinNetworkProfile()
+	default:
+		// Try to load from file
+		permProfile, err = permissions.FromFile(c.PermissionProfileNameOrPath)
+		if err != nil {
+			return c, fmt.Errorf("failed to load permission profile: %v", err)
+		}
+	}
+
+	c.PermissionProfile = permProfile
+	return c, nil
+}
+
+// WithEnvironmentVariables parses and sets environment variables
+func (c *RunConfig) WithEnvironmentVariables(envVarStrings []string) (*RunConfig, error) {
+	envVars, err := environment.ParseEnvironmentVariables(envVarStrings)
+	if err != nil {
+		return c, fmt.Errorf("failed to parse environment variables: %v", err)
+	}
+
+	// Initialize EnvVars if it's nil
+	if c.EnvVars == nil {
+		c.EnvVars = make(map[string]string)
+	}
+
+	// Merge the parsed environment variables with existing ones
+	for key, value := range envVars {
+		c.EnvVars[key] = value
+	}
+
+	// Set transport-specific environment variables
+	environment.SetTransportEnvironmentVariables(c.EnvVars, string(c.Transport), c.TargetPort)
+	return c, nil
+}
+
+// WithSecrets processes secrets and adds them to environment variables
+func (c *RunConfig) WithSecrets(secretManager secrets.Manager) (*RunConfig, error) {
+	if len(c.Secrets) == 0 {
+		return c, nil // No secrets to process
+	}
+
+	secretVariables, err := environment.ParseSecretParameters(c.Secrets, secretManager)
+	if err != nil {
+		return c, fmt.Errorf("failed to get secrets: %v", err)
+	}
+
+	// Initialize EnvVars if it's nil
+	if c.EnvVars == nil {
+		c.EnvVars = make(map[string]string)
+	}
+
+	// Add secret variables to environment variables
+	for key, value := range secretVariables {
+		c.EnvVars[key] = value
+	}
+
+	return c, nil
+}
+
+// WithContainerName generates container name if not already set
+func (c *RunConfig) WithContainerName() *RunConfig {
+	if c.ContainerName == "" && c.Image != "" {
+		containerName, baseName := container.GetOrGenerateContainerName(c.Name, c.Image)
+		c.ContainerName = containerName
+		c.BaseName = baseName
 	}
 	return c
+}
+
+// WithStandardLabels adds standard labels to the container
+func (c *RunConfig) WithStandardLabels() *RunConfig {
+	if c.ContainerLabels == nil {
+		c.ContainerLabels = make(map[string]string)
+	}
+	// Use Name if ContainerName is not set
+	containerName := c.ContainerName
+	if containerName == "" {
+		containerName = c.Name
+	}
+	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, string(c.Transport), c.Port)
+	return c
+}
+
+// ProcessVolumeMounts processes volume mounts and adds them to the permission profile
+func (c *RunConfig) ProcessVolumeMounts() error {
+	if len(c.Volumes) == 0 {
+		return nil
+	}
+
+	if c.PermissionProfile == nil {
+		if c.PermissionProfileNameOrPath == "" {
+			return fmt.Errorf("permission profile is required when using volume mounts")
+		}
+
+		// Load the permission profile from the specified name or path
+		_, err := c.ParsePermissionProfile()
+		if err != nil {
+			return fmt.Errorf("failed to load permission profile: %v", err)
+		}
+	}
+
+	for _, volume := range c.Volumes {
+		// Check if the volume has a read-only flag
+		readOnly := false
+		volumeSpec := volume
+
+		if strings.HasSuffix(volume, ":ro") {
+			readOnly = true
+			volumeSpec = strings.TrimSuffix(volume, ":ro")
+		}
+
+		// Create a mount declaration
+		mount := permissions.MountDeclaration(volumeSpec)
+		source, target, err := mount.Parse()
+		if err != nil {
+			return fmt.Errorf("invalid volume format: %s (%v)", volume, err)
+		}
+
+		// Add the mount to the appropriate permission list
+		if readOnly {
+			// For read-only mounts, add to Read list
+			c.PermissionProfile.Read = append(c.PermissionProfile.Read, mount)
+		} else {
+			// For read-write mounts, add to Write list
+			c.PermissionProfile.Write = append(c.PermissionProfile.Write, mount)
+		}
+
+		fmt.Printf("Adding volume mount: %s -> %s (%s)\n",
+			source, target,
+			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
+	}
+
+	return nil
 }

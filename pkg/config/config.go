@@ -28,7 +28,8 @@ type Secrets struct {
 
 // Clients contains settings for client configuration.
 type Clients struct {
-	AutoDiscovery bool `yaml:"auto_discovery"`
+	AutoDiscovery     bool     `yaml:"auto_discovery"`
+	RegisteredClients []string `yaml:"registered_clients"`
 }
 
 // LoadOrCreateConfig fetches the application configuration.

@@ -34,7 +34,6 @@ var (
 	runTargetPort        int
 	runPermissionProfile string
 	runEnv               []string
-	runNoClientConfig    bool
 	runForeground        bool
 	runVolumes           []string
 	runSecrets           []string
@@ -58,12 +57,6 @@ func init() {
 		"e",
 		[]string{},
 		"Environment variables to pass to the MCP server (format: KEY=VALUE)",
-	)
-	runCmd.Flags().BoolVar(
-		&runNoClientConfig,
-		"no-client-config",
-		false,
-		"Do not update client configuration files with the MCP server URL",
 	)
 	runCmd.Flags().BoolVarP(&runForeground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
 	runCmd.Flags().StringArrayVarP(
@@ -123,7 +116,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runVolumes,
 		runSecrets,
 		runAuthzConfig,
-		runNoClientConfig,
 		runPermissionProfile,
 		oidcIssuer,
 		oidcAudience,

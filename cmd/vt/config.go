@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/vibetool/pkg/config"
 	"github.com/stacklok/vibetool/pkg/secrets"
 )
 
@@ -35,6 +36,28 @@ with the URLs of running MCP servers.`,
 	RunE: autoDiscoveryCmdFunc,
 }
 
+var registerClientCmd = &cobra.Command{
+	Use:   "register-client [client]",
+	Short: "Register a client for MCP server configuration",
+	Long: `Register a client for MCP server configuration.
+Valid clients are:
+  - roo-code: The RooCode extension for VSCode
+  - cursor: The Cursor editor`,
+	Args: cobra.ExactArgs(1),
+	RunE: registerClientCmdFunc,
+}
+
+var removeClientCmd = &cobra.Command{
+	Use:   "remove-client [client]",
+	Short: "Remove a client from MCP server configuration",
+	Long: `Remove a client from MCP server configuration.
+Valid clients are:
+  - roo-code: The RooCode extension for VSCode
+  - cursor: The Cursor editor`,
+	Args: cobra.ExactArgs(1),
+	RunE: removeClientCmdFunc,
+}
+
 func init() {
 	// Add config command to root command
 	rootCmd.AddCommand(configCmd)
@@ -42,6 +65,8 @@ func init() {
 	// Add subcommands to config command
 	configCmd.AddCommand(secretsProviderCmd)
 	configCmd.AddCommand(autoDiscoveryCmd)
+	configCmd.AddCommand(registerClientCmd)
+	configCmd.AddCommand(removeClientCmd)
 }
 
 func secretsProviderCmdFunc(cmd *cobra.Command, args []string) error {
@@ -56,7 +81,7 @@ func secretsProviderCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get the current config
-	cfg := GetConfig()
+	cfg := config.GetConfig()
 
 	// Update the secrets provider type
 	cfg.Secrets.ProviderType = provider
@@ -85,7 +110,7 @@ func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get the current config
-	cfg := GetConfig()
+	cfg := config.GetConfig()
 
 	// Update the auto-discovery setting
 	cfg.Clients.AutoDiscovery = enabled
@@ -96,5 +121,76 @@ func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	cmd.Printf("Auto-discovery of MCP clients %s\n", map[bool]string{true: "enabled", false: "disabled"}[enabled])
+	return nil
+}
+
+func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
+	client := args[0]
+
+	// Validate the client type
+	switch client {
+	case "roo-code", "cursor":
+		// Valid client type
+	default:
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor)", client)
+	}
+
+	// Get the current config
+	cfg := config.GetConfig()
+
+	// Check if client is already registered
+	for _, registeredClient := range cfg.Clients.RegisteredClients {
+		if registeredClient == client {
+			return fmt.Errorf("client %s is already registered", client)
+		}
+	}
+
+	// Add the client to the registered clients list
+	cfg.Clients.RegisteredClients = append(cfg.Clients.RegisteredClients, client)
+
+	// Save the updated config
+	if err := cfg.WriteConfig(); err != nil {
+		return fmt.Errorf("failed to save configuration: %w", err)
+	}
+
+	cmd.Printf("Successfully registered client: %s\n", client)
+	return nil
+}
+
+func removeClientCmdFunc(cmd *cobra.Command, args []string) error {
+	client := args[0]
+
+	// Validate the client type
+	switch client {
+	case "roo-code", "cursor":
+		// Valid client type
+	default:
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor)", client)
+	}
+
+	// Get the current config
+	cfg := config.GetConfig()
+
+	// Find and remove the client from the registered clients list
+	found := false
+	for i, registeredClient := range cfg.Clients.RegisteredClients {
+		if registeredClient == client {
+			// Remove the client by appending the slice before and after the index
+			cfg.Clients.RegisteredClients = append(cfg.Clients.RegisteredClients[:i], cfg.Clients.RegisteredClients[i+1:]...)
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("client %s is not registered", client)
+	}
+
+	// Save the updated config
+	if err := cfg.WriteConfig(); err != nil {
+		return fmt.Errorf("failed to save configuration: %w", err)
+	}
+
+	cmd.Printf("Successfully removed client: %s\n", client)
 	return nil
 }

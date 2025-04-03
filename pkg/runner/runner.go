@@ -103,11 +103,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		fmt.Printf("Warning: Failed to save run configuration: %v\n", err)
 	}
 
-	// Update client configurations if not disabled
-	if !r.Config.NoClientConfig {
-		if err := updateClientConfigurations(r.Config.BaseName, "localhost", r.Config.Port); err != nil {
-			fmt.Printf("Warning: Failed to update client configurations: %v\n", err)
-		}
+	// Update client configurations with the MCP server URL.
+	// Note that this function checks the configuration to determine which
+	// clients should be updated, if any.
+	if err := updateClientConfigurations(r.Config.BaseName, "localhost", r.Config.Port); err != nil {
+		fmt.Printf("Warning: Failed to update client configurations: %v\n", err)
 	}
 
 	// Define a function to stop the MCP server

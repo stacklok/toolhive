@@ -90,10 +90,6 @@ func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
 		detachedArgs = append(detachedArgs, "--env", fmt.Sprintf("%s=%s", key, value))
 	}
 
-	if options.NoClientConfig {
-		detachedArgs = append(detachedArgs, "--no-client-config")
-	}
-
 	// Add volume mounts if they were provided
 	for _, volume := range options.Volumes {
 		detachedArgs = append(detachedArgs, "--volume", volume)
@@ -257,11 +253,6 @@ func configureRunConfig(
 			return fmt.Errorf("failed to load authorization configuration: %v", err)
 		}
 		config.WithAuthz(authzConfig)
-	}
-
-	// Set NoClientConfig flag if not already set
-	if !config.NoClientConfig {
-		config.NoClientConfig = !GetConfig().Clients.AutoDiscovery
 	}
 
 	return nil

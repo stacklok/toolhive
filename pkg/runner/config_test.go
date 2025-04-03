@@ -805,7 +805,6 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	volumes := []string{"/host:/container"}
 	secretsList := []string{"secret1,target=ENV_VAR1"}
 	authzConfigPath := "/path/to/authz.json"
-	noClientConfig := true
 	permissionProfile := "stdio"
 	oidcIssuer := "https://issuer.example.com"
 	oidcAudience := "test-audience"
@@ -820,7 +819,6 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		volumes,
 		secretsList,
 		authzConfigPath,
-		noClientConfig,
 		permissionProfile,
 		oidcIssuer,
 		oidcAudience,
@@ -836,7 +834,6 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	assert.Equal(t, volumes, config.Volumes, "Volumes should match")
 	assert.Equal(t, secretsList, config.Secrets, "Secrets should match")
 	assert.Equal(t, authzConfigPath, config.AuthzConfigPath, "AuthzConfigPath should match")
-	assert.Equal(t, noClientConfig, config.NoClientConfig, "NoClientConfig should match")
 	assert.Equal(t, permissionProfile, config.PermissionProfileNameOrPath, "PermissionProfileNameOrPath should match")
 	assert.NotNil(t, config.ContainerLabels, "ContainerLabels should be initialized")
 	assert.NotNil(t, config.EnvVars, "EnvVars should be initialized")

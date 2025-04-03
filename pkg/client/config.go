@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/vibetool/pkg/config"
 	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
 )
 
@@ -31,30 +34,42 @@ func IsYAML(ext string) bool {
 	return ext == YAMLExt || ext == YMLExt
 }
 
-// configPaths defines the standard locations for client configuration files
-var configPaths = []struct {
-	Description string
-	RelPath     []string
-}{
+// MCPClient is an enum of supported MCP clients.
+type MCPClient string
+
+const (
+	// RooCode represents the RooCode extension for VSCode.
+	RooCode MCPClient = "roo-code"
+	// Cursor represents the Cursor editor.
+	Cursor MCPClient = "cursor"
+	//Copilot MCPClient = "copilot"
+)
+
+// mcpClientConfig represents a configuration path for a supported MCP client.
+type mcpClientConfig struct {
+	ClientType     MCPClient
+	Description    string
+	RelPath        []string
+	PlatformPrefix map[string][]string
+}
+
+var supportedClientIntegrations = []mcpClientConfig{
 	{
-		Description: "VSCode Roo extension (Linux)",
+		ClientType:  RooCode,
+		Description: "VSCode Roo extension",
 		RelPath: []string{
-			".config", "Code", "User", "globalStorage",
-			"rooveterinaryinc.roo-cline", "settings", "mcp_settings.json",
+			"Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json",
+		},
+		PlatformPrefix: map[string][]string{
+			"linux":  {".config"},
+			"darwin": {"Library", "Application Support"},
 		},
 	},
 	{
-		Description: "VSCode Roo extension (macOS)",
-		RelPath: []string{
-			"Library", "Application Support", "Code", "User", "globalStorage",
-			"rooveterinaryinc.roo-cline", "settings", "mcp_settings.json",
-		},
-	},
-	{
-		Description: "Cursor editor (Linux/macOS)",
+		ClientType:  Cursor,
+		Description: "Cursor editor",
 		RelPath:     []string{".cursor", "mcp.json"},
 	},
-	// Add more paths as needed
 }
 
 // ConfigFile represents a client configuration file
@@ -70,23 +85,34 @@ type MCPServerConfig struct {
 
 // FindClientConfigs searches for client configuration files in standard locations
 func FindClientConfigs() ([]ConfigFile, error) {
-	var configs []ConfigFile
-
-	// Get home directory
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
+	// Start by assuming all clients are enabled
+	var filters []MCPClient
+	appConfig := config.GetConfig()
+	// If we are not using auto-discovery, we need to filter the set of clients to configure.
+	if !appConfig.Clients.AutoDiscovery && len(appConfig.Clients.RegisteredClients) > 0 {
+		filters = make([]MCPClient, len(appConfig.Clients.RegisteredClients))
+		for _, client := range appConfig.Clients.RegisteredClients {
+			// Not validating client names here - assuming that A) they are
+			// validated when set, and B) they will be dropped later if not valid.
+			filters = append(filters, MCPClient(client))
+		}
+	} else {
+		// No clients configured - exit early.
+		return nil, nil
 	}
 
-	// Check each path
-	for _, pathInfo := range configPaths {
-		// Construct the full path
-		elements := append([]string{home}, pathInfo.RelPath...)
-		path := filepath.Join(elements...)
+	// Get the set of paths we need to configure
+	configPaths, err := getSupportedPaths(filters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get client config paths: %w", err)
+	}
 
-		config, err := readConfigFile(path)
+	var configs []ConfigFile
+	// Check each path
+	for _, path := range configPaths {
+		clientConfig, err := readConfigFile(path)
 		if err == nil {
-			configs = append(configs, config)
+			configs = append(configs, clientConfig)
 		}
 	}
 
@@ -269,4 +295,29 @@ func GenerateMCPServerURL(host string, port int, containerName string) string {
 	// The URL format is: http://host:port/sse#container-name
 	// Both SSE and STDIO transport types use an SSE proxy
 	return fmt.Sprintf("http://%s:%d%s#%s", host, port, ssecommon.HTTPSSEEndpoint, containerName)
+}
+
+func getSupportedPaths(filters []MCPClient) ([]string, error) {
+	var paths []string
+
+	// Get home directory
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	for _, cfg := range supportedClientIntegrations {
+		// If filters are specified, filter out the clients we don't care about.
+		if len(filters) > 0 && !slices.Contains(filters, cfg.ClientType) {
+			continue
+		}
+		path := []string{home}
+		if prefix, ok := cfg.PlatformPrefix[runtime.GOOS]; ok {
+			path = append(path, prefix...)
+		}
+		path = append(path, cfg.RelPath...)
+		paths = append(paths, filepath.Join(path...))
+	}
+
+	return paths, nil
 }

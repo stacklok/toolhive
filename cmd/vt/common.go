@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/vibetool/pkg/config"
 	"github.com/stacklok/vibetool/pkg/secrets"
 )
 
@@ -37,7 +38,7 @@ func IsOIDCEnabled(cmd *cobra.Command) bool {
 
 // GetSecretsProviderType returns the secrets provider type from the command flags
 func GetSecretsProviderType(_ *cobra.Command) (secrets.ProviderType, error) {
-	provider := GetConfig().Secrets.ProviderType
+	provider := config.GetConfig().Secrets.ProviderType
 	switch provider {
 	case string(secrets.BasicType):
 		return secrets.BasicType, nil

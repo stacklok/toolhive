@@ -74,9 +74,6 @@ type RunConfig struct {
 	// AuthzConfigPath is the path to the authorization configuration file
 	AuthzConfigPath string `json:"authz_config_path,omitempty" yaml:"authz_config_path,omitempty"`
 
-	// NoClientConfig indicates whether to update client configuration files
-	NoClientConfig bool `json:"no_client_config,omitempty" yaml:"no_client_config,omitempty"`
-
 	// Secrets are the secret parameters to pass to the container
 	// Format: "<secret name>,target=<target environment variable>"
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
@@ -119,7 +116,6 @@ func NewRunConfigFromFlags(
 	volumes []string,
 	secretsList []string,
 	authzConfigPath string,
-	noClientConfig bool,
 	permissionProfile string,
 	oidcIssuer string,
 	oidcAudience string,
@@ -134,7 +130,6 @@ func NewRunConfigFromFlags(
 		Volumes:                     volumes,
 		Secrets:                     secretsList,
 		AuthzConfigPath:             authzConfigPath,
-		NoClientConfig:              noClientConfig,
 		PermissionProfileNameOrPath: permissionProfile,
 		ContainerLabels:             make(map[string]string),
 		EnvVars:                     make(map[string]string),
@@ -156,12 +151,6 @@ func NewRunConfigFromFlags(
 // WithAuthz adds authorization configuration to the RunConfig
 func (c *RunConfig) WithAuthz(config *authz.Config) *RunConfig {
 	c.AuthzConfig = config
-	return c
-}
-
-// WithNoClientConfig sets the NoClientConfig flag
-func (c *RunConfig) WithNoClientConfig(noClientConfig bool) *RunConfig {
-	c.NoClientConfig = noClientConfig
 	return c
 }
 

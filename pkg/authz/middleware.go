@@ -9,7 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/stacklok/vibetool/pkg/transport/jsonrpc"
+	"golang.org/x/exp/jsonrpc2"
+
 	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
 )
 
@@ -90,6 +91,27 @@ func extractResourceAndArguments(method string, params json.RawMessage) (string,
 	return resourceID, arguments
 }
 
+// convertToJSONRPC2ID converts an interface{} ID to jsonrpc2.ID
+func convertToJSONRPC2ID(id interface{}) (jsonrpc2.ID, error) {
+	if id == nil {
+		return jsonrpc2.ID{}, nil
+	}
+
+	switch v := id.(type) {
+	case string:
+		return jsonrpc2.StringID(v), nil
+	case int:
+		return jsonrpc2.Int64ID(int64(v)), nil
+	case int64:
+		return jsonrpc2.Int64ID(v), nil
+	case float64:
+		// JSON numbers are often unmarshaled as float64
+		return jsonrpc2.Int64ID(int64(v)), nil
+	default:
+		return jsonrpc2.ID{}, fmt.Errorf("unsupported ID type: %T", id)
+	}
+}
+
 // handleUnauthorized handles unauthorized requests.
 func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	// Create an error response
@@ -99,12 +121,15 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	}
 
 	// Create a JSON-RPC error response
-	errorResponse, _ := jsonrpc.NewErrorMessage(
-		msgID,
-		403, // Forbidden
-		errorMsg,
-		nil,
-	)
+	id, err := convertToJSONRPC2ID(msgID)
+	if err != nil {
+		id = jsonrpc2.ID{} // Use empty ID if conversion fails
+	}
+
+	errorResponse := &jsonrpc2.Response{
+		ID:    id,
+		Error: jsonrpc2.NewError(403, errorMsg),
+	}
 
 	// Set the response headers
 	w.Header().Set("Content-Type", "application/json")
@@ -159,27 +184,28 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 		// Parse the JSON-RPC message
-		var msg jsonrpc.JSONRPCMessage
-		if err := json.Unmarshal(bodyBytes, &msg); err != nil {
+		msg, err := jsonrpc2.DecodeMessage(bodyBytes)
+		if err != nil {
 			// If we can't parse the message, let the next handler deal with it
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// Skip authorization for non-request messages
-		if !msg.IsRequest() {
+		req, ok := msg.(*jsonrpc2.Request)
+		if !ok {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// Check if we should skip authorization after parsing the message
-		if shouldSkipSubsequentAuthorization(msg.Method) {
+		if shouldSkipSubsequentAuthorization(req.Method) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// Get the feature and operation from the method
-		featureOp, ok := MCPMethodToFeatureOperation[msg.Method]
+		featureOp, ok := MCPMethodToFeatureOperation[req.Method]
 		if !ok {
 			// Unknown method, let the next handler deal with it
 			next.ServeHTTP(w, r)
@@ -187,7 +213,7 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		}
 
 		// Extract resource ID and arguments from the params
-		resourceID, arguments := extractResourceAndArguments(msg.Method, msg.Params)
+		resourceID, arguments := extractResourceAndArguments(req.Method, req.Params)
 
 		// Authorize the request
 		authorized, err := a.AuthorizeWithJWTClaims(
@@ -200,7 +226,7 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 
 		// Handle unauthorized requests
 		if err != nil || !authorized {
-			handleUnauthorized(w, msg.ID, err)
+			handleUnauthorized(w, req.ID.Raw(), err)
 			return
 		}
 

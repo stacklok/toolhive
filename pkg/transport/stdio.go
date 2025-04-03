@@ -3,7 +3,6 @@ package transport
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -11,11 +10,12 @@ import (
 	"time"
 	"unicode"
 
+	"golang.org/x/exp/jsonrpc2"
+
 	"github.com/stacklok/vibetool/pkg/container"
 	rt "github.com/stacklok/vibetool/pkg/container/runtime"
 	"github.com/stacklok/vibetool/pkg/permissions"
 	"github.com/stacklok/vibetool/pkg/transport/errors"
-	"github.com/stacklok/vibetool/pkg/transport/jsonrpc"
 	"github.com/stacklok/vibetool/pkg/transport/proxy/httpsse"
 	"github.com/stacklok/vibetool/pkg/transport/types"
 )
@@ -431,38 +431,32 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	}
 
 	// Try to parse the JSON
-	var msg jsonrpc.JSONRPCMessage
-	if err := json.Unmarshal([]byte(jsonData), &msg); err != nil {
+	msg, err := jsonrpc2.DecodeMessage([]byte(jsonData))
+	if err != nil {
 		fmt.Printf("Error parsing JSON-RPC message: %v\n", err)
 		return
 	}
 
-	// Validate the message
-	if err := msg.Validate(); err != nil {
-		fmt.Printf("Invalid JSON-RPC message: %v\n", err)
-		return
-	}
-
 	// Log the message
-	jsonrpc.LogJSONRPCMessage(&msg)
+	fmt.Printf("Received JSON-RPC message: %T\n", msg)
 
 	// Forward to SSE clients via the HTTP proxy
-	if err := t.httpProxy.ForwardResponseToClients(ctx, &msg); err != nil {
+	if err := t.httpProxy.ForwardResponseToClients(ctx, msg); err != nil {
 		fmt.Printf("Error forwarding to SSE clients: %v\n", err)
 	}
 
 	// Send to the response channel
-	if err := t.httpProxy.SendResponseMessage(&msg); err != nil {
+	if err := t.httpProxy.SendResponseMessage(msg); err != nil {
 		fmt.Printf("Error sending to response channel: %v\n", err)
 	}
 }
 
 // sendMessageToContainer sends a JSON-RPC message to the container.
-func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer, msg *jsonrpc.JSONRPCMessage) error {
+func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer, msg jsonrpc2.Message) error {
 	// Serialize the message
-	data, err := json.Marshal(msg)
+	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON-RPC message: %w", err)
+		return fmt.Errorf("failed to encode JSON-RPC message: %w", err)
 	}
 
 	// Add newline

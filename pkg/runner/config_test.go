@@ -455,6 +455,41 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 			},
 		},
 		{
+			name: "Preserve existing environment variables",
+			config: &RunConfig{
+				Transport:  types.TransportTypeSSE,
+				TargetPort: 9000,
+				EnvVars: map[string]string{
+					"EXISTING_VAR": "existing_value",
+				},
+			},
+			envVars:     []string{"KEY1=value1"},
+			expectError: false,
+			expected: map[string]string{
+				"EXISTING_VAR":  "existing_value",
+				"KEY1":          "value1",
+				"MCP_TRANSPORT": "sse",
+				"MCP_PORT":      "9000",
+			},
+		},
+		{
+			name: "Override existing environment variables",
+			config: &RunConfig{
+				Transport:  types.TransportTypeSSE,
+				TargetPort: 9000,
+				EnvVars: map[string]string{
+					"KEY1": "original_value",
+				},
+			},
+			envVars:     []string{"KEY1=new_value"},
+			expectError: false,
+			expected: map[string]string{
+				"KEY1":          "new_value",
+				"MCP_TRANSPORT": "sse",
+				"MCP_PORT":      "9000",
+			},
+		},
+		{
 			name:        "Invalid environment variable format",
 			config:      &RunConfig{Transport: types.TransportTypeSSE, TargetPort: 9000},
 			envVars:     []string{"INVALID_FORMAT"},
@@ -557,6 +592,39 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 			expected: map[string]string{
 				"ENV_VAR1": "value1",
 				"ENV_VAR2": "value2",
+			},
+		},
+		{
+			name: "Preserve existing environment variables",
+			config: &RunConfig{EnvVars: map[string]string{
+				"EXISTING_VAR": "existing_value",
+			}},
+			secrets: []string{
+				"secret1,target=ENV_VAR1",
+			},
+			mockSecrets: map[string]string{
+				"secret1": "value1",
+			},
+			expectError: false,
+			expected: map[string]string{
+				"EXISTING_VAR": "existing_value",
+				"ENV_VAR1":     "value1",
+			},
+		},
+		{
+			name: "Secret overrides existing environment variable",
+			config: &RunConfig{EnvVars: map[string]string{
+				"ENV_VAR1": "original_value",
+			}},
+			secrets: []string{
+				"secret1,target=ENV_VAR1",
+			},
+			mockSecrets: map[string]string{
+				"secret1": "new_value",
+			},
+			expectError: false,
+			expected: map[string]string{
+				"ENV_VAR1": "new_value",
 			},
 		},
 		{

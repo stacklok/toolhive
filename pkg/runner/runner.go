@@ -98,6 +98,11 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	fmt.Printf("MCP server %s started successfully\n", r.Config.ContainerName)
 
+	// Save the configuration to the state store
+	if err := r.SaveState(ctx); err != nil {
+		fmt.Printf("Warning: Failed to save run configuration: %v\n", err)
+	}
+
 	// Update client configurations if not disabled
 	if !r.Config.NoClientConfig {
 		if err := updateClientConfigurations(r.Config.BaseName, "localhost", r.Config.Port); err != nil {
@@ -179,10 +184,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container monitor)
-		// Just clean up the PID file
+		// Clean up the PID file and state
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
 			fmt.Printf("Warning: Failed to remove PID file: %v\n", err)
 		}
+
 		fmt.Printf("MCP server %s stopped\n", r.Config.ContainerName)
 	}
 

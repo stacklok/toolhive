@@ -135,7 +135,7 @@ func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
 	detachedCmd.Env = append(os.Environ(), "TOOLHIVE_DETACHED=1")
 
 	// If the process needs the decrypt password, pass it as an environment variable.
-	if NeedSecretsPassword(cmd) {
+	if NeedSecretsPassword(cmd, options.Secrets) {
 		password, err := secrets.GetSecretsPassword()
 		if err != nil {
 			return fmt.Errorf("failed to get secrets password: %v", err)

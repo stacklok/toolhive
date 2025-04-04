@@ -15,6 +15,13 @@ var configCmd = &cobra.Command{
 	Long:  "The config command provides subcommands to manage application configuration settings.",
 }
 
+var listRegisteredClientsCmd = &cobra.Command{
+	Use:   "list-registered-clients",
+	Short: "List all registered MCP clients",
+	Long:  "List all clients that are registered for MCP server configuration.",
+	RunE:  listRegisteredClientsCmdFunc,
+}
+
 var secretsProviderCmd = &cobra.Command{
 	Use:   "secrets-provider [provider]",
 	Short: "Set the secrets provider type",
@@ -69,6 +76,7 @@ func init() {
 	configCmd.AddCommand(autoDiscoveryCmd)
 	configCmd.AddCommand(registerClientCmd)
 	configCmd.AddCommand(removeClientCmd)
+	configCmd.AddCommand(listRegisteredClientsCmd)
 }
 
 func secretsProviderCmdFunc(cmd *cobra.Command, args []string) error {
@@ -194,5 +202,24 @@ func removeClientCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	cmd.Printf("Successfully removed client: %s\n", client)
+	return nil
+}
+
+func listRegisteredClientsCmdFunc(cmd *cobra.Command, _ []string) error {
+	// Get the current config
+	cfg := config.GetConfig()
+
+	// Check if there are any registered clients
+	if len(cfg.Clients.RegisteredClients) == 0 {
+		cmd.Println("No clients are currently registered.")
+		return nil
+	}
+
+	// Print the list of registered clients
+	cmd.Println("Registered clients:")
+	for _, client := range cfg.Clients.RegisteredClients {
+		cmd.Printf("  - %s\n", client)
+	}
+
 	return nil
 }

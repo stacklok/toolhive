@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -33,7 +34,7 @@ func TestMiddleware(t *testing.T) {
 		name             string
 		method           string
 		params           map[string]interface{}
-		claims           map[string]interface{}
+		claims           jwt.MapClaims
 		expectStatus     int
 		expectAuthorized bool
 	}{
@@ -46,7 +47,7 @@ func TestMiddleware(t *testing.T) {
 					"location": "New York",
 				},
 			},
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 			},
@@ -64,7 +65,7 @@ func TestMiddleware(t *testing.T) {
 					"value2":    10,
 				},
 			},
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 			},
@@ -77,7 +78,7 @@ func TestMiddleware(t *testing.T) {
 			params: map[string]interface{}{
 				"name": "greeting",
 			},
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 			},
@@ -90,7 +91,7 @@ func TestMiddleware(t *testing.T) {
 			params: map[string]interface{}{
 				"name": "farewell",
 			},
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 			},
@@ -103,7 +104,7 @@ func TestMiddleware(t *testing.T) {
 			params: map[string]interface{}{
 				"uri": "data",
 			},
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 			},
@@ -116,7 +117,7 @@ func TestMiddleware(t *testing.T) {
 			params: map[string]interface{}{
 				"uri": "secret",
 			},
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 			},
@@ -127,7 +128,7 @@ func TestMiddleware(t *testing.T) {
 			name:   "Ping is always allowed",
 			method: "ping",
 			params: map[string]interface{}{},
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 			},
@@ -150,7 +151,7 @@ func TestMiddleware(t *testing.T) {
 					"version": "1.0.0",
 				},
 			},
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 			},

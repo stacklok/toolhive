@@ -20,6 +20,7 @@ func newSecretCommand() *cobra.Command {
 		newSecretGetCommand(),
 		newSecretDeleteCommand(),
 		newSecretListCommand(),
+		newSecretResetKeyringCommand(),
 	)
 
 	return cmd
@@ -166,6 +167,21 @@ func newSecretListCommand() *cobra.Command {
 			for _, name := range secretNames {
 				cmd.Printf("  - %s\n", name)
 			}
+		},
+	}
+}
+
+func newSecretResetKeyringCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset-keyring",
+		Short: "Reset the keyring secret",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			if err := secrets.ResetKeyringSecret(); err != nil {
+				cmd.Printf("Failed to reset keyring secret: %v\n", err)
+				return
+			}
+			cmd.Println("Successfully reset keyring secret")
 		},
 	}
 }

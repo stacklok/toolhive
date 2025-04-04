@@ -110,3 +110,8 @@ func readPasswordStdin() ([]byte, error) {
 	}
 	return password, nil
 }
+
+// ResetKeyringSecret clears out the secret from the keystore (if present).
+func ResetKeyringSecret() error {
+	return keyring.DeleteAll(keyringService)
+}

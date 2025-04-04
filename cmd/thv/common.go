@@ -51,7 +51,12 @@ func GetSecretsProviderType(_ *cobra.Command) (secrets.ProviderType, error) {
 }
 
 // NeedSecretsPassword returns true if the secrets provider requires a password.
-func NeedSecretsPassword(cmd *cobra.Command) bool {
+func NeedSecretsPassword(cmd *cobra.Command, secretOptions []string) bool {
+	// If the user did not ask for any secrets, then don't attempt to instantiate
+	// the secrets manager.
+	if len(secretOptions) == 0 {
+		return false
+	}
 	// Ignore err - if the flag is not set, it's not needed.
 	providerType, _ := GetSecretsProviderType(cmd)
 	return providerType == secrets.EncryptedType

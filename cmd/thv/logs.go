@@ -2,13 +2,12 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/container"
-	"github.com/stacklok/vibetool/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/labels"
 )
 
 func newLogsCommand() *cobra.Command {
@@ -43,7 +42,7 @@ func newLogsCommand() *cobra.Command {
 			var containerID string
 			for _, c := range containers {
 				// Check if the container is managed by Vibe Tool
-				if !labels.IsVibeToolContainer(c.Labels) {
+				if !labels.IsToolHiveContainer(c.Labels) {
 					continue
 				}
 
@@ -65,8 +64,12 @@ func newLogsCommand() *cobra.Command {
 				return
 			}
 
-			logs, _ := runtime.ContainerLogs(ctx, containerID)
-			cmd.Println(fmt.Sprintf("%s", logs))
+			logs, err := runtime.ContainerLogs(ctx, containerID)
+			if err != nil {
+				cmd.Printf("failed to get container logs: %v", err)
+				return
+			}
+			cmd.Println(logs)
 		},
 	}
 }

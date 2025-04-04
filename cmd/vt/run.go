@@ -32,6 +32,7 @@ var (
 	runName              string
 	runPort              int
 	runTargetPort        int
+	runTargetHost        string
 	runPermissionProfile string
 	runEnv               []string
 	runForeground        bool
@@ -45,6 +46,11 @@ func init() {
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
 	runCmd.Flags().IntVar(&runTargetPort, "target-port", 0, "Port for the container to expose (only applicable to SSE transport)")
+	runCmd.Flags().StringVar(
+		&runTargetHost,
+		"target-host",
+		"localhost",
+		"Host to forward traffic to (only applicable to SSE transport)")
 	runCmd.Flags().StringVar(
 		&runPermissionProfile,
 		"permission-profile",
@@ -117,6 +123,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runSecrets,
 		runAuthzConfig,
 		runPermissionProfile,
+		runTargetHost,
 		oidcIssuer,
 		oidcAudience,
 		oidcJwksURL,
@@ -153,7 +160,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Configure the RunConfig with transport, ports, permissions, etc.
-	if err := configureRunConfig(cmd, config, runTransport, runPort, runTargetPort, runEnv); err != nil {
+	if err := configureRunConfig(cmd, config, runTransport, runPort, runTargetPort, runTargetHost, runEnv); err != nil {
 		return err
 	}
 

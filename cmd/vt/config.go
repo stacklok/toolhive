@@ -42,7 +42,8 @@ var registerClientCmd = &cobra.Command{
 	Long: `Register a client for MCP server configuration.
 Valid clients are:
   - roo-code: The RooCode extension for VSCode
-  - cursor: The Cursor editor`,
+  - cursor: The Cursor editor
+  - vscode-insider: The Visual Studio Code Insider editor`,
 	Args: cobra.ExactArgs(1),
 	RunE: registerClientCmdFunc,
 }
@@ -53,7 +54,8 @@ var removeClientCmd = &cobra.Command{
 	Long: `Remove a client from MCP server configuration.
 Valid clients are:
   - roo-code: The RooCode extension for VSCode
-  - cursor: The Cursor editor`,
+  - cursor: The Cursor editor
+  - vscode-insider: The Visual Studio Code Insider editor`,
 	Args: cobra.ExactArgs(1),
 	RunE: removeClientCmdFunc,
 }
@@ -129,10 +131,10 @@ func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch client {
-	case "roo-code", "cursor":
+	case "roo-code", "cursor", "vscode-insider":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor)", client)
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode-insider)", client)
 	}
 
 	// Get the current config
@@ -162,10 +164,10 @@ func removeClientCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch client {
-	case "roo-code", "cursor":
+	case "roo-code", "cursor", "vscode-insider":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor)", client)
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode-insider)", client)
 	}
 
 	// Get the current config

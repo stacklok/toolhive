@@ -1,9 +1,9 @@
-# Contributing to toolhive <!-- omit from toc -->
+# Contributing to ToolHive <!-- omit from toc -->
 
-First off, thank you for taking the time to contribute to toolhive! :+1: :tada:
-toolhive is released under the Apache 2.0 license. If you would like to
+First off, thank you for taking the time to contribute to ToolHive! :+1: :tada:
+ToolHive is released under the Apache 2.0 license. If you would like to
 contribute something or want to hack on the code, this document should help you
-get started. You can find some hints for starting development in toolhive's
+get started. You can find some hints for starting development in ToolHive's
 [README](https://github.com/stacklok/toolhive/blob/main/README.md).
 
 ## Table of contents <!-- omit from toc -->
@@ -27,7 +27,7 @@ report unacceptable behavior to
 
 ## Reporting security vulnerabilities
 
-If you think you have found a security vulnerability in toolhive please DO NOT
+If you think you have found a security vulnerability in ToolHive please DO NOT
 disclose it publicly until we've had a chance to fix it. Please don't report
 security vulnerabilities using GitHub issues; instead, please follow this
 [process](https://github.com/stacklok/toolhive/blob/main/SECURITY.md)
@@ -38,7 +38,7 @@ security vulnerabilities using GitHub issues; instead, please follow this
 
 We use GitHub issues to track bugs and enhancements. If you have a general usage
 question, please ask in
-[toolhive's discussion forum](https://discord.gg/stacklok).
+[ToolHive's discussion forum](https://discord.gg/stacklok).
 
 If you are reporting a bug, please help to speed up problem diagnosis by
 providing as much information as possible. Ideally, that would include a small
@@ -53,14 +53,14 @@ are a great place to start!
 ### Pull request process
 
 - Create an issue outlining the fix or feature.
-- Fork the toolhive repository to your own GitHub account and clone it locally.
+- Fork the ToolHive repository to your own GitHub account and clone it locally.
 - Hack on your changes.
 - Correctly format your commit messages, see
   [Commit message guidelines](#commit-message-guidelines) below.
 - Open a PR by ensuring the title and its description reflect the content of the
   PR.
 - Ensure that CI passes, if it fails, fix the failures.
-- Every pull request requires a review from the core toolhive team before
+- Every pull request requires a review from the core ToolHive team before
   merging.
 - Once approved, all of your commits will be squashed into a single commit with
   your PR title.

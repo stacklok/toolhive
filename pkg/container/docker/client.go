@@ -497,28 +497,6 @@ func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runt
 	}, nil
 }
 
-// GetContainerIP gets container IP address
-func (c *Client) GetContainerIP(ctx context.Context, containerID string) (string, error) {
-	// Inspect container
-	info, err := c.client.ContainerInspect(ctx, containerID)
-	if err != nil {
-		// Check if the error is because the container doesn't exist
-		if client.IsErrNotFound(err) {
-			return "", NewContainerError(ErrContainerNotFound, containerID, "container not found")
-		}
-		return "", NewContainerError(err, containerID, fmt.Sprintf("failed to inspect container: %v", err))
-	}
-
-	// Get IP address from the default network
-	for _, netInfo := range info.NetworkSettings.Networks {
-		if netInfo.IPAddress != "" {
-			return netInfo.IPAddress, nil
-		}
-	}
-
-	return "", NewContainerError(fmt.Errorf("no IP address found"), containerID, "container has no IP address")
-}
-
 // readCloserWrapper wraps an io.Reader to implement io.ReadCloser
 type readCloserWrapper struct {
 	reader io.Reader

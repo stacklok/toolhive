@@ -60,10 +60,6 @@ func (*mockRuntime) GetContainerInfo(_ context.Context, _ string) (rt.ContainerI
 	return rt.ContainerInfo{}, nil
 }
 
-func (*mockRuntime) GetContainerIP(_ context.Context, _ string) (string, error) {
-	return "127.0.0.1", nil
-}
-
 func (*mockRuntime) AttachContainer(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, error) {
 	return nil, nil, nil
 }

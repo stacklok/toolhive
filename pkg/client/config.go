@@ -34,6 +34,12 @@ func IsYAML(ext string) bool {
 	return ext == YAMLExt || ext == YMLExt
 }
 
+// TODO: This type could be removed with more refactoring.
+type pathAndEditor struct {
+	Path   string
+	Editor ConfigEditor
+}
+
 // MCPClient is an enum of supported MCP clients.
 type MCPClient string
 
@@ -42,7 +48,8 @@ const (
 	RooCode MCPClient = "roo-code"
 	// Cursor represents the Cursor editor.
 	Cursor MCPClient = "cursor"
-	//Copilot MCPClient = "copilot"
+	// VSCodeInsider represents the VSCode Insider editor.
+	VSCodeInsider MCPClient = "vscode-insider"
 )
 
 // mcpClientConfig represents a configuration path for a supported MCP client.
@@ -51,6 +58,7 @@ type mcpClientConfig struct {
 	Description    string
 	RelPath        []string
 	PlatformPrefix map[string][]string
+	Editor         ConfigEditor
 }
 
 var supportedClientIntegrations = []mcpClientConfig{
@@ -64,11 +72,25 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"linux":  {".config"},
 			"darwin": {"Library", "Application Support"},
 		},
+		Editor: &StandardConfigEditor{},
+	},
+	{
+		ClientType:  VSCodeInsider,
+		Description: "VSCode Insider editor",
+		RelPath: []string{
+			"Code - Insiders", "User", "settings.json",
+		},
+		PlatformPrefix: map[string][]string{
+			"linux":  {".config"},
+			"darwin": {"Library", "Application Support"},
+		},
+		Editor: &VSCodeConfigEditor{},
 	},
 	{
 		ClientType:  Cursor,
 		Description: "Cursor editor",
 		RelPath:     []string{".cursor", "mcp.json"},
+		Editor:      &StandardConfigEditor{},
 	},
 }
 
@@ -76,6 +98,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 type ConfigFile struct {
 	Path     string
 	Contents map[string]interface{}
+	Editor   ConfigEditor
 }
 
 // MCPServerConfig represents an MCP server configuration in a client config file
@@ -109,9 +132,11 @@ func FindClientConfigs() ([]ConfigFile, error) {
 
 	var configs []ConfigFile
 	// Check each path
-	for _, path := range configPaths {
-		clientConfig, err := readConfigFile(path)
+	for _, pe := range configPaths {
+		clientConfig, err := readConfigFile(pe.Path)
 		if err == nil {
+			// ugly hack, refactor away in future.
+			clientConfig.Editor = pe.Editor
 			configs = append(configs, clientConfig)
 		}
 	}
@@ -231,7 +256,7 @@ func (c *ConfigFile) Save() error {
 
 // SaveWithLock safely updates the MCP server configuration in the file
 // It acquires a lock, reads the latest content, applies the change, and saves the file
-func (c *ConfigFile) SaveWithLock(serverName, url string) error {
+func (c *ConfigFile) SaveWithLock(serverName, url string, editor ConfigEditor) error {
 	// Create a lock file
 	fileLock := flock.New(c.Path + ".lock")
 
@@ -256,7 +281,7 @@ func (c *ConfigFile) SaveWithLock(serverName, url string) error {
 	}
 
 	// Apply our change to the latest content
-	if err := latestConfig.UpdateMCPServerConfig(serverName, url); err != nil {
+	if err := editor.AddServer(&latestConfig, serverName, url); err != nil {
 		return fmt.Errorf("failed to update latest config: %w", err)
 	}
 
@@ -297,8 +322,8 @@ func GenerateMCPServerURL(host string, port int, containerName string) string {
 	return fmt.Sprintf("http://%s:%d%s#%s", host, port, ssecommon.HTTPSSEEndpoint, containerName)
 }
 
-func getSupportedPaths(filters []MCPClient) ([]string, error) {
-	var paths []string
+func getSupportedPaths(filters []MCPClient) ([]pathAndEditor, error) {
+	var paths []pathAndEditor
 
 	// Get home directory
 	home, err := os.UserHomeDir()
@@ -316,7 +341,10 @@ func getSupportedPaths(filters []MCPClient) ([]string, error) {
 			path = append(path, prefix...)
 		}
 		path = append(path, cfg.RelPath...)
-		paths = append(paths, filepath.Join(path...))
+		paths = append(paths, pathAndEditor{
+			Path:   filepath.Join(path...),
+			Editor: cfg.Editor,
+		})
 	}
 
 	return paths, nil

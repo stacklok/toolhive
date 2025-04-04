@@ -54,7 +54,7 @@ func rmCmdFunc(_ *cobra.Command, args []string) error {
 	var containerLabels map[string]string
 	for _, c := range containers {
 		// Check if the container is managed by ToolHive
-		if !labels.IstoolhiveContainer(c.Labels) {
+		if !labels.IsToolHiveContainer(c.Labels) {
 			continue
 		}
 

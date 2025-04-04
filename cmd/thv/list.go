@@ -69,25 +69,25 @@ func listCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Filter containers to only show those managed by ToolHive
-	var toolhiveContainers []rt.ContainerInfo
+	var toolHiveContainers []rt.ContainerInfo
 	for _, c := range containers {
-		if labels.IstoolhiveContainer(c.Labels) {
-			toolhiveContainers = append(toolhiveContainers, c)
+		if labels.IsToolHiveContainer(c.Labels) {
+			toolHiveContainers = append(toolHiveContainers, c)
 		}
 	}
 
 	// Filter containers if not showing all
 	if !listAll {
 		var runningContainers []rt.ContainerInfo
-		for _, c := range toolhiveContainers {
+		for _, c := range toolHiveContainers {
 			if c.State == "running" {
 				runningContainers = append(runningContainers, c)
 			}
 		}
-		toolhiveContainers = runningContainers
+		toolHiveContainers = runningContainers
 	}
 
-	if len(toolhiveContainers) == 0 {
+	if len(toolHiveContainers) == 0 {
 		fmt.Println("No MCP servers found")
 		return nil
 	}
@@ -96,11 +96,11 @@ func listCmdFunc(_ *cobra.Command, _ []string) error {
 	switch listFormat {
 	//nolint:goconst
 	case "json":
-		return printJSONOutput(toolhiveContainers)
+		return printJSONOutput(toolHiveContainers)
 	case "mcpservers":
-		return printMCPServersOutput(toolhiveContainers)
+		return printMCPServersOutput(toolHiveContainers)
 	default:
-		printTextOutput(toolhiveContainers)
+		printTextOutput(toolHiveContainers)
 		return nil
 	}
 }

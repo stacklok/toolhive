@@ -43,13 +43,13 @@ func AddStandardLabels(labels map[string]string, containerName, containerBaseNam
 	labels[LabelToolType] = "mcp"
 }
 
-// FormattoolhiveFilter formats a filter for ToolHive containers
-func FormattoolhiveFilter() string {
+// FormatToolHiveFilter formats a filter for ToolHive containers
+func FormatToolHiveFilter() string {
 	return fmt.Sprintf("%s=true", LabelEnabled)
 }
 
-// IstoolhiveContainer checks if a container is managed by ToolHive
-func IstoolhiveContainer(labels map[string]string) bool {
+// IsToolHiveContainer checks if a container is managed by ToolHive
+func IsToolHiveContainer(labels map[string]string) bool {
 	value, ok := labels[LabelEnabled]
 	return ok && strings.ToLower(value) == "true"
 }

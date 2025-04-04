@@ -40,7 +40,7 @@ func findContainerID(ctx context.Context, runtime rt.Runtime, containerName stri
 	// Find the container with the given name
 	for _, c := range containers {
 		// Check if the container is managed by ToolHive
-		if !labels.IstoolhiveContainer(c.Labels) {
+		if !labels.IsToolHiveContainer(c.Labels) {
 			continue
 		}
 

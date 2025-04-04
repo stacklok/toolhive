@@ -108,6 +108,10 @@ type Config struct {
 	// This is only applicable to SSE transport.
 	TargetPort int
 
+	// TargetHost is the host to forward traffic to.
+	// This is only applicable to SSE transport.
+	TargetHost string
+
 	// Host is the host to use for network transports.
 	Host string
 

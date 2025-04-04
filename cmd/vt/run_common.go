@@ -74,6 +74,11 @@ func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
 		detachedArgs = append(detachedArgs, "--target-port", fmt.Sprintf("%d", options.TargetPort))
 	}
 
+	// Add target host if it's not the default
+	if options.TargetHost != "localhost" {
+		detachedArgs = append(detachedArgs, "--target-host", options.TargetHost)
+	}
+
 	// Pass the permission profile to the detached process
 	if options.PermissionProfile != nil {
 		// We need to create a temporary file for the permission profile
@@ -188,6 +193,7 @@ func configureRunConfig(
 	transport string,
 	port int,
 	targetPort int,
+	targetHost string,
 	envVarStrings []string,
 ) error {
 	var err error
@@ -220,10 +226,13 @@ func configureRunConfig(
 		return err
 	}
 
-	// Configure ports
+	// Configure ports and target host
 	if _, err = config.WithPorts(port, targetPort); err != nil {
 		return err
 	}
+
+	// Set target host
+	config.TargetHost = targetHost
 
 	// Set permission profile (mandatory)
 	if _, err = config.ParsePermissionProfile(); err != nil {

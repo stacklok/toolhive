@@ -99,7 +99,7 @@ func readPasswordStdin() ([]byte, error) {
 	fmt.Print("Enter a password for secrets encryption and decryption: ")
 	password, err := term.ReadPassword(int(os.Stdin.Fd()))
 	// Start new line after receiving password to ensure errors are printed correctly.
-	fmt.Printf("\n")
+	fmt.Println()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read password: %w", err)
 	}

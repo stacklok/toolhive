@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"syscall"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -28,15 +31,32 @@ func newSecretCommand() *cobra.Command {
 
 func newSecretSetCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "set <name> <value>",
+		Use:   "set <name>",
 		Short: "Set a secret",
-		Args:  cobra.ExactArgs(2),
+		Long:  "Set a secret with the given name. The secret value will be read from the terminal.",
+		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			name, value := args[0], args[1]
+			name := args[0]
 
 			// Validate input
 			if name == "" {
 				cmd.Println("Error: Secret name cannot be empty")
+				return
+			}
+
+			// Prompt for the secret value
+			fmt.Print("Enter secret value (input will be hidden): ")
+			valueBytes, err := term.ReadPassword(int(syscall.Stdin))
+			fmt.Println() // Add a newline after the hidden input
+
+			if err != nil {
+				cmd.Printf("Error reading secret from terminal: %v\n", err)
+				return
+			}
+
+			value := string(valueBytes)
+			if value == "" {
+				cmd.Println("Error: Secret value cannot be empty")
 				return
 			}
 

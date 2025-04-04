@@ -295,32 +295,6 @@ func (c *Client) CreateContainer(ctx context.Context,
 	return createdStatefulSet.Name, nil
 }
 
-// GetContainerIP implements runtime.Runtime.
-func (c *Client) GetContainerIP(ctx context.Context, containerID string) (string, error) {
-	// In Kubernetes, containerID is the statefulset name
-	namespace := getCurrentNamespace()
-
-	// Get the pods associated with this statefulset
-	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app=%s", containerID),
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to list pods for statefulset %s: %w", containerID, err)
-	}
-
-	if len(pods.Items) == 0 {
-		return "", fmt.Errorf("no pods found for statefulset %s", containerID)
-	}
-
-	// Use the first pod's IP
-	podIP := pods.Items[0].Status.PodIP
-	if podIP == "" {
-		return "", fmt.Errorf("pod for statefulset %s has no IP address", containerID)
-	}
-
-	return podIP, nil
-}
-
 // GetContainerInfo implements runtime.Runtime.
 func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runtime.ContainerInfo, error) {
 	// In Kubernetes, containerID is the statefulset name

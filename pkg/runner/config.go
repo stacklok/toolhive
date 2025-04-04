@@ -7,16 +7,16 @@ import (
 	"io"
 	"strings"
 
-	"github.com/stacklok/vibetool/pkg/auth"
-	"github.com/stacklok/vibetool/pkg/authz"
-	"github.com/stacklok/vibetool/pkg/container"
-	rt "github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/environment"
-	"github.com/stacklok/vibetool/pkg/labels"
-	"github.com/stacklok/vibetool/pkg/networking"
-	"github.com/stacklok/vibetool/pkg/permissions"
-	"github.com/stacklok/vibetool/pkg/secrets"
-	"github.com/stacklok/vibetool/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/container"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/environment"
+	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // RunConfig contains all the configuration needed to run an MCP server

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# This workflow compiles vibetool using a SLSA3 compliant
+# This workflow compiles toolhive using a SLSA3 compliant
 # build and then verifies the provenance of the built artifacts.
 # It releases the following architectures: amd64, arm64, and armv7 on Linux,
 # Windows, and macOS.

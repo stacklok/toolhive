@@ -13,7 +13,7 @@ import (
 
 const (
 	// DefaultAppName is the default application name used for XDG paths
-	DefaultAppName = "vibetool"
+	DefaultAppName = "toolhive"
 
 	// RunConfigsDir is the directory name for storing run configurations
 	RunConfigsDir = "runconfigs"

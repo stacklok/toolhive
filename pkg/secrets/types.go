@@ -1,4 +1,4 @@
-// Package secrets contains the secrets management logic for Vibe Tool.
+// Package secrets contains the secrets management logic for ToolHive.
 package secrets
 
 import (

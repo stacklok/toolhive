@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sync/syncmap"
 
-	"github.com/stacklok/vibetool/pkg/secrets/aes"
+	"github.com/stacklok/toolhive/pkg/secrets/aes"
 )
 
 // EncryptedManager stores secrets in an encrypted file.

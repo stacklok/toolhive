@@ -2,25 +2,25 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: vibetool
+  name: toolhive
   labels:
-    app: vibetool
-    app.kubernetes.io/name: vibetool
+    app: toolhive
+    app.kubernetes.io/name: toolhive
 spec:
-  serviceName: vibetool
+  serviceName: toolhive
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: vibetool
+      app.kubernetes.io/name: toolhive
   template:
     metadata:
       labels:
-        app: vibetool
-        app.kubernetes.io/name: vibetool
+        app: toolhive
+        app.kubernetes.io/name: toolhive
     spec:
       containers:
-      - name: vibetool
-        image: ko://github.com/stacklok/vibetool/cmd/vt
+      - name: toolhive
+        image: ko://github.com/stacklok/toolhive/cmd/thv
         args: ["run", "--foreground=true", "--port=8080", "--name=mcp-fetch", "docker.io/mcp/fetch"]
         resources:
           limits:
@@ -37,10 +37,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: vibetool
+  name: toolhive
 spec:
   selector:
-    app.kubernetes.io/name: vibetool
+    app.kubernetes.io/name: toolhive
   ports:
     - protocol: TCP
       appProtocol: kubernetes.io/h2c

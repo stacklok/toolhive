@@ -1,4 +1,4 @@
-// Package main provides the entry point for the vibetool command-line application.
+// Package main provides the entry point for the toolhive command-line application.
 // This file contains the implementation of the 'registry' command.
 package main
 
@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 var registryCmd = &cobra.Command{
@@ -238,7 +238,7 @@ func printTextServerInfo(name string, server *registry.Server) {
 
 	// Print example command
 	fmt.Println("\nExample Command:")
-	fmt.Printf("  vt run %s\n", name)
+	fmt.Printf("  thv run %s\n", name)
 }
 
 // truncateString truncates a string to the specified length and adds "..." if truncated

@@ -12,7 +12,7 @@ jobs:
       id-token: write
 
     env:
-      BASE_REPO: "ghcr.io/stacklok/vibetool"
+      BASE_REPO: "ghcr.io/stacklok/toolhive"
 
     steps:
       - name: Checkout repository
@@ -52,8 +52,8 @@ jobs:
       - name: Build and Push Image to GHCR
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
-          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare -t $TAG ./cmd/vt \
-            --image-label=org.opencontainers.image.source=https://github.com/stacklok/vibetool,org.opencontainers.image.title="Vibetool",org.opencontainers.image.vendor=Stacklok
+          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare -t $TAG ./cmd/thv \
+            --image-label=org.opencontainers.image.source=https://github.com/stacklok/toolhive,org.opencontainers.image.title="toolhive",org.opencontainers.image.vendor=Stacklok
 
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate

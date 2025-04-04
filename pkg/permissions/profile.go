@@ -1,5 +1,5 @@
 // Package permissions provides utilities for managing container permissions
-// and permission profiles for the vibetool application.
+// and permission profiles for the toolhive application.
 package permissions
 
 import (

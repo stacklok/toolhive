@@ -3,8 +3,8 @@
 package transport
 
 import (
-	"github.com/stacklok/vibetool/pkg/transport/errors"
-	"github.com/stacklok/vibetool/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/transport/errors"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // Factory creates transports

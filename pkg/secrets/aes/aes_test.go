@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/vibetool/pkg/secrets/aes"
+	"github.com/stacklok/toolhive/pkg/secrets/aes"
 )
 
 func TestGCMEncrypt(t *testing.T) {

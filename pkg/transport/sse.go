@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/stacklok/vibetool/pkg/container"
-	rt "github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/networking"
-	"github.com/stacklok/vibetool/pkg/permissions"
-	"github.com/stacklok/vibetool/pkg/transport/errors"
-	"github.com/stacklok/vibetool/pkg/transport/proxy/transparent"
-	"github.com/stacklok/vibetool/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/container"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/transport/errors"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 const (

@@ -1,5 +1,5 @@
 // Package labels provides utilities for managing container labels
-// used by the vibetool application.
+// used by the toolhive application.
 package labels
 
 import (
@@ -8,26 +8,26 @@ import (
 )
 
 const (
-	// LabelPrefix is the prefix for all Vibe Tool labels
-	LabelPrefix = "vibetool"
+	// LabelPrefix is the prefix for all ToolHive labels
+	LabelPrefix = "toolhive"
 
-	// LabelEnabled is the label that indicates a container is managed by Vibe Tool
-	LabelEnabled = "vibetool"
+	// LabelEnabled is the label that indicates a container is managed by ToolHive
+	LabelEnabled = "toolhive"
 
 	// LabelName is the label that contains the container name
-	LabelName = "vibetool-name"
+	LabelName = "toolhive-name"
 
 	// LabelBaseName is the label that contains the base container name (without timestamp)
-	LabelBaseName = "vibetool-basename"
+	LabelBaseName = "toolhive-basename"
 
 	// LabelTransport is the label that contains the transport mode
-	LabelTransport = "vibetool-transport"
+	LabelTransport = "toolhive-transport"
 
 	// LabelPort is the label that contains the port
-	LabelPort = "vibetool-port"
+	LabelPort = "toolhive-port"
 
 	// LabelToolType is the label that indicates the type of tool
-	LabelToolType = "vibetool-tool-type"
+	LabelToolType = "toolhive-tool-type"
 )
 
 // AddStandardLabels adds standard labels to a container
@@ -43,13 +43,13 @@ func AddStandardLabels(labels map[string]string, containerName, containerBaseNam
 	labels[LabelToolType] = "mcp"
 }
 
-// FormatVibeToolFilter formats a filter for Vibe Tool containers
-func FormatVibeToolFilter() string {
+// FormatToolHiveFilter formats a filter for ToolHive containers
+func FormatToolHiveFilter() string {
 	return fmt.Sprintf("%s=true", LabelEnabled)
 }
 
-// IsVibeToolContainer checks if a container is managed by Vibe Tool
-func IsVibeToolContainer(labels map[string]string) bool {
+// IsToolHiveContainer checks if a container is managed by ToolHive
+func IsToolHiveContainer(labels map[string]string) bool {
 	value, ok := labels[LabelEnabled]
 	return ok && strings.ToLower(value) == "true"
 }

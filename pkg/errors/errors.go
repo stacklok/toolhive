@@ -1,4 +1,4 @@
-// Package errors provides error types and utilities for the vibetool application.
+// Package errors provides error types and utilities for the toolhive application.
 package errors
 
 import (

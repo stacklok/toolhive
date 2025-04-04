@@ -9,11 +9,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/stacklok/vibetool/pkg/auth"
-	"github.com/stacklok/vibetool/pkg/client"
-	"github.com/stacklok/vibetool/pkg/process"
-	"github.com/stacklok/vibetool/pkg/transport"
-	"github.com/stacklok/vibetool/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // Runner is responsible for running an MCP server with the provided configuration
@@ -130,7 +130,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Check if we're a detached process
-	if os.Getenv("VIBETOOL_DETACHED") == "1" {
+	if os.Getenv("TOOLHIVE_DETACHED") == "1" {
 		// We're a detached process running in foreground mode
 		// Write the PID to a file so the stop command can kill the process
 		if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {

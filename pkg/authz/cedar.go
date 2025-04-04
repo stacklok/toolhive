@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -114,6 +115,11 @@ func NewCedarAuthorizer(config CedarAuthorizerConfig) (*CedarAuthorizer, error) 
 		}
 	}
 
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Created Cedar authorizer with %d policies and %d entities",
+			len(config.Policies), len(authorizer.entities))
+	}
+
 	return authorizer, nil
 }
 
@@ -139,6 +145,11 @@ func (a *CedarAuthorizer) UpdatePolicies(policies []string) error {
 	}
 
 	a.policySet = newPolicySet
+
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Updated Cedar policies: %d policies", len(policies))
+	}
+
 	return nil
 }
 
@@ -153,6 +164,11 @@ func (a *CedarAuthorizer) UpdateEntities(entitiesJSON string) error {
 	}
 
 	a.entities = newEntities
+
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Updated Cedar entities: %d entities", len(newEntities))
+	}
+
 	return nil
 }
 
@@ -162,6 +178,10 @@ func (a *CedarAuthorizer) AddEntity(entity cedar.Entity) {
 	defer a.mu.Unlock()
 
 	a.entities[entity.UID] = entity
+
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Added entity: %v", entity.UID)
+	}
 }
 
 // RemoveEntity removes an entity from the authorizer's entity store.
@@ -170,6 +190,10 @@ func (a *CedarAuthorizer) RemoveEntity(uid cedar.EntityUID) {
 	defer a.mu.Unlock()
 
 	delete(a.entities, uid)
+
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Removed entity: %v", uid)
+	}
 }
 
 // GetEntity retrieves an entity from the authorizer's entity store.
@@ -194,6 +218,7 @@ func (a *CedarAuthorizer) GetEntityFactory() *EntityFactory {
 // - resource: The object being accessed (e.g., "Tool::weather")
 // - context: Additional information about the request
 // - entities: Optional Cedar entity map with attributes
+//nolint:gocyclo // This function is complex but manageable
 func (a *CedarAuthorizer) IsAuthorized(
 	principal, action, resource string,
 	contextMap map[string]interface{},
@@ -202,31 +227,54 @@ func (a *CedarAuthorizer) IsAuthorized(
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] IsAuthorized called: principal=%s, action=%s, resource=%s",
+			principal, action, resource)
+	}
+
 	if principal == "" {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Authorization failed: missing principal")
+		}
 		return false, ErrMissingPrincipal
 	}
 
 	if action == "" {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Authorization failed: missing action")
+		}
 		return false, ErrMissingAction
 	}
 
 	if resource == "" {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Authorization failed: missing resource")
+		}
 		return false, ErrMissingResource
 	}
 
 	// Parse principal, action, and resource
 	principalType, principalID, err := parseCedarEntityID(principal)
 	if err != nil {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Authorization failed: invalid principal format: %v", err)
+		}
 		return false, err
 	}
 
 	actionType, actionID, err := parseCedarEntityID(action)
 	if err != nil {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Authorization failed: invalid action format: %v", err)
+		}
 		return false, err
 	}
 
 	resourceType, resourceID, err := parseCedarEntityID(resource)
 	if err != nil {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Authorization failed: invalid resource format: %v", err)
+		}
 		return false, err
 	}
 
@@ -258,14 +306,35 @@ func (a *CedarAuthorizer) IsAuthorized(
 		entityMap = mergedEntities
 	}
 
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Checking authorization with %d entities", len(entityMap))
+	}
+
 	// Check authorization
 	decision, diagnostic := a.policySet.IsAuthorized(entityMap, req)
+
 	// Cedar's IsAuthorized returns a Decision and a Diagnostic
 	// Check if the Diagnostic contains any errors
 	if len(diagnostic.Errors) > 0 {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Authorization error: %v", diagnostic.Errors)
+		}
 		return false, fmt.Errorf("authorization error: %v", diagnostic.Errors)
 	}
-	return decision == cedar.Allow, nil
+
+	authorized := decision == cedar.Allow
+
+	if DebugLoggingEnabled {
+		if authorized {
+			log.Printf("[AUTHZ-DEBUG] Authorization successful: principal=%s, action=%s, resource=%s",
+				principal, action, resource)
+		} else {
+			log.Printf("[AUTHZ-DEBUG] Authorization denied: principal=%s, action=%s, resource=%s",
+				principal, action, resource)
+		}
+	}
+
+	return authorized, nil
 }
 
 // extractClaimsFromContext extracts JWT claims from the context.
@@ -344,6 +413,10 @@ func (a *CedarAuthorizer) authorizeToolCall(
 	clientID, toolName string,
 	contextMap map[string]interface{},
 ) (bool, error) {
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Authorizing tool call: clientID=%s, toolName=%s", clientID, toolName)
+	}
+
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
 
@@ -366,6 +439,9 @@ func (a *CedarAuthorizer) authorizeToolCall(
 	// Create Cedar entities
 	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, attributes)
 	if err != nil {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Failed to create Cedar entities: %v", err)
+		}
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
 
@@ -380,6 +456,10 @@ func (a *CedarAuthorizer) authorizePromptGet(
 	clientID, promptName string,
 	contextMap map[string]interface{},
 ) (bool, error) {
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Authorizing prompt get: clientID=%s, promptName=%s", clientID, promptName)
+	}
+
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
 
@@ -402,6 +482,9 @@ func (a *CedarAuthorizer) authorizePromptGet(
 	// Create Cedar entities
 	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, attributes)
 	if err != nil {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Failed to create Cedar entities: %v", err)
+		}
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
 
@@ -416,6 +499,10 @@ func (a *CedarAuthorizer) authorizeResourceRead(
 	clientID, resourceURI string,
 	contextMap map[string]interface{},
 ) (bool, error) {
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Authorizing resource read: clientID=%s, resourceURI=%s", clientID, resourceURI)
+	}
+
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
 
@@ -440,6 +527,9 @@ func (a *CedarAuthorizer) authorizeResourceRead(
 	// Create Cedar entities
 	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, attributes)
 	if err != nil {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Failed to create Cedar entities: %v", err)
+		}
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
 
@@ -455,6 +545,10 @@ func (a *CedarAuthorizer) authorizeFeatureList(
 	feature MCPFeature,
 	contextMap map[string]interface{},
 ) (bool, error) {
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Authorizing feature list: clientID=%s, feature=%s", clientID, feature)
+	}
+
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
 
@@ -477,6 +571,9 @@ func (a *CedarAuthorizer) authorizeFeatureList(
 	// Create Cedar entities
 	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, attributes)
 	if err != nil {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Failed to create Cedar entities: %v", err)
+		}
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
 
@@ -520,6 +617,8 @@ func sanitizeURIForCedar(uri string) string {
 // 3. Includes the JWT claims in the Cedar context
 // 4. Creates entities with appropriate attributes
 // 5. Authorizes the operation using the client ID and claims
+//
+//nolint:gocyclo // This function is complex but manageable
 func (a *CedarAuthorizer) AuthorizeWithJWTClaims(
 	ctx context.Context,
 	feature MCPFeature,
@@ -527,16 +626,32 @@ func (a *CedarAuthorizer) AuthorizeWithJWTClaims(
 	resourceID string,
 	arguments map[string]interface{},
 ) (bool, error) {
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] AuthorizeWithJWTClaims called: feature=%s, operation=%s, resourceID=%s",
+			feature, operation, resourceID)
+	}
+
 	// Extract JWT claims from the context
 	claims, ok := extractClaimsFromContext(ctx)
 	if !ok {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Failed to extract JWT claims from context")
+		}
 		return false, ErrMissingPrincipal
 	}
 
 	// Extract client ID from claims
 	clientID, ok := extractClientIDFromClaims(claims)
 	if !ok {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Failed to extract client ID from claims")
+		}
 		return false, ErrMissingPrincipal
+	}
+
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Extracted client ID: %s", clientID)
+		log.Printf("[AUTHZ-DEBUG] Claims: %+v", claims)
 	}
 
 	// Preprocess claims and arguments
@@ -550,21 +665,36 @@ func (a *CedarAuthorizer) AuthorizeWithJWTClaims(
 	switch {
 	case feature == MCPFeatureTool && operation == MCPOperationCall:
 		// Use the authorizeToolCall function for tool call operations
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Authorizing tool call: clientID=%s, toolName=%s", clientID, resourceID)
+		}
 		return a.authorizeToolCall(clientID, resourceID, contextMap)
 
 	case feature == MCPFeaturePrompt && operation == MCPOperationGet:
 		// Use the authorizePromptGet function for prompt get operations
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Authorizing prompt get: clientID=%s, promptName=%s", clientID, resourceID)
+		}
 		return a.authorizePromptGet(clientID, resourceID, contextMap)
 
 	case feature == MCPFeatureResource && operation == MCPOperationRead:
 		// Use the authorizeResourceRead function for resource read operations
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Authorizing resource read: clientID=%s, resourceURI=%s", clientID, resourceID)
+		}
 		return a.authorizeResourceRead(clientID, resourceID, contextMap)
 
 	case operation == MCPOperationList:
 		// Use the authorizeFeatureList function for list operations
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Authorizing feature list: clientID=%s, feature=%s", clientID, feature)
+		}
 		return a.authorizeFeatureList(clientID, feature, contextMap)
 
 	default:
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Unsupported feature/operation combination: %s/%s", feature, operation)
+		}
 		return false, fmt.Errorf("unsupported feature/operation combination: %s/%s", feature, operation)
 	}
 }

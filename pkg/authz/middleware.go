@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -13,6 +14,16 @@ import (
 
 	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
 )
+
+// DebugLoggingEnabled controls whether debug logging is enabled
+var DebugLoggingEnabled = true
+
+// debugLog logs a debug message if debug logging is enabled
+func debugLog(format string, args ...interface{}) {
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] "+format, args...)
+	}
+}
 
 // MCPMethodToFeatureOperation maps MCP method names to feature and operation pairs.
 var MCPMethodToFeatureOperation = map[string]struct {
@@ -36,14 +47,18 @@ var MCPMethodToFeatureOperation = map[string]struct {
 func shouldSkipInitialAuthorization(r *http.Request) bool {
 	// Skip authorization for non-POST requests and non-JSON content types
 	if r.Method != http.MethodPost || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		debugLog("Skipping initial authorization for non-POST or non-JSON request: method=%s, content-type=%s",
+			r.Method, r.Header.Get("Content-Type"))
 		return true
 	}
 
 	// Skip authorization for the SSE endpoint
 	if strings.HasSuffix(r.URL.Path, ssecommon.HTTPSSEEndpoint) {
+		debugLog("Skipping initial authorization for SSE endpoint: path=%s", r.URL.Path)
 		return true
 	}
 
+	debugLog("Initial authorization check required for: method=%s, path=%s", r.Method, r.URL.Path)
 	return false
 }
 
@@ -52,9 +67,11 @@ func shouldSkipInitialAuthorization(r *http.Request) bool {
 func shouldSkipSubsequentAuthorization(method string) bool {
 	// Skip authorization for methods that don't require it
 	if method == "ping" || method == "progress/update" || method == "initialize" {
+		debugLog("Skipping subsequent authorization for method: %s (always allowed)", method)
 		return true
 	}
 
+	debugLog("Subsequent authorization check required for method: %s", method)
 	return false
 }
 
@@ -167,6 +184,8 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 //	proxy.Start(context.Background())
 func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		debugLog("Processing request: method=%s, path=%s", r.Method, r.URL.Path)
+
 		// Check if we should skip authorization before reading the request body
 		if shouldSkipInitialAuthorization(r) {
 			next.ServeHTTP(w, r)
@@ -176,6 +195,7 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		// Read the request body
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
+			debugLog("Error reading request body: %v", err)
 			http.Error(w, fmt.Sprintf("Error reading request body: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -187,6 +207,7 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		msg, err := jsonrpc2.DecodeMessage(bodyBytes)
 		if err != nil {
 			// If we can't parse the message, let the next handler deal with it
+			debugLog("Failed to parse JSON-RPC message: %v", err)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -194,9 +215,12 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		// Skip authorization for non-request messages
 		req, ok := msg.(*jsonrpc2.Request)
 		if !ok {
+			debugLog("Skipping authorization for non-request message type: %T", msg)
 			next.ServeHTTP(w, r)
 			return
 		}
+
+		debugLog("Processing JSON-RPC request: method=%s, id=%v", req.Method, req.ID.Raw())
 
 		// Check if we should skip authorization after parsing the message
 		if shouldSkipSubsequentAuthorization(req.Method) {
@@ -208,12 +232,21 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		featureOp, ok := MCPMethodToFeatureOperation[req.Method]
 		if !ok {
 			// Unknown method, let the next handler deal with it
+			debugLog("Unknown method, skipping authorization: %s", req.Method)
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// Extract resource ID and arguments from the params
 		resourceID, arguments := extractResourceAndArguments(req.Method, req.Params)
+
+		debugLog("Authorization request details: method=%s, feature=%s, operation=%s, resourceID=%s",
+			req.Method, featureOp.Feature, featureOp.Operation, resourceID)
+
+		// Log arguments for debugging
+		if len(arguments) > 0 {
+			debugLog("Authorization request arguments: %+v", arguments)
+		}
 
 		// Authorize the request
 		authorized, err := a.AuthorizeWithJWTClaims(
@@ -226,9 +259,14 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 
 		// Handle unauthorized requests
 		if err != nil || !authorized {
+			debugLog("Authorization failed: method=%s, feature=%s, operation=%s, resourceID=%s, error=%v",
+				req.Method, featureOp.Feature, featureOp.Operation, resourceID, err)
 			handleUnauthorized(w, req.ID.Raw(), err)
 			return
 		}
+
+		debugLog("Authorization successful: method=%s, feature=%s, operation=%s, resourceID=%s",
+			req.Method, featureOp.Feature, featureOp.Operation, resourceID)
 
 		// Call the next handler
 		next.ServeHTTP(w, r)

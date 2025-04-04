@@ -2,6 +2,8 @@
 package authz
 
 import (
+	"log"
+
 	cedar "github.com/cedar-policy/cedar-go"
 )
 
@@ -26,6 +28,10 @@ func (*EntityFactory) CreatePrincipalEntity(
 		Parents:    cedar.NewEntityUIDSet(),
 		Attributes: attrs,
 		Tags:       cedar.NewRecord(cedar.RecordMap{}),
+	}
+
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Created principal entity: %s::%s", principalType, principalID)
 	}
 
 	return uid, entity
@@ -53,6 +59,10 @@ func (*EntityFactory) CreateActionEntity(
 		Tags:       cedar.NewRecord(cedar.RecordMap{}),
 	}
 
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Created action entity: %s::%s", actionType, actionID)
+	}
+
 	return uid, entity
 }
 
@@ -78,6 +88,11 @@ func (*EntityFactory) CreateResourceEntity(
 		Tags:       cedar.NewRecord(cedar.RecordMap{}),
 	}
 
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Created resource entity: %s::%s with attributes: %+v",
+			resourceType, resourceID, attributes)
+	}
+
 	return uid, entity
 }
 
@@ -86,19 +101,33 @@ func (f *EntityFactory) CreateEntitiesForRequest(
 	principal, action, resource string,
 	attributes map[string]interface{},
 ) (cedar.EntityMap, error) {
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Creating entities for request: principal=%s, action=%s, resource=%s",
+			principal, action, resource)
+	}
+
 	// Parse principal, action, and resource
 	principalType, principalID, err := parseCedarEntityID(principal)
 	if err != nil {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Failed to parse principal ID: %v", err)
+		}
 		return nil, err
 	}
 
 	actionType, actionID, err := parseCedarEntityID(action)
 	if err != nil {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Failed to parse action ID: %v", err)
+		}
 		return nil, err
 	}
 
 	resourceType, resourceID, err := parseCedarEntityID(resource)
 	if err != nil {
+		if DebugLoggingEnabled {
+			log.Printf("[AUTHZ-DEBUG] Failed to parse resource ID: %v", err)
+		}
 		return nil, err
 	}
 
@@ -116,6 +145,10 @@ func (f *EntityFactory) CreateEntitiesForRequest(
 	// Create resource entity
 	resourceUID, resourceEntity := f.CreateResourceEntity(resourceType, resourceID, attributes)
 	entities[resourceUID] = resourceEntity
+
+	if DebugLoggingEnabled {
+		log.Printf("[AUTHZ-DEBUG] Created %d entities for request", len(entities))
+	}
 
 	return entities, nil
 }

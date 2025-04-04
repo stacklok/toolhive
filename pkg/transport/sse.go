@@ -24,6 +24,7 @@ type SSETransport struct {
 	host          string
 	port          int
 	targetPort    int
+	targetHost    string
 	containerID   string
 	containerName string
 	runtime       rt.Runtime
@@ -51,10 +52,16 @@ func NewSSETransport(
 	targetPort int,
 	runtime rt.Runtime,
 	debug bool,
+	targetHost string,
 	middlewares ...types.Middleware,
 ) *SSETransport {
 	if host == "" {
 		host = LocalhostName
+	}
+
+	// If targetHost is not specified, default to localhost
+	if targetHost == "" {
+		targetHost = LocalhostName
 	}
 
 	return &SSETransport{
@@ -62,6 +69,7 @@ func NewSSETransport(
 		port:        port,
 		middlewares: middlewares,
 		targetPort:  targetPort,
+		targetHost:  targetHost,
 		runtime:     runtime,
 		debug:       debug,
 		shutdownCh:  make(chan struct{}),
@@ -93,10 +101,7 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	// Use the target port for the container's environment variables
 	envVars["MCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
 	envVars["FASTMCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
-
-	// Always use localhost for the host
-	// In a Docker bridge network, the container IP is not directly accessible from the host
-	envVars["MCP_HOST"] = LocalhostName
+	envVars["MCP_HOST"] = t.targetHost
 
 	// Create container options
 	containerOptions := rt.NewCreateContainerOptions()
@@ -177,10 +182,9 @@ func (t *SSETransport) Start(ctx context.Context) error {
 
 	// Create and start the transparent proxy
 	// The SSE transport forwards requests from the host port to the container's target port
-
-	// In a Docker bridge network, we need to use localhost since the container port is mapped to the host
+	// In a Docker bridge network, we need to use the specified target host
 	// We ignore containerIP even if it's set, as it's not directly accessible from the host
-	targetHost := LocalhostName
+	targetHost := t.targetHost
 
 	// Check if target port is set
 	if t.targetPort <= 0 {

@@ -39,6 +39,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Port:       r.Config.Port,
 		TargetPort: r.Config.TargetPort,
 		Host:       "localhost",
+		TargetHost: r.Config.TargetHost,
 		Runtime:    r.Config.Runtime,
 		Debug:      r.Config.Debug,
 	}

@@ -802,6 +802,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	secretsList := []string{"secret1,target=ENV_VAR1"}
 	authzConfigPath := "/path/to/authz.json"
 	permissionProfile := "stdio"
+	targetHost := "localhost"
 	oidcIssuer := "https://issuer.example.com"
 	oidcAudience := "test-audience"
 	oidcJwksURL := "https://issuer.example.com/.well-known/jwks.json"
@@ -816,6 +817,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		secretsList,
 		authzConfigPath,
 		permissionProfile,
+		targetHost,
 		oidcIssuer,
 		oidcAudience,
 		oidcJwksURL,
@@ -824,6 +826,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 
 	assert.NotNil(t, config, "NewRunConfigFromFlags should return a non-nil config")
 	assert.Equal(t, runtime, config.Runtime, "Runtime should match")
+	assert.Equal(t, targetHost, config.TargetHost, "TargetHost should match")
 	assert.Equal(t, cmdArgs, config.CmdArgs, "CmdArgs should match")
 	assert.Equal(t, name, config.Name, "Name should match")
 	assert.Equal(t, debug, config.Debug, "Debug should match")

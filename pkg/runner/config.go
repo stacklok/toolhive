@@ -46,6 +46,9 @@ type RunConfig struct {
 	// TargetPort is the port for the container to expose (only applicable to SSE transport)
 	TargetPort int `json:"target_port,omitempty" yaml:"target_port,omitempty"`
 
+	// TargetHost is the host to forward traffic to (only applicable to SSE transport)
+	TargetHost string `json:"target_host,omitempty" yaml:"target_host,omitempty"`
+
 	// PermissionProfileNameOrPath is the name or path of the permission profile
 	PermissionProfileNameOrPath string `json:"permission_profile_name_or_path,omitempty" yaml:"permission_profile_name_or_path,omitempty"` //nolint:lll
 
@@ -117,6 +120,7 @@ func NewRunConfigFromFlags(
 	secretsList []string,
 	authzConfigPath string,
 	permissionProfile string,
+	targetHost string,
 	oidcIssuer string,
 	oidcAudience string,
 	oidcJwksURL string,
@@ -131,6 +135,7 @@ func NewRunConfigFromFlags(
 		Secrets:                     secretsList,
 		AuthzConfigPath:             authzConfigPath,
 		PermissionProfileNameOrPath: permissionProfile,
+		TargetHost:                  targetHost,
 		ContainerLabels:             make(map[string]string),
 		EnvVars:                     make(map[string]string),
 	}

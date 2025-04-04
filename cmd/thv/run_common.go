@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/adrg/xdg"
 	"os"
 	"os/exec"
 	"strings"
 	"syscall"
 
+	"github.com/adrg/xdg"
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/authz"

@@ -10,8 +10,9 @@ import (
 	"sync"
 
 	cedar "github.com/cedar-policy/cedar-go"
+	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/stacklok/vibetool/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 // Common errors for Cedar authorization
@@ -269,20 +270,20 @@ func (a *CedarAuthorizer) IsAuthorized(
 
 // extractClaimsFromContext extracts JWT claims from the context.
 // This assumes that the JWT middleware has already run and added the claims to the context.
-func extractClaimsFromContext(ctx context.Context) (map[string]interface{}, bool) {
+func extractClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool) {
 	// Import the auth package to use its ClaimsContextKey
 	// Get the claims from the context
-	claims, ok := ctx.Value(auth.ClaimsContextKey{}).(map[string]interface{})
+	claims, ok := ctx.Value(auth.ClaimsContextKey{}).(jwt.MapClaims)
 	return claims, ok
 }
 
 // extractClientIDFromClaims extracts the client ID from JWT claims.
 // By default, it uses the "sub" (subject) claim as the client ID.
 // This can be customized based on your JWT token structure.
-func extractClientIDFromClaims(claims map[string]interface{}) (string, bool) {
-	// Use the "sub" claim as the client ID
-	sub, ok := claims["sub"].(string)
-	if !ok || sub == "" {
+func extractClientIDFromClaims(claims jwt.MapClaims) (string, bool) {
+	// Use the GetSubject method to safely extract the "sub" claim
+	sub, err := claims.GetSubject()
+	if err != nil || sub == "" {
 		return "", false
 	}
 
@@ -291,7 +292,7 @@ func extractClientIDFromClaims(claims map[string]interface{}) (string, bool) {
 
 // preprocessClaims adds a "claim_" prefix to all claim keys.
 // This makes it clear which values are from the JWT claims.
-func preprocessClaims(claims map[string]interface{}) map[string]interface{} {
+func preprocessClaims(claims jwt.MapClaims) map[string]interface{} {
 	preprocessed := make(map[string]interface{})
 	for k, v := range claims {
 		claimKey := fmt.Sprintf("claim_%s", k)

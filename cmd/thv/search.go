@@ -1,4 +1,4 @@
-// Package main provides the entry point for the vibetool command-line application.
+// Package main provides the entry point for the toolhive command-line application.
 // This file contains the implementation of the 'search' command.
 package main
 
@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 var searchCmd = &cobra.Command{

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/stacklok/vibetool/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // ParseSecretParameters parses the secret parameters from the command line,

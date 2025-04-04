@@ -4,10 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/vibetool/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 // TestNewCedarAuthorizer tests the creation of a new Cedar authorizer with different configurations.
@@ -91,7 +92,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 	testCases := []struct {
 		name             string
 		policy           string
-		claims           map[string]interface{}
+		claims           jwt.MapClaims
 		feature          MCPFeature
 		operation        MCPOperation
 		resourceID       string
@@ -110,7 +111,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 				context.claim_name == "John Doe"
 			};
 			`,
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":   "user123",
 				"name":  "John Doe",
 				"roles": []string{"user", "reader"},
@@ -133,7 +134,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 				context.claim_name == "John Doe"
 			};
 			`,
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":   "user123",
 				"name":  "Jane Smith",
 				"roles": []string{"user", "reader"},
@@ -205,7 +206,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 				context.claim_groups.contains("editor")
 			};
 			`,
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":    "user123",
 				"name":   "John Doe",
 				"groups": []string{"reader", "editor", "viewer"},
@@ -225,7 +226,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 				resource == Prompt::"greeting"
 			);
 			`,
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 				"role": "user",
@@ -245,7 +246,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 				resource == FeatureType::"tool"
 			);
 			`,
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 				"role": "user",
@@ -265,7 +266,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 				resource == FeatureType::"prompt"
 			);
 			`,
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 				"role": "user",
@@ -285,7 +286,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 				resource == FeatureType::"resource"
 			);
 			`,
-			claims: map[string]interface{}{
+			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
 				"role": "user",
@@ -362,7 +363,7 @@ func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 			name: "Missing sub claim",
 			setupCtx: func(ctx context.Context) context.Context {
 				// Add claims without sub
-				claims := map[string]interface{}{
+				claims := jwt.MapClaims{
 					"name": "John Doe",
 					"role": "user",
 				}
@@ -379,7 +380,7 @@ func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 			name: "Empty sub claim",
 			setupCtx: func(ctx context.Context) context.Context {
 				// Add claims with empty sub
-				claims := map[string]interface{}{
+				claims := jwt.MapClaims{
 					"sub":  "",
 					"name": "John Doe",
 					"role": "user",
@@ -397,7 +398,7 @@ func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 			name: "Unsupported feature/operation combination",
 			setupCtx: func(ctx context.Context) context.Context {
 				// Add valid claims
-				claims := map[string]interface{}{
+				claims := jwt.MapClaims{
 					"sub":  "user123",
 					"name": "John Doe",
 					"role": "user",

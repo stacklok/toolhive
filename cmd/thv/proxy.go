@@ -9,10 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/auth"
-	"github.com/stacklok/vibetool/pkg/networking"
-	"github.com/stacklok/vibetool/pkg/transport/proxy/transparent"
-	"github.com/stacklok/vibetool/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 var proxyCmd = &cobra.Command{

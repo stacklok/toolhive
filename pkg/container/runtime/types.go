@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/stacklok/vibetool/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
 // ContainerInfo represents information about a container
@@ -75,9 +75,6 @@ type Runtime interface {
 
 	// GetContainerInfo gets container information
 	GetContainerInfo(ctx context.Context, containerID string) (ContainerInfo, error)
-
-	// GetContainerIP gets container IP address
-	GetContainerIP(ctx context.Context, containerID string) (string, error)
 
 	// AttachContainer attaches to a container
 	AttachContainer(ctx context.Context, containerID string) (io.WriteCloser, io.ReadCloser, error)

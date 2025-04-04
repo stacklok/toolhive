@@ -5,12 +5,12 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o vt ./cmd/vibetool
+RUN CGO_ENABLED=0 GOOS=linux go build -o thv ./cmd/toolhive
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates
 RUN adduser -D -g '' appuser
 WORKDIR /app
-COPY --from=builder /app/vt .
+COPY --from=builder /app/thv .
 USER appuser
-ENTRYPOINT ["/app/vt"] 
+ENTRYPOINT ["/app/thv"]

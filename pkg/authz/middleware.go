@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
-	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
 // MCPMethodToFeatureOperation maps MCP method names to feature and operation pairs.

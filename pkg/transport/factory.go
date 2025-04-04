@@ -3,8 +3,8 @@
 package transport
 
 import (
-	"github.com/stacklok/vibetool/pkg/transport/errors"
-	"github.com/stacklok/vibetool/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/transport/errors"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // Factory creates transports
@@ -21,7 +21,15 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 	case types.TransportTypeStdio:
 		return NewStdioTransport(config.Port, config.Runtime, config.Debug, config.Middlewares...), nil
 	case types.TransportTypeSSE:
-		return NewSSETransport(config.Host, config.Port, config.TargetPort, config.Runtime, config.Debug, config.Middlewares...), nil
+		return NewSSETransport(
+			config.Host,
+			config.Port,
+			config.TargetPort,
+			config.Runtime,
+			config.Debug,
+			config.TargetHost,
+			config.Middlewares...,
+		), nil
 	default:
 		return nil, errors.ErrUnsupportedTransport
 	}

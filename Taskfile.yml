@@ -30,12 +30,12 @@ tasks:
     desc: Build the binary
     cmds:
       - mkdir -p bin
-      - go build -o bin/vt ./cmd/vt
+      - go build -o bin/thv ./cmd/thv
 
   install:
-    desc: Install the vt binary to GOPATH/bin
+    desc: Install the thv binary to GOPATH/bin
     cmds:
-      - go install -v ./cmd/vt
+      - go install -v ./cmd/thv
 
   all:
     desc: Run linting, tests, and build
@@ -48,18 +48,18 @@ tasks:
   build-image:
     desc: Build the image with ko
     cmds:
-      - ko build --platform linux/amd64,linux/arm64 --local ./cmd/vt
+      - ko build --platform linux/amd64,linux/arm64 --local ./cmd/thv
 
   test-k8s-apply:
     desc: Builds the image, loads it into kind, and applies the Kubernetes manifests
     vars:
       IMAGE:
-        sh: ko build --platform linux/amd64 --local -B ./cmd/vt | tail -n 1
+        sh: ko build --platform linux/amd64 --local -B ./cmd/thv | tail -n 1
     cmds:
       # Load the image into kind
       - echo "Loading image {{.IMAGE}} into kind..."
       - kind load docker-image {{.IMAGE}}
       # Apply the Kubernetes manifest
       - echo "Applying Kubernetes manifest..."
-      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/k8s/vt.yml)
+      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/k8s/thv.yml)
       # Wait for the deployment to be available

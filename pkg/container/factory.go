@@ -6,9 +6,9 @@ import (
 	"context"
 	"os"
 
-	"github.com/stacklok/vibetool/pkg/container/docker"
-	"github.com/stacklok/vibetool/pkg/container/kubernetes"
-	"github.com/stacklok/vibetool/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/docker"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
 // Factory creates container runtimes

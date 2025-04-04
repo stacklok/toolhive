@@ -8,9 +8,9 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
-	rt "github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/permissions"
-	"github.com/stacklok/vibetool/pkg/transport/errors"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/transport/errors"
 )
 
 // Middleware is a function that wraps an http.Handler with additional functionality.
@@ -107,6 +107,10 @@ type Config struct {
 	// TargetPort is the port that the container will expose (container port).
 	// This is only applicable to SSE transport.
 	TargetPort int
+
+	// TargetHost is the host to forward traffic to.
+	// This is only applicable to SSE transport.
+	TargetHost string
 
 	// Host is the host to use for network transports.
 	Host string

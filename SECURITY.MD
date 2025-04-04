@@ -1,13 +1,13 @@
 # Security Policy
 
-The Vibetool community take security seriously! We appreciate your efforts to
+The ToolHive community take security seriously! We appreciate your efforts to
 disclose your findings responsibly and will make every effort to acknowledge
 your contributions.
 
 ## Reporting a vulnerability
 
 To report a security issue, please use the GitHub Security Advisory
-["Report a Vulnerability"](https://github.com/stacklok/Vibetool/security/advisories/new)
+["Report a Vulnerability"](https://github.com/stacklok/toolhive/security/advisories/new)
 tab.
 
 If you are unable to access GitHub you can also email us at
@@ -19,7 +19,7 @@ additional files to reproduce the vulnerability.
 If you are only comfortable sharing under GPG, please start by sending an email
 requesting a public PGP key to use for encryption.
 
-### Contacting the Vibetool security team
+### Contacting the ToolHive security team
 
 Contact the team by sending email to
 [security@stacklok.com](mailto:security@stacklok.com).
@@ -28,7 +28,7 @@ Contact the team by sending email to
 
 ### Private disclosure processes
 
-The Vibetool community asks that all suspected vulnerabilities be handled in
+The ToolHive community asks that all suspected vulnerabilities be handled in
 accordance with
 [Responsible Disclosure model](https://en.wikipedia.org/wiki/Responsible_disclosure).
 
@@ -46,7 +46,7 @@ with the fix and release process.
 
 ## Patch, release, and public communication
 
-For each vulnerability, the Vibetool security team will coordinate to create the
+For each vulnerability, the ToolHive security team will coordinate to create the
 fix and release, and notify the rest of the community.
 
 All of the timelines below are suggestions and assume a Private Disclosure.
@@ -58,7 +58,7 @@ All of the timelines below are suggestions and assume a Private Disclosure.
 - If the fix relies on another upstream project's disclosure timeline, that will
   adjust the process as well.
 - We will work with the upstream project to fit their timeline and best protect
-  Vibetool users.
+  ToolHive users.
 - The Security team will give advance notice to the Private Distributors list
   before the fix is released.
 
@@ -80,7 +80,7 @@ These steps should be completed within the 1-7 days of Disclosure.
 - Create a new
   [security advisory](https://docs.github.com/en/code-security/security-advisories/)
   in affected repository by visiting
-  `https://github.com/stacklok/Vibetool/security/advisories/new`
+  `https://github.com/stacklok/toolhive/security/advisories/new`
 - As many details as possible should be entered such as versions affected, CVE
   (if available yet). As more information is discovered, edit and update the
   advisory accordingly.
@@ -140,7 +140,7 @@ realistic timeline can be communicated to users.
   version. An announcement template is available below. The announcement will be
   sent to the the following channels:
 - A link to fix will be posted to the
-  [Stacklok Discord Server](https://discord.gg/stacklok) in the #Vibetool
+  [Stacklok Discord Server](https://discord.gg/stacklok) in the #toolhive
   channel.
 
 ## Retrospective

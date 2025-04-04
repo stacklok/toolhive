@@ -8,12 +8,12 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "vt",
-	Short: "Vibe Tool (vt) is a lightweight, secure, and fast manager for MCP servers",
-	Long: `Vibe Tool (vt) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers.
+	Use:   "thv",
+	Short: "ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers",
+	Long: `ToolHive (thv) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers.
 It is written in Go and has extensive test coverage—including input validation—to ensure reliability and security.
 
-Under the hood, Vibe Tool acts as a very thin client for the Docker/Podman Unix socket API.
+Under the hood, ToolHive acts as a very thin client for the Docker/Podman Unix socket API.
 This design choice allows it to remain both efficient and lightweight while still providing powerful,
 container-based isolation for running MCP servers.`,
 	Run: func(cmd *cobra.Command, _ []string) {
@@ -26,9 +26,9 @@ container-based isolation for running MCP servers.`,
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Show the version of Vibe Tool",
+	Short: "Show the version of ToolHive",
 	Run: func(_ *cobra.Command, _ []string) {
-		fmt.Println("Vibe Tool v0.1.0")
+		fmt.Println("ToolHive v0.1.0")
 	},
 }
 

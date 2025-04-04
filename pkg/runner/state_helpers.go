@@ -5,11 +5,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/stacklok/vibetool/pkg/runner/state"
+	"github.com/stacklok/toolhive/pkg/runner/state"
 )
 
 // DefaultAppName is the default application name used for state storage
-const DefaultAppName = "vibetool"
+const DefaultAppName = "toolhive"
 
 // SaveState saves the runner configuration to the state store
 func (r *Runner) SaveState(ctx context.Context) error {

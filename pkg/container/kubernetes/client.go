@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	backoff "github.com/cenkalti/backoff/v4"
@@ -14,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	apimwatch "k8s.io/apimachinery/pkg/watch"
 	appsv1apply "k8s.io/client-go/applyconfigurations/apps/v1"
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
@@ -24,9 +27,9 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/tools/watch"
 
-	"github.com/stacklok/vibetool/pkg/container/runtime"
-	// Avoid import cycle
-	"github.com/stacklok/vibetool/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // Constants for container status
@@ -241,16 +244,40 @@ func (c *Client) CreateContainer(ctx context.Context,
 	image string,
 	containerName string,
 	command []string,
-	_ map[string]string,
+	envVars map[string]string,
 	containerLabels map[string]string,
-	_ *permissions.Profile,
-	_ string,
+	_ *permissions.Profile, // TODO: Implement permission profile support for Kubernetes
+	transportType string,
 	options *runtime.CreateContainerOptions) (string, error) {
 	namespace := getCurrentNamespace()
 	containerLabels["app"] = containerName
-	containerLabels["vibetool"] = "true"
+	containerLabels["toolhive"] = "true"
 
 	attachStdio := options == nil || options.AttachStdio
+
+	// Convert environment variables to Kubernetes format
+	var envVarList []*corev1apply.EnvVarApplyConfiguration
+	for k, v := range envVars {
+		envVarList = append(envVarList, corev1apply.EnvVar().WithName(k).WithValue(v))
+	}
+
+	// Create container configuration
+	containerConfig := corev1apply.Container().
+		WithName(containerName).
+		WithImage(image).
+		WithArgs(command...).
+		WithStdin(attachStdio).
+		WithTTY(false).
+		WithEnv(envVarList...)
+
+	// Configure ports if needed for SSE transport
+	if options != nil && transportType == string(transtypes.TransportTypeSSE) {
+		var err error
+		containerConfig, err = configureContainerPorts(containerConfig, options)
+		if err != nil {
+			return "", err
+		}
+	}
 
 	// Create an apply configuration for the statefulset
 	statefulSetApply := appsv1apply.StatefulSet(containerName, namespace).
@@ -265,16 +292,11 @@ func (c *Client) CreateContainer(ctx context.Context,
 			WithTemplate(corev1apply.PodTemplateSpec().
 				WithLabels(containerLabels).
 				WithSpec(corev1apply.PodSpec().
-					WithContainers(corev1apply.Container().
-						WithName(containerName).
-						WithImage(image).
-						WithArgs(command...).
-						WithStdin(attachStdio).
-						WithTTY(false)).
+					WithContainers(containerConfig).
 					WithRestartPolicy(corev1.RestartPolicyAlways))))
 
 	// Apply the statefulset using server-side apply
-	fieldManager := "vibetool-container-manager"
+	fieldManager := "toolhive-container-manager"
 	createdStatefulSet, err := c.client.AppsV1().StatefulSets(namespace).
 		Apply(ctx, statefulSetApply, metav1.ApplyOptions{
 			FieldManager: fieldManager,
@@ -286,6 +308,14 @@ func (c *Client) CreateContainer(ctx context.Context,
 
 	fmt.Printf("Applied statefulset %s\n", createdStatefulSet.Name)
 
+	if transportType == string(transtypes.TransportTypeSSE) && options != nil {
+		// Create a headless service for SSE transport
+		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
+		if err != nil {
+			return "", fmt.Errorf("failed to create headless service: %v", err)
+		}
+	}
+
 	// Wait for the statefulset to be ready
 	err = waitForStatefulSetReady(ctx, c.client, namespace, createdStatefulSet.Name)
 	if err != nil {
@@ -293,32 +323,6 @@ func (c *Client) CreateContainer(ctx context.Context,
 	}
 
 	return createdStatefulSet.Name, nil
-}
-
-// GetContainerIP implements runtime.Runtime.
-func (c *Client) GetContainerIP(ctx context.Context, containerID string) (string, error) {
-	// In Kubernetes, containerID is the statefulset name
-	namespace := getCurrentNamespace()
-
-	// Get the pods associated with this statefulset
-	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app=%s", containerID),
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to list pods for statefulset %s: %w", containerID, err)
-	}
-
-	if len(pods.Items) == 0 {
-		return "", fmt.Errorf("no pods found for statefulset %s", containerID)
-	}
-
-	// Use the first pod's IP
-	podIP := pods.Items[0].Status.PodIP
-	if podIP == "" {
-		return "", fmt.Errorf("pod for statefulset %s has no IP address", containerID)
-	}
-
-	return podIP, nil
 }
 
 // GetContainerInfo implements runtime.Runtime.
@@ -343,18 +347,17 @@ func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runt
 		return runtime.ContainerInfo{}, fmt.Errorf("failed to list pods for statefulset %s: %w", containerID, err)
 	}
 
-	// Extract port mappings if available
+	// Extract port mappings from pods
 	ports := make([]runtime.PortMapping, 0)
 	if len(pods.Items) > 0 {
-		for _, container := range pods.Items[0].Spec.Containers {
-			for _, port := range container.Ports {
-				ports = append(ports, runtime.PortMapping{
-					ContainerPort: int(port.ContainerPort),
-					HostPort:      int(port.HostPort),
-					Protocol:      string(port.Protocol),
-				})
-			}
-		}
+		ports = extractPortMappingsFromPod(&pods.Items[0])
+	}
+
+	// Get ports from associated service (for SSE transport)
+	service, err := c.client.CoreV1().Services(namespace).Get(ctx, containerID, metav1.GetOptions{})
+	if err == nil {
+		// Service exists, add its ports
+		ports = extractPortMappingsFromService(service, ports)
 	}
 
 	// Determine status and state
@@ -428,11 +431,12 @@ func (c *Client) IsContainerRunning(ctx context.Context, containerID string) (bo
 
 // ListContainers implements runtime.Runtime.
 func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, error) {
-	// Create label selector for vibetool containers
-	labelSelector := "vibetool=true"
+	// Create label selector for toolhive containers
+	labelSelector := "toolhive=true"
 
-	// List pods with the vibetool label
-	pods, err := c.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+	// List pods with the toolhive label
+	namespace := getCurrentNamespace()
+	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
 	if err != nil {
@@ -442,16 +446,14 @@ func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, e
 	// Convert to our ContainerInfo format
 	result := make([]runtime.ContainerInfo, 0, len(pods.Items))
 	for _, pod := range pods.Items {
-		// Extract port mappings if available
-		ports := make([]runtime.PortMapping, 0)
-		for _, container := range pod.Spec.Containers {
-			for _, port := range container.Ports {
-				ports = append(ports, runtime.PortMapping{
-					ContainerPort: int(port.ContainerPort),
-					HostPort:      int(port.HostPort),
-					Protocol:      string(port.Protocol),
-				})
-			}
+		// Extract port mappings from pod
+		ports := extractPortMappingsFromPod(&pod)
+
+		// Get ports from associated service (for SSE transport)
+		service, err := c.client.CoreV1().Services(namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+		if err == nil {
+			// Service exists, add its ports
+			ports = extractPortMappingsFromService(service, ports)
 		}
 
 		// Get container status
@@ -576,4 +578,289 @@ func waitForStatefulSetReady(ctx context.Context, clientset *kubernetes.Clientse
 	}
 
 	return nil
+}
+
+// parsePortString parses a port string in the format "port/protocol" and returns the port number
+func parsePortString(portStr string) (int, error) {
+	// Split the port string to get just the port number
+	port := strings.Split(portStr, "/")[0]
+	portNum, err := strconv.Atoi(port)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse port %s: %v", port, err)
+	}
+	return portNum, nil
+}
+
+// configureContainerPorts adds port configurations to a container for SSE transport
+func configureContainerPorts(
+	containerConfig *corev1apply.ContainerApplyConfiguration,
+	options *runtime.CreateContainerOptions,
+) (*corev1apply.ContainerApplyConfiguration, error) {
+	if options == nil {
+		return containerConfig, nil
+	}
+
+	// Use a map to track which ports have been added
+	portMap := make(map[int32]bool)
+	var containerPorts []*corev1apply.ContainerPortApplyConfiguration
+
+	// Process exposed ports
+	for portStr := range options.ExposedPorts {
+		portNum, err := parsePortString(portStr)
+		if err != nil {
+			return nil, err
+		}
+
+		// Check for integer overflow
+		if portNum < 0 || portNum > 65535 {
+			return nil, fmt.Errorf("port number %d is out of valid range (0-65535)", portNum)
+		}
+
+		// Add port if not already in the map
+		portInt32 := int32(portNum)
+		if !portMap[portInt32] {
+			containerPorts = append(containerPorts, corev1apply.ContainerPort().
+				WithContainerPort(portInt32).
+				WithProtocol(corev1.ProtocolTCP))
+			portMap[portInt32] = true
+		}
+	}
+
+	// Process port bindings
+	for portStr := range options.PortBindings {
+		portNum, err := parsePortString(portStr)
+		if err != nil {
+			return nil, err
+		}
+
+		// Check for integer overflow
+		if portNum < 0 || portNum > 65535 {
+			return nil, fmt.Errorf("port number %d is out of valid range (0-65535)", portNum)
+		}
+
+		// Add port if not already in the map
+		portInt32 := int32(portNum)
+		if !portMap[portInt32] {
+			containerPorts = append(containerPorts, corev1apply.ContainerPort().
+				WithContainerPort(portInt32).
+				WithProtocol(corev1.ProtocolTCP))
+			portMap[portInt32] = true
+		}
+	}
+
+	// Add ports to container config
+	if len(containerPorts) > 0 {
+		containerConfig = containerConfig.WithPorts(containerPorts...)
+	}
+
+	return containerConfig, nil
+}
+
+// validatePortNumber checks if a port number is within the valid range
+func validatePortNumber(portNum int) error {
+	if portNum < 0 || portNum > 65535 {
+		return fmt.Errorf("port number %d is out of valid range (0-65535)", portNum)
+	}
+	return nil
+}
+
+// createServicePortConfig creates a service port configuration for a given port number
+func createServicePortConfig(portNum int) *corev1apply.ServicePortApplyConfiguration {
+	//nolint:gosec // G115: Safe int->int32 conversion, range is checked in validatePortNumber
+	portInt32 := int32(portNum)
+	return corev1apply.ServicePort().
+		WithName(fmt.Sprintf("port-%d", portNum)).
+		WithPort(portInt32).
+		WithTargetPort(intstr.FromInt(portNum)).
+		WithProtocol(corev1.ProtocolTCP)
+}
+
+// processExposedPorts processes exposed ports and adds them to the port map
+func processExposedPorts(
+	options *runtime.CreateContainerOptions,
+	portMap map[int32]*corev1apply.ServicePortApplyConfiguration,
+) error {
+	for portStr := range options.ExposedPorts {
+		portNum, err := parsePortString(portStr)
+		if err != nil {
+			return err
+		}
+
+		if err := validatePortNumber(portNum); err != nil {
+			return err
+		}
+
+		//nolint:gosec // G115: Safe int->int32 conversion, range is checked in validatePortNumber
+		portInt32 := int32(portNum)
+		// Add port if not already in the map
+		if _, exists := portMap[portInt32]; !exists {
+			portMap[portInt32] = createServicePortConfig(portNum)
+		}
+	}
+	return nil
+}
+
+// createServicePorts creates service port configurations from container options
+func createServicePorts(options *runtime.CreateContainerOptions) ([]*corev1apply.ServicePortApplyConfiguration, error) {
+	if options == nil {
+		return nil, nil
+	}
+
+	// Use a map to track which ports have been added
+	portMap := make(map[int32]*corev1apply.ServicePortApplyConfiguration)
+
+	// Process exposed ports
+	if err := processExposedPorts(options, portMap); err != nil {
+		return nil, err
+	}
+
+	// Process port bindings
+	for portStr, bindings := range options.PortBindings {
+		portNum, err := parsePortString(portStr)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := validatePortNumber(portNum); err != nil {
+			return nil, err
+		}
+
+		//nolint:gosec // G115: Safe int->int32 conversion, range is checked in validatePortNumber
+		portInt32 := int32(portNum)
+		servicePort := portMap[portInt32]
+		if servicePort == nil {
+			// Create new service port if not in map
+			servicePort = createServicePortConfig(portNum)
+		}
+
+		// If there are bindings with a host port, use the first one as node port
+		if len(bindings) > 0 && bindings[0].HostPort != "" {
+			hostPort, err := strconv.Atoi(bindings[0].HostPort)
+			if err == nil && hostPort >= 30000 && hostPort <= 32767 {
+				// NodePort must be in range 30000-32767
+				// Safe to convert to int32 since we've verified the range (30000-32767)
+				// which is well within int32 range (-2,147,483,648 to 2,147,483,647)
+				//nolint:gosec // G109: Safe int->int32 conversion, range is checked above
+				nodePort := int32(hostPort)
+				servicePort = servicePort.WithNodePort(nodePort)
+			}
+		}
+
+		//nolint:gosec // G115: Safe int->int32 conversion, range is checked above
+		portMap[int32(portNum)] = servicePort
+	}
+
+	// Convert map to slice
+	var servicePorts []*corev1apply.ServicePortApplyConfiguration
+	for _, port := range portMap {
+		servicePorts = append(servicePorts, port)
+	}
+
+	return servicePorts, nil
+}
+
+// createHeadlessService creates a headless Kubernetes service for the StatefulSet
+func (c *Client) createHeadlessService(
+	ctx context.Context,
+	containerName string,
+	namespace string,
+	labels map[string]string,
+	options *runtime.CreateContainerOptions,
+) error {
+	// Create service ports from the container ports
+	servicePorts, err := createServicePorts(options)
+	if err != nil {
+		return err
+	}
+
+	// If no ports were configured, don't create a service
+	if len(servicePorts) == 0 {
+		fmt.Printf("No ports configured for SSE transport, skipping service creation\n")
+		return nil
+	}
+
+	// Create service type based on whether we have node ports
+	serviceType := corev1.ServiceTypeClusterIP
+	for _, sp := range servicePorts {
+		if sp.NodePort != nil {
+			serviceType = corev1.ServiceTypeNodePort
+			break
+		}
+	}
+
+	// Create the service apply configuration
+	serviceApply := corev1apply.Service(containerName, namespace).
+		WithLabels(labels).
+		WithSpec(corev1apply.ServiceSpec().
+			WithSelector(map[string]string{
+				"app": containerName,
+			}).
+			WithPorts(servicePorts...).
+			WithType(serviceType).
+			WithClusterIP("None")) // "None" makes it a headless service
+
+	// Apply the service using server-side apply
+	fieldManager := "toolhive-container-manager"
+	_, err = c.client.CoreV1().Services(namespace).
+		Apply(ctx, serviceApply, metav1.ApplyOptions{
+			FieldManager: fieldManager,
+			Force:        true,
+		})
+
+	if err != nil {
+		return fmt.Errorf("failed to apply service: %v", err)
+	}
+
+	fmt.Printf("Created headless service %s for SSE transport\n", containerName)
+	return nil
+}
+
+// extractPortMappingsFromPod extracts port mappings from a pod's containers
+func extractPortMappingsFromPod(pod *corev1.Pod) []runtime.PortMapping {
+	ports := make([]runtime.PortMapping, 0)
+
+	for _, container := range pod.Spec.Containers {
+		for _, port := range container.Ports {
+			ports = append(ports, runtime.PortMapping{
+				ContainerPort: int(port.ContainerPort),
+				HostPort:      int(port.HostPort),
+				Protocol:      string(port.Protocol),
+			})
+		}
+	}
+
+	return ports
+}
+
+// extractPortMappingsFromService extracts port mappings from a Kubernetes service
+func extractPortMappingsFromService(service *corev1.Service, existingPorts []runtime.PortMapping) []runtime.PortMapping {
+	// Create a map of existing ports for easy lookup and updating
+	portMap := make(map[int]runtime.PortMapping)
+	for _, p := range existingPorts {
+		portMap[p.ContainerPort] = p
+	}
+
+	// Update or add ports from the service
+	for _, port := range service.Spec.Ports {
+		containerPort := int(port.Port)
+		hostPort := 0
+		if port.NodePort > 0 {
+			hostPort = int(port.NodePort)
+		}
+
+		// Update existing port or add new one
+		portMap[containerPort] = runtime.PortMapping{
+			ContainerPort: containerPort,
+			HostPort:      hostPort,
+			Protocol:      string(port.Protocol),
+		}
+	}
+
+	// Convert map back to slice
+	result := make([]runtime.PortMapping, 0, len(portMap))
+	for _, p := range portMap {
+		result = append(result, p)
+	}
+
+	return result
 }

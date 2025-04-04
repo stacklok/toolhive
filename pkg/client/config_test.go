@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
 // setupTestConfig creates a temporary directory and config file for testing
@@ -18,7 +18,7 @@ func setupTestConfig(t *testing.T, testName string) (string, string, ConfigFile)
 	t.Helper()
 
 	// Create a temporary file
-	tempDir, err := os.MkdirTemp("", "vibetool-test")
+	tempDir, err := os.MkdirTemp("", "toolhive-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
@@ -85,7 +85,7 @@ func testUpdateExistingServer(t *testing.T, config ConfigFile, configPath string
 	t.Helper()
 	// Test updating an existing server with lock
 	expectedURL := "http://localhost:54321" + ssecommon.HTTPSSEEndpoint + "#test-container"
-	err := config.SaveWithLock("existing-server", expectedURL)
+	err := config.SaveWithLock("existing-server", expectedURL, &StandardConfigEditor{})
 	if err != nil {
 		t.Fatalf("Failed to update MCP server config: %v", err)
 	}
@@ -112,7 +112,7 @@ func testAddNewServer(t *testing.T, config ConfigFile, configPath string) {
 	t.Helper()
 	// Test adding a new server with lock
 	expectedURL := "http://localhost:9876" + ssecommon.HTTPSSEEndpoint + "#new-container"
-	err := config.SaveWithLock("new-server", expectedURL)
+	err := config.SaveWithLock("new-server", expectedURL, &StandardConfigEditor{})
 	if err != nil {
 		t.Fatalf("Failed to add new MCP server config: %v", err)
 	}

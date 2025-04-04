@@ -5,14 +5,21 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/config"
-	"github.com/stacklok/vibetool/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage application configuration",
 	Long:  "The config command provides subcommands to manage application configuration settings.",
+}
+
+var listRegisteredClientsCmd = &cobra.Command{
+	Use:   "list-registered-clients",
+	Short: "List all registered MCP clients",
+	Long:  "List all clients that are registered for MCP server configuration.",
+	RunE:  listRegisteredClientsCmdFunc,
 }
 
 var secretsProviderCmd = &cobra.Command{
@@ -30,7 +37,7 @@ var autoDiscoveryCmd = &cobra.Command{
 	Use:   "auto-discovery [true|false]",
 	Short: "Set whether to enable auto-discovery of MCP clients",
 	Long: `Set whether to enable auto-discovery and configuration of MCP clients.
-When enabled, Vibe Tool will automatically update client configuration files
+When enabled, ToolHive will automatically update client configuration files
 with the URLs of running MCP servers.`,
 	Args: cobra.ExactArgs(1),
 	RunE: autoDiscoveryCmdFunc,
@@ -42,7 +49,8 @@ var registerClientCmd = &cobra.Command{
 	Long: `Register a client for MCP server configuration.
 Valid clients are:
   - roo-code: The RooCode extension for VSCode
-  - cursor: The Cursor editor`,
+  - cursor: The Cursor editor
+  - vscode-insider: The Visual Studio Code Insider editor`,
 	Args: cobra.ExactArgs(1),
 	RunE: registerClientCmdFunc,
 }
@@ -53,7 +61,8 @@ var removeClientCmd = &cobra.Command{
 	Long: `Remove a client from MCP server configuration.
 Valid clients are:
   - roo-code: The RooCode extension for VSCode
-  - cursor: The Cursor editor`,
+  - cursor: The Cursor editor
+  - vscode-insider: The Visual Studio Code Insider editor`,
 	Args: cobra.ExactArgs(1),
 	RunE: removeClientCmdFunc,
 }
@@ -67,6 +76,7 @@ func init() {
 	configCmd.AddCommand(autoDiscoveryCmd)
 	configCmd.AddCommand(registerClientCmd)
 	configCmd.AddCommand(removeClientCmd)
+	configCmd.AddCommand(listRegisteredClientsCmd)
 }
 
 func secretsProviderCmdFunc(cmd *cobra.Command, args []string) error {
@@ -129,10 +139,10 @@ func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch client {
-	case "roo-code", "cursor":
+	case "roo-code", "cursor", "vscode-insider":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor)", client)
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode-insider)", client)
 	}
 
 	// Get the current config
@@ -162,10 +172,10 @@ func removeClientCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch client {
-	case "roo-code", "cursor":
+	case "roo-code", "cursor", "vscode-insider":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor)", client)
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode-insider)", client)
 	}
 
 	// Get the current config
@@ -192,5 +202,24 @@ func removeClientCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	cmd.Printf("Successfully removed client: %s\n", client)
+	return nil
+}
+
+func listRegisteredClientsCmdFunc(cmd *cobra.Command, _ []string) error {
+	// Get the current config
+	cfg := config.GetConfig()
+
+	// Check if there are any registered clients
+	if len(cfg.Clients.RegisteredClients) == 0 {
+		cmd.Println("No clients are currently registered.")
+		return nil
+	}
+
+	// Print the list of registered clients
+	cmd.Println("Registered clients:")
+	for _, client := range cfg.Clients.RegisteredClients {
+		cmd.Printf("  - %s\n", client)
+	}
+
 	return nil
 }

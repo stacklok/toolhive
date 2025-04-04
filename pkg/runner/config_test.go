@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/vibetool/pkg/authz"
-	rt "github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/permissions"
-	"github.com/stacklok/vibetool/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/authz"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // mockRuntime implements the Runtime interface for testing
@@ -58,10 +58,6 @@ func (*mockRuntime) IsContainerRunning(_ context.Context, _ string) (bool, error
 
 func (*mockRuntime) GetContainerInfo(_ context.Context, _ string) (rt.ContainerInfo, error) {
 	return rt.ContainerInfo{}, nil
-}
-
-func (*mockRuntime) GetContainerIP(_ context.Context, _ string) (string, error) {
-	return "127.0.0.1", nil
 }
 
 func (*mockRuntime) AttachContainer(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, error) {
@@ -743,11 +739,11 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 				ContainerLabels: map[string]string{},
 			},
 			expected: map[string]string{
-				"vibetool":           "true",
-				"vibetool-name":      "test-server",
-				"vibetool-transport": "sse",
-				"vibetool-port":      "8080",
-				"vibetool-tool-type": "mcp",
+				"toolhive":           "true",
+				"toolhive-name":      "test-server",
+				"toolhive-transport": "sse",
+				"toolhive-port":      "8080",
+				"toolhive-tool-type": "mcp",
 			},
 		},
 		{
@@ -761,10 +757,10 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 				},
 			},
 			expected: map[string]string{
-				"vibetool":           "true",
-				"vibetool-name":      "test-server",
-				"vibetool-transport": "stdio",
-				"vibetool-tool-type": "mcp",
+				"toolhive":           "true",
+				"toolhive-name":      "test-server",
+				"toolhive-transport": "stdio",
+				"toolhive-tool-type": "mcp",
 				"existing-label":     "existing-value",
 			},
 		},
@@ -806,6 +802,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	secretsList := []string{"secret1,target=ENV_VAR1"}
 	authzConfigPath := "/path/to/authz.json"
 	permissionProfile := "stdio"
+	targetHost := "localhost"
 	oidcIssuer := "https://issuer.example.com"
 	oidcAudience := "test-audience"
 	oidcJwksURL := "https://issuer.example.com/.well-known/jwks.json"
@@ -820,6 +817,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		secretsList,
 		authzConfigPath,
 		permissionProfile,
+		targetHost,
 		oidcIssuer,
 		oidcAudience,
 		oidcJwksURL,
@@ -828,6 +826,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 
 	assert.NotNil(t, config, "NewRunConfigFromFlags should return a non-nil config")
 	assert.Equal(t, runtime, config.Runtime, "Runtime should match")
+	assert.Equal(t, targetHost, config.TargetHost, "TargetHost should match")
 	assert.Equal(t, cmdArgs, config.CmdArgs, "CmdArgs should match")
 	assert.Equal(t, name, config.Name, "Name should match")
 	assert.Equal(t, debug, config.Debug, "Debug should match")

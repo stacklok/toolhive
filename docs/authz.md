@@ -1,10 +1,10 @@
 # Authorization Framework
 
-This document describes the authorization framework for MCP servers managed by Vibe Tool. The framework uses Cedar policies to authorize MCP operations based on the client's identity and the requested operation.
+This document describes the authorization framework for MCP servers managed by ToolHive. The framework uses Cedar policies to authorize MCP operations based on the client's identity and the requested operation.
 
 ## Overview
 
-Vibe Tool now supports adding authorization to MCP servers it manages. This is implemented using Cedar, a policy language developed by Amazon. The authorization framework consists of the following components:
+ToolHive now supports adding authorization to MCP servers it manages. This is implemented using Cedar, a policy language developed by Amazon. The authorization framework consists of the following components:
 
 1. **Cedar Authorizer**: A component that evaluates Cedar policies to determine if a request is authorized.
 2. **Authorization Middleware**: An HTTP middleware that extracts information from MCP requests and uses the Cedar Authorizer to authorize the request.
@@ -23,7 +23,7 @@ When an MCP server is started with authorization enabled, the following process 
 
 ## Setting Up Authorization
 
-To set up authorization for an MCP server managed by Vibe Tool, follow these steps:
+To set up authorization for an MCP server managed by ToolHive, follow these steps:
 
 1. Create a Cedar authorization configuration file.
 2. Start the MCP server with the `--authz-config` flag pointing to your configuration file.
@@ -60,13 +60,13 @@ The configuration file has the following fields:
 To start an MCP server with authorization, use the `--authz-config` flag:
 
 ```bash
-vt run --transport sse --name my-mcp-server --port 8080 --authz-config /path/to/authz-config.json my-mcp-server-image:latest -- my-mcp-server-args
+thv run --transport sse --name my-mcp-server --port 8080 --authz-config /path/to/authz-config.json my-mcp-server-image:latest -- my-mcp-server-args
 ```
 
 You can also use the `registry run` command with the same flag:
 
 ```bash
-vt registry run my-mcp-server --authz-config /path/to/authz-config.json -- my-mcp-server-args
+thv registry run my-mcp-server --authz-config /path/to/authz-config.json -- my-mcp-server-args
 ```
 
 ## Writing Cedar Policies

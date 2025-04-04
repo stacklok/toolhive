@@ -9,10 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/container"
-	"github.com/stacklok/vibetool/pkg/permissions"
-	"github.com/stacklok/vibetool/pkg/registry"
-	"github.com/stacklok/vibetool/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 var runCmd = &cobra.Command{
@@ -32,6 +32,7 @@ var (
 	runName              string
 	runPort              int
 	runTargetPort        int
+	runTargetHost        string
 	runPermissionProfile string
 	runEnv               []string
 	runForeground        bool
@@ -45,6 +46,11 @@ func init() {
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
 	runCmd.Flags().IntVar(&runTargetPort, "target-port", 0, "Port for the container to expose (only applicable to SSE transport)")
+	runCmd.Flags().StringVar(
+		&runTargetHost,
+		"target-host",
+		"localhost",
+		"Host to forward traffic to (only applicable to SSE transport)")
 	runCmd.Flags().StringVar(
 		&runPermissionProfile,
 		"permission-profile",
@@ -117,6 +123,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runSecrets,
 		runAuthzConfig,
 		runPermissionProfile,
+		runTargetHost,
 		oidcIssuer,
 		oidcAudience,
 		oidcJwksURL,
@@ -153,7 +160,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Configure the RunConfig with transport, ports, permissions, etc.
-	if err := configureRunConfig(cmd, config, runTransport, runPort, runTargetPort, runEnv); err != nil {
+	if err := configureRunConfig(cmd, config, runTransport, runPort, runTargetPort, runTargetHost, runEnv); err != nil {
 		return err
 	}
 
@@ -261,7 +268,7 @@ func isEnvVarProvided(name string, envVars []string, secrets []string) bool {
 
 // createPermissionProfileFile creates a temporary file with the permission profile
 func createPermissionProfileFile(serverName string, permProfile *permissions.Profile, debugMode bool) (string, error) {
-	tempFile, err := os.CreateTemp("", fmt.Sprintf("vibetool-%s-permissions-*.json", serverName))
+	tempFile, err := os.CreateTemp("", fmt.Sprintf("toolhive-%s-permissions-*.json", serverName))
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary file: %v", err)
 	}

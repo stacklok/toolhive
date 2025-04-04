@@ -22,8 +22,8 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 
-	"github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
 // Common socket paths
@@ -317,9 +317,9 @@ func (c *Client) StartContainer(ctx context.Context, containerID string) error {
 
 // ListContainers lists containers
 func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, error) {
-	// Create filter for vibetool containers
+	// Create filter for toolhive containers
 	filterArgs := filters.NewArgs()
-	filterArgs.Add("label", "vibetool=true")
+	filterArgs.Add("label", "toolhive=true")
 
 	// List containers
 	containers, err := c.client.ContainerList(ctx, container.ListOptions{
@@ -495,28 +495,6 @@ func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runt
 		Labels:  info.Config.Labels,
 		Ports:   ports,
 	}, nil
-}
-
-// GetContainerIP gets container IP address
-func (c *Client) GetContainerIP(ctx context.Context, containerID string) (string, error) {
-	// Inspect container
-	info, err := c.client.ContainerInspect(ctx, containerID)
-	if err != nil {
-		// Check if the error is because the container doesn't exist
-		if client.IsErrNotFound(err) {
-			return "", NewContainerError(ErrContainerNotFound, containerID, "container not found")
-		}
-		return "", NewContainerError(err, containerID, fmt.Sprintf("failed to inspect container: %v", err))
-	}
-
-	// Get IP address from the default network
-	for _, netInfo := range info.NetworkSettings.Networks {
-		if netInfo.IPAddress != "" {
-			return netInfo.IPAddress, nil
-		}
-	}
-
-	return "", NewContainerError(fmt.Errorf("no IP address found"), containerID, "container has no IP address")
 }
 
 // readCloserWrapper wraps an io.Reader to implement io.ReadCloser

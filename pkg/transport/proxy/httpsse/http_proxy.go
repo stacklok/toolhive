@@ -13,8 +13,8 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
-	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
-	"github.com/stacklok/vibetool/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // Proxy defines the interface for proxying messages between clients and destinations.

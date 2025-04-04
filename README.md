@@ -1,16 +1,16 @@
-# Vibe Tool (vt)
+# ToolHive (thv)
 
-<img src="docs/images/green_marmot_transparent.png" alt="Vibe Tool Logo" width="300" />
+<img src="docs/images/toolhive.png" alt="ToolHive Logo" width="300" />
 
-Vibe Tool (vt) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers. It is written in Golang and has extensive test coverage—including input validation—to ensure reliability and security.
+ToolHive (thv) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers. It is written in Golang and has extensive test coverage—including input validation—to ensure reliability and security.
 
-Under the hood, Vibe Tool acts as a very thin client for the Docker/Podman Unix socket API. This design choice allows it to remain both efficient and lightweight while still providing powerful, container-based isolation for running MCP servers.
+Under the hood, ToolHive acts as a very thin client for the Docker/Podman Unix socket API. This design choice allows it to remain both efficient and lightweight while still providing powerful, container-based isolation for running MCP servers.
 
-## Why Vibe Tool?
+## Why ToolHive?
 
-Deploying MCP servers requires complex multi-step processes with a lot of friction: involving running random potentially harmful commands (e.g. using `uv` or `npx`), manually managing security credentials (e.g. putting an api token into a text file), and wrestling with inconsistent packaging methods. vibe tool aims to solve this by starting containers in a locked-down environment, granting only the minimal permissions required to run. This significantly reduces the attack surface, imporves usability, and enforces best practices for container security.
+Deploying MCP servers requires complex multi-step processes with a lot of friction: involving running random potentially harmful commands (e.g. using `uv` or `npx`), manually managing security credentials (e.g. putting an api token into a text file), and wrestling with inconsistent packaging methods. ToolHive aims to solve this by starting containers in a locked-down environment, granting only the minimal permissions required to run. This significantly reduces the attack surface, imporves usability, and enforces best practices for container security.
 
-Vibe Tool radically simplifies MCP deployment by:
+ToolHive radically simplifies MCP deployment by:
  - Ease of Use: Instantly deploy MCP servers through Docker containers. Users can start their MCP servers with a single, straightforward command. No need to install and fight with different versions of python / node / etc.
 
 - Enhanced Security: Secure by default: the tool securely manages secrets and configurations, greatly reducing leaks & risks. No more plaintext secrets in configuration files
@@ -28,23 +28,23 @@ Vibe Tool radically simplifies MCP deployment by:
 
 ## Commands
 
-The vt command-line interface provides the following subcommands:
+The thv command-line interface provides the following subcommands:
 
-* `vt run` Runs an MCP server using the default STDIO transport.
+* `thv run` Runs an MCP server using the default STDIO transport.
 
-* `vt run --transport=sse` Runs an SSE MCP server.
+* `thv run --transport=sse` Runs an SSE MCP server.
 
-* `vt list` Lists running MCP servers.
+* `thv list` Lists running MCP servers.
 
-* `vt stop` Stops an MCP server.
+* `thv stop` Stops an MCP server.
 
-* `vt rm` Removes an MCP server.
+* `thv rm` Removes an MCP server.
 
-* `vt help` Displays help information.
+* `thv help` Displays help information.
 
-* `vt version` Shows the current version of Vibe Tool.
+* `thv version` Shows the current version of ToolHive.
 
-* `vt (no subcommand)` Starts an MCP server that itself is used to manage Vibe Tool servers.
+* `thv (no subcommand)` Starts an MCP server that itself is used to manage ToolHive servers.
 
 ## Usage
 
@@ -53,20 +53,20 @@ The vt command-line interface provides the following subcommands:
 To run an MCP server, use the following command:
 
 ```bash
-vt run --transport sse --name my-mcp-server --port 8080 my-mcp-server-image:latest -- my-mcp-server-args
+thv run --transport sse --name my-mcp-server --port 8080 my-mcp-server-image:latest -- my-mcp-server-args
 ```
 
 This command closely resembles `docker run` but focuses on security and simplicity. When invoked:
 
-* Vibe Tool creates a container from the specified image (`my-mcp-server-image:latest`).
+* ToolHive creates a container from the specified image (`my-mcp-server-image:latest`).
 
 * It configures the container to listen on the chosen port (8080).
 
-* Labels the container so it can be tracked by Vibe Tool:
+* Labels the container so it can be tracked by ToolHive:
 
     ```yaml
-    vibetool: true
-    vibetool-name: my-mcp-server
+    toolhive: true
+    toolhive-name: my-mcp-server
     ```
 
 * Sets up the specified transport (e.g., SSE, stdio), potentially using a reverse proxy, depending on user choice.
@@ -75,17 +75,17 @@ This command closely resembles `docker run` but focuses on security and simplici
 
 * **SSE**:
 
-    If the transport is `sse`, Vibe Tool creates a reverse proxy a random that forwards requests to the container. This means the container itself does not directly expose any ports.
+    If the transport is `sse`, ToolHive creates a reverse proxy a random that forwards requests to the container. This means the container itself does not directly expose any ports.
 
 * **STDIO**:
 
-    If the transport is `stdio`, Vibe Tool redirects SSE traffic to the container's standard input and output.
+    If the transport is `stdio`, ToolHive redirects SSE traffic to the container's standard input and output.
     This acts as a secure proxy, ensuring that the container does not have direct access to the network nor
     the host machine.
 
 ## Permissions
 
-Containers launched by Vibe Tool come with a minimal set of permissions, strictly limited to what is required. Permissions can be further customized via a JSON-based permission profile provided with the `--permission-profile` flag.
+Containers launched by ToolHive come with a minimal set of permissions, strictly limited to what is required. Permissions can be further customized via a JSON-based permission profile provided with the `--permission-profile` flag.
 
 An example permission profile file could be:
 
@@ -129,10 +129,10 @@ Two built-in profiles are included for convenience:
 Use:
 
 ```bash
-vt list
+thv list
 ```
 
-This lists all active MCP servers managed by Vibe Tool, along with their current status.
+This lists all active MCP servers managed by ToolHive, along with their current status.
 
 ## Running Against Local Kind Cluster
 

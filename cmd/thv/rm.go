@@ -7,15 +7,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/container"
-	"github.com/stacklok/vibetool/pkg/labels"
-	"github.com/stacklok/vibetool/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 var rmCmd = &cobra.Command{
 	Use:   "rm [container-name]",
 	Short: "Remove an MCP server",
-	Long:  `Remove an MCP server managed by Vibe Tool.`,
+	Long:  `Remove an MCP server managed by ToolHive.`,
 	Args:  cobra.ExactArgs(1),
 	RunE:  rmCmdFunc,
 }
@@ -53,8 +53,8 @@ func rmCmdFunc(_ *cobra.Command, args []string) error {
 	var isRunning bool
 	var containerLabels map[string]string
 	for _, c := range containers {
-		// Check if the container is managed by Vibe Tool
-		if !labels.IsVibeToolContainer(c.Labels) {
+		// Check if the container is managed by ToolHive
+		if !labels.IstoolhiveContainer(c.Labels) {
 			continue
 		}
 

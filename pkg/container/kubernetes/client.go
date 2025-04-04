@@ -27,9 +27,9 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/tools/watch"
 
-	"github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/permissions"
-	transtypes "github.com/stacklok/vibetool/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // Constants for container status
@@ -251,7 +251,7 @@ func (c *Client) CreateContainer(ctx context.Context,
 	options *runtime.CreateContainerOptions) (string, error) {
 	namespace := getCurrentNamespace()
 	containerLabels["app"] = containerName
-	containerLabels["vibetool"] = "true"
+	containerLabels["toolhive"] = "true"
 
 	attachStdio := options == nil || options.AttachStdio
 
@@ -296,7 +296,7 @@ func (c *Client) CreateContainer(ctx context.Context,
 					WithRestartPolicy(corev1.RestartPolicyAlways))))
 
 	// Apply the statefulset using server-side apply
-	fieldManager := "vibetool-container-manager"
+	fieldManager := "toolhive-container-manager"
 	createdStatefulSet, err := c.client.AppsV1().StatefulSets(namespace).
 		Apply(ctx, statefulSetApply, metav1.ApplyOptions{
 			FieldManager: fieldManager,
@@ -431,10 +431,10 @@ func (c *Client) IsContainerRunning(ctx context.Context, containerID string) (bo
 
 // ListContainers implements runtime.Runtime.
 func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, error) {
-	// Create label selector for vibetool containers
-	labelSelector := "vibetool=true"
+	// Create label selector for toolhive containers
+	labelSelector := "toolhive=true"
 
-	// List pods with the vibetool label
+	// List pods with the toolhive label
 	namespace := getCurrentNamespace()
 	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
@@ -800,7 +800,7 @@ func (c *Client) createHeadlessService(
 			WithClusterIP("None")) // "None" makes it a headless service
 
 	// Apply the service using server-side apply
-	fieldManager := "vibetool-container-manager"
+	fieldManager := "toolhive-container-manager"
 	_, err = c.client.CoreV1().Services(namespace).
 		Apply(ctx, serviceApply, metav1.ApplyOptions{
 			FieldManager: fieldManager,

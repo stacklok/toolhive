@@ -22,8 +22,8 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 
-	"github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
 // Common socket paths
@@ -317,9 +317,9 @@ func (c *Client) StartContainer(ctx context.Context, containerID string) error {
 
 // ListContainers lists containers
 func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, error) {
-	// Create filter for vibetool containers
+	// Create filter for toolhive containers
 	filterArgs := filters.NewArgs()
-	filterArgs.Add("label", "vibetool=true")
+	filterArgs.Add("label", "toolhive=true")
 
 	// List containers
 	containers, err := c.client.ContainerList(ctx, container.ListOptions{

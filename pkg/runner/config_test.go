@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/vibetool/pkg/authz"
-	rt "github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/permissions"
-	"github.com/stacklok/vibetool/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/authz"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // mockRuntime implements the Runtime interface for testing
@@ -739,11 +739,11 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 				ContainerLabels: map[string]string{},
 			},
 			expected: map[string]string{
-				"vibetool":           "true",
-				"vibetool-name":      "test-server",
-				"vibetool-transport": "sse",
-				"vibetool-port":      "8080",
-				"vibetool-tool-type": "mcp",
+				"toolhive":           "true",
+				"toolhive-name":      "test-server",
+				"toolhive-transport": "sse",
+				"toolhive-port":      "8080",
+				"toolhive-tool-type": "mcp",
 			},
 		},
 		{
@@ -757,10 +757,10 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 				},
 			},
 			expected: map[string]string{
-				"vibetool":           "true",
-				"vibetool-name":      "test-server",
-				"vibetool-transport": "stdio",
-				"vibetool-tool-type": "mcp",
+				"toolhive":           "true",
+				"toolhive-name":      "test-server",
+				"toolhive-transport": "stdio",
+				"toolhive-tool-type": "mcp",
 				"existing-label":     "existing-value",
 			},
 		},

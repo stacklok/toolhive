@@ -7,16 +7,16 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/container"
-	rt "github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/labels"
-	"github.com/stacklok/vibetool/pkg/process"
+	"github.com/stacklok/toolhive/pkg/container"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/process"
 )
 
 var stopCmd = &cobra.Command{
 	Use:   "stop [container-name]",
 	Short: "Stop an MCP server",
-	Long:  `Stop a running MCP server managed by Vibe Tool.`,
+	Long:  `Stop a running MCP server managed by ToolHive.`,
 	Args:  cobra.ExactArgs(1),
 	RunE:  stopCmdFunc,
 }
@@ -39,8 +39,8 @@ func findContainerID(ctx context.Context, runtime rt.Runtime, containerName stri
 
 	// Find the container with the given name
 	for _, c := range containers {
-		// Check if the container is managed by Vibe Tool
-		if !labels.IsVibeToolContainer(c.Labels) {
+		// Check if the container is managed by ToolHive
+		if !labels.IstoolhiveContainer(c.Labels) {
 			continue
 		}
 

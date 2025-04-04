@@ -12,7 +12,7 @@ import (
 	"github.com/adrg/xdg"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/vibetool/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // Config represents the configuration of the application.
@@ -123,5 +123,5 @@ func (c *Config) WriteConfig() error {
 
 // Consider making the config path configurable.
 func getConfigPath() (string, error) {
-	return xdg.ConfigFile("vibetool/config.yaml")
+	return xdg.ConfigFile("toolhive/config.yaml")
 }

@@ -12,12 +12,12 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
-	"github.com/stacklok/vibetool/pkg/container"
-	rt "github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/permissions"
-	"github.com/stacklok/vibetool/pkg/transport/errors"
-	"github.com/stacklok/vibetool/pkg/transport/proxy/httpsse"
-	"github.com/stacklok/vibetool/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/container"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/transport/errors"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/httpsse"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // StdioTransport implements the Transport interface using standard input/output.

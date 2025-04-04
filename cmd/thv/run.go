@@ -9,10 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/container"
-	"github.com/stacklok/vibetool/pkg/permissions"
-	"github.com/stacklok/vibetool/pkg/registry"
-	"github.com/stacklok/vibetool/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 var runCmd = &cobra.Command{
@@ -268,7 +268,7 @@ func isEnvVarProvided(name string, envVars []string, secrets []string) bool {
 
 // createPermissionProfileFile creates a temporary file with the permission profile
 func createPermissionProfileFile(serverName string, permProfile *permissions.Profile, debugMode bool) (string, error) {
-	tempFile, err := os.CreateTemp("", fmt.Sprintf("vibetool-%s-permissions-*.json", serverName))
+	tempFile, err := os.CreateTemp("", fmt.Sprintf("toolhive-%s-permissions-*.json", serverName))
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary file: %v", err)
 	}

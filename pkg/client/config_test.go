@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
 // setupTestConfig creates a temporary directory and config file for testing
@@ -18,7 +18,7 @@ func setupTestConfig(t *testing.T, testName string) (string, string, ConfigFile)
 	t.Helper()
 
 	// Create a temporary file
-	tempDir, err := os.MkdirTemp("", "vibetool-test")
+	tempDir, err := os.MkdirTemp("", "toolhive-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}

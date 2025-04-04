@@ -1,4 +1,4 @@
-// Package main provides the entry point for the vibetool command-line application.
+// Package main provides the entry point for the toolhive command-line application.
 // This file contains the implementation of the 'list' command.
 package main
 
@@ -11,16 +11,16 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/client"
-	"github.com/stacklok/vibetool/pkg/container"
-	rt "github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/container"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/labels"
 )
 
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List running MCP servers",
-	Long:  `List all MCP servers managed by Vibe Tool, including their status and configuration.`,
+	Long:  `List all MCP servers managed by ToolHive, including their status and configuration.`,
 	RunE:  listCmdFunc,
 }
 
@@ -68,26 +68,26 @@ func listCmdFunc(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to list containers: %v", err)
 	}
 
-	// Filter containers to only show those managed by Vibe Tool
-	var vibeToolContainers []rt.ContainerInfo
+	// Filter containers to only show those managed by ToolHive
+	var toolhiveContainers []rt.ContainerInfo
 	for _, c := range containers {
-		if labels.IsVibeToolContainer(c.Labels) {
-			vibeToolContainers = append(vibeToolContainers, c)
+		if labels.IstoolhiveContainer(c.Labels) {
+			toolhiveContainers = append(toolhiveContainers, c)
 		}
 	}
 
 	// Filter containers if not showing all
 	if !listAll {
 		var runningContainers []rt.ContainerInfo
-		for _, c := range vibeToolContainers {
+		for _, c := range toolhiveContainers {
 			if c.State == "running" {
 				runningContainers = append(runningContainers, c)
 			}
 		}
-		vibeToolContainers = runningContainers
+		toolhiveContainers = runningContainers
 	}
 
-	if len(vibeToolContainers) == 0 {
+	if len(toolhiveContainers) == 0 {
 		fmt.Println("No MCP servers found")
 		return nil
 	}
@@ -96,11 +96,11 @@ func listCmdFunc(_ *cobra.Command, _ []string) error {
 	switch listFormat {
 	//nolint:goconst
 	case "json":
-		return printJSONOutput(vibeToolContainers)
+		return printJSONOutput(toolhiveContainers)
 	case "mcpservers":
-		return printMCPServersOutput(vibeToolContainers)
+		return printMCPServersOutput(toolhiveContainers)
 	default:
-		printTextOutput(vibeToolContainers)
+		printTextOutput(toolhiveContainers)
 		return nil
 	}
 }

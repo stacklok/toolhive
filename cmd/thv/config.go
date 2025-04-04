@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/config"
-	"github.com/stacklok/vibetool/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 var configCmd = &cobra.Command{
@@ -37,7 +37,7 @@ var autoDiscoveryCmd = &cobra.Command{
 	Use:   "auto-discovery [true|false]",
 	Short: "Set whether to enable auto-discovery of MCP clients",
 	Long: `Set whether to enable auto-discovery and configuration of MCP clients.
-When enabled, Vibe Tool will automatically update client configuration files
+When enabled, ToolHive will automatically update client configuration files
 with the URLs of running MCP servers.`,
 	Args: cobra.ExactArgs(1),
 	RunE: autoDiscoveryCmdFunc,

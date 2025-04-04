@@ -6,16 +6,16 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/container"
-	rt "github.com/stacklok/vibetool/pkg/container/runtime"
-	"github.com/stacklok/vibetool/pkg/process"
-	"github.com/stacklok/vibetool/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/container"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 var restartCmd = &cobra.Command{
 	Use:   "restart [container-name]",
 	Short: "Restart a tooling server",
-	Long:  `Restart a running tooling server managed by Vibe Tool. If the server is not running, it will be started.`,
+	Long:  `Restart a running tooling server managed by ToolHive. If the server is not running, it will be started.`,
 	Args:  cobra.ExactArgs(1),
 	RunE:  restartCmdFunc,
 }

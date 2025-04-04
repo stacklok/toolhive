@@ -11,7 +11,7 @@ import (
 )
 
 // SecretsPasswordEnvVar is the environment variable used to specify the password for encrypting and decrypting secrets.
-const SecretsPasswordEnvVar = "VIBETOOL_SECRETS_PASSWORD"
+const SecretsPasswordEnvVar = "TOOLHIVE_SECRETS_PASSWORD"
 
 // ProviderType represents an enum of the types of available secrets providers.
 type ProviderType string
@@ -30,7 +30,7 @@ var ErrUnknownManagerType = errors.New("unknown secret manager type")
 func CreateSecretManager(managerType ProviderType) (Manager, error) {
 	switch managerType {
 	case BasicType:
-		secretsPath, err := xdg.DataFile("vibetool/secrets")
+		secretsPath, err := xdg.DataFile("toolhive/secrets")
 		if err != nil {
 			return nil, fmt.Errorf("unable to access secrets file path %v", err)
 		}
@@ -42,7 +42,7 @@ func CreateSecretManager(managerType ProviderType) (Manager, error) {
 		}
 		// Convert to 256-bit hash for use with AES-GCM.
 		key := sha256.Sum256(password)
-		secretsPath, err := xdg.DataFile("vibetool/secrets_encrypted")
+		secretsPath, err := xdg.DataFile("toolhive/secrets_encrypted")
 		if err != nil {
 			return nil, fmt.Errorf("unable to access secrets file path %v", err)
 		}
@@ -53,7 +53,7 @@ func CreateSecretManager(managerType ProviderType) (Manager, error) {
 }
 
 // GetSecretsPassword returns the password to use for encrypting and decrypting secrets.
-// It will attempt to retrieve it from the environment variable VIBETOOL_SECRETS_PASSWORD.
+// It will attempt to retrieve it from the environment variable TOOLHIVE_SECRETS_PASSWORD.
 // If the environment variable is not set, it will prompt the user to enter a password.
 func GetSecretsPassword() ([]byte, error) {
 	var err error

@@ -19,7 +19,7 @@ kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.
 
 When the ingress controller is running, you should have an external IP set for it. Take not of this IP.
 
-Add the following Ingress yaml that points to your vibetool service:
+Add the following Ingress yaml that points to your toolhive service:
 ```yaml
 ---
 apiVersion: networking.k8s.io/v1
@@ -35,14 +35,14 @@ spec:
         path: /sse
         backend:
           service:
-            name: vibetool
+            name: toolhive
             port:
               number: 8080
       - pathType: Prefix
         path: /messages
         backend:
           service:
-            name: vibetool
+            name: toolhive
             port:
               number: 8080
 ```

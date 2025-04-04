@@ -16,8 +16,8 @@ import (
 	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/vibetool/pkg/config"
-	"github.com/stacklok/vibetool/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
 // lockTimeout is the maximum time to wait for a file lock

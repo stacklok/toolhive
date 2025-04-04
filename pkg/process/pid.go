@@ -15,7 +15,7 @@ import (
 func GetPIDFilePath(containerBaseName string) string {
 	// Use the system temporary directory
 	tmpDir := os.TempDir()
-	return filepath.Join(tmpDir, fmt.Sprintf("vibetool-%s.pid", containerBaseName))
+	return filepath.Join(tmpDir, fmt.Sprintf("toolhive-%s.pid", containerBaseName))
 }
 
 // WritePIDFile writes a process ID to a file

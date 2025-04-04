@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/vibetool/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 // TestNewCedarAuthorizer tests the creation of a new Cedar authorizer with different configurations.

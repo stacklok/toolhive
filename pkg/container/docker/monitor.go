@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stacklok/vibetool/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
 // ContainerMonitor watches a container's state and reports when it exits

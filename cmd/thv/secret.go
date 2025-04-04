@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/vibetool/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 func newSecretCommand() *cobra.Command {

@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/stacklok/vibetool/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
 // ContainerInfo represents information about a container

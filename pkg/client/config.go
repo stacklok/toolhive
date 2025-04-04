@@ -50,6 +50,8 @@ const (
 	Cursor MCPClient = "cursor"
 	// VSCodeInsider represents the VSCode Insider editor.
 	VSCodeInsider MCPClient = "vscode-insider"
+	// VSCode represents the standard VSCode editor.
+	VSCode MCPClient = "vscode"
 )
 
 // mcpClientConfig represents a configuration path for a supported MCP client.
@@ -76,9 +78,21 @@ var supportedClientIntegrations = []mcpClientConfig{
 	},
 	{
 		ClientType:  VSCodeInsider,
-		Description: "VSCode Insider editor",
+		Description: "Visual Studio Code Insider",
 		RelPath: []string{
 			"Code - Insiders", "User", "settings.json",
+		},
+		PlatformPrefix: map[string][]string{
+			"linux":  {".config"},
+			"darwin": {"Library", "Application Support"},
+		},
+		Editor: &VSCodeConfigEditor{},
+	},
+	{
+		ClientType:  VSCode,
+		Description: "Visual Studio Code",
+		RelPath: []string{
+			"Code", "User", "settings.json",
 		},
 		PlatformPrefix: map[string][]string{
 			"linux":  {".config"},

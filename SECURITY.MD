@@ -1,6 +1,6 @@
 # Security Policy
 
-The toolhive community take security seriously! We appreciate your efforts to
+The ToolHive community take security seriously! We appreciate your efforts to
 disclose your findings responsibly and will make every effort to acknowledge
 your contributions.
 
@@ -19,7 +19,7 @@ additional files to reproduce the vulnerability.
 If you are only comfortable sharing under GPG, please start by sending an email
 requesting a public PGP key to use for encryption.
 
-### Contacting the toolhive security team
+### Contacting the ToolHive security team
 
 Contact the team by sending email to
 [security@stacklok.com](mailto:security@stacklok.com).
@@ -28,7 +28,7 @@ Contact the team by sending email to
 
 ### Private disclosure processes
 
-The toolhive community asks that all suspected vulnerabilities be handled in
+The ToolHive community asks that all suspected vulnerabilities be handled in
 accordance with
 [Responsible Disclosure model](https://en.wikipedia.org/wiki/Responsible_disclosure).
 
@@ -46,7 +46,7 @@ with the fix and release process.
 
 ## Patch, release, and public communication
 
-For each vulnerability, the toolhive security team will coordinate to create the
+For each vulnerability, the ToolHive security team will coordinate to create the
 fix and release, and notify the rest of the community.
 
 All of the timelines below are suggestions and assume a Private Disclosure.
@@ -58,7 +58,7 @@ All of the timelines below are suggestions and assume a Private Disclosure.
 - If the fix relies on another upstream project's disclosure timeline, that will
   adjust the process as well.
 - We will work with the upstream project to fit their timeline and best protect
-  toolhive users.
+  ToolHive users.
 - The Security team will give advance notice to the Private Distributors list
   before the fix is released.
 

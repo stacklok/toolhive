@@ -139,10 +139,10 @@ func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch client {
-	case "roo-code", "cursor", "vscode-insider":
+	case "roo-code", "cursor", "vscode-insider", "vscode":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode-insider)", client)
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", client)
 	}
 
 	// Get the current config
@@ -172,10 +172,10 @@ func removeClientCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch client {
-	case "roo-code", "cursor", "vscode-insider":
+	case "roo-code", "cursor", "vscode-insider", "vscode":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode-insider)", client)
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", client)
 	}
 
 	// Get the current config

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner/state"
 )
 
@@ -31,7 +32,7 @@ func (r *Runner) SaveState(ctx context.Context) error {
 		return fmt.Errorf("failed to write run configuration: %w", err)
 	}
 
-	fmt.Printf("Saved run configuration for %s\n", r.Config.BaseName)
+	logger.Log.Info(fmt.Sprintf("Saved run configuration for %s", r.Config.BaseName))
 	return nil
 }
 
@@ -104,6 +105,6 @@ func DeleteSavedConfig(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to delete run configuration: %w", err)
 	}
 
-	fmt.Printf("Deleted run configuration for %s\n", name)
+	logger.Log.Info(fmt.Sprintf("Deleted run configuration for %s", name))
 	return nil
 }

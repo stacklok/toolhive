@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 var rootCmd = &cobra.Command{
@@ -19,7 +21,7 @@ container-based isolation for running MCP servers.`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		// If no subcommand is provided, print help
 		if err := cmd.Help(); err != nil {
-			fmt.Printf("Error displaying help: %v\n", err)
+			logger.Log.Error(fmt.Sprintf("Error displaying help: %v", err))
 		}
 	},
 }
@@ -28,11 +30,14 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show the version of ToolHive",
 	Run: func(_ *cobra.Command, _ []string) {
-		fmt.Println("ToolHive v0.1.0")
+		logger.Log.Info("ToolHive v0.1.0")
 	},
 }
 
 func init() {
+	// Initialize the logger system
+	logger.Initialize()
+
 	// Add persistent flags
 	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
 
@@ -50,7 +55,7 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		logger.Log.Error("%v, %v", os.Stderr, err)
 		os.Exit(1)
 	}
 }

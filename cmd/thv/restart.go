@@ -8,6 +8,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -44,8 +45,8 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	var running bool
 
 	if err != nil {
-		fmt.Printf("Warning: Failed to find container: %v\n", err)
-		fmt.Printf("Trying to find state with name %s directly...\n", containerName)
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to find container: %v", err))
+		logger.Log.Warn(fmt.Sprintf("Trying to find state with name %s directly...", containerName))
 
 		// Try to use the provided name as the base name
 		containerBaseName = containerName
@@ -60,8 +61,8 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 		// Get the base container name
 		containerBaseName, err = getContainerBaseName(ctx, runtime, containerID)
 		if err != nil {
-			fmt.Printf("Warning: Could not find base container name in labels: %v\n", err)
-			fmt.Printf("Using provided name %s as base name\n", containerName)
+			logger.Log.Warn(fmt.Sprintf("Warning: Could not find base container name in labels: %v", err))
+			logger.Log.Warn(fmt.Sprintf("Using provided name %s as base name", containerName))
 			containerBaseName = containerName
 		}
 	}
@@ -70,17 +71,17 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	proxyRunning := isProxyRunning(containerBaseName)
 
 	if running && proxyRunning {
-		fmt.Printf("Container %s and proxy are already running\n", containerName)
+		logger.Log.Info(fmt.Sprintf("Container %s and proxy are already running", containerName))
 		return nil
 	}
 
 	// If the container is running but the proxy is not, stop the container first
 	if containerID != "" && running && !proxyRunning {
-		fmt.Printf("Container %s is running but proxy is not. Stopping container...\n", containerName)
+		logger.Log.Info(fmt.Sprintf("Container %s is running but proxy is not. Stopping container...", containerName))
 		if err := runtime.StopContainer(ctx, containerID); err != nil {
 			return fmt.Errorf("failed to stop container: %v", err)
 		}
-		fmt.Printf("Container %s stopped\n", containerName)
+		logger.Log.Info(fmt.Sprintf("Container %s stopped", containerName))
 	}
 
 	// Load the configuration from the state store
@@ -89,10 +90,10 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load state for %s: %v", containerBaseName, err)
 	}
 
-	fmt.Printf("Loaded configuration from state for %s\n", containerBaseName)
+	logger.Log.Info(fmt.Sprintf("Loaded configuration from state for %s", containerBaseName))
 
 	// Run the tooling server
-	fmt.Printf("Starting tooling server %s...\n", containerName)
+	logger.Log.Info(fmt.Sprintf("Starting tooling server %s...", containerName))
 	return RunMCPServer(ctx, cmd, mcpRunner.Config, false)
 }
 
@@ -111,7 +112,7 @@ func isProxyRunning(containerBaseName string) bool {
 	// Check if the process exists and is running
 	isRunning, err := process.FindProcess(pid)
 	if err != nil {
-		fmt.Printf("Warning: Error checking process: %v\n", err)
+		logger.Log.Warn(fmt.Sprintf("Warning: Error checking process: %v", err))
 		return false
 	}
 

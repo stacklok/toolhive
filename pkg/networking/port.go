@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (
@@ -32,7 +34,7 @@ func IsAvailable(port int) bool {
 	}
 	if err := tcpListener.Close(); err != nil {
 		// Log the error but continue, as we're just checking if the port is available
-		fmt.Printf("Warning: Failed to close TCP listener: %v\n", err)
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to close TCP listener: %v", err))
 	}
 
 	// Check UDP
@@ -47,7 +49,7 @@ func IsAvailable(port int) bool {
 	}
 	if err := udpConn.Close(); err != nil {
 		// Log the error but continue, as we're just checking if the port is available
-		fmt.Printf("Warning: Failed to close UDP connection: %v\n", err)
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to close UDP connection: %v", err))
 	}
 
 	return true

@@ -7,6 +7,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
@@ -129,13 +130,13 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	// Set the port bindings
 	containerOptions.PortBindings[containerPortStr] = portBindings
 
-	fmt.Printf("Exposing container port %d\n", t.targetPort)
+	logger.Log.Info(fmt.Sprintf("Exposing container port %d", t.targetPort))
 
 	// For SSE transport, we don't need to attach stdio
 	containerOptions.AttachStdio = false
 
 	// Create the container
-	fmt.Printf("Creating container %s from image %s...\n", containerName, image)
+	logger.Log.Info(fmt.Sprintf("Creating container %s from image %s...", containerName, image))
 	containerID, err := t.runtime.CreateContainer(
 		ctx,
 		image,
@@ -151,7 +152,7 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 		return fmt.Errorf("failed to create container: %v", err)
 	}
 	t.containerID = containerID
-	fmt.Printf("Container created with ID: %s\n", containerID)
+	logger.Log.Info(fmt.Sprintf("Container created with ID: %s", containerID))
 
 	return nil
 }
@@ -175,7 +176,7 @@ func (t *SSETransport) Start(ctx context.Context) error {
 	}
 
 	// Start the container
-	fmt.Printf("Starting container %s...\n", t.containerName)
+	logger.Log.Info(fmt.Sprintf("Starting container %s...", t.containerName))
 	if err := t.runtime.StartContainer(ctx, t.containerID); err != nil {
 		return fmt.Errorf("failed to start container: %v", err)
 	}
@@ -195,8 +196,8 @@ func (t *SSETransport) Start(ctx context.Context) error {
 	containerPort := t.targetPort
 
 	targetURI := fmt.Sprintf("http://%s:%d", targetHost, containerPort)
-	fmt.Printf("Setting up transparent proxy to forward from host port %d to %s\n",
-		t.port, targetURI)
+	logger.Log.Info(fmt.Sprintf("Setting up transparent proxy to forward from host port %d to %s",
+		t.port, targetURI))
 
 	// Create the transparent proxy with middlewares
 	t.proxy = transparent.NewTransparentProxy(t.port, t.containerName, targetURI, t.middlewares...)
@@ -204,7 +205,7 @@ func (t *SSETransport) Start(ctx context.Context) error {
 		return err
 	}
 
-	fmt.Printf("SSE transport started for container %s on port %d\n", t.containerName, t.port)
+	logger.Log.Info(fmt.Sprintf("SSE transport started for container %s on port %d", t.containerName, t.port))
 
 	// Create a container monitor
 	monitorRuntime, err := container.NewFactory().Create(ctx)
@@ -242,7 +243,7 @@ func (t *SSETransport) Stop(ctx context.Context) error {
 	// Stop the transparent proxy
 	if t.proxy != nil {
 		if err := t.proxy.Stop(ctx); err != nil {
-			fmt.Printf("Warning: Failed to stop proxy: %v\n", err)
+			logger.Log.Warn(fmt.Sprintf("Warning: Failed to stop proxy: %v", err))
 		}
 	}
 
@@ -254,13 +255,13 @@ func (t *SSETransport) Stop(ctx context.Context) error {
 
 		// Remove the container if debug mode is not enabled
 		if !t.debug {
-			fmt.Printf("Removing container %s...\n", t.containerName)
+			logger.Log.Info(fmt.Sprintf("Removing container %s...", t.containerName))
 			if err := t.runtime.RemoveContainer(ctx, t.containerID); err != nil {
-				fmt.Printf("Warning: Failed to remove container: %v\n", err)
+				logger.Log.Warn(fmt.Sprintf("Warning: Failed to remove container: %v", err))
 			}
-			fmt.Printf("Container %s removed\n", t.containerName)
+			logger.Log.Info(fmt.Sprintf("Container %s removed", t.containerName))
 		} else {
-			fmt.Printf("Debug mode enabled, container %s not removed\n", t.containerName)
+			logger.Log.Info(fmt.Sprintf("Debug mode enabled, container %s not removed", t.containerName))
 		}
 	}
 
@@ -273,10 +274,10 @@ func (t *SSETransport) handleContainerExit(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	case err := <-t.errorCh:
-		fmt.Printf("Container %s exited: %v\n", t.containerName, err)
+		logger.Log.Info(fmt.Sprintf("Container %s exited: %v", t.containerName, err))
 		// Stop the transport when the container exits
 		if stopErr := t.Stop(ctx); stopErr != nil {
-			fmt.Printf("Error stopping transport after container exit: %v\n", stopErr)
+			logger.Log.Error(fmt.Sprintf("Error stopping transport after container exit: %v", stopErr))
 		}
 	}
 }

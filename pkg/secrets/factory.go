@@ -9,6 +9,8 @@ import (
 	"github.com/adrg/xdg"
 	"github.com/zalando/go-keyring"
 	"golang.org/x/term"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (
@@ -85,7 +87,7 @@ func GetSecretsPassword() ([]byte, error) {
 
 	// If the keyring is available, we can store the password for future use.
 	if keyringAvailable {
-		fmt.Printf("writing password to os keyring\n")
+		logger.Log.Info("writing password to os keyring")
 		err = keyring.Set(keyringService, keyringService, string(password))
 		if err != nil {
 			return nil, fmt.Errorf("failed to store password in keyring: %w", err)
@@ -99,7 +101,7 @@ func readPasswordStdin() ([]byte, error) {
 	fmt.Print("Enter a password for secrets encryption and decryption: ")
 	password, err := term.ReadPassword(int(os.Stdin.Fd()))
 	// Start new line after receiving password to ensure errors are printed correctly.
-	fmt.Println()
+	logger.Log.Info("")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read password: %w", err)
 	}

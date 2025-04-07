@@ -13,6 +13,7 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -176,7 +177,7 @@ func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
 	if err != nil {
 		return c, err
 	}
-	fmt.Printf("Using host port: %d\n", selectedPort)
+	logger.Log.Info(fmt.Sprintf("Using host port: %d", selectedPort))
 	c.Port = selectedPort
 
 	// Select a target port for the container if using SSE transport
@@ -185,7 +186,7 @@ func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
 		if err != nil {
 			return c, fmt.Errorf("target port error: %w", err)
 		}
-		fmt.Printf("Using target port: %d\n", selectedTargetPort)
+		logger.Log.Info(fmt.Sprintf("Using target port: %d", selectedTargetPort))
 		c.TargetPort = selectedTargetPort
 	}
 
@@ -333,9 +334,9 @@ func (c *RunConfig) ProcessVolumeMounts() error {
 			c.PermissionProfile.Write = append(c.PermissionProfile.Write, mount)
 		}
 
-		fmt.Printf("Adding volume mount: %s -> %s (%s)\n",
+		logger.Log.Info(fmt.Sprintf("Adding volume mount: %s -> %s (%s)",
 			source, target,
-			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
+			map[bool]string{true: "read-only", false: "read-write"}[readOnly]))
 	}
 
 	return nil

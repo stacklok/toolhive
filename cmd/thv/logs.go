@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func newLogsCommand() *cobra.Command {
@@ -16,7 +18,7 @@ func newLogsCommand() *cobra.Command {
 		Short: "Output the logs of an MCP server",
 		Long:  `Output the logs of an MCP server managed by Vibe Tool.`,
 		Args:  cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(_ *cobra.Command, args []string) {
 			// Get container name
 			containerName := args[0]
 
@@ -27,14 +29,14 @@ func newLogsCommand() *cobra.Command {
 			// Create container runtime
 			runtime, err := container.NewFactory().Create(ctx)
 			if err != nil {
-				cmd.Printf("failed to create container runtime: %v", err)
+				logger.Log.Error(fmt.Sprintf("failed to create container runtime: %v", err))
 				return
 			}
 
 			// List containers to find the one with the given name
 			containers, err := runtime.ListContainers(ctx)
 			if err != nil {
-				cmd.Printf("failed to list containers: %v", err)
+				logger.Log.Error(fmt.Sprintf("failed to list containers: %v", err))
 				return
 			}
 
@@ -60,16 +62,17 @@ func newLogsCommand() *cobra.Command {
 			}
 
 			if containerID == "" {
-				cmd.Printf("container %s not found", containerName)
+				logger.Log.Info(fmt.Sprintf("container %s not found", containerName))
 				return
 			}
 
 			logs, err := runtime.ContainerLogs(ctx, containerID)
 			if err != nil {
-				cmd.Printf("failed to get container logs: %v", err)
+				logger.Log.Error(fmt.Sprintf("failed to get container logs: %v", err))
 				return
 			}
-			cmd.Println(logs)
+			logger.Log.Info(logs)
+
 		},
 	}
 }

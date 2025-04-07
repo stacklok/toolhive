@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -43,7 +44,7 @@ func init() {
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
-		fmt.Printf("Warning: Failed to mark flag as required: %v\n", err)
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to mark flag as required: %v", err))
 	}
 }
 
@@ -56,7 +57,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Using host port: %d\n", port)
+	logger.Log.Info(fmt.Sprintf("Using host port: %d", port))
 
 	// Create context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -67,7 +68,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Create JWT validator if OIDC flags are provided
 	if IsOIDCEnabled(cmd) {
-		fmt.Println("OIDC validation enabled")
+		logger.Log.Info("OIDC validation enabled")
 
 		// Get OIDC flag values
 		issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
@@ -89,12 +90,12 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		// Add JWT validation middleware
 		middlewares = append(middlewares, jwtValidator.Middleware)
 	} else {
-		fmt.Println("OIDC validation disabled")
+		logger.Log.Info("OIDC validation disabled")
 	}
 
 	// Create the transparent proxy
-	fmt.Printf("Setting up transparent proxy to forward from host port %d to %s\n",
-		port, proxyTargetURI)
+	logger.Log.Info(fmt.Sprintf("Setting up transparent proxy to forward from host port %d to %s",
+		port, proxyTargetURI))
 
 	// Create the transparent proxy with middlewares
 	proxy := transparent.NewTransparentProxy(port, serverName, proxyTargetURI, middlewares...)
@@ -102,9 +103,9 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start proxy: %v", err)
 	}
 
-	fmt.Printf("Transparent proxy started for server %s on port %d -> %s\n",
-		serverName, port, proxyTargetURI)
-	fmt.Println("Press Ctrl+C to stop")
+	logger.Log.Info(fmt.Sprintf("Transparent proxy started for server %s on port %d -> %s",
+		serverName, port, proxyTargetURI))
+	logger.Log.Info("Press Ctrl+C to stop")
 
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
@@ -112,13 +113,13 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Wait for signal
 	sig := <-sigCh
-	fmt.Printf("Received signal %s, stopping proxy...\n", sig)
+	logger.Log.Info(fmt.Sprintf("Received signal %s, stopping proxy...", sig))
 
 	// Stop the proxy
 	if err := proxy.Stop(ctx); err != nil {
-		fmt.Printf("Warning: Failed to stop proxy: %v\n", err)
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to stop proxy: %v", err))
 	}
 
-	fmt.Printf("Proxy for server %s stopped\n", serverName)
+	logger.Log.Info(fmt.Sprintf("Proxy for server %s stopped", serverName))
 	return nil
 }

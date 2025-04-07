@@ -13,6 +13,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -163,6 +164,8 @@ func TestRunConfig_WithPorts(t *testing.T) {
 			expectError: false,
 		},
 	}
+
+	logger.Initialize()
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {

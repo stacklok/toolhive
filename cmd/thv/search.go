@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 )
 
@@ -44,7 +45,7 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	if len(servers) == 0 {
-		fmt.Printf("No servers found matching query: %s\n", query)
+		logger.Log.Info(fmt.Sprintf("No servers found matching query: %s", query))
 		return nil
 	}
 
@@ -58,7 +59,7 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 	case "json":
 		return printJSONSearchResults(servers)
 	default:
-		fmt.Printf("Found %d servers matching query: %s\n", len(servers), query)
+		logger.Log.Info(fmt.Sprintf("Found %d servers matching query: %s", len(servers), query))
 		printTextSearchResults(servers)
 		return nil
 	}
@@ -73,7 +74,7 @@ func printJSONSearchResults(servers []*registry.Server) error {
 	}
 
 	// Print JSON
-	fmt.Println(string(jsonData))
+	logger.Log.Info(string(jsonData))
 	return nil
 }
 
@@ -101,7 +102,7 @@ func printTextSearchResults(servers []*registry.Server) {
 
 	// Flush the tabwriter
 	if err := w.Flush(); err != nil {
-		fmt.Printf("Warning: Failed to flush tabwriter: %v\n", err)
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to flush tabwriter: %v", err))
 	}
 }
 

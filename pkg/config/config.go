@@ -12,6 +12,7 @@ import (
 	"github.com/adrg/xdg"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -67,11 +68,11 @@ func LoadOrCreateConfig() (*Config, error) {
 		}
 
 		// Prompt user explicitly for auto discovery behaviour.
-		fmt.Printf("Would you like to enable auto discovery and configuraion of MCP clients? (y/n) [n]: ")
+		logger.Log.Info("Would you like to enable auto discovery and configuraion of MCP clients? (y/n) [n]: ")
 		reader := bufio.NewReader(os.Stdin)
 		input, err := reader.ReadString('\n')
 		if err != nil {
-			fmt.Printf("Unable to read input, defaulting to No.\n")
+			logger.Log.Info("Unable to read input, defaulting to No.")
 		}
 		// Treat anything except y/Y as n.
 		if input == "y\n" || input == "Y\n" {
@@ -81,7 +82,7 @@ func LoadOrCreateConfig() (*Config, error) {
 		}
 
 		// Persist the new default to disk.
-		fmt.Printf("initializing configuration file at %s\n", configPath)
+		logger.Log.Info("initializing configuration file at %s", configPath)
 		err = config.WriteConfig()
 		if err != nil {
 			return nil, fmt.Errorf("failed to write default config: %w", err)

@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -104,7 +105,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("OK")); err != nil {
-			fmt.Printf("Warning: Failed to write health check response: %v\n", err)
+			logger.Log.Warn(fmt.Sprintf("Warning: Failed to write health check response: %v", err))
 		}
 	})
 
@@ -117,12 +118,12 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 
 	// Start the server in a goroutine
 	go func() {
-		fmt.Printf("HTTP proxy started for container %s on port %d\n", p.containerName, p.port)
-		fmt.Printf("SSE endpoint: http://localhost:%d%s\n", p.port, ssecommon.HTTPSSEEndpoint)
-		fmt.Printf("JSON-RPC endpoint: http://localhost:%d%s\n", p.port, ssecommon.HTTPMessagesEndpoint)
+		logger.Log.Info(fmt.Sprintf("HTTP proxy started for container %s on port %d", p.containerName, p.port))
+		logger.Log.Info(fmt.Sprintf("SSE endpoint: http://localhost:%d%s", p.port, ssecommon.HTTPSSEEndpoint))
+		logger.Log.Info(fmt.Sprintf("JSON-RPC endpoint: http://localhost:%d%s", p.port, ssecommon.HTTPMessagesEndpoint))
 
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("HTTP server error: %v\n", err)
+			logger.Log.Error(fmt.Sprintf("HTTP server error: %v", err))
 		}
 	}()
 
@@ -268,7 +269,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 		delete(p.sseClients, clientID)
 		p.sseClientsMutex.Unlock()
 		close(messageCh)
-		fmt.Printf("Client %s disconnected\n", clientID)
+		logger.Log.Info(fmt.Sprintf("Client %s disconnected", clientID))
 	}()
 
 	// Send messages to the client
@@ -327,7 +328,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Log the message
-	fmt.Printf("Received JSON-RPC message: %T\n", msg)
+	logger.Log.Info(fmt.Sprintf("Received JSON-RPC message: %T", msg))
 
 	// Send the message to the destination
 	if err := p.SendMessageToDestination(msg); err != nil {
@@ -338,7 +339,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	// Return a success response
 	w.WriteHeader(http.StatusAccepted)
 	if _, err := w.Write([]byte("Accepted")); err != nil {
-		fmt.Printf("Warning: Failed to write response: %v\n", err)
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to write response: %v", err))
 	}
 }
 
@@ -359,7 +360,7 @@ func (p *HTTPSSEProxy) sendSSEEvent(msg *ssecommon.SSEMessage) error {
 			// Channel is full or closed, remove the client
 			delete(p.sseClients, clientID)
 			close(client.MessageCh)
-			fmt.Printf("Client %s removed (channel full or closed)\n", clientID)
+			logger.Log.Info(fmt.Sprintf("Client %s removed (channel full or closed)", clientID))
 		}
 	}
 
@@ -386,7 +387,7 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 			// Message sent successfully
 		default:
 			// Channel is full, stop sending
-			fmt.Printf("Failed to send pending message to client %s (channel full)\n", clientID)
+			logger.Log.Error(fmt.Sprintf("Failed to send pending message to client %s (channel full)", clientID))
 			return
 		}
 	}

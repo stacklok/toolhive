@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -83,7 +84,7 @@ func rmCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Remove the container
-	fmt.Printf("Removing container %s...\n", containerName)
+	logger.Log.Info(fmt.Sprintf("Removing container %s...", containerName))
 	if err := runtime.RemoveContainer(ctx, containerID); err != nil {
 		return fmt.Errorf("failed to remove container: %v", err)
 	}
@@ -93,12 +94,12 @@ func rmCmdFunc(_ *cobra.Command, args []string) error {
 	if baseName != "" {
 		// Delete the saved state if it exists
 		if err := runner.DeleteSavedConfig(ctx, baseName); err != nil {
-			fmt.Printf("Warning: Failed to delete saved state: %v\n", err)
+			logger.Log.Warn(fmt.Sprintf("Warning: Failed to delete saved state: %v", err))
 		} else {
-			fmt.Printf("Saved state for %s removed\n", baseName)
+			logger.Log.Info(fmt.Sprintf("Saved state for %s removed", baseName))
 		}
 	}
 
-	fmt.Printf("Container %s removed\n", containerName)
+	logger.Log.Info(fmt.Sprintf("Container %s removed", containerName))
 	return nil
 }

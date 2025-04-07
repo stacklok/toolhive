@@ -31,11 +31,10 @@ ToolHive radically simplifies MCP deployment by:
 |--------|-----------|-------|
 | Copilot (VS Code) | ✅ |
 | Cursor | ✅ |
-| Continue | ✅ |
-| RooCode | ✅ |
+| Roo Code | ✅ |
 | PydanticAI | ✅ |
 | Continue| ❌ | Continue doesn't yet support SSE.
-| Claude Desktop | ❌ | Claude MCP Configuration requires a "command" and doesn't support just a single "url" like other Clients. We expect Anthropic to evolve this over time so it doesn't require a "command".
+| Claude Desktop | ❌ | Continue doesn't yet support SSE.
 
 
 

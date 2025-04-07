@@ -6,7 +6,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -102,7 +101,7 @@ func secretsProviderCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Secrets provider type updated to: %s", provider))
+	fmt.Printf("Secrets provider type updated to: %s\n", provider)
 	return nil
 }
 
@@ -131,7 +130,7 @@ func autoDiscoveryCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Auto-discovery of MCP clients %s", map[bool]string{true: "enabled", false: "disabled"}[enabled]))
+	fmt.Printf("Auto-discovery of MCP clients %s\n", map[bool]string{true: "enabled", false: "disabled"}[enabled])
 	return nil
 }
 
@@ -164,7 +163,7 @@ func registerClientCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Successfully registered client: %s", client))
+	fmt.Printf("Successfully registered client: %s\n", client)
 	return nil
 }
 
@@ -202,7 +201,7 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Successfully removed client: %s", client))
+	fmt.Printf("Successfully removed client: %s\n", client)
 	return nil
 }
 
@@ -212,14 +211,14 @@ func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
 
 	// Check if there are any registered clients
 	if len(cfg.Clients.RegisteredClients) == 0 {
-		logger.Log.Info("No clients are currently registered.")
+		fmt.Println("No clients are currently registered.")
 		return nil
 	}
 
 	// Print the list of registered clients
-	logger.Log.Info("Registered clients:")
+	fmt.Println("Registered clients:")
 	for _, client := range cfg.Clients.RegisteredClients {
-		logger.Log.Info(fmt.Sprintf("  - %s", client))
+		fmt.Printf("  - %s\n", client)
 	}
 
 	return nil

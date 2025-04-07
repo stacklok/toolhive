@@ -17,7 +17,7 @@ const (
 	// PasswordEnvVar is the environment variable used to specify the password for encrypting and decrypting secrets.
 	PasswordEnvVar = "TOOLHIVE_SECRETS_PASSWORD"
 
-	keyringService = "vibetool"
+	keyringService = "toolhive"
 )
 
 // ProviderType represents an enum of the types of available secrets providers.

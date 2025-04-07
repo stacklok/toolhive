@@ -24,5 +24,18 @@ event: endpoint
 data: http://172.20.0.3/messages?session_id=637d766e-354a-45b6-bc91-e153a35bc49f
 ```
 
-## Chris To Do
-- adds the docs for the addition of a host name to make it look more ingressy, this avoids the IP requirement.
+## Ingress with Local Hostname
+
+In order to avoid using of the IP you can use a hostname instead of preferred. This can be achieved by modifying the `/etc/hosts` file to include a mapping for the load balancer IP to a friendly hostname.
+
+```
+sudo sh -c "echo '$LB_IP mcp-server.dev' >> /etc/hosts"
+```
+
+Now when you curl that endpoint, it should connect as it did with the IP
+
+```
+$ curl mcp-server.dev/sse
+event: endpoint
+data: http://mcp-server.dev/messages?session_id=337e4d34-5fb0-4ccc-9959-fc382d5b4800
+```

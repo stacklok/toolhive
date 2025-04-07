@@ -129,7 +129,7 @@ This command closely resembles `docker run` but focuses on security and simplici
 
 * **SSE**:
 
-    If the transport is `sse`, ToolHive creates a reverse proxy a random that forwards requests to the container. This means the container itself does not directly expose any ports.
+    If the transport is `sse`, ToolHive creates a reverse proxy on a random port that forwards requests to the container. This means the container itself does not directly expose any ports.
 
 * **STDIO**:
 

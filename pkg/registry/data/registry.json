@@ -1164,39 +1164,6 @@
         "workspaces"
       ]
     },
-    "inspector": {
-      "image": "mcp/inspector:latest",
-      "description": "",
-      "transport": "sse",
-      "permissions": {
-        "read": [],
-        "write": [],
-        "network": {
-          "outbound": {
-            "insecure_allow_all": false,
-            "allow_transport": [
-              "tcp"
-            ],
-            "allow_host": [],
-            "allow_port": [
-              443
-            ]
-          }
-        }
-      },
-      "tools": [],
-      "env_vars": [],
-      "args": [],
-      "metadata": {
-        "stars": 0,
-        "pulls": 319,
-        "last_updated": "2025-01-11T00:50:50.836572Z"
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "tags": [
-        "inspector"
-      ]
-    },
     "redis": {
       "image": "mcp/redis:latest",
       "description": "A Model Context Protocol server that provides access to Redis databases. This server enables LLMs to interact with Redis key-value stores through a set of standardized tools.",

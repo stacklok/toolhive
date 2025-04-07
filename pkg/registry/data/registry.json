@@ -1230,39 +1230,6 @@
         "docker"
       ]
     },
-    "run": {
-      "image": "mcp/run:latest",
-      "description": "",
-      "transport": "sse",
-      "permissions": {
-        "read": [],
-        "write": [],
-        "network": {
-          "outbound": {
-            "insecure_allow_all": false,
-            "allow_transport": [
-              "tcp"
-            ],
-            "allow_host": [],
-            "allow_port": [
-              443
-            ]
-          }
-        }
-      },
-      "tools": [],
-      "env_vars": [],
-      "args": [],
-      "metadata": {
-        "stars": 0,
-        "pulls": 626,
-        "last_updated": "2025-03-21T22:37:36.366924Z"
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "tags": [
-        "run"
-      ]
-    },
     "redis": {
       "image": "mcp/redis:latest",
       "description": "",

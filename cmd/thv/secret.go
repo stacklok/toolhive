@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -41,44 +40,44 @@ func newSecretSetCommand() *cobra.Command {
 
 			// Validate input
 			if name == "" {
-				logger.Log.Info("Validation Error: Secret name cannot be empty")
+				fmt.Println("Validation Error: Secret name cannot be empty")
 				return
 			}
 
 			// Prompt for the secret value
-			logger.Log.Info("Enter secret value (input will be hidden): ")
+			fmt.Print("Enter secret value (input will be hidden): ")
 			valueBytes, err := term.ReadPassword(int(syscall.Stdin))
-			logger.Log.Info("") // Add a newline after the hidden input
+			fmt.Println("") // Add a newline after the hidden input
 
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Error reading secret from terminal: %v", err))
+				fmt.Fprintf(os.Stderr, "Error reading secret from terminal: %v\n", err)
 				return
 			}
 
 			value := string(valueBytes)
 			if value == "" {
-				logger.Log.Info("Validation Error: Secret value cannot be empty")
+				fmt.Println("Validation Error: Secret value cannot be empty")
 				return
 			}
 
 			providerType, err := GetSecretsProviderType(cmd)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Error: %v", err))
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 
 			manager, err := secrets.CreateSecretManager(providerType)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Failed to create secrets manager: %v", err))
+				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
 			}
 
 			err = manager.SetSecret(name, value)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Failed to set secret %s: %v", name, err))
+				fmt.Fprintf(os.Stderr, "Failed to set secret %s: %v\n", name, err)
 				return
 			}
-			logger.Log.Info(fmt.Sprintf("Secret %s set successfully", name))
+			fmt.Printf("Secret %s set successfully\n", name)
 		},
 	}
 }
@@ -93,28 +92,28 @@ func newSecretGetCommand() *cobra.Command {
 
 			// Validate input
 			if name == "" {
-				logger.Log.Info("Validation Error Secret name cannot be empty")
+				fmt.Println("Validation Error: Secret name cannot be empty")
 				return
 			}
 
 			providerType, err := GetSecretsProviderType(cmd)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Error: %v", err))
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 
 			manager, err := secrets.CreateSecretManager(providerType)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Failed to create secrets manager: %v", err))
+				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
 			}
 
 			value, err := manager.GetSecret(name)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Failed to get secret %s: %v", name, err))
+				fmt.Fprintf(os.Stderr, "Failed to get secret %s: %v\n", name, err)
 				return
 			}
-			logger.Log.Info(fmt.Sprintf("Secret %s: %s", name, value))
+			fmt.Printf("Secret %s: %s\n", name, value)
 		},
 	}
 }
@@ -129,28 +128,28 @@ func newSecretDeleteCommand() *cobra.Command {
 
 			// Validate input
 			if name == "" {
-				logger.Log.Info("Validation Error: Secret name cannot be empty")
+				fmt.Println("Validation Error: Secret name cannot be empty")
 				return
 			}
 
 			providerType, err := GetSecretsProviderType(cmd)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Error: %v", err))
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 
 			manager, err := secrets.CreateSecretManager(providerType)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Failed to create secrets manager: %v", err))
+				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
 			}
 
 			err = manager.DeleteSecret(name)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Failed to delete secret %s: %v", name, err))
+				fmt.Fprintf(os.Stderr, "Failed to delete secret %s: %v\n", name, err)
 				return
 			}
-			logger.Log.Info(fmt.Sprintf("Secret %s deleted successfully", name))
+			fmt.Printf("Secret %s deleted successfully\n", name)
 		},
 	}
 }
@@ -163,30 +162,30 @@ func newSecretListCommand() *cobra.Command {
 		Run: func(cmd *cobra.Command, _ []string) {
 			providerType, err := GetSecretsProviderType(cmd)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Error: %v", err))
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 
 			manager, err := secrets.CreateSecretManager(providerType)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Failed to create secrets manager: %v", err))
+				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
 			}
 
 			secretNames, err := manager.ListSecrets()
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("Failed to list secrets: %v", err))
+				fmt.Fprintf(os.Stderr, "Failed to list secrets: %v\n", err)
 				return
 			}
 
 			if len(secretNames) == 0 {
-				logger.Log.Info("No secrets found")
+				fmt.Println("No secrets found")
 				return
 			}
 
-			logger.Log.Info("Available secrets:")
+			fmt.Println("Available secrets:")
 			for _, name := range secretNames {
-				logger.Log.Info(fmt.Sprintf("  - %s", name))
+				fmt.Printf("  - %s\n", name)
 			}
 		},
 	}
@@ -199,10 +198,10 @@ func newSecretResetKeyringCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 		Run: func(_ *cobra.Command, _ []string) {
 			if err := secrets.ResetKeyringSecret(); err != nil {
-				logger.Log.Error(fmt.Sprintf("Failed to reset keyring secret: %v", err))
+				fmt.Fprintf(os.Stderr, "Failed to reset keyring secret: %v\n", err)
 				return
 			}
-			logger.Log.Info("Successfully reset keyring secret")
+			fmt.Println("Successfully reset keyring secret")
 		},
 	}
 }

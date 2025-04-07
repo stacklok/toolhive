@@ -1306,41 +1306,6 @@
         "perplexity-ask"
       ]
     },
-    "notion-server": {
-      "image": "mcp/notion-server:latest",
-      "description": "",
-      "transport": "sse",
-      "permissions": {
-        "read": [],
-        "write": [],
-        "network": {
-          "outbound": {
-            "insecure_allow_all": false,
-            "allow_transport": [
-              "tcp"
-            ],
-            "allow_host": [],
-            "allow_port": [
-              443
-            ]
-          }
-        }
-      },
-      "tools": [],
-      "env_vars": [],
-      "args": [],
-      "metadata": {
-        "stars": 0,
-        "pulls": 54,
-        "last_updated": "2025-03-16T17:26:31.491661Z"
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "tags": [
-        "notion",
-        "notion-server",
-        "server"
-      ]
-    },
     "atlassian": {
       "image": "mcp/atlassian:latest",
       "description": "",

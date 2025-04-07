@@ -1438,7 +1438,92 @@
         "monitoring",
         "home-automation",
         "domotics"
-      ]
-    }
-  }
+     ]
+   },
+   "grafana": {
+     "image": "grafana/grafana-oss:latest",
+     "description": "A Model Context Protocol (MCP) server for Grafana OSS that provides access to your Grafana instance and the surrounding ecosystem, enabling dashboard search, datasource queries, alerting management, and incident response.",
+     "transport": "stdio",
+     "permissions": {
+       "read": [],
+       "write": [],
+       "network": {
+         "outbound": {
+           "insecure_allow_all": false,
+           "allow_transport": [
+             "tcp"
+           ],
+           "allow_host": [
+             "grafana.com"
+           ],
+           "allow_port": [
+             443
+           ]
+         }
+       }
+     },
+     "tools": [
+       "search_dashboards",
+       "get_dashboard_by_uid",
+       "list_datasources",
+       "get_datasource_by_uid",
+       "get_datasource_by_name",
+       "query_prometheus",
+       "list_prometheus_metric_metadata",
+       "list_prometheus_metric_names",
+       "list_prometheus_label_names",
+       "list_prometheus_label_values",
+       "list_incidents",
+       "create_incident",
+       "add_activity_to_incident",
+       "resolve_incident",
+       "query_loki_logs",
+       "list_loki_label_names",
+       "list_loki_label_values",
+       "query_loki_stats",
+       "list_alert_rules",
+       "get_alert_rule_by_uid",
+       "list_oncall_schedules",
+       "get_oncall_shift",
+       "get_current_oncall_users",
+       "list_oncall_teams",
+       "list_oncall_users"
+     ],
+     "env_vars": [
+       {
+         "name": "GRAFANA_URL",
+         "description": "URL of the Grafana instance to connect to",
+         "required": true
+       },
+       {
+         "name": "GRAFANA_API_KEY",
+         "description": "Service account token with appropriate permissions",
+         "required": true
+       }
+     ],
+     "args": [],
+     "metadata": {
+       "stars": 347,
+       "pulls": 0,
+       "last_updated": "2025-03-25T16:58:54Z"
+     },
+     "repository_url": "https://github.com/grafana/mcp-grafana",
+     "tags": [
+       "grafana",
+       "dashboards",
+       "visualization",
+       "monitoring",
+       "alerting",
+       "prometheus",
+       "loki",
+       "tempo",
+       "pyroscope",
+       "incidents",
+       "observability",
+       "metrics",
+       "logs",
+       "traces"
+     ]
+   }
+ }
 }

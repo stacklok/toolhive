@@ -231,8 +231,6 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 		t.stdin = nil
 	}
 
-	logger.Log.Info(fmt.Sprintf("Checking vars %v / %s...", t.runtime, t.containerID))
-
 	// Stop the container if runtime is available and we haven't already stopped it
 	if t.runtime != nil && t.containerID != "" {
 		// Check if the container is still running before trying to stop it
@@ -247,7 +245,6 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 			}
 		}
 
-		logger.Log.Info(fmt.Sprintf("Auto-remove is %v...", t.autoRemove))
 		// Remove the container if auto-remove is enabled
 		if t.autoRemove {
 			logger.Log.Info(fmt.Sprintf("Removing container %s...", t.containerName))

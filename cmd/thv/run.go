@@ -116,8 +116,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Autoremove is run.go %v...", autoRemove))
-
 	// Initialize a new RunConfig with values from command-line flags
 	config := runner.NewRunConfigFromFlags(
 		runtime,
@@ -135,8 +133,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		oidcJwksURL,
 		oidcClientID,
 	)
-
-	logger.Log.Info(fmt.Sprintf("Autoremove is run.go %v...", config.AutoRemove))
 
 	// Try to find the server in the registry
 	server, err := registry.GetServer(serverOrImage)

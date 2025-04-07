@@ -256,7 +256,6 @@ func (t *SSETransport) Stop(ctx context.Context) error {
 			return fmt.Errorf("failed to stop container: %w", err)
 		}
 
-		logger.Log.Info(fmt.Sprintf("Auto-remove is %v...", t.autoRemove))
 		// Remove the container if auto-remove is enabled
 		if t.autoRemove {
 			logger.Log.Info(fmt.Sprintf("Removing container %s...", t.containerName))

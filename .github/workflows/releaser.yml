@@ -85,7 +85,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+#          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }} # we don't need this for now
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           VERSION: ${{ needs.ldflags_args.outputs.version }}
           COMMIT: ${{ needs.ldflags_args.outputs.commit }}

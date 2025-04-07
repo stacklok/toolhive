@@ -715,7 +715,7 @@
     "gitlab": {
       "image": "mcp/gitlab:latest",
       "description": "MCP Server for the GitLab API, enabling project management, file operations, and more.",
-      "transport": "sse",
+      "transport": "stdio",
       "permissions": {
         "read": [],
         "write": [],
@@ -1195,39 +1195,6 @@
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
         "inspector"
-      ]
-    },
-    "docker": {
-      "image": "mcp/docker:latest",
-      "description": "",
-      "transport": "sse",
-      "permissions": {
-        "read": [],
-        "write": [],
-        "network": {
-          "outbound": {
-            "insecure_allow_all": false,
-            "allow_transport": [
-              "tcp"
-            ],
-            "allow_host": [],
-            "allow_port": [
-              443
-            ]
-          }
-        }
-      },
-      "tools": [],
-      "env_vars": [],
-      "args": [],
-      "metadata": {
-        "stars": 4,
-        "pulls": 10024,
-        "last_updated": "2025-03-23T06:24:28.608684Z"
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "tags": [
-        "docker"
       ]
     },
     "redis": {

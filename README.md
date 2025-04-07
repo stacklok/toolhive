@@ -25,6 +25,18 @@ ToolHive radically simplifies MCP deployment by:
 
 - Seamless Integration: Compatible with popular development tools such as Copilot, Continue, Claude Desktop, Stitch, and more, streamlining your workflow.
 
+## Client Compability
+
+| Client | Supported | Notes |
+|--------|-----------|-------|
+| Copilot (VS Code) | ✅ |
+| Cursor | ✅ |
+| Roo Code | ✅ |
+| PydanticAI | ✅ |
+| Continue| ❌ | Continue doesn't yet support SSE
+| Claude Desktop | ❌ | Claude Desktop doesn't yet support SSE
+
+
 
 ## Commands
 

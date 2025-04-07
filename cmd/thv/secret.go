@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -33,8 +35,22 @@ func newSecretSetCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "set <name>",
 		Short: "Set a secret",
-		Long:  "Set a secret with the given name. The secret value will be read from the terminal.",
-		Args:  cobra.ExactArgs(1),
+		Long: `Set a secret with the given name.
+
+Input Methods:
+		- Piped Input: If data is piped to the command, the secret value will be read from stdin.
+		  Examples:
+		    echo "my-secret-value" | thv secret set my-secret
+		    cat secret-file.txt | thv secret set my-secret
+		
+		- Interactive Input: If no data is piped, you will be prompted to enter the secret value securely
+		  (input will be hidden).
+		  Example:
+		    thv secret set my-secret
+		    Enter secret value (input will be hidden): _
+
+The secret will be stored securely using the configured secrets provider.`,
+		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			name := args[0]
 
@@ -44,17 +60,38 @@ func newSecretSetCommand() *cobra.Command {
 				return
 			}
 
-			// Prompt for the secret value
-			fmt.Print("Enter secret value (input will be hidden): ")
-			valueBytes, err := term.ReadPassword(int(syscall.Stdin))
-			fmt.Println("") // Add a newline after the hidden input
+			var value string
+			var err error
 
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error reading secret from terminal: %v\n", err)
-				return
+			// Check if data is being piped to stdin
+			stat, _ := os.Stdin.Stat()
+			isPiped := (stat.Mode() & os.ModeCharDevice) == 0
+
+			if isPiped {
+				// Read from stdin (piped input)
+				var valueBytes []byte
+				valueBytes, err = io.ReadAll(os.Stdin)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error reading secret from stdin: %v\n", err)
+					return
+				}
+				value = string(valueBytes)
+				// Trim trailing newline if present
+				value = strings.TrimSuffix(value, "\n")
+			} else {
+				// Interactive mode - prompt for the secret value
+				fmt.Print("Enter secret value (input will be hidden): ")
+				var valueBytes []byte
+				valueBytes, err = term.ReadPassword(int(syscall.Stdin))
+				fmt.Println("") // Add a newline after the hidden input
+
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error reading secret from terminal: %v\n", err)
+					return
+				}
+				value = string(valueBytes)
 			}
 
-			value := string(valueBytes)
 			if value == "" {
 				fmt.Println("Validation Error: Secret value cannot be empty")
 				return

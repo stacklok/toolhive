@@ -9,6 +9,7 @@ require (
 	github.com/docker/go-connections v0.5.0
 	github.com/gofrs/flock v0.12.1
 	github.com/google/uuid v1.6.0
+	github.com/lmittmann/tint v1.0.7
 	github.com/stretchr/testify v1.10.0
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/exp/jsonrpc2 v0.0.0-20250305212735-054e65f0b394

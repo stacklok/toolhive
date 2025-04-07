@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -46,7 +47,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Add OIDC middleware if OIDC validation is enabled
 	if r.Config.OIDCConfig != nil {
-		fmt.Println("OIDC validation enabled for transport")
+		logger.Log.Info("OIDC validation enabled for transport")
 
 		// Create JWT validator
 		jwtValidator, err := auth.NewJWTValidator(ctx, auth.JWTValidatorConfig{
@@ -65,7 +66,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Add authorization middleware if authorization configuration is provided
 	if r.Config.AuthzConfig != nil {
-		fmt.Println("Authorization enabled for transport")
+		logger.Log.Info("Authorization enabled for transport")
 
 		// Get the middleware from the configuration
 		middleware, err := r.Config.AuthzConfig.CreateMiddleware()
@@ -83,7 +84,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Set up the transport
-	fmt.Printf("Setting up %s transport...\n", r.Config.Transport)
+	logger.Log.Info(fmt.Sprintf("Setting up %s transport...", r.Config.Transport))
 	if err := transportHandler.Setup(
 		ctx, r.Config.Runtime, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
 		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile,
@@ -92,41 +93,41 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Start the transport (which also starts the container and monitoring)
-	fmt.Printf("Starting %s transport...\n", r.Config.Transport)
+	logger.Log.Info(fmt.Sprintf("Starting %s transport...", r.Config.Transport))
 	if err := transportHandler.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start transport: %v", err)
 	}
 
-	fmt.Printf("MCP server %s started successfully\n", r.Config.ContainerName)
+	logger.Log.Info(fmt.Sprintf("MCP server %s started successfully", r.Config.ContainerName))
 
 	// Save the configuration to the state store
 	if err := r.SaveState(ctx); err != nil {
-		fmt.Printf("Warning: Failed to save run configuration: %v\n", err)
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to save run configuration: %v", err))
 	}
 
 	// Update client configurations with the MCP server URL.
 	// Note that this function checks the configuration to determine which
 	// clients should be updated, if any.
 	if err := updateClientConfigurations(r.Config.BaseName, "localhost", r.Config.Port); err != nil {
-		fmt.Printf("Warning: Failed to update client configurations: %v\n", err)
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to update client configurations: %v", err))
 	}
 
 	// Define a function to stop the MCP server
 	stopMCPServer := func(reason string) {
-		fmt.Printf("Stopping MCP server: %s\n", reason)
+		logger.Log.Info(fmt.Sprintf("Stopping MCP server: %s", reason))
 
 		// Stop the transport (which also stops the container, monitoring, and handles removal)
-		fmt.Printf("Stopping %s transport...\n", r.Config.Transport)
+		logger.Log.Info(fmt.Sprintf("Stopping %s transport...", r.Config.Transport))
 		if err := transportHandler.Stop(ctx); err != nil {
-			fmt.Printf("Warning: Failed to stop transport: %v\n", err)
+			logger.Log.Warn(fmt.Sprintf("Warning: Failed to stop transport: %v", err))
 		}
 
 		// Remove the PID file if it exists
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			fmt.Printf("Warning: Failed to remove PID file: %v\n", err)
+			logger.Log.Warn(fmt.Sprintf("Warning: Failed to remove PID file: %v", err))
 		}
 
-		fmt.Printf("MCP server %s stopped\n", r.Config.ContainerName)
+		logger.Log.Info(fmt.Sprintf("MCP server %s stopped", r.Config.ContainerName))
 	}
 
 	// Check if we're a detached process
@@ -134,13 +135,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		// We're a detached process running in foreground mode
 		// Write the PID to a file so the stop command can kill the process
 		if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {
-			fmt.Printf("Warning: Failed to write PID file: %v\n", err)
+			logger.Log.Warn(fmt.Sprintf("Warning: Failed to write PID file: %v", err))
 		}
 
-		fmt.Printf("Running as detached process (PID: %d)\n", os.Getpid())
+		logger.Log.Info(fmt.Sprintf("Running as detached process (PID: %d)", os.Getpid()))
 	}
 
-	fmt.Println("Press Ctrl+C to stop or wait for container to exit")
+	logger.Log.Info("Press Ctrl+C to stop or wait for container to exit")
 
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
@@ -154,7 +155,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		for {
 			// Safely check if transportHandler is nil
 			if transportHandler == nil {
-				fmt.Println("Transport handler is nil, exiting monitoring routine...")
+				logger.Log.Info("Transport handler is nil, exiting monitoring routine...")
 				close(doneCh)
 				return
 			}
@@ -162,14 +163,14 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Check if the transport is still running
 			running, err := transportHandler.IsRunning(ctx)
 			if err != nil {
-				fmt.Printf("Error checking transport status: %v\n", err)
+				logger.Log.Error(fmt.Sprintf("Error checking transport status: %v", err))
 				// Don't exit immediately on error, try again after pause
 				time.Sleep(1 * time.Second)
 				continue
 			}
 			if !running {
 				// Transport is no longer running (container exited or was stopped)
-				fmt.Println("Transport is no longer running, exiting...")
+				logger.Log.Info("Transport is no longer running, exiting...")
 				close(doneCh)
 				return
 			}
@@ -187,10 +188,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		// The transport has already been stopped (likely by the container monitor)
 		// Clean up the PID file and state
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			fmt.Printf("Warning: Failed to remove PID file: %v\n", err)
+			logger.Log.Warn(fmt.Sprintf("Warning: Failed to remove PID file: %v", err))
 		}
 
-		fmt.Printf("MCP server %s stopped\n", r.Config.ContainerName)
+		logger.Log.Info(fmt.Sprintf("MCP server %s stopped", r.Config.ContainerName))
 	}
 
 	return nil
@@ -205,7 +206,7 @@ func updateClientConfigurations(containerName, host string, port int) error {
 	}
 
 	if len(configs) == 0 {
-		fmt.Println("No client configuration files found")
+		logger.Log.Info("No client configuration files found")
 		return nil
 	}
 
@@ -214,15 +215,15 @@ func updateClientConfigurations(containerName, host string, port int) error {
 
 	// Update each configuration file
 	for _, config := range configs {
-		fmt.Printf("Updating client configuration: %s\n", config.Path)
+		logger.Log.Info(fmt.Sprintf("Updating client configuration: %s", config.Path))
 
 		// Update the MCP server configuration with locking
 		if err := config.SaveWithLock(containerName, url, config.Editor); err != nil {
-			fmt.Printf("Warning: Failed to update MCP server configuration in %s: %v\n", config.Path, err)
+			logger.Log.Warn(fmt.Sprintf("Warning: Failed to update MCP server configuration in %s: %v", config.Path, err))
 			continue
 		}
 
-		fmt.Printf("Successfully updated client configuration: %s\n", config.Path)
+		logger.Log.Info(fmt.Sprintf("Successfully updated client configuration: %s", config.Path))
 	}
 
 	return nil

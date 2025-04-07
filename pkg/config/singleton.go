@@ -3,26 +3,30 @@ package config
 import (
 	"fmt"
 	"os"
+	"sync"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-// Singleton value - should only be written to by the init function.
+// Singleton value - should only be written to by the GetConfig function.
 var appConfig *Config
 
-// GetConfig returns the application configuration.
-// This can only be called after it is initialized in the init function.
+var lock = &sync.Mutex{}
+
+// GetConfig is a Singleton that returns the application configuration.
 func GetConfig() *Config {
 	if appConfig == nil {
-		panic("configuration is not initialized")
+		lock.Lock()
+		defer lock.Unlock()
+		if appConfig == nil {
+			appConfig, err := LoadOrCreateConfig()
+			if err != nil {
+				logger.Log.Error(fmt.Sprintf("error loading configuration: %v", err))
+				os.Exit(1)
+			}
+
+			return appConfig
+		}
 	}
 	return appConfig
-}
-
-func init() {
-	// Initialize the application configuration.
-	var err error
-	appConfig, err = LoadOrCreateConfig()
-	if err != nil {
-		fmt.Printf("error loading configuration: %v\n", err)
-		os.Exit(1)
-	}
 }

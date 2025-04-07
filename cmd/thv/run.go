@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -152,11 +153,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to check if image exists: %v", err)
 	}
 	if !imageExists {
-		fmt.Printf("Image %s not found locally, pulling...\n", config.Image)
+		logger.Log.Info(fmt.Sprintf("Image %s not found locally, pulling...", config.Image))
 		if err := runtime.PullImage(ctx, config.Image); err != nil {
 			return fmt.Errorf("failed to pull image: %v", err)
 		}
-		fmt.Printf("Successfully pulled image: %s\n", config.Image)
+		logger.Log.Info(fmt.Sprintf("Successfully pulled image: %s", config.Image))
 	}
 
 	// Configure the RunConfig with transport, ports, permissions, etc.
@@ -203,7 +204,7 @@ func applyRegistrySettings(
 		permProfilePath, err := createPermissionProfileFile(serverName, server.Permissions, debugMode)
 		if err != nil {
 			// Just log the error and continue with the default permission profile
-			fmt.Printf("Warning: Failed to create permission profile file: %v\n", err)
+			logger.Log.Warn(fmt.Sprintf("Warning: Failed to create permission profile file: %v", err))
 		} else {
 			// Update the permission profile path
 			config.PermissionProfileNameOrPath = permProfilePath
@@ -232,11 +233,11 @@ func processEnvironmentVariables(
 		if !found {
 			if envVar.Required {
 				// Ask the user for the required environment variable
-				fmt.Printf("Required environment variable: %s (%s)\n", envVar.Name, envVar.Description)
-				fmt.Printf("Enter value for %s: ", envVar.Name)
+				logger.Log.Info(fmt.Sprintf("Required environment variable: %s (%s)", envVar.Name, envVar.Description))
+				logger.Log.Info(fmt.Sprintf("Enter value for %s: ", envVar.Name))
 				var value string
 				if _, err := fmt.Scanln(&value); err != nil {
-					fmt.Printf("Warning: Failed to read input: %v\n", err)
+					logger.Log.Warn(fmt.Sprintf("Warning: Failed to read input: %v", err))
 				}
 
 				if value != "" {
@@ -296,6 +297,6 @@ func createPermissionProfileFile(serverName string, permProfile *permissions.Pro
 // logDebug logs a message if debug mode is enabled
 func logDebug(debugMode bool, format string, args ...interface{}) {
 	if debugMode {
-		fmt.Printf(format+"\n", args...)
+		logger.Log.Info(fmt.Sprintf(format+"", args...))
 	}
 }

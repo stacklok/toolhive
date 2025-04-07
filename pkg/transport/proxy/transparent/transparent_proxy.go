@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -72,7 +73,7 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 
 	// Create a handler that logs requests
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Printf("Transparent proxy: %s %s -> %s\n", r.Method, r.URL.Path, targetURL)
+		logger.Log.Info(fmt.Sprintf("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, targetURL))
 		proxy.ServeHTTP(w, r)
 	})
 
@@ -80,7 +81,7 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 	var finalHandler http.Handler = handler
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
 		finalHandler = p.middlewares[i](finalHandler)
-		fmt.Printf("Applied middleware %d\n", i+1)
+		logger.Log.Info(fmt.Sprintf("Applied middleware %d\n", i+1))
 	}
 
 	// Create the server
@@ -92,11 +93,11 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 
 	// Start the server in a goroutine
 	go func() {
-		fmt.Printf("Transparent proxy started for container %s on port %d -> %s\n",
-			p.containerName, p.port, p.targetURI)
+		logger.Log.Info(fmt.Sprintf("Transparent proxy started for container %s on port %d -> %s",
+			p.containerName, p.port, p.targetURI))
 
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("Transparent proxy error: %v\n", err)
+			logger.Log.Error(fmt.Sprintf("Transparent proxy error: %v", err))
 		}
 	}()
 

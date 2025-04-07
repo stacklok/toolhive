@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 var listCmd = &cobra.Command{
@@ -88,7 +89,7 @@ func listCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	if len(toolHiveContainers) == 0 {
-		fmt.Println("No MCP servers found")
+		logger.Log.Info("No MCP servers found")
 		return nil
 	}
 
@@ -162,7 +163,7 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 	}
 
 	// Print JSON
-	fmt.Println(string(jsonData))
+	logger.Log.Info(string(jsonData))
 	return nil
 }
 
@@ -214,7 +215,7 @@ func printMCPServersOutput(containers []rt.ContainerInfo) error {
 	}
 
 	// Print JSON
-	fmt.Println(string(jsonData))
+	logger.Log.Info(string(jsonData))
 	return nil
 }
 
@@ -270,6 +271,6 @@ func printTextOutput(containers []rt.ContainerInfo) {
 
 	// Flush the tabwriter
 	if err := w.Flush(); err != nil {
-		fmt.Printf("Warning: Failed to flush tabwriter: %v\n", err)
+		logger.Log.Info(fmt.Sprintf("Warning: Failed to flush tabwriter: %v", err))
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -79,7 +80,7 @@ func init() {
 	configCmd.AddCommand(listRegisteredClientsCmd)
 }
 
-func secretsProviderCmdFunc(cmd *cobra.Command, args []string) error {
+func secretsProviderCmdFunc(_ *cobra.Command, args []string) error {
 	provider := args[0]
 
 	// Validate the provider type
@@ -101,11 +102,11 @@ func secretsProviderCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
-	cmd.Printf("Secrets provider type updated to: %s\n", provider)
+	logger.Log.Info(fmt.Sprintf("Secrets provider type updated to: %s", provider))
 	return nil
 }
 
-func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {
+func autoDiscoveryCmdFunc(_ *cobra.Command, args []string) error {
 	value := args[0]
 
 	// Validate the boolean value
@@ -130,11 +131,11 @@ func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
-	cmd.Printf("Auto-discovery of MCP clients %s\n", map[bool]string{true: "enabled", false: "disabled"}[enabled])
+	logger.Log.Info(fmt.Sprintf("Auto-discovery of MCP clients %s", map[bool]string{true: "enabled", false: "disabled"}[enabled]))
 	return nil
 }
 
-func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
+func registerClientCmdFunc(_ *cobra.Command, args []string) error {
 	client := args[0]
 
 	// Validate the client type
@@ -163,11 +164,11 @@ func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
-	cmd.Printf("Successfully registered client: %s\n", client)
+	logger.Log.Info(fmt.Sprintf("Successfully registered client: %s", client))
 	return nil
 }
 
-func removeClientCmdFunc(cmd *cobra.Command, args []string) error {
+func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 	client := args[0]
 
 	// Validate the client type
@@ -201,24 +202,24 @@ func removeClientCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
-	cmd.Printf("Successfully removed client: %s\n", client)
+	logger.Log.Info(fmt.Sprintf("Successfully removed client: %s", client))
 	return nil
 }
 
-func listRegisteredClientsCmdFunc(cmd *cobra.Command, _ []string) error {
+func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
 	// Get the current config
 	cfg := config.GetConfig()
 
 	// Check if there are any registered clients
 	if len(cfg.Clients.RegisteredClients) == 0 {
-		cmd.Println("No clients are currently registered.")
+		logger.Log.Info("No clients are currently registered.")
 		return nil
 	}
 
 	// Print the list of registered clients
-	cmd.Println("Registered clients:")
+	logger.Log.Info("Registered clients:")
 	for _, client := range cfg.Clients.RegisteredClients {
-		cmd.Printf("  - %s\n", client)
+		logger.Log.Info(fmt.Sprintf("  - %s", client))
 	}
 
 	return nil

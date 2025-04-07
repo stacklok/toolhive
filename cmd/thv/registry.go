@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 )
 
@@ -103,7 +104,7 @@ func printJSONServers(servers []*registry.Server) error {
 	}
 
 	// Print JSON
-	fmt.Println(string(jsonData))
+	logger.Log.Info(string(jsonData))
 	return nil
 }
 
@@ -116,7 +117,7 @@ func printJSONServer(server *registry.Server) error {
 	}
 
 	// Print JSON
-	fmt.Println(string(jsonData))
+	logger.Log.Info(string(jsonData))
 	return nil
 }
 
@@ -144,32 +145,32 @@ func printTextServers(servers []*registry.Server) {
 
 	// Flush the tabwriter
 	if err := w.Flush(); err != nil {
-		fmt.Printf("Warning: Failed to flush tabwriter: %v\n", err)
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to flush tabwriter: %v", err))
 	}
 }
 
 // printTextServerInfo prints detailed information about a server in text format
 // nolint:gocyclo
 func printTextServerInfo(name string, server *registry.Server) {
-	fmt.Printf("Name: %s\n", name)
-	fmt.Printf("Image: %s\n", server.Image)
-	fmt.Printf("Description: %s\n", server.Description)
-	fmt.Printf("Transport: %s\n", server.Transport)
-	fmt.Printf("Repository URL: %s\n", server.RepositoryURL)
-	fmt.Printf("Popularity: %d stars, %d pulls\n", server.Metadata.Stars, server.Metadata.Pulls)
-	fmt.Printf("Last Updated: %s\n", server.Metadata.LastUpdated)
+	logger.Log.Info(fmt.Sprintf("Name: %s", name))
+	logger.Log.Info(fmt.Sprintf("Image: %s", server.Image))
+	logger.Log.Info(fmt.Sprintf("Description: %s", server.Description))
+	logger.Log.Info(fmt.Sprintf("Transport: %s", server.Transport))
+	logger.Log.Info(fmt.Sprintf("Repository URL: %s", server.RepositoryURL))
+	logger.Log.Info(fmt.Sprintf("Popularity: %d stars, %d pulls", server.Metadata.Stars, server.Metadata.Pulls))
+	logger.Log.Info(fmt.Sprintf("Last Updated: %s", server.Metadata.LastUpdated))
 
 	// Print tools
 	if len(server.Tools) > 0 {
-		fmt.Println("\nTools:")
+		logger.Log.Info("Tools:")
 		for _, tool := range server.Tools {
-			fmt.Printf("  - %s\n", tool)
+			logger.Log.Info(fmt.Sprintf("  - %s", tool))
 		}
 	}
 
 	// Print environment variables
 	if len(server.EnvVars) > 0 {
-		fmt.Println("\nEnvironment Variables:")
+		logger.Log.Info("\nEnvironment Variables:")
 		for _, envVar := range server.EnvVars {
 			required := ""
 			if envVar.Required {
@@ -179,51 +180,51 @@ func printTextServerInfo(name string, server *registry.Server) {
 			if envVar.Default != "" {
 				defaultValue = fmt.Sprintf(" [default: %s]", envVar.Default)
 			}
-			fmt.Printf("  - %s%s%s: %s\n", envVar.Name, required, defaultValue, envVar.Description)
+			logger.Log.Info(fmt.Sprintf("  - %s%s%s: %s", envVar.Name, required, defaultValue, envVar.Description))
 		}
 	}
 
 	// Print tags
 	if len(server.Tags) > 0 {
-		fmt.Println("\nTags:")
-		fmt.Printf("  %s\n", strings.Join(server.Tags, ", "))
+		logger.Log.Info("Tags:")
+		logger.Log.Info(fmt.Sprintf("  %s", strings.Join(server.Tags, ", ")))
 	}
 
 	// Print permissions
 	if server.Permissions != nil {
-		fmt.Println("\nPermissions:")
+		logger.Log.Info("Permissions:")
 
 		// Print read permissions
 		if len(server.Permissions.Read) > 0 {
-			fmt.Println("  Read:")
+			logger.Log.Info("  Read:")
 			for _, path := range server.Permissions.Read {
-				fmt.Printf("    - %s\n", path)
+				logger.Log.Info(fmt.Sprintf("    - %s", path))
 			}
 		}
 
 		// Print write permissions
 		if len(server.Permissions.Write) > 0 {
-			fmt.Println("  Write:")
+			logger.Log.Info("  Write:")
 			for _, path := range server.Permissions.Write {
-				fmt.Printf("    - %s\n", path)
+				logger.Log.Info(fmt.Sprintf("    - %s", path))
 			}
 		}
 
 		// Print network permissions
 		if server.Permissions.Network != nil && server.Permissions.Network.Outbound != nil {
-			fmt.Println("  Network:")
+			logger.Log.Info("  Network:")
 			outbound := server.Permissions.Network.Outbound
 
 			if outbound.InsecureAllowAll {
-				fmt.Println("    Insecure Allow All: true")
+				logger.Log.Info("    Insecure Allow All: true")
 			}
 
 			if len(outbound.AllowTransport) > 0 {
-				fmt.Printf("    Allow Transport: %s\n", strings.Join(outbound.AllowTransport, ", "))
+				logger.Log.Info(fmt.Sprintf("    Allow Transport: %s", strings.Join(outbound.AllowTransport, ", ")))
 			}
 
 			if len(outbound.AllowHost) > 0 {
-				fmt.Printf("    Allow Host: %s\n", strings.Join(outbound.AllowHost, ", "))
+				logger.Log.Info(fmt.Sprintf("    Allow Host: %s", strings.Join(outbound.AllowHost, ", ")))
 			}
 
 			if len(outbound.AllowPort) > 0 {
@@ -231,14 +232,14 @@ func printTextServerInfo(name string, server *registry.Server) {
 				for i, port := range outbound.AllowPort {
 					ports[i] = fmt.Sprintf("%d", port)
 				}
-				fmt.Printf("    Allow Port: %s\n", strings.Join(ports, ", "))
+				logger.Log.Info(fmt.Sprintf("    Allow Port: %s", strings.Join(ports, ", ")))
 			}
 		}
 	}
 
 	// Print example command
-	fmt.Println("\nExample Command:")
-	fmt.Printf("  thv run %s\n", name)
+	logger.Log.Info("Example Command:")
+	logger.Log.Info(fmt.Sprintf("  thv run %s", name))
 }
 
 // truncateString truncates a string to the specified length and adds "..." if truncated

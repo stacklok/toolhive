@@ -465,7 +465,7 @@
     "everything": {
       "image": "mcp/everything:latest",
       "description": "This MCP server attempts to exercise all the features of the MCP protocol",
-      "transport": "sse",
+      "transport": "stdio",
       "permissions": {
         "read": [],
         "write": [],

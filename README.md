@@ -33,8 +33,8 @@ ToolHive radically simplifies MCP deployment by:
 | Cursor | ✅ |
 | Roo Code | ✅ |
 | PydanticAI | ✅ |
-| Continue| ❌ | Continue doesn't yet support SSE.
-| Claude Desktop | ❌ | Continue doesn't yet support SSE.
+| Continue| ❌ | Continue doesn't yet support SSE
+| Claude Desktop | ❌ | Claude Desktop doesn't yet support SSE
 
 
 

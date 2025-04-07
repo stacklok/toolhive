@@ -1319,8 +1319,8 @@
     },
     "atlassian": {
       "image": "mcp/atlassian:latest",
-      "description": "",
-      "transport": "sse",
+      "description": "Model Context Protocol (MCP) server for Atlassian products (Confluence and Jira). This integration supports both Confluence & Jira Cloud and Server/Data Center deployments.",
+      "transport": "stdio",
       "permissions": {
         "read": [],
         "write": [],
@@ -1330,24 +1330,135 @@
             "allow_transport": [
               "tcp"
             ],
-            "allow_host": [],
+            "allow_host": [
+              "atlassian.net",
+              "atlassian.com"
+            ],
             "allow_port": [
               443
             ]
           }
         }
       },
-      "tools": [],
-      "env_vars": [],
+      "tools": [
+        "confluence_search",
+        "confluence_get_page",
+        "confluence_get_page_children",
+        "confluence_get_page_ancestors",
+        "confluence_get_comments",
+        "confluence_create_page",
+        "confluence_update_page",
+        "confluence_delete_page",
+        "confluence_attach_content",
+        "jira_get_issue",
+        "jira_search",
+        "jira_get_project_issues",
+        "jira_get_epic_issues",
+        "jira_create_issue",
+        "jira_update_issue",
+        "jira_delete_issue",
+        "jira_get_transitions",
+        "jira_transition_issue",
+        "jira_add_comment",
+        "jira_add_worklog",
+        "jira_get_worklog",
+        "jira_download_attachments",
+        "jira_link_to_epic",
+        "jira_get_agile_boards",
+        "jira_get_board_issues",
+        "jira_get_sprints_from_board",
+        "jira_get_sprint_issues"
+      ],
+      "env_vars": [
+        {
+          "name": "CONFLUENCE_URL",
+          "description": "Confluence URL (e.g., https://your-domain.atlassian.net/wiki)",
+          "required": false
+        },
+        {
+          "name": "CONFLUENCE_USERNAME",
+          "description": "Confluence username/email for Cloud deployments",
+          "required": false
+        },
+        {
+          "name": "CONFLUENCE_API_TOKEN",
+          "description": "Confluence API token for Cloud deployments",
+          "required": false
+        },
+        {
+          "name": "CONFLUENCE_PERSONAL_TOKEN",
+          "description": "Confluence Personal Access Token for Server/Data Center deployments",
+          "required": false
+        },
+        {
+          "name": "CONFLUENCE_SSL_VERIFY",
+          "description": "Verify SSL certificates for Confluence Server/Data Center (true/false)",
+          "required": false
+        },
+        {
+          "name": "CONFLUENCE_SPACES_FILTER",
+          "description": "Comma-separated list of Confluence space keys to filter search results",
+          "required": false
+        },
+        {
+          "name": "JIRA_URL",
+          "description": "Jira URL (e.g., https://your-domain.atlassian.net)",
+          "required": false
+        },
+        {
+          "name": "JIRA_USERNAME",
+          "description": "Jira username/email for Cloud deployments",
+          "required": false
+        },
+        {
+          "name": "JIRA_API_TOKEN",
+          "description": "Jira API token for Cloud deployments",
+          "required": false
+        },
+        {
+          "name": "JIRA_PERSONAL_TOKEN",
+          "description": "Jira Personal Access Token for Server/Data Center deployments",
+          "required": false
+        },
+        {
+          "name": "JIRA_SSL_VERIFY",
+          "description": "Verify SSL certificates for Jira Server/Data Center (true/false)",
+          "required": false
+        },
+        {
+          "name": "JIRA_PROJECTS_FILTER",
+          "description": "Comma-separated list of Jira project keys to filter search results",
+          "required": false
+        },
+        {
+          "name": "READ_ONLY_MODE",
+          "description": "Run in read-only mode (disables all write operations)",
+          "required": false
+        },
+        {
+          "name": "MCP_VERBOSE",
+          "description": "Increase logging verbosity",
+          "required": false
+        }
+      ],
       "args": [],
       "metadata": {
-        "stars": 0,
+        "stars": 698,
         "pulls": 89,
         "last_updated": "2025-03-21T21:32:38.626915Z"
       },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "repository_url": "https://github.com/sooperset/mcp-atlassian",
       "tags": [
-        "atlassian"
+        "atlassian",
+        "confluence",
+        "jira",
+        "wiki",
+        "issue-tracking",
+        "project-management",
+        "documentation",
+        "cloud",
+        "server",
+        "data-center"
       ]
     },
     "hass-mcp": {

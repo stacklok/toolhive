@@ -626,8 +626,8 @@
       ]
     },
     "github": {
-      "image": "mcp/github:latest",
-      "description": "MCP Server for the GitHub API, providing repository management and code operations",
+      "image": "ghcr.io/github/github-mcp-server:latest",
+      "description": "The GitHub MCP Server provides seamless integration with GitHub APIs, enabling advanced automation and interaction capabilities for developers and tools",
       "transport": "stdio",
       "permissions": {
         "read": [],
@@ -649,32 +649,55 @@
         }
       },
       "tools": [
-        "create_repository",
-        "list_repositories",
-        "search_repositories",
-        "search_code",
+        "get_me",
+        "get_issue",
+        "create_issue",
+        "add_issue_comment",
+        "list_issues",
+        "update_issue",
         "search_issues",
-        "create_file",
-        "update_file",
+        "get_pull_request",
+        "list_pull_requests",
+        "merge_pull_request",
+        "get_pull_request_files",
+        "get_pull_request_status",
+        "update_pull_request_branch",
+        "get_pull_request_comments",
+        "get_pull_request_reviews",
+        "create_pull_request_review",
         "create_pull_request",
+        "create_or_update_file",
+        "push_files",
+        "search_repositories",
+        "create_repository",
+        "get_file_contents",
         "fork_repository",
-        "get_repository",
-        "get_file_contents"
+        "create_branch",
+        "list_commits",
+        "search_code",
+        "search_users",
+        "get_code_scanning_alert",
+        "list_code_scanning_alerts"
       ],
       "env_vars": [
         {
           "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
           "description": "GitHub personal access token with appropriate permissions",
           "required": true
+        },
+        {
+          "name": "GH_HOST",
+          "description": "GitHub Enterprise Server hostname (optional)",
+          "required": false
         }
       ],
       "args": [],
       "metadata": {
-        "stars": 2,
-        "pulls": 4563,
-        "last_updated": "2024-12-20T16:14:56.311561Z"
+        "stars": 4600,
+        "pulls": 5000,
+        "last_updated": "2025-04-07T08:57:00Z"
       },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
         "api",
         "create",
@@ -685,7 +708,8 @@
         "push",
         "repository",
         "search",
-        "update"
+        "update",
+        "issues"
       ]
     },
     "gitlab": {

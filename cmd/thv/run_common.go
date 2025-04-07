@@ -30,6 +30,9 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, config *runner.RunCon
 	// Create a Runner with the RunConfig
 	mcpRunner := runner.NewRunner(config)
 
+	logger.Log.Info(fmt.Sprintf("Auto-remove is run_common.go %v...", mcpRunner.Config.AutoRemove))
+	logger.Log.Info(fmt.Sprintf("Auto-remove is run_common.go %v...", config.AutoRemove))
+
 	// Run the MCP server
 	return mcpRunner.Run(ctx)
 }
@@ -65,6 +68,14 @@ func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
 	// Add all the original flags
 	if options.Transport != "stdio" {
 		detachedArgs = append(detachedArgs, "--transport", string(options.Transport))
+	}
+
+	if options.Debug {
+		detachedArgs = append(detachedArgs, "--debug")
+	}
+
+	if options.AutoRemove {
+		detachedArgs = append(detachedArgs, "--rm")
 	}
 
 	// Use Name if available

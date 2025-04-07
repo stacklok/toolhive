@@ -30,6 +30,7 @@ type SSETransport struct {
 	containerName string
 	runtime       rt.Runtime
 	debug         bool
+	autoRemove    bool
 	middlewares   []types.Middleware
 
 	// Mutex for protecting shared state
@@ -53,6 +54,7 @@ func NewSSETransport(
 	targetPort int,
 	runtime rt.Runtime,
 	debug bool,
+	autoRemove bool,
 	targetHost string,
 	middlewares ...types.Middleware,
 ) *SSETransport {
@@ -73,6 +75,7 @@ func NewSSETransport(
 		targetHost:  targetHost,
 		runtime:     runtime,
 		debug:       debug,
+		autoRemove:  autoRemove,
 		shutdownCh:  make(chan struct{}),
 	}
 }
@@ -253,15 +256,16 @@ func (t *SSETransport) Stop(ctx context.Context) error {
 			return fmt.Errorf("failed to stop container: %w", err)
 		}
 
-		// Remove the container if debug mode is not enabled
-		if !t.debug {
+		logger.Log.Info(fmt.Sprintf("Auto-remove is %v...", t.autoRemove))
+		// Remove the container if auto-remove is enabled
+		if t.autoRemove {
 			logger.Log.Info(fmt.Sprintf("Removing container %s...", t.containerName))
 			if err := t.runtime.RemoveContainer(ctx, t.containerID); err != nil {
 				logger.Log.Warn(fmt.Sprintf("Warning: Failed to remove container: %v", err))
 			}
 			logger.Log.Info(fmt.Sprintf("Container %s removed", t.containerName))
 		} else {
-			logger.Log.Info(fmt.Sprintf("Debug mode enabled, container %s not removed", t.containerName))
+			logger.Log.Info(fmt.Sprintf("Auto-remove disabled, container %s not removed", t.containerName))
 		}
 	}
 

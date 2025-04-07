@@ -15,13 +15,13 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
-
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -238,6 +238,7 @@ func (c *Client) CreateContainer(
 
 	// Create host configuration
 	hostConfig := &container.HostConfig{
+		AutoRemove:  false,
 		Mounts:      convertMounts(permissionConfig.Mounts),
 		NetworkMode: container.NetworkMode(permissionConfig.NetworkMode),
 		CapAdd:      permissionConfig.CapAdd,
@@ -387,11 +388,45 @@ func (c *Client) StopContainer(ctx context.Context, containerID string) error {
 		return nil
 	}
 
+	eventsCh, errCh := c.client.Events(ctx, events.ListOptions{})
+
+	// Process events in a goroutine
+	go func() {
+		for {
+			select {
+			case event := <-eventsCh:
+				if event.Actor.ID == containerID {
+					logger.Log.Info("Container event",
+						"action", event.Action,
+						"containerID", containerID,
+						"time", event.Time)
+				}
+			case err := <-errCh:
+				logger.Log.Error("Error from events", "error", err)
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	// Use a reasonable timeout
 	timeoutSeconds := 30
+	logger.Log.Info("Stopping container")
 	err = c.client.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeoutSeconds})
 	if err != nil {
 		return NewContainerError(err, containerID, fmt.Sprintf("failed to stop container: %v", err))
+	}
+
+	_, err = c.client.ContainerInspect(ctx, containerID)
+	if err != nil {
+		if client.IsErrNotFound(err) {
+			logger.Log.Error("Container was removed after stopping", "containerID", containerID[:12])
+		} else {
+			logger.Log.Error("Error inspecting container", "error", err)
+		}
+	} else {
+		logger.Log.Info("Container still exists after stopping", "containerID", containerID[:12])
 	}
 	return nil
 }

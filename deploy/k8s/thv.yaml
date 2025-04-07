@@ -22,6 +22,9 @@ spec:
       - name: toolhive
         image: ko://github.com/stacklok/toolhive/cmd/thv
         args: ["run", "--foreground=true", "--port=8080", "--name=mcp-fetch", "docker.io/mcp/fetch"]
+        env:
+        - name: UNSTRUCTURED_LOGS
+          value: "false"
         resources:
           limits:
             cpu: "100m"

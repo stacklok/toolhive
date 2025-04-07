@@ -30,3 +30,5 @@ go.work
 
 .roo/
 thv
+
+kconfig.yaml

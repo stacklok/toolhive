@@ -1266,7 +1266,7 @@
     "perplexity-ask": {
       "image": "mcp/perplexity-ask:latest",
       "description": "",
-      "transport": "sse",
+      "transport": "stdio",
       "permissions": {
         "read": [],
         "write": [],
@@ -1276,7 +1276,9 @@
             "allow_transport": [
               "tcp"
             ],
-            "allow_host": [],
+            "allow_host": [
+                "api.perplexity.ai"
+            ],
             "allow_port": [
               443
             ]
@@ -1284,7 +1286,13 @@
         }
       },
       "tools": [],
-      "env_vars": [],
+      "env_vars": [
+        {
+          "name": "PERPLEXITY_API_KEY",
+          "description": "Perplexity API key",
+          "required": true
+        }
+      ],
       "args": [],
       "metadata": {
         "stars": 0,

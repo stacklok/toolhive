@@ -1548,6 +1548,65 @@
        "logs",
        "traces"
      ]
+   },
+   "semgrep": {
+     "image": "ghcr.io/semgrep/mcp:latest",
+     "description": "An MCP server for using Semgrep to scan code for security vulnerabilities. Semgrep is a fast, deterministic static analysis tool that semantically understands many languages and comes with over 5,000 rules.",
+     "transport": "sse",
+     "permissions": {
+       "read": [],
+       "write": [],
+       "network": {
+         "outbound": {
+           "insecure_allow_all": false,
+           "allow_transport": [
+             "tcp"
+           ],
+           "allow_host": [
+             "semgrep.dev",
+             "semgrep.com"
+           ],
+           "allow_port": [
+             443
+           ]
+         }
+       }
+     },
+     "tools": [
+       "security_check",
+       "semgrep_scan",
+       "semgrep_scan_with_custom_rule",
+       "get_abstract_syntax_tree",
+       "supported_languages",
+       "semgrep_rule_schema",
+       "write_custom_semgrep_rule"
+     ],
+     "env_vars": [
+       {
+         "name": "SEMGREP_APP_TOKEN",
+         "description": "Token for connecting to Semgrep AppSec Platform",
+         "required": false
+       }
+     ],
+     "args": [],
+     "metadata": {
+       "stars": 62,
+       "pulls": 0,
+       "last_updated": "2025-04-07T12:37:00Z"
+     },
+     "repository_url": "https://github.com/semgrep/mcp",
+     "tags": [
+       "security",
+       "static-analysis",
+       "code-scanning",
+       "vulnerability-detection",
+       "sast",
+       "code-quality",
+       "security-scanning",
+       "semgrep",
+       "ast",
+       "code-analysis"
+     ]
    }
  }
 }

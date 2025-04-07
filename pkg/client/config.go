@@ -126,16 +126,18 @@ func FindClientConfigs() ([]ConfigFile, error) {
 	var filters []MCPClient
 	appConfig := config.GetConfig()
 	// If we are not using auto-discovery, we need to filter the set of clients to configure.
-	if !appConfig.Clients.AutoDiscovery && len(appConfig.Clients.RegisteredClients) > 0 {
-		filters = make([]MCPClient, len(appConfig.Clients.RegisteredClients))
-		for _, client := range appConfig.Clients.RegisteredClients {
-			// Not validating client names here - assuming that A) they are
-			// validated when set, and B) they will be dropped later if not valid.
-			filters = append(filters, MCPClient(client))
+	if !appConfig.Clients.AutoDiscovery {
+		if len(appConfig.Clients.RegisteredClients) > 0 {
+			filters = make([]MCPClient, len(appConfig.Clients.RegisteredClients))
+			for _, client := range appConfig.Clients.RegisteredClients {
+				// Not validating client names here - assuming that A) they are
+				// validated when set, and B) they will be dropped later if not valid.
+				filters = append(filters, MCPClient(client))
+			}
+		} else {
+			// No clients configured - exit early.
+			return nil, nil
 		}
-	} else {
-		// No clients configured - exit early.
-		return nil, nil
 	}
 
 	// Get the set of paths we need to configure

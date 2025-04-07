@@ -38,13 +38,13 @@ archives:
 #   - name: toolhive
 #     publisher: stacklok
 #     license: Apache-2.0
-#     license_url: "https://github.com/stacklok/toolhive/blob/main/LICENSE"
+#     license_url: "https://github.com/StacklokLabs/toolhive/blob/main/LICENSE"
 #     copyright: Stacklok, Inc.
 #     homepage: https://stacklok.com
 #     short_description: 'toolhive is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
-#     publisher_support_url: "https://github.com/stacklok/toolhive/issues/new/choose"
+#     publisher_support_url: "https://github.com/StacklokLabs/toolhive/issues/new/choose"
 #     package_identifier: "stacklok.toolhive"
-#     url_template: "https://github.com/stacklok/toolhive/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+#     url_template: "https://github.com/StacklokLabs/toolhive/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
 #     skip_upload: auto
 #     release_notes: "{{.Changelog}}"
 #     tags:
@@ -69,8 +69,8 @@ archives:
 # This section defines how to release to homebrew.
 brews:
   - name: thv
-    homepage: 'https://github.com/stacklok/toolhive'
-    description: 'toolhive is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
+    homepage: 'https://github.com/StacklokLabs/toolhive'
+    description: 'toolhive (thv) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
     directory: Formula
     commit_author:
       name: stacklokbot
@@ -94,7 +94,7 @@ sboms:
 # This section defines the release policy.
 release:
   github:
-    owner: stacklok
+    owner: StacklokLabs
     name: toolhive
 # This section defines how and which artifacts we want to sign for the release.
 signs:

@@ -60,7 +60,7 @@ $ thv run fetch
 Apr  8 12:10:25.757 INF Using host port: 38697
 Apr  8 12:10:25.757 INF Logging to: /Users/$USER/Library/Application Support/toolhive/logs/fetch.log
 Apr  8 12:10:25.759 INF MCP server is running in the background (PID: 40373)
-Apr  8 12:10:25.759 INF Use 'toolhive stop fetch' to stop the server
+Apr  8 12:10:25.759 INF Use 'thv stop fetch' to stop the server
 
 # Let's list our running MCP server
 $ thv list

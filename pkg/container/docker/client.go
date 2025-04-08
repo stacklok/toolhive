@@ -243,6 +243,9 @@ func (c *Client) CreateContainer(
 		CapAdd:      permissionConfig.CapAdd,
 		CapDrop:     permissionConfig.CapDrop,
 		SecurityOpt: permissionConfig.SecurityOpt,
+		RestartPolicy: container.RestartPolicy{
+			Name: "unless-stopped",
+		},
 	}
 
 	// Configure ports if options are provided
@@ -932,6 +935,11 @@ func compareHostConfig(existing *container.InspectResponse, desired *container.H
 
 	// Compare security options
 	if !compareStringSlices(existing.HostConfig.SecurityOpt, desired.SecurityOpt) {
+		return false
+	}
+
+	// Compare restart policy
+	if existing.HostConfig.RestartPolicy.Name != desired.RestartPolicy.Name {
 		return false
 	}
 

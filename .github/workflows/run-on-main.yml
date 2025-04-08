@@ -16,5 +16,9 @@ jobs:
   image-build-and-push:
     name: Build and Sign Image
     needs: [ linting, tests ]
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
     uses: ./.github/workflows/image-build-and-publish.yml
     

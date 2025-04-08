@@ -43,7 +43,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		TargetHost: r.Config.TargetHost,
 		Runtime:    r.Config.Runtime,
 		Debug:      r.Config.Debug,
-		AutoRemove: r.Config.AutoRemove,
 	}
 
 	// Add OIDC middleware if OIDC validation is enabled

@@ -123,9 +123,6 @@ type Config struct {
 	// If debug mode is enabled, containers will not be removed when stopped.
 	Debug bool
 
-	// AutoRemove indicates whether the container should be removed when the server has been stopped.
-	AutoRemove bool
-
 	// Middlewares is a list of middleware functions to apply to the transport.
 	// These are applied in order, with the first middleware being the outermost wrapper.
 	Middlewares []Middleware

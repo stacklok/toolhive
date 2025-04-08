@@ -62,9 +62,6 @@ type RunConfig struct {
 	// Debug indicates whether debug mode is enabled
 	Debug bool `json:"debug,omitempty" yaml:"debug,omitempty"`
 
-	// AutoRemove indicates whether the container should be removed when the server has been stopped
-	AutoRemove bool `json:"auto_remove,omitempty" yaml:"auto_remove,omitempty"`
-
 	// Volumes are the directory mounts to pass to the container
 	// Format: "host-path:container-path[:ro]"
 	Volumes []string `json:"volumes,omitempty" yaml:"volumes,omitempty"`
@@ -120,7 +117,6 @@ func NewRunConfigFromFlags(
 	cmdArgs []string,
 	name string,
 	debug bool,
-	autoRemove bool,
 	volumes []string,
 	secretsList []string,
 	authzConfigPath string,
@@ -136,7 +132,6 @@ func NewRunConfigFromFlags(
 		CmdArgs:                     cmdArgs,
 		Name:                        name,
 		Debug:                       debug,
-		AutoRemove:                  autoRemove,
 		Volumes:                     volumes,
 		Secrets:                     secretsList,
 		AuthzConfigPath:             authzConfigPath,

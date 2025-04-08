@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/stacklok/toolhive/pkg/container"
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/transport/errors"
-	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
-	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/StacklokLabs/toolhive/pkg/container"
+	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/networking"
+	"github.com/StacklokLabs/toolhive/pkg/permissions"
+	"github.com/StacklokLabs/toolhive/pkg/transport/errors"
+	"github.com/StacklokLabs/toolhive/pkg/transport/proxy/transparent"
+	"github.com/StacklokLabs/toolhive/pkg/transport/types"
 )
 
 const (

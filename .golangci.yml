@@ -97,7 +97,7 @@ formatters:
       sections:
         - standard
         - default
-        - prefix(github.com/stacklok/toolhive)
+        - prefix(github.com/StacklokLabs/toolhive)
   exclusions:
     generated: lax
     paths:

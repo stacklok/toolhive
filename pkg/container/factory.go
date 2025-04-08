@@ -6,9 +6,9 @@ import (
 	"context"
 	"os"
 
-	"github.com/stacklok/toolhive/pkg/container/docker"
-	"github.com/stacklok/toolhive/pkg/container/kubernetes"
-	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/StacklokLabs/toolhive/pkg/container/docker"
+	"github.com/StacklokLabs/toolhive/pkg/container/kubernetes"
+	"github.com/StacklokLabs/toolhive/pkg/container/runtime"
 )
 
 // Factory creates container runtimes

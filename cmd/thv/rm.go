@@ -7,12 +7,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/client"
-	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/StacklokLabs/toolhive/pkg/client"
+	"github.com/StacklokLabs/toolhive/pkg/config"
+	"github.com/StacklokLabs/toolhive/pkg/container"
+	"github.com/StacklokLabs/toolhive/pkg/labels"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/runner"
 )
 
 var rmCmd = &cobra.Command{

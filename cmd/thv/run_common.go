@@ -11,11 +11,11 @@ import (
 	"github.com/adrg/xdg"
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/authz"
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/process"
-	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/StacklokLabs/toolhive/pkg/authz"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/process"
+	"github.com/StacklokLabs/toolhive/pkg/runner"
+	"github.com/StacklokLabs/toolhive/pkg/secrets"
 )
 
 // RunMCPServer runs an MCP server with the specified config

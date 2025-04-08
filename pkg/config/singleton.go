@@ -5,7 +5,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
 )
 
 // Singleton value - should only be written to by the GetConfig function.

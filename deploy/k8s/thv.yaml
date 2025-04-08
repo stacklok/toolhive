@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: toolhive
-        image: ko://github.com/stacklok/toolhive/cmd/thv
+        image: ko://github.com/StacklokLabs/toolhive/cmd/thv
         args: ["run", "--foreground=true", "--port=8080", "--name=mcp-fetch", "docker.io/mcp/fetch"]
         env:
         - name: UNSTRUCTURED_LOGS

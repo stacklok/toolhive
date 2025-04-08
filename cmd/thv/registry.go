@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/StacklokLabs/toolhive/pkg/registry"
 )
 
 var registryCmd = &cobra.Command{

@@ -5,8 +5,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/runner/state"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/runner/state"
 )
 
 // DefaultAppName is the default application name used for state storage

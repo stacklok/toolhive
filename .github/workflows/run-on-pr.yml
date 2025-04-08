@@ -12,3 +12,6 @@ jobs:
   tests:
     name: Tests
     uses: ./.github/workflows/test.yml
+  docs:
+    name: Docs
+    uses: ./.github/workflows/verify-docgen.yml

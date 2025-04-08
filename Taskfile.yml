@@ -1,6 +1,12 @@
 version: '3'
 
 tasks:
+
+  docs:
+    desc: Generate the docs
+    cmds:
+      - go run cmd/help/main.go --dir docs/cli
+
   lint:
     desc: Run linting tools
     cmds:
@@ -37,7 +43,7 @@ tasks:
         sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
     cmds:
       - mkdir -p bin
-      - go build -ldflags "-s -w -X github.com/StacklokLabs/toolhive/cmd/thv.Version={{.VERSION}} -X github.com/stacklok/toolhive/cmd/thv.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/cmd/thv.BuildDate={{.BUILD_DATE}}" -o bin/thv ./cmd/thv
+      - go build -ldflags "-s -w -X github.com/StacklokLabs/toolhive/cmd/thv.Version={{.VERSION}} -X github.com/StacklokLabs/toolhive/cmd/thv.Commit={{.COMMIT}} -X github.com/StacklokLabs/toolhive/cmd/thv.BuildDate={{.BUILD_DATE}}" -o bin/thv ./cmd
 
   install:
     desc: Install the thv binary to GOPATH/bin
@@ -49,7 +55,7 @@ tasks:
       BUILD_DATE:
         sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
     cmds:
-      - go install -ldflags "-s -w -X github.com/StacklokLabs/toolhive/cmd/thv.Version={{.VERSION}} -X github.com/stacklok/toolhive/cmd/thv.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/cmd/thv.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv
+      - go install -ldflags "-s -w -X github.com/StacklokLabs/toolhive/cmd/thv.Version={{.VERSION}} -X github.com/StacklokLabs/toolhive/cmd/thv.Commit={{.COMMIT}} -X github.com/StacklokLabs/toolhive/cmd/thv.BuildDate={{.BUILD_DATE}}" -v ./cmd
 
   all:
     desc: Run linting, tests, and build
@@ -62,13 +68,13 @@ tasks:
   build-image:
     desc: Build the image with ko
     cmds:
-      - ko build --platform linux/amd64,linux/arm64 --local ./cmd/thv
+      - ko build --platform linux/amd64,linux/arm64 --local ./cmd
 
   test-k8s-apply:
     desc: Builds the image, loads it into kind, and applies the Kubernetes manifests
     vars:
       IMAGE:
-        sh: ko build --platform linux/amd64 --local -B ./cmd/thv | tail -n 1
+        sh: ko build --platform linux/amd64 --local -B ./cmd | tail -n 1
     cmds:
       # gets the local kind kubeconfig
       - kind get kubeconfig > kconfig.yaml

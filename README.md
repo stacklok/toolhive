@@ -1,5 +1,15 @@
 # ToolHive - making MCP servers easy and secure <!-- omit in toc -->
 
+[![Release](https://img.shields.io/github/v/release/StacklokLabs/toolhive?style=flat&label=Latest%20version)](https://github.com/StacklokLabs/toolhive/releases)
+|
+[![CI](https://github.com/StacklokLabs/toolhive/actions/workflows/run-on-main.yml/badge.svg?event=push)](https://github.com/StacklokLabs/toolhive/actions/workflows/run-on-main.yml)
+|
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache2.0-brightgreen.svg?style=flat)](https://opensource.org/licenses/Apache-2.0)
+|
+[![Star on GitHub](https://img.shields.io/github/stars/StacklokLabs/toolhive.svg?style=flat&logo=github&label=Stars)](https://github.com/StacklokLabs/toolhive)
+|
+[![Discord](https://img.shields.io/discord/1184987096302239844?style=flat&logo=discord&label=Discord)](https://discord.gg/stacklok)
+
 <img src="docs/images/toolhive.png" alt="ToolHive Logo" width="300" />
 
 ToolHive (thv) is a lightweight utility designed to simplify the deployment and

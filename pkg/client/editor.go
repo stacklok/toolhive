@@ -3,7 +3,7 @@ package client
 import (
 	"fmt"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
 )
 
 // ConfigEditor defines the interface for types which can edit MCP client config files.

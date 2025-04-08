@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/container"
+	"github.com/StacklokLabs/toolhive/pkg/labels"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
 )
 
 func newLogsCommand() *cobra.Command {

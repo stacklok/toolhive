@@ -12,8 +12,8 @@ import (
 	"github.com/adrg/xdg"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/secrets"
 )
 
 // Config represents the configuration of the application.

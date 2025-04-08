@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/StacklokLabs/toolhive/pkg/permissions"
 )
 
 // ContainerInfo represents information about a container

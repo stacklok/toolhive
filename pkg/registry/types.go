@@ -4,7 +4,7 @@ package registry
 import (
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/StacklokLabs/toolhive/pkg/permissions"
 )
 
 // Registry represents the top-level structure of the MCP registry

@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
 
-	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/StacklokLabs/toolhive/pkg/auth"
 )
 
 func TestMiddleware(t *testing.T) {

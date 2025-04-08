@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/StacklokLabs/toolhive/pkg/container/runtime"
 )
 
 // ContainerMonitor watches a container's state and reports when it exits

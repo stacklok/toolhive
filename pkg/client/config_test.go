@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/transport/ssecommon"
 )
 
 // setupTestConfig creates a temporary directory and config file for testing

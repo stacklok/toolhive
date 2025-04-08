@@ -12,13 +12,13 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
-	"github.com/stacklok/toolhive/pkg/container"
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/transport/errors"
-	"github.com/stacklok/toolhive/pkg/transport/proxy/httpsse"
-	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/StacklokLabs/toolhive/pkg/container"
+	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/permissions"
+	"github.com/StacklokLabs/toolhive/pkg/transport/errors"
+	"github.com/StacklokLabs/toolhive/pkg/transport/proxy/httpsse"
+	"github.com/StacklokLabs/toolhive/pkg/transport/types"
 )
 
 // StdioTransport implements the Transport interface using standard input/output.

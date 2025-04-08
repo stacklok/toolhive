@@ -9,12 +9,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/client"
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/process"
-	"github.com/stacklok/toolhive/pkg/transport"
-	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/StacklokLabs/toolhive/pkg/auth"
+	"github.com/StacklokLabs/toolhive/pkg/client"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/process"
+	"github.com/StacklokLabs/toolhive/pkg/transport"
+	"github.com/StacklokLabs/toolhive/pkg/transport/types"
 )
 
 // Runner is responsible for running an MCP server with the provided configuration

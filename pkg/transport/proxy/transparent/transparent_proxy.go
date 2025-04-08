@@ -13,8 +13,8 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/transport/types"
 )
 
 // TransparentProxy implements the Proxy interface as a transparent HTTP proxy

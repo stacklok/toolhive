@@ -315,10 +315,7 @@
             ],
             "allow_host": [
               "brave.com",
-              "api.search.brave.com",
-              "search.com",
-              "an.com",
-              "your.com"
+              "api.search.brave.com"
             ],
             "allow_port": [
               443

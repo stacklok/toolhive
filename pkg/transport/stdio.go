@@ -141,12 +141,6 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		return fmt.Errorf("container runtime not set")
 	}
 
-	// Start the container
-	logger.Log.Info(fmt.Sprintf("Starting container %s...", t.containerName))
-	if err := t.runtime.StartContainer(ctx, t.containerID); err != nil {
-		return fmt.Errorf("failed to start container: %v", err)
-	}
-
 	// Attach to the container
 	var err error
 	t.stdin, t.stdout, err = t.runtime.AttachContainer(ctx, t.containerID)

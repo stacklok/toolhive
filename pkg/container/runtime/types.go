@@ -55,9 +55,6 @@ type Runtime interface {
 		options *CreateContainerOptions,
 	) (string, error)
 
-	// StartContainer starts a container
-	StartContainer(ctx context.Context, containerID string) error
-
 	// ListContainers lists containers
 	ListContainers(ctx context.Context) ([]ContainerInfo, error)
 

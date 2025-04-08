@@ -523,14 +523,6 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string) error 
 	return nil
 }
 
-// StartContainer implements runtime.Runtime.
-func (*Client) StartContainer(_ context.Context, containerID string) error {
-	// In Kubernetes, we don't need to explicitly start containers as they are started
-	// automatically when created. However, we could scale up a statefulset if it's scaled to 0.
-	logger.Log.Info(fmt.Sprintf("Container %s is managed by Kubernetes and started automatically", containerID))
-	return nil
-}
-
 // StopContainer implements runtime.Runtime.
 func (*Client) StopContainer(_ context.Context, _ string) error {
 	return nil

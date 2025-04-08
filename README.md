@@ -53,6 +53,7 @@ $ thv config register-client cursor
 $ thv config list-registered-clients
 Registered clients:
   - cursor
+
 # We run the `mcp/fetch` MCP server. You can run `thv registry list` to list all MCP servers that we have currently in the default registry
 # `$USER` will be your user
 $ thv run --name fetch fetch
@@ -60,10 +61,12 @@ Apr  8 12:10:25.757 INF Using host port: 38697
 Apr  8 12:10:25.757 INF Logging to: /Users/$USER/Library/Application Support/toolhive/logs/fetch.log
 Apr  8 12:10:25.759 INF MCP server is running in the background (PID: 40373)
 Apr  8 12:10:25.759 INF Use 'toolhive stop fetch' to stop the server
+
 # Let's list our running MCP server
 $ thv list
 CONTAINER ID   NAME                    IMAGE              STATE     TRANSPORT   PORT    URL
 f336f5d471f1   fetch                   mcp/fetch:latest   running   stdio       38697   http://localhost:38697/sse#fetch
+
 # Let's retrieve the Client Config for Cursor
 # Remember to change `$USER` your user
 $ cat /Users/$USER/.cursor/mcp.json | grep "sse#fetch" -A 3 -B 3

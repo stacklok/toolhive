@@ -325,7 +325,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, e
 			name = c.Names[0]
 			name = strings.TrimPrefix(name, "/")
 		}
-
+ 
 		// Extract port mappings
 		ports := make([]runtime.PortMapping, 0, len(c.Ports))
 		for _, p := range c.Ports {

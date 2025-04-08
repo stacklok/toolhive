@@ -18,7 +18,7 @@ ToolHive radically simplifies MCP deployment by:
 - Standardized Packaging: Leveraging OCI container standards, the project provides a repeatable, standardized packaging method for MCP servers, ensuring compatibility and reliability.
 
 
-## Key Benefits
+### Key Benefits
 - Curated MCP Registry: Includes a registry of curated MCPs with verified configurations — users can effortlessly discover and deploy MCP servers without any manual setup. Just select one from the list and safely run it with just one command.
 
 - Enterprise-Ready Authorization: Offers robust authorization controls tailored for enterprise environments, securely managing tool access and integrating seamlessly with existing infrastructures (e.g., Kubernetes).
@@ -36,7 +36,49 @@ ToolHive radically simplifies MCP deployment by:
 | Continue| ❌ | Continue doesn't yet support SSE
 | Claude Desktop | ❌ | Claude Desktop doesn't yet support SSE
 
+## Getting Started
 
+### Installation
+TODO: Add simple installation instructions
+
+### TL;DR, I want to Run an MCP Server with ToolHive
+
+To get up and running an MCP server, we can use ToolHive to create and run a fetch MCP server that our Cursor Client can use.
+
+> Note: This example makes use of the auto-discovery feature that will automatically write the MCP server information to your Clients configuration. If you do not want this to happen and prefer to configure the MCP server in your Client configuration yourself, make sure you run `thv config auto-discovery false` to disable auto-discovery, and take the details of the MCP server returned from the `thv list` command and configure Client MCP servers manually.
+
+```shell
+# Register our Cursor Client with ToolHive
+$ thv config register-client cursor
+$ thv config list-registered-clients
+Registered clients:
+  - cursor
+# We run the `mcp/fetch` MCP server. You can run `thv registry list` to list all MCP servers that we have currently in the default registry
+# `$USER` will be your user
+$ thv run --name fetch fetch
+Apr  8 12:10:25.757 INF Using host port: 38697
+Apr  8 12:10:25.757 INF Logging to: /Users/$USER/Library/Application Support/toolhive/logs/fetch.log
+Apr  8 12:10:25.759 INF MCP server is running in the background (PID: 40373)
+Apr  8 12:10:25.759 INF Use 'toolhive stop fetch' to stop the server
+# Let's list our running MCP server
+$ thv list
+CONTAINER ID   NAME                    IMAGE              STATE     TRANSPORT   PORT    URL
+f336f5d471f1   fetch                   mcp/fetch:latest   running   stdio       38697   http://localhost:38697/sse#fetch
+# Let's retrieve the Client Config for Cursor
+# Remember to change `$USER` your user
+$ cat /Users/$USER/.cursor/mcp.json | grep "sse#fetch" -A 3 -B 3
+{
+  "mcpServers": {
+    "fetch": {
+      "url": "http://localhost:38697/sse#fetch"
+    }
+  }
+}
+```
+
+Now, in Cursor, you should be able to chat and ask it to fetch you a page, and it will ask you to connect with the running fetch MCP server.
+
+To follow the same examples but for VS Code or Roo Code, just make sure to register the Client and if you have not disabled auto-discovery, it should update your Client configurations.
 
 ## Commands
 
@@ -188,12 +230,9 @@ thv list
 
 This lists all active MCP servers managed by ToolHive, along with their current status.
 
-## Running Against Local Kind Cluster
+## Running ToolHive Inside of a Local Kind Cluster
 
-In order to run this against a local Kind Cluster, run:
-- `task build-image` to build the image into the local registry, it should spit out the image URL
-- `kind load docker-image $IMAGE_URL  --name $KIND_CLUSTER_NAME` to load it into the Kind cluster
-- Create a `pod.yaml` spec for the pod, using the URL above as the image URL and `args:` field with the args you want to run. kind should create and run the pod.
+In order to run this against a local Kind Cluster, follow the [# Running ToolHive Inside a Local Kubernetes Kind Cluster With Ingress](./docs/running-toolhive-in-kind-cluster.md) doc.
 
 ## License
 

@@ -1,8 +1,22 @@
-# Setting up Ingress on a Local Kind Cluster
+# Running ToolHive Inside a Local Kubernetes Kind Cluster With Ingress
 
 ## Prerequisites:
-- Have a local Kind Cluster running
-- Have an MCP server with the proxy workload fronting it (this can be achieved by running the `test-k8s-apply` Taskfile task. `task test-k8s-apply`)
+- Have a local Kind Cluster running (`kind create cluster`)
+- Have [`ko`](https://ko.build/install/) installed (for building the ToolHive image locally)
+- Have [Taskfile](https://taskfile.dev/installation/) installed (to run automated steps)
+- Git Clone the ToolHive repository
+
+## Deploy an MCP Server into Kind Cluster
+
+To make the deployment of an MCP server easier, we have setup the `test-k8s-apply` task. It will go through and perform the following actions:
+- Builds the ToolHive container image
+- Outputs the local `kind` cluster config into a local file
+- Loads ToolHive image into Kind
+- Applies example [Kubernetes manifests](../deploy/k8s/thv.yaml) of a Fetch MCP Server
+- Creates a RoleBinding for the ToolHive container to be able to create resources
+- Applies and configures the Nginx Controller manifests for Ingress
+
+To run this task, in the root of this repository, run `task test-k8s-apply`. Once it has finished, you should have a local Kind cluster with a deployed MCP server. To access it, you can follow the next section of setting up a simple Ingress for it.
 
 ## Setting Up Ingress
 

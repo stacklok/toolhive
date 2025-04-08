@@ -17,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
@@ -154,6 +155,10 @@ func FindClientConfigs() ([]ConfigFile, error) {
 			// ugly hack, refactor away in future.
 			clientConfig.Editor = pe.Editor
 			configs = append(configs, clientConfig)
+		}
+
+		if err != nil {
+			logger.Log.Error(fmt.Sprintf("Error reading client config file %s: %v", pe.Path, err))
 		}
 	}
 

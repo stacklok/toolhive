@@ -40,9 +40,11 @@ var (
 	runVolumes           []string
 	runSecrets           []string
 	runAuthzConfig       string
+	autoRemove           bool
 )
 
 func init() {
+	runCmd.Flags().BoolVar(&autoRemove, "rm", false, "Auto-remove the server container when the server has been stopped")
 	runCmd.Flags().StringVar(&runTransport, "transport", "stdio", "Transport mode (sse or stdio)")
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
@@ -120,6 +122,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		cmdArgs,
 		runName,
 		debugMode,
+		autoRemove,
 		runVolumes,
 		runSecrets,
 		runAuthzConfig,

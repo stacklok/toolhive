@@ -238,6 +238,7 @@ func (c *Client) CreateContainer(
 
 	// Create host configuration
 	hostConfig := &container.HostConfig{
+		AutoRemove:  false,
 		Mounts:      convertMounts(permissionConfig.Mounts),
 		NetworkMode: container.NetworkMode(permissionConfig.NetworkMode),
 		CapAdd:      permissionConfig.CapAdd,

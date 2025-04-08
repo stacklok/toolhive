@@ -67,6 +67,14 @@ func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
 		detachedArgs = append(detachedArgs, "--transport", string(options.Transport))
 	}
 
+	if options.Debug {
+		detachedArgs = append(detachedArgs, "--debug")
+	}
+
+	if options.AutoRemove {
+		detachedArgs = append(detachedArgs, "--rm")
+	}
+
 	// Use Name if available
 	if options.Name != "" {
 		detachedArgs = append(detachedArgs, "--name", options.Name)

@@ -801,6 +801,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	cmdArgs := []string{"arg1", "arg2"}
 	name := "test-server"
 	debug := true
+	autoRemove := true
 	volumes := []string{"/host:/container"}
 	secretsList := []string{"secret1,target=ENV_VAR1"}
 	authzConfigPath := "/path/to/authz.json"
@@ -816,6 +817,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		cmdArgs,
 		name,
 		debug,
+		autoRemove,
 		volumes,
 		secretsList,
 		authzConfigPath,

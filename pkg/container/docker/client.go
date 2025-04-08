@@ -26,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/egress"
 )
 
 // Common socket paths
@@ -43,10 +44,11 @@ const (
 
 // Client implements the Runtime interface for container operations
 type Client struct {
-	runtimeType     runtime.Type
-	socketPath      string
-	client          *client.Client
-	egressProxyPort int
+	runtimeType        runtime.Type
+	socketPath         string
+	client             *client.Client
+	egressProxyPort    int
+	egressProxyFactory *egress.Factory
 }
 
 // NewClient creates a new container client
@@ -93,10 +95,11 @@ func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType
 	}
 
 	c := &Client{
-		runtimeType:     runtimeType,
-		socketPath:      socketPath,
-		client:          dockerClient,
-		egressProxyPort: DefaultEgressProxyPort, // Default egress proxy port
+		runtimeType:        runtimeType,
+		socketPath:         socketPath,
+		client:             dockerClient,
+		egressProxyPort:    DefaultEgressProxyPort, // Default egress proxy port
+		egressProxyFactory: egress.NewFactory(),
 	}
 
 	// Verify that the container runtime is available
@@ -238,15 +241,6 @@ func (c *Client) CreateContainer(
 	// Determine if we should attach stdio
 	attachStdio := options == nil || options.AttachStdio
 
-	// Add egress proxy environment variables if needed
-	if c.needsNetworkAccess(permissionProfile, transportType) && c.shouldUseEgressProxy(permissionProfile) {
-		// Add proxy environment variables
-		proxyEnvVars := getEgressProxyEnvironmentVariables(c.egressProxyPort)
-		for k, v := range proxyEnvVars {
-			envVars[k] = v
-		}
-	}
-
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,
@@ -259,6 +253,9 @@ func (c *Client) CreateContainer(
 		OpenStdin:    attachStdio,
 		Tty:          false,
 	}
+
+	// Create or get the egress proxy if needed
+	egressProxy := c.setupEgressProxy(ctx, name, permissionProfile, transportType, envVars, config)
 
 	// Create host configuration
 	hostConfig := &container.HostConfig{
@@ -304,7 +301,14 @@ func (c *Client) CreateContainer(
 	}
 
 	// Create an internal network for egress control if needed
-	var networkingConfig *network.NetworkingConfig = c.setupEgressNetwork(ctx, permissionProfile, transportType, name, hostConfig)
+	var networkingConfig = c.setupEgressNetwork(
+		ctx,
+		permissionProfile,
+		transportType,
+		name,
+		hostConfig,
+		egressProxy,
+	)
 
 	// Create the container
 	resp, err := c.client.ContainerCreate(
@@ -417,10 +421,24 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string) error 
 	if err != nil {
 		// If the container doesn't exist, that's fine - it's already removed
 		if client.IsErrNotFound(err) {
+			// Stop the egress proxy
+			if info, err := c.GetContainerInfo(ctx, containerID); err == nil {
+				if err := c.egressProxyFactory.StopProxy(ctx, info.Name+"-egress"); err != nil {
+					logger.Log.Warn(fmt.Sprintf("Warning: Failed to stop egress proxy: %v", err))
+				}
+			}
+
 			return nil
 		}
 		return NewContainerError(err, containerID, fmt.Sprintf("failed to remove container: %v", err))
 	}
+	// Stop the egress proxy
+	if info, err := c.GetContainerInfo(ctx, containerID); err == nil {
+		if err := c.egressProxyFactory.StopProxy(ctx, info.Name+"-egress"); err != nil {
+			logger.Log.Warn(fmt.Sprintf("Warning: Failed to stop egress proxy: %v", err))
+		}
+	}
+
 	return nil
 }
 
@@ -1201,6 +1219,7 @@ func (c *Client) setupEgressNetwork(
 	transportType string,
 	containerName string,
 	hostConfig *container.HostConfig,
+	proxy egress.Proxy,
 ) *network.NetworkingConfig {
 	// Only set up egress network if needed
 	if !c.needsNetworkAccess(permissionProfile, transportType) || !c.shouldUseEgressProxy(permissionProfile) {
@@ -1236,5 +1255,49 @@ func (c *Client) setupEgressNetwork(
 		hostConfig.ExtraHosts = append(hostConfig.ExtraHosts, "host.docker.internal:172.17.0.1")
 	}
 
+	// Log the proxy information if available
+	if proxy != nil {
+		logger.Log.Info(fmt.Sprintf("Using egress proxy for container %s on port %d", containerName, proxy.GetPort()))
+	}
+
 	return networkingConfig
+}
+
+// setupEgressProxy creates or gets an egress proxy and configures environment variables
+func (c *Client) setupEgressProxy(
+	ctx context.Context,
+	containerName string,
+	permissionProfile *permissions.Profile,
+	transportType string,
+	envVars map[string]string,
+	config *container.Config,
+) egress.Proxy {
+	// Check if we need an egress proxy
+	if !c.needsNetworkAccess(permissionProfile, transportType) || !c.shouldUseEgressProxy(permissionProfile) {
+		return nil
+	}
+
+	// Create or get the egress proxy
+	proxy, err := c.egressProxyFactory.GetOrCreateProxy(
+		ctx,
+		containerName+"-egress",
+		c.egressProxyPort,
+		"0.0.0.0",
+		permissionProfile,
+	)
+	if err != nil {
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to create egress proxy: %v", err))
+		return nil
+	}
+
+	// Add proxy environment variables
+	proxyEnvVars := getEgressProxyEnvironmentVariables(proxy.GetPort())
+	for k, v := range proxyEnvVars {
+		envVars[k] = v
+	}
+
+	// Update the environment variables in the config
+	config.Env = convertEnvVars(envVars)
+
+	return proxy
 }

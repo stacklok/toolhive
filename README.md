@@ -259,6 +259,10 @@ thv run --secret github,target=GITHUB_PERSONAL_ACCESS_TOKEN github
 ToolHive stores the encryption password in your operating system's keyring
 service.
 
+For more details on managing secrets, see the
+[`thv secret` command reference](./docs/cli/thv_secret.md) or run
+`thv secret --help`.
+
 ### Run a custom MCP server
 
 If you want to run a custom MCP server that is not in the registry, you can do

@@ -1,6 +1,4 @@
-<!-- omit in toc -->
-
-# ToolHive - making MCP servers easy and secure
+# ToolHive - making MCP servers easy and secure <!-- omit in toc -->
 
 <img src="docs/images/toolhive.png" alt="ToolHive Logo" width="300" />
 
@@ -10,30 +8,26 @@ consistency, and security.
 
 <img src="./docs/images/thv-readme-demo.svg" alt="Terminal Recording">
 
-<!-- omit in toc -->
+## Contents <!-- omit in toc -->
 
-## Contents
-
-- [ToolHive - making MCP servers easy and secure](#toolhive---making-mcp-servers-easy-and-secure)
-  - [Contents](#contents)
-  - [Why ToolHive?](#why-toolhive)
-    - [Key benefits](#key-benefits)
-  - [Getting started](#getting-started)
-    - [Prerequisites](#prerequisites)
-    - [Installation](#installation)
-    - [Quickstart - run your first MCP server](#quickstart---run-your-first-mcp-server)
-  - [Client compatibility](#client-compatibility)
-  - [Architecture overview](#architecture-overview)
-  - [Usage examples](#usage-examples)
-    - [Register clients](#register-clients)
-    - [Find and run an MCP server](#find-and-run-an-mcp-server)
-    - [Manage MCP servers](#manage-mcp-servers)
-    - [Secrets management](#secrets-management)
-    - [Run a custom MCP server](#run-a-custom-mcp-server)
-  - [Permissions](#permissions)
-  - [Run ToolHive in Kubernetes](#run-toolhive-in-kubernetes)
-  - [Contributing to ToolHive](#contributing-to-toolhive)
-  - [License](#license)
+- [Why ToolHive?](#why-toolhive)
+  - [Key benefits](#key-benefits)
+- [Getting started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Quickstart - run your first MCP server](#quickstart---run-your-first-mcp-server)
+- [Client compatibility](#client-compatibility)
+- [Architecture overview](#architecture-overview)
+- [Usage examples](#usage-examples)
+  - [Register clients](#register-clients)
+  - [Find and run an MCP server](#find-and-run-an-mcp-server)
+  - [Manage MCP servers](#manage-mcp-servers)
+  - [Secrets management](#secrets-management)
+  - [Run a custom MCP server](#run-a-custom-mcp-server)
+- [Permissions](#permissions)
+- [Run ToolHive in Kubernetes](#run-toolhive-in-kubernetes)
+- [Contributing to ToolHive](#contributing-to-toolhive)
+- [License](#license)
 
 ## Why ToolHive?
 

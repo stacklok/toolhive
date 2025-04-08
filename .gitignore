@@ -32,3 +32,5 @@ go.work
 ^thv$
 
 kconfig.yaml
+
+.DS_Store

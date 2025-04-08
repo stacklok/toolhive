@@ -6,6 +6,8 @@ ToolHive (thv) is a lightweight, secure, and fast manager for MCP (Model Context
 
 Under the hood, ToolHive acts as a very thin client for the Docker/Podman Unix socket API. This design choice allows it to remain both efficient and lightweight while still providing powerful, container-based isolation for running MCP servers.
 
+<img src="./docs/images/thv-readme-demo.svg" alt="Terminal Recording">
+
 ## Why ToolHive?
 
 Deploying MCP servers requires complex multi-step processes with a lot of friction: involving running random potentially harmful commands (e.g. using `uv` or `npx`), manually managing security credentials (e.g. putting an api token into a text file), and wrestling with inconsistent packaging methods. ToolHive aims to solve this by starting containers in a locked-down environment, granting only the minimal permissions required to run. This significantly reduces the attack surface, imporves usability, and enforces best practices for container security.
@@ -25,85 +27,9 @@ ToolHive radically simplifies MCP deployment by:
 
 - Seamless Integration: Compatible with popular development tools such as Copilot, Continue, Claude Desktop, Stitch, and more, streamlining your workflow.
 
-## Client Compability
-
-| Client | Supported | Notes |
-|--------|-----------|-------|
-| Copilot (VS Code) | ✅ |
-| Cursor | ✅ |
-| Roo Code | ✅ |
-| PydanticAI | ✅ |
-| Continue| ❌ | Continue doesn't yet support SSE
-| Claude Desktop | ❌ | Claude Desktop doesn't yet support SSE
-
 ## Getting Started
 
-### Installation
 TODO: Add simple installation instructions
-
-### TL;DR, I want to Run an MCP Server with ToolHive
-
-To get up and running an MCP server, we can use ToolHive to create and run a fetch MCP server that our Cursor Client can use.
-
-> Note: This example makes use of the auto-discovery feature that will automatically write the MCP server information to your Clients configuration. If you do not want this to happen and prefer to configure the MCP server in your Client configuration yourself, make sure you run `thv config auto-discovery false` to disable auto-discovery, and take the details of the MCP server returned from the `thv list` command and configure Client MCP servers manually.
-
-```shell
-# Register our Cursor Client with ToolHive
-$ thv config register-client cursor
-$ thv config list-registered-clients
-Registered clients:
-  - cursor
-
-# We run the `mcp/fetch` MCP server. You can run `thv registry list` to list all MCP servers that we have currently in the default registry
-# `$USER` will be your user
-$ thv run fetch
-Apr  8 12:10:25.757 INF Using host port: 38697
-Apr  8 12:10:25.757 INF Logging to: /Users/$USER/Library/Application Support/toolhive/logs/fetch.log
-Apr  8 12:10:25.759 INF MCP server is running in the background (PID: 40373)
-Apr  8 12:10:25.759 INF Use 'thv stop fetch' to stop the server
-
-# Let's list our running MCP server
-$ thv list
-CONTAINER ID   NAME                    IMAGE              STATE     TRANSPORT   PORT    URL
-f336f5d471f1   fetch                   mcp/fetch:latest   running   stdio       38697   http://localhost:38697/sse#fetch
-
-# Let's retrieve the Client Config for Cursor
-# Remember to change `$USER` your user
-$ cat /Users/$USER/.cursor/mcp.json | grep "sse#fetch" -A 3 -B 3
-{
-  "mcpServers": {
-    "fetch": {
-      "url": "http://localhost:38697/sse#fetch"
-    }
-  }
-}
-```
-
-Now, in Cursor, you should be able to chat and ask it to fetch you a page, and it will ask you to connect with the running fetch MCP server.
-
-To follow the same examples but for VS Code or Roo Code, just make sure to register the Client and if you have not disabled auto-discovery, it should update your Client configurations.
-
-## Commands
-
-The thv command-line interface provides the following subcommands:
-
-* `thv run` Runs an MCP server.
-
-* `thv list` Lists running MCP servers.
-
-* `thv stop` Stops an MCP server.
-
-* `thv rm` Removes an MCP server.
-
-* `thv restart` Restarts an MCP server.
-
-* `thv search` Searches for available MCP servers in the registry.
-
-* `thv registry list` Lists available MCP servers in the registry.
-
-* `thv help` Displays help information.
-
-* `thv version` Shows the current version of ToolHive.
 
 ## Usage
 
@@ -125,6 +51,16 @@ thv run <name-of-mcp-server>
 
 The registry already contains all the parameters needed to run the server, so you don't need to specify any additional arguments.
 ToolHive will automatically pull the image and start the server.
+
+### Listing Running MCP Servers
+
+Use:
+
+```bash
+thv list
+```
+
+This lists all active MCP servers managed by ToolHive, along with their current status.
 
 ### Browsing the Registry
 
@@ -223,15 +159,16 @@ Two built-in profiles are included for convenience:
 * `stdio`: Grants minimal permissions with no network access.
 * `network`: Permits outbound network connections to any host on any port (not recommended for production use).
 
-## Listing Running MCP Servers
+## Client Compability
 
-Use:
-
-```bash
-thv list
-```
-
-This lists all active MCP servers managed by ToolHive, along with their current status.
+| Client | Supported | Notes |
+|--------|-----------|-------|
+| Copilot (VS Code) | ✅ |
+| Cursor | ✅ |
+| Roo Code | ✅ |
+| PydanticAI | ✅ |
+| Continue| ❌ | Continue doesn't yet support SSE
+| Claude Desktop | ❌ | Claude Desktop doesn't yet support SSE
 
 ## Running ToolHive Inside of a Local Kind Cluster
 

@@ -336,6 +336,67 @@ func (c *ConfigFile) SaveWithLock(serverName, url string, editor ConfigEditor) e
 	return nil
 }
 
+// DeleteConfigWithLock safely removes the MCP server configuration in the file
+// It acquires a lock, reads the latest content, applies the change, and saves the file
+func (c *ConfigFile) DeleteConfigWithLock(serverName string, editor ConfigEditor) error {
+	// Create a lock file
+	fileLock := flock.New(c.Path + ".lock")
+
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
+	defer cancel()
+
+	// Try to acquire the lock with a timeout
+	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
+	}
+	defer fileLock.Unlock()
+
+	// Read the latest content from the file
+	latestConfig, err := readConfigFile(c.Path)
+	if err != nil {
+		return fmt.Errorf("failed to read latest config: %w", err)
+	}
+
+	// Apply our change to the latest content
+	if err := editor.RemoveServer(&latestConfig, serverName); err != nil {
+		return fmt.Errorf("failed to update latest config: %w", err)
+	}
+
+	// Determine format based on file extension
+	ext := strings.ToLower(filepath.Ext(c.Path))
+
+	var data []byte
+
+	if IsYAML(ext) {
+		// Marshal YAML
+		data, err = yaml.Marshal(latestConfig.Contents)
+		if err != nil {
+			return fmt.Errorf("failed to marshal YAML: %w", err)
+		}
+	} else {
+		// Default to JSON
+		data, err = json.MarshalIndent(latestConfig.Contents, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+	}
+
+	// Write file
+	if err := os.WriteFile(c.Path, data, 0600); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	// Update our in-memory representation to match the file
+	c.Contents = latestConfig.Contents
+
+	return nil
+}
+
 // GenerateMCPServerURL generates the URL for an MCP server
 func GenerateMCPServerURL(host string, port int, containerName string) string {
 	// The URL format is: http://host:port/sse#container-name

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
@@ -62,7 +63,7 @@ func setupTestConfig(t *testing.T, testName string) (string, string, ConfigFile)
 }
 
 // getMCPServers reads the config file and returns the mcpServers map
-func getMCPServers(t *testing.T, configPath string) map[string]interface{} {
+func getMCPServers(t *testing.T, configPath string, editor ConfigEditor) map[string]interface{} {
 	t.Helper()
 
 	// Read the config file
@@ -71,13 +72,32 @@ func getMCPServers(t *testing.T, configPath string) map[string]interface{} {
 		t.Fatalf("Failed to read updated config file: %v", err)
 	}
 
-	// Check if the servers were updated correctly
-	mcpServers, ok := updatedConfig.Contents["mcpServers"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("mcpServers is not a map")
+	_, vsOk := editor.(*VSCodeConfigEditor)
+	if vsOk {
+		updatedConfig.Editor = editor
+		mcpMap, ok := updatedConfig.Contents["mcp"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("mcp is not a map")
+		}
+
+		// Get servers child object
+		mcpServers, ok := mcpMap["servers"]
+		if !ok {
+			t.Fatalf("mcpServers is not a map")
+		}
+		return mcpServers.(map[string]interface{})
 	}
 
-	return mcpServers
+	_, standardOk := editor.(*StandardConfigEditor)
+	if standardOk {
+		mcpServers, ok := updatedConfig.Contents["mcpServers"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("mcpServers is not a map")
+		}
+		return mcpServers
+	}
+
+	return nil
 }
 
 // testUpdateExistingServer tests updating an existing server
@@ -85,13 +105,15 @@ func testUpdateExistingServer(t *testing.T, config ConfigFile, configPath string
 	t.Helper()
 	// Test updating an existing server with lock
 	expectedURL := "http://localhost:54321" + ssecommon.HTTPSSEEndpoint + "#test-container"
-	err := config.SaveWithLock("existing-server", expectedURL, &StandardConfigEditor{})
+	editor := &StandardConfigEditor{}
+
+	err := config.SaveWithLock("existing-server", expectedURL, editor)
 	if err != nil {
 		t.Fatalf("Failed to update MCP server config: %v", err)
 	}
 
 	// Get the updated servers
-	mcpServers := getMCPServers(t, configPath)
+	mcpServers := getMCPServers(t, configPath, editor)
 
 	// Check existing server
 	existingServer, ok := mcpServers["existing-server"].(map[string]interface{})
@@ -112,13 +134,14 @@ func testAddNewServer(t *testing.T, config ConfigFile, configPath string) {
 	t.Helper()
 	// Test adding a new server with lock
 	expectedURL := "http://localhost:9876" + ssecommon.HTTPSSEEndpoint + "#new-container"
-	err := config.SaveWithLock("new-server", expectedURL, &StandardConfigEditor{})
+	editor := &StandardConfigEditor{}
+	err := config.SaveWithLock("new-server", expectedURL, editor)
 	if err != nil {
 		t.Fatalf("Failed to add new MCP server config: %v", err)
 	}
 
 	// Get the updated servers
-	mcpServers := getMCPServers(t, configPath)
+	mcpServers := getMCPServers(t, configPath, editor)
 
 	// Check new server
 	newServer, ok := mcpServers["new-server"].(map[string]interface{})
@@ -134,11 +157,53 @@ func testAddNewServer(t *testing.T, config ConfigFile, configPath string) {
 	}
 }
 
+// testAddNewServer tests adding a new server
+func testRemovingServer(t *testing.T, config ConfigFile, configPath string, editor ConfigEditor) {
+	t.Helper()
+	// Test adding a new server with lock
+	expectedURL := "http://localhost:9876" + ssecommon.HTTPSSEEndpoint + "#new-container"
+	err := config.SaveWithLock("new-server", expectedURL, editor)
+	if err != nil {
+		t.Fatalf("Failed to add new MCP server config: %v", err)
+	}
+
+	// Get the updated servers
+	mcpServers := getMCPServers(t, configPath, editor)
+
+	// Check new server
+	newServer, ok := mcpServers["new-server"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("new-server is not a map")
+	}
+	newURL, ok := newServer["url"].(string)
+	if !ok {
+		t.Fatalf("url is not a string")
+	}
+	if newURL != expectedURL {
+		t.Fatalf("Unexpected URL for new-server: %s, expected: %s", newURL, expectedURL)
+	}
+
+	// Remove the server
+	err = config.DeleteConfigWithLock("new-server", editor)
+	if err != nil {
+		t.Fatalf("Failed to remove MCP server config: %v", err)
+	}
+
+	mcpServersNew := getMCPServers(t, configPath, editor)
+
+	// Check that the server was removed
+	_, ok = mcpServersNew["new-server"]
+	if ok {
+		t.Fatalf("new-server is still in the config")
+	}
+}
+
 // testPreserveExistingConfig tests that existing configurations are preserved
 func testPreserveExistingConfig(t *testing.T, configPath string) {
 	t.Helper()
 	// Get the updated servers
-	mcpServers := getMCPServers(t, configPath)
+	editor := &StandardConfigEditor{}
+	mcpServers := getMCPServers(t, configPath, editor)
 
 	// Check postgres server (should be unchanged)
 	postgresServer, ok := mcpServers["postgres"].(map[string]interface{})
@@ -212,6 +277,41 @@ func TestUpdateMCPServerConfig(t *testing.T) {
 		})
 
 		testPreserveExistingConfig(t, configPath)
+	})
+
+}
+
+func TestRemoveMCPServerConfig(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+
+	t.Run("RemoveExistingServerStandardEditor", func(t *testing.T) {
+		t.Parallel()
+
+		// Setup test environment for this subtest
+		tempDir, configPath, config := setupTestConfig(t, "remove")
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+
+		testRemovingServer(t, config, configPath, &StandardConfigEditor{})
+	})
+
+	t.Run("RemoveExistingServerVSCodeEditor", func(t *testing.T) {
+		t.Parallel()
+
+		// Setup test environment for this subtest
+		tempDir, configPath, config := setupTestConfig(t, "remove")
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+
+		testRemovingServer(t, config, configPath, &VSCodeConfigEditor{})
 	})
 }
 

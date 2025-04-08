@@ -8,9 +8,7 @@ import (
 
 func TestEgressProxyConfiguration(t *testing.T) {
 	// Create a client
-	client := &Client{
-		egressProxyPort: 3128,
-	}
+	client := &Client{}
 
 	// Test getEgressProxyEnvironmentVariables
 	proxyEnv := getEgressProxyEnvironmentVariables(3128)

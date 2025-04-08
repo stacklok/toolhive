@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,7 +46,6 @@ type Client struct {
 	runtimeType        runtime.Type
 	socketPath         string
 	client             *client.Client
-	egressProxyPort    int
 	egressProxyFactory *egress.Factory
 }
 
@@ -71,8 +71,6 @@ func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType
 		},
 	}
 
-	egressProxyPort := networking.FindAvailable()
-
 	// Create Docker client with the custom HTTP client
 	opts := []client.Opt{
 		client.WithAPIVersionNegotiation(),
@@ -89,7 +87,6 @@ func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType
 		runtimeType:        runtimeType,
 		socketPath:         socketPath,
 		client:             dockerClient,
-		egressProxyPort:    egressProxyPort,
 		egressProxyFactory: egress.NewFactory(),
 	}
 
@@ -223,10 +220,44 @@ func (c *Client) CreateContainer(
 	transportType string,
 	options *runtime.CreateContainerOptions,
 ) (string, error) {
+	// Prepare container and host configurations
+	config, hostConfig, err := c.prepareContainerAndHostConfigurations(
+		image, command, envVars, labels, permissionProfile, transportType, options)
+	if err != nil {
+		return "", err
+	}
+
+	// Check for existing container and handle reuse or recreation
+	existingID, existingProxyPort, canReuse, err := c.checkAndHandleExistingContainer(
+		ctx, name, config, hostConfig, permissionProfile, transportType)
+	if err != nil {
+		return "", err
+	}
+
+	// If we can reuse the existing container, return its ID
+	if canReuse {
+		return existingID, nil
+	}
+
+	// Setup network, create and start a new container
+	return c.setupNetworkAndCreateContainer(
+		ctx, name, config, hostConfig, permissionProfile, transportType, envVars, existingProxyPort)
+}
+
+// prepareContainerAndHostConfigurations creates the container and host configurations
+// based on the provided parameters and permission profile
+func (c *Client) prepareContainerAndHostConfigurations(
+	image string,
+	command []string,
+	envVars, labels map[string]string,
+	permissionProfile *permissions.Profile,
+	transportType string,
+	options *runtime.CreateContainerOptions,
+) (*container.Config, *container.HostConfig, error) {
 	// Get permission config from profile
 	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType)
 	if err != nil {
-		return "", fmt.Errorf("failed to get permission config: %w", err)
+		return nil, nil, fmt.Errorf("failed to get permission config: %w", err)
 	}
 
 	// Determine if we should attach stdio
@@ -245,9 +276,6 @@ func (c *Client) CreateContainer(
 		Tty:          false,
 	}
 
-	// Create or get the egress proxy if needed
-	egressProxy := c.setupEgressProxy(ctx, name, permissionProfile, transportType, envVars, config)
-
 	// Create host configuration
 	hostConfig := &container.HostConfig{
 		AutoRemove:  false,
@@ -262,34 +290,79 @@ func (c *Client) CreateContainer(
 	if options != nil {
 		// Setup exposed ports
 		if err := setupExposedPorts(config, options.ExposedPorts); err != nil {
-			return "", NewContainerError(err, "", err.Error())
+			return nil, nil, NewContainerError(err, "", err.Error())
 		}
 
 		// Setup port bindings
 		if err := setupPortBindings(hostConfig, options.PortBindings); err != nil {
-			return "", NewContainerError(err, "", err.Error())
+			return nil, nil, NewContainerError(err, "", err.Error())
 		}
 	}
 
+	return config, hostConfig, nil
+}
+
+// checkAndHandleExistingContainer checks if a container with the given name already exists,
+// extracts the proxy port if needed, and determines if it can be reused
+func (c *Client) checkAndHandleExistingContainer(
+	ctx context.Context,
+	name string,
+	config *container.Config,
+	hostConfig *container.HostConfig,
+	permissionProfile *permissions.Profile,
+	transportType string,
+) (string, int, bool, error) {
 	// Check if container with this name already exists
 	existingID, err := c.findExistingContainer(ctx, name)
 	if err != nil {
-		return "", err
+		return "", 0, false, err
 	}
 
-	// If container exists, check if we need to recreate it
-	if existingID != "" {
-		canReuse, err := c.handleExistingContainer(ctx, existingID, config, hostConfig)
-		if err != nil {
-			return "", err
-		}
-
-		if canReuse {
-			// Container exists with the right configuration, return its ID
-			return existingID, nil
-		}
-		// Container was removed and needs to be recreated
+	// If no existing container, return empty values
+	if existingID == "" {
+		return "", 0, false, nil
 	}
+
+	// Get the container info to extract the proxy port if needed
+	info, err := c.client.ContainerInspect(ctx, existingID)
+	if err != nil {
+		return "", 0, false, NewContainerError(err, existingID, fmt.Sprintf("failed to inspect container: %v", err))
+	}
+
+	// Extract the proxy port from the container's environment variables
+	var existingProxyPort int
+	if c.needsNetworkAccess(permissionProfile, transportType) && c.shouldUseEgressProxy(permissionProfile) {
+		existingProxyPort = extractProxyPortFromEnv(info.Config.Env)
+		if existingProxyPort > 0 {
+			logger.Log.Info(fmt.Sprintf("Found existing proxy port %d for container %s", existingProxyPort, name))
+		}
+	}
+
+	// Check if we can reuse the container
+	canReuse, err := c.handleExistingContainer(ctx, existingID, config, hostConfig)
+	if err != nil {
+		return "", 0, false, err
+	}
+
+	return existingID, existingProxyPort, canReuse, nil
+}
+
+// setupNetworkAndCreateContainer sets up the network, creates and starts a new container
+// with the provided configurations
+func (c *Client) setupNetworkAndCreateContainer(
+	ctx context.Context,
+	name string,
+	config *container.Config,
+	hostConfig *container.HostConfig,
+	permissionProfile *permissions.Profile,
+	transportType string,
+	envVars map[string]string,
+	existingProxyPort int,
+) (string, error) {
+	// Create or get the egress proxy if needed
+	// If we have an existing proxy port, use it; otherwise, find a new one
+	egressProxy := c.setupEgressProxy(
+		ctx, name, permissionProfile, transportType, envVars, config, existingProxyPort)
 
 	// Create an internal network for egress control if needed
 	var networkingConfig = c.setupEgressNetwork(
@@ -1257,17 +1330,25 @@ func (c *Client) setupEgressProxy(
 	transportType string,
 	envVars map[string]string,
 	config *container.Config,
+	proxyPort int, // Optional port for the proxy. If 0, it will be auto-assigned
 ) egress.Proxy {
 	// Check if we need an egress proxy
 	if !c.needsNetworkAccess(permissionProfile, transportType) || !c.shouldUseEgressProxy(permissionProfile) {
 		return nil
 	}
 
+	proxyName := containerName + "-egress"
+	if proxyPort == 0 {
+		proxyPort = networking.FindAvailable()
+	}
+
 	// Create or get the egress proxy
+	// GetOrCreateProxy is already idempotent - if a proxy with this name exists,
+	// it will return the existing proxy regardless of the port we pass
 	proxy, err := c.egressProxyFactory.GetOrCreateProxy(
 		ctx,
-		containerName+"-egress",
-		c.egressProxyPort,
+		proxyName,
+		proxyPort,
 		"0.0.0.0",
 		permissionProfile,
 	)
@@ -1276,8 +1357,12 @@ func (c *Client) setupEgressProxy(
 		return nil
 	}
 
-	// Add proxy environment variables
-	proxyEnvVars := getEgressProxyEnvironmentVariables(proxy.GetPort())
+	// Get the actual port the proxy is using (important for idempotence)
+	actualPort := proxy.GetPort()
+	logger.Log.Info(fmt.Sprintf("Using egress proxy %s on port %d", proxyName, actualPort))
+
+	// Add proxy environment variables using the actual port
+	proxyEnvVars := getEgressProxyEnvironmentVariables(actualPort)
 	for k, v := range proxyEnvVars {
 		envVars[k] = v
 	}
@@ -1286,4 +1371,31 @@ func (c *Client) setupEgressProxy(
 	config.Env = convertEnvVars(envVars)
 
 	return proxy
+}
+
+// extractProxyPortFromEnv extracts the proxy port from environment variables
+func extractProxyPortFromEnv(env []string) int {
+	// Convert environment variables to a map
+	envMap := envSliceToMap(env)
+
+	// Check for proxy environment variables
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+		if proxyURL, ok := envMap[key]; ok {
+			// Extract the port from the proxy URL
+			// The URL format is typically http://host:port
+			parts := strings.Split(proxyURL, ":")
+			if len(parts) >= 3 {
+				// The port is the last part
+				portStr := parts[len(parts)-1]
+				// Remove any trailing path or query parameters
+				portStr = strings.Split(portStr, "/")[0]
+				port, err := strconv.Atoi(portStr)
+				if err == nil && port > 0 {
+					return port
+				}
+			}
+		}
+	}
+
+	return 0
 }

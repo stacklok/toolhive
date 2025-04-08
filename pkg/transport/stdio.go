@@ -29,7 +29,6 @@ type StdioTransport struct {
 	containerName string
 	runtime       rt.Runtime
 	debug         bool
-	autoRemove    bool
 	middlewares   []types.Middleware
 
 	// Mutex for protecting shared state
@@ -55,14 +54,12 @@ func NewStdioTransport(
 	port int,
 	runtime rt.Runtime,
 	debug bool,
-	autoRemove bool,
 	middlewares ...types.Middleware,
 ) *StdioTransport {
 	return &StdioTransport{
 		port:        port,
 		runtime:     runtime,
 		debug:       debug,
-		autoRemove:  autoRemove,
 		middlewares: middlewares,
 		shutdownCh:  make(chan struct{}),
 	}
@@ -237,18 +234,6 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 			if err := t.runtime.StopContainer(ctx, t.containerID); err != nil {
 				logger.Log.Warn(fmt.Sprintf("Warning: Failed to stop container: %v", err))
 			}
-		}
-
-		// Remove the container if auto-remove is enabled
-		if t.autoRemove {
-			logger.Log.Info(fmt.Sprintf("Removing container %s...", t.containerName))
-			if err := t.runtime.RemoveContainer(ctx, t.containerID); err != nil {
-				logger.Log.Error(fmt.Sprintf("Warning: Failed to remove container: %v", err))
-			} else {
-				logger.Log.Info(fmt.Sprintf("Container %s removed", t.containerName))
-			}
-		} else {
-			logger.Log.Info(fmt.Sprintf("Auto-remove disabled, container %s not removed", t.containerName))
 		}
 	}
 

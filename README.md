@@ -56,7 +56,7 @@ Registered clients:
 
 # We run the `mcp/fetch` MCP server. You can run `thv registry list` to list all MCP servers that we have currently in the default registry
 # `$USER` will be your user
-$ thv run --name fetch fetch
+$ thv run fetch
 Apr  8 12:10:25.757 INF Using host port: 38697
 Apr  8 12:10:25.757 INF Logging to: /Users/$USER/Library/Application Support/toolhive/logs/fetch.log
 Apr  8 12:10:25.759 INF MCP server is running in the background (PID: 40373)

@@ -359,7 +359,8 @@ the [CONTRIBUTING guide](./CONTRIBUTING.md) for details on how to get started.
 
 If you run into a bug or have a feature request, please
 [open an issue](https://github.com/StacklokLabs/toolhive/issues) in the
-repository.
+repository or join us in the `#toolhive-developers` channel on our
+[community Discord server](https://discord.gg/stacklok).
 
 ## License
 

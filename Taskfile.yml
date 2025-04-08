@@ -28,14 +28,28 @@ tasks:
 
   build:
     desc: Build the binary
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty || echo "dev"
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE:
+        sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
     cmds:
       - mkdir -p bin
-      - go build -o bin/thv ./cmd/thv
+      - go build -ldflags "-s -w -X github.com/stacklok/toolhive/cmd/thv.Version={{.VERSION}} -X github.com/stacklok/toolhive/cmd/thv.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/cmd/thv.BuildDate={{.BUILD_DATE}}" -o bin/thv ./cmd/thv
 
   install:
     desc: Install the thv binary to GOPATH/bin
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty || echo "dev"
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE:
+        sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
     cmds:
-      - go install -v ./cmd/thv
+      - go install -ldflags "-s -w -X github.com/stacklok/toolhive/cmd/thv.Version={{.VERSION}} -X github.com/stacklok/toolhive/cmd/thv.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/cmd/thv.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv
 
   all:
     desc: Run linting, tests, and build

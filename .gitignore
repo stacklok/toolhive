@@ -29,6 +29,6 @@ go.work
 /coverage/
 
 .roo/
-thv
+^thv$
 
 kconfig.yaml

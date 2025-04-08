@@ -12,11 +12,9 @@ builds:
       - -tags=netgo
     ldflags:
       - "-s -w"
-      - "-X main.Version={{ .Env.VERSION }}"
-      - "-X main.Commit={{ .Env.COMMIT }}"
-      - "-X main.CommitDate={{ .Env.COMMIT_DATE }}"
-      - "-X main.TreeState={{ .Env.TREE_STATE }}"
-#      - "-X github.com/stacklok/toolhive/---/cli.CLIVersion={{ .Env.VERSION }}"
+      - "-X github.com/stacklok/toolhive/cmd/thv.Version={{ .Version }}"
+      - "-X github.com/stacklok/toolhive/cmd/thv.Commit={{ .Commit }}"
+      - "-X github.com/stacklok/toolhive/cmd/thv.BuildDate={{ .Date }}"
     goos:
       - linux
 #      - windows

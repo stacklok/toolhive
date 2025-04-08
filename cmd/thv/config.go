@@ -48,9 +48,10 @@ var registerClientCmd = &cobra.Command{
 	Short: "Register a client for MCP server configuration",
 	Long: `Register a client for MCP server configuration.
 Valid clients are:
-  - roo-code: The RooCode extension for VSCode
-  - cursor: The Cursor editor
-  - vscode-insider: The Visual Studio Code Insider editor`,
+  - roo-code: Roo Code extension for VS Code
+  - cursor: Cursor editor
+  - vscode: Visual Studio Code
+  - vscode-insider: Visual Studio Code Insiders edition`,
 	Args: cobra.ExactArgs(1),
 	RunE: registerClientCmdFunc,
 }
@@ -60,9 +61,10 @@ var removeClientCmd = &cobra.Command{
 	Short: "Remove a client from MCP server configuration",
 	Long: `Remove a client from MCP server configuration.
 Valid clients are:
-  - roo-code: The RooCode extension for VSCode
-  - cursor: The Cursor editor
-  - vscode-insider: The Visual Studio Code Insider editor`,
+  - roo-code: Roo Code extension for VS Code
+  - cursor: Cursor editor
+  - vscode: Visual Studio Code
+  - vscode-insider: Visual Studio Code Insiders edition`,
 	Args: cobra.ExactArgs(1),
 	RunE: removeClientCmdFunc,
 }

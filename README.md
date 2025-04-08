@@ -24,8 +24,9 @@ consistency, and security.
   - [Manage MCP servers](#manage-mcp-servers)
   - [Secrets management](#secrets-management)
   - [Run a custom MCP server](#run-a-custom-mcp-server)
-- [Permissions](#permissions)
-- [Run ToolHive in Kubernetes](#run-toolhive-in-kubernetes)
+- [Advanced usage](#advanced-usage)
+  - [Customize permissions](#customize-permissions)
+  - [Run ToolHive in Kubernetes](#run-toolhive-in-kubernetes)
 - [Contributing to ToolHive](#contributing-to-toolhive)
 - [License](#license)
 
@@ -292,7 +293,9 @@ simplicity. When invoked:
     ToolHive creates a reverse proxy on a random port that forwards requests to the
     container. This means the container itself does not directly expose any ports.
 
-## Permissions
+## Advanced usage
+
+### Customize permissions
 
 Containers launched by ToolHive come with a minimal set of permissions, strictly
 limited to what is required. Permissions can be further customized via a
@@ -325,7 +328,7 @@ Two built-in profiles are included for convenience:
 - `network`: Permits outbound network connections to any host on any port (not
   recommended for production use).
 
-## Run ToolHive in Kubernetes
+### Run ToolHive in Kubernetes
 
 ToolHive can also be used to deploy MCP servers in a Kubernetes cluster. This
 functionality is still under active development for production use cases, but we

@@ -476,9 +476,51 @@ func (c *Client) StopContainer(ctx context.Context, containerID string) error {
 	return nil
 }
 
+func (c *Client) removeInternalNetwork(ctx context.Context, networkName string) error {
+	logger.Log.Info(fmt.Sprintf("Checking for internal Docker network to remove: %s", networkName))
+
+	// Check if network exists
+	networks, err := c.client.NetworkList(ctx, network.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list networks: %w", err)
+	}
+
+	// Check if network exists
+	var networkExists bool
+	for _, nw := range networks {
+		if nw.Name == networkName {
+			networkExists = true
+			break
+		}
+	}
+
+	if !networkExists {
+		logger.Log.Info(fmt.Sprintf("Network %s does not exist, nothing to remove", networkName))
+		return nil
+	}
+
+	// Remove the network
+	err = c.client.NetworkRemove(ctx, networkName)
+	if err != nil {
+		// If the network is in use, log a warning but don't fail
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to remove network %s: %v", networkName, err))
+		return nil
+	}
+
+	logger.Log.Info(fmt.Sprintf("Removed internal Docker network: %s", networkName))
+	return nil
+}
+
 // RemoveContainer removes a container
 // If the container doesn't exist, it returns success
+// removeInternalNetwork removes a Docker network if it exists
 func (c *Client) RemoveContainer(ctx context.Context, containerID string) error {
+	// Get container info before removing it
+	var containerName string
+	if info, err := c.GetContainerInfo(ctx, containerID); err == nil {
+		containerName = info.Name
+	}
+
 	err := c.client.ContainerRemove(ctx, containerID, container.RemoveOptions{
 		Force: true,
 	})
@@ -486,9 +528,15 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string) error 
 		// If the container doesn't exist, that's fine - it's already removed
 		if client.IsErrNotFound(err) {
 			// Stop the egress proxy
-			if info, err := c.GetContainerInfo(ctx, containerID); err == nil {
-				if err := c.egressProxyFactory.StopProxy(ctx, info.Name+"-egress"); err != nil {
+			if containerName != "" {
+				if err := c.egressProxyFactory.StopProxy(ctx, containerName+"-egress"); err != nil {
 					logger.Log.Warn(fmt.Sprintf("Warning: Failed to stop egress proxy: %v", err))
+				}
+
+				// Remove the network
+				networkName := getNetworkName(containerName)
+				if err := c.removeInternalNetwork(ctx, networkName); err != nil {
+					logger.Log.Warn(fmt.Sprintf("Warning: Failed to remove network: %v", err))
 				}
 			}
 
@@ -496,10 +544,18 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string) error 
 		}
 		return NewContainerError(err, containerID, fmt.Sprintf("failed to remove container: %v", err))
 	}
-	// Stop the egress proxy
-	if info, err := c.GetContainerInfo(ctx, containerID); err == nil {
-		if err := c.egressProxyFactory.StopProxy(ctx, info.Name+"-egress"); err != nil {
+
+	// Stop the egress proxy and remove the network
+	if containerName != "" {
+		// Stop the egress proxy
+		if err := c.egressProxyFactory.StopProxy(ctx, containerName+"-egress"); err != nil {
 			logger.Log.Warn(fmt.Sprintf("Warning: Failed to stop egress proxy: %v", err))
+		}
+
+		// Remove the network
+		networkName := getNetworkName(containerName)
+		if err := c.removeInternalNetwork(ctx, networkName); err != nil {
+			logger.Log.Warn(fmt.Sprintf("Warning: Failed to remove network: %v", err))
 		}
 	}
 

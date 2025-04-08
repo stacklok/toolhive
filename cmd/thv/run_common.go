@@ -180,7 +180,7 @@ func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
 	}
 
 	logger.Log.Info(fmt.Sprintf("MCP server is running in the background (PID: %d)", detachedCmd.Process.Pid))
-	logger.Log.Info(fmt.Sprintf("Use 'toolhive stop %s' to stop the server", options.Name))
+	logger.Log.Info(fmt.Sprintf("Use 'thv stop %s' to stop the server", options.Name))
 
 	return nil
 }

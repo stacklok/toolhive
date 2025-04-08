@@ -292,29 +292,13 @@ func (c *Client) CreateContainer(
 		return "", NewContainerError(err, "", fmt.Sprintf("failed to create container: %v", err))
 	}
 
-	return resp.ID, nil
-}
-
-// StartContainer starts a container
-// If the container is already running, it returns success
-func (c *Client) StartContainer(ctx context.Context, containerID string) error {
-	// Check if the container is already running
-	running, err := c.IsContainerRunning(ctx, containerID)
-	if err != nil {
-		return err
-	}
-
-	// If the container is already running, return success
-	if running {
-		return nil
-	}
-
 	// Start the container
-	err = c.client.ContainerStart(ctx, containerID, container.StartOptions{})
+	err = c.client.ContainerStart(ctx, resp.ID, container.StartOptions{})
 	if err != nil {
-		return NewContainerError(err, containerID, fmt.Sprintf("failed to start container: %v", err))
+		return "", NewContainerError(err, resp.ID, fmt.Sprintf("failed to start container: %v", err))
 	}
-	return nil
+
+	return resp.ID, nil
 }
 
 // ListContainers lists containers

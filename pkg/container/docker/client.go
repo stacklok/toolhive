@@ -25,6 +25,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/egress"
 )
@@ -37,9 +38,6 @@ const (
 	PodmanXDGRuntimeSocketPath = "podman/podman.sock"
 	// DockerSocketPath is the default Docker socket path
 	DockerSocketPath = "/var/run/docker.sock"
-
-	// DefaultEgressProxyPort is the default port for the egress proxy
-	DefaultEgressProxyPort = 3128
 )
 
 // Client implements the Runtime interface for container operations
@@ -62,15 +60,6 @@ func NewClient(ctx context.Context) (*Client, error) {
 	return NewClientWithSocketPath(ctx, socketPath, runtimeType)
 }
 
-// SetEgressProxyPort sets the egress proxy port for the client
-func (c *Client) SetEgressProxyPort(port int) {
-	if port <= 0 {
-		c.egressProxyPort = DefaultEgressProxyPort
-	} else {
-		c.egressProxyPort = port
-	}
-}
-
 // NewClientWithSocketPath creates a new container client with a specific socket path
 func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType runtime.Type) (*Client, error) {
 	// Create a custom HTTP client that uses the Unix socket
@@ -81,6 +70,8 @@ func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType
 			},
 		},
 	}
+
+	egressProxyPort := networking.FindAvailable()
 
 	// Create Docker client with the custom HTTP client
 	opts := []client.Opt{
@@ -98,7 +89,7 @@ func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType
 		runtimeType:        runtimeType,
 		socketPath:         socketPath,
 		client:             dockerClient,
-		egressProxyPort:    DefaultEgressProxyPort, // Default egress proxy port
+		egressProxyPort:    egressProxyPort,
 		egressProxyFactory: egress.NewFactory(),
 	}
 
@@ -1194,11 +1185,6 @@ func getEgressProxyEnvironmentVariables(proxyPort int) map[string]string {
 	if goruntime.GOOS == "linux" {
 		// Add extra host parameter for Linux
 		hostAddr = "172.17.0.1" // Default Docker bridge IP
-	}
-
-	// Use default port if not specified
-	if proxyPort <= 0 {
-		proxyPort = DefaultEgressProxyPort
 	}
 
 	// Set egress proxy environment variables

@@ -41,7 +41,7 @@ archives:
 #     license_url: "https://github.com/StacklokLabs/toolhive/blob/main/LICENSE"
 #     copyright: Stacklok, Inc.
 #     homepage: https://stacklok.com
-#     short_description: 'toolhive is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
+#     short_description: 'ToolHive is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
 #     publisher_support_url: "https://github.com/StacklokLabs/toolhive/issues/new/choose"
 #     package_identifier: "stacklok.toolhive"
 #     url_template: "https://github.com/StacklokLabs/toolhive/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
@@ -70,7 +70,7 @@ archives:
 brews:
   - name: thv
     homepage: 'https://github.com/StacklokLabs/toolhive'
-    description: 'toolhive (thv) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
+    description: 'ToolHive (thv) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
     directory: Formula
     commit_author:
       name: stacklokbot

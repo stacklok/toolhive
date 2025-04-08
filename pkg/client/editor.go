@@ -52,7 +52,7 @@ func (*StandardConfigEditor) AddServer(config *ConfigFile, serverName, url strin
 	return nil
 }
 
-// VSCodeConfigEditor edits the MCP client config format used by VSCode.
+// VSCodeConfigEditor edits the MCP client config format used by VS Code.
 type VSCodeConfigEditor struct{}
 
 // AddServer inserts or updates a server in the MCP client config file.

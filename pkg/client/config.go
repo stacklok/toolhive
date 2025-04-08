@@ -45,13 +45,13 @@ type pathAndEditor struct {
 type MCPClient string
 
 const (
-	// RooCode represents the RooCode extension for VSCode.
+	// RooCode represents the Roo Code extension for VS Code.
 	RooCode MCPClient = "roo-code"
 	// Cursor represents the Cursor editor.
 	Cursor MCPClient = "cursor"
-	// VSCodeInsider represents the VSCode Insider editor.
+	// VSCodeInsider represents the VS Code Insiders editor.
 	VSCodeInsider MCPClient = "vscode-insider"
-	// VSCode represents the standard VSCode editor.
+	// VSCode represents the standard VS Code editor.
 	VSCode MCPClient = "vscode"
 )
 
@@ -67,7 +67,7 @@ type mcpClientConfig struct {
 var supportedClientIntegrations = []mcpClientConfig{
 	{
 		ClientType:  RooCode,
-		Description: "VSCode Roo extension",
+		Description: "VS Code Roo Code extension",
 		RelPath: []string{
 			"Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json",
 		},
@@ -79,7 +79,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 	},
 	{
 		ClientType:  VSCodeInsider,
-		Description: "Visual Studio Code Insider",
+		Description: "Visual Studio Code Insiders",
 		RelPath: []string{
 			"Code - Insiders", "User", "settings.json",
 		},

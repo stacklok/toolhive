@@ -1062,6 +1062,16 @@ func (c *Client) handleExistingContainer(
 	// Compare configurations
 	if compareContainerConfig(&info, desiredConfig, desiredHostConfig) {
 		// Configurations match, container can be reused
+
+		// Check if the container is running
+		if !info.State.Running {
+			// Container exists but is not running, start it
+			err = c.client.ContainerStart(ctx, containerID, container.StartOptions{})
+			if err != nil {
+				return false, NewContainerError(err, containerID, fmt.Sprintf("failed to start existing container: %v", err))
+			}
+		}
+
 		return true, nil
 	}
 

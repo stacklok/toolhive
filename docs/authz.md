@@ -1,34 +1,49 @@
-# Authorization Framework
+# Authorization framework
 
-This document describes the authorization framework for MCP servers managed by ToolHive. The framework uses Cedar policies to authorize MCP operations based on the client's identity and the requested operation.
+This document describes the authorization framework for MCP servers managed by
+ToolHive. The framework uses Cedar policies to authorize MCP operations based on
+the client's identity and the requested operation.
 
 ## Overview
 
-ToolHive now supports adding authorization to MCP servers it manages. This is implemented using Cedar, a policy language developed by Amazon. The authorization framework consists of the following components:
+ToolHive now supports adding authorization to MCP servers it manages. This is
+implemented using Cedar, a policy language developed by Amazon. The
+authorization framework consists of the following components:
 
-1. **Cedar Authorizer**: A component that evaluates Cedar policies to determine if a request is authorized.
-2. **Authorization Middleware**: An HTTP middleware that extracts information from MCP requests and uses the Cedar Authorizer to authorize the request.
-3. **Configuration**: A JSON configuration file that specifies the Cedar policies and entities.
+1. **Cedar authorizer**: A component that evaluates Cedar policies to determine
+   if a request is authorized.
+2. **Authorization middleware**: An HTTP middleware that extracts information
+   from MCP requests and uses the Cedar Authorizer to authorize the request.
+3. **Configuration**: A JSON configuration file that specifies the Cedar
+   policies and entities.
 
-The framework integrates with the existing JWT authentication middleware to provide a complete authentication and authorization solution.
+The framework integrates with the existing JWT authentication middleware to
+provide a complete authentication and authorization solution.
 
-## How It Works
+## How it works
 
-When an MCP server is started with authorization enabled, the following process occurs:
+When an MCP server is started with authorization enabled, the following process
+occurs:
 
-1. The JWT middleware authenticates the client and adds the JWT claims to the request context.
-2. The authorization middleware extracts information from the MCP request, including the feature, operation, and resource ID.
-3. The Cedar authorizer evaluates the Cedar policies to determine if the request is authorized.
-4. If the request is authorized, it is passed to the next handler. Otherwise, a 403 Forbidden response is returned.
+1. The JWT middleware authenticates the client and adds the JWT claims to the
+   request context.
+2. The authorization middleware extracts information from the MCP request,
+   including the feature, operation, and resource ID.
+3. The Cedar authorizer evaluates the Cedar policies to determine if the request
+   is authorized.
+4. If the request is authorized, it is passed to the next handler. Otherwise, a
+   403 Forbidden response is returned.
 
-## Setting Up Authorization
+## Configure authorization
 
-To set up authorization for an MCP server managed by ToolHive, follow these steps:
+To set up authorization for an MCP server managed by ToolHive, follow these
+steps:
 
 1. Create a Cedar authorization configuration file.
-2. Start the MCP server with the `--authz-config` flag pointing to your configuration file.
+2. Start the MCP server with the `--authz-config` flag pointing to your
+   configuration file.
 
-### Creating a Cedar Authorization Configuration File
+### Create an authorization configuration file
 
 Create a JSON file with the following structure:
 
@@ -50,12 +65,13 @@ Create a JSON file with the following structure:
 The configuration file has the following fields:
 
 - `version`: The version of the configuration format.
-- `type`: The type of authorization configuration. Currently, only `cedarv1` is supported.
+- `type`: The type of authorization configuration. Currently, only `cedarv1` is
+  supported.
 - `cedar`: The Cedar-specific configuration.
   - `policies`: An array of Cedar policy strings.
   - `entities_json`: A JSON string representing Cedar entities.
 
-### Starting an MCP Server with Authorization
+### Start an MCP server with authorization
 
 To start an MCP server with authorization, use the `--authz-config` flag:
 
@@ -69,15 +85,16 @@ You can also use the `registry run` command with the same flag:
 thv registry run my-mcp-server --authz-config /path/to/authz-config.json -- my-mcp-server-args
 ```
 
-## Writing Cedar Policies
+## Writing Cedar policies
 
-Cedar is a powerful policy language that allows you to express complex authorization rules. Here's a guide to writing Cedar policies for MCP servers.
+Cedar is a powerful policy language that allows you to express complex
+authorization rules. Here's a guide to writing Cedar policies for MCP servers.
 
-### Policy Structure
+### Policy structure
 
 A Cedar policy has the following structure:
 
-```
+```plain
 permit|forbid(principal, action, resource) when { conditions };
 ```
 
@@ -85,17 +102,21 @@ permit|forbid(principal, action, resource) when { conditions };
 - `principal`: The entity making the request.
 - `action`: The operation being performed.
 - `resource`: The object being accessed.
-- `conditions`: Optional conditions that must be satisfied for the policy to apply.
+- `conditions`: Optional conditions that must be satisfied for the policy to
+  apply.
 
-### MCP Entities
+### MCP entities
 
 In the context of MCP servers, the following entities are used:
 
-- **Principal**: The client making the request, identified by the `sub` claim in the JWT token.
+- **Principal**: The client making the request, identified by the `sub` claim in
+  the JWT token.
+
   - Format: `Client::<client_id>`
   - Example: `Client::user123`
 
 - **Action**: The operation being performed on an MCP feature.
+
   - Format: `Action::<operation>`
   - Examples:
     - `Action::"call_tool"`: Call a tool
@@ -113,13 +134,13 @@ In the context of MCP servers, the following entities are used:
     - `Resource::"data"`: The data resource
     - `FeatureType::"tool"`: The tool feature type (used for list operations)
 
-### Example Policies
+### Example policies
 
 Here are some example policies for common scenarios:
 
 #### Allow a specific tool
 
-```
+```plain
 permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 ```
 
@@ -127,7 +148,7 @@ This policy allows any client to call the weather tool.
 
 #### Allow a specific prompt
 
-```
+```plain
 permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");
 ```
 
@@ -135,7 +156,7 @@ This policy allows any client to get the greeting prompt.
 
 #### Allow a specific resource
 
-```
+```plain
 permit(principal, action == Action::"read_resource", resource == Resource::"data");
 ```
 
@@ -143,7 +164,7 @@ This policy allows any client to read the data resource.
 
 #### Allow listing tools
 
-```
+```plain
 permit(principal, action == Action::"list_tools", resource == FeatureType::"tool");
 ```
 
@@ -151,7 +172,7 @@ This policy allows any client to list available tools.
 
 #### Allow a specific client to call any tool
 
-```
+```plain
 permit(principal == Client::"user123", action == Action::"call_tool", resource);
 ```
 
@@ -159,57 +180,69 @@ This policy allows the client with ID `user123` to call any tool.
 
 #### Allow clients with a specific role to call any tool
 
-```
+```plain
 permit(principal, action == Action::"call_tool", resource) when { principal.claim_roles.contains("admin") };
 ```
 
-This policy allows any client with the `admin` role to call any tool. The `claim_roles` attribute is extracted from the JWT claims.
+This policy allows any client with the `admin` role to call any tool. The
+`claim_roles` attribute is extracted from the JWT claims.
 
 #### Allow clients to call tools based on arguments
 
-```
-permit(principal, action == Action::"call_tool", resource == Tool::"calculator") when { 
-  principal.arg_operation == "add" || principal.arg_operation == "subtract" 
+```plain
+permit(principal, action == Action::"call_tool", resource == Tool::"calculator") when {
+  principal.arg_operation == "add" || principal.arg_operation == "subtract"
 };
 ```
 
-This policy allows any client to call the calculator tool, but only for the "add" and "subtract" operations. The `arg_operation` attribute is extracted from the tool arguments.
+This policy allows any client to call the calculator tool, but only for the
+"add" and "subtract" operations. The `arg_operation` attribute is extracted from
+the tool arguments.
 
-### Using JWT Claims in Policies
+### Using JWT claims in policies
 
-The authorization middleware automatically extracts JWT claims from the request context and adds them to the Cedar context with a `claim_` prefix. For example, the `sub` claim becomes `claim_sub`, and the `name` claim becomes `claim_name`.
+The authorization middleware automatically extracts JWT claims from the request
+context and adds them to the Cedar context with a `claim_` prefix. For example,
+the `sub` claim becomes `claim_sub`, and the `name` claim becomes `claim_name`.
 
 You can use these claims in your policies:
 
-```
-permit(principal, action == Action::"call_tool", resource == Tool::"weather") when { 
-  principal.claim_name == "John Doe" 
+```plain
+permit(principal, action == Action::"call_tool", resource == Tool::"weather") when {
+  principal.claim_name == "John Doe"
 };
 ```
 
-This policy allows only clients with the name "John Doe" to call the weather tool.
+This policy allows only clients with the name "John Doe" to call the weather
+tool.
 
-### Using Tool Arguments in Policies
+### Using tool arguments in policies
 
-The authorization middleware also extracts tool arguments from the request and adds them to the Cedar context with an `arg_` prefix. For example, the `location` argument becomes `arg_location`.
+The authorization middleware also extracts tool arguments from the request and
+adds them to the Cedar context with an `arg_` prefix. For example, the
+`location` argument becomes `arg_location`.
 
 You can use these arguments in your policies:
 
-```
-permit(principal, action == Action::"call_tool", resource == Tool::"weather") when { 
-  principal.arg_location == "New York" || principal.arg_location == "London" 
+```plain
+permit(principal, action == Action::"call_tool", resource == Tool::"weather") when {
+  principal.arg_location == "New York" || principal.arg_location == "London"
 };
 ```
 
-This policy allows any client to call the weather tool, but only for the locations "New York" and "London".
+This policy allows any client to call the weather tool, but only for the
+locations "New York" and "London".
 
-## Advanced Topics
+## Advanced topics
 
-### Entity Attributes
+### Entity attributes
 
-Cedar entities can have attributes that can be used in policy conditions. The authorization middleware automatically adds JWT claims and tool arguments as attributes to the principal entity.
+Cedar entities can have attributes that can be used in policy conditions. The
+authorization middleware automatically adds JWT claims and tool arguments as
+attributes to the principal entity.
 
-You can also define custom entities with attributes in the `entities_json` field of the configuration file:
+You can also define custom entities with attributes in the `entities_json` field
+of the configuration file:
 
 ```json
 {
@@ -231,9 +264,11 @@ You can also define custom entities with attributes in the `entities_json` field
 }
 ```
 
-This configuration defines a custom entity for the weather tool with an `owner` attribute set to `user123`. The policy allows clients to call tools only if they own them.
+This configuration defines a custom entity for the weather tool with an `owner`
+attribute set to `user123`. The policy allows clients to call tools only if they
+own them.
 
-### Policy Evaluation
+### Policy evaluation
 
 Cedar policies are evaluated in the following order:
 
@@ -245,22 +280,28 @@ This means that `forbid` policies take precedence over `permit` policies.
 
 ## Troubleshooting
 
-If you're having issues with authorization, here are some common problems and solutions:
+If you're having issues with authorization, here are some common problems and
+solutions:
 
 ### Request is denied unexpectedly
 
 - Check that your policies are correctly formatted.
-- Check that the principal, action, and resource in your policies match the actual values in the request.
+- Check that the principal, action, and resource in your policies match the
+  actual values in the request.
 - Check that any conditions in your policies are satisfied by the request.
-- Remember that Cedar uses a default deny policy, so if no policy explicitly permits the request, it will be denied.
+- Remember that Cedar uses a default deny policy, so if no policy explicitly
+  permits the request, it will be denied.
 
 ### JWT claims are not available in policies
 
-- Make sure that the JWT middleware is configured correctly and is running before the authorization middleware.
+- Make sure that the JWT middleware is configured correctly and is running
+  before the authorization middleware.
 - Check that the JWT token contains the expected claims.
-- Remember that JWT claims are added to the Cedar context with a `claim_` prefix.
+- Remember that JWT claims are added to the Cedar context with a `claim_`
+  prefix.
 
 ### Tool arguments are not available in policies
 
 - Check that the tool arguments are correctly specified in the request.
-- Remember that tool arguments are added to the Cedar context with an `arg_` prefix.
+- Remember that tool arguments are added to the Cedar context with an `arg_`
+  prefix.

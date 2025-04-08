@@ -1,77 +1,213 @@
-# ToolHive (thv)
+<!-- omit in toc -->
+
+# ToolHive - making MCP servers easy and secure
 
 <img src="docs/images/toolhive.png" alt="ToolHive Logo" width="300" />
 
-ToolHive (thv) is a lightweight, secure, and fast manager for MCP (Model Context
-Protocol) servers. It is written in Golang and has extensive test
-coverage—including input validation—to ensure reliability and security.
-
-Under the hood, ToolHive acts as a very thin client for the Docker/Podman Unix
-socket API. This design choice allows it to remain both efficient and
-lightweight while still providing powerful, container-based isolation for
-running MCP servers.
+ToolHive (thv) is a lightweight utility designed to simplify the deployment and
+management of MCP (Model Context Protocol) servers, ensuring ease of use,
+consistency, and security.
 
 <img src="./docs/images/thv-readme-demo.svg" alt="Terminal Recording">
 
+<!-- omit in toc -->
+
+## Contents
+
+- [ToolHive - making MCP servers easy and secure](#toolhive---making-mcp-servers-easy-and-secure)
+  - [Contents](#contents)
+  - [Why ToolHive?](#why-toolhive)
+    - [Key benefits](#key-benefits)
+  - [Getting started](#getting-started)
+    - [Prerequisites](#prerequisites)
+    - [Installation](#installation)
+    - [Quickstart - run your first MCP server](#quickstart---run-your-first-mcp-server)
+  - [Client compatibility](#client-compatibility)
+  - [Architecture overview](#architecture-overview)
+  - [Usage examples](#usage-examples)
+    - [Register clients](#register-clients)
+    - [Find and run an MCP server](#find-and-run-an-mcp-server)
+    - [Manage MCP servers](#manage-mcp-servers)
+    - [Secrets management](#secrets-management)
+    - [Run a custom MCP server](#run-a-custom-mcp-server)
+  - [Permissions](#permissions)
+  - [Run ToolHive in Kubernetes](#run-toolhive-in-kubernetes)
+  - [Contributing to ToolHive](#contributing-to-toolhive)
+  - [License](#license)
+
 ## Why ToolHive?
 
-Deploying MCP servers requires complex multi-step processes with a lot of
-friction: involving running random potentially harmful commands (e.g. using `uv`
-or `npx`), manually managing security credentials (e.g. putting an api token
-into a text file), and wrestling with inconsistent packaging methods. ToolHive
-aims to solve this by starting containers in a locked-down environment, granting
-only the minimal permissions required to run. This significantly reduces the
-attack surface, improves usability, and enforces best practices for container
-security.
+Deploying MCP servers often involves complex, multi-step processes that can
+introduce friction, such as running potentially unsafe commands (e.g., uv or
+npx), manually managing security credentials (e.g., storing API tokens in
+plaintext), and dealing with inconsistent packaging methods.
 
-ToolHive radically simplifies MCP deployment by:
+ToolHive aims to solve these challenges by running containers in a consistent
+and locked-down environment, granting only the minimal permissions required to
+run. This significantly reduces the attack surface, improves usability, and
+enforces best practices for container security.
 
-- Ease of use: Instantly deploy MCP servers through Docker containers. Users can
-  start their MCP servers with a single, straightforward command. No need to
-  install and fight with different versions of python / node / etc.
+ToolHive simplifies MCP deployment by focusing on three key areas:
 
-- Enhanced security: Secure by default: the tool securely manages secrets and
-  configurations, greatly reducing leaks & risks. No more plaintext secrets in
-  configuration files
+- **Ease of use**: Instantly deploy MCP servers using Docker containers. Start
+  MCP servers with a single, straightforward command without the need to install
+  and manage different versions of Python, Node.js, or other build tools.
 
-- Standardized packaging: Leveraging OCI container standards, the project
-  provides a repeatable, standardized packaging method for MCP servers, ensuring
+- **Enhanced security**: Secure by default. ToolHive securely manages secrets
+  and configurations, greatly reducing the risk of leaks. Avoid plaintext
+  secrets in configuration files.
+
+- **Standardized packaging**: Leverage OCI container standards to provide a
+  repeatable, standardized packaging method for MCP servers, ensuring
   compatibility and reliability.
 
 ### Key benefits
 
-- Curated MCP registry: Includes a registry of curated MCPs with verified
-  configurations — users can effortlessly discover and deploy MCP servers
-  without any manual setup. Just select one from the list and safely run it with
-  just one command.
+- **Curated MCP registry**: ToolHive provides a curated registry of MCPs with
+  verified configurations, allowing you to discover and deploy MCP servers
+  effortlessly. Simply select one from the list and run it securely with a
+  single command.
 
-- Enterprise-ready authorization: Offers robust authorization controls tailored
-  for enterprise environments, securely managing tool access and integrating
-  seamlessly with existing infrastructures (e.g., Kubernetes).
+- **Enterprise-ready authorization**: Robust authorization controls designed for
+  enterprise environments, securely managing tool access and integrating
+  seamlessly with existing infrastructure (e.g., Kubernetes).
 
-- Seamless integration: Compatible with popular development tools such as GitHub
-  Copilot, Cursor, Roo Code, and more, streamlining your workflow.
+- **Seamless integration**: Automatic configuration of popular development tools
+  like GitHub Copilot, Cursor, and more to streamline your workflow.
 
 ## Getting started
 
-TODO: Add simple installation instructions
+### Prerequisites
 
-## Usage
+ToolHive currently works on macOS and Linux using Docker or Podman.
 
-### Running an MCP server
+For client auto-discovery/configuration, a supported client:
 
-First, find the MCP server you want to run. You can search for available MCP
-servers in the registry using:
+- VS Code (v1.99.0 or newer) with an active GitHub Copilot subscription
+- Cursor
+- Roo Code (VS Code extension)
+
+### Installation
+
+TODO: Add installation instructions when ready
+
+### Quickstart - run your first MCP server
+
+> Note: This example enables auto-discovery to automatically find supported
+> client(s) and update their configuration. Skip this step if you prefer to
+> manually configure your client, or run `thv config register-client --help` to
+> learn how to explicitly register a client.
+
+```shell
+#Enable client auto-discovery:
+thv config auto-discovery true
+
+#Run the Fetch MCP server which allows LLMs to fetch the contents of a website:
+thv run fetch
+
+# List the running MCP servers:
+thv list
+```
+
+Your client should now be able to use the `fetch` MCP tool to fetch website
+content.
+
+## Client compatibility
+
+ToolHive has been tested with the following clients:
+
+| Client            | Supported | Notes                                  |
+| ----------------- | --------- | -------------------------------------- |
+| Copilot (VS Code) | ✅        | v1.99.0+ or Insiders version           |
+| Cursor            | ✅        |                                        |
+| Roo Code          | ✅        |                                        |
+| PydanticAI        | ✅        |                                        |
+| Continue          | ❌        | Continue doesn't yet support SSE       |
+| Claude Desktop    | ❌        | Claude Desktop doesn't yet support SSE |
+
+Other clients and development libraries that support the SSE protocol can also
+be used with ToolHive.
+
+Automatic configuration is supported for Copilot, Cursor, and Roo Code. For
+other clients, manual configuration of the MCP server URL is required.
+
+## Architecture overview
+
+ToolHive exposes an SSE proxy to forward requests to MCP servers running in
+containers. The proxy communicates with MCP servers via standard input/output
+(stdio) or server-sent events (SSE).
+
+```mermaid
+flowchart LR
+  subgraph container[Docker/Podman]
+    direction LR
+    proxy[SSE proxy]
+    mcp1[MCP Server]
+    mcp2[MCP Server]
+    mcp3[MCP Server]
+
+    proxy -->|stdio| mcp1
+    proxy -->|stdio| mcp2
+    proxy -->|sse| mcp3
+  end
+
+  T[ToolHive CLI] -->|Socket API| container
+  C[Client] -->|HTTP/SSE| proxy
+```
+
+## Usage examples
+
+Common usage scenarios are detailed below. To view all available commands and
+options, see the [ToolHive CLI reference](./docs/cli/thv.md) or run
+`thv --help`.
+
+### Register clients
+
+ToolHive can automatically configure supported clients to use the MCP servers
+you run. To take advantage of this feature, clients must be registered before
+you run an MCP server.
+
+To enable automatic discovery and configuration of supported clients, run:
 
 ```bash
+thv config auto-discovery true
+```
+
+Or, you can register clients manually:
+
+```bash
+# Register a client
+thv config register-client <client-name>
+
+# Show registered clients
+thv config list-registered-clients
+
+# Remove a client
+thv config remove-client <client-name>
+```
+
+### Find and run an MCP server
+
+First, find the MCP server you want to run. You can list or search available MCP
+servers in the built-in registry using:
+
+```bash
+# List all available servers
+thv registry list
+
+# Find a server by keyword
 thv search <search-term>
 ```
 
-This command will return a list of available MCP servers that match the search
-term.
+To view detailed information about a specific MCP server including its available
+tools, configuration options, and other metadata, use:
 
-Once you find the MCP server you want to run, you can start it using the
-`thv run` command. For example, to run a specific MCP server:
+```bash
+thv registry info <name-of-mcp-server>
+```
+
+Once you find the MCP server you want to run, start it using the `thv run`
+command:
 
 ```bash
 thv run <name-of-mcp-server>
@@ -81,44 +217,54 @@ The registry already contains all the parameters needed to run the server, so
 you don't need to specify any additional arguments. ToolHive will automatically
 pull the image and start the server.
 
-### Listing running MCP servers
+We're always looking to expand our MCP server registry. If you have a specific
+server you'd like to see included, feel free to
+[open an issue](https://github.com/StacklokLabs/toolhive/issues) or submit a
+pull request to update the [registry.json](pkg/registry/data/registry.json)
+file.
 
-Use:
+### Manage MCP servers
+
+To list the running MCP servers:
 
 ```bash
 thv list
 ```
 
-This lists all active MCP servers managed by ToolHive, along with their current
-status.
+This displays all active MCP servers managed by ToolHive, along with their
+current status. To include stopped servers, add the `--all` flag.
 
-### Browsing the registry
-
-You can also browse the registry to see all available MCP servers. Use the
-following command:
+To stop and/or remove a server:
 
 ```bash
-thv registry list
+thv stop <name-of-mcp-server>
+thv rm <name-of-mcp-server>
+
+# Or to stop and remove in one command:
+thv rm -f <name-of-mcp-server>
 ```
 
-This will display a list of all available MCP servers in the registry, along
-with their descriptions and other relevant information.
+### Secrets management
 
-To view detailed information about a specific MCP server, use:
+Many MCP servers require API tokens or other secrets for authentication.
+ToolHive provides a secure way to manage these secrets without exposing them in
+plaintext configuration files.
+
+This example enables ToolHive's encrypted secrets store, creates a secret for a
+GitHub authentication token, and runs the GitHub MCP server with the token:
 
 ```bash
-thv registry info <name-of-mcp-server>
+thv config secrets-provider encrypted
+thv secret set github
+# <enter your GitHub personal access token when prompted>
+
+thv run --secret github,target=GITHUB_PERSONAL_ACCESS_TOKEN github
 ```
 
-This command will provide you with detailed information about the MCP server,
-including its configuration, available options, and any other relevant details.
+ToolHive stores the encryption password in your operating system's keyring
+service.
 
-We're open to adding more MCP servers to the registry. If you have a specific
-server in mind, please submit a pull request or open an issue on our GitHub
-repository. We're tracking the the list in
-[registry.json](pkg/registry/data/registry.json).
-
-### Running a custom MCP server
+### Run a custom MCP server
 
 If you want to run a custom MCP server that is not in the registry, you can do
 so by specifying the image name and any additional arguments. For example:
@@ -142,22 +288,15 @@ simplicity. When invoked:
   toolhive-name: my-mcp-server
   ```
 
-- Sets up the specified transport (e.g., SSE, stdio), potentially using a
-  reverse proxy, depending on user choice.
-
-### Transport modes
-
-- **SSE**:
-
-  If the transport is `sse`, ToolHive creates a reverse proxy on a random port
-  that forwards requests to the container. This means the container itself does
-  not directly expose any ports.
-
-- **STDIO**:
-
-  If the transport is `stdio`, ToolHive redirects SSE traffic to the container's
-  standard input and output. This acts as a secure proxy, ensuring that the
-  container does not have direct access to the network nor the host machine.
+- Sets up the specified transport method (`--transport stdio` or
+  `--transport sse`):
+  - **Standard I/O** (`stdio`), default:\
+    ToolHive redirects SSE traffic from the client to the container's standard input
+    and output. This acts as a secure proxy, ensuring that the container does not
+    have direct access to the network or the host machine.
+  - **Server-sent events (SSE)** (`sse`):\
+    ToolHive creates a reverse proxy on a random port that forwards requests to the
+    container. This means the container itself does not directly expose any ports.
 
 ## Permissions
 
@@ -192,22 +331,24 @@ Two built-in profiles are included for convenience:
 - `network`: Permits outbound network connections to any host on any port (not
   recommended for production use).
 
-## Client compatibility
+## Run ToolHive in Kubernetes
 
-| Client            | Supported | Notes                                  |
-| ----------------- | --------- | -------------------------------------- |
-| Copilot (VS Code) | ✅        | v1.99.0+ or Insiders version           |
-| Cursor            | ✅        |                                        |
-| Roo Code          | ✅        |                                        |
-| PydanticAI        | ✅        |                                        |
-| Continue          | ❌        | Continue doesn't yet support SSE       |
-| Claude Desktop    | ❌        | Claude Desktop doesn't yet support SSE |
+ToolHive can also be used to deploy MCP servers in a Kubernetes cluster. This
+functionality is still under active development for production use cases, but we
+invite you to try it out locally using a kind cluster.
 
-## Running ToolHive in a local kind cluster
+Check out the
+[Run ToolHive in Kubernetes using kind](./docs/running-toolhive-in-kind-cluster.md)
+guide to get started.
 
-To run ToolHive in a local lind cluster, follow the
-[# Running ToolHive Inside a Local Kubernetes Kind Cluster With Ingress](./docs/running-toolhive-in-kind-cluster.md)
-doc.
+## Contributing to ToolHive
+
+We welcome contributions to ToolHive! If you'd like to contribute, please review
+the [CONTRIBUTING guide](./CONTRIBUTING.md) for details on how to get started.
+
+If you run into a bug or have a feature request, please
+[open an issue](https://github.com/StacklokLabs/toolhive/issues) in the
+repository.
 
 ## License
 

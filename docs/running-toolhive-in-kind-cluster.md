@@ -1,4 +1,7 @@
-# Running ToolHive in a local Kubernetes kind cluster with ingress
+# Run ToolHive in Kubernetes using kind
+
+This guide walks you through deploying ToolHive in a local kind cluster with an
+example MCP server.
 
 ## Prerequisites
 

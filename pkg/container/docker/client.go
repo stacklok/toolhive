@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"time"
 
@@ -35,13 +36,17 @@ const (
 	PodmanXDGRuntimeSocketPath = "podman/podman.sock"
 	// DockerSocketPath is the default Docker socket path
 	DockerSocketPath = "/var/run/docker.sock"
+
+	// DefaultEgressProxyPort is the default port for the egress proxy
+	DefaultEgressProxyPort = 3128
 )
 
 // Client implements the Runtime interface for container operations
 type Client struct {
-	runtimeType runtime.Type
-	socketPath  string
-	client      *client.Client
+	runtimeType     runtime.Type
+	socketPath      string
+	client          *client.Client
+	egressProxyPort int
 }
 
 // NewClient creates a new container client
@@ -53,6 +58,15 @@ func NewClient(ctx context.Context) (*Client, error) {
 	}
 
 	return NewClientWithSocketPath(ctx, socketPath, runtimeType)
+}
+
+// SetEgressProxyPort sets the egress proxy port for the client
+func (c *Client) SetEgressProxyPort(port int) {
+	if port <= 0 {
+		c.egressProxyPort = DefaultEgressProxyPort
+	} else {
+		c.egressProxyPort = port
+	}
 }
 
 // NewClientWithSocketPath creates a new container client with a specific socket path
@@ -79,9 +93,10 @@ func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType
 	}
 
 	c := &Client{
-		runtimeType: runtimeType,
-		socketPath:  socketPath,
-		client:      dockerClient,
+		runtimeType:     runtimeType,
+		socketPath:      socketPath,
+		client:          dockerClient,
+		egressProxyPort: DefaultEgressProxyPort, // Default egress proxy port
 	}
 
 	// Verify that the container runtime is available
@@ -223,6 +238,15 @@ func (c *Client) CreateContainer(
 	// Determine if we should attach stdio
 	attachStdio := options == nil || options.AttachStdio
 
+	// Add egress proxy environment variables if needed
+	if c.needsNetworkAccess(permissionProfile, transportType) && c.shouldUseEgressProxy(permissionProfile) {
+		// Add proxy environment variables
+		proxyEnvVars := getEgressProxyEnvironmentVariables(c.egressProxyPort)
+		for k, v := range proxyEnvVars {
+			envVars[k] = v
+		}
+	}
+
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,
@@ -279,12 +303,15 @@ func (c *Client) CreateContainer(
 		// Container was removed and needs to be recreated
 	}
 
+	// Create an internal network for egress control if needed
+	var networkingConfig *network.NetworkingConfig = c.setupEgressNetwork(ctx, permissionProfile, transportType, name, hostConfig)
+
 	// Create the container
 	resp, err := c.client.ContainerCreate(
 		ctx,
 		config,
 		hostConfig,
-		&network.NetworkingConfig{},
+		networkingConfig,
 		nil,
 		name,
 	)
@@ -714,6 +741,35 @@ func (*Client) needsNetworkAccess(profile *permissions.Profile, transportType st
 	return false
 }
 
+// shouldUseEgressProxy determines if the container should use the egress proxy for controlled outbound traffic
+func (*Client) shouldUseEgressProxy(profile *permissions.Profile) bool {
+	// If the profile has network settings that require controlled access, use egress proxy
+	if profile.Network != nil && profile.Network.Outbound != nil {
+		outbound := profile.Network.Outbound
+
+		// Don't use egress proxy for insecure allow all
+		if outbound.InsecureAllowAll {
+			return false
+		}
+
+		// Use egress proxy for controlled access
+		if len(outbound.AllowTransport) > 0 ||
+			len(outbound.AllowHost) > 0 ||
+			len(outbound.AllowPort) > 0 {
+			return true
+		}
+	}
+
+	// Default to using egress proxy for any network access that's not explicitly allowed all
+	return true
+}
+
+// getNetworkName generates a network name for a container
+func getNetworkName(containerName string) string {
+	// Use a prefix to identify toolhive networks
+	return fmt.Sprintf("thv-%s", containerName)
+}
+
 // getPermissionConfigFromProfile converts a permission profile to a container permission config
 func (c *Client) getPermissionConfigFromProfile(
 	profile *permissions.Profile,
@@ -732,8 +788,10 @@ func (c *Client) getPermissionConfigFromProfile(
 	c.addReadOnlyMounts(config, profile.Read)
 	c.addReadWriteMounts(config, profile.Write)
 
-	// Determine network mode
+	// Determine network mode and proxy settings
 	if c.needsNetworkAccess(profile, transportType) {
+		// Always use bridge network mode initially
+		// The actual network will be set in CreateContainer if using egress proxy
 		config.NetworkMode = "bridge"
 	}
 
@@ -1071,4 +1129,112 @@ func (c *Client) handleExistingContainer(
 
 	// Container was removed and needs to be recreated
 	return false, nil
+}
+
+// createInternalNetwork creates an internal Docker network for controlled egress
+func (c *Client) createInternalNetwork(ctx context.Context, networkName string) error {
+	logger.Log.Info(fmt.Sprintf("Creating internal Docker network: %s", networkName))
+
+	// Check if network already exists
+	networks, err := c.client.NetworkList(ctx, network.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list networks: %w", err)
+	}
+
+	// Check if network already exists
+	for _, nw := range networks {
+		if nw.Name == networkName {
+			logger.Log.Info(fmt.Sprintf("Network %s already exists", networkName))
+			return nil
+		}
+	}
+
+	// Create network options
+	options := network.CreateOptions{
+		Driver:   "bridge",
+		Internal: true, // This makes it an internal network with no direct internet access
+	}
+
+	// Create the network
+	_, err = c.client.NetworkCreate(ctx, networkName, options)
+	if err != nil {
+		return fmt.Errorf("failed to create network: %w", err)
+	}
+
+	logger.Log.Info(fmt.Sprintf("Created internal Docker network: %s", networkName))
+	return nil
+}
+
+// getEgressProxyEnvironmentVariables returns environment variables for egress proxy configuration
+func getEgressProxyEnvironmentVariables(proxyPort int) map[string]string {
+	// Determine the host address to use for the egress proxy
+	// For Docker on macOS and Windows, host.docker.internal resolves to the host
+	// For Linux, we need to use the Docker bridge IP (typically 172.17.0.1)
+	hostAddr := "host.docker.internal"
+
+	// Check if we're on Linux
+	if goruntime.GOOS == "linux" {
+		// Add extra host parameter for Linux
+		hostAddr = "172.17.0.1" // Default Docker bridge IP
+	}
+
+	// Use default port if not specified
+	if proxyPort <= 0 {
+		proxyPort = DefaultEgressProxyPort
+	}
+
+	// Set egress proxy environment variables
+	return map[string]string{
+		"HTTP_PROXY":  fmt.Sprintf("http://%s:%d", hostAddr, proxyPort),
+		"HTTPS_PROXY": fmt.Sprintf("http://%s:%d", hostAddr, proxyPort),
+		"http_proxy":  fmt.Sprintf("http://%s:%d", hostAddr, proxyPort),
+		"https_proxy": fmt.Sprintf("http://%s:%d", hostAddr, proxyPort),
+		"NO_PROXY":    "localhost,127.0.0.1",
+		"no_proxy":    "localhost,127.0.0.1",
+	}
+}
+
+// setupEgressNetwork sets up the egress network for a container
+func (c *Client) setupEgressNetwork(
+	ctx context.Context,
+	permissionProfile *permissions.Profile,
+	transportType string,
+	containerName string,
+	hostConfig *container.HostConfig,
+) *network.NetworkingConfig {
+	// Only set up egress network if needed
+	if !c.needsNetworkAccess(permissionProfile, transportType) || !c.shouldUseEgressProxy(permissionProfile) {
+		return nil
+	}
+
+	// Generate network name based on container name
+	networkName := getNetworkName(containerName)
+
+	// Create the internal network
+	if err := c.createInternalNetwork(ctx, networkName); err != nil {
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to create internal network: %v", err))
+		return nil
+	}
+
+	// Set the container to use this network
+	hostConfig.NetworkMode = container.NetworkMode(networkName)
+
+	// Set up networking config to connect to this network
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			networkName: {
+				NetworkID: networkName,
+			},
+		},
+	}
+
+	// For Linux hosts, we need to add the host.docker.internal hostname
+	if goruntime.GOOS == "linux" {
+		if hostConfig.ExtraHosts == nil {
+			hostConfig.ExtraHosts = []string{}
+		}
+		hostConfig.ExtraHosts = append(hostConfig.ExtraHosts, "host.docker.internal:172.17.0.1")
+	}
+
+	return networkingConfig
 }

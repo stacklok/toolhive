@@ -1,8 +1,8 @@
-package main
+// Package cli provides the entry point for the toolhive command-line application.
+package cli
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -10,8 +10,9 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "thv",
-	Short: "ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers",
+	Use:               "thv",
+	DisableAutoGenTag: true,
+	Short:             "ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers",
 	Long: `ToolHive (thv) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers.
 It is written in Go and has extensive test coverage—including input validation—to ensure reliability and security.
 
@@ -26,10 +27,8 @@ container-based isolation for running MCP servers.`,
 	},
 }
 
-func init() {
-	// Initialize the logger system
-	logger.Initialize()
-
+// NewRootCmd creates a new root command for the ToolHive CLI.
+func NewRootCmd() *cobra.Command {
 	// Add persistent flags
 	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
 
@@ -43,11 +42,6 @@ func init() {
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newLogsCommand())
 	rootCmd.AddCommand(newSecretCommand())
-}
 
-func main() {
-	if err := rootCmd.Execute(); err != nil {
-		logger.Log.Error("%v, %v", os.Stderr, err)
-		os.Exit(1)
-	}
+	return rootCmd
 }

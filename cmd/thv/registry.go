@@ -1,6 +1,4 @@
-// Package main provides the entry point for the toolhive command-line application.
-// This file contains the implementation of the 'registry' command.
-package main
+package cli
 
 import (
 	"encoding/json"

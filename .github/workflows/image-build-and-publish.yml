@@ -52,7 +52,7 @@ jobs:
       - name: Build and Push Image to GHCR
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
-          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare -t $TAG ./cmd/thv \
+          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare -t $TAG ./cmd \
             --image-label=org.opencontainers.image.source=https://github.com/StacklokLabs/toolhive,org.opencontainers.image.title="toolhive",org.opencontainers.image.vendor=Stacklok
 
       - name: Sign Image with Cosign

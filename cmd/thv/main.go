@@ -26,14 +26,6 @@ container-based isolation for running MCP servers.`,
 	},
 }
 
-var versionCmd = &cobra.Command{
-	Use:   "version",
-	Short: "Show the version of ToolHive",
-	Run: func(_ *cobra.Command, _ []string) {
-		logger.Log.Info("ToolHive v0.1.0")
-	},
-}
-
 func init() {
 	// Initialize the logger system
 	logger.Initialize()
@@ -48,7 +40,7 @@ func init() {
 	rootCmd.AddCommand(rmCmd)
 	rootCmd.AddCommand(proxyCmd)
 	rootCmd.AddCommand(restartCmd)
-	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newLogsCommand())
 	rootCmd.AddCommand(newSecretCommand())
 }

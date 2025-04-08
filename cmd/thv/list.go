@@ -32,7 +32,8 @@ var (
 
 // Constants for list command
 const (
-	defaultHost = "localhost"
+	defaultHost      = "localhost"
+	unknownTransport = "unknown"
 )
 
 // ContainerOutput represents container information for JSON output
@@ -126,7 +127,7 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 		// Get transport type from labels
 		transport := labels.GetTransportType(c.Labels)
 		if transport == "" {
-			transport = "unknown"
+			transport = unknownTransport
 		}
 
 		// Get tool type from labels
@@ -242,7 +243,7 @@ func printTextOutput(containers []rt.ContainerInfo) {
 		// Get transport type from labels
 		transport := labels.GetTransportType(c.Labels)
 		if transport == "" {
-			transport = "unknown"
+			transport = unknownTransport
 		}
 
 		// Get port from labels

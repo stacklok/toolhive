@@ -22,7 +22,7 @@ builds:
     goarch:
       - amd64
       - arm64
-    main: ./cmd
+    main: ./cmd/thv
     binary: thv
 # This section defines the release format.
 archives:

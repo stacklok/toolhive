@@ -94,24 +94,33 @@ For client auto-discovery/configuration, a supported client:
 
 ### Installation
 
-Installation is quite easy and we have several options to do so.
+ToolHive is a CLI tool written in Go and packaged as a single binary. You can
+install it using one of the following methods:
 
-#### MacOS (Homebrew)
+#### Download the binary <!-- omit in toc -->
+
+Download the latest cross-platform release binaries from
+[toolhive/releases](https://github.com/StacklokLabs/toolhive/releases).
+
+#### Homebrew (macOS) <!-- omit in toc -->
+
+Install on macOS using Homebrew:
 
 ```bash
 brew tap stacklok/tap
 brew install thv
 ```
 
-#### Download a release
+#### Build from source <!-- omit in toc -->
 
-Download the latest release from [toolhive/releases](https://github.com/StacklokLabs/toolhive/releases).
+To build ToolHive from source, clone this repository and build the CLI using Go:
 
-#### Build from source
+```bash
+go build ./cmd/thv
+go install ./cmd/thv
+```
 
-You can do your normal `go build` and `go install`
-
-or you can do the following if you have task installed (it's similar to `make`)
+Or using [Task](https://taskfile.dev/installation):
 
 ```bash
 task build

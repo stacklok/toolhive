@@ -118,7 +118,7 @@ func rmCmdFunc(_ *cobra.Command, args []string) error {
 
 func shouldRemoveClientConfig() bool {
 	c := config.GetConfig()
-	return len(c.Clients.RegisteredClients) > 0 && c.Clients.AutoDiscovery
+	return len(c.Clients.RegisteredClients) > 0 || c.Clients.AutoDiscovery
 }
 
 // updateClientConfigurations updates client configuration files with the MCP server URL

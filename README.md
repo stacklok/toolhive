@@ -146,18 +146,22 @@ containers. The proxy communicates with MCP servers via standard input/output
 flowchart LR
   subgraph container[Docker/Podman]
     direction LR
-    proxy[SSE proxy]
+    proxy1[SSE proxy 1]
+    proxy2[SSE proxy 2]
+    proxy3[SSE proxy 3]
     mcp1[MCP Server]
     mcp2[MCP Server]
     mcp3[MCP Server]
 
-    proxy -->|stdio| mcp1
-    proxy -->|stdio| mcp2
-    proxy -->|sse| mcp3
+    proxy1 -->|stdio| mcp1
+    proxy2 -->|stdio| mcp2
+    proxy3 -->|sse| mcp3
   end
 
   T[ToolHive CLI] -->|Socket API| container
-  C[Client] -->|HTTP/SSE| proxy
+  C[Client] -->|HTTP/SSE| proxy1
+  C[Client] -->|HTTP/SSE| proxy2
+  C[Client] -->|HTTP/SSE| proxy3
 ```
 
 ## Usage examples

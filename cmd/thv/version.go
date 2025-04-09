@@ -102,11 +102,11 @@ func getVersionInfo() versionInfo {
 
 // printVersionInfo prints the version information
 func printVersionInfo(info versionInfo) {
-	fmt.Printf("ToolHive %s", info.Version)
-	fmt.Printf("Commit: %s", info.Commit)
-	fmt.Printf("Built: %s", info.BuildDate)
-	fmt.Printf("Go version: %s", info.GoVersion)
-	fmt.Printf("Platform: %s", info.Platform)
+	fmt.Printf("ToolHive %s\n", info.Version)
+	fmt.Printf("Commit: %s\n", info.Commit)
+	fmt.Printf("Built: %s\n", info.BuildDate)
+	fmt.Printf("Go version: %s\n", info.GoVersion)
+	fmt.Printf("Platform: %s\n", info.Platform)
 }
 
 // printJSONVersionInfo prints the version information as JSON

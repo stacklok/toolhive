@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	nameref "github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/cobra"
 
 	"github.com/StacklokLabs/toolhive/pkg/container"
@@ -146,14 +147,26 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		logDebug(debugMode, "Server '%s' not found in registry, treating as Docker image", serverOrImage)
 		config.Image = serverOrImage
 	}
+	// Check if the image has the "latest" tag
+	isLatestTag := hasLatestTag(config.Image)
 
-	// Check if the image exists locally, and pull it if not
+	// Check if the image exists locally
 	imageExists, err := runtime.ImageExists(ctx, config.Image)
 	if err != nil {
 		return fmt.Errorf("failed to check if image exists: %v", err)
 	}
-	if !imageExists {
-		logger.Log.Info(fmt.Sprintf("Image %s not found locally, pulling...", config.Image))
+
+	// Always pull if the tag is "latest" or if the image doesn't exist locally
+	if isLatestTag || !imageExists {
+		var pullMsg string
+		if !imageExists {
+			pullMsg = "Image %s not found locally, pulling..."
+		}
+		if isLatestTag && imageExists {
+			pullMsg = "Image %s has 'latest' tag, pulling to ensure we have the most recent version..."
+		}
+
+		logger.Log.Info(fmt.Sprintf(pullMsg, config.Image))
 		if err := runtime.PullImage(ctx, config.Image); err != nil {
 			return fmt.Errorf("failed to pull image: %v", err)
 		}
@@ -265,6 +278,27 @@ func isEnvVarProvided(name string, envVars []string, secrets []string) bool {
 
 	// Check if the environment variable is provided as a secret
 	return findEnvironmentVariableFromSecrets(secrets, name)
+}
+
+// hasLatestTag checks if the given image reference has the "latest" tag or no tag (which defaults to "latest")
+func hasLatestTag(imageRef string) bool {
+	ref, err := nameref.ParseReference(imageRef)
+	if err != nil {
+		// If we can't parse the reference, assume it's not "latest"
+		logger.Log.Warn(fmt.Sprintf("Warning: Failed to parse image reference: %v", err))
+		return false
+	}
+
+	// Check if the reference is a tag
+	if taggedRef, ok := ref.(nameref.Tag); ok {
+		// Check if the tag is "latest"
+		return taggedRef.TagStr() == "latest"
+	}
+
+	// If the reference is not a tag (e.g., it's a digest), it's not "latest"
+	// If no tag was specified, it defaults to "latest"
+	_, isDigest := ref.(nameref.Digest)
+	return !isDigest
 }
 
 // createPermissionProfileFile creates a temporary file with the permission profile

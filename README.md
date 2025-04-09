@@ -94,7 +94,29 @@ For client auto-discovery/configuration, a supported client:
 
 ### Installation
 
-TODO: Add installation instructions when ready
+Installation is quite easy and we have several options to do so.
+
+#### MacOS (Homebrew)
+
+```bash
+brew tap stacklok/tap
+brew install thv
+```
+
+#### Download a release
+
+Download the latest release from [toolhive/releases](https://github.com/StacklokLabs/toolhive/releases).
+
+#### Build from source
+
+You can do your normal `go build` and `go install`
+
+or you can do the following if you have task installed (it's similar to `make`)
+
+```bash
+task build
+task install
+```
 
 ### Quickstart - run your first MCP server
 
@@ -104,10 +126,10 @@ TODO: Add installation instructions when ready
 > learn how to explicitly register a client.
 
 ```shell
-#Enable client auto-discovery:
+# Enable client auto-discovery:
 thv config auto-discovery true
 
-#Run the Fetch MCP server which allows LLMs to fetch the contents of a website:
+# Run the Fetch MCP server which allows LLMs to fetch the contents of a website:
 thv run fetch
 
 # List the running MCP servers:

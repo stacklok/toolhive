@@ -126,13 +126,8 @@ func printTextServers(servers []*registry.Server) {
 
 	// Print server information
 	for _, server := range servers {
-		// Extract server name from image
-		name := strings.Split(server.Image, ":")[0]
-		name = strings.TrimPrefix(name, "mcp/")
-
-		// Print server information
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n",
-			name,
+			server.Name,
 			truncateString(server.Description, 60),
 			server.Transport,
 			server.Metadata.Stars,
@@ -149,7 +144,7 @@ func printTextServers(servers []*registry.Server) {
 // printTextServerInfo prints detailed information about a server in text format
 // nolint:gocyclo
 func printTextServerInfo(name string, server *registry.Server) {
-	fmt.Printf("Name: %s\n", name)
+	fmt.Printf("Name: %s\n", server.Name)
 	fmt.Printf("Image: %s\n", server.Image)
 	fmt.Printf("Description: %s\n", server.Description)
 	fmt.Printf("Transport: %s\n", server.Transport)

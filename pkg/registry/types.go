@@ -16,6 +16,7 @@ type Registry struct {
 
 // Server represents an MCP server in the registry
 type Server struct {
+	Name          string               `json:"name,omitempty"`
 	Image         string               `json:"image"`
 	Description   string               `json:"description"`
 	Transport     string               `json:"transport"`

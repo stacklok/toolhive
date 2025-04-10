@@ -1,5 +1,5 @@
-// Package cli provides the entry point for the toolhive command-line application.
-package cli
+// Package app provides the entry point for the toolhive command-line application.
+package app
 
 import (
 	"fmt"

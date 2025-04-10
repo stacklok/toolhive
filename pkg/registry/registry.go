@@ -33,6 +33,11 @@ func GetRegistry() (*Registry, error) {
 			registryErr = fmt.Errorf("failed to parse registry data: %w", err)
 			return
 		}
+
+		// Set name field on each server based on map key
+		for name, server := range registry.Servers {
+			server.Name = name
+		}
 	})
 
 	return registry, registryErr

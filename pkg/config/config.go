@@ -101,16 +101,16 @@ func LoadOrCreateConfig() (*Config, error) {
 		// Hack - if the secrets provider type is set to the old `basic` type,
 		// just change it to `encrypted`.
 		if config.Secrets.ProviderType == "basic" {
-			fmt.Println("removing basic secrets provider")
+			fmt.Println("cleaning up basic secrets provider")
 			// Attempt to cleanup path, treat errors as non fatal.
 			oldPath, err := xdg.DataFile("toolhive/secrets")
 			if err == nil {
-				err = os.Remove(oldPath)
-				if err != nil {
-					logger.Log.Warn("unable to remove secrets_basic file: %s", err)
-				}
-			} else {
-				logger.Log.Warn("unable to remove secrets_basic file: %s", err)
+				_ = os.Remove(oldPath)
+			}
+			config.Secrets.ProviderType = string(secrets.EncryptedType)
+			err = config.WriteConfig()
+			if err != nil {
+				fmt.Printf("error updating config: %v", err)
 			}
 		}
 	}

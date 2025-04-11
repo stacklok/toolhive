@@ -203,10 +203,9 @@ func (c *RunConfig) ParsePermissionProfile() (*RunConfig, error) {
 	var err error
 
 	switch c.PermissionProfileNameOrPath {
-	//nolint:goconst // Let's do this later
-	case "stdio":
-		permProfile = permissions.BuiltinStdioProfile()
-	case "network":
+	case permissions.ProfileNone, "stdio":
+		permProfile = permissions.BuiltinNoneProfile()
+	case permissions.ProfileNetwork:
 		permProfile = permissions.BuiltinNetworkProfile()
 	default:
 		// Try to load from file

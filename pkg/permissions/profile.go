@@ -11,6 +11,14 @@ import (
 	"strings"
 )
 
+// Built-in permission profile names
+const (
+	// ProfileNone is the name of the built-in profile with no permissions
+	ProfileNone = "none"
+	// ProfileNetwork is the name of the built-in profile with network permissions
+	ProfileNetwork = "network"
+)
+
 // Profile represents a permission profile for a container
 type Profile struct {
 	// Read is a list of mount declarations that the container can read from
@@ -83,8 +91,8 @@ func FromFile(path string) (*Profile, error) {
 	return &profile, nil
 }
 
-// BuiltinStdioProfile returns the built-in stdio profile
-func BuiltinStdioProfile() *Profile {
+// BuiltinNoneProfile returns the built-in profile with no permissions
+func BuiltinNoneProfile() *Profile {
 	return &Profile{
 		Read:  []MountDeclaration{},
 		Write: []MountDeclaration{},

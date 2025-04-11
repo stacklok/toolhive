@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
 	"github.com/StacklokLabs/toolhive/pkg/container/templates"
@@ -67,10 +68,14 @@ func handleProtocolScheme(ctx context.Context, runtime rt.Runtime, serverOrImage
 		return "", fmt.Errorf("failed to write Dockerfile: %w", err)
 	}
 
+	//dynamically generate tag from timestamp
+	tag := time.Now().Format("20060102150405")
+
 	// Generate a unique image name based on the package name
-	imageName := fmt.Sprintf("toolhive-%s-%s:latest",
+	imageName := fmt.Sprintf("toolhivelocal/%s-%s:%s",
 		string(transportType),
-		strings.ReplaceAll(packageName, "/", "-"))
+		strings.ReplaceAll(packageName, "/", "-"),
+		tag)
 
 	// Log the build process
 	logDebug(debugMode, "Building Docker image for %s package: %s", transportType, packageName)

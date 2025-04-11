@@ -9,6 +9,7 @@ import (
 
 	"github.com/adrg/xdg"
 	"github.com/google/uuid"
+	"golang.org/x/mod/semver"
 
 	"github.com/StacklokLabs/toolhive/pkg/versions"
 )
@@ -90,6 +91,8 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 		return nil
 	}
 
+	fmt.Println("checking for updates...")
+
 	// If the update file is stale or does not exist - get the latest version
 	// from the API.
 	latestVersion, err := d.versionClient.GetLatestVersion(d.instanceID, d.currentVersion)
@@ -121,8 +124,7 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 }
 
 func notifyIfUpdateAvailable(currentVersion, latestVersion string) {
-	// TODO: Consider using semver logic in future.
-	if currentVersion != latestVersion {
-		fmt.Printf("A new version of ToolHive is available: %s\n", latestVersion)
+	if semver.Compare(currentVersion, latestVersion) < 0 {
+		fmt.Printf("A new version of ToolHive is available: %s\n. Currently running%s\n", latestVersion, currentVersion)
 	}
 }

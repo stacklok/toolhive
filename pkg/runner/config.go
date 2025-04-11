@@ -242,7 +242,7 @@ func (c *RunConfig) WithEnvironmentVariables(envVarStrings []string) (*RunConfig
 }
 
 // WithSecrets processes secrets and adds them to environment variables
-func (c *RunConfig) WithSecrets(secretManager secrets.Manager) (*RunConfig, error) {
+func (c *RunConfig) WithSecrets(secretManager secrets.Provider) (*RunConfig, error) {
 	if len(c.Secrets) == 0 {
 		return c, nil // No secrets to process
 	}

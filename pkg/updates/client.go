@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 )
 
 // VersionClient is an interface for calling the update service API.
@@ -40,6 +41,10 @@ func (d *defaultVersionClient) GetLatestVersion(instanceID string, currentVersio
 
 	// Set headers
 	userAgent := fmt.Sprintf("toolhive/%s", currentVersion)
+	// Add `dev` to the user agent for Stacklok devs.
+	if os.Getenv("TOOLHIVE_DEV") != "" {
+		userAgent += " dev"
+	}
 	req.Header.Set(instanceIDHeader, instanceID)
 	req.Header.Set(userAgentHeader, userAgent)
 

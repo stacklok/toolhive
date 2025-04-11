@@ -30,7 +30,7 @@ func NewUpdateChecker(versionClient VersionClient) (UpdateChecker, error) {
 
 	// Check to see if the file already exists. Read the instance ID from the
 	// file if it does. If it doesn't exist, create a new instance ID.
-	var instanceID string
+	var instanceID, previousVersion string
 	// #nosec G304: File path is not configurable at this time.
 	rawContents, err := os.ReadFile(path)
 	if err != nil {
@@ -46,13 +46,15 @@ func NewUpdateChecker(versionClient VersionClient) (UpdateChecker, error) {
 			return nil, fmt.Errorf("failed to deserialize update file: %w", err)
 		}
 		instanceID = contents.InstanceID
+		previousVersion = contents.LatestVersion
 	}
 
 	return &defaultUpdateChecker{
-		currentVersion: versions.GetVersionInfo().Version,
-		instanceID:     instanceID,
-		updateFilePath: path,
-		versionClient:  versionClient,
+		currentVersion:      versions.GetVersionInfo().Version,
+		instanceID:          instanceID,
+		updateFilePath:      path,
+		versionClient:       versionClient,
+		previousAPIResponse: previousVersion,
 	}, nil
 }
 

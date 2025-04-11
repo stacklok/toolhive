@@ -26,7 +26,7 @@ thv run [flags] SERVER_OR_IMAGE [-- ARGS...]
       --oidc-client-id string       OIDC client ID
       --oidc-issuer string          OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string        URL to fetch the JWKS from
-      --permission-profile string   Permission profile to use (stdio, network, or path to JSON file) (default "stdio")
+      --permission-profile string   Permission profile to use (none, network, or path to JSON file) (default "none")
       --port int                    Port for the HTTP proxy to listen on (host port)
       --secret stringArray          Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
       --target-host string          Host to forward traffic to (only applicable to SSE transport) (default "localhost")

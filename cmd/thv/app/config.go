@@ -27,7 +27,6 @@ var secretsProviderCmd = &cobra.Command{
 	Short: "Set the secrets provider type",
 	Long: `Set the secrets provider type for storing and retrieving secrets.
 Valid providers are:
-  - basic: Stores secrets in an unencrypted file (not recommended for production)
   - encrypted: Stores secrets in an encrypted file using AES-256-GCM`,
 	Args: cobra.ExactArgs(1),
 	RunE: secretsProviderCmdFunc,
@@ -86,10 +85,10 @@ func secretsProviderCmdFunc(_ *cobra.Command, args []string) error {
 
 	// Validate the provider type
 	switch provider {
-	case string(secrets.BasicType), string(secrets.EncryptedType):
+	case string(secrets.EncryptedType):
 		// Valid provider type
 	default:
-		return fmt.Errorf("invalid secrets provider type: %s (valid types: basic, encrypted)", provider)
+		return fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted)", provider)
 	}
 
 	// Get the current config

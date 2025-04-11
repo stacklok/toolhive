@@ -6,7 +6,6 @@ Set the secrets provider type
 
 Set the secrets provider type for storing and retrieving secrets.
 Valid providers are:
-  - basic: Stores secrets in an unencrypted file (not recommended for production)
   - encrypted: Stores secrets in an encrypted file using AES-256-GCM
 
 ```

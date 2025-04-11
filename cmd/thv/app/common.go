@@ -40,13 +40,11 @@ func IsOIDCEnabled(cmd *cobra.Command) bool {
 func GetSecretsProviderType(_ *cobra.Command) (secrets.ProviderType, error) {
 	provider := config.GetConfig().Secrets.ProviderType
 	switch provider {
-	case string(secrets.BasicType):
-		return secrets.BasicType, nil
 	case string(secrets.EncryptedType):
 		return secrets.EncryptedType, nil
 	default:
 		// TODO: auto-generate the set of valid values.
-		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: basic, encrypted)", provider)
+		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted)", provider)
 	}
 }
 

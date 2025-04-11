@@ -60,7 +60,7 @@ func LoadOrCreateConfig() (*Config, error) {
 		// Create a new config with default values.
 		config = Config{
 			Secrets: Secrets{
-				ProviderType: string(secrets.BasicType),
+				ProviderType: string(secrets.EncryptedType),
 			},
 			Clients: Clients{
 				AutoDiscovery: true,
@@ -97,6 +97,21 @@ func LoadOrCreateConfig() (*Config, error) {
 		err = yaml.Unmarshal(configFile, &config)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse config file yaml: %w", err)
+		}
+		// Hack - if the secrets provider type is set to the old `basic` type,
+		// just change it to `encrypted`.
+		if config.Secrets.ProviderType == "basic" {
+			fmt.Println("removing basic secrets provider")
+			// Attempt to cleanup path, treat errors as non fatal.
+			oldPath, err := xdg.DataFile("toolhive/secrets")
+			if err == nil {
+				err = os.Remove(oldPath)
+				if err != nil {
+					logger.Log.Warn("unable to remove secrets_basic file: %s", err)
+				}
+			} else {
+				logger.Log.Warn("unable to remove secrets_basic file: %s", err)
+			}
 		}
 	}
 

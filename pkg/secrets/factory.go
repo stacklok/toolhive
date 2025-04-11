@@ -24,8 +24,6 @@ const (
 type ProviderType string
 
 const (
-	// BasicType represents the basic secret provider.
-	BasicType ProviderType = "basic"
 	// EncryptedType represents the encrypted secret provider.
 	EncryptedType ProviderType = "encrypted"
 )
@@ -36,12 +34,6 @@ var ErrUnknownManagerType = errors.New("unknown secret manager type")
 // CreateSecretManager creates the specified type of secret manager.
 func CreateSecretManager(managerType ProviderType) (Manager, error) {
 	switch managerType {
-	case BasicType:
-		secretsPath, err := xdg.DataFile("toolhive/secrets")
-		if err != nil {
-			return nil, fmt.Errorf("unable to access secrets file path %v", err)
-		}
-		return NewBasicManager(secretsPath)
 	case EncryptedType:
 		password, err := GetSecretsPassword()
 		if err != nil {

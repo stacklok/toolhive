@@ -24,6 +24,11 @@ type EncryptedManager struct {
 	secrets syncmap.Map // Thread-safe map for storing secrets
 }
 
+// fileStructure is the structure of the secrets file.
+type fileStructure struct {
+	Secrets map[string]string `json:"secrets"`
+}
+
 // GetSecret retrieves a secret from the secret store.
 func (e *EncryptedManager) GetSecret(name string) (string, error) {
 	if name == "" {

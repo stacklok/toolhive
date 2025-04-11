@@ -312,3 +312,12 @@ func TestEncryptedManager_Concurrency(t *testing.T) {
 }
 
 // End of tests
+
+// Helper functions
+func createTempFile(t *testing.T) string {
+	t.Helper()
+	tempFile, err := os.CreateTemp("", "secrets-test-*.json")
+	require.NoError(t, err, "Creating a temporary file should not return an error")
+	tempFile.Close()
+	return tempFile.Name()
+}

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -48,7 +47,7 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 
 	// Sort servers by name
 	sort.Slice(servers, func(i, j int) bool {
-		return servers[i].Image < servers[j].Image
+		return servers[i].Name < servers[j].Name
 	})
 
 	// Output based on format
@@ -83,13 +82,9 @@ func printTextSearchResults(servers []*registry.Server) {
 
 	// Print server information
 	for _, server := range servers {
-		// Extract server name from image
-		name := strings.Split(server.Image, ":")[0]
-		name = strings.TrimPrefix(name, "mcp/")
-
 		// Print server information
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n",
-			name,
+			server.Name,
 			truncateSearchString(server.Description, 60),
 			server.Transport,
 			server.Metadata.Stars,
@@ -105,8 +100,5 @@ func printTextSearchResults(servers []*registry.Server) {
 
 // truncateSearchString truncates a string to the specified length and adds "..." if truncated
 func truncateSearchString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
+	return truncateString(s, maxLen)
 }

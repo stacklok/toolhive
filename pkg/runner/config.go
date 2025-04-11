@@ -203,7 +203,7 @@ func (c *RunConfig) ParsePermissionProfile() (*RunConfig, error) {
 	var err error
 
 	switch c.PermissionProfileNameOrPath {
-	case permissions.ProfileNone:
+	case permissions.ProfileNone, "stdio":
 		permProfile = permissions.BuiltinNoneProfile()
 	case permissions.ProfileNetwork:
 		permProfile = permissions.BuiltinNetworkProfile()

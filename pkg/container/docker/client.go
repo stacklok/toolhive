@@ -3,6 +3,7 @@
 package docker
 
 import (
+	"archive/tar"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	dockerimage "github.com/docker/docker/api/types/image"
@@ -591,6 +593,134 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 	// Parse and filter the pull output
 	if err := parsePullOutput(reader, os.Stdout); err != nil {
 		return NewContainerError(err, "", fmt.Sprintf("failed to process pull output: %v", err))
+	}
+
+	return nil
+}
+
+// BuildImage builds a Docker image from a Dockerfile in the specified context directory
+func (c *Client) BuildImage(ctx context.Context, contextDir, imageName string) error {
+	logger.Log.Info(fmt.Sprintf("Building image %s from context directory %s", imageName, contextDir))
+
+	// Create a tar archive of the context directory
+	tarFile, err := os.CreateTemp("", "docker-build-context-*.tar")
+	if err != nil {
+		return NewContainerError(err, "", fmt.Sprintf("failed to create temporary tar file: %v", err))
+	}
+	defer os.Remove(tarFile.Name())
+	defer tarFile.Close()
+
+	// Create a tar archive of the context directory
+	if err := createTarFromDir(contextDir, tarFile); err != nil {
+		return NewContainerError(err, "", fmt.Sprintf("failed to create tar archive: %v", err))
+	}
+
+	// Reset the file pointer to the beginning of the file
+	if _, err := tarFile.Seek(0, 0); err != nil {
+		return NewContainerError(err, "", fmt.Sprintf("failed to reset tar file pointer: %v", err))
+	}
+
+	// Build the image
+	buildOptions := types.ImageBuildOptions{
+		Tags:       []string{imageName},
+		Dockerfile: "Dockerfile",
+		Remove:     true,
+	}
+
+	response, err := c.client.ImageBuild(ctx, tarFile, buildOptions)
+	if err != nil {
+		return NewContainerError(err, "", fmt.Sprintf("failed to build image: %v", err))
+	}
+	defer response.Body.Close()
+
+	// Parse and log the build output
+	if err := parseBuildOutput(response.Body, os.Stdout); err != nil {
+		return NewContainerError(err, "", fmt.Sprintf("failed to process build output: %v", err))
+	}
+
+	return nil
+}
+
+// createTarFromDir creates a tar archive from a directory
+func createTarFromDir(srcDir string, writer io.Writer) error {
+	// Create a new tar writer
+	tw := tar.NewWriter(writer)
+	defer tw.Close()
+
+	// Walk through the directory and add files to the tar archive
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Get the relative path
+		relPath, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return fmt.Errorf("failed to get relative path: %w", err)
+		}
+
+		// Skip the root directory
+		if relPath == "." {
+			return nil
+		}
+
+		// Create a tar header
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return fmt.Errorf("failed to create tar header: %w", err)
+		}
+
+		// Set the name to the relative path
+		header.Name = relPath
+
+		// Write the header
+		if err := tw.WriteHeader(header); err != nil {
+			return fmt.Errorf("failed to write tar header: %w", err)
+		}
+
+		// If it's a regular file, write the contents
+		if !info.IsDir() {
+			// #nosec G304 - This is safe because we're only opening files within the specified context directory
+			file, err := os.Open(path)
+			if err != nil {
+				return fmt.Errorf("failed to open file: %w", err)
+			}
+			defer file.Close()
+
+			if _, err := io.Copy(tw, file); err != nil {
+				return fmt.Errorf("failed to copy file contents: %w", err)
+			}
+		}
+
+		return nil
+	})
+}
+
+// parseBuildOutput parses the Docker image build output and formats it in a more readable way
+func parseBuildOutput(reader io.Reader, writer io.Writer) error {
+	decoder := json.NewDecoder(reader)
+	for {
+		var buildOutput struct {
+			Stream string `json:"stream,omitempty"`
+			Error  string `json:"error,omitempty"`
+		}
+
+		if err := decoder.Decode(&buildOutput); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("failed to decode build output: %w", err)
+		}
+
+		// Check for errors
+		if buildOutput.Error != "" {
+			return fmt.Errorf("build error: %s", buildOutput.Error)
+		}
+
+		// Print the stream output
+		if buildOutput.Stream != "" {
+			fmt.Fprint(writer, buildOutput.Stream)
+		}
 	}
 
 	return nil

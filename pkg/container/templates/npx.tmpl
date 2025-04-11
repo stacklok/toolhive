@@ -1,0 +1,10 @@
+FROM node:22-slim
+
+# Set working directory
+WORKDIR /app
+
+# Run the MCP server using npx
+# The entrypoint will be constructed dynamically based on the package and arguments
+# Using the form: npx -- <pkg>[@<version>] [args...]
+# The -- separates npx options from the package name and arguments
+ENTRYPOINT ["npx", "--yes", "--", "{{.MCPPackage}}"{{range .MCPArgs}}, "{{.}}"{{end}}]

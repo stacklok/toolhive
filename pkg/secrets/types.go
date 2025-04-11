@@ -9,8 +9,8 @@ import (
 // regex to extract name and target from secret parameter, e.g. "name,target=target"
 var secretParamRegex = regexp.MustCompile(`^([^,]+),target=(.+)$`)
 
-// Manager describes a type which can manage secrets.
-type Manager interface {
+// Provider describes a type which can manage secrets.
+type Provider interface {
 	GetSecret(name string) (string, error)
 	SetSecret(name, value string) error
 	DeleteSecret(name string) error

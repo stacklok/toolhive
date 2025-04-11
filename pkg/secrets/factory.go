@@ -32,7 +32,7 @@ const (
 var ErrUnknownManagerType = errors.New("unknown secret manager type")
 
 // CreateSecretManager creates the specified type of secret manager.
-func CreateSecretManager(managerType ProviderType) (Manager, error) {
+func CreateSecretManager(managerType ProviderType) (Provider, error) {
 	switch managerType {
 	case EncryptedType:
 		password, err := GetSecretsPassword()

@@ -30,7 +30,7 @@ const (
 	defaultVersionAPI = "https://updates.codegate.ai/api/v1/version"
 )
 
-// GetLatestVersion sends a GET request to the up2date API endpoint and returns the version from the response.
+// GetLatestVersion sends a GET request to the update API endpoint and returns the version from the response.
 // It returns an error if the request fails or if the response status code is not 200.
 func (d *defaultVersionClient) GetLatestVersion(instanceID string, currentVersion string) (string, error) {
 	// Create a new request

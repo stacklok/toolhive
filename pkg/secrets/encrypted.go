@@ -115,7 +115,7 @@ func (e *EncryptedManager) updateFile() error {
 }
 
 // NewEncryptedManager creates an instance of EncryptedManager.
-func NewEncryptedManager(filePath string, key []byte) (Manager, error) {
+func NewEncryptedManager(filePath string, key []byte) (Provider, error) {
 	if len(key) == 0 {
 		return nil, errors.New("key cannot be empty")
 	}

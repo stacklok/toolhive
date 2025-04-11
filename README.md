@@ -34,6 +34,7 @@ consistency, and security.
   - [Manage MCP servers](#manage-mcp-servers)
   - [Secrets management](#secrets-management)
   - [Run a custom MCP server](#run-a-custom-mcp-server)
+  - [Run MCP servers using protocol schemes](#run-mcp-servers-using-protocol-schemes)
 - [Advanced usage](#advanced-usage)
   - [Customize permissions](#customize-permissions)
   - [Run ToolHive in Kubernetes](#run-toolhive-in-kubernetes)
@@ -341,6 +342,44 @@ simplicity. When invoked:
   - **Server-sent events (SSE)** (`sse`):\
     ToolHive creates a reverse proxy on a random port that forwards requests to the
     container. This means the container itself does not directly expose any ports.
+
+### Run MCP servers using protocol schemes
+
+ToolHive supports running MCP servers directly from package managers using protocol schemes. This allows you to run MCP servers without having to build and publish Docker images first.
+
+Currently, two protocol schemes are supported:
+
+- **uvx://**: For Python-based MCP servers using the uv package manager
+- **npx://**: For Node.js-based MCP servers using npm
+
+For example, to run a Python-based MCP server:
+
+```bash
+thv run uvx://awslabs.core-mcp-server@latest
+```
+
+Or to run a Node.js-based MCP server:
+
+```bash
+thv run npx://pulumi/mcp-server@latest
+```
+
+When you use a protocol scheme, ToolHive will:
+
+1. Detect the protocol scheme and extract the package name
+2. Generate a Dockerfile based on the appropriate template
+3. Build a Docker image with the package installed
+4. Run the MCP server using the built image
+
+Note that in this case, you still might need to specify additional arguments like the
+transport method, volumes, and environment variables. So, the command might look like:
+
+```bash
+thv run --transport sse --name my-mcp-server --port 8080 uvx://some-sse-mcp-server@latest -- my-mcp-server-args
+```
+
+Read the documentation for the specific MCP server to see if it requires any additional
+arguments.
 
 ## Advanced usage
 

@@ -73,6 +73,10 @@ func (*mockRuntime) PullImage(_ context.Context, _ string) error {
 	return nil
 }
 
+func (*mockRuntime) BuildImage(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (*mockRuntime) Name() string {
 	return "mock"
 }

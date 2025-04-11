@@ -115,6 +115,19 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
+	// Check if the serverOrImage contains a protocol scheme (uvx:// or npx://)
+	// and build a Docker image for it if needed
+	processedImage, err := handleProtocolScheme(ctx, runtime, serverOrImage, debugMode)
+	if err != nil {
+		return fmt.Errorf("failed to process protocol scheme: %v", err)
+	}
+
+	// Update serverOrImage with the processed image if it was changed
+	if processedImage != serverOrImage {
+		logDebug(debugMode, "Using built image: %s instead of %s", processedImage, serverOrImage)
+		serverOrImage = processedImage
+	}
+
 	// Initialize a new RunConfig with values from command-line flags
 	config := runner.NewRunConfigFromFlags(
 		runtime,
@@ -133,7 +146,14 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	)
 
 	// Try to find the server in the registry
-	server, err := registry.GetServer(serverOrImage)
+	// Skip registry lookup if we already processed a protocol scheme
+	var server *registry.Server
+	if processedImage == serverOrImage {
+		server, err = registry.GetServer(serverOrImage)
+	} else {
+		// We already processed a protocol scheme, so we don't need to look up in the registry
+		err = fmt.Errorf("server not found in registry")
+	}
 
 	// Set the image based on whether we found a registry entry
 	if err == nil {

@@ -502,6 +502,15 @@ func (*Client) PullImage(_ context.Context, imageName string) error {
 	return nil
 }
 
+// BuildImage implements runtime.Runtime.
+func (*Client) BuildImage(_ context.Context, _, _ string) error {
+	// In Kubernetes, we don't build images directly within the cluster.
+	// Images should be built externally and pushed to a registry.
+	logger.Log.Warn("BuildImage is not supported in Kubernetes runtime. " +
+		"Images should be built externally and pushed to a registry.")
+	return fmt.Errorf("building images directly is not supported in Kubernetes runtime")
+}
+
 // RemoveContainer implements runtime.Runtime.
 func (c *Client) RemoveContainer(ctx context.Context, containerID string) error {
 	// In Kubernetes, we remove a container by deleting the statefulset

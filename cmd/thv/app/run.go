@@ -56,8 +56,8 @@ func init() {
 	runCmd.Flags().StringVar(
 		&runPermissionProfile,
 		"permission-profile",
-		"stdio",
-		"Permission profile to use (stdio, network, or path to JSON file)",
+		permissions.ProfileNone,
+		"Permission profile to use (none, network, or path to JSON file)",
 	)
 	runCmd.Flags().StringArrayVarP(
 		&runEnv,

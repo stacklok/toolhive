@@ -212,14 +212,14 @@ func TestRunConfig_ParsePermissionProfile(t *testing.T) {
 			expectError:       true,
 		},
 		{
-			name:                "Stdio built-in profile",
-			profileNameOrPath:   "stdio",
+			name:                "None built-in profile",
+			profileNameOrPath:   permissions.ProfileNone,
 			expectError:         false,
-			expectedProfileType: "stdio",
+			expectedProfileType: "none",
 		},
 		{
 			name:                "Network built-in profile",
-			profileNameOrPath:   "network",
+			profileNameOrPath:   permissions.ProfileNetwork,
 			expectError:         false,
 			expectedProfileType: "network",
 		},
@@ -289,10 +289,10 @@ func TestRunConfig_ParsePermissionProfile(t *testing.T) {
 				assert.NotNil(t, config.PermissionProfile, "PermissionProfile should be set")
 
 				switch tc.expectedProfileType {
-				case "stdio":
-					// For stdio profile, check that network outbound is not allowed
+				case "none":
+					// For none profile, check that network outbound is not allowed
 					assert.False(t, config.PermissionProfile.Network.Outbound.InsecureAllowAll,
-						"Stdio profile should not allow all outbound network connections")
+						"None profile should not allow all outbound network connections")
 				case "network":
 					// For network profile, check that network outbound is allowed
 					assert.True(t, config.PermissionProfile.Network.Outbound.InsecureAllowAll,
@@ -341,7 +341,7 @@ func TestRunConfig_ProcessVolumeMounts(t *testing.T) {
 			name: "Volumes without permission profile but with profile name",
 			config: &RunConfig{
 				Volumes:                     []string{"/host:/container"},
-				PermissionProfileNameOrPath: "stdio",
+				PermissionProfileNameOrPath: permissions.ProfileNone,
 			},
 			expectError:         false,
 			expectedReadMounts:  0,
@@ -351,7 +351,7 @@ func TestRunConfig_ProcessVolumeMounts(t *testing.T) {
 			name: "Read-only volume with existing profile",
 			config: &RunConfig{
 				Volumes:           []string{"/host:/container:ro"},
-				PermissionProfile: permissions.BuiltinStdioProfile(),
+				PermissionProfile: permissions.BuiltinNoneProfile(),
 			},
 			expectError:         false,
 			expectedReadMounts:  1,
@@ -361,7 +361,7 @@ func TestRunConfig_ProcessVolumeMounts(t *testing.T) {
 			name: "Read-write volume with existing profile",
 			config: &RunConfig{
 				Volumes:           []string{"/host:/container"},
-				PermissionProfile: permissions.BuiltinStdioProfile(),
+				PermissionProfile: permissions.BuiltinNoneProfile(),
 			},
 			expectError:         false,
 			expectedReadMounts:  0,
@@ -375,7 +375,7 @@ func TestRunConfig_ProcessVolumeMounts(t *testing.T) {
 					"/host2:/container2",
 					"/host3:/container3:ro",
 				},
-				PermissionProfile: permissions.BuiltinStdioProfile(),
+				PermissionProfile: permissions.BuiltinNoneProfile(),
 			},
 			expectError:         false,
 			expectedReadMounts:  2,
@@ -385,7 +385,7 @@ func TestRunConfig_ProcessVolumeMounts(t *testing.T) {
 			name: "Invalid volume format",
 			config: &RunConfig{
 				Volumes:           []string{"invalid:format:with:too:many:colons"},
-				PermissionProfile: permissions.BuiltinStdioProfile(),
+				PermissionProfile: permissions.BuiltinNoneProfile(),
 			},
 			expectError: true,
 		},
@@ -804,7 +804,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	volumes := []string{"/host:/container"}
 	secretsList := []string{"secret1,target=ENV_VAR1"}
 	authzConfigPath := "/path/to/authz.json"
-	permissionProfile := "stdio"
+	permissionProfile := permissions.ProfileNone
 	targetHost := "localhost"
 	oidcIssuer := "https://issuer.example.com"
 	oidcAudience := "test-audience"

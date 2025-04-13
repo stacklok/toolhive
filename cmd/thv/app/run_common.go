@@ -133,6 +133,7 @@ func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
 	// Add the image and any arguments
 	detachedArgs = append(detachedArgs, options.Image)
 	if len(options.CmdArgs) > 0 {
+		detachedArgs = append(detachedArgs, "--")
 		detachedArgs = append(detachedArgs, options.CmdArgs...)
 	}
 

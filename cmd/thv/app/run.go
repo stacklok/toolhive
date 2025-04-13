@@ -27,6 +27,10 @@ If not found, it will treat the argument as a Docker image and run it directly.
 The container will be started with minimal permissions and the specified transport mode.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runCmdFunc,
+	// Ignore unknown flags to allow passing flags to the MCP server
+	FParseErrWhitelist: cobra.FParseErrWhitelist{
+		UnknownFlags: true,
+	},
 }
 
 var (
@@ -92,9 +96,14 @@ func init() {
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
-	// Get the server name or image and command arguments
+	// Get the server name or image
 	serverOrImage := args[0]
-	cmdArgs := args[1:]
+
+	// Process command arguments using os.Args to find everything after --
+	cmdArgs := parseCommandArguments(os.Args)
+
+	// Print the processed command arguments for debugging
+	logger.Log.Info(fmt.Sprintf("Processed cmdArgs: %v", cmdArgs))
 
 	// Create context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -353,4 +362,18 @@ func logDebug(debugMode bool, format string, args ...interface{}) {
 	if debugMode {
 		logger.Log.Info(fmt.Sprintf(format+"", args...))
 	}
+}
+
+// parseCommandArguments processes command-line arguments to find everything after the -- separator
+// which are the arguments to be passed to the MCP server
+func parseCommandArguments(args []string) []string {
+	var cmdArgs []string
+	for i, arg := range args {
+		if arg == "--" && i < len(args)-1 {
+			// Found the separator, take everything after it
+			cmdArgs = args[i+1:]
+			break
+		}
+	}
+	return cmdArgs
 }

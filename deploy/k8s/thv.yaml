@@ -18,6 +18,7 @@ spec:
         app: toolhive
         app.kubernetes.io/name: toolhive
     spec:
+      serviceAccountName: toolhive
       containers:
       - name: toolhive
         image: ko://github.com/StacklokLabs/toolhive/cmd

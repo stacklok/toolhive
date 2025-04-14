@@ -46,7 +46,7 @@ jobs:
         run: |
           echo "commit=$GITHUB_SHA" >> $GITHUB_OUTPUT
           echo "commit-date=$(git log --date=iso8601-strict -1 --pretty=%ct)" >> $GITHUB_OUTPUT
-          echo "version=$(git describe --tags --always --dirty | cut -c2-)" >> $GITHUB_OUTPUT
+          echo "version=$(git describe --tags --always --dirty)" >> $GITHUB_OUTPUT
           echo "tree-state=$(if git diff --quiet; then echo "clean"; else echo "dirty"; fi)" >> $GITHUB_OUTPUT
   release:
     needs:

@@ -35,7 +35,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				MCPArgs:    []string{"--arg1", "--arg2", "value"},
 			},
 			wantContains: []string{
-				"FROM node:22-slim",
+				"FROM node:22-alpine",
 				"ENTRYPOINT [\"npx\", \"--yes\", \"--\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
 			},
 			wantErr: false,

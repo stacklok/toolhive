@@ -1,11 +1,16 @@
 package app
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
+	"github.com/StacklokLabs/toolhive/pkg/client"
 	"github.com/StacklokLabs/toolhive/pkg/config"
+	"github.com/StacklokLabs/toolhive/pkg/container"
+	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
+	"github.com/StacklokLabs/toolhive/pkg/labels"
 	"github.com/StacklokLabs/toolhive/pkg/secrets"
 )
 
@@ -132,18 +137,28 @@ func autoDiscoveryCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Auto-discovery of MCP clients %s\n", map[bool]string{true: "enabled", false: "disabled"}[enabled])
+
+	// If auto-discovery is enabled, update all registered clients with currently running MCPs
+	if enabled && len(cfg.Clients.RegisteredClients) > 0 {
+		for _, clientName := range cfg.Clients.RegisteredClients {
+			if err := addRunningMCPsToClient(clientName); err != nil {
+				fmt.Printf("Warning: Failed to add running MCPs to client %s: %v\n", clientName, err)
+			}
+		}
+	}
+
 	return nil
 }
 
 func registerClientCmdFunc(_ *cobra.Command, args []string) error {
-	client := args[0]
+	clientType := args[0]
 
 	// Validate the client type
-	switch client {
+	switch clientType {
 	case "roo-code", "cursor", "vscode-insider", "vscode":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", client)
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", clientType)
 	}
 
 	// Get the current config
@@ -151,32 +166,38 @@ func registerClientCmdFunc(_ *cobra.Command, args []string) error {
 
 	// Check if client is already registered
 	for _, registeredClient := range cfg.Clients.RegisteredClients {
-		if registeredClient == client {
-			return fmt.Errorf("client %s is already registered", client)
+		if registeredClient == clientType {
+			return fmt.Errorf("client %s is already registered", clientType)
 		}
 	}
 
 	// Add the client to the registered clients list
-	cfg.Clients.RegisteredClients = append(cfg.Clients.RegisteredClients, client)
+	cfg.Clients.RegisteredClients = append(cfg.Clients.RegisteredClients, clientType)
 
 	// Save the updated config
 	if err := cfg.WriteConfig(); err != nil {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
-	fmt.Printf("Successfully registered client: %s\n", client)
+	fmt.Printf("Successfully registered client: %s\n", clientType)
+
+	// Add currently running MCPs to the newly registered client
+	if err := addRunningMCPsToClient(clientType); err != nil {
+		fmt.Printf("Warning: Failed to add running MCPs to client: %v\n", err)
+	}
+
 	return nil
 }
 
 func removeClientCmdFunc(_ *cobra.Command, args []string) error {
-	client := args[0]
+	clientType := args[0]
 
 	// Validate the client type
-	switch client {
+	switch clientType {
 	case "roo-code", "cursor", "vscode-insider", "vscode":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", client)
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", clientType)
 	}
 
 	// Get the current config
@@ -185,7 +206,7 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 	// Find and remove the client from the registered clients list
 	found := false
 	for i, registeredClient := range cfg.Clients.RegisteredClients {
-		if registeredClient == client {
+		if registeredClient == clientType {
 			// Remove the client by appending the slice before and after the index
 			cfg.Clients.RegisteredClients = append(cfg.Clients.RegisteredClients[:i], cfg.Clients.RegisteredClients[i+1:]...)
 			found = true
@@ -194,7 +215,7 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	if !found {
-		return fmt.Errorf("client %s is not registered", client)
+		return fmt.Errorf("client %s is not registered", clientType)
 	}
 
 	// Save the updated config
@@ -202,7 +223,89 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
-	fmt.Printf("Successfully removed client: %s\n", client)
+	fmt.Printf("Successfully removed client: %s\n", clientType)
+	return nil
+}
+
+// addRunningMCPsToClient adds currently running MCP servers to the specified client's configuration
+func addRunningMCPsToClient(clientName string) error {
+	// Create context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create container runtime
+	runtime, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container runtime: %v", err)
+	}
+
+	// List containers
+	containers, err := runtime.ListContainers(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %v", err)
+	}
+
+	// Filter containers to only show those managed by ToolHive and running
+	var runningContainers []rt.ContainerInfo
+	for _, c := range containers {
+		if labels.IsToolHiveContainer(c.Labels) && c.State == "running" {
+			runningContainers = append(runningContainers, c)
+		}
+	}
+
+	if len(runningContainers) == 0 {
+		// No running servers, nothing to do
+		return nil
+	}
+
+	// Find the client configuration for the specified client
+	clientConfigs, err := client.FindClientConfigs()
+	if err != nil {
+		return fmt.Errorf("failed to find client configurations: %w", err)
+	}
+
+	// If no configs found, nothing to do
+	if len(clientConfigs) == 0 {
+		return nil
+	}
+
+	// For each running container, add it to the client configuration
+	for _, c := range runningContainers {
+		// Get container name from labels
+		name := labels.GetContainerName(c.Labels)
+		if name == "" {
+			name = c.Name // Fallback to container name
+		}
+
+		// Get tool type from labels
+		toolType := labels.GetToolType(c.Labels)
+
+		// Only include containers with tool type "mcp"
+		if toolType != "mcp" {
+			continue
+		}
+
+		// Get port from labels
+		port, err := labels.GetPort(c.Labels)
+		if err != nil {
+			continue // Skip if we can't get the port
+		}
+
+		// Generate URL for the MCP server
+		url := client.GenerateMCPServerURL("localhost", port, name)
+
+		// Update each configuration file
+		for _, clientConfig := range clientConfigs {
+			// Update the MCP server configuration with locking
+			if err := clientConfig.SaveWithLock(name, url, clientConfig.Editor); err != nil {
+				fmt.Printf("Warning: Failed to update MCP server configuration in %s: %v\n", clientConfig.Path, err)
+				continue
+			}
+
+			fmt.Printf("Added MCP server %s to client %s\n", name, clientName)
+		}
+	}
+
 	return nil
 }
 
@@ -218,8 +321,8 @@ func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
 
 	// Print the list of registered clients
 	fmt.Println("Registered clients:")
-	for _, client := range cfg.Clients.RegisteredClients {
-		fmt.Printf("  - %s\n", client)
+	for _, clientName := range cfg.Clients.RegisteredClients {
+		fmt.Printf("  - %s\n", clientName)
 	}
 
 	return nil

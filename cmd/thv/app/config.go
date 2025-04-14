@@ -11,6 +11,7 @@ import (
 	"github.com/StacklokLabs/toolhive/pkg/container"
 	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
 	"github.com/StacklokLabs/toolhive/pkg/labels"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
 	"github.com/StacklokLabs/toolhive/pkg/secrets"
 )
 
@@ -297,8 +298,8 @@ func addRunningMCPsToClient(clientName string) error {
 		// Update each configuration file
 		for _, clientConfig := range clientConfigs {
 			// Update the MCP server configuration with locking
-			if err := clientConfig.SaveWithLock(name, url, clientConfig.Editor); err != nil {
-				fmt.Printf("Warning: Failed to update MCP server configuration in %s: %v\n", clientConfig.Path, err)
+			if err := client.Upsert(clientConfig, name, url); err != nil {
+				logger.Log.Warn(fmt.Sprintf("Warning: Failed to update MCP server configuration in %s: %v", clientConfig.Path, err))
 				continue
 			}
 

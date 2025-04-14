@@ -217,9 +217,8 @@ func updateClientConfigurations(containerName, host string, port int) error {
 	for _, config := range configs {
 		logger.Log.Info(fmt.Sprintf("Updating client configuration: %s", config.Path))
 
-		// Update the MCP server configuration with locking
-		if err := config.SaveWithLock(containerName, url, config.Editor); err != nil {
-			logger.Log.Warn(fmt.Sprintf("Warning: Failed to update MCP server configuration in %s: %v", config.Path, err))
+		if err := client.Upsert(config, containerName, url); err != nil {
+			fmt.Printf("Warning: Failed to update MCP server configuration in %s: %v\n", config.Path, err)
 			continue
 		}
 

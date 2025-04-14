@@ -55,7 +55,7 @@ tasks:
       BUILD_DATE:
         sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
     cmds:
-      - go install -ldflags "-s -w -X github.com/StacklokLabs/toolhive/cmd/thv/app.Version={{.VERSION}} -X github.com/StacklokLabs/toolhive/cmd/thv/app.Commit={{.COMMIT}} -X github.com/StacklokLabs/toolhive/cmd/thv/app.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv
+      - go install -ldflags "-s -w -X github.com/StacklokLabs/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/StacklokLabs/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/StacklokLabs/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv
 
   all:
     desc: Run linting, tests, and build

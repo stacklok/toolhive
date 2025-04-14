@@ -126,7 +126,8 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 }
 
 func notifyIfUpdateAvailable(currentVersion, latestVersion string) {
-	if semver.Compare(currentVersion, latestVersion) < 0 {
+	// Ensure both versions have the 'v' prefix for proper semantic version comparison.
+	if semver.Compare(semver.Canonical(currentVersion), semver.Canonical(latestVersion)) < 0 {
 		fmt.Printf("A new version of ToolHive is available: %s\nCurrently running: %s\n", latestVersion, currentVersion)
 	}
 }

@@ -14,7 +14,7 @@ require (
 	github.com/stretchr/testify v1.10.0
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/exp/jsonrpc2 v0.0.0-20250305212735-054e65f0b394
-	golang.org/x/mod v0.22.0
+	golang.org/x/mod v0.24.0
 	golang.org/x/sync v0.13.0
 	golang.org/x/term v0.31.0
 	gopkg.in/yaml.v3 v3.0.1

@@ -83,7 +83,7 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 		logger.Log.Errorf("Failed to write file: %v", err)
 	}
 
-	logger.Log.Infof(fmt.Sprintf("Successfully updated the client config file for MCPServer %s", serverName))
+	logger.Log.Infof("Successfully updated the client config file for MCPServer %s", serverName)
 
 	return nil
 }

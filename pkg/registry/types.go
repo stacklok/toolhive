@@ -16,10 +16,12 @@ type Registry struct {
 
 // Server represents an MCP server in the registry
 type Server struct {
-	Name          string               `json:"name,omitempty"`
-	Image         string               `json:"image"`
-	Description   string               `json:"description"`
-	Transport     string               `json:"transport"`
+	Name        string `json:"name,omitempty"`
+	Image       string `json:"image"`
+	Description string `json:"description"`
+	Transport   string `json:"transport"`
+	// TargetPort is the port for the container to expose (only applicable to SSE transport)
+	TargetPort    int                  `json:"target_port,omitempty"`
 	Permissions   *permissions.Profile `json:"permissions"`
 	Tools         []string             `json:"tools"`
 	EnvVars       []*EnvVar            `json:"env_vars"`

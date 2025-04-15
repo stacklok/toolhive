@@ -236,6 +236,12 @@ func applyRegistrySettings(
 			runTransport, server.Transport)
 	}
 
+	// Use registry target port if not overridden and transport is SSE
+	if !cmd.Flags().Changed("target-port") && server.Transport == "sse" && server.TargetPort > 0 {
+		logDebug(debugMode, "Using registry target port: %d", server.TargetPort)
+		runTargetPort = server.TargetPort
+	}
+
 	// Process environment variables from registry
 	// This will be merged with command-line env vars in configureRunConfig
 	envVarStrings := processEnvironmentVariables(server.EnvVars, runEnv, config.Secrets, debugMode)

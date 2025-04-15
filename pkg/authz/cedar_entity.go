@@ -84,6 +84,7 @@ func (*EntityFactory) CreateResourceEntity(
 // CreateEntitiesForRequest creates entities for a specific authorization request.
 func (f *EntityFactory) CreateEntitiesForRequest(
 	principal, action, resource string,
+	claimsMap map[string]interface{},
 	attributes map[string]interface{},
 ) (cedar.EntityMap, error) {
 	// Parse principal, action, and resource
@@ -106,7 +107,7 @@ func (f *EntityFactory) CreateEntitiesForRequest(
 	entities := make(cedar.EntityMap)
 
 	// Create principal entity
-	principalUID, principalEntity := f.CreatePrincipalEntity(principalType, principalID, nil)
+	principalUID, principalEntity := f.CreatePrincipalEntity(principalType, principalID, claimsMap)
 	entities[principalUID] = principalEntity
 
 	// Create action entity

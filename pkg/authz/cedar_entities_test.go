@@ -16,6 +16,7 @@ func TestCreateCedarEntities(t *testing.T) {
 		principal  string
 		action     string
 		resource   string
+		claimsMap  map[string]interface{}
 		attributes map[string]interface{}
 		expectErr  bool
 	}{
@@ -24,6 +25,11 @@ func TestCreateCedarEntities(t *testing.T) {
 			principal: "Client::user123",
 			action:    "Action::call_tool",
 			resource:  "Tool::weather",
+			claimsMap: map[string]interface{}{
+				"claim_sub":   "user123",
+				"claim_name":  "John Doe",
+				"claim_roles": []string{"user", "admin"},
+			},
 			attributes: map[string]interface{}{
 				"name":      "weather",
 				"operation": "call",
@@ -36,6 +42,7 @@ func TestCreateCedarEntities(t *testing.T) {
 			principal:  "user123",
 			action:     "Action::call_tool",
 			resource:   "Tool::weather",
+			claimsMap:  map[string]interface{}{},
 			attributes: map[string]interface{}{},
 			expectErr:  true,
 		},
@@ -44,6 +51,7 @@ func TestCreateCedarEntities(t *testing.T) {
 			principal:  "Client::user123",
 			action:     "call_tool",
 			resource:   "Tool::weather",
+			claimsMap:  map[string]interface{}{},
 			attributes: map[string]interface{}{},
 			expectErr:  true,
 		},
@@ -52,6 +60,7 @@ func TestCreateCedarEntities(t *testing.T) {
 			principal:  "Client::user123",
 			action:     "Action::call_tool",
 			resource:   "weather",
+			claimsMap:  map[string]interface{}{},
 			attributes: map[string]interface{}{},
 			expectErr:  true,
 		},
@@ -60,18 +69,22 @@ func TestCreateCedarEntities(t *testing.T) {
 			principal: "Client::user123",
 			action:    "Action::call_tool",
 			resource:  "Tool::calculator",
+			claimsMap: map[string]interface{}{
+				"claim_sub":             "user123",
+				"claim_name":            "John Doe",
+				"claim_roles":           []string{"user", "admin"},
+				"claim_clearance_level": 5,
+			},
 			attributes: map[string]interface{}{
-				"name":      "calculator",
-				"operation": "call",
-				"feature":   "tool",
-				"args": map[string]interface{}{
-					"operation": "add",
-					"value1":    5,
-					"value2":    10,
-				},
-				"tags":     []string{"math", "utility"},
-				"priority": 1,
-				"enabled":  true,
+				"name":          "calculator",
+				"operation":     "call",
+				"feature":       "tool",
+				"arg_operation": "add",
+				"arg_value1":    5,
+				"arg_value2":    10,
+				"tags":          []string{"math", "utility"},
+				"priority":      1,
+				"enabled":       true,
 			},
 			expectErr: false,
 		},
@@ -84,7 +97,7 @@ func TestCreateCedarEntities(t *testing.T) {
 			factory := NewEntityFactory()
 
 			// Create Cedar entities
-			entities, err := factory.CreateEntitiesForRequest(tc.principal, tc.action, tc.resource, tc.attributes)
+			entities, err := factory.CreateEntitiesForRequest(tc.principal, tc.action, tc.resource, tc.claimsMap, tc.attributes)
 
 			// Check error expectations
 			if tc.expectErr {
@@ -143,6 +156,19 @@ func TestCreateCedarEntities(t *testing.T) {
 				// Verify that the resource entity has the name attribute
 				_, found = resourceEntity.Attributes.Get(cedar.String("name"))
 				assert.True(t, found, "Resource name attribute not found")
+
+				// Verify that JWT claims are added to the principal entity
+				if len(tc.claimsMap) > 0 {
+					for k, v := range tc.claimsMap {
+						claimValue, found := principalEntity.Attributes.Get(cedar.String(k))
+						assert.True(t, found, "Claim %s not found in principal entity", k)
+
+						// For string claims, we can directly compare the values
+						if strVal, ok := v.(string); ok {
+							assert.Equal(t, strVal, string(claimValue.(cedar.String)), "Claim %s value does not match", k)
+						}
+					}
+				}
 			}
 		})
 	}

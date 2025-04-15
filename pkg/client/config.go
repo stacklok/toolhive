@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/tailscale/hujson"
@@ -21,24 +20,6 @@ import (
 
 // lockTimeout is the maximum time to wait for a file lock
 const lockTimeout = 1 * time.Second
-
-// YAML file extensions
-const (
-	YAMLExt = ".yaml"
-	YMLExt  = ".yml"
-)
-
-// IsYAML checks if a file extension is a YAML extension
-func IsYAML(ext string) bool {
-	return ext == YAMLExt || ext == YMLExt
-}
-
-// TODO: This type could be removed with more refactoring.
-type pathAndEditor struct {
-	Path                 string
-	MCPServersPathPrefix string
-	ClientType           MCPClient
-}
 
 // MCPClient is an enum of supported MCP clients.
 type MCPClient string
@@ -54,6 +35,17 @@ const (
 	VSCode MCPClient = "vscode"
 )
 
+// Extension is extension of the client config file.
+type Extension string
+
+const (
+	// JSON represents a JSON extension.
+	JSON Extension = "json"
+
+	// YAML represents a YAML extension.
+	YAML Extension = "yaml"
+)
+
 // mcpClientConfig represents a configuration path for a supported MCP client.
 type mcpClientConfig struct {
 	ClientType           MCPClient
@@ -61,6 +53,7 @@ type mcpClientConfig struct {
 	RelPath              []string
 	PlatformPrefix       map[string][]string
 	MCPServersPathPrefix string
+	Extension            Extension
 }
 
 var supportedClientIntegrations = []mcpClientConfig{
@@ -75,6 +68,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"darwin": {"Library", "Application Support"},
 		},
 		MCPServersPathPrefix: "/mcpServers",
+		Extension:            JSON,
 	},
 	{
 		ClientType:  VSCodeInsider,
@@ -87,6 +81,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"darwin": {"Library", "Application Support"},
 		},
 		MCPServersPathPrefix: "/mcp/servers",
+		Extension:            JSON,
 	},
 	{
 		ClientType:  VSCode,
@@ -99,22 +94,23 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"linux":  {".config"},
 			"darwin": {"Library", "Application Support"},
 		},
+		Extension: JSON,
 	},
 	{
 		ClientType:           Cursor,
 		Description:          "Cursor editor",
 		MCPServersPathPrefix: "/mcpServers",
 		RelPath:              []string{".cursor", "mcp.json"},
+		Extension:            JSON,
 	},
 }
 
 // ConfigFile represents a client configuration file
 type ConfigFile struct {
-	Path                 string
-	ClientType           MCPClient
-	Contents             map[string]interface{}
-	ConfigUpdater        ConfigUpdater
-	MCPServersPathPrefix string
+	Path          string
+	ClientType    MCPClient
+	ConfigUpdater ConfigUpdater
+	Extension     Extension
 }
 
 // MCPServerConfig represents an MCP server configuration in a client config file
@@ -142,32 +138,18 @@ func FindClientConfigs() ([]ConfigFile, error) {
 		}
 	}
 
-	// Get the set of paths we need to configure
-	configPaths, err := getSupportedPaths(filters)
+	// retrieve the metadata of the config files
+	configFiles, err := retrieveConfigFilesMetadata(filters)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get client config paths: %w", err)
+		return nil, fmt.Errorf("failed to retrieve client config metadata: %w", err)
 	}
 
-	var configs []ConfigFile
-
-	// Check each path
-	for _, pe := range configPaths {
-		// TODO: This is a bit of a hack to get the client type into the ConfigFile
-		// object. We should probably refactor this to be more elegant.
-		// We can also rename the `readConfigFile` function so that it expresses that it
-		// only retrieves client config file metadata, not the contents.
-		clientConfig, err := readConfigFile(pe.Path, pe.MCPServersPathPrefix)
-		clientConfig.ClientType = pe.ClientType
-		if err == nil {
-			configs = append(configs, clientConfig)
-		}
-
-		if err != nil {
-			logger.Log.Error(fmt.Sprintf("Error reading client config file %s: %v", pe.Path, err))
-		}
+	// validate the format of the config files
+	err = validateConfigFilesFormat(configFiles)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate config file format: %w", err)
 	}
-
-	return configs, nil
+	return configFiles, nil
 }
 
 // Upsert updates/inserts an MCP server in a client configuration file
@@ -185,46 +167,6 @@ func Upsert(cf ConfigFile, name string, url string) error {
 	return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})
 }
 
-// readConfigFile reads and parses a client configuration file
-func readConfigFile(path, mcpServersPathPrefix string) (ConfigFile, error) {
-	// Check if file exists
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return ConfigFile{}, fmt.Errorf("file does not exist: %s", path)
-	}
-
-	// Read file
-	cleanpath := filepath.Clean(path)
-	data, err := os.ReadFile(cleanpath)
-	if err != nil {
-		return ConfigFile{}, fmt.Errorf("failed to read file: %w", err)
-	}
-
-	// Determine format based on file extension
-	var contents map[string]interface{}
-	ext := strings.ToLower(filepath.Ext(path))
-	var configUpdater ConfigUpdater
-
-	if IsYAML(ext) {
-		// Parse YAML
-		if err := yaml.Unmarshal(data, &contents); err != nil {
-			return ConfigFile{}, fmt.Errorf("failed to parse YAML: %w", err)
-		}
-	} else {
-		// Default to JSON
-		_, err := hujson.Parse(data)
-		if err != nil {
-			return ConfigFile{}, fmt.Errorf("failed to parse JSON: %w", err)
-		}
-		configUpdater = &JSONConfigUpdater{Path: cleanpath, MCPServersPathPrefix: mcpServersPathPrefix}
-	}
-
-	return ConfigFile{
-		Path:          path,
-		Contents:      contents,
-		ConfigUpdater: configUpdater,
-	}, nil
-}
-
 // GenerateMCPServerURL generates the URL for an MCP server
 func GenerateMCPServerURL(host string, port int, containerName string) string {
 	// The URL format is: http://host:port/sse#container-name
@@ -232,8 +174,11 @@ func GenerateMCPServerURL(host string, port int, containerName string) string {
 	return fmt.Sprintf("http://%s:%d%s#%s", host, port, ssecommon.HTTPSSEEndpoint, containerName)
 }
 
-func getSupportedPaths(filters []MCPClient) ([]pathAndEditor, error) {
-	var paths []pathAndEditor
+// retrieveConfigFilesMetadata retrieves the metadata for client configuration files.
+// It returns a list of ConfigFile objects, which contain metadata about the file that
+// can be used when performing operations on the file.
+func retrieveConfigFilesMetadata(filters []MCPClient) ([]ConfigFile, error) {
+	var configFiles []ConfigFile
 
 	// Get home directory
 	home, err := os.UserHomeDir()
@@ -246,19 +191,78 @@ func getSupportedPaths(filters []MCPClient) ([]pathAndEditor, error) {
 		if len(filters) > 0 && !slices.Contains(filters, cfg.ClientType) {
 			continue
 		}
-		path := []string{home}
-		if prefix, ok := cfg.PlatformPrefix[runtime.GOOS]; ok {
-			path = append(path, prefix...)
+
+		path := buildConfigFilePath(cfg.RelPath, cfg.PlatformPrefix, []string{home})
+
+		err := validateConfigFileExists(path)
+		if err != nil {
+			logger.Log.Warn("failed to validate config file: %w", err)
+			continue
 		}
-		path = append(path, cfg.RelPath...)
-		// TODO: This is a bit of a hack to get the client type into the pathAndEditor
-		// object. We should probably refactor this to be more elegant.
-		paths = append(paths, pathAndEditor{
-			Path:                 filepath.Join(path...),
-			MCPServersPathPrefix: cfg.MCPServersPathPrefix,
-			ClientType:           cfg.ClientType,
-		})
+
+		var configUpdater ConfigUpdater
+
+		if cfg.Extension == YAML {
+			// TODO: Implement
+		} else {
+			// Default to JSON
+			configUpdater = &JSONConfigUpdater{Path: path, MCPServersPathPrefix: cfg.MCPServersPathPrefix}
+		}
+
+		clientConfig := ConfigFile{
+			Path:          path,
+			ConfigUpdater: configUpdater,
+			ClientType:    cfg.ClientType,
+			Extension:     cfg.Extension,
+		}
+
+		configFiles = append(configFiles, clientConfig)
 	}
 
-	return paths, nil
+	return configFiles, nil
+}
+
+func buildConfigFilePath(relPath []string, platformPrefix map[string][]string, path []string) string {
+	if prefix, ok := platformPrefix[runtime.GOOS]; ok {
+		path = append(path, prefix...)
+	}
+	path = append(path, relPath...)
+	return filepath.Clean(filepath.Join(path...))
+}
+
+// validateConfigFileExists validates that a client configuration file exists.
+func validateConfigFileExists(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("file does not exist: %s", path)
+	}
+	return nil
+}
+
+// validateConfigFileFormat validates the format of a client configuration file
+// It returns an error if the file is not valid JSON or YAML.
+func validateConfigFilesFormat(configFiles []ConfigFile) error {
+	for _, cf := range configFiles {
+		data, err := os.ReadFile(cf.Path)
+		if err != nil {
+			return fmt.Errorf("failed to read file %s: %w", cf.Path, err)
+		}
+
+		if cf.Extension == YAML {
+			// Parse YAML
+			// we don't care about the contents of the file, we just want to validate that it's valid YAML
+			var contents map[string]interface{}
+			if err := yaml.Unmarshal(data, &contents); err != nil {
+				return fmt.Errorf("failed to parse YAML for file %s: %w", cf.Path, err)
+			}
+		} else {
+			// Default to JSON
+			// we don't care about the contents of the file, we just want to validate that it's valid JSON
+			_, err := hujson.Parse(data)
+			if err != nil {
+				return fmt.Errorf("failed to parse JSON for file %s: %w", cf.Path, err)
+			}
+		}
+	}
+
+	return nil
 }

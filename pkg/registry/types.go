@@ -21,15 +21,17 @@ type Server struct {
 	Description string `json:"description"`
 	Transport   string `json:"transport"`
 	// TargetPort is the port for the container to expose (only applicable to SSE transport)
-	TargetPort    int                  `json:"target_port,omitempty"`
-	Permissions   *permissions.Profile `json:"permissions"`
-	Tools         []string             `json:"tools"`
-	EnvVars       []*EnvVar            `json:"env_vars"`
-	Args          []string             `json:"args"`
-	Metadata      *Metadata            `json:"metadata"`
-	RepositoryURL string               `json:"repository_url,omitempty"`
-	Tags          []string             `json:"tags,omitempty"`
-	DockerTags    []string             `json:"docker_tags,omitempty"`
+	TargetPort  int                  `json:"target_port,omitempty"`
+	Permissions *permissions.Profile `json:"permissions"`
+	Tools       []string             `json:"tools"`
+	EnvVars     []*EnvVar            `json:"env_vars"`
+	// Args are the default command-line arguments to pass to the MCP server container.
+	// These arguments will be prepended to any command-line arguments provided by the user.
+	Args          []string  `json:"args"`
+	Metadata      *Metadata `json:"metadata"`
+	RepositoryURL string    `json:"repository_url,omitempty"`
+	Tags          []string  `json:"tags,omitempty"`
+	DockerTags    []string  `json:"docker_tags,omitempty"`
 }
 
 // EnvVar represents an environment variable for an MCP server

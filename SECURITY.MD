@@ -138,7 +138,7 @@ realistic timeline can be communicated to users.
   action. As much as possible this announcement should be actionable, and
   include any mitigating steps users can take prior to upgrading to a fixed
   version. An announcement template is available below. The announcement will be
-  sent to the the following channels:
+  sent to the following channels:
 - A link to fix will be posted to the
   [Stacklok Discord Server](https://discord.gg/stacklok) in the #toolhive
   channel.

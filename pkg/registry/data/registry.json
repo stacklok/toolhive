@@ -1648,13 +1648,11 @@
        "write": [],
        "network": {
          "outbound": {
-           "insecure_allow_all": false,
+           "insecure_allow_all": true,
            "allow_transport": [
              "tcp"
            ],
-           "allow_host": [
-             "api.netbird.io"
-           ],
+           "allow_host": [],
            "allow_port": [
              443
            ]
@@ -1682,7 +1680,7 @@
          "required": false
        }
      ],
-     "args": ["--transport", "sse"],
+     "args": ["--transport", "sse", "--sse-address", ":8001"],
      "metadata": {
        "stars": 27,
        "pulls": 0,

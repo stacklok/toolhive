@@ -427,11 +427,6 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	if err := t.httpProxy.ForwardResponseToClients(ctx, msg); err != nil {
 		logger.Log.Error(fmt.Sprintf("Error forwarding to SSE clients: %v", err))
 	}
-
-	// Send to the response channel
-	if err := t.httpProxy.SendResponseMessage(msg); err != nil {
-		logger.Log.Error(fmt.Sprintf("Error sending to response channel: %v", err))
-	}
 }
 
 // sendMessageToContainer sends a JSON-RPC message to the container.

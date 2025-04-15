@@ -140,12 +140,6 @@ func (*TransparentProxy) GetMessageChannel() chan jsonrpc2.Message {
 	return nil
 }
 
-// GetResponseChannel returns the channel for receiving messages from the destination.
-// This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (*TransparentProxy) GetResponseChannel() <-chan jsonrpc2.Message {
-	return nil
-}
-
 // SendMessageToDestination sends a message to the destination.
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
 func (*TransparentProxy) SendMessageToDestination(_ jsonrpc2.Message) error {
@@ -156,10 +150,4 @@ func (*TransparentProxy) SendMessageToDestination(_ jsonrpc2.Message) error {
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
 func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.Message) error {
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
-}
-
-// SendResponseMessage sends a message to the response channel.
-// This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
-func (*TransparentProxy) SendResponseMessage(_ jsonrpc2.Message) error {
-	return fmt.Errorf("SendResponseMessage not implemented for TransparentProxy")
 }

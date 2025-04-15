@@ -1637,6 +1637,68 @@
        "ast",
        "code-analysis"
      ]
+   },
+   "netbird": {
+     "image": "aantti/mcp-netbird:latest",
+     "description": "A Model Context Protocol server for NetBird, enabling management of your NetBird network.",
+     "transport": "sse",
+     "target_port": 8001,
+     "permissions": {
+       "read": [],
+       "write": [],
+       "network": {
+         "outbound": {
+           "insecure_allow_all": false,
+           "allow_transport": [
+             "tcp"
+           ],
+           "allow_host": [
+             "api.netbird.io"
+           ],
+           "allow_port": [
+             443
+           ]
+         }
+       }
+     },
+     "tools": [
+       "list_netbird_peers",
+       "list_netbird_port_allocations",
+       "list_netbird_groups",
+       "list_netbird_policies",
+       "list_netbird_posture_checks",
+       "list_netbird_networks",
+       "list_netbird_nameservers"
+     ],
+     "env_vars": [
+       {
+         "name": "NETBIRD_API_TOKEN",
+         "description": "NetBird API token for authentication",
+         "required": true
+       },
+       {
+         "name": "NETBIRD_HOST",
+         "description": "NetBird API host (default is api.netbird.io)",
+         "required": false
+       }
+     ],
+     "args": ["--transport", "sse"],
+     "metadata": {
+       "stars": 27,
+       "pulls": 0,
+       "last_updated": "2025-04-15T17:21:00Z"
+     },
+     "repository_url": "https://github.com/aantti/mcp-netbird",
+     "tags": [
+       "netbird",
+       "vpn",
+       "networking",
+       "peer",
+       "route",
+       "dns",
+       "setup-key",
+       "management"
+     ]
    }
  }
 }

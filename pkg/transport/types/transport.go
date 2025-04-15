@@ -83,17 +83,11 @@ type Proxy interface {
 	// GetMessageChannel returns the channel for messages to/from the destination.
 	GetMessageChannel() chan jsonrpc2.Message
 
-	// GetResponseChannel returns the channel for receiving messages from the destination.
-	GetResponseChannel() <-chan jsonrpc2.Message
-
 	// SendMessageToDestination sends a message to the destination.
 	SendMessageToDestination(msg jsonrpc2.Message) error
 
 	// ForwardResponseToClients forwards a response from the destination to clients.
 	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
-
-	// SendResponseMessage sends a message to the response channel.
-	SendResponseMessage(msg jsonrpc2.Message) error
 }
 
 // Config contains configuration options for a transport.

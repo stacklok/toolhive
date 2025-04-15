@@ -64,9 +64,8 @@ type HTTPSSEProxy struct {
 	pendingMessages []*ssecommon.PendingSSEMessage
 	pendingMutex    sync.Mutex
 
-	// Message channels
-	messageCh  chan jsonrpc2.Message
-	responseCh chan jsonrpc2.Message
+	// Message channel
+	messageCh chan jsonrpc2.Message
 }
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
@@ -77,7 +76,6 @@ func NewHTTPSSEProxy(port int, containerName string, middlewares ...types.Middle
 		containerName:   containerName,
 		shutdownCh:      make(chan struct{}),
 		messageCh:       make(chan jsonrpc2.Message, 100),
-		responseCh:      make(chan jsonrpc2.Message, 100),
 		sseClients:      make(map[string]*ssecommon.SSEClient),
 		pendingMessages: []*ssecommon.PendingSSEMessage{},
 	}
@@ -148,11 +146,6 @@ func (p *HTTPSSEProxy) GetMessageChannel() chan jsonrpc2.Message {
 	return p.messageCh
 }
 
-// GetResponseChannel returns the channel for receiving messages from the destination.
-func (p *HTTPSSEProxy) GetResponseChannel() <-chan jsonrpc2.Message {
-	return p.responseCh
-}
-
 // SendMessageToDestination sends a message to the destination via the message channel.
 func (p *HTTPSSEProxy) SendMessageToDestination(msg jsonrpc2.Message) error {
 	select {
@@ -162,18 +155,6 @@ func (p *HTTPSSEProxy) SendMessageToDestination(msg jsonrpc2.Message) error {
 	default:
 		// Channel is full or closed
 		return fmt.Errorf("failed to send message to destination")
-	}
-}
-
-// SendResponseMessage sends a message to the response channel.
-func (p *HTTPSSEProxy) SendResponseMessage(msg jsonrpc2.Message) error {
-	select {
-	case p.responseCh <- msg:
-		// Message sent successfully
-		return nil
-	default:
-		// Channel is full or closed
-		return fmt.Errorf("failed to send message to response channel")
 	}
 }
 

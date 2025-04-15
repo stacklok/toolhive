@@ -14,7 +14,7 @@ authorization framework consists of the following components:
    if a request is authorized.
 2. **Authorization middleware**: An HTTP middleware that extracts information
    from MCP requests and uses the Cedar Authorizer to authorize the request.
-3. **Configuration**: A JSON configuration file that specifies the Cedar
+3. **Configuration**: A configuration file (JSON or YAML) that specifies the Cedar
    policies and entities.
 
 The framework integrates with the existing JWT authentication middleware to
@@ -45,7 +45,9 @@ steps:
 
 ### Create an authorization configuration file
 
-Create a JSON file with the following structure:
+Create a configuration file (JSON or YAML) with the following structure:
+
+#### JSON Format
 
 ```json
 {
@@ -60,6 +62,19 @@ Create a JSON file with the following structure:
     "entities_json": "[]"
   }
 }
+```
+
+#### YAML Format
+
+```yaml
+version: "1.0"
+type: cedarv1
+cedar:
+  policies:
+    - 'permit(principal, action == Action::"call_tool", resource == Tool::"weather");'
+    - 'permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");'
+    - 'permit(principal, action == Action::"read_resource", resource == Resource::"data");'
+  entities_json: "[]"
 ```
 
 The configuration file has the following fields:
@@ -79,10 +94,10 @@ To start an MCP server with authorization, use the `--authz-config` flag:
 thv run --transport sse --name my-mcp-server --port 8080 --authz-config /path/to/authz-config.json my-mcp-server-image:latest -- my-mcp-server-args
 ```
 
-You can also use the `registry run` command with the same flag:
+Or with a YAML configuration:
 
 ```bash
-thv registry run my-mcp-server --authz-config /path/to/authz-config.json -- my-mcp-server-args
+thv run --transport sse --name my-mcp-server --port 8080 --authz-config /path/to/authz-config.yaml my-mcp-server-image:latest -- my-mcp-server-args
 ```
 
 ## Writing Cedar policies
@@ -281,7 +296,7 @@ of the configuration file:
   "type": "cedarv1",
   "cedar": {
     "policies": [
-      "permit(principal, action == Action::"call_tool", resource) when { resource.owner == principal.claim_sub };"
+      "permit(principal, action == Action::\"call_tool\", resource) when { resource.owner == principal.claim_sub };"
     ],
     "entities_json": "[
       {

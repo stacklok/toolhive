@@ -82,11 +82,11 @@ func handleProtocolScheme(ctx context.Context, runtime rt.Runtime, serverOrImage
 	logDebug(debugMode, "Using Dockerfile:\n%s", dockerfileContent)
 
 	// Build the Docker image
-	logger.Log.Info(fmt.Sprintf("Building Docker image for %s package: %s", transportType, packageName))
+	logger.Log.Infof("Building Docker image for %s package: %s", transportType, packageName)
 	if err := runtime.BuildImage(ctx, tempDir, imageName); err != nil {
 		return "", fmt.Errorf("failed to build Docker image: %w", err)
 	}
-	logger.Log.Info(fmt.Sprintf("Successfully built Docker image: %s", imageName))
+	logger.Log.Infof("Successfully built Docker image: %s", imageName)
 
 	return imageName, nil
 }

@@ -103,7 +103,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	cmdArgs := parseCommandArguments(os.Args)
 
 	// Print the processed command arguments for debugging
-	logger.Log.Info(fmt.Sprintf("Processed cmdArgs: %v", cmdArgs))
+	logger.Log.Infof("Processed cmdArgs: %v", cmdArgs)
 
 	// Create context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -195,11 +195,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 			pullMsg = "Image %s has 'latest' tag, pulling to ensure we have the most recent version..."
 		}
 
-		logger.Log.Info(fmt.Sprintf(pullMsg, config.Image))
+		logger.Log.Infof(pullMsg, config.Image)
 		if err := runtime.PullImage(ctx, config.Image); err != nil {
 			return fmt.Errorf("failed to pull image: %v", err)
 		}
-		logger.Log.Info(fmt.Sprintf("Successfully pulled image: %s", config.Image))
+		logger.Log.Infof("Successfully pulled image: %s", config.Image)
 	}
 
 	// Configure the RunConfig with transport, ports, permissions, etc.
@@ -258,7 +258,7 @@ func applyRegistrySettings(
 		permProfilePath, err := createPermissionProfileFile(serverName, server.Permissions, debugMode)
 		if err != nil {
 			// Just log the error and continue with the default permission profile
-			logger.Log.Warn(fmt.Sprintf("Warning: Failed to create permission profile file: %v", err))
+			logger.Log.Warnf("Warning: Failed to create permission profile file: %v", err)
 		} else {
 			// Update the permission profile path
 			config.PermissionProfileNameOrPath = permProfilePath
@@ -287,11 +287,11 @@ func processEnvironmentVariables(
 		if !found {
 			if envVar.Required {
 				// Ask the user for the required environment variable
-				logger.Log.Info(fmt.Sprintf("Required environment variable: %s (%s)", envVar.Name, envVar.Description))
-				logger.Log.Info(fmt.Sprintf("Enter value for %s: ", envVar.Name))
+				logger.Log.Infof("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
+				logger.Log.Infof("Enter value for %s: ", envVar.Name)
 				var value string
 				if _, err := fmt.Scanln(&value); err != nil {
-					logger.Log.Warn(fmt.Sprintf("Warning: Failed to read input: %v", err))
+					logger.Log.Warnf("Warning: Failed to read input: %v", err)
 				}
 
 				if value != "" {
@@ -326,7 +326,7 @@ func hasLatestTag(imageRef string) bool {
 	ref, err := nameref.ParseReference(imageRef)
 	if err != nil {
 		// If we can't parse the reference, assume it's not "latest"
-		logger.Log.Warn(fmt.Sprintf("Warning: Failed to parse image reference: %v", err))
+		logger.Log.Warnf("Warning: Failed to parse image reference: %v", err)
 		return false
 	}
 
@@ -372,7 +372,7 @@ func createPermissionProfileFile(serverName string, permProfile *permissions.Pro
 // logDebug logs a message if debug mode is enabled
 func logDebug(debugMode bool, format string, args ...interface{}) {
 	if debugMode {
-		logger.Log.Info(fmt.Sprintf(format+"", args...))
+		logger.Log.Infof(format+"", args...)
 	}
 }
 

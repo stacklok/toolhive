@@ -2,8 +2,6 @@
 package app
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 
 	"github.com/StacklokLabs/toolhive/pkg/logger"
@@ -22,7 +20,7 @@ container-based isolation for running MCP servers.`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		// If no subcommand is provided, print help
 		if err := cmd.Help(); err != nil {
-			logger.Log.Error(fmt.Sprintf("Error displaying help: %v", err))
+			logger.Log.Errorf("Error displaying help: %v", err)
 		}
 	},
 }

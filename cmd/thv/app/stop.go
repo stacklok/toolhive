@@ -79,39 +79,39 @@ func getContainerBaseName(ctx context.Context, runtime rt.Runtime, containerID s
 // stopProxyProcess stops the proxy process associated with the container
 func stopProxyProcess(containerBaseName string) {
 	if containerBaseName == "" {
-		logger.Log.Warn("Warning: Could not find base container name in labels")
+		logger.Log.Warnf("Warning: Could not find base container name in labels")
 		return
 	}
 
 	// Try to read the PID file and kill the process
 	pid, err := process.ReadPIDFile(containerBaseName)
 	if err != nil {
-		logger.Log.Error(fmt.Sprintf("No PID file found for %s, proxy may not be running in detached mode", containerBaseName))
+		logger.Log.Errorf("No PID file found for %s, proxy may not be running in detached mode", containerBaseName)
 		return
 	}
 
 	// PID file found, try to kill the process
-	logger.Log.Info(fmt.Sprintf("Stopping proxy process (PID: %d)...", pid))
+	logger.Log.Infof("Stopping proxy process (PID: %d)...", pid)
 	if err := process.KillProcess(pid); err != nil {
-		logger.Log.Warn(fmt.Sprintf("Warning: Failed to kill proxy process: %v", err))
+		logger.Log.Warnf("Warning: Failed to kill proxy process: %v", err)
 	} else {
-		logger.Log.Info("Proxy process stopped")
+		logger.Log.Infof("Proxy process stopped")
 	}
 
 	// Remove the PID file
 	if err := process.RemovePIDFile(containerBaseName); err != nil {
-		logger.Log.Warn(fmt.Sprintf("Warning: Failed to remove PID file: %v", err))
+		logger.Log.Warnf("Warning: Failed to remove PID file: %v", err)
 	}
 }
 
 // stopContainer stops the container
 func stopContainer(ctx context.Context, runtime rt.Runtime, containerID, containerName string) error {
-	logger.Log.Info(fmt.Sprintf("Stopping container %s...", containerName))
+	logger.Log.Infof("Stopping container %s...", containerName)
 	if err := runtime.StopContainer(ctx, containerID); err != nil {
 		return fmt.Errorf("failed to stop container: %v", err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Container %s stopped", containerName))
+	logger.Log.Infof("Container %s stopped", containerName)
 	return nil
 }
 
@@ -142,7 +142,7 @@ func stopCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	if !running {
-		logger.Log.Info(fmt.Sprintf("Container %s is not running", containerName))
+		logger.Log.Infof("Container %s is not running", containerName)
 		return nil
 	}
 

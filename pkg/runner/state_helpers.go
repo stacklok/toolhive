@@ -32,7 +32,7 @@ func (r *Runner) SaveState(ctx context.Context) error {
 		return fmt.Errorf("failed to write run configuration: %w", err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Saved run configuration for %s", r.Config.BaseName))
+	logger.Log.Infof("Saved run configuration for %s", r.Config.BaseName)
 	return nil
 }
 
@@ -105,6 +105,6 @@ func DeleteSavedConfig(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to delete run configuration: %w", err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Deleted run configuration for %s", name))
+	logger.Log.Infof("Deleted run configuration for %s", name)
 	return nil
 }

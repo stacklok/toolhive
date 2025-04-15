@@ -33,6 +33,14 @@ type Clients struct {
 	RegisteredClients []string `yaml:"registered_clients"`
 }
 
+// defaultPathGenerator generates the default config path using xdg
+var defaultPathGenerator = func() (string, error) {
+	return xdg.ConfigFile("toolhive/config.yaml")
+}
+
+// getConfigPath is the current path generator, can be replaced in tests
+var getConfigPath = defaultPathGenerator
+
 // LoadOrCreateConfig fetches the application configuration.
 // If it does not already exist - it will create a new config file with default values.
 func LoadOrCreateConfig() (*Config, error) {
@@ -135,9 +143,4 @@ func (c *Config) WriteConfig() error {
 		return fmt.Errorf("error writing config file: %w", err)
 	}
 	return nil
-}
-
-// Consider making the config path configurable.
-func getConfigPath() (string, error) {
-	return xdg.ConfigFile("toolhive/config.yaml")
 }

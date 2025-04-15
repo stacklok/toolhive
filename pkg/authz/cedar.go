@@ -342,7 +342,8 @@ func mergeContexts(contextMaps ...map[string]interface{}) map[string]interface{}
 // It checks if the client is authorized to call the tool with the given context.
 func (a *CedarAuthorizer) authorizeToolCall(
 	clientID, toolName string,
-	contextMap map[string]interface{},
+	claimsMap map[string]interface{},
+	attrsMap map[string]interface{},
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -353,21 +354,20 @@ func (a *CedarAuthorizer) authorizeToolCall(
 	// Resource is the tool being called
 	resource := fmt.Sprintf("Tool::%s", toolName)
 
-	// Add tool name to context
-	contextMap["tool_name"] = toolName
-
 	// Create attributes for the entities
-	attributes := map[string]interface{}{
+	attributes := mergeContexts(map[string]interface{}{
 		"name":      toolName,
 		"operation": "call",
 		"feature":   "tool",
-	}
+	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
+
+	contextMap := mergeContexts(claimsMap, attrsMap)
 
 	// Check authorization with entities
 	return a.IsAuthorized(principal, action, resource, contextMap, entities)
@@ -378,7 +378,8 @@ func (a *CedarAuthorizer) authorizeToolCall(
 // It checks if the client is authorized to access the prompt with the given context.
 func (a *CedarAuthorizer) authorizePromptGet(
 	clientID, promptName string,
-	contextMap map[string]interface{},
+	claimsMap map[string]interface{},
+	attrsMap map[string]interface{},
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -389,21 +390,20 @@ func (a *CedarAuthorizer) authorizePromptGet(
 	// Resource is the prompt being accessed
 	resource := fmt.Sprintf("Prompt::%s", promptName)
 
-	// Add prompt name to context
-	contextMap["prompt_name"] = promptName
-
 	// Create attributes for the entities
-	attributes := map[string]interface{}{
+	attributes := mergeContexts(map[string]interface{}{
 		"name":      promptName,
 		"operation": "get",
 		"feature":   "prompt",
-	}
+	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
+
+	contextMap := mergeContexts(claimsMap, attrsMap)
 
 	// Check authorization with entities
 	return a.IsAuthorized(principal, action, resource, contextMap, entities)
@@ -414,7 +414,8 @@ func (a *CedarAuthorizer) authorizePromptGet(
 // It checks if the client is authorized to read the resource.
 func (a *CedarAuthorizer) authorizeResourceRead(
 	clientID, resourceURI string,
-	contextMap map[string]interface{},
+	claimsMap map[string]interface{},
+	attrsMap map[string]interface{},
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -427,21 +428,20 @@ func (a *CedarAuthorizer) authorizeResourceRead(
 	sanitizedURI := sanitizeURIForCedar(resourceURI)
 	resource := fmt.Sprintf("Resource::%s", sanitizedURI)
 
-	// Add resource URI to context
-	contextMap["resource_uri"] = resourceURI
-
 	// Create attributes for the entities
-	attributes := map[string]interface{}{
+	attributes := mergeContexts(map[string]interface{}{
 		"uri":       resourceURI,
 		"operation": "read",
 		"feature":   "resource",
-	}
+	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
+
+	contextMap := mergeContexts(claimsMap, attrsMap)
 
 	// Check authorization with entities
 	return a.IsAuthorized(principal, action, resource, contextMap, entities)
@@ -453,7 +453,8 @@ func (a *CedarAuthorizer) authorizeResourceRead(
 func (a *CedarAuthorizer) authorizeFeatureList(
 	clientID string,
 	feature MCPFeature,
-	contextMap map[string]interface{},
+	claimsMap map[string]interface{},
+	attrsMap map[string]interface{},
 ) (bool, error) {
 	// Extract principal from client ID
 	principal := fmt.Sprintf("Client::%s", clientID)
@@ -464,21 +465,20 @@ func (a *CedarAuthorizer) authorizeFeatureList(
 	// Resource is the feature type
 	resource := fmt.Sprintf("FeatureType::%s", feature)
 
-	// Add feature type to context
-	contextMap["feature_type"] = string(feature)
-
 	// Create attributes for the entities
-	attributes := map[string]interface{}{
+	attributes := mergeContexts(map[string]interface{}{
 		"type":      string(feature),
 		"operation": "list",
 		"feature":   string(feature),
-	}
+	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, attributes)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
+
+	contextMap := mergeContexts(claimsMap, attrsMap)
 
 	// Check authorization with entities
 	return a.IsAuthorized(principal, action, resource, contextMap, entities)
@@ -543,26 +543,23 @@ func (a *CedarAuthorizer) AuthorizeWithJWTClaims(
 	processedClaims := preprocessClaims(claims)
 	processedArgs := preprocessArguments(arguments)
 
-	// Merge claims and arguments into a single context map
-	contextMap := mergeContexts(processedClaims, processedArgs)
-
 	// Authorize based on the feature and operation
 	switch {
 	case feature == MCPFeatureTool && operation == MCPOperationCall:
 		// Use the authorizeToolCall function for tool call operations
-		return a.authorizeToolCall(clientID, resourceID, contextMap)
+		return a.authorizeToolCall(clientID, resourceID, processedClaims, processedArgs)
 
 	case feature == MCPFeaturePrompt && operation == MCPOperationGet:
 		// Use the authorizePromptGet function for prompt get operations
-		return a.authorizePromptGet(clientID, resourceID, contextMap)
+		return a.authorizePromptGet(clientID, resourceID, processedClaims, processedArgs)
 
 	case feature == MCPFeatureResource && operation == MCPOperationRead:
 		// Use the authorizeResourceRead function for resource read operations
-		return a.authorizeResourceRead(clientID, resourceID, contextMap)
+		return a.authorizeResourceRead(clientID, resourceID, processedClaims, processedArgs)
 
 	case operation == MCPOperationList:
 		// Use the authorizeFeatureList function for list operations
-		return a.authorizeFeatureList(clientID, feature, contextMap)
+		return a.authorizeFeatureList(clientID, feature, processedClaims, processedArgs)
 
 	default:
 		return false, fmt.Errorf("unsupported feature/operation combination: %s/%s", feature, operation)

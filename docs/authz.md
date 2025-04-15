@@ -6,7 +6,7 @@ the client's identity and the requested operation.
 
 ## Overview
 
-ToolHive now supports adding authorization to MCP servers it manages. This is
+ToolHive supports adding authorization to MCP servers it manages. This is
 implemented using Cedar, a policy language developed by Amazon. The
 authorization framework consists of the following components:
 
@@ -185,53 +185,84 @@ permit(principal, action == Action::"call_tool", resource) when { principal.clai
 ```
 
 This policy allows any client with the `admin` role to call any tool. The
-`claim_roles` attribute is extracted from the JWT claims.
+`claim_roles` attribute is extracted from the JWT claims and added to the principal entity.
 
 #### Allow clients to call tools based on arguments
 
 ```plain
 permit(principal, action == Action::"call_tool", resource == Tool::"calculator") when {
-  principal.arg_operation == "add" || principal.arg_operation == "subtract"
+  resource.arg_operation == "add" || resource.arg_operation == "subtract"
 };
 ```
 
 This policy allows any client to call the calculator tool, but only for the
 "add" and "subtract" operations. The `arg_operation` attribute is extracted from
-the tool arguments.
+the tool arguments and added to the resource entity.
 
 ### Using JWT claims in policies
 
 The authorization middleware automatically extracts JWT claims from the request
-context and adds them to the Cedar context with a `claim_` prefix. For example,
-the `sub` claim becomes `claim_sub`, and the `name` claim becomes `claim_name`.
+context and adds them with a `claim_` prefix. For example, the `sub` claim becomes
+`claim_sub`, and the `name` claim becomes `claim_name`.
 
-You can use these claims in your policies:
+These claims are available in two ways in your policies:
 
+1. On the principal entity:
 ```plain
 permit(principal, action == Action::"call_tool", resource == Tool::"weather") when {
   principal.claim_name == "John Doe"
 };
 ```
 
-This policy allows only clients with the name "John Doe" to call the weather
-tool.
+2. In the context:
+```plain
+permit(principal, action == Action::"call_tool", resource == Tool::"weather") when {
+  context.claim_name == "John Doe"
+};
+```
+
+Both approaches work and can be used to make authorization decisions based on
+the client's identity. This policy allows only clients with the name "John Doe"
+to call the weather tool.
 
 ### Using tool arguments in policies
 
 The authorization middleware also extracts tool arguments from the request and
-adds them to the Cedar context with an `arg_` prefix. For example, the
-`location` argument becomes `arg_location`.
+adds them with an `arg_` prefix. For example, the `location` argument becomes
+`arg_location`.
 
-You can use these arguments in your policies:
+These arguments are available in two ways in your policies:
 
+1. On the resource entity:
 ```plain
 permit(principal, action == Action::"call_tool", resource == Tool::"weather") when {
-  principal.arg_location == "New York" || principal.arg_location == "London"
+  resource.arg_location == "New York" || resource.arg_location == "London"
 };
 ```
 
-This policy allows any client to call the weather tool, but only for the
-locations "New York" and "London".
+2. In the context:
+```plain
+permit(principal, action == Action::"call_tool", resource == Tool::"weather") when {
+  context.arg_location == "New York" || context.arg_location == "London"
+};
+```
+
+Both approaches work and can be used to make authorization decisions based on
+the specific parameters of the request. This policy allows any client to call the
+weather tool, but only for the locations "New York" and "London".
+
+### Combining JWT claims and tool arguments
+
+You can combine JWT claims and tool arguments in your policies to create more sophisticated authorization rules:
+
+```plain
+permit(principal, action == Action::"call_tool", resource == Tool::"sensitive_data") when {
+  principal.claim_roles.contains("data_analyst") &&
+  resource.arg_data_level <= principal.claim_clearance_level
+};
+```
+
+This policy allows clients with the "data_analyst" role to access the sensitive_data tool, but only if their clearance level (from JWT claims) is sufficient for the requested data level (from tool arguments).
 
 ## Advanced topics
 

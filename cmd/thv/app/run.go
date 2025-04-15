@@ -242,6 +242,12 @@ func applyRegistrySettings(
 		runTargetPort = server.TargetPort
 	}
 
+	// Prepend registry args to command-line args if available
+	if len(server.Args) > 0 {
+		logDebug(debugMode, "Prepending registry args: %v", server.Args)
+		config.CmdArgs = append(server.Args, config.CmdArgs...)
+	}
+
 	// Process environment variables from registry
 	// This will be merged with command-line env vars in configureRunConfig
 	envVarStrings := processEnvironmentVariables(server.EnvVars, runEnv, config.Secrets, debugMode)

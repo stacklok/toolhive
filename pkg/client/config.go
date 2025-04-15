@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/tailscale/hujson"
-	"gopkg.in/yaml.v3"
 
 	"github.com/StacklokLabs/toolhive/pkg/config"
 	"github.com/StacklokLabs/toolhive/pkg/logger"
@@ -41,9 +40,6 @@ type Extension string
 const (
 	// JSON represents a JSON extension.
 	JSON Extension = "json"
-
-	// YAML represents a YAML extension.
-	YAML Extension = "yaml"
 )
 
 // mcpClientConfig represents a configuration path for a supported MCP client.
@@ -200,14 +196,7 @@ func retrieveConfigFilesMetadata(filters []MCPClient) ([]ConfigFile, error) {
 			continue
 		}
 
-		var configUpdater ConfigUpdater
-
-		if cfg.Extension == YAML {
-			// TODO: Implement
-		} else {
-			// Default to JSON
-			configUpdater = &JSONConfigUpdater{Path: path, MCPServersPathPrefix: cfg.MCPServersPathPrefix}
-		}
+		configUpdater := &JSONConfigUpdater{Path: path, MCPServersPathPrefix: cfg.MCPServersPathPrefix}
 
 		clientConfig := ConfigFile{
 			Path:          path,
@@ -239,7 +228,7 @@ func validateConfigFileExists(path string) error {
 }
 
 // validateConfigFileFormat validates the format of a client configuration file
-// It returns an error if the file is not valid JSON or YAML.
+// It returns an error if the file is not valid JSON.
 func validateConfigFilesFormat(configFiles []ConfigFile) error {
 	for _, cf := range configFiles {
 		data, err := os.ReadFile(cf.Path)
@@ -247,20 +236,11 @@ func validateConfigFilesFormat(configFiles []ConfigFile) error {
 			return fmt.Errorf("failed to read file %s: %w", cf.Path, err)
 		}
 
-		if cf.Extension == YAML {
-			// Parse YAML
-			// we don't care about the contents of the file, we just want to validate that it's valid YAML
-			var contents map[string]interface{}
-			if err := yaml.Unmarshal(data, &contents); err != nil {
-				return fmt.Errorf("failed to parse YAML for file %s: %w", cf.Path, err)
-			}
-		} else {
-			// Default to JSON
-			// we don't care about the contents of the file, we just want to validate that it's valid JSON
-			_, err := hujson.Parse(data)
-			if err != nil {
-				return fmt.Errorf("failed to parse JSON for file %s: %w", cf.Path, err)
-			}
+		// Default to JSON
+		// we don't care about the contents of the file, we just want to validate that it's valid JSON
+		_, err = hujson.Parse(data)
+		if err != nil {
+			return fmt.Errorf("failed to parse JSON for file %s: %w", cf.Path, err)
 		}
 	}
 

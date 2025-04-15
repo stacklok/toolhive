@@ -3,8 +3,6 @@
 package client
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofrs/flock"
+	"github.com/tailscale/hujson"
 	"gopkg.in/yaml.v3"
 
 	"github.com/StacklokLabs/toolhive/pkg/config"
@@ -37,8 +35,9 @@ func IsYAML(ext string) bool {
 
 // TODO: This type could be removed with more refactoring.
 type pathAndEditor struct {
-	Path   string
-	Editor ConfigEditor
+	Path                 string
+	MCPServersPathPrefix string
+	ClientType           MCPClient
 }
 
 // MCPClient is an enum of supported MCP clients.
@@ -57,11 +56,11 @@ const (
 
 // mcpClientConfig represents a configuration path for a supported MCP client.
 type mcpClientConfig struct {
-	ClientType     MCPClient
-	Description    string
-	RelPath        []string
-	PlatformPrefix map[string][]string
-	Editor         ConfigEditor
+	ClientType           MCPClient
+	Description          string
+	RelPath              []string
+	PlatformPrefix       map[string][]string
+	MCPServersPathPrefix string
 }
 
 var supportedClientIntegrations = []mcpClientConfig{
@@ -75,7 +74,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"linux":  {".config"},
 			"darwin": {"Library", "Application Support"},
 		},
-		Editor: &StandardConfigEditor{},
+		MCPServersPathPrefix: "/mcpServers",
 	},
 	{
 		ClientType:  VSCodeInsider,
@@ -87,7 +86,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"linux":  {".config"},
 			"darwin": {"Library", "Application Support"},
 		},
-		Editor: &VSCodeConfigEditor{},
+		MCPServersPathPrefix: "/mcp/servers",
 	},
 	{
 		ClientType:  VSCode,
@@ -95,25 +94,27 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath: []string{
 			"Code", "User", "settings.json",
 		},
+		MCPServersPathPrefix: "/mcp/servers",
 		PlatformPrefix: map[string][]string{
 			"linux":  {".config"},
 			"darwin": {"Library", "Application Support"},
 		},
-		Editor: &VSCodeConfigEditor{},
 	},
 	{
-		ClientType:  Cursor,
-		Description: "Cursor editor",
-		RelPath:     []string{".cursor", "mcp.json"},
-		Editor:      &StandardConfigEditor{},
+		ClientType:           Cursor,
+		Description:          "Cursor editor",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".cursor", "mcp.json"},
 	},
 }
 
 // ConfigFile represents a client configuration file
 type ConfigFile struct {
-	Path     string
-	Contents map[string]interface{}
-	Editor   ConfigEditor
+	Path                 string
+	ClientType           MCPClient
+	Contents             map[string]interface{}
+	ConfigUpdater        ConfigUpdater
+	MCPServersPathPrefix string
 }
 
 // MCPServerConfig represents an MCP server configuration in a client config file
@@ -148,12 +149,16 @@ func FindClientConfigs() ([]ConfigFile, error) {
 	}
 
 	var configs []ConfigFile
+
 	// Check each path
 	for _, pe := range configPaths {
-		clientConfig, err := readConfigFile(pe.Path)
+		// TODO: This is a bit of a hack to get the client type into the ConfigFile
+		// object. We should probably refactor this to be more elegant.
+		// We can also rename the `readConfigFile` function so that it expresses that it
+		// only retrieves client config file metadata, not the contents.
+		clientConfig, err := readConfigFile(pe.Path, pe.MCPServersPathPrefix)
+		clientConfig.ClientType = pe.ClientType
 		if err == nil {
-			// ugly hack, refactor away in future.
-			clientConfig.Editor = pe.Editor
 			configs = append(configs, clientConfig)
 		}
 
@@ -165,8 +170,23 @@ func FindClientConfigs() ([]ConfigFile, error) {
 	return configs, nil
 }
 
+// Upsert updates/inserts an MCP server in a client configuration file
+// It is a wrapper around the ConfigUpdater.Upsert method. Because the
+// ConfigUpdater is different for each client type, we need to handle
+// the different types of McpServer objects. For example, VSCode allows
+// for a `type` field, but Cursor and others do not. This allows us to
+// build up more complex MCP server configurations for different clients
+// without leaking them into the CMD layer.
+func Upsert(cf ConfigFile, name string, url string) error {
+	if cf.ClientType == VSCode || cf.ClientType == VSCodeInsider {
+		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: "sse"})
+	}
+
+	return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})
+}
+
 // readConfigFile reads and parses a client configuration file
-func readConfigFile(path string) (ConfigFile, error) {
+func readConfigFile(path, mcpServersPathPrefix string) (ConfigFile, error) {
 	// Check if file exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return ConfigFile{}, fmt.Errorf("file does not exist: %s", path)
@@ -182,6 +202,7 @@ func readConfigFile(path string) (ConfigFile, error) {
 	// Determine format based on file extension
 	var contents map[string]interface{}
 	ext := strings.ToLower(filepath.Ext(path))
+	var configUpdater ConfigUpdater
 
 	if IsYAML(ext) {
 		// Parse YAML
@@ -190,211 +211,18 @@ func readConfigFile(path string) (ConfigFile, error) {
 		}
 	} else {
 		// Default to JSON
-		if err := json.Unmarshal(data, &contents); err != nil {
+		_, err := hujson.Parse(data)
+		if err != nil {
 			return ConfigFile{}, fmt.Errorf("failed to parse JSON: %w", err)
 		}
+		configUpdater = &JSONConfigUpdater{Path: cleanpath, MCPServersPathPrefix: mcpServersPathPrefix}
 	}
 
 	return ConfigFile{
-		Path:     path,
-		Contents: contents,
+		Path:          path,
+		Contents:      contents,
+		ConfigUpdater: configUpdater,
 	}, nil
-}
-
-// UpdateMCPServerConfig updates the MCP server configuration in memory
-// This does not save the changes to the file
-func (c *ConfigFile) UpdateMCPServerConfig(serverName, url string) error {
-	// Get mcpServers object
-	mcpServers, ok := c.Contents["mcpServers"]
-	if !ok {
-		// Create mcpServers object if it doesn't exist
-		c.Contents["mcpServers"] = make(map[string]interface{})
-		mcpServers = c.Contents["mcpServers"]
-	}
-
-	// Convert to map
-	mcpServersMap, ok := mcpServers.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("mcpServers is not a map")
-	}
-
-	// Check if the server already exists
-	existingConfig, exists := mcpServersMap[serverName]
-	if exists {
-		// Update only the URL field and preserve all other fields
-		existingConfigMap, ok := existingConfig.(map[string]interface{})
-		if ok {
-			// Update the URL field
-			existingConfigMap["url"] = url
-			// Keep the existing config
-			mcpServersMap[serverName] = existingConfigMap
-		} else {
-			// If the existing config is not a map, replace it
-			mcpServersMap[serverName] = map[string]interface{}{
-				"url": url,
-			}
-		}
-	} else {
-		// Create a new server config
-		mcpServersMap[serverName] = map[string]interface{}{
-			"url": url,
-		}
-	}
-
-	return nil
-}
-
-// Save writes the updated configuration back to the file without locking
-// This is unsafe for concurrent access and should only be used in tests
-func (c *ConfigFile) Save() error {
-	// Determine format based on file extension
-	ext := strings.ToLower(filepath.Ext(c.Path))
-
-	var data []byte
-	var err error
-
-	if IsYAML(ext) {
-		// Marshal YAML
-		data, err = yaml.Marshal(c.Contents)
-		if err != nil {
-			return fmt.Errorf("failed to marshal YAML: %w", err)
-		}
-	} else {
-		// Default to JSON
-		data, err = json.MarshalIndent(c.Contents, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal JSON: %w", err)
-		}
-	}
-
-	// Write file
-	if err := os.WriteFile(c.Path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	return nil
-}
-
-// SaveWithLock safely updates the MCP server configuration in the file
-// It acquires a lock, reads the latest content, applies the change, and saves the file
-func (c *ConfigFile) SaveWithLock(serverName, url string, editor ConfigEditor) error {
-	// Create a lock file
-	fileLock := flock.New(c.Path + ".lock")
-
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
-
-	// Try to acquire the lock with a timeout
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer fileLock.Unlock()
-
-	// Read the latest content from the file
-	latestConfig, err := readConfigFile(c.Path)
-	if err != nil {
-		return fmt.Errorf("failed to read latest config: %w", err)
-	}
-
-	// Apply our change to the latest content
-	if err := editor.AddServer(&latestConfig, serverName, url); err != nil {
-		return fmt.Errorf("failed to update latest config: %w", err)
-	}
-
-	// Determine format based on file extension
-	ext := strings.ToLower(filepath.Ext(c.Path))
-
-	var data []byte
-
-	if IsYAML(ext) {
-		// Marshal YAML
-		data, err = yaml.Marshal(latestConfig.Contents)
-		if err != nil {
-			return fmt.Errorf("failed to marshal YAML: %w", err)
-		}
-	} else {
-		// Default to JSON
-		data, err = json.MarshalIndent(latestConfig.Contents, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal JSON: %w", err)
-		}
-	}
-
-	// Write file
-	if err := os.WriteFile(c.Path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	// Update our in-memory representation to match the file
-	c.Contents = latestConfig.Contents
-
-	return nil
-}
-
-// DeleteConfigWithLock safely removes the MCP server configuration in the file
-// It acquires a lock, reads the latest content, applies the change, and saves the file
-func (c *ConfigFile) DeleteConfigWithLock(serverName string, editor ConfigEditor) error {
-	// Create a lock file
-	fileLock := flock.New(c.Path + ".lock")
-
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
-
-	// Try to acquire the lock with a timeout
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer fileLock.Unlock()
-
-	// Read the latest content from the file
-	latestConfig, err := readConfigFile(c.Path)
-	if err != nil {
-		return fmt.Errorf("failed to read latest config: %w", err)
-	}
-
-	// Apply our change to the latest content
-	if err := editor.RemoveServer(&latestConfig, serverName); err != nil {
-		return fmt.Errorf("failed to update latest config: %w", err)
-	}
-
-	// Determine format based on file extension
-	ext := strings.ToLower(filepath.Ext(c.Path))
-
-	var data []byte
-
-	if IsYAML(ext) {
-		// Marshal YAML
-		data, err = yaml.Marshal(latestConfig.Contents)
-		if err != nil {
-			return fmt.Errorf("failed to marshal YAML: %w", err)
-		}
-	} else {
-		// Default to JSON
-		data, err = json.MarshalIndent(latestConfig.Contents, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal JSON: %w", err)
-		}
-	}
-
-	// Write file
-	if err := os.WriteFile(c.Path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	// Update our in-memory representation to match the file
-	c.Contents = latestConfig.Contents
-
-	return nil
 }
 
 // GenerateMCPServerURL generates the URL for an MCP server
@@ -423,9 +251,12 @@ func getSupportedPaths(filters []MCPClient) ([]pathAndEditor, error) {
 			path = append(path, prefix...)
 		}
 		path = append(path, cfg.RelPath...)
+		// TODO: This is a bit of a hack to get the client type into the pathAndEditor
+		// object. We should probably refactor this to be more elegant.
 		paths = append(paths, pathAndEditor{
-			Path:   filepath.Join(path...),
-			Editor: cfg.Editor,
+			Path:                 filepath.Join(path...),
+			MCPServersPathPrefix: cfg.MCPServersPathPrefix,
+			ClientType:           cfg.ClientType,
 		})
 	}
 

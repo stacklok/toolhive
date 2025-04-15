@@ -137,8 +137,7 @@ func removeClientConfigurations(containerName string) error {
 	for _, c := range configs {
 		logger.Log.Info(fmt.Sprintf("Removing MCP server from client configuration: %s", c.Path))
 
-		// Remove the MCP server configuration with locking
-		if err := c.DeleteConfigWithLock(containerName, c.Editor); err != nil {
+		if err := c.ConfigUpdater.Remove(containerName); err != nil {
 			logger.Log.Warn(fmt.Sprintf("Warning: Failed to remove MCP server from client configurationn %s: %v", c.Path, err))
 			continue
 		}

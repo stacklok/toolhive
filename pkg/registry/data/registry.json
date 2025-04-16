@@ -1672,7 +1672,13 @@
        }
      },
      "tools": [
-       "retrieve_from_aws_kb"
+       "list_netbird_peers",
+       "list_netbird_port_allocations",
+       "list_netbird_groups",
+       "list_netbird_policies",
+       "list_netbird_posture_checks",
+       "list_netbird_networks",
+       "list_netbird_nameservers"
      ],
      "env_vars": [
        {

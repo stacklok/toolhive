@@ -3,14 +3,15 @@ package logger
 import (
 	"bytes"
 	"encoding/json"
-	"log/slog"
+	"io"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
-// TestUnstructuredLogs tests the unstructuredLogs function
-func TestUnstructuredLogs(t *testing.T) {
+func TestUnstructuredLogsCheck(t *testing.T) {
 	tests := []struct {
 		name     string
 		envValue string
@@ -39,54 +40,53 @@ func TestUnstructuredLogs(t *testing.T) {
 	}
 }
 
-// mockWriter is a simple io.Writer implementation for testing
-type mockWriter struct {
-	buf bytes.Buffer
-}
-
-func (w *mockWriter) Write(p []byte) (n int, err error) {
-	return w.buf.Write(p)
-}
-
-func (w *mockWriter) String() string {
-	return w.buf.String()
-}
-
-func (w *mockWriter) Reset() {
-	w.buf.Reset()
-}
-
-// TestSlogLogger tests the slogLogger implementation
-func TestSlogLogger(t *testing.T) {
-	// Create a buffer to capture log output
-	var buf mockWriter
-
-	// Create a logger that writes to our buffer
-	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
-	logger := &slogLogger{logger: slog.New(handler)}
-
-	// Test all log levels
-	testCases := []struct {
-		method   string
-		logFunc  func(msg string, args ...any)
-		level    string
-		message  string
-		key      string
-		value    string
-		contains bool
+func TestStructuredLogger(t *testing.T) {
+	unformattedLogTestCases := []struct {
+		level    string // The log level to test
+		message  string // The message to log
+		key      string // Key for structured logging
+		value    string // Value for structured logging
+		contains bool   // Whether to check if output contains the message
 	}{
-		{"Debug", logger.Debug, "DEBUG", "debug message", "key", "value", true},
-		{"Info", logger.Info, "INFO", "info message", "key", "value", true},
-		{"Warn", logger.Warn, "WARN", "warn message", "key", "value", true},
-		{"Error", logger.Error, "ERROR", "error message", "key", "value", true},
+		{"DEBUG", "debug message", "key", "value", true},
+		{"INFO", "info message", "key", "value", true},
+		{"WARN", "warn message", "key", "value", true},
+		{"ERROR", "error message", "key", "value", true},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.method, func(t *testing.T) {
-			buf.Reset()
-			tc.logFunc(tc.message, tc.key, tc.value)
+	for _, tc := range unformattedLogTestCases {
+		t.Run("NonFormattedLogs", func(t *testing.T) {
 
-			output := buf.String()
+			// we create a pipe to capture the output of the log
+			// so we can test that the logger logs the right message
+			originalStdout := os.Stdout
+			r, w, _ := os.Pipe()
+			os.Stdout = w
+
+			os.Setenv("UNSTRUCTURED_LOGS", "false")
+			defer os.Unsetenv("UNSTRUCTURED_LOGS")
+
+			Initialize()
+			os.Stdout = originalStdout
+
+			// Log the message based on the level
+			switch tc.level {
+			case "DEBUG":
+				Log.Debug(tc.message, tc.key, tc.value)
+			case "INFO":
+				Log.Info(tc.message, tc.key, tc.value)
+			case "WARN":
+				Log.Warn(tc.message, tc.key, tc.value)
+			case "ERROR":
+				Log.Error(tc.message, tc.key, tc.value)
+			}
+
+			w.Close()
+
+			// Read the captured output
+			var capturedOutput bytes.Buffer
+			io.Copy(&capturedOutput, r)
+			output := capturedOutput.String()
 
 			// Parse JSON output
 			var logEntry map[string]interface{}
@@ -108,6 +108,126 @@ func TestSlogLogger(t *testing.T) {
 			if value, ok := logEntry[tc.key].(string); !ok || value != tc.value {
 				t.Errorf("Expected %s=%s, got %v", tc.key, tc.value, logEntry[tc.key])
 			}
+		})
+	}
+
+	formattedLogTestCases := []struct {
+		level    string
+		message  string
+		key      string
+		value    string
+		expected string
+		contains bool
+	}{
+		{"DEBUG", "debug message %s and %s", "key", "value", "debug message key and value", true},
+		{"INFO", "info message %s and %s", "key", "value", "info message key and value", true},
+		{"WARN", "warn message %s and %s", "key", "value", "warn message key and value", true},
+		{"ERROR", "error message %s and %s", "key", "value", "error message key and value", true},
+	}
+
+	for _, tc := range formattedLogTestCases {
+		t.Run("FormattedLogs", func(t *testing.T) {
+			// we create a pipe to capture the output of the log
+			// so we can test that the logger logs the right message
+			originalStdout := os.Stdout
+			r, w, _ := os.Pipe()
+			os.Stdout = w
+
+			os.Setenv("UNSTRUCTURED_LOGS", "false")
+			defer os.Unsetenv("UNSTRUCTURED_LOGS")
+
+			Initialize()
+			os.Stdout = originalStdout
+
+			// Log the message based on the level
+			switch tc.level {
+			case "DEBUG":
+				Log.Debugf(tc.message, tc.key, tc.value)
+			case "INFO":
+				Log.Infof(tc.message, tc.key, tc.value)
+			case "WARN":
+				Log.Warnf(tc.message, tc.key, tc.value)
+			case "ERROR":
+				Log.Errorf(tc.message, tc.key, tc.value)
+			}
+
+			w.Close()
+
+			// Read the captured output
+			var capturedOutput bytes.Buffer
+			io.Copy(&capturedOutput, r)
+			output := capturedOutput.String()
+
+			capturedOutput.Reset()
+
+			// Parse JSON output
+			var logEntry map[string]interface{}
+			if err := json.Unmarshal([]byte(output), &logEntry); err != nil {
+				t.Fatalf("Failed to parse JSON log output: %v", err)
+			}
+
+			// Check level
+			if level, ok := logEntry["level"].(string); !ok || level != tc.level {
+				t.Errorf("Expected level %s, got %v", tc.level, logEntry["level"])
+			}
+
+			// Check message
+			if msg, ok := logEntry["msg"].(string); !ok || msg != tc.expected {
+				t.Errorf(tc.expected, tc.message, logEntry["msg"])
+			}
+		})
+	}
+}
+
+func TestUnstructuredLogger(t *testing.T) {
+	// we only test for the formatted logs here because the unstructured logs
+	// do not contain the key/value pair format that the structured logs do
+	formattedLogTestCases := []struct {
+		level    string
+		message  string
+		key      string
+		value    string
+		expected string
+	}{
+		{"DBG", "debug message %s and %s", "key", "value", "debug message key and value"},
+		{"INF", "info message %s and %s", "key", "value", "info message key and value"},
+		{"WRN", "warn message %s and %s", "key", "value", "warn message key and value"},
+		{"ERR", "error message %s and %s", "key", "value", "error message key and value"},
+	}
+
+	for _, tc := range formattedLogTestCases {
+		t.Run("FormattedLogs", func(t *testing.T) {
+
+			// we create a pipe to capture the output of the log
+			// so we can test that the logger logs the right message
+			originalStderr := os.Stderr
+			r, w, _ := os.Pipe()
+			os.Stderr = w
+
+			Initialize()
+			os.Stderr = originalStderr
+
+			// Log the message based on the level
+			switch tc.level {
+			case "DBG":
+				Log.Debugf(tc.message, tc.key, tc.value)
+			case "INF":
+				Log.Infof(tc.message, tc.key, tc.value)
+			case "WRN":
+				Log.Warnf(tc.message, tc.key, tc.value)
+			case "ERR":
+				Log.Errorf(tc.message, tc.key, tc.value)
+			}
+
+			w.Close()
+
+			// Read the captured output
+			var capturedOutput bytes.Buffer
+			io.Copy(&capturedOutput, r)
+			output := capturedOutput.String()
+
+			assert.Contains(t, output, tc.level, "Expected log entry '%s' to contain log level '%s'", output, tc.level)
+			assert.Contains(t, output, tc.expected, "Expected log entry '%s' to contain message '%s'", output, tc.expected)
 		})
 	}
 }

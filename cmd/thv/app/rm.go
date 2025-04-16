@@ -87,7 +87,7 @@ func rmCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Remove the container
-	logger.Log.Info(fmt.Sprintf("Removing container %s...", containerName))
+	logger.Log.Infof("Removing container %s...", containerName)
 	if err := runtime.RemoveContainer(ctx, containerID); err != nil {
 		return fmt.Errorf("failed to remove container: %v", err)
 	}
@@ -97,19 +97,19 @@ func rmCmdFunc(_ *cobra.Command, args []string) error {
 	if baseName != "" {
 		// Delete the saved state if it exists
 		if err := runner.DeleteSavedConfig(ctx, baseName); err != nil {
-			logger.Log.Warn(fmt.Sprintf("Warning: Failed to delete saved state: %v", err))
+			logger.Log.Warnf("Warning: Failed to delete saved state: %v", err)
 		} else {
-			logger.Log.Info(fmt.Sprintf("Saved state for %s removed", baseName))
+			logger.Log.Infof("Saved state for %s removed", baseName)
 		}
 	}
 
-	logger.Log.Info(fmt.Sprintf("Container %s removed", containerName))
+	logger.Log.Infof("Container %s removed", containerName)
 
 	if shouldRemoveClientConfig() {
 		if err := removeClientConfigurations(containerName); err != nil {
-			logger.Log.Error(fmt.Sprintf("Warning: Failed to remove client configurations: %v", err))
+			logger.Log.Warnf("Warning: Failed to remove client configurations: %v", err)
 		} else {
-			logger.Log.Info(fmt.Sprintf("Client configurations for %s removed", containerName))
+			logger.Log.Infof("Client configurations for %s removed", containerName)
 		}
 	}
 
@@ -130,19 +130,19 @@ func removeClientConfigurations(containerName string) error {
 	}
 
 	if len(configs) == 0 {
-		logger.Log.Info("No client configuration files found")
+		logger.Log.Infof("No client configuration files found")
 		return nil
 	}
 
 	for _, c := range configs {
-		logger.Log.Info(fmt.Sprintf("Removing MCP server from client configuration: %s", c.Path))
+		logger.Log.Infof("Removing MCP server from client configuration: %s", c.Path)
 
 		if err := c.ConfigUpdater.Remove(containerName); err != nil {
-			logger.Log.Warn(fmt.Sprintf("Warning: Failed to remove MCP server from client configurationn %s: %v", c.Path, err))
+			logger.Log.Warnf("Warning: Failed to remove MCP server from client configurationn %s: %v", c.Path, err)
 			continue
 		}
 
-		logger.Log.Info(fmt.Sprintf("Successfully removed MCP server from client configuration: %s", c.Path))
+		logger.Log.Infof("Successfully removed MCP server from client configuration: %s", c.Path)
 	}
 
 	return nil

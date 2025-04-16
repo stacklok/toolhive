@@ -458,7 +458,7 @@ func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runt
 			hostPort := 0
 			if _, err := fmt.Sscanf(binding.HostPort, "%d", &hostPort); err != nil {
 				// If we can't parse the port, just use 0
-				logger.Log.Warn(fmt.Sprintf("Warning: Failed to parse host port %s: %v", binding.HostPort, err))
+				logger.Log.Warnf("Warning: Failed to parse host port %s: %v", binding.HostPort, err)
 			}
 
 			ports = append(ports, runtime.PortMapping{
@@ -581,7 +581,7 @@ func parsePullOutput(reader io.Reader, writer io.Writer) error {
 
 // PullImage pulls an image from a registry
 func (c *Client) PullImage(ctx context.Context, imageName string) error {
-	logger.Log.Info(fmt.Sprintf("Pulling image: %s", imageName))
+	logger.Log.Infof("Pulling image: %s", imageName)
 
 	// Pull the image
 	reader, err := c.client.ImagePull(ctx, imageName, dockerimage.PullOptions{})
@@ -600,7 +600,7 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 
 // BuildImage builds a Docker image from a Dockerfile in the specified context directory
 func (c *Client) BuildImage(ctx context.Context, contextDir, imageName string) error {
-	logger.Log.Info(fmt.Sprintf("Building image %s from context directory %s", imageName, contextDir))
+	logger.Log.Infof("Building image %s from context directory %s", imageName, contextDir)
 
 	// Create a tar archive of the context directory
 	tarFile, err := os.CreateTemp("", "docker-build-context-*.tar")
@@ -734,13 +734,13 @@ func (*Client) addReadOnlyMounts(config *runtime.PermissionConfig, mounts []perm
 		source, target, err := mountDecl.Parse()
 		if err != nil {
 			// Skip invalid mounts
-			logger.Log.Warn(fmt.Sprintf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err))
+			logger.Log.Warnf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err)
 			continue
 		}
 
 		// Skip resource URIs for now (they need special handling)
 		if strings.Contains(source, "://") {
-			logger.Log.Warn(fmt.Sprintf("Warning: Resource URI mounts not yet supported: %s", source))
+			logger.Log.Warnf("Warning: Resource URI mounts not yet supported: %s", source)
 			continue
 		}
 
@@ -764,13 +764,13 @@ func (*Client) addReadWriteMounts(config *runtime.PermissionConfig, mounts []per
 		source, target, err := mountDecl.Parse()
 		if err != nil {
 			// Skip invalid mounts
-			logger.Log.Warn(fmt.Sprintf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err))
+			logger.Log.Warnf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err)
 			continue
 		}
 
 		// Skip resource URIs for now (they need special handling)
 		if strings.Contains(source, "://") {
-			logger.Log.Warn(fmt.Sprintf("Warning: Resource URI mounts not yet supported: %s", source))
+			logger.Log.Warnf("Warning: Resource URI mounts not yet supported: %s", source)
 			continue
 		}
 
@@ -813,13 +813,13 @@ func convertRelativePathToAbsolute(source string, mountDecl permissions.MountDec
 	// Get the current working directory
 	cwd, err := os.Getwd()
 	if err != nil {
-		logger.Log.Warn(fmt.Sprintf("Warning: Failed to get current working directory: %v", err))
+		logger.Log.Warnf("Warning: Failed to get current working directory: %v", err)
 		return "", false
 	}
 
 	// Convert relative path to absolute path
 	absPath := filepath.Join(cwd, source)
-	logger.Log.Info(fmt.Sprintf("Converting relative path to absolute: %s -> %s", mountDecl, absPath))
+	logger.Log.Infof("Converting relative path to absolute: %s -> %s", mountDecl, absPath)
 	return absPath, true
 }
 

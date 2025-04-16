@@ -45,8 +45,8 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	var running bool
 
 	if err != nil {
-		logger.Log.Warn(fmt.Sprintf("Warning: Failed to find container: %v", err))
-		logger.Log.Warn(fmt.Sprintf("Trying to find state with name %s directly...", containerName))
+		logger.Log.Warnf("Warning: Failed to find container: %v", err)
+		logger.Log.Warnf("Trying to find state with name %s directly...", containerName)
 
 		// Try to use the provided name as the base name
 		containerBaseName = containerName
@@ -61,8 +61,8 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 		// Get the base container name
 		containerBaseName, err = getContainerBaseName(ctx, runtime, containerID)
 		if err != nil {
-			logger.Log.Warn(fmt.Sprintf("Warning: Could not find base container name in labels: %v", err))
-			logger.Log.Warn(fmt.Sprintf("Using provided name %s as base name", containerName))
+			logger.Log.Warnf("Warning: Could not find base container name in labels: %v", err)
+			logger.Log.Warnf("Using provided name %s as base name", containerName)
 			containerBaseName = containerName
 		}
 	}
@@ -71,17 +71,17 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	proxyRunning := isProxyRunning(containerBaseName)
 
 	if running && proxyRunning {
-		logger.Log.Info(fmt.Sprintf("Container %s and proxy are already running", containerName))
+		logger.Log.Infof("Container %s and proxy are already running", containerName)
 		return nil
 	}
 
 	// If the container is running but the proxy is not, stop the container first
 	if containerID != "" && running && !proxyRunning {
-		logger.Log.Info(fmt.Sprintf("Container %s is running but proxy is not. Stopping container...", containerName))
+		logger.Log.Infof("Container %s is running but proxy is not. Stopping container...", containerName)
 		if err := runtime.StopContainer(ctx, containerID); err != nil {
 			return fmt.Errorf("failed to stop container: %v", err)
 		}
-		logger.Log.Info(fmt.Sprintf("Container %s stopped", containerName))
+		logger.Log.Infof("Container %s stopped", containerName)
 	}
 
 	// Load the configuration from the state store
@@ -90,10 +90,10 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load state for %s: %v", containerBaseName, err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Loaded configuration from state for %s", containerBaseName))
+	logger.Log.Infof("Loaded configuration from state for %s", containerBaseName)
 
 	// Run the tooling server
-	logger.Log.Info(fmt.Sprintf("Starting tooling server %s...", containerName))
+	logger.Log.Infof("Starting tooling server %s...", containerName)
 	return RunMCPServer(ctx, cmd, mcpRunner.Config, false)
 }
 
@@ -112,7 +112,7 @@ func isProxyRunning(containerBaseName string) bool {
 	// Check if the process exists and is running
 	isRunning, err := process.FindProcess(pid)
 	if err != nil {
-		logger.Log.Warn(fmt.Sprintf("Warning: Error checking process: %v", err))
+		logger.Log.Warnf("Warning: Error checking process: %v", err)
 		return false
 	}
 

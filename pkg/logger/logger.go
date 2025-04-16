@@ -2,6 +2,7 @@
 package logger
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -16,14 +17,34 @@ var Log Logger
 // Logger provides a unified interface for logging
 type Logger interface {
 	Debug(msg string, args ...any)
+	Debugf(msg string, args ...any)
 	Info(msg string, args ...any)
+	Infof(msg string, args ...any)
 	Warn(msg string, args ...any)
+	Warnf(msg string, args ...any)
 	Error(msg string, args ...any)
+	Errorf(msg string, args ...any)
 }
 
 // Implementation using slog
 type slogLogger struct {
 	logger *slog.Logger
+}
+
+func (l *slogLogger) Debugf(msg string, args ...any) {
+	l.logger.Debug(fmt.Sprintf(msg, args...))
+}
+
+func (l *slogLogger) Infof(msg string, args ...any) {
+	l.logger.Info(fmt.Sprintf(msg, args...))
+}
+
+func (l *slogLogger) Warnf(msg string, args ...any) {
+	l.logger.Warn(fmt.Sprintf(msg, args...))
+}
+
+func (l *slogLogger) Errorf(msg string, args ...any) {
+	l.logger.Error(fmt.Sprintf(msg, args...))
 }
 
 func (l *slogLogger) Debug(msg string, args ...any) {
@@ -60,28 +81,27 @@ func Initialize() {
 	if unstructuredLogs() {
 		w := os.Stderr
 
-		logger := slog.New(tint.NewHandler(w, nil))
+		handler := tint.NewHandler(w, &tint.Options{
+			Level:      slog.LevelDebug,
+			TimeFormat: time.Kitchen,
+		})
 
-		// set global logger with custom options
-		slog.SetDefault(slog.New(
-			tint.NewHandler(w, &tint.Options{
-				// TODO: we should probably set the below based on a flag passed to CLI
-				Level:      slog.LevelDebug,
-				TimeFormat: time.Kitchen,
-			}),
-		))
+		slogger := slog.New(handler)
 
-		Log = logger
+		slog.SetDefault(slogger)
+		Log = &slogLogger{logger: slogger}
 	} else {
-		handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		w := os.Stdout
+
+		handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
 			// TODO: we should probably set the below based on a flag passed to CLI
 			Level: slog.LevelDebug,
 		})
-		slogger := slog.New(handler)
-		Log = &slogLogger{logger: slogger}
 
-		// Also set as default slog logger
+		slogger := slog.New(handler)
+
 		slog.SetDefault(slogger)
+		Log = &slogLogger{logger: slogger}
 	}
 }
 

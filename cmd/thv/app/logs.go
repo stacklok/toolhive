@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -29,14 +28,14 @@ func newLogsCommand() *cobra.Command {
 			// Create container runtime
 			runtime, err := container.NewFactory().Create(ctx)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("failed to create container runtime: %v", err))
+				logger.Log.Errorf("failed to create container runtime: %v", err)
 				return
 			}
 
 			// List containers to find the one with the given name
 			containers, err := runtime.ListContainers(ctx)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("failed to list containers: %v", err))
+				logger.Log.Errorf("failed to list containers: %v", err)
 				return
 			}
 
@@ -62,16 +61,16 @@ func newLogsCommand() *cobra.Command {
 			}
 
 			if containerID == "" {
-				logger.Log.Info(fmt.Sprintf("container %s not found", containerName))
+				logger.Log.Infof("container %s not found", containerName)
 				return
 			}
 
 			logs, err := runtime.ContainerLogs(ctx, containerID)
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("failed to get container logs: %v", err))
+				logger.Log.Errorf("failed to get container logs: %v", err)
 				return
 			}
-			logger.Log.Info(logs)
+			logger.Log.Infof(logs)
 
 		},
 	}

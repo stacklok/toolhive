@@ -152,7 +152,7 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 		return nil, nil, fmt.Errorf("failed to create SPDY executor: %v", err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Attaching to pod %s container %s...", podName, containerID))
+	logger.Log.Infof("Attaching to pod %s container %s...", podName, containerID)
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
@@ -173,22 +173,22 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 				Tty:    false,
 			})
 		}, backoffWithRetries, func(err error, duration time.Duration) {
-			logger.Log.Error(fmt.Sprintf("Error attaching to container %s: %v. Retrying in %s...", containerID, err, duration))
+			logger.Log.Errorf("Error attaching to container %s: %v. Retrying in %s...", containerID, err, duration)
 		})
 		if err != nil {
 			if statusErr, ok := err.(*errors.StatusError); ok {
-				logger.Log.Error(fmt.Sprintf("Kubernetes API error: Status=%s, Message=%s, Reason=%s, Code=%d",
+				logger.Log.Errorf("Kubernetes API error: Status=%s, Message=%s, Reason=%s, Code=%d",
 					statusErr.ErrStatus.Status,
 					statusErr.ErrStatus.Message,
 					statusErr.ErrStatus.Reason,
-					statusErr.ErrStatus.Code))
+					statusErr.ErrStatus.Code)
 
 				if statusErr.ErrStatus.Code == 0 && statusErr.ErrStatus.Message == "" {
-					logger.Log.Info("Empty status error - this typically means the connection was closed unexpectedly")
-					logger.Log.Info("This often happens when the container terminates or doesn't read from stdin")
+					logger.Log.Infof("Empty status error - this typically means the connection was closed unexpectedly")
+					logger.Log.Infof("This often happens when the container terminates or doesn't read from stdin")
 				}
 			} else {
-				logger.Log.Error(fmt.Sprintf("Non-status error: %v", err))
+				logger.Log.Errorf("Non-status error: %v", err)
 			}
 		}
 	}()
@@ -307,7 +307,7 @@ func (c *Client) CreateContainer(ctx context.Context,
 		return "", fmt.Errorf("failed to apply statefulset: %v", err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Applied statefulset %s", createdStatefulSet.Name))
+	logger.Log.Infof("Applied statefulset %s", createdStatefulSet.Name)
 
 	if transportType == string(transtypes.TransportTypeSSE) && options != nil {
 		// Create a headless service for SSE transport
@@ -496,8 +496,8 @@ func (*Client) PullImage(_ context.Context, imageName string) error {
 	// image when needed.
 
 	// Log that we're skipping the pull operation
-	logger.Log.Info(fmt.Sprintf("Skipping explicit image pull for %s in Kubernetes - "+
-		"images are pulled automatically when pods are created", imageName))
+	logger.Log.Infof("Skipping explicit image pull for %s in Kubernetes - "+
+		"images are pulled automatically when pods are created", imageName)
 
 	return nil
 }
@@ -506,7 +506,7 @@ func (*Client) PullImage(_ context.Context, imageName string) error {
 func (*Client) BuildImage(_ context.Context, _, _ string) error {
 	// In Kubernetes, we don't build images directly within the cluster.
 	// Images should be built externally and pushed to a registry.
-	logger.Log.Warn("BuildImage is not supported in Kubernetes runtime. " +
+	logger.Log.Warnf("BuildImage is not supported in Kubernetes runtime. " +
 		"Images should be built externally and pushed to a registry.")
 	return fmt.Errorf("building images directly is not supported in Kubernetes runtime")
 }
@@ -522,13 +522,13 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string) error 
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// If the statefulset doesn't exist, that's fine
-			logger.Log.Info(fmt.Sprintf("Statefulset %s not found, nothing to remove", containerID))
+			logger.Log.Infof("Statefulset %s not found, nothing to remove", containerID)
 			return nil
 		}
 		return fmt.Errorf("failed to delete statefulset %s: %w", containerID, err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Deleted statefulset %s", containerID))
+	logger.Log.Infof("Deleted statefulset %s", containerID)
 	return nil
 }
 
@@ -564,8 +564,8 @@ func waitForStatefulSetReady(ctx context.Context, clientset *kubernetes.Clientse
 			return true, nil
 		}
 
-		logger.Log.Info(fmt.Sprintf("Waiting for statefulset %s to be ready (%d/%d replicas ready)...",
-			name, statefulSet.Status.ReadyReplicas, *statefulSet.Spec.Replicas))
+		logger.Log.Infof("Waiting for statefulset %s to be ready (%d/%d replicas ready)...",
+			name, statefulSet.Status.ReadyReplicas, *statefulSet.Spec.Replicas)
 		return false, nil
 	}
 
@@ -777,7 +777,7 @@ func (c *Client) createHeadlessService(
 
 	// If no ports were configured, don't create a service
 	if len(servicePorts) == 0 {
-		logger.Log.Info("No ports configured for SSE transport, skipping service creation")
+		logger.Log.Infof("No ports configured for SSE transport, skipping service creation")
 		return nil
 	}
 
@@ -813,7 +813,7 @@ func (c *Client) createHeadlessService(
 		return fmt.Errorf("failed to apply service: %v", err)
 	}
 
-	logger.Log.Info(fmt.Sprintf("Created headless service %s for SSE transport", containerName))
+	logger.Log.Infof("Created headless service %s for SSE transport", containerName)
 	return nil
 }
 

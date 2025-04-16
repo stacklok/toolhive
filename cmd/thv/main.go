@@ -16,7 +16,7 @@ func main() {
 	checkForUpdates()
 
 	if err := app.NewRootCmd().Execute(); err != nil {
-		logger.Log.Error("%v, %v", os.Stderr, err)
+		logger.Log.Errorf("%v, %v", os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -26,12 +26,12 @@ func checkForUpdates() {
 	updateChecker, err := updates.NewUpdateChecker(versionClient)
 	// treat update-related errors as non-fatal
 	if err != nil {
-		logger.Log.Error("unable to create update client: %w", err)
+		logger.Log.Errorf("unable to create update client: %w", err)
 		return
 	}
 
 	err = updateChecker.CheckLatestVersion()
 	if err != nil {
-		logger.Log.Error("error while checking for updates: %w", err)
+		logger.Log.Errorf("error while checking for updates: %w", err)
 	}
 }

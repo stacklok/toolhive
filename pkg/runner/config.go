@@ -177,7 +177,7 @@ func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
 	if err != nil {
 		return c, err
 	}
-	logger.Log.Info(fmt.Sprintf("Using host port: %d", selectedPort))
+	logger.Log.Infof("Using host port: %d", selectedPort)
 	c.Port = selectedPort
 
 	// Select a target port for the container if using SSE transport
@@ -186,7 +186,7 @@ func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
 		if err != nil {
 			return c, fmt.Errorf("target port error: %w", err)
 		}
-		logger.Log.Info(fmt.Sprintf("Using target port: %d", selectedTargetPort))
+		logger.Log.Infof("Using target port: %d", selectedTargetPort)
 		c.TargetPort = selectedTargetPort
 	}
 
@@ -333,9 +333,9 @@ func (c *RunConfig) ProcessVolumeMounts() error {
 			c.PermissionProfile.Write = append(c.PermissionProfile.Write, mount)
 		}
 
-		logger.Log.Info(fmt.Sprintf("Adding volume mount: %s -> %s (%s)",
+		logger.Log.Infof("Adding volume mount: %s -> %s (%s)",
 			source, target,
-			map[bool]string{true: "read-only", false: "read-write"}[readOnly]))
+			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
 	}
 
 	return nil

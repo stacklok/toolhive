@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"sync"
 
@@ -21,7 +20,7 @@ func GetConfig() *Config {
 		if appConfig == nil {
 			appConfig, err := LoadOrCreateConfig()
 			if err != nil {
-				logger.Log.Error(fmt.Sprintf("error loading configuration: %v", err))
+				logger.Log.Errorf("error loading configuration: %v", err)
 				os.Exit(1)
 			}
 

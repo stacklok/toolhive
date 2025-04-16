@@ -79,7 +79,7 @@ func GetSecretsPassword() ([]byte, error) {
 
 	// If the keyring is available, we can store the password for future use.
 	if keyringAvailable {
-		logger.Log.Info("writing password to os keyring")
+		logger.Log.Infof("writing password to os keyring")
 		err = keyring.Set(keyringService, keyringService, string(password))
 		if err != nil {
 			return nil, fmt.Errorf("failed to store password in keyring: %w", err)
@@ -93,7 +93,7 @@ func readPasswordStdin() ([]byte, error) {
 	fmt.Print("Enter a password for secrets encryption and decryption: ")
 	password, err := term.ReadPassword(int(os.Stdin.Fd()))
 	// Start new line after receiving password to ensure errors are printed correctly.
-	logger.Log.Info("")
+	logger.Log.Infof("")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read password: %w", err)
 	}

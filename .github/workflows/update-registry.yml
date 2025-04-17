@@ -1,0 +1,75 @@
+name: Update Registry
+
+on:
+  schedule:
+    # Run every hour
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    # Allow manual triggering
+    inputs:
+      count:
+        description: 'Number of entries to update'
+        required: false
+        default: 3
+        type: number
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build regup command
+        run: go build -o bin/regup ./cmd/regup
+
+      - name: Set count
+        id: set-count
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "count=${{ github.event.inputs.count }}" >> $GITHUB_OUTPUT
+          else
+            echo "count=3" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update registry
+        id: update
+        run: |
+          # Run regup with the specified count
+          ./bin/regup update --count ${{ steps.set-count.outputs.count }}
+          
+          # Check if there are changes
+          if git diff --exit-code pkg/registry/data/registry.json; then
+            echo "changes=false" >> $GITHUB_OUTPUT
+            echo "No changes to the registry"
+          else
+            echo "changes=true" >> $GITHUB_OUTPUT
+            echo "Changes detected in the registry"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Pull Request
+        if: steps.update.outputs.changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Update registry with latest stars and pulls"
+          title: "Update registry with latest stars and pulls"
+          body: |
+            This PR updates the registry with the latest GitHub stars and pulls information.
+            
+            The update was performed automatically by the `regup` command.
+          branch: update-registry
+          base: main
+          delete-branch: true

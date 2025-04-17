@@ -33,7 +33,8 @@ var updateCmd = &cobra.Command{
 func init() {
 	updateCmd.Flags().IntVarP(&count, "count", "c", 1, "Number of entries to update (default 1)")
 	updateCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", false, "Perform a dry run without making changes")
-	updateCmd.Flags().StringVarP(&githubToken, "github-token", "t", "", "GitHub token for API authentication (can also be set via GITHUB_TOKEN env var)")
+	updateCmd.Flags().StringVarP(&githubToken, "github-token", "t", "",
+		"GitHub token for API authentication (can also be set via GITHUB_TOKEN env var)")
 }
 
 func updateCmdFunc(_ *cobra.Command, _ []string) error {
@@ -44,6 +45,7 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 
 	// Read the registry file directly
 	registryPath := filepath.Join("pkg", "registry", "data", "registry.json")
+	// #nosec G304 -- This is a known file path
 	data, err := os.ReadFile(registryPath)
 	if err != nil {
 		return fmt.Errorf("failed to read registry file: %w", err)
@@ -261,6 +263,7 @@ func saveRegistry(reg *registry.Registry, updatedServers []string) error {
 	registryPath := filepath.Join("pkg", "registry", "data", "registry.json")
 
 	// Read the original file
+	// #nosec G304 -- This is a known file path
 	originalData, err := os.ReadFile(registryPath)
 	if err != nil {
 		return fmt.Errorf("failed to read registry file: %w", err)
@@ -315,7 +318,8 @@ func saveRegistry(reg *registry.Registry, updatedServers []string) error {
 	}
 
 	// Write the file
-	if err := os.WriteFile(registryPath, data, 0644); err != nil {
+	// #nosec G306 -- This is a public registry file
+	if err := os.WriteFile(registryPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write registry file: %w", err)
 	}
 

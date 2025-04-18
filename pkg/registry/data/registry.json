@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-04-18 07:04:25",
+  "last_updated": "2025-04-18 08:05:10",
   "servers": {
     "atlassian": {
       "args": [],
@@ -571,9 +571,9 @@
       ],
       "image": "mcp/gdrive:latest",
       "metadata": {
-        "last_updated": "2024-12-20T21:45:48.670733Z",
-        "pulls": 647,
-        "stars": 2
+        "last_updated": "2025-04-18T08:05:10Z",
+        "pulls": 738,
+        "stars": 37800
       },
       "permissions": {
         "network": {
@@ -1498,9 +1498,9 @@
       "env_vars": [],
       "image": "mcp/sequentialthinking:latest",
       "metadata": {
-        "last_updated": "2024-12-20T16:15:56.759355Z",
-        "pulls": 4031,
-        "stars": 0
+        "last_updated": "2025-04-18T08:05:10Z",
+        "pulls": 4124,
+        "stars": 37800
       },
       "permissions": {
         "network": {
@@ -1555,9 +1555,9 @@
       ],
       "image": "mcp/slack:latest",
       "metadata": {
-        "last_updated": "2024-12-20T16:16:05.464285Z",
-        "pulls": 627,
-        "stars": 2
+        "last_updated": "2025-04-18T08:05:10Z",
+        "pulls": 703,
+        "stars": 37800
       },
       "permissions": {
         "network": {

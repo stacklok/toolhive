@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-04-18 18:05:04",
+  "last_updated": "2025-04-18 19:03:44",
   "servers": {
     "atlassian": {
       "args": [],
@@ -764,9 +764,9 @@
       ],
       "image": "mcp/gitlab:latest",
       "metadata": {
-        "last_updated": "2025-04-18T06:05:33Z",
-        "pulls": 921,
-        "stars": 37736
+        "last_updated": "2025-04-18T19:03:44Z",
+        "pulls": 998,
+        "stars": 38002
       },
       "permissions": {
         "network": {
@@ -1032,9 +1032,9 @@
       ],
       "image": "mcp/memory:latest",
       "metadata": {
-        "last_updated": "2025-04-18T07:04:24Z",
-        "pulls": 2629,
-        "stars": 37772
+        "last_updated": "2025-04-18T19:03:44Z",
+        "pulls": 2744,
+        "stars": 38002
       },
       "permissions": {
         "network": {
@@ -1191,9 +1191,9 @@
       "env_vars": [],
       "image": "mcp/postgres:latest",
       "metadata": {
-        "last_updated": "2025-04-18T07:04:25Z",
-        "pulls": 3478,
-        "stars": 37772
+        "last_updated": "2025-04-18T19:03:44Z",
+        "pulls": 3615,
+        "stars": 38002
       },
       "permissions": {
         "network": {

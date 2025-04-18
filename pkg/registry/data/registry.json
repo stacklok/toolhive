@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-04-18 14:03:56",
+  "last_updated": "2025-04-18 15:04:01",
   "servers": {
     "atlassian": {
       "args": [],
@@ -616,9 +616,9 @@
       "env_vars": [],
       "image": "mcp/git:latest",
       "metadata": {
-        "last_updated": "2025-04-17T15:32:12+03:00",
-        "pulls": 1820,
-        "stars": 37414
+        "last_updated": "2025-04-18T15:04:01Z",
+        "pulls": 1894,
+        "stars": 37926
       },
       "permissions": {
         "network": {
@@ -1097,9 +1097,9 @@
       ],
       "image": "aantti/mcp-netbird:latest",
       "metadata": {
-        "last_updated": "2025-04-15T17:21:00Z",
-        "pulls": 0,
-        "stars": 27
+        "last_updated": "2025-04-18T15:04:01Z",
+        "pulls": 94,
+        "stars": 28
       },
       "permissions": {
         "network": {
@@ -1658,9 +1658,9 @@
       "env_vars": [],
       "image": "mcp/time:latest",
       "metadata": {
-        "last_updated": "2025-04-17T15:34:59+03:00",
-        "pulls": 1590,
-        "stars": 37416
+        "last_updated": "2025-04-18T15:04:01Z",
+        "pulls": 1671,
+        "stars": 37926
       },
       "permissions": {
         "network": {

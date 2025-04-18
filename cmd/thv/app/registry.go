@@ -61,7 +61,7 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 
 	// Sort servers by name
 	sort.Slice(servers, func(i, j int) bool {
-		return servers[i].Image < servers[j].Image
+		return servers[i].Name < servers[j].Name
 	})
 
 	// Output based on format

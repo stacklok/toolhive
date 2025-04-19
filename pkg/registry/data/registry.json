@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-04-19 05:04:10",
+  "last_updated": "2025-04-19 06:05:00",
   "servers": {
     "atlassian": {
       "args": [],
@@ -889,9 +889,9 @@
       ],
       "image": "grafana/grafana-oss:latest",
       "metadata": {
-        "last_updated": "2025-04-18T13:09:11Z",
-        "pulls": 70,
-        "stars": 538
+        "last_updated": "2025-04-19T06:05:00Z",
+        "pulls": 140,
+        "stars": 542
       },
       "permissions": {
         "network": {
@@ -974,9 +974,9 @@
       ],
       "image": "voska/hass-mcp:latest",
       "metadata": {
-        "last_updated": "2025-04-18T13:09:11Z",
-        "pulls": 146,
-        "stars": 52
+        "last_updated": "2025-04-19T06:05:00Z",
+        "pulls": 292,
+        "stars": 53
       },
       "permissions": {
         "network": {
@@ -1152,9 +1152,9 @@
       ],
       "image": "mcp/perplexity-ask:latest",
       "metadata": {
-        "last_updated": "2025-04-18T09:04:09Z",
-        "pulls": 680,
-        "stars": 37823
+        "last_updated": "2025-04-19T06:05:00Z",
+        "pulls": 804,
+        "stars": 38146
       },
       "permissions": {
         "network": {

@@ -60,7 +60,7 @@ func init() {
 	runCmd.Flags().StringVar(
 		&runPermissionProfile,
 		"permission-profile",
-		permissions.ProfileNone,
+		permissions.ProfileNetwork,
 		"Permission profile to use (none, network, or path to JSON file)",
 	)
 	runCmd.Flags().StringArrayVarP(

@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-04-19 14:03:57",
+  "last_updated": "2025-04-19 16:04:04",
   "servers": {
     "atlassian": {
       "args": [],
@@ -78,9 +78,9 @@
       ],
       "image": "mcp/atlassian:latest",
       "metadata": {
-        "last_updated": "2025-04-19T05:04:09Z",
-        "pulls": 309,
-        "stars": 991
+        "last_updated": "2025-04-19T16:04:04Z",
+        "pulls": 419,
+        "stars": 1000
       },
       "permissions": {
         "network": {
@@ -571,9 +571,9 @@
       ],
       "image": "mcp/gdrive:latest",
       "metadata": {
-        "last_updated": "2025-04-19T05:04:09Z",
-        "pulls": 829,
-        "stars": 38126
+        "last_updated": "2025-04-19T16:04:04Z",
+        "pulls": 920,
+        "stars": 38287
       },
       "permissions": {
         "network": {
@@ -1243,9 +1243,9 @@
       ],
       "image": "mcp/puppeteer:latest",
       "metadata": {
-        "last_updated": "2025-04-19T04:04:48Z",
-        "pulls": 7267,
-        "stars": 38114
+        "last_updated": "2025-04-19T16:04:04Z",
+        "pulls": 7403,
+        "stars": 38287
       },
       "permissions": {
         "network": {

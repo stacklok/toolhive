@@ -13,7 +13,10 @@ func main() {
 	// Initialize the logger system
 	logger.Initialize()
 
-	checkForUpdates()
+	// Skip update check for completion command
+	if !app.IsCompletionCommand(os.Args) {
+		checkForUpdates()
+	}
 
 	if err := app.NewRootCmd().Execute(); err != nil {
 		logger.Log.Errorf("%v, %v", os.Stderr, err)

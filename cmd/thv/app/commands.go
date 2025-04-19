@@ -43,3 +43,11 @@ func NewRootCmd() *cobra.Command {
 
 	return rootCmd
 }
+
+// IsCompletionCommand checks if the command being run is the completion command
+func IsCompletionCommand(args []string) bool {
+	if len(args) > 1 {
+		return args[1] == "completion"
+	}
+	return false
+}

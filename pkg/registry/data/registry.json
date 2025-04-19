@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-04-19 09:03:59",
+  "last_updated": "2025-04-19 10:03:57",
   "servers": {
     "atlassian": {
       "args": [],
@@ -167,9 +167,9 @@
       ],
       "image": "mcp/aws-kb-retrieval-server:latest",
       "metadata": {
-        "last_updated": "2025-04-18T16:04:24Z",
-        "pulls": 395,
-        "stars": 37951
+        "last_updated": "2025-04-19T10:03:57Z",
+        "pulls": 453,
+        "stars": 38204
       },
       "permissions": {
         "network": {
@@ -313,9 +313,9 @@
       "env_vars": [],
       "image": "mcp/everything:latest",
       "metadata": {
-        "last_updated": "2025-04-18T17:03:44Z",
-        "pulls": 574,
-        "stars": 37973
+        "last_updated": "2025-04-19T10:03:57Z",
+        "pulls": 717,
+        "stars": 38204
       },
       "permissions": {
         "network": {
@@ -1609,9 +1609,9 @@
       "env_vars": [],
       "image": "mcp/sqlite:latest",
       "metadata": {
-        "last_updated": "2025-04-18T17:03:44Z",
-        "pulls": 2202,
-        "stars": 37973
+        "last_updated": "2025-04-19T10:03:57Z",
+        "pulls": 2310,
+        "stars": 38204
       },
       "permissions": {
         "network": {

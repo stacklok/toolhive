@@ -1,4 +1,4 @@
-FROM python:3.12-alpine
+FROM python:3.12-slim
 
 # Install uv package manager
 RUN pip install --no-cache-dir uv
@@ -7,10 +7,12 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 
 # Create a non-root user to run the application and set proper permissions
-RUN addgroup -S appgroup && \
-    adduser -S appuser -G appgroup && \
+RUN groupadd -r appgroup && \
+    useradd -r -g appgroup -m appuser && \
     mkdir -p /app && \
-    chown -R appuser:appgroup /app
+    chown -R appuser:appgroup /app && \
+    mkdir -p /home/appuser/.cache && \
+    chown -R appuser:appgroup /home/appuser
 
 # Set environment variables for better performance in containers
 ENV PYTHONDONTWRITEBYTECODE=1 \

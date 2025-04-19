@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-04-19 08:04:45",
+  "last_updated": "2025-04-19 09:03:59",
   "servers": {
     "atlassian": {
       "args": [],
@@ -363,9 +363,9 @@
       "env_vars": [],
       "image": "mcp/fetch:latest",
       "metadata": {
-        "last_updated": "2025-04-18T16:04:23Z",
-        "pulls": 4110,
-        "stars": 37951
+        "last_updated": "2025-04-19T09:03:59Z",
+        "pulls": 4182,
+        "stars": 38186
       },
       "permissions": {
         "network": {
@@ -1097,8 +1097,8 @@
       ],
       "image": "aantti/mcp-netbird:latest",
       "metadata": {
-        "last_updated": "2025-04-18T15:04:01Z",
-        "pulls": 94,
+        "last_updated": "2025-04-19T09:03:58Z",
+        "pulls": 188,
         "stars": 28
       },
       "permissions": {
@@ -1459,9 +1459,9 @@
       ],
       "image": "mcp/sentry:latest",
       "metadata": {
-        "last_updated": "2025-04-18T16:04:23Z",
-        "pulls": 509,
-        "stars": 37951
+        "last_updated": "2025-04-19T09:03:58Z",
+        "pulls": 636,
+        "stars": 38186
       },
       "permissions": {
         "network": {

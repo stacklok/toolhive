@@ -21,7 +21,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				MCPArgs:    []string{"--arg1", "--arg2", "value"},
 			},
 			wantContains: []string{
-				"FROM python:3.12-alpine",
+				"FROM python:3.12-slim",
 				"RUN pip install --no-cache-dir uv",
 				"ENTRYPOINT [\"uvx\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
 			},

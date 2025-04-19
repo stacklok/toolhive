@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-04-19 06:05:00",
+  "last_updated": "2025-04-19 07:03:47",
   "servers": {
     "atlassian": {
       "args": [],
@@ -507,9 +507,9 @@
       ],
       "image": "mcp/firecrawl:latest",
       "metadata": {
-        "last_updated": "2025-04-18T13:09:12Z",
-        "pulls": 109,
-        "stars": 2574
+        "last_updated": "2025-04-19T07:03:47Z",
+        "pulls": 218,
+        "stars": 2591
       },
       "permissions": {
         "network": {
@@ -677,9 +677,9 @@
       ],
       "image": "ghcr.io/github/github-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-04-18T14:03:56Z",
+        "last_updated": "2025-04-19T07:03:47Z",
         "pulls": 5000,
-        "stars": 11585
+        "stars": 11646
       },
       "permissions": {
         "network": {
@@ -1400,9 +1400,9 @@
       ],
       "image": "ghcr.io/semgrep/mcp:latest",
       "metadata": {
-        "last_updated": "2025-04-18T14:03:56Z",
-        "pulls": 105,
-        "stars": 115
+        "last_updated": "2025-04-19T07:03:47Z",
+        "pulls": 210,
+        "stars": 118
       },
       "permissions": {
         "network": {

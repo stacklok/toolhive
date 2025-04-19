@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-04-19 11:03:46",
+  "last_updated": "2025-04-19 12:05:38",
   "servers": {
     "atlassian": {
       "args": [],
@@ -826,9 +826,9 @@
       ],
       "image": "mcp/google-maps:latest",
       "metadata": {
-        "last_updated": "2025-04-18T18:05:04Z",
-        "pulls": 681,
-        "stars": 37984
+        "last_updated": "2025-04-19T12:05:38Z",
+        "pulls": 746,
+        "stars": 38236
       },
       "permissions": {
         "network": {
@@ -1032,9 +1032,9 @@
       ],
       "image": "mcp/memory:latest",
       "metadata": {
-        "last_updated": "2025-04-18T19:03:44Z",
-        "pulls": 2744,
-        "stars": 38002
+        "last_updated": "2025-04-19T12:05:38Z",
+        "pulls": 2859,
+        "stars": 38236
       },
       "permissions": {
         "network": {
@@ -1191,9 +1191,9 @@
       "env_vars": [],
       "image": "mcp/postgres:latest",
       "metadata": {
-        "last_updated": "2025-04-18T19:03:44Z",
-        "pulls": 3615,
-        "stars": 38002
+        "last_updated": "2025-04-19T12:05:38Z",
+        "pulls": 3752,
+        "stars": 38236
       },
       "permissions": {
         "network": {

@@ -2,15 +2,15 @@ name: Update Registry
 
 on:
   schedule:
-    # Run every hour
-    - cron: '0 * * * *'
+    # Run once a day at midnight UTC
+    - cron: '0 0 * * *'
   workflow_dispatch:
     # Allow manual triggering
     inputs:
       count:
         description: 'Number of entries to update'
         required: false
-        default: 3
+        default: 150
         type: number
 
 permissions:
@@ -39,7 +39,7 @@ jobs:
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             echo "count=${{ github.event.inputs.count }}" >> $GITHUB_OUTPUT
           else
-            echo "count=3" >> $GITHUB_OUTPUT
+            echo "count=150" >> $GITHUB_OUTPUT
           fi
 
       - name: Update registry

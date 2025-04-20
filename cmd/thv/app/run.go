@@ -18,13 +18,29 @@ import (
 )
 
 var runCmd = &cobra.Command{
-	Use:   "run [flags] SERVER_OR_IMAGE [-- ARGS...]",
+	Use:   "run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]",
 	Short: "Run an MCP server",
-	Long: `Run an MCP server in a container with the specified server name or image and arguments.
-If a server name is provided, it will first try to find it in the registry.
-If found, it will use the registry defaults for transport, permissions, etc.
-If not found, it will treat the argument as a Docker image and run it directly.
-The container will be started with minimal permissions and the specified transport mode.`,
+	Long: `Run an MCP server with the specified name, image, or protocol scheme.
+
+ToolHive supports three ways to run an MCP server:
+
+1. From the registry:
+   $ thv run server-name [-- args...]
+   Looks up the server in the registry and uses its predefined settings
+   (transport, permissions, environment variables, etc.)
+
+2. From a container image:
+   $ thv run ghcr.io/example/mcp-server:latest [-- args...]
+   Runs the specified container image directly with the provided arguments
+
+3. Using a protocol scheme:
+   $ thv run uvx://package-name [-- args...]
+   $ thv run npx://package-name [-- args...]
+   Automatically generates a container that runs the specified package
+   using either uvx (Python with uv package manager) or npx (Node.js)
+
+The container will be started with the specified transport mode and
+permission profile. Additional configuration can be provided via flags.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runCmdFunc,
 	// Ignore unknown flags to allow passing flags to the MCP server

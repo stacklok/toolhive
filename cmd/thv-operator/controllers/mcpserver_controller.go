@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -45,7 +44,7 @@ type MCPServerReconciler struct {
 //
 //nolint:gocyclo
 func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+	ctxLogger := log.FromContext(ctx)
 
 	// Fetch the MCPServer instance
 	mcpServer := &mcpv1alpha1.MCPServer{}
@@ -54,11 +53,11 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if errors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
 			// Return and don't requeue
-			logger.Info("MCPServer resource not found. Ignoring since object must be deleted")
+			ctxLogger.Info("MCPServer resource not found. Ignoring since object must be deleted")
 			return ctrl.Result{}, nil
 		}
 		// Error reading the object - requeue the request.
-		logger.Error(err, "Failed to get MCPServer")
+		ctxLogger.Error(err, "Failed to get MCPServer")
 		return ctrl.Result{}, err
 	}
 
@@ -93,7 +92,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Update the MCPServer status with the pod status
 	if err := r.updateMCPServerStatus(ctx, mcpServer); err != nil {
-		logger.Error(err, "Failed to update MCPServer status")
+		ctxLogger.Error(err, "Failed to update MCPServer status")
 		return ctrl.Result{}, err
 	}
 
@@ -104,19 +103,19 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Define a new deployment
 		dep := r.deploymentForMCPServer(mcpServer)
 		if dep == nil {
-			logger.Error(nil, "Failed to create Deployment object")
+			ctxLogger.Error(nil, "Failed to create Deployment object")
 			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
 		}
-		logger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+		ctxLogger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 		err = r.Create(ctx, dep)
 		if err != nil {
-			logger.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+			ctxLogger.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 			return ctrl.Result{}, err
 		}
 		// Deployment created successfully - return and requeue
 		return ctrl.Result{Requeue: true}, nil
 	} else if err != nil {
-		logger.Error(err, "Failed to get Deployment")
+		ctxLogger.Error(err, "Failed to get Deployment")
 		return ctrl.Result{}, err
 	}
 
@@ -125,7 +124,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		deployment.Spec.Replicas = int32Ptr(1)
 		err = r.Update(ctx, deployment)
 		if err != nil {
-			logger.Error(err, "Failed to update Deployment",
+			ctxLogger.Error(err, "Failed to update Deployment",
 				"Deployment.Namespace", deployment.Namespace,
 				"Deployment.Name", deployment.Name)
 			return ctrl.Result{}, err
@@ -141,19 +140,19 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Define a new service
 		svc := r.serviceForMCPServer(mcpServer)
 		if svc == nil {
-			logger.Error(nil, "Failed to create Service object")
+			ctxLogger.Error(nil, "Failed to create Service object")
 			return ctrl.Result{}, fmt.Errorf("failed to create Service object")
 		}
-		logger.Info("Creating a new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
+		ctxLogger.Info("Creating a new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
 		err = r.Create(ctx, svc)
 		if err != nil {
-			logger.Error(err, "Failed to create new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
+			ctxLogger.Error(err, "Failed to create new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
 			return ctrl.Result{}, err
 		}
 		// Service created successfully - return and requeue
 		return ctrl.Result{Requeue: true}, nil
 	} else if err != nil {
-		logger.Error(err, "Failed to get Service")
+		ctxLogger.Error(err, "Failed to get Service")
 		return ctrl.Result{}, err
 	}
 
@@ -162,7 +161,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		mcpServer.Status.URL = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", service.Name, service.Namespace, mcpServer.Spec.Port)
 		err = r.Status().Update(ctx, mcpServer)
 		if err != nil {
-			logger.Error(err, "Failed to update MCPServer status")
+			ctxLogger.Error(err, "Failed to update MCPServer status")
 			return ctrl.Result{}, err
 		}
 	}
@@ -174,7 +173,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		deployment.Spec = newDeployment.Spec
 		err = r.Update(ctx, deployment)
 		if err != nil {
-			logger.Error(err, "Failed to update Deployment",
+			ctxLogger.Error(err, "Failed to update Deployment",
 				"Deployment.Namespace", deployment.Namespace,
 				"Deployment.Name", deployment.Name)
 			return ctrl.Result{}, err
@@ -190,7 +189,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		service.Spec.Ports = newService.Spec.Ports
 		err = r.Update(ctx, service)
 		if err != nil {
-			logger.Error(err, "Failed to update Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
+			ctxLogger.Error(err, "Failed to update Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
 			return ctrl.Result{}, err
 		}
 		// Spec updated - return and requeue

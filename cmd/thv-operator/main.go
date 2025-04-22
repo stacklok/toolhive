@@ -47,9 +47,9 @@ func main() {
 
 	// Initialize the structured logger
 	logger.Initialize()
-	
+
 	// Set the controller-runtime logger to use our structured logger
-	ctrl.SetLogger(log.LoggerFrom(logger.Log))
+	ctrl.SetLogger(logger.ToLogr(logger.Log))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,

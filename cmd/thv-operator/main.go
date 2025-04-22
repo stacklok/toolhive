@@ -14,17 +14,18 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server" // Import for metricsserver
 	"sigs.k8s.io/controller-runtime/pkg/webhook"                      // Import for webhook
 
 	mcpv1alpha1 "github.com/StacklokLabs/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/StacklokLabs/toolhive/cmd/thv-operator/controllers"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
 )
 
 var (
 	scheme   = runtime.NewScheme()
-	setupLog = ctrl.Log.WithName("setup")
+	setupLog = log.Log.WithName("setup")
 )
 
 func init() {
@@ -42,13 +43,13 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	opts := zap.Options{
-		Development: true,
-	}
-	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	// Initialize the structured logger
+	logger.Initialize()
+	
+	// Set the controller-runtime logger to use our structured logger
+	ctrl.SetLogger(log.LoggerFrom(logger.Log))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,

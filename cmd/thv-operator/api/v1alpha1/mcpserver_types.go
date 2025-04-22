@@ -101,9 +101,9 @@ type ResourceList struct {
 
 // SecretRef is a reference to a secret
 type SecretRef struct {
-	// Name is the name of the secret
+	// Key is the name of the secret
 	// +kubebuilder:validation:Required
-	Name string `json:"name"`
+	Key string `json:"key"`
 
 	// Target is the environment variable to set with the secret value
 	// +kubebuilder:validation:Required

@@ -143,15 +143,15 @@ spec:
                 items:
                   description: SecretRef is a reference to a secret
                   properties:
-                    name:
-                      description: Name is the name of the secret
+                    key:
+                      description: Key is the name of the secret
                       type: string
                     target:
                       description: Target is the environment variable to set with
                         the secret value
                       type: string
                   required:
-                  - name
+                  - key
                   - target
                   type: object
                 type: array

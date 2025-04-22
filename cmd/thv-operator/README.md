@@ -96,7 +96,7 @@ spec:
     type: builtin
     name: network
   secrets:
-    - name: github-token
+    - key: github-token
       target: GITHUB_PERSONAL_ACCESS_TOKEN
 ```
 

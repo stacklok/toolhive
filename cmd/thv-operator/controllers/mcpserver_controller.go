@@ -5,6 +5,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 
@@ -22,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/StacklokLabs/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/StacklokLabs/toolhive/pkg/logger"
 )
 
 // MCPServerReconciler reconciles a MCPServer object
@@ -223,7 +225,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 	// Add secrets
 	for _, secret := range m.Spec.Secrets {
-		args = append(args, fmt.Sprintf("--secret=%s,target=%s", secret.Name, secret.Target))
+		args = append(args, fmt.Sprintf("--secret=%s,target=%s", secret.Key, secret.Target))
 	}
 
 	// Add the image
@@ -323,7 +325,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Image:        "ko://github.com/StacklokLabs/toolhive/cmd",
+						Image:        getOperatorImage(),
 						Name:         "toolhive",
 						Args:         args,
 						Env:          env,
@@ -343,7 +345,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 	// Set MCPServer instance as the owner and controller
 	if err := controllerutil.SetControllerReference(m, dep, r.Scheme); err != nil {
-		log.Log.Error(err, "Failed to set controller reference for Deployment")
+		logger.Log.Error("Failed to set controller reference for Deployment", err)
 		return nil
 	}
 	return dep
@@ -371,7 +373,7 @@ func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *cor
 
 	// Set MCPServer instance as the owner and controller
 	if err := controllerutil.SetControllerReference(m, svc, r.Scheme); err != nil {
-		log.Log.Error(err, "Failed to set controller reference for Service")
+		logger.Log.Error("Failed to set controller reference for Service", err)
 		return nil
 	}
 	return svc
@@ -450,7 +452,7 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 		container := deployment.Spec.Template.Spec.Containers[0]
 
 		// Check if the image has changed
-		if !strings.Contains(container.Image, "ko://github.com/StacklokLabs/toolhive/cmd") {
+		if container.Image != getOperatorImage() {
 			return true
 		}
 
@@ -561,6 +563,17 @@ func labelsForMCPServer(name string) map[string]string {
 		"toolhive":                   "true",
 		"toolhive-name":              name,
 	}
+}
+
+// getOperatorImage returns the image to use for the operator
+func getOperatorImage() string {
+	// Get the image from the environment variable or use a default
+	image := os.Getenv("OPERATOR_IMAGE")
+	if image == "" {
+		// Default to the published image
+		image = "ghcr.io/stackloklabs/toolhive/operator:latest"
+	}
+	return image
 }
 
 // int32Ptr returns a pointer to an int32

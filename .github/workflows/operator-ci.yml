@@ -10,6 +10,9 @@ on:
       - 'go.sum'
       - '.github/workflows/operator-ci.yml'
 
+permissions:
+  contents: read
+
 jobs:
   linting:
     name: Linting

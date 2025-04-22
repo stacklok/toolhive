@@ -23,4 +23,6 @@ jobs:
     uses: ./.github/workflows/image-build-and-publish.yml
   operator-ci:
     name: Operator CI
+    permissions:
+      contents: read
     uses: ./.github/workflows/operator-ci.yml

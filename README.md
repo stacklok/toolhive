@@ -412,7 +412,7 @@ on ports `80` and `443`.
 
 Two built-in profiles are included for convenience:
 
-- `stdio`: Grants minimal permissions with no network access.
+- `none`: Grants minimal permissions with no network access.
 - `network`: Permits outbound network connections to any host on any port (not
   recommended for production use).
 

@@ -74,7 +74,7 @@ func handleProtocolScheme(ctx context.Context, runtime rt.Runtime, serverOrImage
 	// Generate a unique image name based on the package name
 	imageName := fmt.Sprintf("toolhivelocal/%s-%s:%s",
 		string(transportType),
-		strings.ReplaceAll(packageName, "/", "-"),
+		packageNameToImageName(packageName),
 		tag)
 
 	// Log the build process
@@ -89,4 +89,10 @@ func handleProtocolScheme(ctx context.Context, runtime rt.Runtime, serverOrImage
 	logger.Log.Infof("Successfully built Docker image: %s", imageName)
 
 	return imageName, nil
+}
+
+// Replace slashes with dashes to create a valid Docker image name. If there
+// is a version in the package name, the @ is replaced with a dash.
+func packageNameToImageName(packageName string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(packageName, "/", "-"), "@", "-")
 }

@@ -324,7 +324,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Image:        getOperatorImage(),
+						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",
 						Args:         args,
 						Env:          env,
@@ -450,8 +450,8 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {
 		container := deployment.Spec.Template.Spec.Containers[0]
 
-		// Check if the image has changed
-		if container.Image != getOperatorImage() {
+		// Check if the toolhive runner image has changed
+		if container.Image != getToolhiveRunnerImage() {
 			return true
 		}
 
@@ -564,13 +564,13 @@ func labelsForMCPServer(name string) map[string]string {
 	}
 }
 
-// getOperatorImage returns the image to use for the operator
-func getOperatorImage() string {
+// getToolhiveRunnerImage returns the image to use for the toolhive runner container
+func getToolhiveRunnerImage() string {
 	// Get the image from the environment variable or use a default
-	image := os.Getenv("OPERATOR_IMAGE")
+	image := os.Getenv("TOOLHIVE_RUNNER_IMAGE")
 	if image == "" {
 		// Default to the published image
-		image = "ghcr.io/stackloklabs/toolhive/operator:latest"
+		image = "ghcr.io/stackloklabs/toolhive:latest"
 	}
 	return image
 }

@@ -1,0 +1,186 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: toolhive-operator
+  namespace: toolhive-system
+  labels:
+    app.kubernetes.io/name: toolhive-operator
+    app.kubernetes.io/part-of: toolhive-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: toolhive-operator-manager-role
+  labels:
+    app.kubernetes.io/name: toolhive-operator
+    app.kubernetes.io/part-of: toolhive-operator
+rules:
+# Allow the operator to manage MCPServer resources
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcpservers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcpservers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcpservers/finalizers
+  verbs:
+  - update
+
+# Allow the operator to manage Deployments
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+
+# Allow the operator to manage Services
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+
+# Allow the operator to manage Pods
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+
+# Allow the operator to read ConfigMaps
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+
+# Allow the operator to read Secrets
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+
+# Allow the operator to manage events
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: toolhive-operator-manager-rolebinding
+  labels:
+    app.kubernetes.io/name: toolhive-operator
+    app.kubernetes.io/part-of: toolhive-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: toolhive-operator-manager-role
+subjects:
+- kind: ServiceAccount
+  name: toolhive-operator
+  namespace: toolhive-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: toolhive-operator-leader-election-role
+  namespace: toolhive-system
+  labels:
+    app.kubernetes.io/name: toolhive-operator
+    app.kubernetes.io/part-of: toolhive-operator
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: toolhive-operator-leader-election-rolebinding
+  namespace: toolhive-system
+  labels:
+    app.kubernetes.io/name: toolhive-operator
+    app.kubernetes.io/part-of: toolhive-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: toolhive-operator-leader-election-role
+subjects:
+- kind: ServiceAccount
+  name: toolhive-operator
+  namespace: toolhive-system

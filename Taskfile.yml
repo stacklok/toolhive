@@ -94,3 +94,99 @@ tasks:
       # We do the below commands because of some inconsistency between the secret and webhook caBundle. ref: https://github.com/kubernetes/ingress-nginx/issues/5968#issuecomment-849772666
       - CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}' --kubeconfig kconfig.yaml)
       - kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]' --kubeconfig kconfig.yaml
+
+  # Operator tasks
+  build-operator:
+    desc: Build the operator binary
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty || echo "dev"
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE:
+        sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
+    cmds:
+      - mkdir -p bin
+      - go build -ldflags "-s -w -X github.com/StacklokLabs/toolhive/cmd/thv-operator/app.Version={{.VERSION}} -X github.com/StacklokLabs/toolhive/cmd/thv-operator/app.Commit={{.COMMIT}} -X github.com/StacklokLabs/toolhive/cmd/thv-operator/app.BuildDate={{.BUILD_DATE}}" -o bin/thv-operator ./cmd/thv-operator
+
+  install-operator:
+    desc: Install the thv-operator binary to GOPATH/bin
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty || echo "dev"
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE:
+        sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
+    cmds:
+      - go install -ldflags "-s -w -X github.com/StacklokLabs/toolhive/cmd/thv-operator/app.Version={{.VERSION}} -X github.com/StacklokLabs/toolhive/cmd/thv-operator/app.Commit={{.COMMIT}} -X github.com/StacklokLabs/toolhive/cmd/thv-operator/app.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv-operator
+
+  build-operator-image:
+    desc: Build the operator image with ko
+    cmds:
+      - ko build --platform linux/amd64,linux/arm64 --local ./cmd/thv-operator
+
+  operator-install-crds:
+    desc: Install CRDs into the K8s cluster
+    cmds:
+      - kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
+
+  operator-uninstall-crds:
+    desc: Uninstall CRDs from the K8s cluster
+    cmds:
+      - kubectl delete -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
+
+  operator-deploy:
+    desc: Deploy operator to the K8s cluster
+    cmds:
+      - kubectl apply -f deploy/operator/namespace.yaml
+      - kubectl apply -f deploy/operator/rbac.yaml
+      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/operator/operator.yaml)
+
+  operator-undeploy:
+    desc: Undeploy operator from the K8s cluster
+    cmds:
+      - kubectl delete -f deploy/operator/operator.yaml
+      - kubectl delete -f deploy/operator/rbac.yaml
+      - kubectl delete -f deploy/operator/namespace.yaml
+
+  operator-test-k8s-apply:
+    desc: Builds the operator image, loads it into kind, and applies the Kubernetes manifests
+    vars:
+      IMAGE:
+        sh: ko build --platform linux/amd64 --local -B ./cmd/thv-operator | tail -n 1
+    cmds:
+      # gets the local kind kubeconfig
+      - kind get kubeconfig > kconfig.yaml
+      # Load the image into kind
+      - echo "Loading image {{.IMAGE}} into kind..."
+      - kind load docker-image {{.IMAGE}}
+      # Apply the CRDs
+      - echo "Applying CRDs..."
+      - kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml --kubeconfig kconfig.yaml
+      # Apply the operator manifests
+      - echo "Applying operator manifests..."
+      - kubectl apply -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/operator/operator.yaml) --kubeconfig kconfig.yaml
+
+  # Kubebuilder tasks
+  operator-generate:
+    desc: Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations
+    cmds:
+      - mkdir -p bin
+      - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
+      - $(go env GOPATH)/bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./cmd/thv-operator/..."
+
+  operator-manifests:
+    desc: Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects
+    cmds:
+      - mkdir -p bin
+      - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
+      - $(go env GOPATH)/bin/controller-gen rbac:roleName=manager-role crd webhook paths="./cmd/thv-operator/..." output:crd:artifacts:config=deploy/operator/crds output:rbac:artifacts:config=deploy/operator
+
+  operator-test:
+    desc: Run tests for the operator
+    cmds:
+      - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+      - KUBEBUILDER_ASSETS="$(shell setup-envtest use 1.28.0 -p path)" go test ./cmd/thv-operator/... -coverprofile cover.out

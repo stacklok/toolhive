@@ -56,3 +56,65 @@ jobs:
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
+
+  operator-image-build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+
+    env:
+      BASE_REPO: "ghcr.io/stackloklabs/toolhive/operator"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate CRDs
+        run: task operator-manifests
+
+      - name: Compute version number
+        id: version-string
+        run: |
+          DATE="$(date +%Y%m%d)"
+          COMMIT="$(git rev-parse --short HEAD)"
+          echo "tag=0.$DATE.$GITHUB_RUN_NUMBER+ref.$COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 #pin@v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup ko
+        uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+
+      - name: Build and Push Image to GHCR
+        run: |
+          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare -t $TAG ./cmd/thv-operator \
+            --image-label=org.opencontainers.image.source=https://github.com/StacklokLabs/toolhive,org.opencontainers.image.title="toolhive-operator",org.opencontainers.image.vendor=Stacklok
+
+      - name: Sign Image with Cosign
+        # This step uses the identity token to provision an ephemeral certificate
+        # against the sigstore community Fulcio instance.
+        run: |
+          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          # Sign the ko image
+          cosign sign -y $BASE_REPO:$TAG

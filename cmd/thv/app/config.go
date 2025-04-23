@@ -98,7 +98,7 @@ func secretsProviderCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Update the secrets provider type
-	err := config.GetConfig().Update(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) {
 		c.Secrets.ProviderType = provider
 	})
 	if err != nil {
@@ -124,7 +124,7 @@ func autoDiscoveryCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Update the auto-discovery setting
-	err := config.GetConfig().Update(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) {
 		c.Clients.AutoDiscovery = enabled
 		// If auto-discovery is enabled, update all registered clients with currently running MCPs
 		if enabled && len(c.Clients.RegisteredClients) > 0 {
@@ -155,7 +155,7 @@ func registerClientCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", clientType)
 	}
 
-	err := config.GetConfig().Update(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) {
 		// Check if client is already registered and skip.
 		for _, registeredClient := range c.Clients.RegisteredClients {
 			if registeredClient == clientType {
@@ -192,7 +192,7 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", clientType)
 	}
 
-	err := config.GetConfig().Update(func(c *config.Config) {
+	err := config.UpdateConfig(func(c *config.Config) {
 		// Find and remove the client from the registered clients list
 		found := false
 		for i, registeredClient := range c.Clients.RegisteredClients {

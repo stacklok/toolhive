@@ -132,9 +132,28 @@ func LoadOrCreateConfig() (*Config, error) {
 	return &config, nil
 }
 
-// Update locks the config file, applies the changes from the anonymous
-// function, writes to disk and unlocks the file.
-func (c *Config) Update(updateFn func(*Config)) error {
+// Save serializes the config struct and writes it to disk.
+func (c *Config) save() error {
+	configPath, err := getConfigPath()
+	if err != nil {
+		return fmt.Errorf("unable to fetch config path: %w", err)
+	}
+
+	configBytes, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("error serializing config file: %w", err)
+	}
+
+	err = os.WriteFile(configPath, configBytes, 0600)
+	if err != nil {
+		return fmt.Errorf("error writing config file: %w", err)
+	}
+	return nil
+}
+
+// UpdateConfig locks the config file, reads from disk, applies the changes
+// from the anonymous function, writes to disk and unlocks the file.
+func UpdateConfig(updateFn func(*Config)) error {
 	configPath, err := getConfigPath()
 	if err != nil {
 		return fmt.Errorf("unable to fetch config path: %w", err)
@@ -156,6 +175,11 @@ func (c *Config) Update(updateFn func(*Config)) error {
 	}
 	defer fileLock.Unlock()
 
+	c, err := LoadOrCreateConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config from disk: %w", err)
+	}
+
 	// Apply changes to the config file.
 	updateFn(c)
 
@@ -166,24 +190,5 @@ func (c *Config) Update(updateFn func(*Config)) error {
 	}
 
 	// Lock is released automatically when the function returns.
-	return nil
-}
-
-// Save serializes the config struct and writes it to disk.
-func (c *Config) save() error {
-	configPath, err := getConfigPath()
-	if err != nil {
-		return fmt.Errorf("unable to fetch config path: %w", err)
-	}
-
-	configBytes, err := yaml.Marshal(c)
-	if err != nil {
-		return fmt.Errorf("error serializing config file: %w", err)
-	}
-
-	err = os.WriteFile(configPath, configBytes, 0600)
-	if err != nil {
-		return fmt.Errorf("error writing config file: %w", err)
-	}
 	return nil
 }

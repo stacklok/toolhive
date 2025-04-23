@@ -50,6 +50,7 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 	// Create a temporary directory for the test
 	tempDir := t.TempDir()
 
+	// TODO: see if there's a way to avoid changing env vars during tests.
 	// Save original XDG_CONFIG_HOME
 	originalXDGConfigHome := os.Getenv("XDG_CONFIG_HOME")
 	t.Setenv("XDG_CONFIG_HOME", tempDir)
@@ -61,9 +62,7 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 
 	// Write the config file if one is provided
 	if cfg != nil {
-		// TODO: Check if the tests can be written in a way which don't
-		// involve writing the config file to disk.
-		err = cfg.Update(func(_ *config.Config) {})
+		err = config.UpdateConfig(func(c *config.Config) { *c = *cfg })
 		require.NoError(t, err)
 	}
 

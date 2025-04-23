@@ -90,7 +90,7 @@ jobs:
         run: |
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             # For main branch, use semver with -dev suffix
-            echo "tag=0.1.0-dev.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+            echo "tag=0.0.1-dev.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             # For tags, use the tag as is (assuming it's semver)
             TAG="${{ github.ref_name }}"
@@ -98,7 +98,7 @@ jobs:
           else
             # For other branches, use branch name and run number
             BRANCH="${{ github.ref_name }}"
-            echo "tag=0.1.0-$BRANCH.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+            echo "tag=0.0.1-$BRANCH.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Login to GitHub Container Registry

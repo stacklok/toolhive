@@ -15,3 +15,8 @@ jobs:
   docs:
     name: Docs
     uses: ./.github/workflows/verify-docgen.yml
+  operator-ci:
+    name: Operator CI
+    permissions:
+      contents: read
+    uses: ./.github/workflows/operator-ci.yml

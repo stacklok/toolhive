@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: toolhive-system
+  labels:
+    app.kubernetes.io/name: toolhive
+    app.kubernetes.io/part-of: toolhive-operator

@@ -1,0 +1,26 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github
+spec:
+  image: docker.io/mcp/github
+  transport: stdio
+  port: 8080
+  permissionProfile:
+    type: builtin
+    name: network
+  secrets:
+    - name: github-token
+      key: GITHUB_PERSONAL_ACCESS_TOKEN
+  env:
+    - name: GITHUB_API_URL
+      value: https://api.github.com
+    - name: LOG_LEVEL
+      value: info
+  resources:
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"

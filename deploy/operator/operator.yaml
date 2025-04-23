@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: toolhive-operator
+  namespace: toolhive-system
+  labels:
+    app.kubernetes.io/name: toolhive-operator
+    app.kubernetes.io/part-of: toolhive-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: toolhive-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: toolhive-operator
+        app.kubernetes.io/part-of: toolhive-operator
+    spec:
+      serviceAccountName: toolhive-operator
+      containers:
+      - name: manager
+        image: ko://github.com/StacklokLabs/toolhive/cmd/thv-operator
+        args:
+        - --leader-elect
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        ports:
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        - containerPort: 8081
+          name: health
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+      securityContext:
+        runAsNonRoot: true
+      terminationGracePeriodSeconds: 10

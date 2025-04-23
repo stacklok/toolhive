@@ -1,0 +1,113 @@
+name: Operator CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'cmd/thv-operator/**'
+      - 'deploy/operator/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/operator-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  linting:
+    name: Linting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@1481404843c368bc19ca9406f87d6e0fc97bdcfd # v7.0.0
+        with:
+          version: v2.0.1
+          args: --timeout=5m --path-prefix=cmd/thv-operator
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run tests
+        run: task operator-test
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build operator
+        run: task build-operator
+
+  generate-crds:
+    name: Generate CRDs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate CRDs
+        run: task operator-manifests
+
+      - name: Check for changes
+        id: git-check
+        run: |
+          git diff --exit-code deploy/operator/crds || echo "changes=true" >> $GITHUB_OUTPUT
+
+      - name: Fail if CRDs are not up to date
+        if: steps.git-check.outputs.changes == 'true'
+        run: |
+          echo "CRDs are not up to date. Please run 'task operator-manifests' and commit the changes."
+          exit 1

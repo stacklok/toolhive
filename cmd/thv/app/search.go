@@ -29,7 +29,7 @@ func init() {
 	rootCmd.AddCommand(searchCmd)
 
 	// Add flags for search command
-	searchCmd.Flags().StringVar(&searchFormat, "format", "text", "Output format (json or text)")
+	searchCmd.Flags().StringVar(&searchFormat, "format", FormatText, "Output format (json or text)")
 }
 
 func searchCmdFunc(_ *cobra.Command, args []string) error {
@@ -52,7 +52,7 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 
 	// Output based on format
 	switch searchFormat {
-	case "json":
+	case FormatJSON:
 		return printJSONSearchResults(servers)
 	default:
 		fmt.Printf("Found %d servers matching query: %s\n", len(servers), query)

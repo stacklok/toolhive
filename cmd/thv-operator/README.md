@@ -96,17 +96,23 @@ spec:
     type: builtin
     name: network
   secrets:
-    - key: github-token
-      target: GITHUB_PERSONAL_ACCESS_TOKEN
+    - name: github-token
+      key: token
+      targetEnvName: GITHUB_PERSONAL_ACCESS_TOKEN
 ```
 
 First, create the secret:
 
 ```bash
-kubectl create secret generic github-token --from-literal=GITHUB_PERSONAL_ACCESS_TOKEN=your-token
+kubectl create secret generic github-token --from-literal=token=your-token
 ```
 
 Then apply the MCPServer resource.
+
+The `secrets` field has the following parameters:
+- `name`: The name of the Kubernetes secret (required)
+- `key`: The key in the secret itself (required)
+- `targetEnvName`: The environment variable to be used when setting up the secret in the MCP server (optional). If left unspecified, it defaults to the key.
 
 ### Checking MCP Server Status
 

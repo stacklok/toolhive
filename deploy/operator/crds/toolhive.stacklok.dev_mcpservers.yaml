@@ -144,15 +144,19 @@ spec:
                   description: SecretRef is a reference to a secret
                   properties:
                     key:
-                      description: Key is the name of the secret
+                      description: Key is the key in the secret itself
                       type: string
-                    target:
-                      description: Target is the environment variable to set with
-                        the secret value
+                    name:
+                      description: Name is the name of the secret
+                      type: string
+                    targetEnvName:
+                      description: |-
+                        TargetEnvName is the environment variable to be used when setting up the secret in the MCP server
+                        If left unspecified, it defaults to the key
                       type: string
                   required:
                   - key
-                  - target
+                  - name
                   type: object
                 type: array
               transport:

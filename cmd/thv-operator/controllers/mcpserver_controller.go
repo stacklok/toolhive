@@ -224,7 +224,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 	// Add secrets
 	for _, secret := range m.Spec.Secrets {
-		args = append(args, fmt.Sprintf("--secret=%s,target=%s", secret.Key, secret.Target))
+		args = append(args, formatSecretArg(secret))
 	}
 
 	// Add the image
@@ -494,6 +494,21 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 			return true
 		}
 
+		// Check if the secrets have changed
+		for _, secret := range mcpServer.Spec.Secrets {
+			secretArg := formatSecretArg(secret)
+			found := false
+			for _, arg := range container.Args {
+				if arg == secretArg {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return true
+			}
+		}
+
 		// Check if the container port has changed
 		if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.Spec.Port {
 			return true
@@ -573,6 +588,15 @@ func getToolhiveRunnerImage() string {
 		image = "ghcr.io/stackloklabs/toolhive:latest"
 	}
 	return image
+}
+
+// formatSecretArg formats a secret reference into a command-line argument
+func formatSecretArg(secret mcpv1alpha1.SecretRef) string {
+	targetEnv := secret.Key
+	if secret.TargetEnvName != "" {
+		targetEnv = secret.TargetEnvName
+	}
+	return fmt.Sprintf("--secret=%s/%s,target=%s", secret.Name, secret.Key, targetEnv)
 }
 
 // int32Ptr returns a pointer to an int32

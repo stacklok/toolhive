@@ -101,13 +101,18 @@ type ResourceList struct {
 
 // SecretRef is a reference to a secret
 type SecretRef struct {
-	// Key is the name of the secret
+	// Name is the name of the secret
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Key is the key in the secret itself
 	// +kubebuilder:validation:Required
 	Key string `json:"key"`
 
-	// Target is the environment variable to set with the secret value
-	// +kubebuilder:validation:Required
-	Target string `json:"target"`
+	// TargetEnvName is the environment variable to be used when setting up the secret in the MCP server
+	// If left unspecified, it defaults to the key
+	// +optional
+	TargetEnvName string `json:"targetEnvName,omitempty"`
 }
 
 // Permission profile types

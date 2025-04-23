@@ -10,8 +10,8 @@ spec:
     type: builtin
     name: network
   secrets:
-    - key: github-token
-      target: GITHUB_PERSONAL_ACCESS_TOKEN
+    - name: github-token
+      key: GITHUB_PERSONAL_ACCESS_TOKEN
   env:
     - name: GITHUB_API_URL
       value: https://api.github.com

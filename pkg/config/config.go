@@ -4,17 +4,23 @@ package config
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path"
+	"time"
 
 	"github.com/adrg/xdg"
+	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 
 	"github.com/StacklokLabs/toolhive/pkg/logger"
 	"github.com/StacklokLabs/toolhive/pkg/secrets"
 )
+
+// lockTimeout is the maximum time to wait for a file lock
+const lockTimeout = 1 * time.Second
 
 // Config represents the configuration of the application.
 type Config struct {
@@ -91,7 +97,7 @@ func LoadOrCreateConfig() (*Config, error) {
 
 		// Persist the new default to disk.
 		logger.Log.Infof("initializing configuration file at %s", configPath)
-		err = config.WriteConfig()
+		err = config.save()
 		if err != nil {
 			return nil, fmt.Errorf("failed to write default config: %w", err)
 		}
@@ -116,7 +122,7 @@ func LoadOrCreateConfig() (*Config, error) {
 				_ = os.Remove(oldPath)
 			}
 			config.Secrets.ProviderType = string(secrets.EncryptedType)
-			err = config.WriteConfig()
+			err = config.save()
 			if err != nil {
 				fmt.Printf("error updating config: %v", err)
 			}
@@ -126,8 +132,8 @@ func LoadOrCreateConfig() (*Config, error) {
 	return &config, nil
 }
 
-// WriteConfig serializes the config struct and writes it to disk.
-func (c *Config) WriteConfig() error {
+// Save serializes the config struct and writes it to disk.
+func (c *Config) save() error {
 	configPath, err := getConfigPath()
 	if err != nil {
 		return fmt.Errorf("unable to fetch config path: %w", err)
@@ -142,5 +148,47 @@ func (c *Config) WriteConfig() error {
 	if err != nil {
 		return fmt.Errorf("error writing config file: %w", err)
 	}
+	return nil
+}
+
+// UpdateConfig locks the config file, reads from disk, applies the changes
+// from the anonymous function, writes to disk and unlocks the file.
+func UpdateConfig(updateFn func(*Config)) error {
+	configPath, err := getConfigPath()
+	if err != nil {
+		return fmt.Errorf("unable to fetch config path: %w", err)
+	}
+
+	// Code mostly copy-pasta from client package. This could possibly be
+	// refactored into shared logic.
+	fileLock := flock.New(configPath)
+	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
+	defer cancel()
+
+	// Try and acquire a file lock.
+	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
+	}
+	defer fileLock.Unlock()
+
+	c, err := LoadOrCreateConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config from disk: %w", err)
+	}
+
+	// Apply changes to the config file.
+	updateFn(c)
+
+	// Write the updated config to disk.
+	err = c.save()
+	if err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	// Lock is released automatically when the function returns.
 	return nil
 }

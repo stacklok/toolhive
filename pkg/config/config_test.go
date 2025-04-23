@@ -109,10 +109,10 @@ func TestLoadOrCreateConfig(t *testing.T) {
 	})
 }
 
-func TestWriteConfig(t *testing.T) {
+func TestSave(t *testing.T) {
 	logger.Initialize()
 
-	t.Run("TestWriteConfig", func(t *testing.T) {
+	t.Run("TestSave", func(t *testing.T) {
 		// Create a temporary directory for the test
 		tempDir := t.TempDir()
 
@@ -135,7 +135,7 @@ func TestWriteConfig(t *testing.T) {
 		}
 
 		// Write the config
-		err := config.WriteConfig()
+		err := config.save()
 		require.NoError(t, err)
 
 		// Verify the file was created

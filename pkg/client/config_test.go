@@ -61,7 +61,9 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 
 	// Write the config file if one is provided
 	if cfg != nil {
-		err = cfg.WriteConfig()
+		// TODO: Check if the tests can be written in a way which don't
+		// involve writing the config file to disk.
+		err = cfg.Update(func(_ *config.Config) {})
 		require.NoError(t, err)
 	}
 

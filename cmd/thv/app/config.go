@@ -97,15 +97,12 @@ func secretsProviderCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted)", provider)
 	}
 
-	// Get the current config
-	cfg := config.GetConfig()
-
 	// Update the secrets provider type
-	cfg.Secrets.ProviderType = provider
-
-	// Save the updated config
-	if err := cfg.WriteConfig(); err != nil {
-		return fmt.Errorf("failed to save configuration: %w", err)
+	err := config.GetConfig().Update(func(c *config.Config) {
+		c.Secrets.ProviderType = provider
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
 	fmt.Printf("Secrets provider type updated to: %s\n", provider)
@@ -126,27 +123,23 @@ func autoDiscoveryCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid boolean value: %s (valid values: true, false)", value)
 	}
 
-	// Get the current config
-	cfg := config.GetConfig()
-
 	// Update the auto-discovery setting
-	cfg.Clients.AutoDiscovery = enabled
-
-	// Save the updated config
-	if err := cfg.WriteConfig(); err != nil {
-		return fmt.Errorf("failed to save configuration: %w", err)
+	err := config.GetConfig().Update(func(c *config.Config) {
+		c.Clients.AutoDiscovery = enabled
+		// If auto-discovery is enabled, update all registered clients with currently running MCPs
+		if enabled && len(c.Clients.RegisteredClients) > 0 {
+			for _, clientName := range c.Clients.RegisteredClients {
+				if err := addRunningMCPsToClient(clientName); err != nil {
+					fmt.Printf("Warning: Failed to add running MCPs to client %s: %v\n", clientName, err)
+				}
+			}
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
 	fmt.Printf("Auto-discovery of MCP clients %s\n", map[bool]string{true: "enabled", false: "disabled"}[enabled])
-
-	// If auto-discovery is enabled, update all registered clients with currently running MCPs
-	if enabled && len(cfg.Clients.RegisteredClients) > 0 {
-		for _, clientName := range cfg.Clients.RegisteredClients {
-			if err := addRunningMCPsToClient(clientName); err != nil {
-				fmt.Printf("Warning: Failed to add running MCPs to client %s: %v\n", clientName, err)
-			}
-		}
-	}
 
 	return nil
 }
@@ -162,22 +155,20 @@ func registerClientCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", clientType)
 	}
 
-	// Get the current config
-	cfg := config.GetConfig()
-
-	// Check if client is already registered
-	for _, registeredClient := range cfg.Clients.RegisteredClients {
-		if registeredClient == clientType {
-			return fmt.Errorf("client %s is already registered", clientType)
+	err := config.GetConfig().Update(func(c *config.Config) {
+		// Check if client is already registered and skip.
+		for _, registeredClient := range c.Clients.RegisteredClients {
+			if registeredClient == clientType {
+				fmt.Printf("Client %s is already registered, skipping...\n", clientType)
+				return
+			}
 		}
-	}
 
-	// Add the client to the registered clients list
-	cfg.Clients.RegisteredClients = append(cfg.Clients.RegisteredClients, clientType)
-
-	// Save the updated config
-	if err := cfg.WriteConfig(); err != nil {
-		return fmt.Errorf("failed to save configuration: %w", err)
+		// Add the client to the registered clients list
+		c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, clientType)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
 	fmt.Printf("Successfully registered client: %s\n", clientType)
@@ -201,27 +192,25 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", clientType)
 	}
 
-	// Get the current config
-	cfg := config.GetConfig()
-
-	// Find and remove the client from the registered clients list
-	found := false
-	for i, registeredClient := range cfg.Clients.RegisteredClients {
-		if registeredClient == clientType {
-			// Remove the client by appending the slice before and after the index
-			cfg.Clients.RegisteredClients = append(cfg.Clients.RegisteredClients[:i], cfg.Clients.RegisteredClients[i+1:]...)
-			found = true
-			break
+	err := config.GetConfig().Update(func(c *config.Config) {
+		// Find and remove the client from the registered clients list
+		found := false
+		for i, registeredClient := range c.Clients.RegisteredClients {
+			if registeredClient == clientType {
+				// Remove the client by appending the slice before and after the index
+				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
+				found = true
+				break
+			}
 		}
-	}
-
-	if !found {
-		return fmt.Errorf("client %s is not registered", clientType)
-	}
-
-	// Save the updated config
-	if err := cfg.WriteConfig(); err != nil {
-		return fmt.Errorf("failed to save configuration: %w", err)
+		if found {
+			fmt.Printf("Client %s removed from registered clients.\n", clientType)
+		} else {
+			fmt.Printf("Client %s not found in registered clients.\n", clientType)
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
 	fmt.Printf("Successfully removed client: %s\n", clientType)

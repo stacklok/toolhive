@@ -291,10 +291,12 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 
 // ProcessVolumeMounts processes volume mounts and adds them to the permission profile
 func (c *RunConfig) ProcessVolumeMounts() error {
+	// Skip if no volumes to process
 	if len(c.Volumes) == 0 {
 		return nil
 	}
 
+	// Ensure permission profile is loaded
 	if c.PermissionProfile == nil {
 		if c.PermissionProfileNameOrPath == "" {
 			return fmt.Errorf("permission profile is required when using volume mounts")
@@ -307,31 +309,53 @@ func (c *RunConfig) ProcessVolumeMounts() error {
 		}
 	}
 
-	for _, volume := range c.Volumes {
-		// Check if the volume has a read-only flag
-		readOnly := false
-		volumeSpec := volume
+	// Create a map of existing mount targets for quick lookup
+	existingMounts := make(map[string]string)
 
-		if strings.HasSuffix(volume, ":ro") {
-			readOnly = true
+	// Add existing read mounts to the map
+	for _, m := range c.PermissionProfile.Read {
+		source, target, _ := m.Parse()
+		existingMounts[target] = source
+	}
+
+	// Add existing write mounts to the map
+	for _, m := range c.PermissionProfile.Write {
+		source, target, _ := m.Parse()
+		existingMounts[target] = source
+	}
+
+	// Process each volume mount
+	for _, volume := range c.Volumes {
+		// Parse read-only flag
+		readOnly := strings.HasSuffix(volume, ":ro")
+		volumeSpec := volume
+		if readOnly {
 			volumeSpec = strings.TrimSuffix(volume, ":ro")
 		}
 
-		// Create a mount declaration
+		// Create and parse mount declaration
 		mount := permissions.MountDeclaration(volumeSpec)
 		source, target, err := mount.Parse()
 		if err != nil {
 			return fmt.Errorf("invalid volume format: %s (%v)", volume, err)
 		}
 
+		// Check for duplicate mount target
+		if existingSource, isDuplicate := existingMounts[target]; isDuplicate {
+			logger.Log.Warnf("Skipping duplicate mount target: %s (already mounted from %s)",
+				target, existingSource)
+			continue
+		}
+
 		// Add the mount to the appropriate permission list
 		if readOnly {
-			// For read-only mounts, add to Read list
 			c.PermissionProfile.Read = append(c.PermissionProfile.Read, mount)
 		} else {
-			// For read-write mounts, add to Write list
 			c.PermissionProfile.Write = append(c.PermissionProfile.Write, mount)
 		}
+
+		// Add to the map of existing mounts
+		existingMounts[target] = source
 
 		logger.Log.Infof("Adding volume mount: %s -> %s (%s)",
 			source, target,

@@ -28,6 +28,8 @@ const (
 	TransportTypeUVX TransportType = "uvx"
 	// TransportTypeNPX represents the npx transport.
 	TransportTypeNPX TransportType = "npx"
+	// TransportTypeGO represents the go transport.
+	TransportTypeGO TransportType = "go"
 )
 
 // GetDockerfileTemplate returns the Dockerfile template for the specified transport type.
@@ -40,6 +42,8 @@ func GetDockerfileTemplate(transportType TransportType, data TemplateData) (stri
 		templateName = "uvx.tmpl"
 	case TransportTypeNPX:
 		templateName = "npx.tmpl"
+	case TransportTypeGO:
+		templateName = "go.tmpl"
 	default:
 		return "", fmt.Errorf("unsupported transport type: %s", transportType)
 	}
@@ -72,6 +76,8 @@ func ParseTransportType(s string) (TransportType, error) {
 		return TransportTypeUVX, nil
 	case "npx":
 		return TransportTypeNPX, nil
+	case "go":
+		return TransportTypeGO, nil
 	default:
 		return "", fmt.Errorf("unsupported transport type: %s", s)
 	}

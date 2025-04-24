@@ -17,6 +17,7 @@ import (
 const (
 	UVXScheme = "uvx://"
 	NPXScheme = "npx://"
+	GOScheme  = "go://"
 )
 
 // handleProtocolScheme checks if the serverOrImage string contains a protocol scheme (uvx:// or npx://)
@@ -24,7 +25,9 @@ const (
 // Returns the Docker image name to use and any error encountered.
 func handleProtocolScheme(ctx context.Context, runtime rt.Runtime, serverOrImage string, debugMode bool) (string, error) {
 	// Check if the serverOrImage starts with a protocol scheme
-	if !strings.HasPrefix(serverOrImage, UVXScheme) && !strings.HasPrefix(serverOrImage, NPXScheme) {
+	if !strings.HasPrefix(serverOrImage, UVXScheme) &&
+		!strings.HasPrefix(serverOrImage, NPXScheme) &&
+		!strings.HasPrefix(serverOrImage, GOScheme) {
 		// No protocol scheme, return the original serverOrImage
 		return serverOrImage, nil
 	}
@@ -39,6 +42,9 @@ func handleProtocolScheme(ctx context.Context, runtime rt.Runtime, serverOrImage
 	} else if strings.HasPrefix(serverOrImage, NPXScheme) {
 		transportType = templates.TransportTypeNPX
 		packageName = strings.TrimPrefix(serverOrImage, NPXScheme)
+	} else if strings.HasPrefix(serverOrImage, GOScheme) {
+		transportType = templates.TransportTypeGO
+		packageName = strings.TrimPrefix(serverOrImage, GOScheme)
 	} else {
 		return "", fmt.Errorf("unsupported protocol scheme: %s", serverOrImage)
 	}

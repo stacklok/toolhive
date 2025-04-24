@@ -41,6 +41,19 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:          "GO transport",
+			transportType: TransportTypeGO,
+			data: TemplateData{
+				MCPPackage: "example-package",
+				MCPArgs:    []string{"--arg1", "--arg2", "value"},
+			},
+			wantContains: []string{
+				"FROM golang:1.24-alpine",
+				"ENTRYPOINT [\"go\", \"run\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
+			},
+			wantErr: false,
+		},
+		{
 			name:          "Unsupported transport",
 			transportType: "unsupported",
 			data: TemplateData{
@@ -90,6 +103,12 @@ func TestParseTransportType(t *testing.T) {
 			name:    "NPX transport",
 			s:       "npx",
 			want:    TransportTypeNPX,
+			wantErr: false,
+		},
+		{
+			name:    "GO transport",
+			s:       "go",
+			want:    TransportTypeGO,
 			wantErr: false,
 		},
 		{

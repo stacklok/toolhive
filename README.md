@@ -347,10 +347,11 @@ simplicity. When invoked:
 
 ToolHive supports running MCP servers directly from package managers using protocol schemes. This allows you to run MCP servers without having to build and publish Docker images first.
 
-Currently, two protocol schemes are supported:
+Currently, three protocol schemes are supported:
 
 - **uvx://**: For Python-based MCP servers using the uv package manager
 - **npx://**: For Node.js-based MCP servers using npm
+- **go://**: For Go-based MCP servers using the Go toolchain
 
 For example, to run a Python-based MCP server:
 
@@ -362,6 +363,12 @@ Or to run a Node.js-based MCP server:
 
 ```bash
 thv run npx://pulumi/mcp-server@latest
+```
+
+Or to run a Go-based MCP server:
+
+```bash
+thv run go://github.com/example/go-mcp-server@latest
 ```
 
 When you use a protocol scheme, ToolHive will:

@@ -74,15 +74,6 @@ func NewClient(ctx context.Context) (*Client, error) {
 		}
 
 		return c, nil
-
-		// // If we can ping the runtime, return the client
-		// if err := c.ping(ctx); err == nil {
-		// 	logger.Log.Debugf("Successfully connected to %s runtime", runtimeType)
-		// 	return c, nil
-		// }
-
-		// logger.Log.Debugf("Failed to ping %s: %v", sp, err)
-		// lastErr = err
 	}
 
 	if lastErr != nil {

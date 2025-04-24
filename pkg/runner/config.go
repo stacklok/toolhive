@@ -82,6 +82,10 @@ type RunConfig struct {
 	// Format: "<secret name>,target=<target environment variable>"
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 
+	// K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
+	// Only applicable when using Kubernetes runtime
+	K8sPodTemplatePatch string `json:"k8s_pod_template_patch,omitempty" yaml:"k8s_pod_template_patch,omitempty"`
+
 	// Runtime is the container runtime to use (not serialized)
 	Runtime rt.Runtime `json:"-" yaml:"-"`
 }

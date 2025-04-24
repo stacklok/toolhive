@@ -87,7 +87,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	logger.Log.Infof("Setting up %s transport...", r.Config.Transport)
 	if err := transportHandler.Setup(
 		ctx, r.Config.Runtime, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
-		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile,
+		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile, r.Config.K8sPodTemplatePatch,
 	); err != nil {
 		return fmt.Errorf("failed to set up transport: %v", err)
 	}

@@ -37,6 +37,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
   -e, --env stringArray             Environment variables to pass to the MCP server (format: KEY=VALUE)
   -f, --foreground                  Run in foreground mode (block until container exits)
   -h, --help                        help for run
+      --k8s-pod-patch string        JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)
       --name string                 Name of the MCP server (auto-generated from image if not provided)
       --oidc-audience string        Expected audience for the token
       --oidc-client-id string       OIDC client ID

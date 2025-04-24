@@ -4,6 +4,7 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -42,7 +43,9 @@ const (
 // Client implements the Runtime interface for container operations
 type Client struct {
 	runtimeType runtime.Type
-	client      *kubernetes.Clientset
+	client      kubernetes.Interface
+	// waitForStatefulSetReadyFunc is used for testing to mock the waitForStatefulSetReady function
+	waitForStatefulSetReadyFunc func(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error
 }
 
 // NewClient creates a new container client
@@ -262,10 +265,26 @@ func (c *Client) CreateContainer(ctx context.Context,
 		envVarList = append(envVarList, corev1apply.EnvVar().WithName(k).WithValue(v))
 	}
 
-	// Create container configuration
-	containerConfig := corev1apply.Container().
-		WithName(containerName).
-		WithImage(image).
+	// Create a pod template spec
+	podTemplateSpec := ensureObjectMetaApplyConfigurationExists(corev1apply.PodTemplateSpec())
+
+	// Apply the patch if provided
+	if options != nil && options.K8sPodTemplatePatch != "" {
+		var err error
+		podTemplateSpec, err = applyPodTemplatePatch(podTemplateSpec, options.K8sPodTemplatePatch)
+		if err != nil {
+			return "", fmt.Errorf("failed to apply pod template patch: %w", err)
+		}
+	}
+
+	// Ensure the pod template has required configuration (labels, etc.)
+	podTemplateSpec = ensurePodTemplateConfig(podTemplateSpec, containerLabels)
+
+	// Get or create the "mcp" container
+	mcpContainer := getMCPContainer(podTemplateSpec)
+
+	// Configure the "mcp" container with our settings
+	mcpContainer.WithImage(image).
 		WithArgs(command...).
 		WithStdin(attachStdio).
 		WithTTY(false).
@@ -274,7 +293,8 @@ func (c *Client) CreateContainer(ctx context.Context,
 	// Configure ports if needed for SSE transport
 	if options != nil && transportType == string(transtypes.TransportTypeSSE) {
 		var err error
-		containerConfig, err = configureContainerPorts(containerConfig, options)
+		//nolint:staticcheck // SA4006: We are using mcpContainer in the statefulset creation
+		mcpContainer, err = configureContainerPorts(mcpContainer, options)
 		if err != nil {
 			return "", err
 		}
@@ -290,11 +310,7 @@ func (c *Client) CreateContainer(ctx context.Context,
 					"app": containerName,
 				})).
 			WithServiceName(containerName).
-			WithTemplate(corev1apply.PodTemplateSpec().
-				WithLabels(containerLabels).
-				WithSpec(corev1apply.PodSpec().
-					WithContainers(containerConfig).
-					WithRestartPolicy(corev1.RestartPolicyAlways))))
+			WithTemplate(podTemplateSpec))
 
 	// Apply the statefulset using server-side apply
 	fieldManager := "toolhive-container-manager"
@@ -318,7 +334,11 @@ func (c *Client) CreateContainer(ctx context.Context,
 	}
 
 	// Wait for the statefulset to be ready
-	err = waitForStatefulSetReady(ctx, c.client, namespace, createdStatefulSet.Name)
+	waitFunc := waitForStatefulSetReady
+	if c.waitForStatefulSetReadyFunc != nil {
+		waitFunc = c.waitForStatefulSetReadyFunc
+	}
+	err = waitFunc(ctx, c.client, namespace, createdStatefulSet.Name)
 	if err != nil {
 		return createdStatefulSet.Name, fmt.Errorf("statefulset applied but failed to become ready: %w", err)
 	}
@@ -538,7 +558,7 @@ func (*Client) StopContainer(_ context.Context, _ string) error {
 }
 
 // waitForStatefulSetReady waits for a statefulset to be ready using the watch API
-func waitForStatefulSetReady(ctx context.Context, clientset *kubernetes.Clientset, namespace, name string) error {
+func waitForStatefulSetReady(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error {
 	// Create a field selector to watch only this specific statefulset
 	fieldSelector := fmt.Sprintf("metadata.name=%s", name)
 
@@ -865,4 +885,117 @@ func extractPortMappingsFromService(service *corev1.Service, existingPorts []run
 	}
 
 	return result
+}
+
+// applyPodTemplatePatch applies a JSON patch to a pod template spec
+func applyPodTemplatePatch(
+	baseTemplate *corev1apply.PodTemplateSpecApplyConfiguration,
+	patchJSON string,
+) (*corev1apply.PodTemplateSpecApplyConfiguration, error) {
+	// Check if the base template is nil
+	if baseTemplate == nil {
+		return nil, fmt.Errorf("base template is nil")
+	}
+
+	// Parse the patch JSON
+	patchedSpec, err := createPodTemplateFromPatch(patchJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if the patched spec is nil
+	if patchedSpec == nil {
+		return baseTemplate, nil
+	}
+
+	// Copy fields from the patched spec to our template
+	if patchedSpec.ObjectMetaApplyConfiguration != nil && len(patchedSpec.Labels) > 0 {
+		baseTemplate = baseTemplate.WithLabels(patchedSpec.Labels)
+	}
+
+	if patchedSpec.Spec != nil {
+		// Ensure baseTemplate.Spec is not nil
+		if baseTemplate.Spec == nil {
+			baseTemplate = baseTemplate.WithSpec(corev1apply.PodSpec())
+		}
+		// Copy the spec
+		baseTemplate = baseTemplate.WithSpec(patchedSpec.Spec)
+	}
+
+	return baseTemplate, nil
+}
+
+// createPodTemplateFromPatch creates a pod template spec from a JSON string
+func createPodTemplateFromPatch(patchJSON string) (*corev1apply.PodTemplateSpecApplyConfiguration, error) {
+	// Ensure the patch is valid JSON
+	var patchMap map[string]interface{}
+	if err := json.Unmarshal([]byte(patchJSON), &patchMap); err != nil {
+		return nil, fmt.Errorf("invalid JSON patch: %w", err)
+	}
+
+	var podTemplateSpec corev1apply.PodTemplateSpecApplyConfiguration
+	if err := json.Unmarshal([]byte(patchJSON), &podTemplateSpec); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal patch into pod template spec: %w", err)
+	}
+
+	// Ensure the pod template spec is not nil
+	return ensureObjectMetaApplyConfigurationExists(&podTemplateSpec), nil
+}
+
+// ensurePodTemplateConfig ensures the pod template has required configuration
+func ensurePodTemplateConfig(
+	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
+	containerLabels map[string]string,
+) *corev1apply.PodTemplateSpecApplyConfiguration {
+	podTemplateSpec = ensureObjectMetaApplyConfigurationExists(podTemplateSpec)
+	// Ensure the pod template has labels
+	if podTemplateSpec.Labels == nil {
+		podTemplateSpec = podTemplateSpec.WithLabels(containerLabels)
+	} else {
+		// Merge with required labels
+		for k, v := range containerLabels {
+			podTemplateSpec.Labels[k] = v
+		}
+	}
+
+	// Ensure the pod template has a spec
+	if podTemplateSpec.Spec == nil {
+		podTemplateSpec = podTemplateSpec.WithSpec(corev1apply.PodSpec())
+	}
+
+	// Ensure the pod template has a restart policy
+	if podTemplateSpec.Spec.RestartPolicy == nil {
+		podTemplateSpec.Spec = podTemplateSpec.Spec.WithRestartPolicy(corev1.RestartPolicyAlways)
+	}
+
+	return podTemplateSpec
+}
+
+// getMCPContainer finds or creates the "mcp" container in the pod template
+func getMCPContainer(
+	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
+) *corev1apply.ContainerApplyConfiguration {
+	if podTemplateSpec.Spec != nil && podTemplateSpec.Spec.Containers != nil {
+		for i := range podTemplateSpec.Spec.Containers {
+			// Get a pointer to the container in the slice
+			container := &podTemplateSpec.Spec.Containers[i]
+			if container.Name != nil && *container.Name == "mcp" {
+				return container
+			}
+		}
+	}
+
+	mcpContainer := corev1apply.Container().WithName("mcp")
+	podTemplateSpec.Spec.WithContainers(mcpContainer)
+	return mcpContainer
+}
+
+func ensureObjectMetaApplyConfigurationExists(
+	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
+) *corev1apply.PodTemplateSpecApplyConfiguration {
+	if podTemplateSpec.ObjectMetaApplyConfiguration == nil {
+		podTemplateSpec.ObjectMetaApplyConfiguration = &metav1apply.ObjectMetaApplyConfiguration{}
+	}
+
+	return podTemplateSpec
 }

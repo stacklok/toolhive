@@ -84,6 +84,7 @@ func (t *StdioTransport) Setup(
 	cmdArgs []string,
 	envVars, labels map[string]string,
 	permissionProfile *permissions.Profile,
+	k8sPodTemplatePatch string,
 ) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -97,6 +98,7 @@ func (t *StdioTransport) Setup(
 	// Create container options
 	containerOptions := rt.NewCreateContainerOptions()
 	containerOptions.AttachStdio = true
+	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
 
 	// Create the container
 	logger.Log.Infof("Creating container %s from image %s...", containerName, image)

@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-04-24 00:20:06",
+  "last_updated": "2025-04-24 08:14:00",
   "servers": {
     "atlassian": {
       "args": [],
@@ -1019,6 +1019,58 @@
         "get_error_log"
       ],
       "transport": "stdio"
+    },
+    "k8s": {
+      "args": [],
+      "description": "MKP is a Model Context Protocol (MCP) server for Kubernetes that allows LLM-powered applications to interact with Kubernetes clusters.\nIt provides tools for listing and applying Kubernetes resources through the MCP protocol.\n\nWhen running this server, you need to provide Kubernetes credentials. You can do this in several ways:\n\n1. Mount your kubeconfig file using the volume flag:\n    --volume /path/to/your/kubeconfig:/home/nonroot/.kube/config:ro\n\n2. Set the KUBECONFIG environment variable:\n    --env KUBECONFIG=/path/in/container/to/kubeconfig\n\n3. For in-cluster configuration (when running inside Kubernetes):\n    No additional configuration needed if proper service account is configured.",
+      "env_vars": [
+        {
+          "description": "Path to the kubeconfig file for Kubernetes API authentication",
+          "name": "KUBECONFIG",
+          "required": false
+        }
+      ],
+      "image": "ghcr.io/stackloklabs/mkp/server:latest",
+      "metadata": {
+        "last_updated": "2025-04-24T08:14:00Z",
+        "pulls": 0,
+        "stars": 0
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [
+              443
+            ],
+            "allow_transport": [
+              "tcp"
+            ],
+            "insecure_allow_all": true
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/StacklokLabs/mkp",
+      "tags": [
+        "kubernetes",
+        "k8s",
+        "api",
+        "resources",
+        "cluster",
+        "namespaced",
+        "apply",
+        "get",
+        "list"
+      ],
+      "tools": [
+        "list_resources",
+        "get_resource",
+        "apply_resource"
+      ],
+      "target_port": 8080,
+      "transport": "sse"
     },
     "memory": {
       "args": [],

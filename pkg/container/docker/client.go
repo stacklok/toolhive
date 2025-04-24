@@ -39,7 +39,7 @@ const (
 	DockerSocketPath = "/var/run/docker.sock"
 )
 
-var supportedRuntimes = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
+var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
 
 // Client implements the Runtime interface for container operations
 type Client struct {
@@ -57,18 +57,18 @@ func NewClient(ctx context.Context) (*Client, error) {
 	// Once a socket is found, we create a client and ping the runtime
 	// If the ping fails, we try the next runtime
 	// If all runtimes fail, we return an error
-	for _, rt := range supportedRuntimes {
+	for _, sp := range supportedSocketPaths {
 		// Try to find a container socket for the given runtime
-		socketPath, runtimeType, err := findContainerSocket(rt)
+		socketPath, runtimeType, err := findContainerSocket(sp)
 		if err != nil {
-			logger.Log.Debugf("Failed to find socket for %s: %v", rt, err)
+			logger.Log.Debugf("Failed to find socket for %s: %v", sp, err)
 			lastErr = err
 			continue
 		}
 
 		c, err := NewClientWithSocketPath(ctx, socketPath, runtimeType)
 		if err != nil {
-			logger.Log.Debugf("Failed to create client for %s: %v", rt, err)
+			logger.Log.Debugf("Failed to create client for %s: %v", sp, err)
 			lastErr = err
 			continue
 		}
@@ -79,7 +79,7 @@ func NewClient(ctx context.Context) (*Client, error) {
 			return c, nil
 		}
 
-		logger.Log.Debugf("Failed to ping %s: %v", rt, err)
+		logger.Log.Debugf("Failed to ping %s: %v", sp, err)
 		lastErr = err
 	}
 

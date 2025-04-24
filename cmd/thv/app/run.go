@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/StacklokLabs/toolhive/pkg/container"
+	"github.com/StacklokLabs/toolhive/pkg/container/runtime"
 	"github.com/StacklokLabs/toolhive/pkg/logger"
 	"github.com/StacklokLabs/toolhive/pkg/permissions"
 	"github.com/StacklokLabs/toolhive/pkg/registry"
@@ -144,14 +145,14 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
 
 	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
+	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
 	// Check if the serverOrImage contains a protocol scheme (uvx:// or npx://)
 	// and build a Docker image for it if needed
-	processedImage, err := handleProtocolScheme(ctx, runtime, serverOrImage, debugMode)
+	processedImage, err := handleProtocolScheme(ctx, rt, serverOrImage, debugMode)
 	if err != nil {
 		return fmt.Errorf("failed to process protocol scheme: %v", err)
 	}
@@ -164,7 +165,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Initialize a new RunConfig with values from command-line flags
 	config := runner.NewRunConfigFromFlags(
-		runtime,
+		rt,
 		cmdArgs,
 		runName,
 		debugMode,
@@ -206,30 +207,9 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		logDebug(debugMode, "Server '%s' not found in registry, treating as Docker image", serverOrImage)
 		config.Image = serverOrImage
 	}
-	// Check if the image has the "latest" tag
-	isLatestTag := hasLatestTag(config.Image)
 
-	// Check if the image exists locally
-	imageExists, err := runtime.ImageExists(ctx, config.Image)
-	if err != nil {
-		return fmt.Errorf("failed to check if image exists: %v", err)
-	}
-
-	// Always pull if the tag is "latest" or if the image doesn't exist locally
-	if isLatestTag || !imageExists {
-		var pullMsg string
-		if !imageExists {
-			pullMsg = "Image %s not found locally, pulling..."
-		}
-		if isLatestTag && imageExists {
-			pullMsg = "Image %s has 'latest' tag, pulling to ensure we have the most recent version..."
-		}
-
-		logger.Log.Infof(pullMsg, config.Image)
-		if err := runtime.PullImage(ctx, config.Image); err != nil {
-			return fmt.Errorf("failed to pull image: %v", err)
-		}
-		logger.Log.Infof("Successfully pulled image: %s", config.Image)
+	if err := pullImage(ctx, config.Image, rt); err != nil {
+		return fmt.Errorf("failed to retrieve or pull image: %v", err)
 	}
 
 	// Configure the RunConfig with transport, ports, permissions, etc.
@@ -239,6 +219,59 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Run the MCP server
 	return RunMCPServer(ctx, cmd, config, runForeground)
+}
+
+// pullImage pulls an image from a remote registry if it has the "latest" tag
+// or if it doesn't exist locally. If the image is a local image, it will not be pulled.
+// If the image has the latest tag, it will be pulled to ensure we have the most recent version.
+// however, if there is a failure in pulling the "latest" tag, it will check if the image exists locally
+// as it is possible that the image was locally built.
+func pullImage(ctx context.Context, image string, rt runtime.Runtime) error {
+	// Check if the image has the "latest" tag
+	isLatestTag := hasLatestTag(image)
+
+	if isLatestTag {
+		// For "latest" tag, try to pull first
+		logger.Log.Infof("Image %s has 'latest' tag, pulling to ensure we have the most recent version...", image)
+		err := rt.PullImage(ctx, image)
+		if err != nil {
+			// Pull failed, check if it exists locally
+			logger.Log.Infof("Pull failed, checking if image exists locally: %s", image)
+			imageExists, checkErr := rt.ImageExists(ctx, image)
+			if checkErr != nil {
+				return fmt.Errorf("failed to check if image exists: %v", checkErr)
+			}
+
+			if imageExists {
+				logger.Log.Debugf("Using existing local image: %s", image)
+			} else {
+				return fmt.Errorf("failed to pull image from remote registry and image doesn't exist locally. %v", err)
+			}
+		} else {
+			logger.Log.Infof("Successfully pulled image: %s", image)
+		}
+	} else {
+		// For non-latest tags, check locally first
+		logger.Log.Debugf("Checking if image exists locally: %s", image)
+		imageExists, err := rt.ImageExists(ctx, image)
+		logger.Log.Debugf("ImageExists locally: %t", imageExists)
+		if err != nil {
+			return fmt.Errorf("failed to check if image exists locally: %v", err)
+		}
+
+		if imageExists {
+			logger.Log.Debugf("Using existing local image: %s", image)
+		} else {
+			// Image doesn't exist locally, try to pull
+			logger.Log.Infof("Image %s not found locally, pulling...", image)
+			if err := rt.PullImage(ctx, image); err != nil {
+				return fmt.Errorf("failed to pull image: %v", err)
+			}
+			logger.Log.Infof("Successfully pulled image: %s", image)
+		}
+	}
+
+	return nil
 }
 
 // applyRegistrySettings applies settings from a registry server to the run config

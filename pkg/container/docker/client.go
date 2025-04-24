@@ -39,6 +39,8 @@ const (
 	DockerSocketPath = "/var/run/docker.sock"
 )
 
+var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
+
 // Client implements the Runtime interface for container operations
 type Client struct {
 	runtimeType runtime.Type
@@ -48,13 +50,36 @@ type Client struct {
 
 // NewClient creates a new container client
 func NewClient(ctx context.Context) (*Client, error) {
-	// Try to find a container socket in various locations
-	socketPath, runtimeType, err := findContainerSocket()
-	if err != nil {
-		return nil, err
+	var lastErr error
+
+	// We try to find a container socket for the given runtime
+	// We try Podman first, then Docker as fallback
+	// Once a socket is found, we create a client and ping the runtime
+	// If the ping fails, we try the next runtime
+	// If all runtimes fail, we return an error
+	for _, sp := range supportedSocketPaths {
+		// Try to find a container socket for the given runtime
+		socketPath, runtimeType, err := findContainerSocket(sp)
+		if err != nil {
+			logger.Log.Debugf("Failed to find socket for %s: %v", sp, err)
+			lastErr = err
+			continue
+		}
+
+		c, err := NewClientWithSocketPath(ctx, socketPath, runtimeType)
+		if err != nil {
+			logger.Log.Debugf("Failed to create client for %s: %v", sp, err)
+			lastErr = err
+			continue
+		}
+
+		return c, nil
 	}
 
-	return NewClientWithSocketPath(ctx, socketPath, runtimeType)
+	if lastErr != nil {
+		return nil, fmt.Errorf("no supported container runtime available: %w", lastErr)
+	}
+	return nil, fmt.Errorf("no supported container runtime found/running")
 }
 
 // NewClientWithSocketPath creates a new container client with a specific socket path
@@ -90,6 +115,7 @@ func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType
 	if err := c.ping(ctx); err != nil {
 		return nil, err
 	}
+	logger.Log.Debugf("Successfully connected to %s runtime", c.runtimeType)
 
 	return c, nil
 }
@@ -104,32 +130,56 @@ func (c *Client) ping(ctx context.Context) error {
 }
 
 // findContainerSocket finds a container socket path, preferring Podman over Docker
-func findContainerSocket() (string, runtime.Type, error) {
-	// Try Podman sockets first
-	// Check standard Podman location
-	if _, err := os.Stat(PodmanSocketPath); err == nil {
-		return PodmanSocketPath, runtime.TypePodman, nil
-	}
+func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 
-	// Check XDG_RUNTIME_DIR location for Podman
-	if xdgRuntimeDir := os.Getenv("XDG_RUNTIME_DIR"); xdgRuntimeDir != "" {
-		xdgSocketPath := filepath.Join(xdgRuntimeDir, PodmanXDGRuntimeSocketPath)
-		if _, err := os.Stat(xdgSocketPath); err == nil {
-			return xdgSocketPath, runtime.TypePodman, nil
+	if rt == runtime.TypePodman {
+		// Try Podman sockets first
+		// Check standard Podman location
+		_, err := os.Stat(PodmanSocketPath)
+		if err == nil {
+			logger.Log.Debugf("Found Podman socket at %s", PodmanSocketPath)
+			return PodmanSocketPath, runtime.TypePodman, nil
+		}
+
+		logger.Log.Debugf("Failed to check Podman socket at %s: %v", PodmanSocketPath, err)
+
+		// Check XDG_RUNTIME_DIR location for Podman
+		if xdgRuntimeDir := os.Getenv("XDG_RUNTIME_DIR"); xdgRuntimeDir != "" {
+			xdgSocketPath := filepath.Join(xdgRuntimeDir, PodmanXDGRuntimeSocketPath)
+			_, err := os.Stat(xdgSocketPath)
+
+			if err == nil {
+				logger.Log.Debugf("Found Podman socket at %s", xdgSocketPath)
+				return xdgSocketPath, runtime.TypePodman, nil
+			}
+
+			logger.Log.Debugf("Failed to check Podman socket at %s: %v", xdgSocketPath, err)
+		}
+
+		// Check user-specific location for Podman
+		if home := os.Getenv("HOME"); home != "" {
+			userSocketPath := filepath.Join(home, ".local/share/containers/podman/machine/podman.sock")
+			_, err := os.Stat(userSocketPath)
+
+			if err == nil {
+				logger.Log.Debugf("Found Podman socket at %s", userSocketPath)
+				return userSocketPath, runtime.TypePodman, nil
+			}
+
+			logger.Log.Debugf("Failed to check Podman socket at %s: %v", userSocketPath, err)
 		}
 	}
 
-	// Check user-specific location for Podman
-	if home := os.Getenv("HOME"); home != "" {
-		userSocketPath := filepath.Join(home, ".local/share/containers/podman/machine/podman.sock")
-		if _, err := os.Stat(userSocketPath); err == nil {
-			return userSocketPath, runtime.TypePodman, nil
-		}
-	}
+	if rt == runtime.TypeDocker {
+		// Try Docker socket as fallback
+		_, err := os.Stat(DockerSocketPath)
 
-	// Try Docker socket as fallback
-	if _, err := os.Stat(DockerSocketPath); err == nil {
-		return DockerSocketPath, runtime.TypeDocker, nil
+		if err == nil {
+			logger.Log.Debugf("Found Docker socket at %s", DockerSocketPath)
+			return DockerSocketPath, runtime.TypeDocker, nil
+		}
+
+		logger.Log.Debugf("Failed to check Docker socket at %s: %v", DockerSocketPath, err)
 	}
 
 	return "", "", ErrRuntimeNotFound

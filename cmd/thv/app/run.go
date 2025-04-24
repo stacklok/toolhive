@@ -61,6 +61,7 @@ var (
 	runVolumes           []string
 	runSecrets           []string
 	runAuthzConfig       string
+	runK8sPodPatch       string
 )
 
 func init() {
@@ -105,6 +106,12 @@ func init() {
 		"authz-config",
 		"",
 		"Path to the authorization configuration file",
+	)
+	runCmd.Flags().StringVar(
+		&runK8sPodPatch,
+		"k8s-pod-patch",
+		"",
+		"JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)",
 	)
 
 	// Add OIDC validation flags
@@ -169,6 +176,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		oidcJwksURL,
 		oidcClientID,
 	)
+
+	// Set the Kubernetes pod template patch if provided
+	if runK8sPodPatch != "" {
+		config.K8sPodTemplatePatch = runK8sPodPatch
+	}
 
 	// Try to find the server in the registry
 	// Skip registry lookup if we already processed a protocol scheme

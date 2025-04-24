@@ -137,6 +137,10 @@ type CreateContainerOptions struct {
 	// AttachStdio indicates whether to attach stdin/stdout/stderr
 	// This is typically set to true for stdio transport
 	AttachStdio bool
+
+	// K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
+	// Only applicable when using Kubernetes runtime
+	K8sPodTemplatePatch string
 }
 
 // PortBinding represents a host port binding
@@ -150,9 +154,10 @@ type PortBinding struct {
 // NewCreateContainerOptions creates a new CreateContainerOptions with default values
 func NewCreateContainerOptions() *CreateContainerOptions {
 	return &CreateContainerOptions{
-		ExposedPorts: make(map[string]struct{}),
-		PortBindings: make(map[string][]PortBinding),
-		AttachStdio:  false,
+		ExposedPorts:        make(map[string]struct{}),
+		PortBindings:        make(map[string][]PortBinding),
+		AttachStdio:         false,
+		K8sPodTemplatePatch: "",
 	}
 }
 

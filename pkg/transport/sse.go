@@ -89,7 +89,7 @@ func (t *SSETransport) Port() int {
 
 // Setup prepares the transport for use.
 func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerName string, image string, cmdArgs []string,
-	envVars, labels map[string]string, permissionProfile *permissions.Profile) error {
+	envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -106,6 +106,7 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 
 	// Create container options
 	containerOptions := rt.NewCreateContainerOptions()
+	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
 
 	// For SSE transport, expose the target port in the container
 	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)

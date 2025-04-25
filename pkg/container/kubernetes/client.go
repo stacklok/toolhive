@@ -38,6 +38,8 @@ import (
 const (
 	// UnknownStatus represents an unknown container status
 	UnknownStatus = "unknown"
+	// mcpContainerName is the name of the MCP container. This is a known constant.
+	mcpContainerName = "mcp"
 )
 
 // Client implements the Runtime interface for container operations

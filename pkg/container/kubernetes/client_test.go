@@ -18,11 +18,6 @@ import (
 	"github.com/StacklokLabs/toolhive/pkg/logger"
 )
 
-// Constants for tests
-const (
-	mcpContainerName = "mcp"
-)
-
 func init() {
 	// Initialize the logger for tests
 	logger.Initialize()

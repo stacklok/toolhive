@@ -38,6 +38,7 @@ kubectl apply -f deploy/operator/namespace.yaml
 
 ```bash
 kubectl apply -f deploy/operator/rbac.yaml
+kubectl apply -f deploy/operator/toolhive_rbac.yaml
 ```
 
 4. Deploy the operator:

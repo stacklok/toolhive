@@ -1,0 +1,59 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: toolhive
+  namespace: toolhive-system
+  labels:
+    app: toolhive
+    app.kubernetes.io/name: toolhive
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: toolhive
+  namespace: toolhive-system
+  labels:
+    app: toolhive
+    app.kubernetes.io/name: toolhive
+rules:
+  # StatefulSet management
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "apply"]
+  
+  # Service management
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "apply"]
+  
+  # Pod management
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  
+  # Pod logs
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  
+  # Pod attach (for attaching to containers)
+  - apiGroups: [""]
+    resources: ["pods/attach"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: toolhive
+  namespace: toolhive-system
+  labels:
+    app: toolhive
+    app.kubernetes.io/name: toolhive
+subjects:
+- kind: ServiceAccount
+  name: toolhive
+roleRef:
+  kind: Role
+  name: toolhive
+  apiGroup: rbac.authorization.k8s.io

@@ -38,7 +38,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(proxyCmd)
 	rootCmd.AddCommand(restartCmd)
 	rootCmd.AddCommand(newVersionCmd())
-	rootCmd.AddCommand(newLogsCommand())
+	rootCmd.AddCommand(logsCommand())
 	rootCmd.AddCommand(newSecretCommand())
 
 	return rootCmd

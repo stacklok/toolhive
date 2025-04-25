@@ -10,7 +10,7 @@ import (
 
 func main() {
 	if err := app.NewRootCmd().Execute(); err != nil {
-		logger.Log.Errorf("%v, %v", os.Stderr, err)
+		logger.Log.Errorf("%v", err)
 		os.Exit(1)
 	}
 }

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -22,8 +23,8 @@ func logsCommand() *cobra.Command {
 		Short: "Output the logs of an MCP server",
 		Long:  `Output the logs of an MCP server managed by Vibe Tool.`,
 		Args:  cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
-			logsCmdFunc(cmd, args)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return logsCmdFunc(cmd, args)
 		},
 	}
 
@@ -36,7 +37,7 @@ func logsCommand() *cobra.Command {
 	return logsCommand
 }
 
-func logsCmdFunc(_ *cobra.Command, args []string) {
+func logsCmdFunc(_ *cobra.Command, args []string) error {
 	// Get container name
 	containerName := args[0]
 
@@ -47,15 +48,13 @@ func logsCmdFunc(_ *cobra.Command, args []string) {
 	// Create container runtime
 	runtime, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		logger.Log.Errorf("failed to create container runtime: %v", err)
-		return
+		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
 	// List containers to find the one with the given name
 	containers, err := runtime.ListContainers(ctx)
 	if err != nil {
-		logger.Log.Errorf("failed to list containers: %v", err)
-		return
+		return fmt.Errorf("failed to list containers: %w", err)
 	}
 
 	// Find the container with the given name
@@ -81,14 +80,14 @@ func logsCmdFunc(_ *cobra.Command, args []string) {
 
 	if containerID == "" {
 		logger.Log.Infof("container %s not found", containerName)
-		return
+		return nil
 	}
 
 	tail := viper.GetBool("tail")
 	logs, err := runtime.ContainerLogs(ctx, containerID, tail)
 	if err != nil {
-		logger.Log.Errorf("failed to get container logs: %v", err)
-		return
+		return fmt.Errorf("failed to get container logs: %v", err)
 	}
 	logger.Log.Infof(logs)
+	return nil
 }

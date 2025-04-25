@@ -323,6 +323,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 					Labels: ls,
 				},
 				Spec: corev1.PodSpec{
+					ServiceAccountName: "toolhive",
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",
@@ -528,6 +529,11 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 		if !reflect.DeepEqual(container.Resources, resourceRequirementsForMCPServer(mcpServer)) {
 			return true
 		}
+	}
+
+	// Check if the service account name has changed
+	if deployment.Spec.Template.Spec.ServiceAccountName != "toolhive" {
+		return true
 	}
 
 	return false

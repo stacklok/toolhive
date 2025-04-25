@@ -975,7 +975,18 @@ func ensurePodTemplateConfig(
 func getMCPContainer(
 	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
 ) *corev1apply.ContainerApplyConfiguration {
-	if podTemplateSpec.Spec != nil && podTemplateSpec.Spec.Containers != nil {
+	// Ensure the pod template has a spec
+	if podTemplateSpec.Spec == nil {
+		podTemplateSpec = podTemplateSpec.WithSpec(corev1apply.PodSpec())
+	}
+
+	// Ensure the pod template has a container list
+	if podTemplateSpec.Spec.Containers == nil {
+		podTemplateSpec.Spec.WithContainers()
+	}
+
+	// Check if the container already exists
+	if podTemplateSpec.Spec.Containers != nil {
 		for i := range podTemplateSpec.Spec.Containers {
 			// Get a pointer to the container in the slice
 			container := &podTemplateSpec.Spec.Containers[i]
@@ -985,8 +996,12 @@ func getMCPContainer(
 		}
 	}
 
+	// Create a new container
 	mcpContainer := corev1apply.Container().WithName("mcp")
+
+	// Add the new container
 	podTemplateSpec.Spec.WithContainers(mcpContainer)
+
 	return mcpContainer
 }
 

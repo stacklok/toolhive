@@ -301,26 +301,56 @@ func TestEnsurePodTemplateConfig(t *testing.T) {
 func TestGetMCPContainer(t *testing.T) {
 	// Test cases
 	testCases := []struct {
-		name            string
-		podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration
-		expectedName    string
+		name                string
+		podTemplateSpec     *corev1apply.PodTemplateSpecApplyConfiguration
+		expectedName        string
+		expectedContainers  int
+		checkContainerNames []string
 	}{
 		{
-			name:            "empty pod template",
-			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec()),
-			expectedName:    "mcp",
+			name:               "empty pod template",
+			podTemplateSpec:    corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec()),
+			expectedName:       "mcp",
+			expectedContainers: 1,
+			checkContainerNames: []string{
+				"mcp",
+			},
 		},
 		{
 			name: "pod template with existing mcp container",
 			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec().
 				WithContainers(corev1apply.Container().WithName("mcp").WithImage("existing-image"))),
-			expectedName: "mcp",
+			expectedName:       "mcp",
+			expectedContainers: 1,
+			checkContainerNames: []string{
+				"mcp",
+			},
 		},
 		{
 			name: "pod template with different container",
 			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec().
 				WithContainers(corev1apply.Container().WithName("other-container"))),
-			expectedName: "mcp",
+			expectedName:       "mcp",
+			expectedContainers: 2,
+			checkContainerNames: []string{
+				"other-container",
+				"mcp",
+			},
+		},
+		{
+			name: "pod template with multiple existing containers",
+			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec().
+				WithContainers(
+					corev1apply.Container().WithName("container1"),
+					corev1apply.Container().WithName("container2"),
+				)),
+			expectedName:       "mcp",
+			expectedContainers: 3,
+			checkContainerNames: []string{
+				"container1",
+				"container2",
+				"mcp",
+			},
 		},
 	}
 
@@ -335,14 +365,25 @@ func TestGetMCPContainer(t *testing.T) {
 			assert.Equal(t, tc.expectedName, *result.Name)
 
 			// Check that the container was added to the pod template
-			found := false
+			assert.NotNil(t, tc.podTemplateSpec.Spec)
+			assert.NotNil(t, tc.podTemplateSpec.Spec.Containers)
+
+			// Check that all expected containers are present by name
+			containerNames := make(map[string]bool)
 			for _, container := range tc.podTemplateSpec.Spec.Containers {
-				if container.Name != nil && *container.Name == tc.expectedName {
-					found = true
-					break
+				if container.Name != nil {
+					containerNames[*container.Name] = true
 				}
 			}
-			assert.True(t, found, "Container %s not found in pod template", tc.expectedName)
+
+			for _, expectedName := range tc.checkContainerNames {
+				assert.True(t, containerNames[expectedName],
+					"Expected container %s not found in pod template", expectedName)
+			}
+
+			// Check the total number of containers
+			assert.Equal(t, tc.expectedContainers, len(tc.podTemplateSpec.Spec.Containers),
+				"Expected %d containers, got %d", tc.expectedContainers, len(tc.podTemplateSpec.Spec.Containers))
 		})
 	}
 }

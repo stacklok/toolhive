@@ -2,9 +2,13 @@
 package app
 
 import (
+	"os"
+
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 
 	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/StacklokLabs/toolhive/pkg/updates"
 )
 
 var rootCmd = &cobra.Command{
@@ -23,12 +27,19 @@ container-based isolation for running MCP servers.`,
 			logger.Log.Errorf("Error displaying help: %v", err)
 		}
 	},
+	PersistentPreRun: func(_ *cobra.Command, _ []string) {
+		logger.Initialize()
+	},
 }
 
 // NewRootCmd creates a new root command for the ToolHive CLI.
 func NewRootCmd() *cobra.Command {
 	// Add persistent flags
 	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
+	err := viper.BindPFlag("debug", rootCmd.PersistentFlags().Lookup("debug"))
+	if err != nil {
+		logger.Log.Errorf("Error binding debug flag: %v", err)
+	}
 
 	// Add subcommands
 	rootCmd.AddCommand(runCmd)
@@ -41,6 +52,11 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newLogsCommand())
 	rootCmd.AddCommand(newSecretCommand())
 
+	// Skip update check for completion command
+	if !IsCompletionCommand(os.Args) {
+		checkForUpdates()
+	}
+
 	return rootCmd
 }
 
@@ -50,4 +66,19 @@ func IsCompletionCommand(args []string) bool {
 		return args[1] == "completion"
 	}
 	return false
+}
+
+func checkForUpdates() {
+	versionClient := updates.NewVersionClient()
+	updateChecker, err := updates.NewUpdateChecker(versionClient)
+	// treat update-related errors as non-fatal
+	if err != nil {
+		logger.Log.Errorf("unable to create update client: %w", err)
+		return
+	}
+
+	err = updateChecker.CheckLatestVersion()
+	if err != nil {
+		logger.Log.Errorf("error while checking for updates: %w", err)
+	}
 }

@@ -468,11 +468,10 @@ func (c *Client) ContainerLogs(ctx context.Context, containerID string, tail boo
 	defer logs.Close()
 
 	if tail {
-		fmt.Printf("Tailing logs for container %s:\n", containerID)
 		_, err = io.Copy(os.Stdout, logs)
 		if err != nil && err != io.EOF {
-			fmt.Printf("Error reading container logs: %v\n", err)
-			return "", NewContainerError(err, containerID, fmt.Sprintf("failed to read container logs: %v", err))
+			logger.Log.Errorf("Error reading container logs: %v", err)
+			return "", NewContainerError(err, containerID, fmt.Sprintf("failed to tail container logs: %v", err))
 		}
 	}
 

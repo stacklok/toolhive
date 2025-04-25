@@ -303,23 +303,45 @@ func TestGetMCPContainer(t *testing.T) {
 	testCases := []struct {
 		name            string
 		podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration
+		expectNil       bool
 		expectedName    string
 	}{
 		{
 			name:            "empty pod template",
 			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec()),
-			expectedName:    "mcp",
+			expectNil:       true,
 		},
 		{
 			name: "pod template with existing mcp container",
 			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec().
-				WithContainers(corev1apply.Container().WithName("mcp").WithImage("existing-image"))),
+				WithContainers(corev1apply.Container().WithName(mcpContainerName).WithImage("existing-image"))),
+			expectNil:    false,
 			expectedName: "mcp",
 		},
 		{
 			name: "pod template with different container",
 			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec().
 				WithContainers(corev1apply.Container().WithName("other-container"))),
+			expectNil: true,
+		},
+		{
+			name: "pod template with multiple existing containers but no mcp",
+			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec().
+				WithContainers(
+					corev1apply.Container().WithName("container1"),
+					corev1apply.Container().WithName("container2"),
+				)),
+			expectNil: true,
+		},
+		{
+			name: "pod template with multiple existing containers including mcp",
+			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec().
+				WithContainers(
+					corev1apply.Container().WithName("container1"),
+					corev1apply.Container().WithName(mcpContainerName),
+					corev1apply.Container().WithName("container2"),
+				)),
+			expectNil:    false,
 			expectedName: "mcp",
 		},
 	}
@@ -329,20 +351,295 @@ func TestGetMCPContainer(t *testing.T) {
 			// Call the function
 			result := getMCPContainer(tc.podTemplateSpec)
 
-			// Check the result
-			assert.NotNil(t, result)
-			assert.NotNil(t, result.Name)
-			assert.Equal(t, tc.expectedName, *result.Name)
+			if tc.expectNil {
+				// Check that the result is nil
+				assert.Nil(t, result, "Expected nil result for %s", tc.name)
+			} else {
+				// Check that the result is not nil and has the expected name
+				assert.NotNil(t, result, "Expected non-nil result for %s", tc.name)
+				assert.NotNil(t, result.Name, "Expected non-nil name for %s", tc.name)
+				assert.Equal(t, tc.expectedName, *result.Name, "Expected name %s for %s", tc.expectedName, tc.name)
+			}
+		})
+	}
+}
 
-			// Check that the container was added to the pod template
-			found := false
-			for _, container := range tc.podTemplateSpec.Spec.Containers {
-				if container.Name != nil && *container.Name == tc.expectedName {
-					found = true
+// TestConfigureMCPContainer tests the configureMCPContainer function
+func TestConfigureMCPContainer(t *testing.T) {
+	// Test cases
+	testCases := []struct {
+		name                string
+		podTemplateSpec     *corev1apply.PodTemplateSpecApplyConfiguration
+		image               string
+		command             []string
+		attachStdio         bool
+		envVars             []*corev1apply.EnvVarApplyConfiguration
+		transportType       string
+		options             *runtime.CreateContainerOptions
+		expectedContainers  int
+		expectedImage       string
+		expectedCommand     []string
+		expectedEnvVarCount int
+		expectedPorts       int
+	}{
+		{
+			name: "create new container",
+			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec().
+				WithContainers(corev1apply.Container().WithName("other-container"))),
+			image:               "test-image",
+			command:             []string{"test-command"},
+			attachStdio:         true,
+			envVars:             []*corev1apply.EnvVarApplyConfiguration{corev1apply.EnvVar().WithName("TEST_ENV").WithValue("test-value")},
+			transportType:       "stdio",
+			options:             nil,
+			expectedContainers:  2,
+			expectedImage:       "test-image",
+			expectedCommand:     []string{"test-command"},
+			expectedEnvVarCount: 1,
+			expectedPorts:       0,
+		},
+		{
+			name: "configure existing container",
+			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec().
+				WithContainers(
+					corev1apply.Container().WithName(mcpContainerName).WithImage("old-image"),
+					corev1apply.Container().WithName("other-container"),
+				)),
+			image:               "test-image",
+			command:             []string{"test-command"},
+			attachStdio:         true,
+			envVars:             []*corev1apply.EnvVarApplyConfiguration{corev1apply.EnvVar().WithName("TEST_ENV").WithValue("test-value")},
+			transportType:       "stdio",
+			options:             nil,
+			expectedContainers:  2,
+			expectedImage:       "test-image",
+			expectedCommand:     []string{"test-command"},
+			expectedEnvVarCount: 1,
+			expectedPorts:       0,
+		},
+		{
+			name:            "configure with SSE transport",
+			podTemplateSpec: corev1apply.PodTemplateSpec().WithSpec(corev1apply.PodSpec()),
+			image:           "test-image",
+			command:         []string{"test-command"},
+			attachStdio:     true,
+			envVars:         []*corev1apply.EnvVarApplyConfiguration{corev1apply.EnvVar().WithName("TEST_ENV").WithValue("test-value")},
+			transportType:   "sse",
+			options: &runtime.CreateContainerOptions{
+				ExposedPorts: map[string]struct{}{
+					"8080/tcp": {},
+				},
+			},
+			expectedContainers:  1,
+			expectedImage:       "test-image",
+			expectedCommand:     []string{"test-command"},
+			expectedEnvVarCount: 1,
+			expectedPorts:       1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Call the function
+			err := configureMCPContainer(
+				tc.podTemplateSpec,
+				tc.image,
+				tc.command,
+				tc.attachStdio,
+				tc.envVars,
+				tc.transportType,
+				tc.options,
+			)
+
+			// Check that there was no error
+			require.NoError(t, err)
+
+			// Check that the pod template has a spec
+			assert.NotNil(t, tc.podTemplateSpec.Spec)
+
+			// Check that the container list is not nil
+			assert.NotNil(t, tc.podTemplateSpec.Spec.Containers)
+
+			// Check the number of containers
+			assert.Equal(t, tc.expectedContainers, len(tc.podTemplateSpec.Spec.Containers))
+
+			// Find the mcp container
+			var mcpContainer *corev1apply.ContainerApplyConfiguration
+			for i := range tc.podTemplateSpec.Spec.Containers {
+				container := &tc.podTemplateSpec.Spec.Containers[i]
+				if container.Name != nil && *container.Name == mcpContainerName {
+					mcpContainer = container
 					break
 				}
 			}
-			assert.True(t, found, "Container %s not found in pod template", tc.expectedName)
+
+			// Check that the mcp container exists
+			assert.NotNil(t, mcpContainer)
+
+			// Check the container configuration
+			assert.Equal(t, tc.expectedImage, *mcpContainer.Image)
+			assert.Equal(t, tc.expectedCommand, mcpContainer.Args)
+			assert.Equal(t, tc.attachStdio, *mcpContainer.Stdin)
+			assert.Equal(t, tc.expectedEnvVarCount, len(mcpContainer.Env))
+
+			// Check ports if expected
+			if tc.expectedPorts > 0 {
+				assert.NotNil(t, mcpContainer.Ports)
+				assert.Equal(t, tc.expectedPorts, len(mcpContainer.Ports))
+			}
+		})
+	}
+}
+
+// TestCreateContainerWithMCP tests the CreateContainer function with MCP container configuration
+func TestCreateContainerWithMCP(t *testing.T) {
+	// Test cases
+	testCases := []struct {
+		name                string
+		existingContainers  []corev1.Container
+		image               string
+		command             []string
+		envVars             map[string]string
+		attachStdio         bool
+		transportType       string
+		options             *runtime.CreateContainerOptions
+		expectedContainers  int
+		expectedImage       string
+		expectedCommand     []string
+		expectedEnvVarCount int
+	}{
+		{
+			name:                "create container with no existing containers",
+			existingContainers:  []corev1.Container{},
+			image:               "test-image",
+			command:             []string{"test-command"},
+			envVars:             map[string]string{"TEST_ENV": "test-value"},
+			attachStdio:         true,
+			transportType:       "stdio",
+			options:             nil,
+			expectedContainers:  1,
+			expectedImage:       "test-image",
+			expectedCommand:     []string{"test-command"},
+			expectedEnvVarCount: 1,
+		},
+		{
+			name: "create container with existing non-mcp container",
+			existingContainers: []corev1.Container{
+				{
+					Name:  "other-container",
+					Image: "other-image",
+				},
+			},
+			image:               "test-image",
+			command:             []string{"test-command"},
+			envVars:             map[string]string{"TEST_ENV": "test-value"},
+			attachStdio:         true,
+			transportType:       "stdio",
+			options:             nil,
+			expectedContainers:  2,
+			expectedImage:       "test-image",
+			expectedCommand:     []string{"test-command"},
+			expectedEnvVarCount: 1,
+		},
+		{
+			name: "create container with existing mcp container",
+			existingContainers: []corev1.Container{
+				{
+					Name:  mcpContainerName,
+					Image: "old-image",
+				},
+			},
+			image:               "test-image",
+			command:             []string{"test-command"},
+			envVars:             map[string]string{"TEST_ENV": "test-value"},
+			attachStdio:         true,
+			transportType:       "stdio",
+			options:             nil,
+			expectedContainers:  1,
+			expectedImage:       "test-image",
+			expectedCommand:     []string{"test-command"},
+			expectedEnvVarCount: 1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create a fake Kubernetes clientset with a mock statefulset
+			mockStatefulSet := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "default",
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: func() *int32 { i := int32(1); return &i }(),
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: tc.existingContainers,
+						},
+					},
+				},
+				Status: appsv1.StatefulSetStatus{
+					ReadyReplicas: 1,
+				},
+			}
+			clientset := fake.NewSimpleClientset(mockStatefulSet)
+
+			// Create a client with the fake clientset
+			client := &Client{
+				runtimeType:                 runtime.TypeKubernetes,
+				client:                      clientset,
+				waitForStatefulSetReadyFunc: mockWaitForStatefulSetReady,
+			}
+
+			// Create the container
+			containerID, err := client.CreateContainer(
+				context.Background(),
+				tc.image,
+				"test-container",
+				tc.command,
+				tc.envVars,
+				map[string]string{"test-label": "test-value"},
+				nil,
+				tc.transportType,
+				tc.options,
+			)
+
+			// Check that there was no error
+			require.NoError(t, err)
+			assert.NotEmpty(t, containerID)
+
+			// Get the created StatefulSet
+			statefulSet, err := clientset.AppsV1().StatefulSets("default").Get(
+				context.Background(),
+				"test-container",
+				metav1.GetOptions{},
+			)
+			require.NoError(t, err)
+
+			// Check that the StatefulSet was created with the correct values
+			assert.Equal(t, "test-container", statefulSet.Name)
+
+			// Check the number of containers
+			assert.Equal(t, tc.expectedContainers, len(statefulSet.Spec.Template.Spec.Containers))
+
+			// Find the mcp container
+			var mcpContainer *corev1.Container
+			for i := range statefulSet.Spec.Template.Spec.Containers {
+				container := &statefulSet.Spec.Template.Spec.Containers[i]
+				if container.Name == mcpContainerName {
+					mcpContainer = container
+					break
+				}
+			}
+
+			// Check that the mcp container exists
+			assert.NotNil(t, mcpContainer)
+
+			// Check the container configuration
+			assert.Equal(t, tc.expectedImage, mcpContainer.Image)
+			assert.Equal(t, tc.expectedCommand, mcpContainer.Args)
+			assert.Equal(t, tc.attachStdio, mcpContainer.Stdin)
+			assert.Equal(t, tc.expectedEnvVarCount, len(mcpContainer.Env))
 		})
 	}
 }

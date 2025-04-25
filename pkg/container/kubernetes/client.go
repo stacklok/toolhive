@@ -38,6 +38,8 @@ import (
 const (
 	// UnknownStatus represents an unknown container status
 	UnknownStatus = "unknown"
+	// mcpContainerName is the name of the MCP container. This is a known constant.
+	mcpContainerName = "mcp"
 )
 
 // Client implements the Runtime interface for container operations
@@ -280,24 +282,18 @@ func (c *Client) CreateContainer(ctx context.Context,
 	// Ensure the pod template has required configuration (labels, etc.)
 	podTemplateSpec = ensurePodTemplateConfig(podTemplateSpec, containerLabels)
 
-	// Get or create the "mcp" container
-	mcpContainer := getMCPContainer(podTemplateSpec)
-
-	// Configure the "mcp" container with our settings
-	mcpContainer.WithImage(image).
-		WithArgs(command...).
-		WithStdin(attachStdio).
-		WithTTY(false).
-		WithEnv(envVarList...)
-
-	// Configure ports if needed for SSE transport
-	if options != nil && transportType == string(transtypes.TransportTypeSSE) {
-		var err error
-		//nolint:staticcheck // SA4006: We are using mcpContainer in the statefulset creation
-		mcpContainer, err = configureContainerPorts(mcpContainer, options)
-		if err != nil {
-			return "", err
-		}
+	// Configure the MCP container
+	err := configureMCPContainer(
+		podTemplateSpec,
+		image,
+		command,
+		attachStdio,
+		envVarList,
+		transportType,
+		options,
+	)
+	if err != nil {
+		return "", err
 	}
 
 	// Create an apply configuration for the statefulset
@@ -971,11 +967,18 @@ func ensurePodTemplateConfig(
 	return podTemplateSpec
 }
 
-// getMCPContainer finds or creates the "mcp" container in the pod template
+// getMCPContainer finds the "mcp" container in the pod template if it exists.
+// Returns nil if the container doesn't exist.
 func getMCPContainer(
 	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
 ) *corev1apply.ContainerApplyConfiguration {
-	if podTemplateSpec.Spec != nil && podTemplateSpec.Spec.Containers != nil {
+	// Ensure the pod template has a spec
+	if podTemplateSpec.Spec == nil {
+		podTemplateSpec = podTemplateSpec.WithSpec(corev1apply.PodSpec())
+	}
+
+	// Check if the container already exists
+	if podTemplateSpec.Spec.Containers != nil {
 		for i := range podTemplateSpec.Spec.Containers {
 			// Get a pointer to the container in the slice
 			container := &podTemplateSpec.Spec.Containers[i]
@@ -985,9 +988,8 @@ func getMCPContainer(
 		}
 	}
 
-	mcpContainer := corev1apply.Container().WithName("mcp")
-	podTemplateSpec.Spec.WithContainers(mcpContainer)
-	return mcpContainer
+	// Container doesn't exist
+	return nil
 }
 
 func ensureObjectMetaApplyConfigurationExists(
@@ -998,4 +1000,67 @@ func ensureObjectMetaApplyConfigurationExists(
 	}
 
 	return podTemplateSpec
+}
+
+// configureContainer configures a container with the given settings
+func configureContainer(
+	container *corev1apply.ContainerApplyConfiguration,
+	image string,
+	command []string,
+	attachStdio bool,
+	envVars []*corev1apply.EnvVarApplyConfiguration,
+) {
+	container.WithImage(image).
+		WithArgs(command...).
+		WithStdin(attachStdio).
+		WithTTY(false).
+		WithEnv(envVars...)
+}
+
+// configureMCPContainer configures the MCP container in the pod template
+func configureMCPContainer(
+	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
+	image string,
+	command []string,
+	attachStdio bool,
+	envVarList []*corev1apply.EnvVarApplyConfiguration,
+	transportType string,
+	options *runtime.CreateContainerOptions,
+) error {
+	// Get the "mcp" container if it exists
+	mcpContainer := getMCPContainer(podTemplateSpec)
+
+	// If the container doesn't exist, create a new one
+	if mcpContainer == nil {
+		mcpContainer = corev1apply.Container().WithName("mcp")
+
+		// Configure the container
+		configureContainer(mcpContainer, image, command, attachStdio, envVarList)
+
+		// Configure ports if needed
+		if options != nil && transportType == string(transtypes.TransportTypeSSE) {
+			var err error
+			mcpContainer, err = configureContainerPorts(mcpContainer, options)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Add the fully configured container to the pod template
+		podTemplateSpec.Spec.WithContainers(mcpContainer)
+	} else {
+		// Configure the existing container
+		configureContainer(mcpContainer, image, command, attachStdio, envVarList)
+
+		// Configure ports if needed
+		if options != nil && transportType == string(transtypes.TransportTypeSSE) {
+			var err error
+			_, err = configureContainerPorts(mcpContainer, options)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }

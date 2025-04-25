@@ -26,9 +26,18 @@ jobs:
       - name: Compute version number
         id: version-string
         run: |
-          DATE="$(date +%Y%m%d)"
-          COMMIT="$(git rev-parse --short HEAD)"
-          echo "tag=0.$DATE.$GITHUB_RUN_NUMBER+ref.$COMMIT" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            # For main branch, use semver with -dev suffix
+            echo "tag=0.0.1-dev.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # For tags, use the tag as is (assuming it's semver)
+            TAG="${{ github.ref_name }}"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          else
+            # For other branches, use branch name and run number
+            BRANCH="${{ github.ref_name }}"
+            echo "tag=0.0.1-$BRANCH.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 #pin@v3.4.0
@@ -46,7 +55,14 @@ jobs:
       - name: Build and Push Image to GHCR
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
-          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare -t $TAG ./cmd/thv \
+          TAGS="-t $TAG"
+          
+          # Add latest tag only if building from a tag
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAGS="$TAGS -t latest"
+          fi
+          
+          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/thv \
             --image-label=org.opencontainers.image.source=https://github.com/StacklokLabs/toolhive,org.opencontainers.image.title="toolhive",org.opencontainers.image.vendor=Stacklok
 
       - name: Sign Image with Cosign
@@ -56,6 +72,11 @@ jobs:
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
+          
+          # Sign the latest tag if building from a tag
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            cosign sign -y $BASE_REPO:latest
+          fi
 
   operator-image-build-and-publish:
     runs-on: ubuntu-latest
@@ -117,7 +138,14 @@ jobs:
       - name: Build and Push Image to GHCR
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
-          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare -t $TAG ./cmd/thv-operator \
+          TAGS="-t $TAG"
+          
+          # Add latest tag only if building from a tag
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAGS="$TAGS -t latest"
+          fi
+          
+          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/thv-operator \
             --image-label=org.opencontainers.image.source=https://github.com/StacklokLabs/toolhive,org.opencontainers.image.title="toolhive-operator",org.opencontainers.image.vendor=Stacklok
 
       - name: Sign Image with Cosign
@@ -127,3 +155,8 @@ jobs:
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
+          
+          # Sign the latest tag if building from a tag
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            cosign sign -y $BASE_REPO:latest
+          fi

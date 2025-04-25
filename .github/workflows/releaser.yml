@@ -105,6 +105,15 @@ jobs:
           fi
           echo "hashes=$hashes" >> $GITHUB_OUTPUT
 
+  image-build-and-push:
+    name: Build and Sign Image
+    needs: [ release ]
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/image-build-and-publish.yml
+
 #  provenance:
 #    name: Generate provenance (SLSA3)
 #    needs:

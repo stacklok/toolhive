@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -65,6 +66,8 @@ func TestStructuredLogger(t *testing.T) {
 
 			os.Setenv("UNSTRUCTURED_LOGS", "false")
 			defer os.Unsetenv("UNSTRUCTURED_LOGS")
+
+			viper.SetDefault("debug", true)
 
 			Initialize()
 			os.Stdout = originalStdout
@@ -136,6 +139,8 @@ func TestStructuredLogger(t *testing.T) {
 			os.Setenv("UNSTRUCTURED_LOGS", "false")
 			defer os.Unsetenv("UNSTRUCTURED_LOGS")
 
+			viper.SetDefault("debug", true)
+
 			Initialize()
 			os.Stdout = originalStdout
 
@@ -203,6 +208,8 @@ func TestUnstructuredLogger(t *testing.T) {
 			originalStderr := os.Stderr
 			r, w, _ := os.Pipe()
 			os.Stderr = w
+
+			viper.SetDefault("debug", true)
 
 			Initialize()
 			os.Stderr = originalStderr

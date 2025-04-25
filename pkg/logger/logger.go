@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lmittmann/tint"
+	"github.com/spf13/viper"
 )
 
 // Log is a global logger instance
@@ -82,7 +83,7 @@ func Initialize() {
 		w := os.Stderr
 
 		handler := tint.NewHandler(w, &tint.Options{
-			Level:      slog.LevelDebug,
+			Level:      getLogLevel(),
 			TimeFormat: time.Kitchen,
 		})
 
@@ -94,8 +95,7 @@ func Initialize() {
 		w := os.Stdout
 
 		handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
-			// TODO: we should probably set the below based on a flag passed to CLI
-			Level: slog.LevelDebug,
+			Level: getLogLevel(),
 		})
 
 		slogger := slog.New(handler)
@@ -114,4 +114,15 @@ func GetLogger(component string) Logger {
 	}
 
 	return Log
+}
+
+// getLogLevel returns the appropriate slog.Level based on the debug flag
+func getLogLevel() slog.Level {
+	var level slog.Level
+	if viper.GetBool("debug") {
+		level = slog.LevelDebug
+	} else {
+		level = slog.LevelInfo
+	}
+	return level
 }

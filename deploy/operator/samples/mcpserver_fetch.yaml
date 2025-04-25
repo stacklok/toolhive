@@ -2,6 +2,7 @@ apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
   name: fetch
+  namespace: toolhive-system
 spec:
   image: docker.io/mcp/fetch
   transport: stdio

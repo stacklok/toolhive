@@ -88,6 +88,6 @@ func logsCmdFunc(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get container logs: %v", err)
 	}
-	fmt.Printf(logs)
+	fmt.Print(logs)
 	return nil
 }

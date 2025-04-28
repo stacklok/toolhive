@@ -223,7 +223,7 @@ func (c *Client) ContainerLogs(ctx context.Context, containerID string) (string,
 
 	// Get logs from the pod
 	logOptions := &corev1.PodLogOptions{
-		Container:  mcpContainerName, // Use the container name within the pod
+		Container:  mcpContainerName,
 		Follow:     false,
 		Previous:   false,
 		Timestamps: true,

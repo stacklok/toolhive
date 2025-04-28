@@ -3,7 +3,7 @@ module github.com/StacklokLabs/toolhive
 go 1.24.1
 
 require (
-	github.com/cedar-policy/cedar-go v1.1.1
+	github.com/cedar-policy/cedar-go v1.2.1
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/docker/docker v28.1.1+incompatible
 	github.com/docker/go-connections v0.5.0

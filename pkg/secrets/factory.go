@@ -89,8 +89,7 @@ func GetSecretsPassword() ([]byte, error) {
 }
 
 func readPasswordStdin() ([]byte, error) {
-	// Prompt the user for a password from stdin.
-	fmt.Print("Enter a password for secrets encryption and decryption: ")
+	printPasswordPrompt()
 	password, err := term.ReadPassword(int(os.Stdin.Fd()))
 	// Start new line after receiving password to ensure errors are printed correctly.
 	logger.Log.Infof("")
@@ -108,4 +107,12 @@ func readPasswordStdin() ([]byte, error) {
 // ResetKeyringSecret clears out the secret from the keystore (if present).
 func ResetKeyringSecret() error {
 	return keyring.DeleteAll(keyringService)
+}
+
+func printPasswordPrompt() {
+	fmt.Print("ToolHive needs a password to secure your credentials in the OS keyring.\n" +
+		"This password will be used to encrypt and decrypt API tokens and other secrets\n" +
+		"that need to be accessed by MCP servers. It will be securely stored in your OS keyring\n" +
+		"so you won't need to enter it each time.\n" +
+		"Please enter your keyring password: ")
 }

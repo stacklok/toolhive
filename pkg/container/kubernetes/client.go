@@ -132,7 +132,7 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 	podName := pods.Items[0].Name
 
 	attachOpts := &corev1.PodAttachOptions{
-		Container: containerID,
+		Container: mcpContainerName,
 		Stdin:     true,
 		Stdout:    true,
 		Stderr:    true,
@@ -223,7 +223,7 @@ func (c *Client) ContainerLogs(ctx context.Context, containerID string) (string,
 
 	// Get logs from the pod
 	logOptions := &corev1.PodLogOptions{
-		Container:  containerID, // Use the container name within the pod
+		Container:  mcpContainerName,
 		Follow:     false,
 		Previous:   false,
 		Timestamps: true,

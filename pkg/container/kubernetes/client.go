@@ -806,8 +806,10 @@ func (c *Client) createHeadlessService(
 		}
 	}
 
+	svcName := fmt.Sprintf("%s-headless", containerName)
+
 	// Create the service apply configuration
-	serviceApply := corev1apply.Service(containerName, namespace).
+	serviceApply := corev1apply.Service(svcName, namespace).
 		WithLabels(labels).
 		WithSpec(corev1apply.ServiceSpec().
 			WithSelector(map[string]string{

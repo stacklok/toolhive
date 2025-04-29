@@ -136,7 +136,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Check if the Service already exists, if not create a new one
 	service := &corev1.Service{}
 	err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, service)
-	if err != nil && errors.IsNotFound(err) && mcpServer.Spec.Transport != "sse" {
+	if err != nil && errors.IsNotFound(err) {
 		// Define a new service
 		svc := r.serviceForMCPServer(mcpServer)
 		if svc == nil {

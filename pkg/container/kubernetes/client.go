@@ -806,7 +806,9 @@ func (c *Client) createHeadlessService(
 		}
 	}
 
-	svcName := fmt.Sprintf("%s-headless", containerName)
+	// we want to generate a service name that is unique for the headless service
+	// to avoid conflicts with the proxy service
+	svcName := fmt.Sprintf("mcp-%s-headless", containerName)
 
 	// Create the service apply configuration
 	serviceApply := corev1apply.Service(svcName, namespace).

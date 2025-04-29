@@ -21,6 +21,7 @@ spec:
       containers:
       - name: manager
         image: ghcr.io/stackloklabs/toolhive/operator:latest
+        imagePullPolicy: Always
         args:
         - --leader-elect
         resources:

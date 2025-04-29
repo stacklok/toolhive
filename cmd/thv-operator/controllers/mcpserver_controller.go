@@ -355,9 +355,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *corev1.Service {
 	ls := labelsForMCPServer(m.Name)
 
+	// we want to generate a service name that is unique for the proxy service
+	// to avoid conflicts with the headless service
+	svcName := fmt.Sprintf("mcp-%s-proxy", m.Name)
+
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      m.Name,
+			Name:      svcName,
 			Namespace: m.Namespace,
 		},
 		Spec: corev1.ServiceSpec{

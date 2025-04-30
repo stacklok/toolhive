@@ -1,5 +1,7 @@
 # Run ToolHive in Kubernetes using kind
 
+> NOTE: This document has been deprecated because the recommended way of installing ToolHive and its managed MCP servers is to use the ToolHive Operator. This document can still be followed but because it's easier to deploy MCP servers into the Cluster using the Operator, we will at some point remove this document.
+
 This guide walks you through deploying ToolHive in a local kind cluster with an
 example MCP server.
 

@@ -70,6 +70,18 @@ tasks:
     cmds:
       - ko build --platform linux/amd64,linux/arm64 --local ./cmd/thv
 
+  kind-ingress-setup:
+    desc: Setup Nginx Ingress Controller in a local Kind cluster
+    cmds:
+      - kind get kubeconfig > kconfig.yaml
+      - echo "Applying Kubernetes Ingress manifest..."
+      - kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml --kubeconfig kconfig.yaml
+      # we want to wait until the nginx controlle is ready before we apply our ingress object
+      - kubectl wait --namespace=ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/instance=ingress-nginx,app.kubernetes.io/component=controller --timeout=120s --kubeconfig kconfig.yaml
+      # We do the below commands because of some inconsistency between the secret and webhook caBundle. ref: https://github.com/kubernetes/ingress-nginx/issues/5968#issuecomment-849772666
+      - CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}' --kubeconfig kconfig.yaml)
+      - kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]' --kubeconfig kconfig.yaml
+
   test-k8s-apply:
     desc: Builds the image, loads it into kind, and applies the Kubernetes manifests
     vars:
@@ -86,14 +98,7 @@ tasks:
       - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/k8s/thv.yaml) --kubeconfig kconfig.yaml
       # Create RoleBinding for ToolHive until (TODO: https://github.com/StacklokLabs/toolhive/issues/102) is done
       - kubectl create clusterrolebinding default-view --clusterrole=cluster-admin --serviceaccount=default:default --kubeconfig kconfig.yaml
-      - echo "Applying Kubernetes Ingress manifest..."
-      - kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml --kubeconfig kconfig.yaml
-      # we want to wait until the nginx controlle is ready before we apply our ingress object
-      - kubectl wait --namespace=ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/instance=ingress-nginx,app.kubernetes.io/component=controller --timeout=120s --kubeconfig kconfig.yaml
-      - kubectl apply -f deploy/k8s/ingress.yaml --kubeconfig kconfig.yaml
-      # We do the below commands because of some inconsistency between the secret and webhook caBundle. ref: https://github.com/kubernetes/ingress-nginx/issues/5968#issuecomment-849772666
-      - CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}' --kubeconfig kconfig.yaml)
-      - kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]' --kubeconfig kconfig.yaml
+      - task: kind-ingress-setup
 
   # Operator tasks
   build-operator:

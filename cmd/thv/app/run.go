@@ -9,6 +9,7 @@ import (
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/StacklokLabs/toolhive/pkg/container"
 	"github.com/StacklokLabs/toolhive/pkg/container/runtime"
@@ -351,12 +352,19 @@ func processEnvironmentVariables(
 			if envVar.Required {
 				// Ask the user for the required environment variable
 				logger.Log.Infof("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
-				logger.Log.Infof("Enter value for %s: ", envVar.Name)
-				var value string
-				if _, err := fmt.Scanln(&value); err != nil {
+
+				fmt.Printf("Enter value for %s (input will be hidden): ", envVar.Name)
+				byteValue, err := term.ReadPassword(int(os.Stdin.Fd()))
+				fmt.Println() // Move to the next line after hidden input
+
+				if err != nil {
 					logger.Log.Warnf("Warning: Failed to read input: %v", err)
+					// Skip this variable and continue to the next one
+					continue
 				}
 
+				// Trim whitespace from the input
+				value := strings.TrimSpace(string(byteValue))
 				if value != "" {
 					envVars = append(envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
 				}

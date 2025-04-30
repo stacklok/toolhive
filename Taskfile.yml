@@ -70,6 +70,18 @@ tasks:
     cmds:
       - ko build --platform linux/amd64,linux/arm64 --local ./cmd/thv
 
+  kind-setup:
+    desc: Setup a local Kind cluster
+    cmds:
+      - kind create cluster --name kind
+      - kind get kubeconfig > kconfig.yaml
+
+  kind-destroy:
+    desc: Destroy a local Kind cluster
+    cmds:
+      - kind delete cluster --name kind
+      - rm kconfig.yaml
+
   kind-ingress-setup:
     desc: Setup Nginx Ingress Controller in a local Kind cluster
     cmds:
@@ -81,6 +93,13 @@ tasks:
       # We do the below commands because of some inconsistency between the secret and webhook caBundle. ref: https://github.com/kubernetes/ingress-nginx/issues/5968#issuecomment-849772666
       - CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}' --kubeconfig kconfig.yaml)
       - kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]' --kubeconfig kconfig.yaml
+
+  kind-with-toolhive-operator:
+    desc: Setup a local Kind cluster with the ToolHive operator
+    cmds:
+      - task kind-setup
+      - task kind-ingress-setup
+      - task operator-test-k8s-apply
 
   test-k8s-apply:
     desc: Builds the image, loads it into kind, and applies the Kubernetes manifests

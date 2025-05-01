@@ -93,8 +93,9 @@ tasks:
         ignore_error: true
       # We do the below commands because of some inconsistency between the secret and webhook caBundle. ref: https://github.com/kubernetes/ingress-nginx/issues/5968#issuecomment-849772666
       - echo "Patching Ingress Nginx Admission Webhook CA Bundle..."
-      - CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}' --kubeconfig kconfig.yaml)
-      - kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]' --kubeconfig kconfig.yaml
+      - |
+        CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}' --kubeconfig kconfig.yaml)
+        kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]' --kubeconfig kconfig.yaml
 
   kind-with-toolhive-operator*:
     desc: |

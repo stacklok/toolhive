@@ -144,37 +144,40 @@ tasks:
   operator-install-crds:
     desc: Install CRDs into the K8s cluster
     cmds:
-      - kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml  --kubeconfig kconfig.yaml
+      - kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml --server-side=true --kubeconfig kconfig.yaml
 
   operator-uninstall-crds:
     desc: Uninstall CRDs from the K8s cluster
     cmds:
-      - kubectl delete -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml  --kubeconfig kconfig.yaml
+      - kubectl delete -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
 
   operator-deploy-latest:
     desc: Deploy latest built Operator image from Github to the K8s cluster
     cmds:
       - kubectl apply -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
       - kubectl apply -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f deploy/operator/toolhive_rbac.yaml --kubeconfig kconfig.yaml
       - kubectl apply -f deploy/operator/operator.yaml --kubeconfig kconfig.yaml
 
   operator-deploy-local:
     desc: Build the Operator image locally and deploy it to the K8s cluster
     vars:
       IMAGE:
-        sh: ko build --platform linux/amd64 --local -B ./cmd/thv-operator | tail -n 1
+        sh: KO_DOCKER_REPO=kind.local ko build --platform linux/amd64 --local -B ./cmd/thv-operator | tail -n 1
     cmds:
       - echo "Loading image {{.IMAGE}} into kind..."
       - kind load docker-image {{.IMAGE}}
       - kubectl apply -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
       - kubectl apply -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
-      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/operator/operator.yaml) --kubeconfig kconfig.yaml
+      - kubectl apply -f deploy/operator/toolhive_rbac.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -B -f deploy/operator/operator_local.yaml) --kubeconfig kconfig.yaml
 
   operator-undeploy:
     desc: Undeploy operator from the K8s cluster
     cmds:
       - kubectl delete -f deploy/operator/operator.yaml --kubeconfig kconfig.yaml
       - kubectl delete -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
+      - kubectl delete -f deploy/operator/toolhive_rbac.yaml --kubeconfig kconfig.yaml
       - kubectl delete -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
 
   # Kubebuilder tasks

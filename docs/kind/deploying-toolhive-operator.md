@@ -12,7 +12,7 @@ The [ToolHive Kubernetes Operator](../../cmd/thv-operator/README.md) manages MCP
 
 ## TL;DR
 
-To setup a kind cluster and deploy the Operator, we have created a Task so that you can do this with one command.
+To setup a kind cluster and deploy the Operator, we have created a Task so that you can do this with one command. You will need to clone this repository to run the command.
 
 Run:
 ```bash
@@ -43,26 +43,26 @@ Once the cluster is running, follow these steps:
 1. Install the CRD:
 
 ```bash
-kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
+kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
 ```
 
 2. Create the operator namespace:
 
 ```bash
-kubectl apply -f deploy/operator/namespace.yaml
+kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/namespace.yaml
 ```
 
 3. Set up RBAC:
 
 ```bash
-kubectl apply -f deploy/operator/rbac.yaml
-kubectl apply -f deploy/operator/toolhive_rbac.yaml
+≈
+kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/toolhive_rbac.yaml
 ```
 
 4. Deploy the operator:
 
 ```bash
-kubectl apply -f deploy/operator/operator.yaml
+kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/operator.yaml
 ```
 
 ## Installing the Operator Into an Existing Kind Cluster
@@ -86,24 +86,24 @@ $ task operator-deploy-local
 1. Install the CRD:
 
 ```bash
-kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
+kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
 ```
 
 2. Create the operator namespace:
 
 ```bash
-kubectl apply -f deploy/operator/namespace.yaml
+kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/namespace.yaml
 ```
 
 3. Set up RBAC:
 
 ```bash
-kubectl apply -f deploy/operator/rbac.yaml
-kubectl apply -f deploy/operator/toolhive_rbac.yaml
+kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/rbac.yaml
+kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/toolhive_rbac.yaml
 ```
 
 4. Deploy the operator:
 
 ```bash
-kubectl apply -f deploy/operator/operator.yaml
+kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/operator.yaml
 ```

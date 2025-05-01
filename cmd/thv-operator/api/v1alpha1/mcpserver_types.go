@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -44,6 +45,13 @@ type MCPServerSpec struct {
 	// PermissionProfile defines the permission profile to use
 	// +optional
 	PermissionProfile *PermissionProfileRef `json:"permissionProfile,omitempty"`
+
+	// PodTemplateSpec defines the pod template to use for the MCP server
+	// This allows for customizing the pod configuration beyond what is provided by the other fields.
+	// Note that to modify the specific container the MCP server runs in, you must specify
+	// the `mcp` container name in the PodTemplateSpec.
+	// +optional
+	PodTemplateSpec *corev1.PodTemplateSpec `json:"podTemplateSpec,omitempty"`
 }
 
 // EnvVar represents an environment variable in a container

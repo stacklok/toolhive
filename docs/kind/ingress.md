@@ -12,7 +12,7 @@ This document walks through setting up Ingress in a local Kind cluster. There ar
 
 To install the Nginx Ingress Controller, run the following:
 
-```shell
+```bash
 $ kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml
 ```
 
@@ -20,14 +20,14 @@ There are [known issues](https://github.com/kubernetes/ingress-nginx/issues/5968
 
 To fix these inconsistencies run:
 
-```shell
+```bash
 $ CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}')
 $ kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]'
 ```
 
 We should now be able to confirm that the Nginx Ingress Controller is running and healthy by running:
 
-```shell
+```bash
 $ kubectl get --namespace=ingress-nginx pod --selector=app.kubernetes.io/instance=ingress-nginx,app.kubernetes.io/component=controller
 NAME                                       READY   STATUS    RESTARTS   AGE
 ingress-nginx-controller-76666fb69-5bshr   1/1     Running   0          2m41s
@@ -37,7 +37,7 @@ Now, although the Nginx Ingress Controller is running, we need to hook with an I
 
 To confirm there is no IP, run:
 
-```shell
+```bash
 $ kubectl get svc/ingress-nginx-controller -n ingress-nginx -o=jsonpath='{.status.loadBalancer.ingress[0].ip}'
 ```
 
@@ -53,7 +53,7 @@ After following the documentation, it should now be installed and running and qu
 
 To confirm that it has provided an IP address, you should now see an IP returned when you run:
 
-```shell
+```bash
 $ kubectl get svc/ingress-nginx-controller -n ingress-nginx -o=jsonpath='{.status.loadBalancer.ingress[0].ip}'
 ```
 
@@ -61,7 +61,7 @@ $ kubectl get svc/ingress-nginx-controller -n ingress-nginx -o=jsonpath='{.statu
 
 After following the two previous sections, we should now be able to confirm if we can connect to the Ingress Controller with our local terminal. Inside of a local terminal run:
 
-```shell
+```bash
 $ LB_IP=$(kubectl get svc/ingress-nginx-controller -n ingress-nginx -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')
 $ curl -I $LB_IP/healthz
 HTTP/1.1 200 OK
@@ -105,14 +105,14 @@ If you prefer to use a friendly hostname instead of an IP address, modify your `
 
 This example creates the hostname `my-kind-cluster.dev`:
 
-```shell
+```bash
 $ LB_IP=$(kubectl get svc/ingress-nginx-controller -n ingress-nginx -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')
 $ sudo sh -c "echo '$LB_IP my-kind-cluster.dev' >> /etc/hosts"
 ```
 
 Now, when you curl that endpoint, it should connect as it did with the IP:
 
-```shell
+```bash
 $ curl -I my-kind-cluster.dev/healthz
 HTTP/1.1 200 OK
 Date: Wed, 30 Apr 2025 12:37:16 GMT
@@ -127,7 +127,7 @@ We have also automated the installation of the Nginx Ingress Controller using a 
 
 To use, run:
 
-```shell
+```bash
 $ task kind-ingress-setup
 ```
 

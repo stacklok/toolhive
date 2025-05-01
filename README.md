@@ -135,7 +135,7 @@ task install
 > manually configure your client, or run `thv config register-client --help` to
 > learn how to explicitly register a client.
 
-```shell
+```bash
 # Enable client auto-discovery:
 thv config auto-discovery true
 

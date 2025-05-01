@@ -104,7 +104,6 @@ tasks:
       By default, you can run `task kind-with-toolhive-operator` to deploy the latest Operator image from Github.
     vars:
       OPERATOR_DEPLOYMENT: '{{index .MATCH 0 | trimPrefix "-" | default "latest"}}'
-      MY_VAR: '{{.MY_VAR | default "my-default-value"}}'     
     cmds:
       - task: kind-setup
       - task: kind-ingress-setup

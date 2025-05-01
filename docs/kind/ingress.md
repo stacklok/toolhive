@@ -4,8 +4,7 @@ This document walks through setting up Ingress in a local Kind cluster. There ar
 
 ### Prerequisites
 
-- A [kind](https://kind.sigs.k8s.io/) cluster running locally
-  (`kind create cluster`)
+- A [kind](https://kind.sigs.k8s.io/) cluster running locally. Follow our [Setup a Local Kind Cluster](./setup-kind-cluster.md) to do this.
 - Optional: [Task](https://taskfile.dev/installation/) to run automated steps with a cloned copy of the ToolHive repository
   (`git clone https://github.com/StacklokLabs/toolhive`)
 

@@ -111,24 +111,6 @@ tasks:
       - task: operator-install-crds
       - task: operator-deploy-{{.OPERATOR_DEPLOYMENT}}
 
-  test-k8s-apply:
-    desc: Builds the image, loads it into kind, and applies the Kubernetes manifests
-    vars:
-      IMAGE:
-        sh: ko build --platform linux/amd64 --local -B ./cmd/thv | tail -n 1
-    cmds:
-      # gets the local kind kubeconfig
-      - kind get kubeconfig > kconfig.yaml
-      # Load the image into kind
-      - echo "Loading image {{.IMAGE}} into kind..."
-      - kind load docker-image {{.IMAGE}}
-      # Apply the Kubernetes manifest
-      - echo "Applying Kubernetes manifest..."
-      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/k8s/thv.yaml) --kubeconfig kconfig.yaml
-      # Create RoleBinding for ToolHive until (TODO: https://github.com/StacklokLabs/toolhive/issues/102) is done
-      - kubectl create clusterrolebinding default-view --clusterrole=cluster-admin --serviceaccount=default:default --kubeconfig kconfig.yaml
-      - task: kind-ingress-setup
-
   # Operator tasks
   build-operator:
     desc: Build the operator binary
@@ -195,27 +177,6 @@ tasks:
       - kubectl delete -f deploy/operator/operator.yaml --kubeconfig kconfig.yaml
       - kubectl delete -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
       - kubectl delete -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
-
-  # operator-test-k8s-apply:
-  #   desc: Builds the operator image, loads it into kind, and applies the Kubernetes manifests
-  #   vars:
-  #     IMAGE:
-  #       sh: ko build --platform linux/amd64 --local -B ./cmd/thv-operator | tail -n 1
-  #   cmds:
-  #     - echo "Running..."
-  #     # gets the local kind kubeconfig
-  #     - kind get kubeconfig > kconfig.yaml
-  #     # Load the image into kind
-  #     - echo "Loading image {{.IMAGE}} into kind..."
-  #     - kind load docker-image {{.IMAGE}}
-  #     # Apply the CRDs
-  #     - echo "Applying CRDs..."
-  #     - kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml --kubeconfig kconfig.yaml
-  #     # Apply the operator manifests
-  #     - echo "Applying operator manifests..."
-  #     - kubectl apply -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
-  #     - kubectl apply -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
-  #     - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/operator/operator.yaml) --kubeconfig kconfig.yaml
 
   # Kubebuilder tasks
   operator-generate:

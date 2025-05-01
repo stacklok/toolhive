@@ -135,8 +135,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Check if the Service already exists, if not create a new one
+	serviceName := createServiceName(mcpServer.Name)
 	service := &corev1.Service{}
-	err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, service)
+	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: mcpServer.Namespace}, service)
 	if err != nil && errors.IsNotFound(err) {
 		// Define a new service
 		svc := r.serviceForMCPServer(mcpServer)
@@ -362,13 +363,17 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 	return dep
 }
 
+func createServiceName(mcpServerName string) string {
+	return fmt.Sprintf("mcp-%s-proxy", mcpServerName)
+}
+
 // serviceForMCPServer returns a MCPServer Service object
 func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *corev1.Service {
 	ls := labelsForMCPServer(m.Name)
 
 	// we want to generate a service name that is unique for the proxy service
 	// to avoid conflicts with the headless service
-	svcName := fmt.Sprintf("mcp-%s-proxy", m.Name)
+	svcName := createServiceName(m.Name)
 
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{

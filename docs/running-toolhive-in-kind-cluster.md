@@ -1,5 +1,7 @@
 # Run ToolHive in Kubernetes using kind
 
+> NOTE: This document has been deprecated because the recommended way of installing ToolHive and its managed MCP servers is to use the ToolHive Operator. This document can still be followed but because it's easier to deploy MCP servers into the Cluster using the Operator, we will at some point remove this document.
+
 This guide walks you through deploying ToolHive in a local kind cluster with an
 example MCP server.
 
@@ -44,7 +46,7 @@ load balancer capabilities for local kind setups.
 
 In a new terminal, run the following commands and keep the terminal open:
 
-```shell
+```bash
 # Linux / macOS with Go installed:
 go install sigs.k8s.io/cloud-provider-kind@latest
 sudo ~/go/bin/cloud-provider-kind
@@ -59,7 +61,7 @@ should have an external IP assigned. Run the following command to retrieve the
 IP and store it in a variable. Then, curl the MCP server endpoint to verify the
 connection:
 
-```shell
+```bash
 $ LB_IP=$(kubectl get svc/ingress-nginx-controller -n ingress-nginx -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')
 $ curl $LB_IP/sse
 event: endpoint
@@ -72,13 +74,13 @@ If you prefer to use a friendly hostname instead of an IP address, modify your
 `/etc/hosts` file to include a mapping for the load balancer IP. This example
 creates the hostname `mcp-server.dev`:
 
-```shell
+```bash
 sudo sh -c "echo '$LB_IP mcp-server.dev' >> /etc/hosts"
 ```
 
 Now, when you curl that endpoint, it should connect as it did with the IP:
 
-```shell
+```bash
 $ curl mcp-server.dev/sse
 event: endpoint
 data: http://mcp-server.dev/messages?session_id=337e4d34-5fb0-4ccc-9959-fc382d5b4800

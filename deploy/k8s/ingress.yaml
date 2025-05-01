@@ -1,24 +1,19 @@
----
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: example-ingress
+  name: mcp-fetch-ingress
+  namespace: toolhive-system
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
   ingressClassName: nginx
   rules:
   - http:
       paths:
-      - pathType: Prefix
-        path: /sse
+      - path: /
+        pathType: Prefix
         backend:
           service:
-            name: toolhive
-            port:
-              number: 8080
-      - pathType: Prefix
-        path: /messages
-        backend:
-          service:
-            name: toolhive
+            name: mcp-fetch-proxy
             port:
               number: 8080

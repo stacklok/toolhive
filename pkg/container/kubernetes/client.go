@@ -132,7 +132,7 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 	podName := pods.Items[0].Name
 
 	attachOpts := &corev1.PodAttachOptions{
-		Container: containerID,
+		Container: mcpContainerName,
 		Stdin:     true,
 		Stdout:    true,
 		Stderr:    true,
@@ -223,7 +223,7 @@ func (c *Client) ContainerLogs(ctx context.Context, containerID string, tail boo
 
 	// Get logs from the pod
 	logOptions := &corev1.PodLogOptions{
-		Container:  containerID, // Use the container name within the pod
+		Container:  mcpContainerName,
 		Follow:     tail,
 		Previous:   false,
 		Timestamps: true,
@@ -806,8 +806,12 @@ func (c *Client) createHeadlessService(
 		}
 	}
 
+	// we want to generate a service name that is unique for the headless service
+	// to avoid conflicts with the proxy service
+	svcName := fmt.Sprintf("mcp-%s-headless", containerName)
+
 	// Create the service apply configuration
-	serviceApply := corev1apply.Service(containerName, namespace).
+	serviceApply := corev1apply.Service(svcName, namespace).
 		WithLabels(labels).
 		WithSpec(corev1apply.ServiceSpec().
 			WithSelector(map[string]string{

@@ -259,8 +259,8 @@ func (a *CedarAuthorizer) IsAuthorized(
 	}
 
 	// Check authorization
-	decision, diagnostic := a.policySet.IsAuthorized(entityMap, req)
-	// Cedar's IsAuthorized returns a Decision and a Diagnostic
+	decision, diagnostic := cedar.Authorize(a.policySet, entityMap, req)
+	// Cedar's Authorize returns a Decision and a Diagnostic
 	// Check if the Diagnostic contains any errors
 	if len(diagnostic.Errors) > 0 {
 		return false, fmt.Errorf("authorization error: %v", diagnostic.Errors)

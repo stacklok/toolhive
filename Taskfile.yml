@@ -85,39 +85,30 @@ tasks:
   kind-ingress-setup:
     desc: Setup Nginx Ingress Controller in a local Kind cluster
     cmds:
-      - kind get kubeconfig > kconfig.yaml
       - echo "Applying Kubernetes Ingress manifest..."
       - kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml --kubeconfig kconfig.yaml
-      # we want to wait until the nginx controlle is ready before we apply our ingress object
-      - kubectl wait --namespace=ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/instance=ingress-nginx,app.kubernetes.io/component=controller --timeout=120s --kubeconfig kconfig.yaml
+      - echo "Waiting for Ingress Nginx Controller to be created and ready..."
+      - cmd: |
+          while ! kubectl wait --namespace=ingress-nginx --for=condition=Ready pod --selector=app.kubernetes.io/instance=ingress-nginx,app.kubernetes.io/component=controller --timeout=120s --kubeconfig kconfig.yaml &>/dev/null; do sleep 2; done
+        ignore_error: true
       # We do the below commands because of some inconsistency between the secret and webhook caBundle. ref: https://github.com/kubernetes/ingress-nginx/issues/5968#issuecomment-849772666
+      - echo "Patching Ingress Nginx Admission Webhook CA Bundle..."
       - CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}' --kubeconfig kconfig.yaml)
       - kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]' --kubeconfig kconfig.yaml
 
-  kind-with-toolhive-operator:
-    desc: Setup a local Kind cluster with the ToolHive operator
-    cmds:
-      - task kind-setup
-      - task kind-ingress-setup
-      - task operator-test-k8s-apply
-
-  test-k8s-apply:
-    desc: Builds the image, loads it into kind, and applies the Kubernetes manifests
+  kind-with-toolhive-operator*:
+    desc: |
+      Setup a local Kind cluster with the ToolHive Operator installed. You can choose to deploy a locally built Operator image or the latest Operator image from Github.
+      To deploy a locally built Operator image, run `task kind-with-toolhive-operator-local`.
+      To deploy the latest Operator image from Github, run `task kind-with-toolhive-operator-latest`.
+      By default, you can run `task kind-with-toolhive-operator` to deploy the latest Operator image from Github.
     vars:
-      IMAGE:
-        sh: ko build --platform linux/amd64 --local -B ./cmd/thv | tail -n 1
+      OPERATOR_DEPLOYMENT: '{{index .MATCH 0 | trimPrefix "-" | default "latest"}}'
     cmds:
-      # gets the local kind kubeconfig
-      - kind get kubeconfig > kconfig.yaml
-      # Load the image into kind
-      - echo "Loading image {{.IMAGE}} into kind..."
-      - kind load docker-image {{.IMAGE}}
-      # Apply the Kubernetes manifest
-      - echo "Applying Kubernetes manifest..."
-      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/k8s/thv.yaml) --kubeconfig kconfig.yaml
-      # Create RoleBinding for ToolHive until (TODO: https://github.com/StacklokLabs/toolhive/issues/102) is done
-      - kubectl create clusterrolebinding default-view --clusterrole=cluster-admin --serviceaccount=default:default --kubeconfig kconfig.yaml
+      - task: kind-setup
       - task: kind-ingress-setup
+      - task: operator-install-crds
+      - task: operator-deploy-{{.OPERATOR_DEPLOYMENT}}
 
   # Operator tasks
   build-operator:
@@ -153,46 +144,41 @@ tasks:
   operator-install-crds:
     desc: Install CRDs into the K8s cluster
     cmds:
-      - kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
+      - kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml --server-side=true --kubeconfig kconfig.yaml
 
   operator-uninstall-crds:
     desc: Uninstall CRDs from the K8s cluster
     cmds:
       - kubectl delete -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
 
-  operator-deploy:
-    desc: Deploy operator to the K8s cluster
+  operator-deploy-latest:
+    desc: Deploy latest built Operator image from Github to the K8s cluster
     cmds:
-      - kubectl apply -f deploy/operator/namespace.yaml
-      - kubectl apply -f deploy/operator/rbac.yaml
-      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/operator/operator.yaml)
+      - kubectl apply -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f deploy/operator/toolhive_rbac.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f deploy/operator/operator.yaml --kubeconfig kconfig.yaml
+
+  operator-deploy-local:
+    desc: Build the Operator image locally and deploy it to the K8s cluster
+    vars:
+      IMAGE:
+        sh: KO_DOCKER_REPO=kind.local ko build --platform linux/amd64 --local -B ./cmd/thv-operator | tail -n 1
+    cmds:
+      - echo "Loading image {{.IMAGE}} into kind..."
+      - kind load docker-image {{.IMAGE}}
+      - kubectl apply -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f deploy/operator/toolhive_rbac.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -B -f deploy/operator/operator_local.yaml) --kubeconfig kconfig.yaml
 
   operator-undeploy:
     desc: Undeploy operator from the K8s cluster
     cmds:
-      - kubectl delete -f deploy/operator/operator.yaml
-      - kubectl delete -f deploy/operator/rbac.yaml
-      - kubectl delete -f deploy/operator/namespace.yaml
-
-  operator-test-k8s-apply:
-    desc: Builds the operator image, loads it into kind, and applies the Kubernetes manifests
-    vars:
-      IMAGE:
-        sh: ko build --platform linux/amd64 --local -B ./cmd/thv-operator | tail -n 1
-    cmds:
-      # gets the local kind kubeconfig
-      - kind get kubeconfig > kconfig.yaml
-      # Load the image into kind
-      - echo "Loading image {{.IMAGE}} into kind..."
-      - kind load docker-image {{.IMAGE}}
-      # Apply the CRDs
-      - echo "Applying CRDs..."
-      - kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml --kubeconfig kconfig.yaml
-      # Apply the operator manifests
-      - echo "Applying operator manifests..."
-      - kubectl apply -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
-      - kubectl apply -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
-      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -f deploy/operator/operator.yaml) --kubeconfig kconfig.yaml
+      - kubectl delete -f deploy/operator/operator.yaml --kubeconfig kconfig.yaml
+      - kubectl delete -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
+      - kubectl delete -f deploy/operator/toolhive_rbac.yaml --kubeconfig kconfig.yaml
+      - kubectl delete -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
 
   # Kubebuilder tasks
   operator-generate:

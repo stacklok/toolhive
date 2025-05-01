@@ -65,9 +65,9 @@ kubectl apply -f deploy/operator/toolhive_rbac.yaml
 kubectl apply -f deploy/operator/operator.yaml
 ```
 
-### Installing the Operator Into an Existing Kind Cluster
+## Installing the Operator Into an Existing Kind Cluster
 
-#### Automated via Task
+### Automated via Task
 
 We have a dedicated Task that installs the operator into a cluster.
 
@@ -81,7 +81,7 @@ $ task operator-deploy-latest
 $ task operator-deploy-local
 ```
 
-#### Manually
+### Manually
 
 1. Install the CRD:
 

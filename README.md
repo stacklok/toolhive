@@ -135,7 +135,7 @@ task install
 > manually configure your client, or run `thv config register-client --help` to
 > learn how to explicitly register a client.
 
-```shell
+```bash
 # Enable client auto-discovery:
 thv config auto-discovery true
 
@@ -159,6 +159,7 @@ ToolHive has been tested with the following clients:
 | Cursor            | ✅        |                                        |
 | Roo Code          | ✅        |                                        |
 | PydanticAI        | ✅        |                                        |
+| Claude Code       | ✅        |                                        |
 | Continue          | ❌        | Continue doesn't yet support SSE       |
 | Claude Desktop    | ❌        | Claude Desktop doesn't yet support SSE |
 
@@ -425,13 +426,15 @@ Two built-in profiles are included for convenience:
 
 ### Run ToolHive in Kubernetes
 
-ToolHive can also be used to deploy MCP servers in a Kubernetes cluster. This
+ToolHive can also be used to deploy MCP servers in a Kubernetes cluster via our new Operator. This
 functionality is still under active development for production use cases, but we
-invite you to try it out locally using a kind cluster.
+invite you to try it out locally using a Kind cluster.
 
 Check out the
-[Run ToolHive in Kubernetes using kind](./docs/running-toolhive-in-kind-cluster.md)
+[Run ToolHive Operator in Kubernetes using kind](./docs/kind/deploying-toolhive-operator.md)
 guide to get started.
+
+[Deploy MCP Servers in Kubernetes with ToolHive Operator](./docs/kind/deploying-mcp-server-with-operator.md)
 
 ## Contributing to ToolHive
 

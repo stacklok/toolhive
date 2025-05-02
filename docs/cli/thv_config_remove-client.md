@@ -8,6 +8,7 @@ Remove a client from MCP server configuration.
 Valid clients are:
   - roo-code: Roo Code extension for VS Code
   - cursor: Cursor editor
+  - claude-code: Claude Code CLI
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition
 

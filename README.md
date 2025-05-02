@@ -159,6 +159,7 @@ ToolHive has been tested with the following clients:
 | Cursor            | ✅        |                                        |
 | Roo Code          | ✅        |                                        |
 | PydanticAI        | ✅        |                                        |
+| Claude Code       | ✅        |                                        |
 | Continue          | ❌        | Continue doesn't yet support SSE       |
 | Claude Desktop    | ❌        | Claude Desktop doesn't yet support SSE |
 

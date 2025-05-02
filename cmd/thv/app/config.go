@@ -55,6 +55,7 @@ var registerClientCmd = &cobra.Command{
 Valid clients are:
   - roo-code: Roo Code extension for VS Code
   - cursor: Cursor editor
+  - claude-code: Claude Code CLI
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition`,
 	Args: cobra.ExactArgs(1),
@@ -68,6 +69,7 @@ var removeClientCmd = &cobra.Command{
 Valid clients are:
   - roo-code: Roo Code extension for VS Code
   - cursor: Cursor editor
+  - claude-code: Claude Code CLI
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition`,
 	Args: cobra.ExactArgs(1),
@@ -149,10 +151,10 @@ func registerClientCmdFunc(_ *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cursor", "vscode-insider", "vscode":
+	case "roo-code", "cursor", "claude-code", "vscode-insider", "vscode":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", clientType)
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, claude-code, vscode, vscode-insider)", clientType)
 	}
 
 	err := config.UpdateConfig(func(c *config.Config) {
@@ -186,10 +188,10 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cursor", "vscode-insider", "vscode":
+	case "roo-code", "cursor", "claude-code", "vscode-insider", "vscode":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, vscode, vscode-insider)", clientType)
+		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, claude-code, vscode, vscode-insider)", clientType)
 	}
 
 	err := config.UpdateConfig(func(c *config.Config) {

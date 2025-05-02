@@ -66,7 +66,7 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 
 	// Output based on format
 	switch registryFormat {
-	case "json":
+	case FormatJSON:
 		return printJSONServers(servers)
 	default:
 		printTextServers(servers)

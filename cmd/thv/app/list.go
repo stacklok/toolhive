@@ -9,10 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/StacklokLabs/toolhive/pkg/api"
+	"github.com/StacklokLabs/toolhive/pkg/api/factory"
 	"github.com/StacklokLabs/toolhive/pkg/client"
-	"github.com/StacklokLabs/toolhive/pkg/container"
-	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
-	"github.com/StacklokLabs/toolhive/pkg/labels"
 	"github.com/StacklokLabs/toolhive/pkg/logger"
 )
 
@@ -34,14 +33,13 @@ const (
 	unknownTransport = "unknown"
 )
 
-// ContainerOutput represents container information for JSON output
-type ContainerOutput struct {
+// ServerOutput represents server information for JSON output
+type ServerOutput struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Image     string `json:"image"`
 	State     string `json:"state"`
 	Transport string `json:"transport"`
-	ToolType  string `json:"tool_type,omitempty"`
 	Port      int    `json:"port"`
 	URL       string `json:"url"`
 }
@@ -51,44 +49,50 @@ func init() {
 	listCmd.Flags().StringVar(&listFormat, "format", "text", "Output format (json, text, or mcpservers)")
 }
 
-func listCmdFunc(_ *cobra.Command, _ []string) error {
+func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	// Create context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
+	// Get debug mode flag
+	debugMode, _ := cmd.Flags().GetBool("debug")
+
+	// Create API client factory
+	apiFactory, err := factory.New(
+		factory.WithClientType(factory.LocalClientType),
+		factory.WithDebug(debugMode),
+	)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		return fmt.Errorf("failed to create API client factory: %v", err)
 	}
 
-	// List containers
-	containers, err := runtime.ListContainers(ctx)
+	// Create API client
+	apiClient, err := apiFactory.Create(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
+		return fmt.Errorf("failed to create API client: %v", err)
+	}
+	defer apiClient.Close()
+
+	// Create list options
+	listOpts := &api.ListOptions{
+		Status: "running",
+	}
+	if listAll {
+		listOpts.Status = "all"
 	}
 
-	// Filter containers to only show those managed by ToolHive
-	var toolHiveContainers []rt.ContainerInfo
-	for _, c := range containers {
-		if labels.IsToolHiveContainer(c.Labels) {
-			toolHiveContainers = append(toolHiveContainers, c)
+	// List servers
+	servers, err := apiClient.Server().List(ctx, listOpts)
+	if err != nil {
+		return fmt.Errorf("failed to list servers: %v", err)
+	}
+
+	if len(servers) == 0 {
+		if listAll {
+			fmt.Printf("No MCP servers found\n")
+		} else {
+			fmt.Printf("No running MCP servers found\n")
 		}
-	}
-
-	// Filter containers if not showing all
-	if !listAll {
-		var runningContainers []rt.ContainerInfo
-		for _, c := range toolHiveContainers {
-			if c.State == "running" {
-				runningContainers = append(runningContainers, c)
-			}
-		}
-		toolHiveContainers = runningContainers
-	}
-
-	if len(toolHiveContainers) == 0 {
-		logger.Log.Infof("No MCP servers found")
 		return nil
 	}
 
@@ -96,61 +100,42 @@ func listCmdFunc(_ *cobra.Command, _ []string) error {
 	switch listFormat {
 	//nolint:goconst
 	case "json":
-		return printJSONOutput(toolHiveContainers)
+		return printJSONOutput(servers)
 	case "mcpservers":
-		return printMCPServersOutput(toolHiveContainers)
+		return printMCPServersOutput(servers)
 	default:
-		printTextOutput(toolHiveContainers)
+		printTextOutput(servers)
 		return nil
 	}
 }
 
-// printJSONOutput prints container information in JSON format
-func printJSONOutput(containers []rt.ContainerInfo) error {
-	var output []ContainerOutput
+// printJSONOutput prints server information in JSON format
+func printJSONOutput(servers []*api.Server) error {
+	var output []ServerOutput
 
-	for _, c := range containers {
+	for _, s := range servers {
 		// Truncate container ID to first 12 characters (similar to Docker)
-		truncatedID := c.ID
+		truncatedID := s.ContainerID
 		if len(truncatedID) > 12 {
 			truncatedID = truncatedID[:12]
 		}
 
-		// Get container name from labels
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
-
-		// Get transport type from labels
-		transport := labels.GetTransportType(c.Labels)
-		if transport == "" {
-			transport = unknownTransport
-		}
-
-		// Get tool type from labels
-		toolType := labels.GetToolType(c.Labels)
-
-		// Get port from labels
-		port, err := labels.GetPort(c.Labels)
-		if err != nil {
-			port = 0
-		}
+		// Get state from status
+		state := string(s.Status)
 
 		// Generate URL for the MCP server
 		url := ""
-		if port > 0 {
-			url = client.GenerateMCPServerURL(defaultHost, port, name)
+		if s.HostPort > 0 {
+			url = client.GenerateMCPServerURL(defaultHost, s.HostPort, s.Name)
 		}
 
-		output = append(output, ContainerOutput{
+		output = append(output, ServerOutput{
 			ID:        truncatedID,
-			Name:      name,
-			Image:     c.Image,
-			State:     c.State,
-			Transport: transport,
-			ToolType:  toolType,
-			Port:      port,
+			Name:      s.Name,
+			Image:     s.Image,
+			State:     state,
+			Transport: s.Transport,
+			Port:      s.HostPort,
 			URL:       url,
 		})
 	}
@@ -168,39 +153,24 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 
 // printMCPServersOutput prints MCP servers configuration in JSON format
 // This format is compatible with client configuration files
-func printMCPServersOutput(containers []rt.ContainerInfo) error {
+func printMCPServersOutput(servers []*api.Server) error {
 	// Create a map to hold the MCP servers configuration
 	mcpServers := make(map[string]map[string]string)
 
-	for _, c := range containers {
-		// Get container name from labels
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
-
-		// Get tool type from labels
-		toolType := labels.GetToolType(c.Labels)
-
-		// Only include containers with tool type "mcp"
-		if toolType != "mcp" {
+	for _, s := range servers {
+		// Only include running servers
+		if s.Status != api.ServerStatusRunning {
 			continue
-		}
-
-		// Get port from labels
-		port, err := labels.GetPort(c.Labels)
-		if err != nil {
-			port = 0
 		}
 
 		// Generate URL for the MCP server
 		url := ""
-		if port > 0 {
-			url = client.GenerateMCPServerURL(defaultHost, port, name)
+		if s.HostPort > 0 {
+			url = client.GenerateMCPServerURL(defaultHost, s.HostPort, s.Name)
 		}
 
 		// Add the MCP server to the map
-		mcpServers[name] = map[string]string{
+		mcpServers[s.Name] = map[string]string{
 			"url": url,
 		}
 	}
@@ -218,52 +188,37 @@ func printMCPServersOutput(containers []rt.ContainerInfo) error {
 	return nil
 }
 
-// printTextOutput prints container information in text format
-func printTextOutput(containers []rt.ContainerInfo) {
+// printTextOutput prints server information in text format
+func printTextOutput(servers []*api.Server) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "CONTAINER ID\tNAME\tIMAGE\tSTATE\tTRANSPORT\tPORT\tURL")
 
-	// Print container information
-	for _, c := range containers {
+	// Print server information
+	for _, s := range servers {
 		// Truncate container ID to first 12 characters (similar to Docker)
-		truncatedID := c.ID
+		truncatedID := s.ContainerID
 		if len(truncatedID) > 12 {
 			truncatedID = truncatedID[:12]
 		}
 
-		// Get container name from labels
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
-
-		// Get transport type from labels
-		transport := labels.GetTransportType(c.Labels)
-		if transport == "" {
-			transport = unknownTransport
-		}
-
-		// Get port from labels
-		port, err := labels.GetPort(c.Labels)
-		if err != nil {
-			port = 0
-		}
+		// Get state from status
+		state := string(s.Status)
 
 		// Generate URL for the MCP server
 		url := ""
-		if port > 0 {
-			url = client.GenerateMCPServerURL(defaultHost, port, name)
+		if s.HostPort > 0 {
+			url = client.GenerateMCPServerURL(defaultHost, s.HostPort, s.Name)
 		}
 
-		// Print container information
+		// Print server information
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
 			truncatedID,
-			name,
-			c.Image,
-			c.State,
-			transport,
-			port,
+			s.Name,
+			s.Image,
+			state,
+			s.Transport,
+			s.HostPort,
 			url,
 		)
 	}

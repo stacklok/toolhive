@@ -3,15 +3,12 @@ package app
 import (
 	"context"
 	"fmt"
-	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/StacklokLabs/toolhive/pkg/container"
-	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
-	"github.com/StacklokLabs/toolhive/pkg/labels"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
-	"github.com/StacklokLabs/toolhive/pkg/process"
+	"github.com/StacklokLabs/toolhive/pkg/api"
+	"github.com/StacklokLabs/toolhive/pkg/api/factory"
 )
 
 var stopCmd = &cobra.Command{
@@ -30,128 +27,43 @@ func init() {
 	stopCmd.Flags().IntVar(&stopTimeout, "timeout", 30, "Timeout in seconds before forcibly stopping the container")
 }
 
-// findContainerID finds the container ID by name or ID prefix
-func findContainerID(ctx context.Context, runtime rt.Runtime, containerName string) (string, error) {
-	// List containers to find the one with the given name
-	containers, err := runtime.ListContainers(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Find the container with the given name
-	for _, c := range containers {
-		// Check if the container is managed by ToolHive
-		if !labels.IsToolHiveContainer(c.Labels) {
-			continue
-		}
-
-		// Check if the container name matches
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
-
-		// Check if the name matches (exact match or prefix match)
-		if name == containerName || strings.HasPrefix(c.ID, containerName) {
-			return c.ID, nil
-		}
-	}
-
-	return "", fmt.Errorf("container %s not found", containerName)
-}
-
-// getContainerBaseName gets the base container name from the container labels
-func getContainerBaseName(ctx context.Context, runtime rt.Runtime, containerID string) (string, error) {
-	containers, err := runtime.ListContainers(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	for _, c := range containers {
-		if c.ID == containerID {
-			return labels.GetContainerBaseName(c.Labels), nil
-		}
-	}
-
-	return "", fmt.Errorf("container %s not found", containerID)
-}
-
-// stopProxyProcess stops the proxy process associated with the container
-func stopProxyProcess(containerBaseName string) {
-	if containerBaseName == "" {
-		logger.Log.Warnf("Warning: Could not find base container name in labels")
-		return
-	}
-
-	// Try to read the PID file and kill the process
-	pid, err := process.ReadPIDFile(containerBaseName)
-	if err != nil {
-		logger.Log.Errorf("No PID file found for %s, proxy may not be running in detached mode", containerBaseName)
-		return
-	}
-
-	// PID file found, try to kill the process
-	logger.Log.Infof("Stopping proxy process (PID: %d)...", pid)
-	if err := process.KillProcess(pid); err != nil {
-		logger.Log.Warnf("Warning: Failed to kill proxy process: %v", err)
-	} else {
-		logger.Log.Infof("Proxy process stopped")
-	}
-
-	// Remove the PID file
-	if err := process.RemovePIDFile(containerBaseName); err != nil {
-		logger.Log.Warnf("Warning: Failed to remove PID file: %v", err)
-	}
-}
-
-// stopContainer stops the container
-func stopContainer(ctx context.Context, runtime rt.Runtime, containerID, containerName string) error {
-	logger.Log.Infof("Stopping container %s...", containerName)
-	if err := runtime.StopContainer(ctx, containerID); err != nil {
-		return fmt.Errorf("failed to stop container: %v", err)
-	}
-
-	logger.Log.Infof("Container %s stopped", containerName)
-	return nil
-}
-
-func stopCmdFunc(_ *cobra.Command, args []string) error {
+func stopCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get container name
 	containerName := args[0]
 
 	// Create context
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
 
-	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
+	// Get debug mode flag
+	debugMode, _ := cmd.Flags().GetBool("debug")
+
+	// Create API client factory
+	apiFactory, err := factory.New(
+		factory.WithClientType(factory.LocalClientType),
+		factory.WithDebug(debugMode),
+	)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		return fmt.Errorf("failed to create API client factory: %v", err)
 	}
 
-	// Find the container ID
-	containerID, err := findContainerID(ctx, runtime, containerName)
+	// Create API client
+	apiClient, err := apiFactory.Create(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create API client: %v", err)
+	}
+	defer apiClient.Close()
+
+	// Create stop options
+	stopOpts := &api.StopOptions{
+		Timeout: time.Duration(stopTimeout) * time.Second,
 	}
 
-	// Check if the container is running
-	running, err := runtime.IsContainerRunning(ctx, containerID)
-	if err != nil {
-		return fmt.Errorf("failed to check if container is running: %v", err)
+	// Stop the server
+	if err := apiClient.Server().Stop(ctx, containerName, stopOpts); err != nil {
+		return fmt.Errorf("failed to stop server: %v", err)
 	}
 
-	if !running {
-		logger.Log.Infof("Container %s is not running", containerName)
-		return nil
-	}
-
-	// Get the base container name
-	containerBaseName, _ := getContainerBaseName(ctx, runtime, containerID)
-
-	// Stop the proxy process
-	stopProxyProcess(containerBaseName)
-
-	// Stop the container
-	return stopContainer(ctx, runtime, containerID, containerName)
+	fmt.Printf("Server %s stopped\n", containerName)
+	return nil
 }

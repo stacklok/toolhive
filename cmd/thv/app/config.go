@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/StacklokLabs/toolhive/pkg/api"
 	"github.com/StacklokLabs/toolhive/pkg/client"
 	"github.com/StacklokLabs/toolhive/pkg/config"
 	"github.com/StacklokLabs/toolhive/pkg/container"
@@ -240,7 +241,7 @@ func addRunningMCPsToClient(clientName string) error {
 	// Filter containers to only show those managed by ToolHive and running
 	var runningContainers []rt.ContainerInfo
 	for _, c := range containers {
-		if labels.IsToolHiveContainer(c.Labels) && c.State == "running" {
+		if labels.IsToolHiveContainer(c.Labels) && c.State == string(api.ServerStatusRunning) {
 			runningContainers = append(runningContainers, c)
 		}
 	}

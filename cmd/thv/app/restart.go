@@ -6,10 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/StacklokLabs/toolhive/pkg/container"
-	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
+	"github.com/StacklokLabs/toolhive/pkg/api"
+	"github.com/StacklokLabs/toolhive/pkg/api/factory"
 	"github.com/StacklokLabs/toolhive/pkg/logger"
-	"github.com/StacklokLabs/toolhive/pkg/process"
 	"github.com/StacklokLabs/toolhive/pkg/runner"
 )
 
@@ -30,105 +29,49 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	containerName := args[0]
 
 	// Create context
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
 
-	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
+	// Get debug mode flag
+	debugMode, _ := cmd.Flags().GetBool("debug")
+
+	// Create API client factory
+	apiFactory, err := factory.New(
+		factory.WithClientType(factory.LocalClientType),
+		factory.WithDebug(debugMode),
+	)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		return fmt.Errorf("failed to create API client factory: %v", err)
 	}
 
-	// Try to find the container ID
-	containerID, err := findContainerID(ctx, runtime, containerName)
-	var containerBaseName string
-	var running bool
-
+	// Create API client
+	apiClient, err := apiFactory.Create(ctx)
 	if err != nil {
-		logger.Log.Warnf("Warning: Failed to find container: %v", err)
-		logger.Log.Warnf("Trying to find state with name %s directly...", containerName)
+		return fmt.Errorf("failed to create API client: %v", err)
+	}
+	defer apiClient.Close()
 
-		// Try to use the provided name as the base name
-		containerBaseName = containerName
-		running = false
-	} else {
-		// Container found, check if it's running
-		running, err = runtime.IsContainerRunning(ctx, containerID)
-		if err != nil {
-			return fmt.Errorf("failed to check if container is running: %v", err)
-		}
-
-		// Get the base container name
-		containerBaseName, err = getContainerBaseName(ctx, runtime, containerID)
-		if err != nil {
-			logger.Log.Warnf("Warning: Could not find base container name in labels: %v", err)
-			logger.Log.Warnf("Using provided name %s as base name", containerName)
-			containerBaseName = containerName
-		}
+	// Get the server information to verify it exists
+	_, err = apiClient.Server().Get(ctx, containerName)
+	if err != nil {
+		return fmt.Errorf("failed to get server information: %v", err)
 	}
 
-	// Check if the proxy process is running
-	proxyRunning := isProxyRunning(containerBaseName)
+	// Create restart options
+	restartOpts := &api.RestartOptions{}
 
-	if running && proxyRunning {
-		logger.Log.Infof("Container %s and proxy are already running", containerName)
-		return nil
-	}
-
-	// If the container is running but the proxy is not, stop the container first
-	if containerID != "" && running && !proxyRunning {
-		logger.Log.Infof("Container %s is running but proxy is not. Stopping container...", containerName)
-		if err := runtime.StopContainer(ctx, containerID); err != nil {
-			return fmt.Errorf("failed to stop container: %v", err)
-		}
-		logger.Log.Infof("Container %s stopped", containerName)
+	// Restart the server
+	if err := apiClient.Server().Restart(ctx, containerName, restartOpts); err != nil {
+		return fmt.Errorf("failed to restart server: %v", err)
 	}
 
 	// Load the configuration from the state store
-	mcpRunner, err := loadRunnerFromState(ctx, containerBaseName, runtime)
+	mcpRunner, err := runner.LoadState(ctx, containerName)
 	if err != nil {
-		return fmt.Errorf("failed to load state for %s: %v", containerBaseName, err)
+		return fmt.Errorf("failed to load state for %s: %v", containerName, err)
 	}
 
-	logger.Log.Infof("Loaded configuration from state for %s", containerBaseName)
-
-	// Run the tooling server
-	logger.Log.Infof("Starting tooling server %s...", containerName)
+	// Run the MCP server in a detached process
+	logger.Log.Infof("Starting MCP server %s...", containerName)
 	return RunMCPServer(ctx, cmd, mcpRunner.Config, false)
-}
-
-// isProxyRunning checks if the proxy process is running
-func isProxyRunning(containerBaseName string) bool {
-	if containerBaseName == "" {
-		return false
-	}
-
-	// Try to read the PID file
-	pid, err := process.ReadPIDFile(containerBaseName)
-	if err != nil {
-		return false
-	}
-
-	// Check if the process exists and is running
-	isRunning, err := process.FindProcess(pid)
-	if err != nil {
-		logger.Log.Warnf("Warning: Error checking process: %v", err)
-		return false
-	}
-
-	return isRunning
-}
-
-// loadRunnerFromState attempts to load a Runner from the state store
-func loadRunnerFromState(ctx context.Context, baseName string, runtime rt.Runtime) (*runner.Runner, error) {
-	// Load the runner from the state store
-	r, err := runner.LoadState(ctx, baseName)
-	if err != nil {
-		return nil, err
-	}
-
-	// Update the runtime in the loaded configuration
-	r.Config.Runtime = runtime
-
-	return r, nil
 }

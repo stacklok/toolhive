@@ -1,69 +1,69 @@
 package app
 
 import (
+	"context"
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/StacklokLabs/toolhive/pkg/versions"
+	"github.com/StacklokLabs/toolhive/pkg/api"
+	"github.com/StacklokLabs/toolhive/pkg/api/factory"
 )
 
 // newVersionCmd creates a new version command
 func newVersionCmd() *cobra.Command {
-	var jsonOutput bool
-
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Show the version of ToolHive",
 		Long:  `Display detailed version information about ToolHive, including version number, git commit, build date, and Go version.`,
-		Run: func(_ *cobra.Command, _ []string) {
-			info := versions.GetVersionInfo()
-
-			if jsonOutput {
-				printJSONVersionInfo(info)
-			} else {
-				printVersionInfo(info)
-			}
-		},
+		RunE:  versionCmdFunc,
 	}
 
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output version information as JSON")
+	cmd.Flags().String("format", "text", "Output format (json or text)")
 
 	return cmd
 }
 
-// printVersionInfo prints the version information
-func printVersionInfo(info versions.VersionInfo) {
-	fmt.Printf("ToolHive %s\n", info.Version)
-	fmt.Printf("Commit: %s\n", info.Commit)
-	fmt.Printf("Built: %s\n", info.BuildDate)
-	fmt.Printf("Go version: %s\n", info.GoVersion)
-	fmt.Printf("Platform: %s\n", info.Platform)
-}
+func versionCmdFunc(cmd *cobra.Command, _ []string) error {
+	// Create context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-// printJSONVersionInfo prints the version information as JSON
-func printJSONVersionInfo(info versions.VersionInfo) {
-	// Simple JSON formatting without importing encoding/json
-	jsonStr := fmt.Sprintf(`{
-  "version": "%s",
-  "commit": "%s",
-  "build_date": "%s",
-  "go_version": "%s",
-  "platform": "%s"
-}`,
-		escapeJSON(info.Version),
-		escapeJSON(info.Commit),
-		escapeJSON(info.BuildDate),
-		escapeJSON(info.GoVersion),
-		escapeJSON(info.Platform))
+	// Get debug mode flag
+	debugMode, _ := cmd.Flags().GetBool("debug")
 
-	fmt.Printf("%s", jsonStr)
-}
+	// Get format flag
+	format, _ := cmd.Flags().GetString("format")
 
-// escapeJSON escapes special characters in JSON strings
-func escapeJSON(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	return s
+	// Create API client factory
+	apiFactory, err := factory.New(
+		factory.WithClientType(factory.LocalClientType),
+		factory.WithDebug(debugMode),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create API client factory: %v", err)
+	}
+
+	// Create API client
+	apiClient, err := apiFactory.Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create API client: %v", err)
+	}
+	defer apiClient.Close()
+
+	// Create version options
+	versionOpts := &api.VersionOptions{
+		Format: format,
+	}
+
+	// Get version information
+	versionInfo, err := apiClient.Version().Get(ctx, versionOpts)
+	if err != nil {
+		return fmt.Errorf("failed to get version information: %v", err)
+	}
+
+	// Print version information
+	fmt.Println(versionInfo)
+
+	return nil
 }

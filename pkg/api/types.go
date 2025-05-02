@@ -146,6 +146,8 @@ type ProxyOptions struct {
 	TargetPort int `json:"target_port,omitempty"`
 	// TargetHost is the host to forward to
 	TargetHost string `json:"target_host,omitempty"`
+	// OIDCConfig contains OIDC configuration for JWT validation
+	OIDCConfig *auth.JWTValidatorConfig `json:"oidc_config,omitempty"`
 }
 
 // RegistryListOptions represents options for listing MCP servers in the registry.

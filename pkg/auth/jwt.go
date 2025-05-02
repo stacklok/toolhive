@@ -220,7 +220,10 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 		// Validate the token
 		claims, err := v.ValidateToken(r.Context(), tokenString)
 		if err != nil {
-			w.Header().Set("WWW-Authenticate", fmt.Sprintf("Bearer realm=\"%s\", error=\"invalid_token\", error_description=\"%v\"", v.issuer, err))
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf(
+				"Bearer realm=\"%s\", error=\"invalid_token\", error_description=\"%v\"",
+				v.issuer, err,
+			))
 			http.Error(w, fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
 			return
 		}

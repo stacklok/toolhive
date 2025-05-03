@@ -202,12 +202,14 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 		// Get the token from the Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf("Bearer realm=\"%s\"", v.issuer))
 			http.Error(w, "Authorization header required", http.StatusUnauthorized)
 			return
 		}
 
 		// Check if the Authorization header has the Bearer prefix
 		if !strings.HasPrefix(authHeader, "Bearer ") {
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf("Bearer realm=\"%s\"", v.issuer))
 			http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
 			return
 		}
@@ -218,6 +220,10 @@ func (v *JWTValidator) Middleware(next http.Handler) http.Handler {
 		// Validate the token
 		claims, err := v.ValidateToken(r.Context(), tokenString)
 		if err != nil {
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf(
+				"Bearer realm=\"%s\", error=\"invalid_token\", error_description=\"%v\"",
+				v.issuer, err,
+			))
 			http.Error(w, fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
 			return
 		}

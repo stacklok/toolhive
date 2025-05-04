@@ -51,7 +51,7 @@ PRs to resolve existing issues are greatly appreciated and issues labeled as
 are a great place to start!
 
 ### Pull request process
-
+- -All commits must include a Signed-off-by trailer at the end of each commit message to indicate that the contributor agrees to the Developer Certificate of Origin. For additional details, check out the [DCO instructions](dco.md).
 - Create an issue outlining the fix or feature.
 - Fork the ToolHive repository to your own GitHub account and clone it locally.
 - Hack on your changes.

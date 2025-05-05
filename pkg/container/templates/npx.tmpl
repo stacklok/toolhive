@@ -1,7 +1,7 @@
 FROM node:22-alpine
 
 # Install git for package installation support
-RUN apk add --no-cache git
+RUN apk add --no-cache git ca-certificates
 
 # Set working directory
 WORKDIR /app
@@ -19,6 +19,14 @@ ENV NODE_ENV=production \
     NPM_CONFIG_AUDIT=false \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
     NPM_CONFIG_PROGRESS=false
+
+{{if .CACertContent}}
+# Add custom CA certificate
+RUN mkdir -p /usr/local/share/ca-certificates
+COPY ca-cert.crt /usr/local/share/ca-certificates/
+RUN chmod 644 /usr/local/share/ca-certificates/ca-cert.crt && \
+    update-ca-certificates
+{{end}}
 
 # Run the MCP server using npx
 # The entrypoint will be constructed dynamically based on the package and arguments

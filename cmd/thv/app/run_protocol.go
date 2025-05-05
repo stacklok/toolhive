@@ -20,10 +20,16 @@ const (
 	GOScheme  = "go://"
 )
 
-// handleProtocolScheme checks if the serverOrImage string contains a protocol scheme (uvx:// or npx://)
+// handleProtocolScheme checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
 // and builds a Docker image for it if needed.
 // Returns the Docker image name to use and any error encountered.
-func handleProtocolScheme(ctx context.Context, runtime rt.Runtime, serverOrImage string, debugMode bool) (string, error) {
+func handleProtocolScheme(
+	ctx context.Context,
+	runtime rt.Runtime,
+	serverOrImage string,
+	debugMode bool,
+	caCertPath string,
+) (string, error) {
 	// Check if the serverOrImage starts with a protocol scheme
 	if !strings.HasPrefix(serverOrImage, UVXScheme) &&
 		!strings.HasPrefix(serverOrImage, NPXScheme) &&
@@ -55,6 +61,21 @@ func handleProtocolScheme(ctx context.Context, runtime rt.Runtime, serverOrImage
 		MCPArgs:    []string{}, // No additional arguments for now
 	}
 
+	// If a CA certificate path is provided, read the certificate and add it to the template data
+	if caCertPath != "" {
+		logDebug(debugMode, "Using custom CA certificate from: %s", caCertPath)
+
+		// Read the CA certificate file
+		// #nosec G304 -- This is a user-provided file path that we need to read
+		caCertContent, err := os.ReadFile(caCertPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read CA certificate file: %w", err)
+		}
+
+		// Add the CA certificate content to the template data
+		templateData.CACertContent = string(caCertContent)
+	}
+
 	// Get the Dockerfile content
 	dockerfileContent, err := templates.GetDockerfileTemplate(transportType, templateData)
 	if err != nil {
@@ -72,6 +93,15 @@ func handleProtocolScheme(ctx context.Context, runtime rt.Runtime, serverOrImage
 	dockerfilePath := filepath.Join(tempDir, "Dockerfile")
 	if err := os.WriteFile(dockerfilePath, []byte(dockerfileContent), 0600); err != nil {
 		return "", fmt.Errorf("failed to write Dockerfile: %w", err)
+	}
+
+	// If a CA certificate is provided, write it to the build context
+	if templateData.CACertContent != "" {
+		caCertFilePath := filepath.Join(tempDir, "ca-cert.crt")
+		if err := os.WriteFile(caCertFilePath, []byte(templateData.CACertContent), 0600); err != nil {
+			return "", fmt.Errorf("failed to write CA certificate file: %w", err)
+		}
+		logDebug(debugMode, "Added CA certificate to build context: %s", caCertFilePath)
 	}
 
 	//dynamically generate tag from timestamp

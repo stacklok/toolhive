@@ -18,6 +18,8 @@ type TemplateData struct {
 	MCPPackage string
 	// MCPArgs are the arguments to pass to the MCP package.
 	MCPArgs []string
+	// CACertContent is the content of the custom CA certificate to include in the image.
+	CACertContent string
 }
 
 // TransportType represents the type of transport to use.

@@ -32,6 +32,8 @@ const (
 	VSCodeInsider MCPClient = "vscode-insider"
 	// VSCode represents the standard VS Code editor.
 	VSCode MCPClient = "vscode"
+	// ClaudeCode represents the Claude Code CLI.
+	ClaudeCode MCPClient = "claude-code"
 )
 
 // Extension is extension of the client config file.
@@ -99,6 +101,13 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{".cursor", "mcp.json"},
 		Extension:            JSON,
 	},
+	{
+		ClientType:           ClaudeCode,
+		Description:          "Claude Code CLI",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".claude.json"},
+		Extension:            JSON,
+	},
 }
 
 // ConfigFile represents a client configuration file
@@ -151,12 +160,12 @@ func FindClientConfigs() ([]ConfigFile, error) {
 // Upsert updates/inserts an MCP server in a client configuration file
 // It is a wrapper around the ConfigUpdater.Upsert method. Because the
 // ConfigUpdater is different for each client type, we need to handle
-// the different types of McpServer objects. For example, VSCode allows
+// the different types of McpServer objects. For example, VSCode and ClaudeCode allows
 // for a `type` field, but Cursor and others do not. This allows us to
 // build up more complex MCP server configurations for different clients
 // without leaking them into the CMD layer.
 func Upsert(cf ConfigFile, name string, url string) error {
-	if cf.ClientType == VSCode || cf.ClientType == VSCodeInsider {
+	if cf.ClientType == VSCode || cf.ClientType == VSCodeInsider || cf.ClientType == ClaudeCode {
 		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: "sse"})
 	}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"time"
 )
 
@@ -40,7 +41,7 @@ func GetVersionInfo() VersionInfo {
 	commit := Commit
 	buildDate := BuildDate
 
-	if ver == "dev" {
+	if strings.HasPrefix(ver, "dev") {
 		if info, ok := debug.ReadBuildInfo(); ok {
 			// Try to get version from build info
 			for _, setting := range info.Settings {

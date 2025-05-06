@@ -1,54 +1,5 @@
 {
   "last_updated": "2025-05-06 00:20:49",
-  "osv": {
-    "args": [],
-    "description": "An MCP (Model Context Protocol) server that provides access to the OSV (Open Source Vulnerabilities) database. This server allows LLM-powered applications to query the OSV database for vulnerability information about packages and commits.",
-    "env_vars": [],
-    "image": "ghcr.io/stackloklabs/osv-mcp/server:latest",
-    "metadata": {
-      "last_updated": "2025-05-05T00:21:57Z",
-      "pulls": 1200,
-      "stars": 25
-    },
-    "permissions": {
-      "network": {
-        "outbound": {
-          "allow_host": [
-            "api.osv.dev"
-          ],
-          "allow_port": [
-            443
-          ],
-          "allow_transport": [
-            "tcp"
-          ],
-          "insecure_allow_all": false
-        }
-      },
-      "read": [],
-      "write": []
-    },
-    "repository_url": "https://github.com/StacklokLabs/osv-mcp",
-    "tags": [
-      "vulnerability",
-      "security",
-      "osv",
-      "open-source",
-      "cve",
-      "packages",
-      "dependencies",
-      "scanning",
-      "security-scanning",
-      "vulnerability-detection"
-    ],
-    "target_port": 8080,
-    "tools": [
-      "query_vulnerability",
-      "query_vulnerabilities_batch",
-      "get_vulnerability"
-    ],
-    "transport": "sse"
-  },
   "servers": {
     "atlassian": {
       "args": [],
@@ -1238,6 +1189,55 @@
         "list_netbird_posture_checks",
         "list_netbird_networks",
         "list_netbird_nameservers"
+      ],
+      "transport": "sse"
+    },
+    "osv": {
+      "args": [],
+      "description": "An MCP (Model Context Protocol) server that provides access to the OSV (Open Source Vulnerabilities) database. This server allows LLM-powered applications to query the OSV database for vulnerability information about packages and commits.",
+      "env_vars": [],
+      "image": "ghcr.io/stackloklabs/osv-mcp/server:latest",
+      "metadata": {
+        "last_updated": "2025-05-05T00:21:57Z",
+        "pulls": 1200,
+        "stars": 25
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              "api.osv.dev"
+            ],
+            "allow_port": [
+              443
+            ],
+            "allow_transport": [
+              "tcp"
+            ],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/StacklokLabs/osv-mcp",
+      "tags": [
+        "vulnerability",
+        "security",
+        "osv",
+        "open-source",
+        "cve",
+        "packages",
+        "dependencies",
+        "scanning",
+        "security-scanning",
+        "vulnerability-detection"
+      ],
+      "target_port": 8080,
+      "tools": [
+        "query_vulnerability",
+        "query_vulnerabilities_batch",
+        "get_vulnerability"
       ],
       "transport": "sse"
     },

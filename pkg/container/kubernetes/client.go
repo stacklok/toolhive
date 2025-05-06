@@ -968,6 +968,33 @@ func ensurePodTemplateConfig(
 		podTemplateSpec.Spec = podTemplateSpec.Spec.WithRestartPolicy(corev1.RestartPolicyAlways)
 	}
 
+	// Add pod-level security context if not already present
+	if podTemplateSpec.Spec.SecurityContext == nil {
+		podTemplateSpec.Spec = podTemplateSpec.Spec.WithSecurityContext(
+			corev1apply.PodSecurityContext().
+				WithRunAsNonRoot(true).
+				WithRunAsUser(int64(1000)).
+				WithRunAsGroup(int64(1000)).
+				WithFSGroup(int64(1000)),
+		)
+	} else {
+		// If the pod-level security context already exists, ensure it has the correct settings
+		if podTemplateSpec.Spec.SecurityContext.RunAsNonRoot == nil {
+			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithRunAsNonRoot(true)
+		}
+
+		if podTemplateSpec.Spec.SecurityContext.FSGroup == nil {
+			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithFSGroup(int64(1000))
+		}
+
+		if podTemplateSpec.Spec.SecurityContext.RunAsUser == nil {
+			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithRunAsUser(int64(1000))
+		}
+
+		if podTemplateSpec.Spec.SecurityContext.RunAsGroup == nil {
+			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithRunAsGroup(int64(1000))
+		}
+	}
 	return podTemplateSpec
 }
 
@@ -1019,6 +1046,44 @@ func configureContainer(
 		WithStdin(attachStdio).
 		WithTTY(false).
 		WithEnv(envVars...)
+
+	// Add container security context if not already present
+	if container.SecurityContext == nil {
+		container.WithSecurityContext(
+			corev1apply.SecurityContext().
+				WithPrivileged(false).
+				WithRunAsNonRoot(true).
+				WithAllowPrivilegeEscalation(false).
+				WithReadOnlyRootFilesystem(true).
+				WithRunAsUser(int64(1000)).
+				WithRunAsGroup(int64(1000)),
+		)
+	} else {
+		// If the container security context already exists, ensure it has the correct settings
+		if container.SecurityContext.RunAsNonRoot == nil {
+			container.SecurityContext = container.SecurityContext.WithRunAsNonRoot(true)
+		}
+
+		if container.SecurityContext.RunAsUser == nil {
+			container.SecurityContext = container.SecurityContext.WithRunAsUser(int64(1000))
+		}
+
+		if container.SecurityContext.RunAsGroup == nil {
+			container.SecurityContext = container.SecurityContext.WithRunAsGroup(int64(1000))
+		}
+
+		if container.SecurityContext.Privileged == nil {
+			container.SecurityContext = container.SecurityContext.WithPrivileged(false)
+		}
+
+		if container.SecurityContext.ReadOnlyRootFilesystem == nil {
+			container.SecurityContext = container.SecurityContext.WithReadOnlyRootFilesystem(true)
+		}
+
+		if container.SecurityContext.AllowPrivilegeEscalation == nil {
+			container.SecurityContext = container.SecurityContext.WithAllowPrivilegeEscalation(false)
+		}
+	}
 }
 
 // configureMCPContainer configures the MCP container in the pod template

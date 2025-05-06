@@ -34,15 +34,37 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 
 	// Test cases
 	testCases := []struct {
-		name                string
-		k8sPodTemplatePatch string
-		expectedVolumes     []corev1.Volume
-		expectedTolerations []corev1.Toleration
+		name                             string
+		k8sPodTemplatePatch              string
+		expectedVolumes                  []corev1.Volume
+		expectedTolerations              []corev1.Toleration
+		expectedPodSecurityContext       *corev1apply.PodSecurityContextApplyConfiguration
+		expectedContainerSecurityContext *corev1apply.SecurityContextApplyConfiguration
 	}{
 		{
 			name: "with pod template patch",
 			k8sPodTemplatePatch: `{
 				"spec": {
+					"securityContext": {
+						"runAsNonRoot": false,
+						"runAsUser": 2000,
+						"runAsGroup": 2000,
+						"fsGroup": 2000
+					},
+					"containers": [
+						{
+							"name": "mcp",
+							"securityContext": {
+								"privileged": true,
+								"runAsNonRoot": false,
+								"runAsUser": 2000,
+								"runAsGroup": 2000,
+								"fsGroup": 2000,
+								"readOnlyRootFilesystem": false,
+								"allowPrivilegeEscalation": true
+							}
+						}
+					],
 					"volumes": [
 						{
 							"name": "test-volume",
@@ -59,6 +81,18 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 					]
 				}
 			}`,
+			expectedPodSecurityContext: corev1apply.PodSecurityContext().
+				WithRunAsNonRoot(false).
+				WithRunAsUser(int64(2000)).
+				WithRunAsGroup(int64(2000)).
+				WithFSGroup(int64(2000)),
+			expectedContainerSecurityContext: corev1apply.SecurityContext().
+				WithRunAsNonRoot(false).
+				WithRunAsUser(int64(2000)).
+				WithRunAsGroup(int64(2000)).
+				WithPrivileged(true).
+				WithReadOnlyRootFilesystem(false).
+				WithAllowPrivilegeEscalation(true),
 			expectedVolumes: []corev1.Volume{
 				{
 					Name: "test-volume",
@@ -79,6 +113,18 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 		{
 			name:                "without pod template patch",
 			k8sPodTemplatePatch: "",
+			expectedPodSecurityContext: corev1apply.PodSecurityContext().
+				WithRunAsNonRoot(true).
+				WithRunAsUser(int64(1000)).
+				WithRunAsGroup(int64(1000)).
+				WithFSGroup(int64(1000)),
+			expectedContainerSecurityContext: corev1apply.SecurityContext().
+				WithRunAsNonRoot(true).
+				WithRunAsUser(int64(1000)).
+				WithRunAsGroup(int64(1000)).
+				WithPrivileged(false).
+				WithReadOnlyRootFilesystem(true).
+				WithAllowPrivilegeEscalation(false),
 			expectedVolumes:     nil,
 			expectedTolerations: nil,
 		},
@@ -160,10 +206,26 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 				// Check tolerations
 				assert.Equal(t, tc.expectedTolerations, statefulSet.Spec.Template.Spec.Tolerations)
 			} else {
-				// Check that no volumes or tolerations were added
 				assert.Empty(t, statefulSet.Spec.Template.Spec.Volumes)
 				assert.Empty(t, statefulSet.Spec.Template.Spec.Tolerations)
 			}
+
+			// Check pod security context
+			assert.NotNil(t, statefulSet.Spec.Template.Spec.SecurityContext, "Pod security context should not be nil")
+			assert.Equal(t, tc.expectedPodSecurityContext.RunAsNonRoot, statefulSet.Spec.Template.Spec.SecurityContext.RunAsNonRoot, "RunAsNonRoot should be true")
+			assert.Equal(t, tc.expectedPodSecurityContext.RunAsUser, statefulSet.Spec.Template.Spec.SecurityContext.RunAsUser, "RunAsUser should be 1000")
+			assert.Equal(t, tc.expectedPodSecurityContext.RunAsGroup, statefulSet.Spec.Template.Spec.SecurityContext.RunAsGroup, "RunAsGroup should be 1000")
+			assert.Equal(t, tc.expectedPodSecurityContext.FSGroup, statefulSet.Spec.Template.Spec.SecurityContext.FSGroup, "FSGroup should be 1000")
+
+			// Check container security context
+			container := statefulSet.Spec.Template.Spec.Containers[0]
+			assert.NotNil(t, container.SecurityContext, "Container security context should not be nil")
+			assert.Equal(t, tc.expectedContainerSecurityContext.RunAsNonRoot, container.SecurityContext.RunAsNonRoot, "Container RunAsNonRoot should be true")
+			assert.Equal(t, tc.expectedContainerSecurityContext.RunAsUser, container.SecurityContext.RunAsUser, "Container RunAsUser should be 1000")
+			assert.Equal(t, tc.expectedContainerSecurityContext.RunAsGroup, container.SecurityContext.RunAsGroup, "Container RunAsGroup should be 1000")
+			assert.Equal(t, tc.expectedContainerSecurityContext.Privileged, container.SecurityContext.Privileged, "Container Privileged should be false")
+			assert.Equal(t, tc.expectedContainerSecurityContext.ReadOnlyRootFilesystem, container.SecurityContext.ReadOnlyRootFilesystem, "Container ReadOnlyRootFilesystem should be true")
+			assert.Equal(t, tc.expectedContainerSecurityContext.AllowPrivilegeEscalation, container.SecurityContext.AllowPrivilegeEscalation, "Container AllowPrivilegeEscalation should be false")
 		})
 	}
 }

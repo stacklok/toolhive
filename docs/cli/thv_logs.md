@@ -14,6 +14,7 @@ thv logs [container-name] [flags]
 
 ```
   -h, --help   help for logs
+  -t, --tail   Tail the logs
 ```
 
 ### Options inherited from parent commands

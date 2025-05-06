@@ -49,7 +49,7 @@ func (*mockRuntime) RemoveContainer(_ context.Context, _ string) error {
 	return nil
 }
 
-func (*mockRuntime) ContainerLogs(_ context.Context, _ string) (string, error) {
+func (*mockRuntime) ContainerLogs(_ context.Context, _ string, _ bool) (string, error) {
 	return "", nil
 }
 

@@ -117,7 +117,7 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 				// Container has exited, get logs and info
 				// Create a short timeout context for these operations
 				infoCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				logs, _ := m.runtime.ContainerLogs(infoCtx, m.containerID)
+				logs, _ := m.runtime.ContainerLogs(infoCtx, m.containerID, false)
 				info, _ := m.runtime.GetContainerInfo(infoCtx, m.containerID)
 				cancel() // Always cancel the context to avoid leaks
 

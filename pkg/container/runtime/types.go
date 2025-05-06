@@ -65,7 +65,7 @@ type Runtime interface {
 	RemoveContainer(ctx context.Context, containerID string) error
 
 	// ContainerLogs gets container logs
-	ContainerLogs(ctx context.Context, containerID string) (string, error)
+	ContainerLogs(ctx context.Context, containerID string, tail bool) (string, error)
 
 	// IsContainerRunning checks if a container is running
 	IsContainerRunning(ctx context.Context, containerID string) (bool, error)

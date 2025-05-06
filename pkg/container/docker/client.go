@@ -452,10 +452,12 @@ func (c *Client) RemoveContainer(ctx context.Context, containerID string) error 
 }
 
 // ContainerLogs gets container logs
-func (c *Client) ContainerLogs(ctx context.Context, containerID string) (string, error) {
+func (c *Client) ContainerLogs(ctx context.Context, containerID string, tail bool) (string, error) {
 	options := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
+		Follow:     tail,
+		Tail:       "100",
 	}
 
 	// Get logs
@@ -464,6 +466,14 @@ func (c *Client) ContainerLogs(ctx context.Context, containerID string) (string,
 		return "", NewContainerError(err, containerID, fmt.Sprintf("failed to get container logs: %v", err))
 	}
 	defer logs.Close()
+
+	if tail {
+		_, err = io.Copy(os.Stdout, logs)
+		if err != nil && err != io.EOF {
+			logger.Log.Errorf("Error reading container logs: %v", err)
+			return "", NewContainerError(err, containerID, fmt.Sprintf("failed to tail container logs: %v", err))
+		}
+	}
 
 	// Read logs
 	logBytes, err := io.ReadAll(logs)

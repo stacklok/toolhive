@@ -1,7 +1,10 @@
 FROM python:3.12-slim
 
-# Install uv package manager
-RUN pip install --no-cache-dir uv
+# Install uv package manager and CA certificates
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    pip install --no-cache-dir uv && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
@@ -13,6 +16,14 @@ RUN groupadd -r appgroup && \
     chown -R appuser:appgroup /app && \
     mkdir -p /home/appuser/.cache && \
     chown -R appuser:appgroup /home/appuser
+
+{{if .CACertContent}}
+# Add custom CA certificate
+RUN mkdir -p /usr/local/share/ca-certificates
+COPY ca-cert.crt /usr/local/share/ca-certificates/
+RUN chmod 644 /usr/local/share/ca-certificates/ca-cert.crt && \
+    update-ca-certificates
+{{end}}
 
 # Set environment variables for better performance in containers
 ENV PYTHONDONTWRITEBYTECODE=1 \

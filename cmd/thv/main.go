@@ -2,15 +2,15 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/StacklokLabs/toolhive/cmd/thv/app"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
 )
 
 func main() {
 	if err := app.NewRootCmd().Execute(); err != nil {
-		logger.Log.Errorf("%v, %v", os.Stderr, err)
+		fmt.Fprintf(os.Stderr, "there was an error: %v\n", err)
 		os.Exit(1)
 	}
 }

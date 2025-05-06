@@ -90,25 +90,7 @@ func init() {
 
 func secretsProviderCmdFunc(_ *cobra.Command, args []string) error {
 	provider := args[0]
-
-	// Validate the provider type
-	switch provider {
-	case string(secrets.EncryptedType):
-		// Valid provider type
-	default:
-		return fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted)", provider)
-	}
-
-	// Update the secrets provider type
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.Secrets.ProviderType = provider
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
-	}
-
-	fmt.Printf("Secrets provider type updated to: %s\n", provider)
-	return nil
+	return SetSecretsProvider(secrets.ProviderType(provider))
 }
 
 func autoDiscoveryCmdFunc(_ *cobra.Command, args []string) error {

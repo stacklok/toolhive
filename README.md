@@ -292,6 +292,12 @@ Many MCP servers require API tokens or other secrets for authentication.
 ToolHive provides a secure way to manage these secrets without exposing them in
 plaintext configuration files.
 
+ToolHive offers integration with multiple secret providers:
+
+- `encrypted`
+- `1password`
+
+#### `encrypted`
 This example enables ToolHive's encrypted secrets store, creates a secret for a
 GitHub authentication token, and runs the GitHub MCP server with the token:
 
@@ -309,6 +315,33 @@ service.
 For more details on managing secrets, see the
 [`thv secret` command reference](./docs/cli/thv_secret.md) or run
 `thv secret --help`.
+
+#### `1password`
+This example enables ToolHive's 1Password integration for retrieving secrets.
+
+To enable the `1password` provider:
+
+```bash
+$ thv config secrets-provider 1password
+Secrets provider type updated to: 1password
+```
+
+To allow ToolHive to retrieve secrets from your 1Password make sure you setup a [Service Account](https://developer.1password.com/docs/sdks/#step-1-create-a-service-account) and set the `OP_SERVICE_ACCOUNT_TOKEN` variable before running any ToolHive commands that use it.
+
+When you are referencing a secret make sure to follow the [secret reference](https://developer.1password.com/docs/cli/secret-references/#step-3-resolve-secret-references) required by 1Password
+
+```bash
+# `op://<vault-name>/<item-name>/[section-name/]<field-name>`
+$ OP_SERVICE_ACCOUNT_TOKEN="<token>" thv secret get op://test/login/password
+Secret op://test/login/password: my-test-passywordy
+```
+
+> Note: Only getting of secrets is supported with 1Password currently. If there is a demand to support setting of secrets in future, we will look into adding this capability.
+
+For more details on managing secrets, see the
+[`thv secret` command reference](./docs/cli/thv_secret.md) or run
+`thv secret --help`.
+
 
 ### Run a custom MCP server
 

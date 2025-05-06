@@ -26,6 +26,9 @@ type ProviderType string
 const (
 	// EncryptedType represents the encrypted secret provider.
 	EncryptedType ProviderType = "encrypted"
+
+	// OnePasswordType represents the 1Password secret provider.
+	OnePasswordType ProviderType = "1password"
 )
 
 // ErrUnknownManagerType is returned when an invalid value for ProviderType is specified.
@@ -46,6 +49,8 @@ func CreateSecretManager(managerType ProviderType) (Provider, error) {
 			return nil, fmt.Errorf("unable to access secrets file path %v", err)
 		}
 		return NewEncryptedManager(secretsPath, key[:])
+	case OnePasswordType:
+		return NewOnePasswordManager()
 	default:
 		return nil, ErrUnknownManagerType
 	}

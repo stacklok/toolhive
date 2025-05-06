@@ -294,7 +294,7 @@ func applyRegistrySettings(
 	// Use registry transport if not overridden
 	if !cmd.Flags().Changed("transport") {
 		logDebug(debugMode, "Using registry transport: %s", server.Transport)
-		// The actual transport setting will be handled by configureRunConfig
+		runTransport = server.Transport
 	} else {
 		logDebug(debugMode, "Using provided transport: %s (overriding registry default: %s)",
 			runTransport, server.Transport)

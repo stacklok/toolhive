@@ -42,10 +42,44 @@ func GetSecretsProviderType(_ *cobra.Command) (secrets.ProviderType, error) {
 	switch provider {
 	case string(secrets.EncryptedType):
 		return secrets.EncryptedType, nil
+	case string(secrets.OnePasswordType):
+		return secrets.OnePasswordType, nil
 	default:
 		// TODO: auto-generate the set of valid values.
-		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted)", provider)
+		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted, 1password)", provider)
 	}
+}
+
+// SetSecretsProvider sets the secrets provider type in the configuration.
+// It validates the input and updates the configuration.
+// Choices are `encrypted` and `1password`.
+func SetSecretsProvider(provider secrets.ProviderType) error {
+
+	// Validate input
+	if provider == "" {
+		fmt.Println("validation error: provider cannot be empty")
+		return fmt.Errorf("validation error: provider cannot be empty")
+	}
+
+	// Validate the provider type
+	switch provider {
+	case secrets.EncryptedType:
+	case secrets.OnePasswordType:
+		// Valid provider type
+	default:
+		return fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted, 1password)", provider)
+	}
+
+	// Update the secrets provider type
+	err := config.UpdateConfig(func(c *config.Config) {
+		c.Secrets.ProviderType = string(provider)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	fmt.Printf("Secrets provider type updated to: %s\n", provider)
+	return nil
 }
 
 // NeedSecretsPassword returns true if the secrets provider requires a password.

@@ -26,9 +26,26 @@ func newSecretCommand() *cobra.Command {
 		newSecretDeleteCommand(),
 		newSecretListCommand(),
 		newSecretResetKeyringCommand(),
+		newSecretProviderCommand(),
 	)
 
 	return cmd
+}
+
+func newSecretProviderCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "provider <name>",
+		Short: "Configure the secrets provider",
+		Long: `Configure the secrets provider.
+Valid secrets providers are:
+  - encrypted: Encrypted secrets provider
+  - 1password: 1Password secrets provider (currently only supports getting secrets)`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			provider := args[0]
+			return SetSecretsProvider(secrets.ProviderType(provider))
+		},
+	}
 }
 
 func newSecretSetCommand() *cobra.Command {

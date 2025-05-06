@@ -7,11 +7,12 @@ import (
 
 func TestGetDockerfileTemplate(t *testing.T) {
 	tests := []struct {
-		name          string
-		transportType TransportType
-		data          TemplateData
-		wantContains  []string
-		wantErr       bool
+		name            string
+		transportType   TransportType
+		data            TemplateData
+		wantContains    []string
+		wantNotContains []string
+		wantErr         bool
 	}{
 		{
 			name:          "UVX transport",
@@ -22,10 +23,36 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			},
 			wantContains: []string{
 				"FROM python:3.12-slim",
-				"RUN pip install --no-cache-dir uv",
+				"apt-get install -y --no-install-recommends ca-certificates",
+				"pip install --no-cache-dir uv",
 				"ENTRYPOINT [\"uvx\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
 			},
+			wantNotContains: []string{
+				"Add custom CA certificate",
+				"update-ca-certificates",
+			},
 			wantErr: false,
+		},
+		{
+			name:          "UVX transport with CA certificate",
+			transportType: TransportTypeUVX,
+			data: TemplateData{
+				MCPPackage:    "example-package",
+				MCPArgs:       []string{"--arg1", "--arg2", "value"},
+				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
+			},
+			wantContains: []string{
+				"FROM python:3.12-slim",
+				"apt-get install -y --no-install-recommends ca-certificates",
+				"pip install --no-cache-dir uv",
+				"ENTRYPOINT [\"uvx\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
+				"Add custom CA certificate",
+				"mkdir -p /usr/local/share/ca-certificates",
+				"COPY ca-cert.crt /usr/local/share/ca-certificates/",
+				"update-ca-certificates",
+			},
+			wantNotContains: []string{},
+			wantErr:         false,
 		},
 		{
 			name:          "NPX transport",
@@ -38,7 +65,30 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM node:22-alpine",
 				"ENTRYPOINT [\"npx\", \"--yes\", \"--\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
 			},
+			wantNotContains: []string{
+				"Add custom CA certificate",
+				"update-ca-certificates",
+			},
 			wantErr: false,
+		},
+		{
+			name:          "NPX transport with CA certificate",
+			transportType: TransportTypeNPX,
+			data: TemplateData{
+				MCPPackage:    "example-package",
+				MCPArgs:       []string{"--arg1", "--arg2", "value"},
+				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
+			},
+			wantContains: []string{
+				"FROM node:22-alpine",
+				"ENTRYPOINT [\"npx\", \"--yes\", \"--\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
+				"Add custom CA certificate",
+				"mkdir -p /usr/local/share/ca-certificates",
+				"COPY ca-cert.crt /usr/local/share/ca-certificates/",
+				"update-ca-certificates",
+			},
+			wantNotContains: []string{},
+			wantErr:         false,
 		},
 		{
 			name:          "GO transport",
@@ -51,7 +101,30 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM golang:1.24-alpine",
 				"ENTRYPOINT [\"go\", \"run\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
 			},
+			wantNotContains: []string{
+				"Add custom CA certificate",
+				"update-ca-certificates",
+			},
 			wantErr: false,
+		},
+		{
+			name:          "GO transport with CA certificate",
+			transportType: TransportTypeGO,
+			data: TemplateData{
+				MCPPackage:    "example-package",
+				MCPArgs:       []string{"--arg1", "--arg2", "value"},
+				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
+			},
+			wantContains: []string{
+				"FROM golang:1.24-alpine",
+				"ENTRYPOINT [\"go\", \"run\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
+				"Add custom CA certificate",
+				"mkdir -p /usr/local/share/ca-certificates",
+				"COPY ca-cert.crt /usr/local/share/ca-certificates/",
+				"update-ca-certificates",
+			},
+			wantNotContains: []string{},
+			wantErr:         false,
 		},
 		{
 			name:          "Unsupported transport",
@@ -60,8 +133,9 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				MCPPackage: "example-package",
 				MCPArgs:    []string{"--arg1", "--arg2", "value"},
 			},
-			wantContains: nil,
-			wantErr:      true,
+			wantContains:    nil,
+			wantNotContains: nil,
+			wantErr:         true,
 		},
 	}
 
@@ -80,6 +154,12 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			for _, want := range tt.wantContains {
 				if !strings.Contains(got, want) {
 					t.Errorf("GetDockerfileTemplate() = %v, want to contain %v", got, want)
+				}
+			}
+
+			for _, notWant := range tt.wantNotContains {
+				if strings.Contains(got, notWant) {
+					t.Errorf("GetDockerfileTemplate() = %v, want NOT to contain %v", got, notWant)
 				}
 			}
 		})

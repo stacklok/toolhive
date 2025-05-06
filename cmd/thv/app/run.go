@@ -66,6 +66,7 @@ var (
 	runSecrets           []string
 	runAuthzConfig       string
 	runK8sPodPatch       string
+	runCACertPath        string
 )
 
 func init() {
@@ -117,6 +118,12 @@ func init() {
 		"",
 		"JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)",
 	)
+	runCmd.Flags().StringVar(
+		&runCACertPath,
+		"ca-cert",
+		"",
+		"Path to a custom CA certificate file to use for container builds",
+	)
 
 	// Add OIDC validation flags
 	AddOIDCFlags(runCmd)
@@ -151,9 +158,9 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
-	// Check if the serverOrImage contains a protocol scheme (uvx:// or npx://)
+	// Check if the serverOrImage contains a protocol scheme (uvx://, npx://, or go://)
 	// and build a Docker image for it if needed
-	processedImage, err := handleProtocolScheme(ctx, rt, serverOrImage, debugMode)
+	processedImage, err := handleProtocolScheme(ctx, rt, serverOrImage, debugMode, runCACertPath)
 	if err != nil {
 		return fmt.Errorf("failed to process protocol scheme: %v", err)
 	}
@@ -294,7 +301,7 @@ func applyRegistrySettings(
 	// Use registry transport if not overridden
 	if !cmd.Flags().Changed("transport") {
 		logDebug(debugMode, "Using registry transport: %s", server.Transport)
-		// The actual transport setting will be handled by configureRunConfig
+		runTransport = server.Transport
 	} else {
 		logDebug(debugMode, "Using provided transport: %s (overriding registry default: %s)",
 			runTransport, server.Transport)

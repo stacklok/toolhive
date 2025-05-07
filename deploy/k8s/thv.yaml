@@ -19,10 +19,18 @@ spec:
         app.kubernetes.io/name: toolhive
     spec:
       serviceAccountName: toolhive
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
       containers:
       - name: toolhive
         image: ko://github.com/StacklokLabs/toolhive/cmd
         args: ["run", "--foreground=true", "--port=8080", "--name=mcp-fetch", "docker.io/mcp/fetch"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsUser: 1000
+          runAsGroup: 1000
         env:
         - name: UNSTRUCTURED_LOGS
           value: "false"

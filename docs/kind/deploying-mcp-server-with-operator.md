@@ -12,7 +12,6 @@ With the ToolHive Operator running, you can deploy an MCP server into the cluste
 
 ```bash
 $ kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/samples/mcpserver_fetch.yaml
-mcpserver.toolhive.stacklok.dev/fetch created
 ```
 
 You should now be able to see the MCP server pods being created/running:

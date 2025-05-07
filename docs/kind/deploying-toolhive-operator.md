@@ -43,7 +43,7 @@ Once the cluster is running, follow these steps:
 1. Install the CRD:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
+kubectl create -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
 ```
 
 2. Create the operator namespace:
@@ -55,7 +55,6 @@ kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/de
 3. Set up RBAC:
 
 ```bash
-≈
 kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/toolhive_rbac.yaml
 ```
 

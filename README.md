@@ -176,25 +176,38 @@ containers. The proxy communicates with MCP servers via standard input/output
 (stdio) or server-sent events (SSE).
 
 ```mermaid
-flowchart LR
-  subgraph container[Docker/Podman]
+flowchart TD
+  subgraph container1[Docker/Podman Container 1]
     direction LR
     proxy1[SSE proxy 1]
-    proxy2[SSE proxy 2]
-    proxy3[SSE proxy 3]
-    mcp1[MCP Server]
-    mcp2[MCP Server]
-    mcp3[MCP Server]
-
+    mcp1[MCP Server 1]
     proxy1 -->|stdio| mcp1
+  end
+  
+  subgraph container2[Docker/Podman Container 2]
+    direction LR
+    proxy2[SSE proxy 2]
+    mcp2[MCP Server 2]
     proxy2 -->|stdio| mcp2
+  end
+  
+  subgraph container3[Docker/Podman Container 3]
+    direction LR
+    proxy3[SSE proxy 3]
+    mcp3[MCP Server 3]
     proxy3 -->|sse| mcp3
   end
 
-  T[ToolHive CLI] -->|Socket API| container
-  C[Client] -->|HTTP/SSE| proxy1
-  C[Client] -->|HTTP/SSE| proxy2
-  C[Client] -->|HTTP/SSE| proxy3
+  C[Client]
+  T[ToolHive CLI]
+  
+  C -->|HTTP/SSE| proxy1
+  C -->|HTTP/SSE| proxy2
+  C -->|HTTP/SSE| proxy3
+  
+  T -->|Socket API 1| container1
+  T -->|Socket API 2| container2
+  T -->|Socket API 3| container3
 ```
 
 ## Usage examples

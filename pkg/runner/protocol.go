@@ -1,4 +1,4 @@
-package app
+package runner
 
 import (
 	"context"
@@ -20,14 +20,13 @@ const (
 	GOScheme  = "go://"
 )
 
-// handleProtocolScheme checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
+// HandleProtocolScheme checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
 // and builds a Docker image for it if needed.
 // Returns the Docker image name to use and any error encountered.
-func handleProtocolScheme(
+func HandleProtocolScheme(
 	ctx context.Context,
 	runtime rt.Runtime,
 	serverOrImage string,
-	debugMode bool,
 	caCertPath string,
 ) (string, error) {
 	// Check if the serverOrImage starts with a protocol scheme
@@ -63,7 +62,7 @@ func handleProtocolScheme(
 
 	// If a CA certificate path is provided, read the certificate and add it to the template data
 	if caCertPath != "" {
-		logDebug(debugMode, "Using custom CA certificate from: %s", caCertPath)
+		logger.Debugf("Using custom CA certificate from: %s", caCertPath)
 
 		// Read the CA certificate file
 		// #nosec G304 -- This is a user-provided file path that we need to read
@@ -101,7 +100,7 @@ func handleProtocolScheme(
 		if err := os.WriteFile(caCertFilePath, []byte(templateData.CACertContent), 0600); err != nil {
 			return "", fmt.Errorf("failed to write CA certificate file: %w", err)
 		}
-		logDebug(debugMode, "Added CA certificate to build context: %s", caCertFilePath)
+		logger.Debugf("Added CA certificate to build context: %s", caCertFilePath)
 	}
 
 	//dynamically generate tag from timestamp
@@ -114,8 +113,8 @@ func handleProtocolScheme(
 		tag)
 
 	// Log the build process
-	logDebug(debugMode, "Building Docker image for %s package: %s", transportType, packageName)
-	logDebug(debugMode, "Using Dockerfile:\n%s", dockerfileContent)
+	logger.Debugf("Building Docker image for %s package: %s", transportType, packageName)
+	logger.Debugf("Using Dockerfile:\n%s", dockerfileContent)
 
 	// Build the Docker image
 	logger.Infof("Building Docker image for %s package: %s", transportType, packageName)

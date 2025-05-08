@@ -157,14 +157,16 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Check if the serverOrImage contains a protocol scheme (uvx://, npx://, or go://)
 	// and build a Docker image for it if needed
-	processedImage, err := handleProtocolScheme(ctx, rt, serverOrImage, debugMode, runCACertPath)
+	// TODO: Fix log level handling
+	//processedImage, err := handleProtocolScheme(ctx, rt, serverOrImage, debugMode, runCACertPath)
+	processedImage, err := runner.HandleProtocolScheme(ctx, rt, serverOrImage, runCACertPath)
 	if err != nil {
 		return fmt.Errorf("failed to process protocol scheme: %v", err)
 	}
 
 	// Update serverOrImage with the processed image if it was changed
 	if processedImage != serverOrImage {
-		logDebug(debugMode, "Using built image: %s instead of %s", processedImage, serverOrImage)
+		logger.Debugf("Using built image: %s instead of %s", processedImage, serverOrImage)
 		serverOrImage = processedImage
 	}
 

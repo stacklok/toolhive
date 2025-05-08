@@ -177,24 +177,24 @@ containers. The proxy communicates with MCP servers via standard input/output
 
 ```mermaid
 flowchart LR
-  subgraph container[Docker/Podman]
+  subgraph container["Docker/Podman"]
     direction LR
-    proxy1[SSE proxy 1]
-    proxy2[SSE proxy 2]
-    proxy3[SSE proxy 3]
-    mcp1[MCP Server]
-    mcp2[MCP Server]
-    mcp3[MCP Server]
-
-    proxy1 -->|stdio| mcp1
-    proxy2 -->|stdio| mcp2
-    proxy3 -->|sse| mcp3
+    subgraph container1["Container"]
+        mcp1["MCP Server 1"]
+    end
+    subgraph container2["Container"]
+        mcp2["MCP Server 2"]
+    end
+    subgraph container3["Container"]
+        mcp3["MCP Server 3"]
+    end
   end
-
-  T[ToolHive CLI] -->|Socket API| container
-  C[Client] -->|HTTP/SSE| proxy1
-  C[Client] -->|HTTP/SSE| proxy2
-  C[Client] -->|HTTP/SSE| proxy3
+    proxy1["SSE proxy 1"] -- stdio --> mcp1
+    proxy2["SSE proxy 2"] -- stdio --> mcp2
+    proxy3["SSE proxy 3"] -- sse --> mcp3
+    T["ToolHive CLI"] -- Socket API --> container
+    C["Client"] -- HTTP/SSE --> proxy1 & proxy2 & proxy3
+    T ~~~ C
 ```
 
 ## Usage examples

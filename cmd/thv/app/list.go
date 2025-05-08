@@ -62,7 +62,7 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	// Create container runtime
 	toolHiveContainers, err := manager.ListContainers(ctx, listAll)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		return fmt.Errorf("failed to list containers: %v", err)
 	}
 
 	if len(toolHiveContainers) == 0 {

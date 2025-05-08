@@ -10,7 +10,7 @@ import (
 	"github.com/zalando/go-keyring"
 	"golang.org/x/term"
 
-	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (

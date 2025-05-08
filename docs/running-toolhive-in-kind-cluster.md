@@ -12,7 +12,7 @@ example MCP server.
 - [`ko`](https://ko.build/install/) to build the ToolHive image
 - [Task](https://taskfile.dev/installation/) to run automated steps
 - A copy of the ToolHive repository
-  (`git clone https://github.com/StacklokLabs/toolhive`)
+  (`git clone https://github.com/stacklok/toolhive`)
 
 ## Deploy an MCP server into a kind cluster
 

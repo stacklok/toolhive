@@ -8,11 +8,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/StacklokLabs/toolhive/pkg/auth"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
-	"github.com/StacklokLabs/toolhive/pkg/networking"
-	"github.com/StacklokLabs/toolhive/pkg/transport/proxy/transparent"
-	"github.com/StacklokLabs/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 var proxyCmd = &cobra.Command{

@@ -22,8 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/StacklokLabs/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // MCPServerReconciler reconciles a MCPServer object
@@ -633,7 +633,7 @@ func getToolhiveRunnerImage() string {
 	image := os.Getenv("TOOLHIVE_RUNNER_IMAGE")
 	if image == "" {
 		// Default to the published image
-		image = "ghcr.io/stackloklabs/toolhive:latest"
+		image = "ghcr.io/stacklok/toolhive:latest"
 	}
 	return image
 }

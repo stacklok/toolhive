@@ -6,14 +6,14 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/StacklokLabs/toolhive/pkg/client"
-	"github.com/StacklokLabs/toolhive/pkg/config"
-	ct "github.com/StacklokLabs/toolhive/pkg/container"
-	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
-	"github.com/StacklokLabs/toolhive/pkg/labels"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
-	"github.com/StacklokLabs/toolhive/pkg/process"
-	"github.com/StacklokLabs/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/config"
+	ct "github.com/stacklok/toolhive/pkg/container"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 // Manager is responsible for managing the state of ToolHive-managed containers.

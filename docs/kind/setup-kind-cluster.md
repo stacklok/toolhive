@@ -6,7 +6,7 @@ This document walks through setting up a local Kind cluster. There are many exam
 
 - Local container runtime is installed ([Docker](https://www.docker.com/), [Podman](https://podman.io/) etc)
 - Optional: [Task](https://taskfile.dev/installation/) to run automated steps with a cloned copy of the ToolHive repository
-  (`git clone https://github.com/StacklokLabs/toolhive`)
+  (`git clone https://github.com/stacklok/toolhive`)
 
 ## Installing Kind
 
@@ -54,7 +54,7 @@ $ kind delete clusters kind
 
 ### Automatic Setup: Setup & Destroy a Local Kind Cluster
 
-To automate the creation/destruction of a local Kind cluster, we have added a Task into the [`Taskfile.yml`](https://github.com/StacklokLabs/toolhive/blob/main/Taskfile.yml) in the root of the ToolHive repository.
+To automate the creation/destruction of a local Kind cluster, we have added a Task into the [`Taskfile.yml`](https://github.com/stacklok/toolhive/blob/main/Taskfile.yml) in the root of the ToolHive repository.
 
 #### Setup
 

@@ -12,7 +12,7 @@ import (
 	"github.com/tidwall/gjson"
 	"gotest.tools/assert"
 
-	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestUpsertMCPServerConfig(t *testing.T) {

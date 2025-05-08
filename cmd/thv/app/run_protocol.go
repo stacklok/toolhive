@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
-	"github.com/StacklokLabs/toolhive/pkg/container/templates"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/templates"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Protocol schemes

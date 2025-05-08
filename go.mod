@@ -1,4 +1,4 @@
-module github.com/StacklokLabs/toolhive
+module github.com/stacklok/toolhive
 
 go 1.24.1
 

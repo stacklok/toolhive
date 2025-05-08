@@ -12,7 +12,7 @@ jobs:
       id-token: write
 
     env:
-      BASE_REPO: "ghcr.io/stackloklabs/toolhive"
+      BASE_REPO: "ghcr.io/stacklok/toolhive"
 
     steps:
       - name: Checkout repository
@@ -63,7 +63,7 @@ jobs:
           fi
           
           KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/thv \
-            --image-label=org.opencontainers.image.source=https://github.com/StacklokLabs/toolhive,org.opencontainers.image.title="toolhive",org.opencontainers.image.vendor=Stacklok
+            --image-label=org.opencontainers.image.source=https://github.com/stacklok/toolhive,org.opencontainers.image.title="toolhive",org.opencontainers.image.vendor=Stacklok
 
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
@@ -86,7 +86,7 @@ jobs:
       id-token: write
 
     env:
-      BASE_REPO: "ghcr.io/stackloklabs/toolhive/operator"
+      BASE_REPO: "ghcr.io/stacklok/toolhive/operator"
 
     steps:
       - name: Checkout repository
@@ -146,7 +146,7 @@ jobs:
           fi
           
           KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/thv-operator \
-            --image-label=org.opencontainers.image.source=https://github.com/StacklokLabs/toolhive,org.opencontainers.image.title="toolhive-operator",org.opencontainers.image.vendor=Stacklok
+            --image-label=org.opencontainers.image.source=https://github.com/stacklok/toolhive,org.opencontainers.image.title="toolhive-operator",org.opencontainers.image.vendor=Stacklok
 
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate

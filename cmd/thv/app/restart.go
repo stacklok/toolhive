@@ -6,13 +6,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/StacklokLabs/toolhive/pkg/container"
-	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
-	"github.com/StacklokLabs/toolhive/pkg/labels"
-	"github.com/StacklokLabs/toolhive/pkg/lifecycle"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
-	"github.com/StacklokLabs/toolhive/pkg/process"
-	"github.com/StacklokLabs/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/container"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/lifecycle"
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 var restartCmd = &cobra.Command{

@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/StacklokLabs/toolhive/pkg/authz"
-	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
-	"github.com/StacklokLabs/toolhive/pkg/permissions"
-	"github.com/StacklokLabs/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/authz"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // mockRuntime implements the Runtime interface for testing

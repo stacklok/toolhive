@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/StacklokLabs/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // mockSecretsProvider is a mock implementation of the secrets.Provider interface

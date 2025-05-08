@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	"github.com/StacklokLabs/toolhive/pkg/secrets"
-	"github.com/StacklokLabs/toolhive/pkg/secrets/mocks"
+	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
 
 func TestNewOnePasswordManager(t *testing.T) {

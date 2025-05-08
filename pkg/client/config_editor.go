@@ -12,7 +12,7 @@ import (
 	"github.com/tailscale/hujson"
 	"github.com/tidwall/gjson"
 
-	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // ConfigUpdater defines the interface for types which can edit MCP client config files.

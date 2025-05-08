@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/StacklokLabs/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 var searchCmd = &cobra.Command{

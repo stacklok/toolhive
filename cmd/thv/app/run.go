@@ -11,12 +11,12 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/StacklokLabs/toolhive/pkg/container"
-	"github.com/StacklokLabs/toolhive/pkg/container/runtime"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
-	"github.com/StacklokLabs/toolhive/pkg/permissions"
-	"github.com/StacklokLabs/toolhive/pkg/registry"
-	"github.com/StacklokLabs/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 var runCmd = &cobra.Command{

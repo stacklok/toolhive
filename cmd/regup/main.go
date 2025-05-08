@@ -4,8 +4,8 @@ package main
 import (
 	"os"
 
-	"github.com/StacklokLabs/toolhive/cmd/regup/app"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/cmd/regup/app"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func main() {

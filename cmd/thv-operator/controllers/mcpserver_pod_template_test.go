@@ -11,7 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 
-	mcpv1alpha1 "github.com/StacklokLabs/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
 func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {

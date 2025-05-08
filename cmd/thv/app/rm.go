@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/StacklokLabs/toolhive/pkg/lifecycle"
+	"github.com/stacklok/toolhive/pkg/lifecycle"
 )
 
 var rmCmd = &cobra.Command{

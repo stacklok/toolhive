@@ -7,17 +7,17 @@ import (
 	"io"
 	"strings"
 
-	"github.com/StacklokLabs/toolhive/pkg/auth"
-	"github.com/StacklokLabs/toolhive/pkg/authz"
-	"github.com/StacklokLabs/toolhive/pkg/container"
-	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
-	"github.com/StacklokLabs/toolhive/pkg/environment"
-	"github.com/StacklokLabs/toolhive/pkg/labels"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
-	"github.com/StacklokLabs/toolhive/pkg/networking"
-	"github.com/StacklokLabs/toolhive/pkg/permissions"
-	"github.com/StacklokLabs/toolhive/pkg/secrets"
-	"github.com/StacklokLabs/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/container"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/environment"
+	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // RunConfig contains all the configuration needed to run an MCP server

@@ -18,9 +18,9 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server" // Import for metricsserver
 	"sigs.k8s.io/controller-runtime/pkg/webhook"                      // Import for webhook
 
-	mcpv1alpha1 "github.com/StacklokLabs/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/StacklokLabs/toolhive/cmd/thv-operator/controllers"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 var (

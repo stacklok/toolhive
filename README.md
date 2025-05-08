@@ -1,12 +1,12 @@
 # ToolHive - making MCP servers easy and secure <!-- omit in toc -->
 
-[![Release](https://img.shields.io/github/v/release/StacklokLabs/toolhive?style=flat&label=Latest%20version)](https://github.com/StacklokLabs/toolhive/releases)
+[![Release](https://img.shields.io/github/v/release/stacklok/toolhive?style=flat&label=Latest%20version)](https://github.com/stacklok/toolhive/releases)
 |
-[![CI](https://github.com/StacklokLabs/toolhive/actions/workflows/run-on-main.yml/badge.svg?event=push)](https://github.com/StacklokLabs/toolhive/actions/workflows/run-on-main.yml)
+[![CI](https://github.com/stacklok/toolhive/actions/workflows/run-on-main.yml/badge.svg?event=push)](https://github.com/stacklok/toolhive/actions/workflows/run-on-main.yml)
 |
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache2.0-brightgreen.svg?style=flat)](https://opensource.org/licenses/Apache-2.0)
 |
-[![Star on GitHub](https://img.shields.io/github/stars/StacklokLabs/toolhive.svg?style=flat&logo=github&label=Stars)](https://github.com/StacklokLabs/toolhive)
+[![Star on GitHub](https://img.shields.io/github/stars/stacklok/toolhive.svg?style=flat&logo=github&label=Stars)](https://github.com/stacklok/toolhive)
 |
 [![Discord](https://img.shields.io/discord/1184987096302239844?style=flat&logo=discord&label=Discord)](https://discord.gg/stacklok)
 
@@ -101,7 +101,7 @@ install it using one of the following methods:
 #### Download the binary <!-- omit in toc -->
 
 Download the latest cross-platform release binaries from
-[toolhive/releases](https://github.com/StacklokLabs/toolhive/releases).
+[toolhive/releases](https://github.com/stacklok/toolhive/releases).
 
 #### Homebrew (macOS) <!-- omit in toc -->
 
@@ -261,7 +261,7 @@ pull the image and start the server.
 
 We're always looking to expand our MCP server registry. If you have a specific
 server you'd like to see included, feel free to
-[open an issue](https://github.com/StacklokLabs/toolhive/issues) or submit a
+[open an issue](https://github.com/stacklok/toolhive/issues) or submit a
 pull request to update the [registry.json](pkg/registry/data/registry.json)
 file.
 
@@ -475,7 +475,7 @@ We welcome contributions to ToolHive! If you'd like to contribute, please review
 the [CONTRIBUTING guide](./CONTRIBUTING.md) for details on how to get started.
 
 If you run into a bug or have a feature request, please
-[open an issue](https://github.com/StacklokLabs/toolhive/issues) in the
+[open an issue](https://github.com/stacklok/toolhive/issues) in the
 repository or join us in the `#toolhive-developers` channel on our
 [community Discord server](https://discord.gg/stacklok).
 

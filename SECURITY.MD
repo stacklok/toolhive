@@ -7,7 +7,7 @@ your contributions.
 ## Reporting a vulnerability
 
 To report a security issue, please use the GitHub Security Advisory
-["Report a Vulnerability"](https://github.com/StacklokLabs/toolhive/security/advisories/new)
+["Report a Vulnerability"](https://github.com/stacklok/toolhive/security/advisories/new)
 tab.
 
 If you are unable to access GitHub you can also email us at
@@ -80,7 +80,7 @@ These steps should be completed within the 1-7 days of Disclosure.
 - Create a new
   [security advisory](https://docs.github.com/en/code-security/security-advisories/)
   in affected repository by visiting
-  `https://github.com/StacklokLabs/toolhive/security/advisories/new`
+  `https://github.com/stacklok/toolhive/security/advisories/new`
 - As many details as possible should be entered such as versions affected, CVE
   (if available yet). As more information is discovered, edit and update the
   advisory accordingly.

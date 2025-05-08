@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -49,6 +48,7 @@ func init() {
 }
 
 func proxyCmdFunc(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	// Get the server name
 	serverName := args[0]
 
@@ -58,10 +58,6 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	logger.Log.Infof("Using host port: %d", port)
-
-	// Create context
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Create middlewares slice
 	var middlewares []types.Middleware

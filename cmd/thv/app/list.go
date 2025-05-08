@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,9 +9,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/StacklokLabs/toolhive/pkg/client"
-	"github.com/StacklokLabs/toolhive/pkg/container"
 	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
 	"github.com/StacklokLabs/toolhive/pkg/labels"
+	"github.com/StacklokLabs/toolhive/pkg/lifecycle"
 	"github.com/StacklokLabs/toolhive/pkg/logger"
 )
 
@@ -51,40 +50,19 @@ func init() {
 	listCmd.Flags().StringVar(&listFormat, "format", "text", "Output format (json, text, or mcpservers)")
 }
 
-func listCmdFunc(_ *cobra.Command, _ []string) error {
-	// Create context
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func listCmdFunc(cmd *cobra.Command, _ []string) error {
+	ctx := cmd.Context()
+
+	// Instantiate the container manager.
+	manager, err := lifecycle.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container manager: %v", err)
+	}
 
 	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
+	toolHiveContainers, err := manager.ListContainers(ctx, listAll)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
-	}
-
-	// List containers
-	containers, err := runtime.ListContainers(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Filter containers to only show those managed by ToolHive
-	var toolHiveContainers []rt.ContainerInfo
-	for _, c := range containers {
-		if labels.IsToolHiveContainer(c.Labels) {
-			toolHiveContainers = append(toolHiveContainers, c)
-		}
-	}
-
-	// Filter containers if not showing all
-	if !listAll {
-		var runningContainers []rt.ContainerInfo
-		for _, c := range toolHiveContainers {
-			if c.State == "running" {
-				runningContainers = append(runningContainers, c)
-			}
-		}
-		toolHiveContainers = runningContainers
 	}
 
 	if len(toolHiveContainers) == 0 {

@@ -8,6 +8,8 @@ import (
 
 	"github.com/StacklokLabs/toolhive/pkg/container"
 	rt "github.com/StacklokLabs/toolhive/pkg/container/runtime"
+	"github.com/StacklokLabs/toolhive/pkg/labels"
+	"github.com/StacklokLabs/toolhive/pkg/lifecycle"
 	"github.com/StacklokLabs/toolhive/pkg/logger"
 	"github.com/StacklokLabs/toolhive/pkg/process"
 	"github.com/StacklokLabs/toolhive/pkg/runner"
@@ -26,12 +28,9 @@ func init() {
 }
 
 func restartCmdFunc(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	// Get container name
 	containerName := args[0]
-
-	// Create context
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Create container runtime
 	runtime, err := container.NewFactory().Create(ctx)
@@ -131,4 +130,62 @@ func loadRunnerFromState(ctx context.Context, baseName string, runtime rt.Runtim
 	r.Config.Runtime = runtime
 
 	return r, nil
+}
+
+/*
+ * The following functions are duplicated in container/manager.go until
+ * we can refactor the code to avoid this duplication.
+ */
+
+// getContainerBaseName gets the base container name from the container labels
+func getContainerBaseName(ctx context.Context, runtime rt.Runtime, containerID string) (string, error) {
+	containers, err := runtime.ListContainers(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to list containers: %v", err)
+	}
+
+	for _, c := range containers {
+		if c.ID == containerID {
+			return labels.GetContainerBaseName(c.Labels), nil
+		}
+	}
+
+	return "", fmt.Errorf("container %s not found", containerID)
+}
+
+func findContainerID(ctx context.Context, runtime rt.Runtime, name string) (string, error) {
+	c, err := findContainerByName(ctx, runtime, name)
+	if err != nil {
+		return "", err
+	}
+	return c.ID, nil
+}
+
+func findContainerByName(ctx context.Context, runtime rt.Runtime, name string) (*rt.ContainerInfo, error) {
+	// List containers to find the one with the given name
+	containers, err := runtime.ListContainers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %v", err)
+	}
+
+	// Find the container with the given name
+	for _, c := range containers {
+		// Check if the container is managed by ToolHive
+		if !labels.IsToolHiveContainer(c.Labels) {
+			continue
+		}
+
+		// Check if the container name matches
+		containerName := labels.GetContainerName(c.Labels)
+		if containerName == "" {
+			name = c.Name // Fallback to container name
+		}
+
+		// Check if the name matches (exact match or prefix match)
+		if containerName == name || c.ID == name {
+			return &c, nil
+		}
+	}
+
+	return nil, fmt.Errorf("%w: %s", lifecycle.ErrContainerNotFound, name)
 }

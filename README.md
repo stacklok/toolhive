@@ -179,9 +179,15 @@ containers. The proxy communicates with MCP servers via standard input/output
 flowchart LR
   subgraph container["Docker/Podman"]
     direction LR
-    mcp1["MCP Server"]
-    mcp2["MCP Server"]
-    mcp3["MCP Server"]
+    subgraph container1["Container"]
+        mcp1["MCP Server 1"]
+    end
+    subgraph container2["Container"]
+        mcp2["MCP Server 2"]
+    end
+    subgraph container3["Container"]
+        mcp3["MCP Server 3"]
+    end
   end
     proxy1["SSE proxy 1"] -- stdio --> mcp1
     proxy2["SSE proxy 2"] -- stdio --> mcp2

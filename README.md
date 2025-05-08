@@ -177,11 +177,11 @@ containers. The proxy communicates with MCP servers via standard input/output
 
 ```mermaid
 flowchart TD
-  subgraph container1[Docker/Podman Container 1]
+  subgraph container1[Docker/Podman Container 3]
     direction LR
-    proxy1[SSE proxy 1]
-    mcp1[MCP Server 1]
-    proxy1 -->|stdio| mcp1
+    proxy3[SSE proxy 3]
+    mcp3[MCP Server 3]
+    proxy3 -->|stdio| mcp3
   end
   
   subgraph container2[Docker/Podman Container 2]
@@ -191,11 +191,11 @@ flowchart TD
     proxy2 -->|stdio| mcp2
   end
   
-  subgraph container3[Docker/Podman Container 3]
+  subgraph container3[Docker/Podman Container 1]
     direction LR
-    proxy3[SSE proxy 3]
-    mcp3[MCP Server 3]
-    proxy3 -->|sse| mcp3
+    proxy1[SSE proxy 1]
+    mcp1[MCP Server 1]
+    proxy1 -->|sse| mcp1
   end
 
   C[Client]
@@ -205,9 +205,9 @@ flowchart TD
   C -->|HTTP/SSE| proxy2
   C -->|HTTP/SSE| proxy3
   
-  T -->|Socket API 1| container1
+  T -->|Socket API 1| container3
   T -->|Socket API 2| container2
-  T -->|Socket API 3| container3
+  T -->|Socket API 3| container1
 ```
 
 ## Usage examples

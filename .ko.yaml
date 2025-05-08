@@ -1,0 +1,6 @@
+defaultBaseImage: gcr.io/distroless/base-nonroot
+
+labels:
+  org.opencontainers.image.licenses: Apache-2.0
+  org.opencontainers.image.source: https://github.com/StacklokLabs/toolhive
+  org.opencontainers.image.vendor: Stacklok

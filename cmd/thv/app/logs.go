@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -37,13 +36,10 @@ func logsCommand() *cobra.Command {
 	return logsCommand
 }
 
-func logsCmdFunc(_ *cobra.Command, args []string) error {
+func logsCmdFunc(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	// Get container name
 	containerName := args[0]
-
-	// Create context
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Create container runtime
 	runtime, err := container.NewFactory().Create(ctx)

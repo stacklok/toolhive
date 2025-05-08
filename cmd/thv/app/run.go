@@ -130,6 +130,7 @@ func init() {
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
 	// Get the server name or image
 	serverOrImage := args[0]
 
@@ -138,10 +139,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Print the processed command arguments for debugging
 	logger.Log.Infof("Processed cmdArgs: %v", cmdArgs)
-
-	// Create context
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")

@@ -93,7 +93,7 @@ func secretsProviderCmdFunc(_ *cobra.Command, args []string) error {
 	return SetSecretsProvider(secrets.ProviderType(provider))
 }
 
-func autoDiscoveryCmdFunc(_ *cobra.Command, args []string) error {
+func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {
 	value := args[0]
 
 	// Validate the boolean value
@@ -113,7 +113,7 @@ func autoDiscoveryCmdFunc(_ *cobra.Command, args []string) error {
 		// If auto-discovery is enabled, update all registered clients with currently running MCPs
 		if enabled && len(c.Clients.RegisteredClients) > 0 {
 			for _, clientName := range c.Clients.RegisteredClients {
-				if err := addRunningMCPsToClient(clientName); err != nil {
+				if err := addRunningMCPsToClient(cmd.Context(), clientName); err != nil {
 					fmt.Printf("Warning: Failed to add running MCPs to client %s: %v\n", clientName, err)
 				}
 			}
@@ -128,7 +128,7 @@ func autoDiscoveryCmdFunc(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func registerClientCmdFunc(_ *cobra.Command, args []string) error {
+func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
 	clientType := args[0]
 
 	// Validate the client type
@@ -158,7 +158,7 @@ func registerClientCmdFunc(_ *cobra.Command, args []string) error {
 	fmt.Printf("Successfully registered client: %s\n", clientType)
 
 	// Add currently running MCPs to the newly registered client
-	if err := addRunningMCPsToClient(clientType); err != nil {
+	if err := addRunningMCPsToClient(cmd.Context(), clientType); err != nil {
 		fmt.Printf("Warning: Failed to add running MCPs to client: %v\n", err)
 	}
 
@@ -202,11 +202,7 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 // addRunningMCPsToClient adds currently running MCP servers to the specified client's configuration
-func addRunningMCPsToClient(clientName string) error {
-	// Create context
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 	// Create container runtime
 	runtime, err := container.NewFactory().Create(ctx)
 	if err != nil {

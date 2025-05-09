@@ -201,7 +201,7 @@ func retrieveConfigFilesMetadata(filters []MCPClient) ([]ConfigFile, error) {
 
 		err := validateConfigFileExists(path)
 		if err != nil {
-			logger.Log.Warnf("failed to validate config file: %w", err)
+			logger.Warnf("failed to validate config file: %w", err)
 			continue
 		}
 

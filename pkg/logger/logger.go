@@ -13,7 +13,47 @@ import (
 )
 
 // Log is a global logger instance
-var Log Logger
+var log Logger
+
+// Debug logs a message at debug level using the singleton logger.
+func Debug(msg string, args ...any) {
+	log.Debug(msg, args)
+}
+
+// Debugf logs a message at debug level using the singleton logger.
+func Debugf(msg string, args ...any) {
+	log.Debugf(msg, args)
+}
+
+// Info logs a message at info level using the singleton logger.
+func Info(msg string, args ...any) {
+	log.Info(msg, args)
+}
+
+// Infof logs a message at info level using the singleton logger.
+func Infof(msg string, args ...any) {
+	log.Infof(msg, args)
+}
+
+// Warn logs a message at warning level using the singleton logger.
+func Warn(msg string, args ...any) {
+	log.Warn(msg, args)
+}
+
+// Warnf logs a message at warning level using the singleton logger.
+func Warnf(msg string, args ...any) {
+	log.Warnf(msg, args)
+}
+
+// Error logs a message at error level using the singleton logger.
+func Error(msg string, args ...any) {
+	log.Error(msg, args)
+}
+
+// Errorf logs a message at error level using the singleton logger.
+func Errorf(msg string, args ...any) {
+	log.Errorf(msg, args)
+}
 
 // Logger provides a unified interface for logging
 type Logger interface {
@@ -90,7 +130,7 @@ func Initialize() {
 		slogger := slog.New(handler)
 
 		slog.SetDefault(slogger)
-		Log = &slogLogger{logger: slogger}
+		log = &slogLogger{logger: slogger}
 	} else {
 		w := os.Stdout
 
@@ -101,19 +141,19 @@ func Initialize() {
 		slogger := slog.New(handler)
 
 		slog.SetDefault(slogger)
-		Log = &slogLogger{logger: slogger}
+		log = &slogLogger{logger: slogger}
 	}
 }
 
 // GetLogger returns a context-specific logger
 func GetLogger(component string) Logger {
-	if slogger, ok := Log.(*slogLogger); ok {
+	if slogger, ok := log.(*slogLogger); ok {
 		return &slogLogger{
 			logger: slogger.logger.With("component", component),
 		}
 	}
 
-	return Log
+	return log
 }
 
 // getLogLevel returns the appropriate slog.Level based on the debug flag

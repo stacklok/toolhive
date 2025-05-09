@@ -82,11 +82,11 @@ func LoadOrCreateConfig() (*Config, error) {
 		}
 
 		// Prompt user explicitly for auto discovery behaviour.
-		logger.Log.Infof("Would you like to enable auto discovery and configuraion of MCP clients? (y/n) [n]: ")
+		logger.Infof("Would you like to enable auto discovery and configuraion of MCP clients? (y/n) [n]: ")
 		reader := bufio.NewReader(os.Stdin)
 		input, err := reader.ReadString('\n')
 		if err != nil {
-			logger.Log.Infof("Unable to read input, defaulting to No.")
+			logger.Infof("Unable to read input, defaulting to No.")
 		}
 		// Treat anything except y/Y as n.
 		if input == "y\n" || input == "Y\n" {
@@ -96,7 +96,7 @@ func LoadOrCreateConfig() (*Config, error) {
 		}
 
 		// Persist the new default to disk.
-		logger.Log.Infof("initializing configuration file at %s", configPath)
+		logger.Infof("initializing configuration file at %s", configPath)
 		err = config.save()
 		if err != nil {
 			return nil, fmt.Errorf("failed to write default config: %w", err)

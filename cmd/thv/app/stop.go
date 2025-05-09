@@ -40,7 +40,7 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		// If the container is not found, treat as a non-fatal error.
 		if errors.Is(err, lifecycle.ErrContainerNotFound) {
-			logger.Log.Infof("Container %s is not running", containerName)
+			logger.Infof("Container %s is not running", containerName)
 		} else {
 			return fmt.Errorf("failed to delete container: %v", err)
 		}

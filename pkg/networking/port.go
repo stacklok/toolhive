@@ -34,7 +34,7 @@ func IsAvailable(port int) bool {
 	}
 	if err := tcpListener.Close(); err != nil {
 		// Log the error but continue, as we're just checking if the port is available
-		logger.Log.Warnf("Warning: Failed to close TCP listener: %v", err)
+		logger.Warnf("Warning: Failed to close TCP listener: %v", err)
 	}
 
 	// Check UDP
@@ -49,7 +49,7 @@ func IsAvailable(port int) bool {
 	}
 	if err := udpConn.Close(); err != nil {
 		// Log the error but continue, as we're just checking if the port is available
-		logger.Log.Warnf("Warning: Failed to close UDP connection: %v", err)
+		logger.Warnf("Warning: Failed to close UDP connection: %v", err)
 	}
 
 	return true

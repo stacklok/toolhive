@@ -85,7 +85,7 @@ func (d *defaultManager) DeleteContainer(ctx context.Context, name string, force
 	}
 
 	// Remove the container
-	logger.Log.Infof("Removing container %s...", name)
+	logger.Infof("Removing container %s...", name)
 	if err := d.runtime.RemoveContainer(ctx, containerID); err != nil {
 		return fmt.Errorf("failed to remove container: %v", err)
 	}
@@ -95,19 +95,19 @@ func (d *defaultManager) DeleteContainer(ctx context.Context, name string, force
 	if baseName != "" {
 		// Delete the saved state if it exists
 		if err := runner.DeleteSavedConfig(ctx, baseName); err != nil {
-			logger.Log.Warnf("Warning: Failed to delete saved state: %v", err)
+			logger.Warnf("Warning: Failed to delete saved state: %v", err)
 		} else {
-			logger.Log.Infof("Saved state for %s removed", baseName)
+			logger.Infof("Saved state for %s removed", baseName)
 		}
 	}
 
-	logger.Log.Infof("Container %s removed", name)
+	logger.Infof("Container %s removed", name)
 
 	if shouldRemoveClientConfig() {
 		if err := removeClientConfigurations(name); err != nil {
-			logger.Log.Warnf("Warning: Failed to remove client configurations: %v", err)
+			logger.Warnf("Warning: Failed to remove client configurations: %v", err)
 		} else {
-			logger.Log.Infof("Client configurations for %s removed", name)
+			logger.Infof("Client configurations for %s removed", name)
 		}
 	}
 
@@ -181,28 +181,28 @@ func (d *defaultManager) findContainerByName(ctx context.Context, name string) (
 // stopProxyProcess stops the proxy process associated with the container
 func stopProxyProcess(containerBaseName string) {
 	if containerBaseName == "" {
-		logger.Log.Warnf("Warning: Could not find base container name in labels")
+		logger.Warnf("Warning: Could not find base container name in labels")
 		return
 	}
 
 	// Try to read the PID file and kill the process
 	pid, err := process.ReadPIDFile(containerBaseName)
 	if err != nil {
-		logger.Log.Errorf("No PID file found for %s, proxy may not be running in detached mode", containerBaseName)
+		logger.Errorf("No PID file found for %s, proxy may not be running in detached mode", containerBaseName)
 		return
 	}
 
 	// PID file found, try to kill the process
-	logger.Log.Infof("Stopping proxy process (PID: %d)...", pid)
+	logger.Infof("Stopping proxy process (PID: %d)...", pid)
 	if err := process.KillProcess(pid); err != nil {
-		logger.Log.Warnf("Warning: Failed to kill proxy process: %v", err)
+		logger.Warnf("Warning: Failed to kill proxy process: %v", err)
 	} else {
-		logger.Log.Infof("Proxy process stopped")
+		logger.Infof("Proxy process stopped")
 	}
 
 	// Remove the PID file
 	if err := process.RemovePIDFile(containerBaseName); err != nil {
-		logger.Log.Warnf("Warning: Failed to remove PID file: %v", err)
+		logger.Warnf("Warning: Failed to remove PID file: %v", err)
 	}
 }
 
@@ -224,12 +224,12 @@ func (d *defaultManager) getContainerBaseName(ctx context.Context, containerID s
 
 // stopContainer stops the container
 func (d *defaultManager) stopContainer(ctx context.Context, containerID, containerName string) error {
-	logger.Log.Infof("Stopping container %s...", containerName)
+	logger.Infof("Stopping container %s...", containerName)
 	if err := d.runtime.StopContainer(ctx, containerID); err != nil {
 		return fmt.Errorf("failed to stop container: %w", err)
 	}
 
-	logger.Log.Infof("Container %s stopped", containerName)
+	logger.Infof("Container %s stopped", containerName)
 	return nil
 }
 
@@ -248,19 +248,19 @@ func removeClientConfigurations(containerName string) error {
 	}
 
 	if len(configs) == 0 {
-		logger.Log.Infof("No client configuration files found")
+		logger.Infof("No client configuration files found")
 		return nil
 	}
 
 	for _, c := range configs {
-		logger.Log.Infof("Removing MCP server from client configuration: %s", c.Path)
+		logger.Infof("Removing MCP server from client configuration: %s", c.Path)
 
 		if err := c.ConfigUpdater.Remove(containerName); err != nil {
-			logger.Log.Warnf("Warning: Failed to remove MCP server from client configurationn %s: %v", c.Path, err)
+			logger.Warnf("Warning: Failed to remove MCP server from client configurationn %s: %v", c.Path, err)
 			continue
 		}
 
-		logger.Log.Infof("Successfully removed MCP server from client configuration: %s", c.Path)
+		logger.Infof("Successfully removed MCP server from client configuration: %s", c.Path)
 	}
 
 	return nil

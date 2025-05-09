@@ -218,7 +218,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 	if m.Spec.PodTemplateSpec != nil {
 		podTemplatePatch, err := json.Marshal(m.Spec.PodTemplateSpec)
 		if err != nil {
-			logger.Log.Errorf("Failed to marshal pod template spec: %v", err)
+			logger.Errorf("Failed to marshal pod template spec: %v", err)
 		} else {
 			args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
 		}
@@ -357,7 +357,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 	// Set MCPServer instance as the owner and controller
 	if err := controllerutil.SetControllerReference(m, dep, r.Scheme); err != nil {
-		logger.Log.Error("Failed to set controller reference for Deployment", err)
+		logger.Error("Failed to set controller reference for Deployment", err)
 		return nil
 	}
 	return dep
@@ -393,7 +393,7 @@ func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *cor
 
 	// Set MCPServer instance as the owner and controller
 	if err := controllerutil.SetControllerReference(m, svc, r.Scheme); err != nil {
-		logger.Log.Error("Failed to set controller reference for Service", err)
+		logger.Error("Failed to set controller reference for Service", err)
 		return nil
 	}
 	return svc

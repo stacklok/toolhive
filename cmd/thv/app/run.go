@@ -138,7 +138,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	cmdArgs := parseCommandArguments(os.Args)
 
 	// Print the processed command arguments for debugging
-	logger.Log.Infof("Processed cmdArgs: %v", cmdArgs)
+	logger.Infof("Processed cmdArgs: %v", cmdArgs)
 
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
@@ -237,42 +237,42 @@ func pullImage(ctx context.Context, image string, rt runtime.Runtime) error {
 
 	if isLatestTag {
 		// For "latest" tag, try to pull first
-		logger.Log.Infof("Image %s has 'latest' tag, pulling to ensure we have the most recent version...", image)
+		logger.Infof("Image %s has 'latest' tag, pulling to ensure we have the most recent version...", image)
 		err := rt.PullImage(ctx, image)
 		if err != nil {
 			// Pull failed, check if it exists locally
-			logger.Log.Infof("Pull failed, checking if image exists locally: %s", image)
+			logger.Infof("Pull failed, checking if image exists locally: %s", image)
 			imageExists, checkErr := rt.ImageExists(ctx, image)
 			if checkErr != nil {
 				return fmt.Errorf("failed to check if image exists: %v", checkErr)
 			}
 
 			if imageExists {
-				logger.Log.Debugf("Using existing local image: %s", image)
+				logger.Debugf("Using existing local image: %s", image)
 			} else {
 				return fmt.Errorf("failed to pull image from remote registry and image doesn't exist locally. %v", err)
 			}
 		} else {
-			logger.Log.Infof("Successfully pulled image: %s", image)
+			logger.Infof("Successfully pulled image: %s", image)
 		}
 	} else {
 		// For non-latest tags, check locally first
-		logger.Log.Debugf("Checking if image exists locally: %s", image)
+		logger.Debugf("Checking if image exists locally: %s", image)
 		imageExists, err := rt.ImageExists(ctx, image)
-		logger.Log.Debugf("ImageExists locally: %t", imageExists)
+		logger.Debugf("ImageExists locally: %t", imageExists)
 		if err != nil {
 			return fmt.Errorf("failed to check if image exists locally: %v", err)
 		}
 
 		if imageExists {
-			logger.Log.Debugf("Using existing local image: %s", image)
+			logger.Debugf("Using existing local image: %s", image)
 		} else {
 			// Image doesn't exist locally, try to pull
-			logger.Log.Infof("Image %s not found locally, pulling...", image)
+			logger.Infof("Image %s not found locally, pulling...", image)
 			if err := rt.PullImage(ctx, image); err != nil {
 				return fmt.Errorf("failed to pull image: %v", err)
 			}
-			logger.Log.Infof("Successfully pulled image: %s", image)
+			logger.Infof("Successfully pulled image: %s", image)
 		}
 	}
 
@@ -326,7 +326,7 @@ func applyRegistrySettings(
 		permProfilePath, err := createPermissionProfileFile(serverName, server.Permissions, debugMode)
 		if err != nil {
 			// Just log the error and continue with the default permission profile
-			logger.Log.Warnf("Warning: Failed to create permission profile file: %v", err)
+			logger.Warnf("Warning: Failed to create permission profile file: %v", err)
 		} else {
 			// Update the permission profile path
 			config.PermissionProfileNameOrPath = permProfilePath
@@ -355,14 +355,14 @@ func processEnvironmentVariables(
 		if !found {
 			if envVar.Required {
 				// Ask the user for the required environment variable
-				logger.Log.Infof("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
+				logger.Infof("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
 
 				fmt.Printf("Enter value for %s (input will be hidden): ", envVar.Name)
 				byteValue, err := term.ReadPassword(int(os.Stdin.Fd()))
 				fmt.Println() // Move to the next line after hidden input
 
 				if err != nil {
-					logger.Log.Warnf("Warning: Failed to read input: %v", err)
+					logger.Warnf("Warning: Failed to read input: %v", err)
 					// Skip this variable and continue to the next one
 					continue
 				}
@@ -401,7 +401,7 @@ func hasLatestTag(imageRef string) bool {
 	ref, err := nameref.ParseReference(imageRef)
 	if err != nil {
 		// If we can't parse the reference, assume it's not "latest"
-		logger.Log.Warnf("Warning: Failed to parse image reference: %v", err)
+		logger.Warnf("Warning: Failed to parse image reference: %v", err)
 		return false
 	}
 
@@ -447,7 +447,7 @@ func createPermissionProfileFile(serverName string, permProfile *permissions.Pro
 // logDebug logs a message if debug mode is enabled
 func logDebug(debugMode bool, format string, args ...interface{}) {
 	if debugMode {
-		logger.Log.Infof(format+"", args...)
+		logger.Infof(format+"", args...)
 	}
 }
 

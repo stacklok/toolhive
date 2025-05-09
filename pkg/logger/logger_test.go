@@ -75,13 +75,13 @@ func TestStructuredLogger(t *testing.T) {
 			// Log the message based on the level
 			switch tc.level {
 			case "DEBUG":
-				Log.Debug(tc.message, tc.key, tc.value)
+				log.Debug(tc.message, tc.key, tc.value)
 			case "INFO":
-				Log.Info(tc.message, tc.key, tc.value)
+				log.Info(tc.message, tc.key, tc.value)
 			case "WARN":
-				Log.Warn(tc.message, tc.key, tc.value)
+				log.Warn(tc.message, tc.key, tc.value)
 			case "ERROR":
-				Log.Error(tc.message, tc.key, tc.value)
+				log.Error(tc.message, tc.key, tc.value)
 			}
 
 			w.Close()
@@ -147,13 +147,13 @@ func TestStructuredLogger(t *testing.T) {
 			// Log the message based on the level
 			switch tc.level {
 			case "DEBUG":
-				Log.Debugf(tc.message, tc.key, tc.value)
+				log.Debugf(tc.message, tc.key, tc.value)
 			case "INFO":
-				Log.Infof(tc.message, tc.key, tc.value)
+				log.Infof(tc.message, tc.key, tc.value)
 			case "WARN":
-				Log.Warnf(tc.message, tc.key, tc.value)
+				log.Warnf(tc.message, tc.key, tc.value)
 			case "ERROR":
-				Log.Errorf(tc.message, tc.key, tc.value)
+				log.Errorf(tc.message, tc.key, tc.value)
 			}
 
 			w.Close()
@@ -217,13 +217,13 @@ func TestUnstructuredLogger(t *testing.T) {
 			// Log the message based on the level
 			switch tc.level {
 			case "DBG":
-				Log.Debugf(tc.message, tc.key, tc.value)
+				log.Debugf(tc.message, tc.key, tc.value)
 			case "INF":
-				Log.Infof(tc.message, tc.key, tc.value)
+				log.Infof(tc.message, tc.key, tc.value)
 			case "WRN":
-				Log.Warnf(tc.message, tc.key, tc.value)
+				log.Warnf(tc.message, tc.key, tc.value)
 			case "ERR":
-				Log.Errorf(tc.message, tc.key, tc.value)
+				log.Errorf(tc.message, tc.key, tc.value)
 			}
 
 			w.Close()
@@ -256,7 +256,7 @@ func TestInitialize(t *testing.T) {
 		Initialize()
 
 		// Log a test message
-		Log.Info("test message", "key", "value")
+		log.Info("test message", "key", "value")
 
 		// Restore stdout
 		w.Close()
@@ -293,7 +293,7 @@ func TestInitialize(t *testing.T) {
 		Initialize()
 
 		// Log a test message
-		Log.Info("test message", "key", "value")
+		log.Info("test message", "key", "value")
 
 		// Restore stderr
 		w.Close()

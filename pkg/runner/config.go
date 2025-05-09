@@ -181,7 +181,7 @@ func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
 	if err != nil {
 		return c, err
 	}
-	logger.Log.Infof("Using host port: %d", selectedPort)
+	logger.Infof("Using host port: %d", selectedPort)
 	c.Port = selectedPort
 
 	// Select a target port for the container if using SSE transport
@@ -190,7 +190,7 @@ func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
 		if err != nil {
 			return c, fmt.Errorf("target port error: %w", err)
 		}
-		logger.Log.Infof("Using target port: %d", selectedTargetPort)
+		logger.Infof("Using target port: %d", selectedTargetPort)
 		c.TargetPort = selectedTargetPort
 	}
 
@@ -346,7 +346,7 @@ func (c *RunConfig) ProcessVolumeMounts() error {
 
 		// Check for duplicate mount target
 		if existingSource, isDuplicate := existingMounts[target]; isDuplicate {
-			logger.Log.Warnf("Skipping duplicate mount target: %s (already mounted from %s)",
+			logger.Warnf("Skipping duplicate mount target: %s (already mounted from %s)",
 				target, existingSource)
 			continue
 		}
@@ -361,7 +361,7 @@ func (c *RunConfig) ProcessVolumeMounts() error {
 		// Add to the map of existing mounts
 		existingMounts[target] = source
 
-		logger.Log.Infof("Adding volume mount: %s -> %s (%s)",
+		logger.Infof("Adding volume mount: %s -> %s (%s)",
 			source, target,
 			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
 	}

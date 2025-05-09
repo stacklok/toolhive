@@ -5,9 +5,9 @@ import (
 	"github.com/go-logr/logr"
 )
 
-// ToLogr returns a logr.Logger that uses the given Logger
-func ToLogr(logger Logger) logr.Logger {
-	return logr.New(&toolhiveLogSink{logger: logger})
+// NewLogr returns a logr.Logger which uses the singleton logger.
+func NewLogr() logr.Logger {
+	return logr.New(&toolhiveLogSink{logger: log})
 }
 
 // toolhiveLogSink adapts our logger to the logr.LogSink interface

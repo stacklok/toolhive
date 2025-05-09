@@ -37,6 +37,8 @@ const (
 	PodmanXDGRuntimeSocketPath = "podman/podman.sock"
 	// DockerSocketPath is the default Docker socket path
 	DockerSocketPath = "/var/run/docker.sock"
+	// DockerDesktopMacSocketPath is the Docker Desktop socket path on macOS
+	DockerDesktopMacSocketPath = ".docker/run/docker.sock"
 )
 
 var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
@@ -180,6 +182,19 @@ func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 		}
 
 		logger.Log.Debugf("Failed to check Docker socket at %s: %v", DockerSocketPath, err)
+
+		// Try Docker Desktop socket path on macOS
+		if home := os.Getenv("HOME"); home != "" {
+			dockerDesktopPath := filepath.Join(home, DockerDesktopMacSocketPath)
+			_, err := os.Stat(dockerDesktopPath)
+
+			if err == nil {
+				logger.Log.Debugf("Found Docker Desktop socket at %s", dockerDesktopPath)
+				return dockerDesktopPath, runtime.TypeDocker, nil
+			}
+
+			logger.Log.Debugf("Failed to check Docker Desktop socket at %s: %v", dockerDesktopPath, err)
+		}
 	}
 
 	return "", "", ErrRuntimeNotFound

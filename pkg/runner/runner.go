@@ -130,8 +130,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
-	// Check if we're a detached process
-	if os.Getenv("TOOLHIVE_DETACHED") == "1" {
+	if process.IsDetached() {
 		// We're a detached process running in foreground mode
 		// Write the PID to a file so the stop command can kill the process
 		if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {

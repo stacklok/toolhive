@@ -11,6 +11,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/process"
 )
 
 const (
@@ -60,6 +61,13 @@ func CreateSecretManager(managerType ProviderType) (Provider, error) {
 // It will attempt to retrieve it from the environment variable TOOLHIVE_SECRETS_PASSWORD.
 // If the environment variable is not set, it will prompt the user to enter a password.
 func GetSecretsPassword() ([]byte, error) {
+	// We cannot ask for a password in a detached process.
+	// We should never trigger this, but this ensures that if there's a bug
+	// then it's easier to find.
+	if process.IsDetached() {
+		return nil, fmt.Errorf("detached process detected, cannot ask for password")
+	}
+
 	// First, attempt to load the password from the environment variable.
 	password := []byte(os.Getenv(PasswordEnvVar))
 	if len(password) > 0 {

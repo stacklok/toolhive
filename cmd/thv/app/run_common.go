@@ -144,7 +144,7 @@ func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
 	detachedCmd := exec.Command(execPath, detachedArgs...)
 
 	// Set environment variables for the detached process
-	detachedCmd.Env = append(os.Environ(), "TOOLHIVE_DETACHED=1")
+	detachedCmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s", process.ToolHiveDetachedEnv, process.ToolHiveDetachedValue))
 
 	// If the process needs the decrypt password, pass it as an environment variable.
 	if NeedSecretsPassword(cmd, options.Secrets) {

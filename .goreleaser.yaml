@@ -12,9 +12,9 @@ builds:
       - -tags=netgo
     ldflags:
       - "-s -w"
-      - "-X github.com/StacklokLabs/toolhive/pkg/versions.Version={{ .Env.VERSION }}"
-      - "-X github.com/StacklokLabs/toolhive/pkg/versions.Commit={{ .Env.COMMIT }}"
-      - "-X github.com/StacklokLabs/toolhive/pkg/versions.BuildDate={{ .Date }}"
+      - "-X github.com/stacklok/toolhive/pkg/versions.Version={{ .Env.VERSION }}"
+      - "-X github.com/stacklok/toolhive/pkg/versions.Commit={{ .Env.COMMIT }}"
+      - "-X github.com/stacklok/toolhive/pkg/versions.BuildDate={{ .Date }}"
     goos:
       - linux
 #      - windows
@@ -36,13 +36,13 @@ archives:
 #   - name: toolhive
 #     publisher: stacklok
 #     license: Apache-2.0
-#     license_url: "https://github.com/StacklokLabs/toolhive/blob/main/LICENSE"
+#     license_url: "https://github.com/stacklok/toolhive/blob/main/LICENSE"
 #     copyright: Stacklok, Inc.
 #     homepage: https://stacklok.com
 #     short_description: 'ToolHive is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
-#     publisher_support_url: "https://github.com/StacklokLabs/toolhive/issues/new/choose"
+#     publisher_support_url: "https://github.com/stacklok/toolhive/issues/new/choose"
 #     package_identifier: "stacklok.toolhive"
-#     url_template: "https://github.com/StacklokLabs/toolhive/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+#     url_template: "https://github.com/stacklok/toolhive/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
 #     skip_upload: auto
 #     release_notes: "{{.Changelog}}"
 #     tags:
@@ -67,7 +67,7 @@ archives:
 # This section defines how to release to homebrew.
 brews:
   - name: thv
-    homepage: 'https://github.com/StacklokLabs/toolhive'
+    homepage: 'https://github.com/stacklok/toolhive'
     description: 'ToolHive (thv) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
     directory: Formula
     commit_author:
@@ -92,7 +92,7 @@ sboms:
 # This section defines the release policy.
 release:
   github:
-    owner: StacklokLabs
+    owner: stacklok
     name: toolhive
 # This section defines how and which artifacts we want to sign for the release.
 signs:

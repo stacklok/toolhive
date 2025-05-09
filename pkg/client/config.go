@@ -12,9 +12,9 @@ import (
 
 	"github.com/tailscale/hujson"
 
-	"github.com/StacklokLabs/toolhive/pkg/config"
-	"github.com/StacklokLabs/toolhive/pkg/logger"
-	"github.com/StacklokLabs/toolhive/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
 // lockTimeout is the maximum time to wait for a file lock

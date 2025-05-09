@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/StacklokLabs/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 func newSecretCommand() *cobra.Command {

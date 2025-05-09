@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
-	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // MockConfigPath replaces the getConfigPath function with a mock that returns a specified path

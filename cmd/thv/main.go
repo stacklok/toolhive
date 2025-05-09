@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/StacklokLabs/toolhive/cmd/thv/app"
+	"github.com/stacklok/toolhive/cmd/thv/app"
 )
 
 func main() {

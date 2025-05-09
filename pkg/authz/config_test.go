@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/StacklokLabs/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 func TestLoadConfig(t *testing.T) {

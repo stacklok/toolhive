@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 
-	"github.com/StacklokLabs/toolhive/pkg/versions"
+	"github.com/stacklok/toolhive/pkg/versions"
 )
 
 // UpdateChecker is an interface for checking if a new version of ToolHive is available.

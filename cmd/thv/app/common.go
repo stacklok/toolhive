@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/StacklokLabs/toolhive/pkg/config"
-	"github.com/StacklokLabs/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // AddOIDCFlags adds OIDC validation flags to the provided command.

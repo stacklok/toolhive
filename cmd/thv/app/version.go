@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/StacklokLabs/toolhive/pkg/versions"
+	"github.com/stacklok/toolhive/pkg/versions"
 )
 
 // newVersionCmd creates a new version command

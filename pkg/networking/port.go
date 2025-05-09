@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"net"
 
-	"github.com/StacklokLabs/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (

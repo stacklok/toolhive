@@ -20,7 +20,7 @@ spec:
       serviceAccountName: toolhive-operator
       containers:
       - name: manager
-        image: ko://github.com/StacklokLabs/toolhive/cmd/thv-operator
+        image: ko://github.com/stacklok/toolhive/cmd/thv-operator
         imagePullPolicy: Never
         args:
         - --leader-elect

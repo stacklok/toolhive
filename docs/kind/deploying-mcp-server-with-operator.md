@@ -11,7 +11,7 @@ The [ToolHive Kubernetes Operator](../../cmd/thv-operator/README.md) manages MCP
 With the ToolHive Operator running, you can deploy an MCP server into the cluster by running the following:
 
 ```bash
-$ kubectl apply -f https://raw.githubusercontent.com/StacklokLabs/toolhive/main/deploy/operator/samples/mcpserver_fetch.yaml
+$ kubectl apply -f https://raw.githubusercontent.com/stacklok/toolhive/main/deploy/operator/samples/mcpserver_fetch.yaml
 ```
 
 You should now be able to see the MCP server pods being created/running:

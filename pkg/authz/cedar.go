@@ -12,7 +12,7 @@ import (
 	cedar "github.com/cedar-policy/cedar-go"
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/StacklokLabs/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 // Common errors for Cedar authorization

@@ -24,7 +24,7 @@ spec:
         fsGroup: 1000
       containers:
       - name: toolhive
-        image: ko://github.com/StacklokLabs/toolhive/cmd
+        image: ko://github.com/stacklok/toolhive/cmd
         args: ["run", "--foreground=true", "--port=8080", "--name=mcp-fetch", "docker.io/mcp/fetch"]
         securityContext:
           allowPrivilegeEscalation: false

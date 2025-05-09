@@ -1,7 +1,5 @@
 package secrets
 
-// TODO: this file duplicates logic with basic.go. Refactor to share common code.
-
 import (
 	"encoding/json"
 	"errors"

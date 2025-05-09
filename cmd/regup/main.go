@@ -13,7 +13,7 @@ func main() {
 	logger.Initialize()
 
 	if err := app.NewRootCmd().Execute(); err != nil {
-		logger.Log.Errorf("%v", err)
+		logger.Errorf("%v", err)
 		os.Exit(1)
 	}
 }

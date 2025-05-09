@@ -66,7 +66,7 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 
 	if len(toolHiveContainers) == 0 {
-		logger.Log.Infof("No MCP servers found")
+		logger.Infof("No MCP servers found")
 		return nil
 	}
 
@@ -140,7 +140,7 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 	}
 
 	// Print JSON
-	logger.Log.Infof(string(jsonData))
+	logger.Infof(string(jsonData))
 	return nil
 }
 
@@ -192,7 +192,7 @@ func printMCPServersOutput(containers []rt.ContainerInfo) error {
 	}
 
 	// Print JSON
-	logger.Log.Infof(string(jsonData))
+	logger.Infof(string(jsonData))
 	return nil
 }
 
@@ -248,6 +248,6 @@ func printTextOutput(containers []rt.ContainerInfo) {
 
 	// Flush the tabwriter
 	if err := w.Flush(); err != nil {
-		logger.Log.Infof("Warning: Failed to flush tabwriter: %v", err)
+		logger.Infof("Warning: Failed to flush tabwriter: %v", err)
 	}
 }

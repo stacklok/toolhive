@@ -24,7 +24,7 @@ container-based isolation for running MCP servers.`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		// If no subcommand is provided, print help
 		if err := cmd.Help(); err != nil {
-			logger.Log.Errorf("Error displaying help: %v", err)
+			logger.Errorf("Error displaying help: %v", err)
 		}
 	},
 	PersistentPreRun: func(_ *cobra.Command, _ []string) {
@@ -38,7 +38,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
 	err := viper.BindPFlag("debug", rootCmd.PersistentFlags().Lookup("debug"))
 	if err != nil {
-		logger.Log.Errorf("Error binding debug flag: %v", err)
+		logger.Errorf("Error binding debug flag: %v", err)
 	}
 
 	// Add subcommands
@@ -73,12 +73,12 @@ func checkForUpdates() {
 	updateChecker, err := updates.NewUpdateChecker(versionClient)
 	// treat update-related errors as non-fatal
 	if err != nil {
-		logger.Log.Errorf("unable to create update client: %w", err)
+		logger.Errorf("unable to create update client: %w", err)
 		return
 	}
 
 	err = updateChecker.CheckLatestVersion()
 	if err != nil {
-		logger.Log.Errorf("error while checking for updates: %w", err)
+		logger.Errorf("error while checking for updates: %w", err)
 	}
 }

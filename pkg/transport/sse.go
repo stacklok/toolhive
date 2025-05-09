@@ -131,13 +131,13 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	// Set the port bindings
 	containerOptions.PortBindings[containerPortStr] = portBindings
 
-	logger.Log.Infof("Exposing container port %d", t.targetPort)
+	logger.Infof("Exposing container port %d", t.targetPort)
 
 	// For SSE transport, we don't need to attach stdio
 	containerOptions.AttachStdio = false
 
 	// Create the container
-	logger.Log.Infof("Creating container %s from image %s...", containerName, image)
+	logger.Infof("Creating container %s from image %s...", containerName, image)
 	containerID, err := t.runtime.CreateContainer(
 		ctx,
 		image,
@@ -153,7 +153,7 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 		return fmt.Errorf("failed to create container: %v", err)
 	}
 	t.containerID = containerID
-	logger.Log.Infof("Container created with ID: %s", containerID)
+	logger.Infof("Container created with ID: %s", containerID)
 
 	return nil
 }
@@ -191,7 +191,7 @@ func (t *SSETransport) Start(ctx context.Context) error {
 	containerPort := t.targetPort
 
 	targetURI := fmt.Sprintf("http://%s:%d", targetHost, containerPort)
-	logger.Log.Infof("Setting up transparent proxy to forward from host port %d to %s",
+	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
 		t.port, targetURI)
 
 	// Create the transparent proxy with middlewares
@@ -200,7 +200,7 @@ func (t *SSETransport) Start(ctx context.Context) error {
 		return err
 	}
 
-	logger.Log.Infof("SSE transport started for container %s on port %d", t.containerName, t.port)
+	logger.Infof("SSE transport started for container %s on port %d", t.containerName, t.port)
 
 	// Create a container monitor
 	monitorRuntime, err := container.NewFactory().Create(ctx)
@@ -238,7 +238,7 @@ func (t *SSETransport) Stop(ctx context.Context) error {
 	// Stop the transparent proxy
 	if t.proxy != nil {
 		if err := t.proxy.Stop(ctx); err != nil {
-			logger.Log.Warnf("Warning: Failed to stop proxy: %v", err)
+			logger.Warnf("Warning: Failed to stop proxy: %v", err)
 		}
 	}
 
@@ -258,10 +258,10 @@ func (t *SSETransport) handleContainerExit(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	case err := <-t.errorCh:
-		logger.Log.Infof("Container %s exited: %v", t.containerName, err)
+		logger.Infof("Container %s exited: %v", t.containerName, err)
 		// Stop the transport when the container exits
 		if stopErr := t.Stop(ctx); stopErr != nil {
-			logger.Log.Errorf("Error stopping transport after container exit: %v", stopErr)
+			logger.Errorf("Error stopping transport after container exit: %v", stopErr)
 		}
 	}
 }

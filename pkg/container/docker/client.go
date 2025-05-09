@@ -63,14 +63,14 @@ func NewClient(ctx context.Context) (*Client, error) {
 		// Try to find a container socket for the given runtime
 		socketPath, runtimeType, err := findContainerSocket(sp)
 		if err != nil {
-			logger.Log.Debugf("Failed to find socket for %s: %v", sp, err)
+			logger.Debugf("Failed to find socket for %s: %v", sp, err)
 			lastErr = err
 			continue
 		}
 
 		c, err := NewClientWithSocketPath(ctx, socketPath, runtimeType)
 		if err != nil {
-			logger.Log.Debugf("Failed to create client for %s: %v", sp, err)
+			logger.Debugf("Failed to create client for %s: %v", sp, err)
 			lastErr = err
 			continue
 		}
@@ -117,7 +117,7 @@ func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType
 	if err := c.ping(ctx); err != nil {
 		return nil, err
 	}
-	logger.Log.Debugf("Successfully connected to %s runtime", c.runtimeType)
+	logger.Debugf("Successfully connected to %s runtime", c.runtimeType)
 
 	return c, nil
 }
@@ -139,11 +139,11 @@ func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 		// Check standard Podman location
 		_, err := os.Stat(PodmanSocketPath)
 		if err == nil {
-			logger.Log.Debugf("Found Podman socket at %s", PodmanSocketPath)
+			logger.Debugf("Found Podman socket at %s", PodmanSocketPath)
 			return PodmanSocketPath, runtime.TypePodman, nil
 		}
 
-		logger.Log.Debugf("Failed to check Podman socket at %s: %v", PodmanSocketPath, err)
+		logger.Debugf("Failed to check Podman socket at %s: %v", PodmanSocketPath, err)
 
 		// Check XDG_RUNTIME_DIR location for Podman
 		if xdgRuntimeDir := os.Getenv("XDG_RUNTIME_DIR"); xdgRuntimeDir != "" {
@@ -151,11 +151,11 @@ func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 			_, err := os.Stat(xdgSocketPath)
 
 			if err == nil {
-				logger.Log.Debugf("Found Podman socket at %s", xdgSocketPath)
+				logger.Debugf("Found Podman socket at %s", xdgSocketPath)
 				return xdgSocketPath, runtime.TypePodman, nil
 			}
 
-			logger.Log.Debugf("Failed to check Podman socket at %s: %v", xdgSocketPath, err)
+			logger.Debugf("Failed to check Podman socket at %s: %v", xdgSocketPath, err)
 		}
 
 		// Check user-specific location for Podman
@@ -164,11 +164,11 @@ func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 			_, err := os.Stat(userSocketPath)
 
 			if err == nil {
-				logger.Log.Debugf("Found Podman socket at %s", userSocketPath)
+				logger.Debugf("Found Podman socket at %s", userSocketPath)
 				return userSocketPath, runtime.TypePodman, nil
 			}
 
-			logger.Log.Debugf("Failed to check Podman socket at %s: %v", userSocketPath, err)
+			logger.Debugf("Failed to check Podman socket at %s: %v", userSocketPath, err)
 		}
 	}
 
@@ -177,11 +177,11 @@ func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 		_, err := os.Stat(DockerSocketPath)
 
 		if err == nil {
-			logger.Log.Debugf("Found Docker socket at %s", DockerSocketPath)
+			logger.Debugf("Found Docker socket at %s", DockerSocketPath)
 			return DockerSocketPath, runtime.TypeDocker, nil
 		}
 
-		logger.Log.Debugf("Failed to check Docker socket at %s: %v", DockerSocketPath, err)
+		logger.Debugf("Failed to check Docker socket at %s: %v", DockerSocketPath, err)
 
 		// Try Docker Desktop socket path on macOS
 		if home := os.Getenv("HOME"); home != "" {
@@ -189,11 +189,11 @@ func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 			_, err := os.Stat(dockerDesktopPath)
 
 			if err == nil {
-				logger.Log.Debugf("Found Docker Desktop socket at %s", dockerDesktopPath)
+				logger.Debugf("Found Docker Desktop socket at %s", dockerDesktopPath)
 				return dockerDesktopPath, runtime.TypeDocker, nil
 			}
 
-			logger.Log.Debugf("Failed to check Docker Desktop socket at %s: %v", dockerDesktopPath, err)
+			logger.Debugf("Failed to check Docker Desktop socket at %s: %v", dockerDesktopPath, err)
 		}
 	}
 
@@ -485,7 +485,7 @@ func (c *Client) ContainerLogs(ctx context.Context, containerID string, tail boo
 	if tail {
 		_, err = io.Copy(os.Stdout, logs)
 		if err != nil && err != io.EOF {
-			logger.Log.Errorf("Error reading container logs: %v", err)
+			logger.Errorf("Error reading container logs: %v", err)
 			return "", NewContainerError(err, containerID, fmt.Sprintf("failed to tail container logs: %v", err))
 		}
 	}
@@ -533,7 +533,7 @@ func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runt
 			hostPort := 0
 			if _, err := fmt.Sscanf(binding.HostPort, "%d", &hostPort); err != nil {
 				// If we can't parse the port, just use 0
-				logger.Log.Warnf("Warning: Failed to parse host port %s: %v", binding.HostPort, err)
+				logger.Warnf("Warning: Failed to parse host port %s: %v", binding.HostPort, err)
 			}
 
 			ports = append(ports, runtime.PortMapping{
@@ -656,7 +656,7 @@ func parsePullOutput(reader io.Reader, writer io.Writer) error {
 
 // PullImage pulls an image from a registry
 func (c *Client) PullImage(ctx context.Context, imageName string) error {
-	logger.Log.Infof("Pulling image: %s", imageName)
+	logger.Infof("Pulling image: %s", imageName)
 
 	// Pull the image
 	reader, err := c.client.ImagePull(ctx, imageName, dockerimage.PullOptions{})
@@ -675,7 +675,7 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 
 // BuildImage builds a Docker image from a Dockerfile in the specified context directory
 func (c *Client) BuildImage(ctx context.Context, contextDir, imageName string) error {
-	logger.Log.Infof("Building image %s from context directory %s", imageName, contextDir)
+	logger.Infof("Building image %s from context directory %s", imageName, contextDir)
 
 	// Create a tar archive of the context directory
 	tarFile, err := os.CreateTemp("", "docker-build-context-*.tar")
@@ -809,13 +809,13 @@ func (*Client) addReadOnlyMounts(config *runtime.PermissionConfig, mounts []perm
 		source, target, err := mountDecl.Parse()
 		if err != nil {
 			// Skip invalid mounts
-			logger.Log.Warnf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err)
+			logger.Warnf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err)
 			continue
 		}
 
 		// Skip resource URIs for now (they need special handling)
 		if strings.Contains(source, "://") {
-			logger.Log.Warnf("Warning: Resource URI mounts not yet supported: %s", source)
+			logger.Warnf("Warning: Resource URI mounts not yet supported: %s", source)
 			continue
 		}
 
@@ -839,13 +839,13 @@ func (*Client) addReadWriteMounts(config *runtime.PermissionConfig, mounts []per
 		source, target, err := mountDecl.Parse()
 		if err != nil {
 			// Skip invalid mounts
-			logger.Log.Warnf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err)
+			logger.Warnf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err)
 			continue
 		}
 
 		// Skip resource URIs for now (they need special handling)
 		if strings.Contains(source, "://") {
-			logger.Log.Warnf("Warning: Resource URI mounts not yet supported: %s", source)
+			logger.Warnf("Warning: Resource URI mounts not yet supported: %s", source)
 			continue
 		}
 
@@ -888,13 +888,13 @@ func convertRelativePathToAbsolute(source string, mountDecl permissions.MountDec
 	// Get the current working directory
 	cwd, err := os.Getwd()
 	if err != nil {
-		logger.Log.Warnf("Warning: Failed to get current working directory: %v", err)
+		logger.Warnf("Warning: Failed to get current working directory: %v", err)
 		return "", false
 	}
 
 	// Convert relative path to absolute path
 	absPath := filepath.Join(cwd, source)
-	logger.Log.Infof("Converting relative path to absolute: %s -> %s", mountDecl, absPath)
+	logger.Infof("Converting relative path to absolute: %s -> %s", mountDecl, absPath)
 	return absPath, true
 }
 

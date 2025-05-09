@@ -88,7 +88,7 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 	// Limit to the requested count
 	if count > len(servers) {
 		count = len(servers)
-		logger.Log.Warnf("Requested count %d exceeds available servers, limiting to %d", count, len(servers))
+		logger.Warnf("Requested count %d exceeds available servers, limiting to %d", count, len(servers))
 	}
 	servers = servers[:count]
 
@@ -97,10 +97,10 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 
 	// Update each server
 	for _, s := range servers {
-		logger.Log.Infof("Updating server: %s", s.name)
+		logger.Infof("Updating server: %s", s.name)
 
 		if err := updateServerInfo(s.name, s.server); err != nil {
-			logger.Log.Errorf("Failed to update server %s: %v", s.name, err)
+			logger.Errorf("Failed to update server %s: %v", s.name, err)
 			continue
 		}
 
@@ -109,7 +109,7 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 
 	// If we're in dry run mode, don't save changes
 	if dryRun {
-		logger.Log.Info("Dry run completed, no changes made")
+		logger.Info("Dry run completed, no changes made")
 		return nil
 	}
 
@@ -123,9 +123,9 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 			return fmt.Errorf("failed to save registry: %w", err)
 		}
 
-		logger.Log.Info("Registry updated successfully")
+		logger.Info("Registry updated successfully")
 	} else {
-		logger.Log.Info("No servers were updated")
+		logger.Info("No servers were updated")
 	}
 
 	return nil
@@ -135,7 +135,7 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 func updateServerInfo(name string, server *registry.Server) error {
 	// Skip if no repository URL
 	if server.RepositoryURL == "" {
-		logger.Log.Warnf("Server %s has no repository URL, skipping", name)
+		logger.Warnf("Server %s has no repository URL, skipping", name)
 		return nil
 	}
 
@@ -153,13 +153,13 @@ func updateServerInfo(name string, server *registry.Server) error {
 
 	// Update server metadata
 	if dryRun {
-		logger.Log.Infof("[DRY RUN] Would update %s: stars %d -> %d, pulls %d -> %d",
+		logger.Infof("[DRY RUN] Would update %s: stars %d -> %d, pulls %d -> %d",
 			name, server.Metadata.Stars, stars, server.Metadata.Pulls, pulls)
 		return nil
 	}
 
 	// Log the changes
-	logger.Log.Infof("Updating %s: stars %d -> %d, pulls %d -> %d",
+	logger.Infof("Updating %s: stars %d -> %d, pulls %d -> %d",
 		name, server.Metadata.Stars, stars, server.Metadata.Pulls, pulls)
 
 	// Update the metadata
@@ -294,7 +294,7 @@ func saveRegistry(reg *registry.Registry, updatedServers []string) error {
 		// Get the server from the original JSON
 		serverJSON, ok := serversMap[name].(map[string]interface{})
 		if !ok {
-			logger.Log.Warnf("Server %s not found in original registry, skipping", name)
+			logger.Warnf("Server %s not found in original registry, skipping", name)
 			continue
 		}
 

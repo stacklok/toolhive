@@ -30,7 +30,7 @@ func logsCommand() *cobra.Command {
 	logsCommand.Flags().BoolVarP(&tailFlag, "tail", "t", false, "Tail the logs")
 	err := viper.BindPFlag("tail", logsCommand.Flags().Lookup("tail"))
 	if err != nil {
-		logger.Log.Errorf("failed to bind flag: %v", err)
+		logger.Errorf("failed to bind flag: %v", err)
 	}
 
 	return logsCommand
@@ -75,7 +75,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	if containerID == "" {
-		logger.Log.Infof("container %s not found", containerName)
+		logger.Infof("container %s not found", containerName)
 		return nil
 	}
 

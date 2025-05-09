@@ -55,7 +55,7 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 
 	content, err := os.ReadFile(jcu.Path)
 	if err != nil {
-		logger.Log.Errorf("Failed to read file: %v", err)
+		logger.Errorf("Failed to read file: %v", err)
 	}
 
 	content = ensurePathExists(content, jcu.MCPServersPathPrefix)
@@ -64,26 +64,26 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
-		logger.Log.Errorf("Unable to marshal the MCPServer into JSON: %v", err)
+		logger.Errorf("Unable to marshal the MCPServer into JSON: %v", err)
 	}
 
 	patch := fmt.Sprintf(`[{ "op": "add", "path": "%s/%s", "value": %s } ]`, jcu.MCPServersPathPrefix, serverName, dataJSON)
 	err = v.Patch([]byte(patch))
 	if err != nil {
-		logger.Log.Errorf("Failed to patch file: %v", err)
+		logger.Errorf("Failed to patch file: %v", err)
 	}
 
 	formatted, _ := hujson.Format(v.Pack())
 	if err != nil {
-		logger.Log.Errorf("Failed to format the patched file: %v", err)
+		logger.Errorf("Failed to format the patched file: %v", err)
 	}
 
 	// Write back to the file
 	if err := os.WriteFile(jcu.Path, formatted, 0600); err != nil {
-		logger.Log.Errorf("Failed to write file: %v", err)
+		logger.Errorf("Failed to write file: %v", err)
 	}
 
-	logger.Log.Infof("Successfully updated the client config file for MCPServer %s", serverName)
+	logger.Infof("Successfully updated the client config file for MCPServer %s", serverName)
 
 	return nil
 }
@@ -109,7 +109,7 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 
 	content, err := os.ReadFile(jcu.Path)
 	if err != nil {
-		logger.Log.Errorf("Failed to read file: %v", err)
+		logger.Errorf("Failed to read file: %v", err)
 	}
 
 	v, _ := hujson.Parse(content)
@@ -117,17 +117,17 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 	patch := fmt.Sprintf(`[{ "op": "remove", "path": "%s/%s" } ]`, jcu.MCPServersPathPrefix, serverName)
 	err = v.Patch([]byte(patch))
 	if err != nil {
-		logger.Log.Errorf("Failed to patch file: %v", err)
+		logger.Errorf("Failed to patch file: %v", err)
 	}
 
 	formatted, _ := hujson.Format(v.Pack())
 
 	// Write back to the file
 	if err := os.WriteFile(jcu.Path, formatted, 0600); err != nil {
-		logger.Log.Errorf("Failed to write file: %v", err)
+		logger.Errorf("Failed to write file: %v", err)
 	}
 
-	logger.Log.Infof("Successfully removed the MCPServer %s from the client config file", serverName)
+	logger.Infof("Successfully removed the MCPServer %s from the client config file", serverName)
 
 	return nil
 }
@@ -184,7 +184,7 @@ func ensurePathExists(content []byte, path string) []byte {
 		v, _ := hujson.Parse(content)
 		err := v.Patch([]byte(patch))
 		if err != nil {
-			logger.Log.Errorf("Failed to patch file: %v", err)
+			logger.Errorf("Failed to patch file: %v", err)
 		}
 
 		// Update the content with the patched version

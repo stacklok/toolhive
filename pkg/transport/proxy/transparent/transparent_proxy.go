@@ -73,7 +73,7 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 
 	// Create a handler that logs requests
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger.Log.Infof("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, targetURL)
+		logger.Infof("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, targetURL)
 		proxy.ServeHTTP(w, r)
 	})
 
@@ -81,7 +81,7 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 	var finalHandler http.Handler = handler
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
 		finalHandler = p.middlewares[i](finalHandler)
-		logger.Log.Infof("Applied middleware %d\n", i+1)
+		logger.Infof("Applied middleware %d\n", i+1)
 	}
 
 	// Create the server
@@ -93,11 +93,11 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 
 	// Start the server in a goroutine
 	go func() {
-		logger.Log.Infof("Transparent proxy started for container %s on port %d -> %s",
+		logger.Infof("Transparent proxy started for container %s on port %d -> %s",
 			p.containerName, p.port, p.targetURI)
 
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Log.Errorf("Transparent proxy error: %v", err)
+			logger.Errorf("Transparent proxy error: %v", err)
 		}
 	}()
 

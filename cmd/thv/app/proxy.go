@@ -43,7 +43,7 @@ func init() {
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
-		logger.Log.Warnf("Warning: Failed to mark flag as required: %v", err)
+		logger.Warnf("Warning: Failed to mark flag as required: %v", err)
 	}
 }
 
@@ -57,14 +57,14 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	logger.Log.Infof("Using host port: %d", port)
+	logger.Infof("Using host port: %d", port)
 
 	// Create middlewares slice
 	var middlewares []types.Middleware
 
 	// Create JWT validator if OIDC flags are provided
 	if IsOIDCEnabled(cmd) {
-		logger.Log.Infof("OIDC validation enabled")
+		logger.Infof("OIDC validation enabled")
 
 		// Get OIDC flag values
 		issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
@@ -86,11 +86,11 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		// Add JWT validation middleware
 		middlewares = append(middlewares, jwtValidator.Middleware)
 	} else {
-		logger.Log.Infof("OIDC validation disabled")
+		logger.Infof("OIDC validation disabled")
 	}
 
 	// Create the transparent proxy
-	logger.Log.Infof("Setting up transparent proxy to forward from host port %d to %s",
+	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
 		port, proxyTargetURI)
 
 	// Create the transparent proxy with middlewares
@@ -99,9 +99,9 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start proxy: %v", err)
 	}
 
-	logger.Log.Infof("Transparent proxy started for server %s on port %d -> %s",
+	logger.Infof("Transparent proxy started for server %s on port %d -> %s",
 		serverName, port, proxyTargetURI)
-	logger.Log.Infof("Press Ctrl+C to stop")
+	logger.Infof("Press Ctrl+C to stop")
 
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
@@ -109,13 +109,13 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Wait for signal
 	sig := <-sigCh
-	logger.Log.Infof("Received signal %s, stopping proxy...", sig)
+	logger.Infof("Received signal %s, stopping proxy...", sig)
 
 	// Stop the proxy
 	if err := proxy.Stop(ctx); err != nil {
-		logger.Log.Warnf("Warning: Failed to stop proxy: %v", err)
+		logger.Warnf("Warning: Failed to stop proxy: %v", err)
 	}
 
-	logger.Log.Infof("Proxy for server %s stopped", serverName)
+	logger.Infof("Proxy for server %s stopped", serverName)
 	return nil
 }

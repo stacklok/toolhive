@@ -20,7 +20,7 @@ require (
 	go.uber.org/mock v0.5.2
 	golang.org/x/exp/jsonrpc2 v0.0.0-20250305212735-054e65f0b394
 	golang.org/x/mod v0.24.0
-	golang.org/x/sync v0.13.0
+	golang.org/x/sync v0.14.0
 	golang.org/x/term v0.32.0
 	gopkg.in/yaml.v3 v3.0.1
 	gotest.tools v2.2.0+incompatible

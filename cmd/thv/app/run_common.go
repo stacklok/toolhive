@@ -8,7 +8,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/runner"
-	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // RunMCPServer runs an MCP server with the specified configuration.
@@ -23,17 +22,7 @@ func RunMCPServer(ctx context.Context, config *runner.RunConfig, foreground bool
 		return manager.RunContainer(ctx, config)
 	}
 
-	var envVars []string
-	// If we need the decrypt password, set it as an environment variable in the detached process.
-	if NeedSecretsPassword(config.Secrets) {
-		password, err := secrets.GetSecretsPassword()
-		if err != nil {
-			return fmt.Errorf("failed to get secrets password: %v", err)
-		}
-		envVars = append(envVars, fmt.Sprintf("%s=%s", secrets.PasswordEnvVar, password))
-	}
-
-	return manager.RunContainerDetached(config, envVars)
+	return manager.RunContainerDetached(config)
 }
 
 // configureRunConfig configures a RunConfig with transport, ports, permissions, etc.

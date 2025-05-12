@@ -31,7 +31,6 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create lifecycle manager: %v", err)
 	}
 
-	// TODO: IMPLEMENT ME
-	var envVars []string
-	return manager.RestartContainer(ctx, containerName, envVars)
+	// Restart the container in a detached process.
+	return manager.RestartContainer(ctx, containerName)
 }

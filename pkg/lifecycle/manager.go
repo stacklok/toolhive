@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // Manager is responsible for managing the state of ToolHive-managed containers.
@@ -32,9 +33,9 @@ type Manager interface {
 	// RunContainer runs a container in the foreground.
 	RunContainer(ctx context.Context, runConfig *runner.RunConfig) error
 	// RunContainerDetached runs a container in the background.
-	RunContainerDetached(runConfig *runner.RunConfig, detachedProcessEnv []string) error
+	RunContainerDetached(runConfig *runner.RunConfig) error
 	// RestartContainer restarts a previously stopped container.
-	RestartContainer(ctx context.Context, name string, detachedProcessEnv []string) error
+	RestartContainer(ctx context.Context, name string) error
 }
 
 type defaultManager struct {
@@ -157,7 +158,7 @@ func (*defaultManager) RunContainer(ctx context.Context, runConfig *runner.RunCo
 }
 
 //nolint:gocyclo // This function is complex but manageable
-func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig, detachedProcessEnv []string) error {
+func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig) error {
 	// Get the current executable path
 	execPath, err := os.Executable()
 	if err != nil {
@@ -264,9 +265,16 @@ func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig, detache
 	// Set environment variables for the detached process
 	detachedCmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s", process.ToolHiveDetachedEnv, process.ToolHiveDetachedValue))
 
-	// If the process needs any additional environment variables, set them.
-	if len(detachedProcessEnv) > 0 {
-		detachedCmd.Env = append(detachedCmd.Env, detachedProcessEnv...)
+	// If we need the decrypt password, set it as an environment variable in the detached process.
+	// NOTE: This breaks the abstraction slightly since this is only relevant for the CLI, but there
+	// are checks inside `GetSecretsPassword` to ensure this does not get called in a detached process.
+	// This will be addressed in a future re-think of the secrets manager interface.
+	if needSecretsPassword(runConfig.Secrets) {
+		password, err := secrets.GetSecretsPassword()
+		if err != nil {
+			return fmt.Errorf("failed to get secrets password: %v", err)
+		}
+		detachedCmd.Env = append(detachedCmd.Env, fmt.Sprintf("%s=%s", secrets.PasswordEnvVar, password))
 	}
 
 	// Redirect stdout and stderr to the log file if it was created successfully
@@ -301,7 +309,7 @@ func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig, detache
 	return nil
 }
 
-func (d *defaultManager) RestartContainer(ctx context.Context, name string, detachedProcessEnv []string) error {
+func (d *defaultManager) RestartContainer(ctx context.Context, name string) error {
 	var containerBaseName string
 	var running bool
 	// Try to find the container.
@@ -345,9 +353,9 @@ func (d *defaultManager) RestartContainer(ctx context.Context, name string, deta
 
 	logger.Infof("Loaded configuration from state for %s", containerBaseName)
 
-	// Run the tooling server
+	// Run the tooling server inside a detached process.
 	logger.Infof("Starting tooling server %s...", name)
-	return d.RunContainerDetached(mcpRunner.Config, detachedProcessEnv)
+	return d.RunContainerDetached(mcpRunner.Config)
 }
 
 func (d *defaultManager) findContainerID(ctx context.Context, name string) (string, error) {
@@ -513,4 +521,15 @@ func (d *defaultManager) loadRunnerFromState(ctx context.Context, baseName strin
 	r.Config.Runtime = d.runtime
 
 	return r, nil
+}
+
+func needSecretsPassword(secretOptions []string) bool {
+	// If the user did not ask for any secrets, then don't attempt to instantiate
+	// the secrets manager.
+	if len(secretOptions) == 0 {
+		return false
+	}
+	// Ignore err - if the flag is not set, it's not needed.
+	providerType, _ := config.GetConfig().Secrets.GetProviderType()
+	return providerType == secrets.EncryptedType
 }

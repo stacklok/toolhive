@@ -67,15 +67,3 @@ func SetSecretsProvider(provider secrets.ProviderType) error {
 	fmt.Printf("Secrets provider type updated to: %s\n", provider)
 	return nil
 }
-
-// NeedSecretsPassword returns true if the secrets provider requires a password.
-func NeedSecretsPassword(secretOptions []string) bool {
-	// If the user did not ask for any secrets, then don't attempt to instantiate
-	// the secrets manager.
-	if len(secretOptions) == 0 {
-		return false
-	}
-	// Ignore err - if the flag is not set, it's not needed.
-	providerType, _ := config.GetConfig().Secrets.GetProviderType()
-	return providerType == secrets.EncryptedType
-}

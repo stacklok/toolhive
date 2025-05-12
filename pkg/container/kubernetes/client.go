@@ -189,8 +189,8 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 					statusErr.ErrStatus.Code)
 
 				if statusErr.ErrStatus.Code == 0 && statusErr.ErrStatus.Message == "" {
-					logger.Infof("Empty status error - this typically means the connection was closed unexpectedly")
-					logger.Infof("This often happens when the container terminates or doesn't read from stdin")
+					logger.Info("Empty status error - this typically means the connection was closed unexpectedly")
+					logger.Info("This often happens when the container terminates or doesn't read from stdin")
 				}
 			} else {
 				logger.Errorf("Non-status error: %v", err)
@@ -793,7 +793,7 @@ func (c *Client) createHeadlessService(
 
 	// If no ports were configured, don't create a service
 	if len(servicePorts) == 0 {
-		logger.Infof("No ports configured for SSE transport, skipping service creation")
+		logger.Info("No ports configured for SSE transport, skipping service creation")
 		return nil
 	}
 

@@ -66,7 +66,7 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 
 	if len(toolHiveContainers) == 0 {
-		logger.Infof("No MCP servers found")
+		logger.Info("No MCP servers found")
 		return nil
 	}
 
@@ -140,7 +140,7 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 	}
 
 	// Print JSON
-	logger.Infof(string(jsonData))
+	logger.Info(string(jsonData))
 	return nil
 }
 
@@ -192,7 +192,7 @@ func printMCPServersOutput(containers []rt.ContainerInfo) error {
 	}
 
 	// Print JSON
-	logger.Infof(string(jsonData))
+	logger.Info(string(jsonData))
 	return nil
 }
 

@@ -96,11 +96,11 @@ func LoadOrCreateConfig() (*Config, error) {
 		}
 
 		// Prompt user explicitly for auto discovery behaviour.
-		logger.Infof("Would you like to enable auto discovery and configuraion of MCP clients? (y/n) [n]: ")
+		logger.Info("Would you like to enable auto discovery and configuraion of MCP clients? (y/n) [n]: ")
 		reader := bufio.NewReader(os.Stdin)
 		input, err := reader.ReadString('\n')
 		if err != nil {
-			logger.Infof("Unable to read input, defaulting to No.")
+			logger.Info("Unable to read input, defaulting to No.")
 		}
 		// Treat anything except y/Y as n.
 		if input == "y\n" || input == "Y\n" {

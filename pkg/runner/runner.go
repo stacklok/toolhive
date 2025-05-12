@@ -49,7 +49,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Add OIDC middleware if OIDC validation is enabled
 	if r.Config.OIDCConfig != nil {
-		logger.Infof("OIDC validation enabled for transport")
+		logger.Info("OIDC validation enabled for transport")
 
 		// Create JWT validator
 		jwtValidator, err := auth.NewJWTValidator(ctx, auth.JWTValidatorConfig{
@@ -68,7 +68,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Add authorization middleware if authorization configuration is provided
 	if r.Config.AuthzConfig != nil {
-		logger.Infof("Authorization enabled for transport")
+		logger.Info("Authorization enabled for transport")
 
 		// Get the middleware from the configuration
 		middleware, err := r.Config.AuthzConfig.CreateMiddleware()
@@ -160,9 +160,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		logger.Infof("Running as detached process (PID: %d)", os.Getpid())
+	} else {
+		logger.Info("Press Ctrl+C to stop or wait for container to exit")
 	}
-
-	logger.Infof("Press Ctrl+C to stop or wait for container to exit")
 
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
@@ -176,7 +176,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		for {
 			// Safely check if transportHandler is nil
 			if transportHandler == nil {
-				logger.Infof("Transport handler is nil, exiting monitoring routine...")
+				logger.Info("Transport handler is nil, exiting monitoring routine...")
 				close(doneCh)
 				return
 			}
@@ -191,7 +191,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			if !running {
 				// Transport is no longer running (container exited or was stopped)
-				logger.Infof("Transport is no longer running, exiting...")
+				logger.Info("Transport is no longer running, exiting...")
 				close(doneCh)
 				return
 			}

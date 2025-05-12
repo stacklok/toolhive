@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/transport"
 )
 
 var runCmd = &cobra.Command{
@@ -56,6 +58,7 @@ permission profile. Additional configuration can be provided via flags.`,
 var (
 	runTransport         string
 	runName              string
+	runHost              string
 	runPort              int
 	runTargetPort        int
 	runTargetHost        string
@@ -72,6 +75,7 @@ var (
 func init() {
 	runCmd.Flags().StringVar(&runTransport, "transport", "stdio", "Transport mode (sse or stdio)")
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
+	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostName, "Host for the HTTP proxy to listen on (IP or hostname)")
 	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
 	runCmd.Flags().IntVar(&runTargetPort, "target-port", 0, "Port for the container to expose (only applicable to SSE transport)")
 	runCmd.Flags().StringVar(
@@ -131,6 +135,14 @@ func init() {
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
+
+	// Validate the host flag and default resolving to IP in case hostname is provided
+	validatedHost, err := ValidateAndNormaliseHostFlag(runHost)
+	if err != nil {
+		return fmt.Errorf("invalid host: %s", runHost)
+	}
+	runHost = validatedHost
+
 	// Get the server name or image
 	serverOrImage := args[0]
 
@@ -173,6 +185,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		rt,
 		cmdArgs,
 		runName,
+		runHost,
 		debugMode,
 		runVolumes,
 		runSecrets,
@@ -436,4 +449,32 @@ func parseCommandArguments(args []string) []string {
 		}
 	}
 	return cmdArgs
+}
+
+// ValidateAndNormaliseHostFlag validates and normalizes the host flag resolving it to an IP address if hostname is provided
+func ValidateAndNormaliseHostFlag(host string) (string, error) {
+	// Check if the host is a valid IP address
+	ip := net.ParseIP(host)
+	if ip != nil {
+		if ip.To4() == nil {
+			return "", fmt.Errorf("IPv6 addresses are not supported: %s", host)
+		}
+		return host, nil
+	}
+
+	// If not an IP address, resolve the hostname to an IP address
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return "", fmt.Errorf("invalid host: %s", host)
+	}
+
+	// Use the first IPv4 address found
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip != nil && ip.To4() != nil {
+			return ip.String(), nil
+		}
+	}
+
+	return "", fmt.Errorf("could not resolve host: %s", host)
 }

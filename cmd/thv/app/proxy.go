@@ -11,6 +11,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -25,11 +26,13 @@ This command creates a standalone proxy without starting a container.`,
 }
 
 var (
+	proxyHost      string
 	proxyPort      int
 	proxyTargetURI string
 )
 
 func init() {
+	proxyCmd.Flags().StringVar(&proxyHost, "host", transport.LocalhostName, "Host for the HTTP proxy to listen on (IP or hostname)")
 	proxyCmd.Flags().IntVar(&proxyPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
 	proxyCmd.Flags().StringVar(
 		&proxyTargetURI,
@@ -51,6 +54,13 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	// Get the server name
 	serverName := args[0]
+
+	// Validate the host flag and default resolving to IP in case hostname is provided
+	validatedHost, err := ValidateAndNormaliseHostFlag(proxyHost)
+	if err != nil {
+		return fmt.Errorf("invalid host: %s", proxyHost)
+	}
+	proxyHost = validatedHost
 
 	// Select a port for the HTTP proxy (host port)
 	port, err := networking.FindOrUsePort(proxyPort)
@@ -94,7 +104,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		port, proxyTargetURI)
 
 	// Create the transparent proxy with middlewares
-	proxy := transparent.NewTransparentProxy(port, serverName, proxyTargetURI, middlewares...)
+	proxy := transparent.NewTransparentProxy(proxyHost, port, serverName, proxyTargetURI, middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %v", err)
 	}

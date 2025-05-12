@@ -8,7 +8,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
@@ -112,21 +111,21 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)
 	containerOptions.ExposedPorts[containerPortStr] = struct{}{}
 
-	// Create port bindings for localhost
+	// Create host port bindings (configurable through the --host flag)
 	portBindings := []rt.PortBinding{
 		{
-			HostIP:   "127.0.0.1", // IPv4 localhost
+			HostIP:   t.host,
 			HostPort: fmt.Sprintf("%d", t.targetPort),
 		},
 	}
 
-	// Check if IPv6 is available and add IPv6 localhost binding
-	if networking.IsIPv6Available() {
-		portBindings = append(portBindings, rt.PortBinding{
-			HostIP:   "::1", // IPv6 localhost
-			HostPort: fmt.Sprintf("%d", t.targetPort),
-		})
-	}
+	// Check if IPv6 is available and add IPv6 localhost binding (commented out for now)
+	//if networking.IsIPv6Available() {
+	//	portBindings = append(portBindings, rt.PortBinding{
+	//		HostIP:   "::1", // IPv6 localhost
+	//		HostPort: fmt.Sprintf("%d", t.targetPort),
+	//	})
+	//}
 
 	// Set the port bindings
 	containerOptions.PortBindings[containerPortStr] = portBindings
@@ -195,7 +194,7 @@ func (t *SSETransport) Start(ctx context.Context) error {
 		t.port, targetURI)
 
 	// Create the transparent proxy with middlewares
-	t.proxy = transparent.NewTransparentProxy(t.port, t.containerName, targetURI, t.middlewares...)
+	t.proxy = transparent.NewTransparentProxy(t.host, t.port, t.containerName, targetURI, t.middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}

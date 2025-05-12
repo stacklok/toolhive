@@ -73,12 +73,12 @@ func checkForUpdates() {
 	updateChecker, err := updates.NewUpdateChecker(versionClient)
 	// treat update-related errors as non-fatal
 	if err != nil {
-		logger.Errorf("unable to create update client: %w", err)
+		logger.Warnf("unable to create update client: %s", err)
 		return
 	}
 
 	err = updateChecker.CheckLatestVersion()
 	if err != nil {
-		logger.Errorf("error while checking for updates: %w", err)
+		logger.Warnf("could not check for updates: %s", err)
 	}
 }

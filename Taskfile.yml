@@ -67,8 +67,10 @@ tasks:
 
   build-image:
     desc: Build the image with ko
+    env:
+      KO_DOCKER_REPO: ghcr.io/stacklok/toolhive
     cmds:
-      - ko build --platform linux/amd64,linux/arm64 --local ./cmd/thv
+      - ko build --local --bare ./cmd/thv
 
   kind-setup:
     desc: Setup a local Kind cluster

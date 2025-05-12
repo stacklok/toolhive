@@ -36,20 +36,6 @@ func IsOIDCEnabled(cmd *cobra.Command) bool {
 	return jwksURL != "" || issuer != ""
 }
 
-// GetSecretsProviderType returns the secrets provider type from the command flags
-func GetSecretsProviderType(_ *cobra.Command) (secrets.ProviderType, error) {
-	provider := config.GetConfig().Secrets.ProviderType
-	switch provider {
-	case string(secrets.EncryptedType):
-		return secrets.EncryptedType, nil
-	case string(secrets.OnePasswordType):
-		return secrets.OnePasswordType, nil
-	default:
-		// TODO: auto-generate the set of valid values.
-		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted, 1password)", provider)
-	}
-}
-
 // SetSecretsProvider sets the secrets provider type in the configuration.
 // It validates the input and updates the configuration.
 // Choices are `encrypted` and `1password`.
@@ -83,13 +69,13 @@ func SetSecretsProvider(provider secrets.ProviderType) error {
 }
 
 // NeedSecretsPassword returns true if the secrets provider requires a password.
-func NeedSecretsPassword(cmd *cobra.Command, secretOptions []string) bool {
+func NeedSecretsPassword(secretOptions []string) bool {
 	// If the user did not ask for any secrets, then don't attempt to instantiate
 	// the secrets manager.
 	if len(secretOptions) == 0 {
 		return false
 	}
 	// Ignore err - if the flag is not set, it's not needed.
-	providerType, _ := GetSecretsProviderType(cmd)
+	providerType, _ := config.GetConfig().Secrets.GetProviderType()
 	return providerType == secrets.EncryptedType
 }

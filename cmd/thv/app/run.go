@@ -218,12 +218,12 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Configure the RunConfig with transport, ports, permissions, etc.
-	if err := configureRunConfig(cmd, config, runTransport, runPort, runTargetPort, runTargetHost, runEnv); err != nil {
+	if err := configureRunConfig(config, runTransport, runPort, runTargetPort, runTargetHost, runEnv); err != nil {
 		return err
 	}
 
 	// Run the MCP server
-	return RunMCPServer(ctx, cmd, config, runForeground)
+	return RunMCPServer(ctx, config, runForeground)
 }
 
 // pullImage pulls an image from a remote registry if it has the "latest" tag

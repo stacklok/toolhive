@@ -93,7 +93,7 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Run the tooling server
 	logger.Infof("Starting tooling server %s...", containerName)
-	return RunMCPServer(ctx, cmd, mcpRunner.Config, false)
+	return RunMCPServer(ctx, mcpRunner.Config, false)
 }
 
 // isProxyRunning checks if the proxy process is running

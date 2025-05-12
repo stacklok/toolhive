@@ -35,8 +35,8 @@ const (
 // ErrUnknownManagerType is returned when an invalid value for ProviderType is specified.
 var ErrUnknownManagerType = errors.New("unknown secret manager type")
 
-// CreateSecretManager creates the specified type of secret manager.
-func CreateSecretManager(managerType ProviderType) (Provider, error) {
+// CreateSecretProvider creates the specified type of secrets provider.
+func CreateSecretProvider(managerType ProviderType) (Provider, error) {
 	switch managerType {
 	case EncryptedType:
 		password, err := GetSecretsPassword()
@@ -61,13 +61,6 @@ func CreateSecretManager(managerType ProviderType) (Provider, error) {
 // It will attempt to retrieve it from the environment variable TOOLHIVE_SECRETS_PASSWORD.
 // If the environment variable is not set, it will prompt the user to enter a password.
 func GetSecretsPassword() ([]byte, error) {
-	// We cannot ask for a password in a detached process.
-	// We should never trigger this, but this ensures that if there's a bug
-	// then it's easier to find.
-	if process.IsDetached() {
-		return nil, fmt.Errorf("detached process detected, cannot ask for password")
-	}
-
 	// First, attempt to load the password from the environment variable.
 	password := []byte(os.Getenv(PasswordEnvVar))
 	if len(password) > 0 {
@@ -83,6 +76,13 @@ func GetSecretsPassword() ([]byte, error) {
 	// We need to determine if the error is due to a lack of keyring on the
 	// system or if the keyring is available but nothing was stored.
 	keyringAvailable := errors.Is(err, keyring.ErrNotFound)
+
+	// We cannot ask for a password in a detached process.
+	// We should never trigger this, but this ensures that if there's a bug
+	// then it's easier to find.
+	if process.IsDetached() {
+		return nil, fmt.Errorf("detached process detected, cannot ask for password")
+	}
 
 	// If the keyring is not available, prompt the user for a password.
 	password, err = readPasswordStdin()
@@ -105,7 +105,7 @@ func readPasswordStdin() ([]byte, error) {
 	printPasswordPrompt()
 	password, err := term.ReadPassword(int(os.Stdin.Fd()))
 	// Start new line after receiving password to ensure errors are printed correctly.
-	logger.Infof("")
+	fmt.Println()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read password: %w", err)
 	}

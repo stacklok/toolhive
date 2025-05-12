@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -68,7 +69,7 @@ Input Methods:
 
 The secret will be stored securely using the configured secrets provider.`,
 		Args: cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(_ *cobra.Command, args []string) {
 			name := args[0]
 
 			// Validate input
@@ -114,13 +115,7 @@ The secret will be stored securely using the configured secrets provider.`,
 				return
 			}
 
-			providerType, err := GetSecretsProviderType(cmd)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-
-			manager, err := secrets.CreateSecretManager(providerType)
+			manager, err := getSecretsManager()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
@@ -141,7 +136,7 @@ func newSecretGetCommand() *cobra.Command {
 		Use:   "get <name>",
 		Short: "Get a secret",
 		Args:  cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(_ *cobra.Command, args []string) {
 			name := args[0]
 
 			// Validate input
@@ -150,13 +145,7 @@ func newSecretGetCommand() *cobra.Command {
 				return
 			}
 
-			providerType, err := GetSecretsProviderType(cmd)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-
-			manager, err := secrets.CreateSecretManager(providerType)
+			manager, err := getSecretsManager()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
@@ -177,7 +166,7 @@ func newSecretDeleteCommand() *cobra.Command {
 		Use:   "delete <name>",
 		Short: "Delete a secret",
 		Args:  cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(_ *cobra.Command, args []string) {
 			name := args[0]
 
 			// Validate input
@@ -186,13 +175,7 @@ func newSecretDeleteCommand() *cobra.Command {
 				return
 			}
 
-			providerType, err := GetSecretsProviderType(cmd)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-
-			manager, err := secrets.CreateSecretManager(providerType)
+			manager, err := getSecretsManager()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
@@ -213,14 +196,8 @@ func newSecretListCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List all available secrets",
 		Args:  cobra.NoArgs,
-		Run: func(cmd *cobra.Command, _ []string) {
-			providerType, err := GetSecretsProviderType(cmd)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-
-			manager, err := secrets.CreateSecretManager(providerType)
+		Run: func(_ *cobra.Command, _ []string) {
+			manager, err := getSecretsManager()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
@@ -258,4 +235,18 @@ func newSecretResetKeyringCommand() *cobra.Command {
 			fmt.Println("Successfully reset keyring secret")
 		},
 	}
+}
+
+func getSecretsManager() (secrets.Provider, error) {
+	providerType, err := config.GetConfig().Secrets.GetProviderType()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
+	}
+
+	manager, err := secrets.CreateSecretProvider(providerType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create secrets manager: %w", err)
+	}
+
+	return manager, nil
 }

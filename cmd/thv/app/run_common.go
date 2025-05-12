@@ -9,7 +9,6 @@ import (
 	"syscall"
 
 	"github.com/adrg/xdg"
-	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -23,10 +22,10 @@ import (
 // RunMCPServer runs an MCP server with the specified config
 //
 //nolint:gocyclo // This function is complex but manageable
-func RunMCPServer(ctx context.Context, cmd *cobra.Command, config *runner.RunConfig, foreground bool) error {
+func RunMCPServer(ctx context.Context, config *runner.RunConfig, foreground bool) error {
 	// If not running in foreground mode, start a new detached process and exit
 	if !foreground {
-		return detachProcess(cmd, config)
+		return detachProcess(config)
 	}
 
 	// Create a Runner with the RunConfig
@@ -39,7 +38,7 @@ func RunMCPServer(ctx context.Context, cmd *cobra.Command, config *runner.RunCon
 // detachProcess starts a new detached process with the same command but with the --foreground flag
 //
 //nolint:gocyclo // This function is complex but manageable
-func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
+func detachProcess(options *runner.RunConfig) error {
 	// Get the current executable path
 	execPath, err := os.Executable()
 	if err != nil {
@@ -146,8 +145,8 @@ func detachProcess(cmd *cobra.Command, options *runner.RunConfig) error {
 	// Set environment variables for the detached process
 	detachedCmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s", process.ToolHiveDetachedEnv, process.ToolHiveDetachedValue))
 
-	// If the process needs the decrypt password, pass it as an environment variable.
-	if NeedSecretsPassword(cmd, options.Secrets) {
+	// If we need the decrypt password, set it as an environment variable in the detached process.
+	if NeedSecretsPassword(options.Secrets) {
 		password, err := secrets.GetSecretsPassword()
 		if err != nil {
 			return fmt.Errorf("failed to get secrets password: %v", err)
@@ -200,7 +199,6 @@ func findEnvironmentVariableFromSecrets(secs []string, envVarName string) bool {
 
 // configureRunConfig configures a RunConfig with transport, ports, permissions, etc.
 func configureRunConfig(
-	cmd *cobra.Command,
 	config *runner.RunConfig,
 	transport string,
 	port int,
@@ -213,24 +211,6 @@ func configureRunConfig(
 	// Check if permission profile is provided
 	if config.PermissionProfileNameOrPath == "" {
 		return fmt.Errorf("permission profile is required")
-	}
-
-	// Process secrets if provided
-	if len(config.Secrets) > 0 {
-		providerType, err := GetSecretsProviderType(cmd)
-		if err != nil {
-			return fmt.Errorf("error determining secrets provider type: %w", err)
-		}
-
-		secretManager, err := secrets.CreateSecretManager(providerType)
-		if err != nil {
-			return fmt.Errorf("error instantiating secret manager %v", err)
-		}
-
-		// Process secrets
-		if _, err = config.WithSecrets(secretManager); err != nil {
-			return err
-		}
 	}
 
 	// Set transport

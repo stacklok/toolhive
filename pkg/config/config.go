@@ -33,6 +33,20 @@ type Secrets struct {
 	ProviderType string `yaml:"provider_type"`
 }
 
+// GetProviderType returns the secrets provider type from the application config.
+func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
+	provider := s.ProviderType
+	switch provider {
+	case string(secrets.EncryptedType):
+		return secrets.EncryptedType, nil
+	case string(secrets.OnePasswordType):
+		return secrets.OnePasswordType, nil
+	default:
+		// TODO: auto-generate the set of valid values.
+		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted, 1password)", provider)
+	}
+}
+
 // Clients contains settings for client configuration.
 type Clients struct {
 	AutoDiscovery     bool     `yaml:"auto_discovery"`

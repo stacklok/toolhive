@@ -11,8 +11,10 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -24,9 +26,9 @@ type Runner struct {
 }
 
 // NewRunner creates a new Runner with the provided configuration
-func NewRunner(config *RunConfig) *Runner {
+func NewRunner(runConfig *RunConfig) *Runner {
 	return &Runner{
-		Config: config,
+		Config: runConfig,
 	}
 }
 
@@ -83,6 +85,31 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create transport: %v", err)
 	}
 
+	// Save the configuration to the state store
+	if err := r.SaveState(ctx); err != nil {
+		logger.Warnf("Warning: Failed to save run configuration: %v", err)
+	}
+
+	// Process secrets if provided
+	// NOTE: This MUST happen after we save the run config to avoid storing
+	// the secrets in the state store.
+	if len(r.Config.Secrets) > 0 {
+		providerType, err := config.GetConfig().Secrets.GetProviderType()
+		if err != nil {
+			return fmt.Errorf("error determining secrets provider type: %w", err)
+		}
+
+		secretManager, err := secrets.CreateSecretProvider(providerType)
+		if err != nil {
+			return fmt.Errorf("error instantiating secret manager %v", err)
+		}
+
+		// Process secrets
+		if _, err = r.Config.WithSecrets(secretManager); err != nil {
+			return err
+		}
+	}
+
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)
 	if err := transportHandler.Setup(
@@ -99,11 +126,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	logger.Infof("MCP server %s started successfully", r.Config.ContainerName)
-
-	// Save the configuration to the state store
-	if err := r.SaveState(ctx); err != nil {
-		logger.Warnf("Warning: Failed to save run configuration: %v", err)
-	}
 
 	// Update client configurations with the MCP server URL.
 	// Note that this function checks the configuration to determine which
@@ -199,12 +221,12 @@ func (r *Runner) Run(ctx context.Context) error {
 // updateClientConfigurations updates client configuration files with the MCP server URL
 func updateClientConfigurations(containerName, host string, port int) error {
 	// Find client configuration files
-	configs, err := client.FindClientConfigs()
+	clientConfigs, err := client.FindClientConfigs()
 	if err != nil {
 		return fmt.Errorf("failed to find client configurations: %w", err)
 	}
 
-	if len(configs) == 0 {
+	if len(clientConfigs) == 0 {
 		logger.Infof("No client configuration files found")
 		return nil
 	}
@@ -213,15 +235,15 @@ func updateClientConfigurations(containerName, host string, port int) error {
 	url := client.GenerateMCPServerURL(host, port, containerName)
 
 	// Update each configuration file
-	for _, config := range configs {
-		logger.Infof("Updating client configuration: %s", config.Path)
+	for _, clientConfig := range clientConfigs {
+		logger.Infof("Updating client configuration: %s", clientConfig.Path)
 
-		if err := client.Upsert(config, containerName, url); err != nil {
-			fmt.Printf("Warning: Failed to update MCP server configuration in %s: %v\n", config.Path, err)
+		if err := client.Upsert(clientConfig, containerName, url); err != nil {
+			fmt.Printf("Warning: Failed to update MCP server configuration in %s: %v\n", clientConfig.Path, err)
 			continue
 		}
 
-		logger.Infof("Successfully updated client configuration: %s", config.Path)
+		logger.Infof("Successfully updated client configuration: %s", clientConfig.Path)
 	}
 
 	return nil

@@ -64,7 +64,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Create JWT validator if OIDC flags are provided
 	if IsOIDCEnabled(cmd) {
-		logger.Infof("OIDC validation enabled")
+		logger.Info("OIDC validation enabled")
 
 		// Get OIDC flag values
 		issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
@@ -86,7 +86,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		// Add JWT validation middleware
 		middlewares = append(middlewares, jwtValidator.Middleware)
 	} else {
-		logger.Infof("OIDC validation disabled")
+		logger.Info("OIDC validation disabled")
 	}
 
 	// Create the transparent proxy
@@ -101,7 +101,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 	logger.Infof("Transparent proxy started for server %s on port %d -> %s",
 		serverName, port, proxyTargetURI)
-	logger.Infof("Press Ctrl+C to stop")
+	logger.Info("Press Ctrl+C to stop")
 
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)

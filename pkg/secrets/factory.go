@@ -92,7 +92,7 @@ func GetSecretsPassword() ([]byte, error) {
 
 	// If the keyring is available, we can store the password for future use.
 	if keyringAvailable {
-		logger.Infof("writing password to os keyring")
+		logger.Info("writing password to os keyring")
 		err = keyring.Set(keyringService, keyringService, string(password))
 		if err != nil {
 			return nil, fmt.Errorf("failed to store password in keyring: %w", err)

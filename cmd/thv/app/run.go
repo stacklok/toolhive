@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -323,7 +323,7 @@ func applyRegistrySettings(
 
 	// Create a temporary file for the permission profile if not explicitly provided
 	if !cmd.Flags().Changed("permission-profile") {
-		permProfilePath, err := createPermissionProfileFile(serverName, server.Permissions, debugMode)
+		permProfilePath, err := lifecycle.CreatePermissionProfileFile(serverName, server.Permissions)
 		if err != nil {
 			// Just log the error and continue with the default permission profile
 			logger.Warnf("Warning: Failed to create permission profile file: %v", err)
@@ -415,33 +415,6 @@ func hasLatestTag(imageRef string) bool {
 	// If no tag was specified, it defaults to "latest"
 	_, isDigest := ref.(nameref.Digest)
 	return !isDigest
-}
-
-// createPermissionProfileFile creates a temporary file with the permission profile
-func createPermissionProfileFile(serverName string, permProfile *permissions.Profile, debugMode bool) (string, error) {
-	tempFile, err := os.CreateTemp("", fmt.Sprintf("toolhive-%s-permissions-*.json", serverName))
-	if err != nil {
-		return "", fmt.Errorf("failed to create temporary file: %v", err)
-	}
-	defer tempFile.Close()
-
-	// Get the temporary file path
-	permProfilePath := tempFile.Name()
-
-	// Serialize the permission profile to JSON
-	permProfileJSON, err := json.Marshal(permProfile)
-	if err != nil {
-		return "", fmt.Errorf("failed to serialize permission profile: %v", err)
-	}
-
-	// Write the permission profile to the temporary file
-	if _, err := tempFile.Write(permProfileJSON); err != nil {
-		return "", fmt.Errorf("failed to write permission profile to file: %v", err)
-	}
-
-	logDebug(debugMode, "Wrote permission profile to temporary file: %s", permProfilePath)
-
-	return permProfilePath, nil
 }
 
 // logDebug logs a message if debug mode is enabled

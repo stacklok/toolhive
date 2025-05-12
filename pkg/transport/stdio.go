@@ -152,7 +152,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	if err := t.httpProxy.Start(ctx); err != nil {
 		return err
 	}
-	logger.Infof("HTTP SSE proxy started, processing messages...")
+	logger.Info("HTTP SSE proxy started, processing messages...")
 
 	// Start processing messages in a goroutine
 	go t.processMessages(ctx, t.stdin, t.stdout)
@@ -282,11 +282,11 @@ func (t *StdioTransport) processMessages(ctx context.Context, stdin io.WriteClos
 		case <-ctx.Done():
 			return
 		case msg := <-messageCh:
-			logger.Infof("Process incoming messages and sending message to container")
+			logger.Info("Process incoming messages and sending message to container")
 			if err := t.sendMessageToContainer(ctx, stdin, msg); err != nil {
 				logger.Errorf("Error sending message to container: %v", err)
 			}
-			logger.Infof("Messages processed")
+			logger.Info("Messages processed")
 		}
 	}
 }
@@ -308,7 +308,7 @@ func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser
 			n, err := stdout.Read(readBuffer)
 			if err != nil {
 				if err == io.EOF {
-					logger.Infof("Container stdout closed")
+					logger.Info("Container stdout closed")
 				} else {
 					logger.Errorf("Error reading from container stdout: %v", err)
 				}
@@ -443,11 +443,11 @@ func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer
 	data = append(data, '\n')
 
 	// Write to stdin
-	logger.Infof("Writing to container stdin")
+	logger.Info("Writing to container stdin")
 	if _, err := stdin.Write(data); err != nil {
 		return fmt.Errorf("failed to write to container stdin: %w", err)
 	}
-	logger.Infof("Wrote to container stdin")
+	logger.Info("Wrote to container stdin")
 
 	return nil
 }

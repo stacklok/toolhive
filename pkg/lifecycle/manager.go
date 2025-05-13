@@ -25,6 +25,8 @@ import (
 
 // Manager is responsible for managing the state of ToolHive-managed containers.
 type Manager interface {
+	// GetContainer returns information about the named container.
+	GetContainer(ctx context.Context, name string) (*rt.ContainerInfo, error)
 	// ListContainers lists all ToolHive-managed containers.
 	ListContainers(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error)
 	// DeleteContainer deletes a container and its associated proxy process.
@@ -59,6 +61,10 @@ func NewManager(ctx context.Context) (Manager, error) {
 	return &defaultManager{
 		runtime: runtime,
 	}, nil
+}
+
+func (d *defaultManager) GetContainer(ctx context.Context, name string) (*rt.ContainerInfo, error) {
+	return d.findContainerByName(ctx, name)
 }
 
 func (d *defaultManager) ListContainers(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error) {

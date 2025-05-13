@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
+	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -32,9 +33,15 @@ func Serve(ctx context.Context, address string) error {
 		middleware.Timeout(middlewareTimeout),
 	)
 
+	manager, err := lifecycle.NewManager(ctx)
+	if err != nil {
+		logger.Panicf("failed to create lifecycle manager: %v", err)
+	}
+
 	routers := map[string]http.Handler{
-		"/health":         v1.HealthcheckRouter(),
-		"/api/v1/version": v1.VersionRouter(),
+		"/health":             v1.HealthcheckRouter(),
+		"/api/v1beta/version": v1.VersionRouter(),
+		"/api/v1beta/servers": v1.ServerRouter(manager),
 	}
 	for prefix, router := range routers {
 		r.Mount(prefix, router)

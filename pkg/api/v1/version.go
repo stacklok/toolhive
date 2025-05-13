@@ -10,7 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
-// VersionRouter sets up version route.
+// VersionRouter sets up the version route.
 func VersionRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", getVersion)

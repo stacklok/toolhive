@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/transport/proxy"
 )
 
 // Manager is responsible for managing the state of ToolHive-managed containers.
@@ -146,7 +147,7 @@ func (d *defaultManager) StopContainer(ctx context.Context, name string) error {
 	containerBaseName, _ := d.getContainerBaseName(ctx, containerID)
 
 	// Stop the proxy process
-	stopProxyProcess(containerBaseName)
+	proxy.StopProcess(containerBaseName)
 
 	// Stop the container
 	return d.stopContainer(ctx, containerID, name)
@@ -333,7 +334,7 @@ func (d *defaultManager) RestartContainer(ctx context.Context, name string) erro
 	}
 
 	// Check if the proxy process is running
-	proxyRunning := isProxyRunning(containerBaseName)
+	proxyRunning := proxy.IsRunning(containerBaseName)
 
 	if running && proxyRunning {
 		logger.Infof("Container %s and proxy are already running", name)
@@ -400,34 +401,6 @@ func (d *defaultManager) findContainerByName(ctx context.Context, name string) (
 	return nil, fmt.Errorf("%w: %s", ErrContainerNotFound, name)
 }
 
-// stopProxyProcess stops the proxy process associated with the container
-func stopProxyProcess(containerBaseName string) {
-	if containerBaseName == "" {
-		logger.Warnf("Warning: Could not find base container name in labels")
-		return
-	}
-
-	// Try to read the PID file and kill the process
-	pid, err := process.ReadPIDFile(containerBaseName)
-	if err != nil {
-		logger.Errorf("No PID file found for %s, proxy may not be running in detached mode", containerBaseName)
-		return
-	}
-
-	// PID file found, try to kill the process
-	logger.Infof("Stopping proxy process (PID: %d)...", pid)
-	if err := process.KillProcess(pid); err != nil {
-		logger.Warnf("Warning: Failed to kill proxy process: %v", err)
-	} else {
-		logger.Info("Proxy process stopped")
-	}
-
-	// Remove the PID file
-	if err := process.RemovePIDFile(containerBaseName); err != nil {
-		logger.Warnf("Warning: Failed to remove PID file: %v", err)
-	}
-}
-
 // getContainerBaseName gets the base container name from the container labels
 func (d *defaultManager) getContainerBaseName(ctx context.Context, containerID string) (string, error) {
 	containers, err := d.runtime.ListContainers(ctx)
@@ -486,28 +459,6 @@ func removeClientConfigurations(containerName string) error {
 	}
 
 	return nil
-}
-
-// isProxyRunning checks if the proxy process is running
-func isProxyRunning(containerBaseName string) bool {
-	if containerBaseName == "" {
-		return false
-	}
-
-	// Try to read the PID file
-	pid, err := process.ReadPIDFile(containerBaseName)
-	if err != nil {
-		return false
-	}
-
-	// Check if the process exists and is running
-	isRunning, err := process.FindProcess(pid)
-	if err != nil {
-		logger.Warnf("Warning: Error checking process: %v", err)
-		return false
-	}
-
-	return isRunning
 }
 
 func isContainerRunning(container *rt.ContainerInfo) bool {

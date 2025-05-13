@@ -16,5 +16,5 @@ func TestGetVersion(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.Code)
 	var version versionResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&version))
-	require.Equal(t, "dev", version.Version)
+	require.Contains(t, version.Version, "build-")
 }

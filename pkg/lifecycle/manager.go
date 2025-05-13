@@ -197,6 +197,11 @@ func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig) error {
 		detachedArgs = append(detachedArgs, "--name", runConfig.Name)
 	}
 
+	// Use ContainerName if available
+	if runConfig.ContainerName != "" {
+		detachedArgs = append(detachedArgs, "--name", runConfig.ContainerName)
+	}
+
 	if runConfig.Port != 0 {
 		detachedArgs = append(detachedArgs, "--port", fmt.Sprintf("%d", runConfig.Port))
 	}
@@ -304,7 +309,7 @@ func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig) error {
 	}
 
 	logger.Infof("MCP server is running in the background (PID: %d)", detachedCmd.Process.Pid)
-	logger.Infof("Use 'thv stop %s' to stop the server", runConfig.Name)
+	logger.Infof("Use 'thv stop %s' to stop the server", runConfig.ContainerName)
 
 	return nil
 }

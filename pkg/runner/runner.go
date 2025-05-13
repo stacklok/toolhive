@@ -130,7 +130,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Update client configurations with the MCP server URL.
 	// Note that this function checks the configuration to determine which
 	// clients should be updated, if any.
-	if err := updateClientConfigurations(r.Config.BaseName, "localhost", r.Config.Port); err != nil {
+	if err := updateClientConfigurations(r.Config.ContainerName, "localhost", r.Config.Port); err != nil {
 		logger.Warnf("Warning: Failed to update client configurations: %v", err)
 	}
 

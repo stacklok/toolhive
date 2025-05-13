@@ -75,13 +75,13 @@ var (
 func init() {
 	runCmd.Flags().StringVar(&runTransport, "transport", "stdio", "Transport mode (sse or stdio)")
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
-	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostName, "Host for the HTTP proxy to listen on (IP or hostname)")
+	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
 	runCmd.Flags().IntVar(&runTargetPort, "target-port", 0, "Port for the container to expose (only applicable to SSE transport)")
 	runCmd.Flags().StringVar(
 		&runTargetHost,
 		"target-host",
-		"localhost",
+		transport.LocalhostIPv4,
 		"Host to forward traffic to (only applicable to SSE transport)")
 	runCmd.Flags().StringVar(
 		&runPermissionProfile,

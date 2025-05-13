@@ -32,7 +32,7 @@ var (
 )
 
 func init() {
-	proxyCmd.Flags().StringVar(&proxyHost, "host", transport.LocalhostName, "Host for the HTTP proxy to listen on (IP or hostname)")
+	proxyCmd.Flags().StringVar(&proxyHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	proxyCmd.Flags().IntVar(&proxyPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
 	proxyCmd.Flags().StringVar(
 		&proxyTargetURI,

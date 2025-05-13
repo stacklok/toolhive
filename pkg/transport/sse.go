@@ -17,6 +17,8 @@ import (
 const (
 	// LocalhostName is the standard hostname for localhost
 	LocalhostName = "localhost"
+	// LocalhostIPv4 is the standard IPv4 address for localhost
+	LocalhostIPv4 = "127.0.0.1"
 )
 
 // SSETransport implements the Transport interface using Server-Sent Events.
@@ -56,12 +58,12 @@ func NewSSETransport(
 	middlewares ...types.Middleware,
 ) *SSETransport {
 	if host == "" {
-		host = LocalhostName
+		host = LocalhostIPv4
 	}
 
 	// If targetHost is not specified, default to localhost
 	if targetHost == "" {
-		targetHost = LocalhostName
+		targetHost = LocalhostIPv4
 	}
 
 	return &SSETransport{

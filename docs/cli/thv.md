@@ -34,6 +34,7 @@ thv [flags]
 * [thv run](thv_run.md)	 - Run an MCP server
 * [thv search](thv_search.md)	 - Search for MCP servers
 * [thv secret](thv_secret.md)	 - Manage secrets
+* [thv serve](thv_serve.md)	 - Start the ToolHive API server
 * [thv stop](thv_stop.md)	 - Stop an MCP server
 * [thv version](thv_version.md)	 - Show the version of ToolHive
 

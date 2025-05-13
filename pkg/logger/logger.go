@@ -55,6 +55,16 @@ func Errorf(msg string, args ...any) {
 	log.Errorf(msg, args)
 }
 
+// Panic logs a message at error level using the singleton logger and panics the program.
+func Panic(msg string, args ...any) {
+	log.Panic(msg, args)
+}
+
+// Panicf logs a message at error level using the singleton logger and panics the program.
+func Panicf(msg string, args ...any) {
+	log.Panicf(msg, args)
+}
+
 // Logger provides a unified interface for logging
 type Logger interface {
 	Debug(msg string, args ...any)
@@ -65,6 +75,8 @@ type Logger interface {
 	Warnf(msg string, args ...any)
 	Error(msg string, args ...any)
 	Errorf(msg string, args ...any)
+	Panic(msg string, args ...any)
+	Panicf(msg string, args ...any)
 }
 
 // Implementation using slog
@@ -88,6 +100,12 @@ func (l *slogLogger) Errorf(msg string, args ...any) {
 	l.logger.Error(fmt.Sprintf(msg, args...))
 }
 
+func (l *slogLogger) Panicf(msg string, args ...any) {
+	l.logger.Error(fmt.Sprintf(msg, args...))
+	// TODO: Check if logger has native panic method.
+	panic(msg)
+}
+
 func (l *slogLogger) Debug(msg string, args ...any) {
 	l.logger.Debug(msg, args...)
 }
@@ -102,6 +120,11 @@ func (l *slogLogger) Warn(msg string, args ...any) {
 
 func (l *slogLogger) Error(msg string, args ...any) {
 	l.logger.Error(msg, args...)
+}
+
+func (l *slogLogger) Panic(msg string, args ...any) {
+	l.logger.Error(msg, args...)
+	panic(msg)
 }
 
 func unstructuredLogs() bool {

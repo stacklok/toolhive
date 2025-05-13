@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -125,8 +126,12 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 	return nil
 }
 
-func notifyIfUpdateAvailable(currentVersion, latestVersion string) {
-	current, latest := currentVersion, latestVersion
+func notifyIfUpdateAvailable(current, latest string) {
+	// Print a meaningful message for people running local builds.
+	if strings.HasPrefix(current, "build-") {
+		fmt.Printf("You are running a local build of ToolHive, latest release is: %s\n", latest)
+		return
+	}
 	// Ensure both versions have the 'v' prefix for proper semantic version comparison
 	if !semver.IsValid(current) {
 		current = fmt.Sprintf("v%s", current)
@@ -136,6 +141,6 @@ func notifyIfUpdateAvailable(currentVersion, latestVersion string) {
 	}
 	// Compare the versions ensuring their canonical forms
 	if semver.Compare(semver.Canonical(current), semver.Canonical(latest)) < 0 {
-		fmt.Printf("A new version of ToolHive is available: %s\nCurrently running: %s\n", latestVersion, currentVersion)
+		fmt.Printf("A new version of ToolHive is available: %s\nCurrently running: %s\n", latest, current)
 	}
 }

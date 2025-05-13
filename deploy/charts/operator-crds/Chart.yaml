@@ -1,0 +1,6 @@
+apiVersion: v2
+name: operator-crds
+description: A Helm chart for the ToolHive Operator CRDS
+type: application
+version: 0.0.1
+appVersion: "0.0.1"

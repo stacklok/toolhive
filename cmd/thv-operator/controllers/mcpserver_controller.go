@@ -32,13 +32,28 @@ type MCPServerReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-//+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/finalizers,verbs=update
-//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
-//+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// Allow the operator to manage MCPServer resources
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/status,verbs=get;patch;update
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/finalizers,verbs=update
+
+// Allow the operator to manage Deployments
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
+
+// Allow the operator to manage Services
+// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
+
+// Allow the operator read manage Pods
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+
+// Allow the operator read manage ConfigMaps
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+
+// Allow the operator read manage Secrets
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+
+// Allow the operator to manage events
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.

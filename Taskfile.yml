@@ -147,20 +147,17 @@ tasks:
   operator-install-crds:
     desc: Install CRDs into the K8s cluster
     cmds:
-      - kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml --server-side=true --kubeconfig kconfig.yaml
+      - helm upgrade --install operator-crds deploy/charts/operator-crds --kubeconfig kconfig.yaml
 
   operator-uninstall-crds:
     desc: Uninstall CRDs from the K8s cluster
     cmds:
-      - kubectl delete -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
+      - helm uninstall operator-crds --kubeconfig kconfig.yaml
 
   operator-deploy-latest:
     desc: Deploy latest built Operator image from Github to the K8s cluster
     cmds:
-      - kubectl apply -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
-      - kubectl apply -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
-      - kubectl apply -f deploy/operator/toolhive_rbac.yaml --kubeconfig kconfig.yaml
-      - kubectl apply -f deploy/operator/operator.yaml --kubeconfig kconfig.yaml
+      - helm upgrade --install toolhive-operator deploy/charts/operator --namespace toolhive-system --create-namespace --kubeconfig kconfig.yaml
 
   operator-deploy-local:
     desc: Build the Operator image locally and deploy it to the K8s cluster
@@ -178,10 +175,7 @@ tasks:
   operator-undeploy:
     desc: Undeploy operator from the K8s cluster
     cmds:
-      - kubectl delete -f deploy/operator/operator.yaml --kubeconfig kconfig.yaml
-      - kubectl delete -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
-      - kubectl delete -f deploy/operator/toolhive_rbac.yaml --kubeconfig kconfig.yaml
-      - kubectl delete -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
+      - helm uninstall toolhive-operator --kubeconfig kconfig.yaml
 
   # Kubebuilder tasks
   operator-generate:
@@ -197,6 +191,7 @@ tasks:
       - mkdir -p bin
       - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
       - $(go env GOPATH)/bin/controller-gen crd webhook paths="./cmd/thv-operator/..." output:crd:artifacts:config=deploy/charts/operator-crds/templates
+      - $(go env GOPATH)/bin/controller-gen rbac:roleName=toolhive-operator-manager-role paths="./cmd/thv-operator/..." output:rbac:artifacts:config=deploy/charts/operator/templates/clusterrole
 
   operator-test:
     desc: Run tests for the operator

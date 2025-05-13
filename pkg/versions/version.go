@@ -66,6 +66,14 @@ func GetVersionInfo() VersionInfo {
 		}
 	}
 
+	// If the version is just "dev" - manufacture a version string using the commit.
+	// NOTE: Ignore any IDE warnings about this condition always being true - it is
+	// overridden by the build flags.
+	if ver == "dev" {
+		// Truncate commit to 8 characters for brevity.
+		ver = fmt.Sprintf("build-%s", fmt.Sprintf("%.*s", 8, commit))
+	}
+
 	return VersionInfo{
 		Version:   ver,
 		Commit:    commit,

@@ -6,13 +6,21 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+// Constants for inspector command
+// const (
+// 	defaultHost = "localhost"
+// )
 
 func inspectorCommand() *cobra.Command {
 	inspectorCommand := &cobra.Command{
@@ -31,13 +39,65 @@ func inspectorCommand() *cobra.Command {
 		logger.Errorf("failed to bind flag: %v", err)
 	}
 
+	inspectorCommand.Flags().StringP("server-name", "s", "", "Name of an existing MCP server to connect to")
+	err = viper.BindPFlag("server-name", inspectorCommand.Flags().Lookup("server-name"))
+	if err != nil {
+		logger.Errorf("failed to bind flag: %v", err)
+	}
+
 	return inspectorCommand
 }
 
 func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	// // Get container name
-	// containerName := args[0]
+
+	// Get server name from flag
+	serverName, err := cmd.Flags().GetString("server-name")
+	if err != nil {
+		return fmt.Errorf("failed to get server-name flag: %v", err)
+	}
+
+	if serverName == "" {
+		return fmt.Errorf("server-name flag is required")
+	}
+
+	// Instantiate the container manager
+	manager, err := lifecycle.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container manager: %v", err)
+	}
+
+	// Get list of all containers
+	containers, err := manager.ListContainers(ctx, true)
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %v", err)
+	}
+
+	// Find the server with the matching name
+	var serverURL string
+	for _, c := range containers {
+		name := labels.GetContainerName(c.Labels)
+		if name == "" {
+			name = c.Name // Fallback to container name
+		}
+
+		if name == serverName {
+			// Get port from labels
+			port, err := labels.GetPort(c.Labels)
+			if err != nil {
+				return fmt.Errorf("failed to get port for server %s: %v", serverName, err)
+			}
+
+			// Generate URL for the MCP server
+			if port > 0 {
+				serverURL = client.GenerateMCPServerURL(defaultHost, port, serverName)
+				break
+			}
+		}
+	}
+
+	logger.Infof("Found MCP server: %s", serverName)
+	logger.Infof("Server URL: %s", serverURL)
 
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)

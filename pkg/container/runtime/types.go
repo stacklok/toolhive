@@ -82,6 +82,9 @@ type Runtime interface {
 	// PullImage pulls an image from a registry
 	PullImage(ctx context.Context, image string) error
 
+	// VerifyImage verifies a container image
+	VerifyImage(ctx context.Context, image string) (bool, error)
+
 	// BuildImage builds a Docker image from a Dockerfile in the specified context directory
 	BuildImage(ctx context.Context, contextDir, imageName string) error
 }

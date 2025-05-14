@@ -699,6 +699,15 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 	return nil
 }
 
+// VerifyImage verifies a container image
+func (c *Client) VerifyImage(_ context.Context, image string) (bool, error) {
+	// TODO: Implement actual image signature verification logic
+	logger.Infof("Verifying image: %s", image)
+
+	// Always return true for now
+	return true, nil
+}
+
 // BuildImage builds a Docker image from a Dockerfile in the specified context directory
 func (c *Client) BuildImage(ctx context.Context, contextDir, imageName string) error {
 	logger.Infof("Building image %s from context directory %s", imageName, contextDir)

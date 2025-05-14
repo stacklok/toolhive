@@ -518,6 +518,17 @@ func (*Client) PullImage(_ context.Context, imageName string) error {
 	return nil
 }
 
+// VerifyImage verifies a container image
+func (*Client) VerifyImage(_ context.Context, image string) (bool, error) {
+	// TODO: Implement actual image signature verification logic
+	// This could be done via sigtore-go too but I assume we may want to leverage admission controllers
+	// or image policy webhooks in k8s
+	logger.Infof("Verifying image: %s", image)
+
+	// Always return true for now
+	return true, nil
+}
+
 // BuildImage implements runtime.Runtime.
 func (*Client) BuildImage(_ context.Context, _, _ string) error {
 	// In Kubernetes, we don't build images directly within the cluster.

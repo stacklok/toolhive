@@ -39,10 +39,6 @@ const (
 	DockerSocketPath = "/var/run/docker.sock"
 	// DockerDesktopMacSocketPath is the Docker Desktop socket path on macOS
 	DockerDesktopMacSocketPath = ".docker/run/docker.sock"
-	// DockerSocketSuffix is the suffix for Docker socket files
-	DockerSocketSuffix = "docker.sock"
-	// PodmanSocketSuffix is the suffix for Podman socket files
-	PodmanSocketSuffix = "podman.sock"
 )
 
 var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
@@ -137,17 +133,24 @@ func (c *Client) ping(ctx context.Context) error {
 
 // findContainerSocket finds a container socket path, preferring Podman over Docker
 func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
-	// check if there is a custom socket path
-	if customSocketPath := os.Getenv("TOOLHIVE_CONTAINER_SOCKET"); customSocketPath != "" {
-		logger.Debugf("Found custom container socket at %s", customSocketPath)
-		// check if it's docker or podman
-		if strings.HasSuffix(customSocketPath, DockerSocketSuffix) {
-			return customSocketPath, runtime.TypeDocker, nil
+
+	// First check for custom socket paths via environment variables
+	if customSocketPath := os.Getenv("TOOLHIVE_PODMAN_SOCKET"); customSocketPath != "" {
+		logger.Debugf("Found custom Podman socket at %s", customSocketPath)
+		// validate the socket path
+		if _, err := os.Stat(customSocketPath); err != nil {
+			return "", runtime.TypePodman, fmt.Errorf("invalid Podman socket path: %w", err)
 		}
-		if strings.HasSuffix(customSocketPath, PodmanSocketSuffix) {
-			return customSocketPath, runtime.TypePodman, nil
+		return customSocketPath, runtime.TypePodman, nil
+	}
+
+	if customSocketPath := os.Getenv("TOOLHIVE_DOCKER_SOCKET"); customSocketPath != "" {
+		logger.Debugf("Found custom Docker socket at %s", customSocketPath)
+		// validate the socket path
+		if _, err := os.Stat(customSocketPath); err != nil {
+			return "", runtime.TypeDocker, fmt.Errorf("invalid Docker socket path: %w", err)
 		}
-		return "", rt, fmt.Errorf("unsupported container runtime: %s", rt)
+		return customSocketPath, runtime.TypeDocker, nil
 	}
 
 	if rt == runtime.TypePodman {

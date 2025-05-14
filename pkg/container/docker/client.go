@@ -143,7 +143,7 @@ func (c *Client) ping(ctx context.Context) error {
 func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 	// First check for custom socket paths via environment variables
 	if customSocketPath := os.Getenv(PodmanSocketEnv); customSocketPath != "" {
-		logger.Debugf("Found custom Podman socket at %s", customSocketPath)
+		logger.Debugf("Using Podman socket from env: %s", customSocketPath)
 		// validate the socket path
 		if _, err := os.Stat(customSocketPath); err != nil {
 			return "", runtime.TypePodman, fmt.Errorf("invalid Podman socket path: %w", err)
@@ -152,7 +152,7 @@ func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 	}
 
 	if customSocketPath := os.Getenv(DockerSocketEnv); customSocketPath != "" {
-		logger.Debugf("Found custom Docker socket at %s", customSocketPath)
+		logger.Debugf("Using Docker socket from env: %s", customSocketPath)
 		// validate the socket path
 		if _, err := os.Stat(customSocketPath); err != nil {
 			return "", runtime.TypeDocker, fmt.Errorf("invalid Docker socket path: %w", err)

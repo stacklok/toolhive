@@ -41,6 +41,14 @@ const (
 	DockerDesktopMacSocketPath = ".docker/run/docker.sock"
 )
 
+// Environment variable names
+const (
+	// DockerSocketEnv is the environment variable for custom Docker socket path
+	DockerSocketEnv = "TOOLHIVE_DOCKER_SOCKET"
+	// PodmanSocketEnv is the environment variable for custom Podman socket path
+	PodmanSocketEnv = "TOOLHIVE_PODMAN_SOCKET"
+)
+
 var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
 
 // Client implements the Runtime interface for container operations
@@ -133,9 +141,8 @@ func (c *Client) ping(ctx context.Context) error {
 
 // findContainerSocket finds a container socket path, preferring Podman over Docker
 func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
-
 	// First check for custom socket paths via environment variables
-	if customSocketPath := os.Getenv("TOOLHIVE_PODMAN_SOCKET"); customSocketPath != "" {
+	if customSocketPath := os.Getenv(PodmanSocketEnv); customSocketPath != "" {
 		logger.Debugf("Found custom Podman socket at %s", customSocketPath)
 		// validate the socket path
 		if _, err := os.Stat(customSocketPath); err != nil {
@@ -144,7 +151,7 @@ func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 		return customSocketPath, runtime.TypePodman, nil
 	}
 
-	if customSocketPath := os.Getenv("TOOLHIVE_DOCKER_SOCKET"); customSocketPath != "" {
+	if customSocketPath := os.Getenv(DockerSocketEnv); customSocketPath != "" {
 		logger.Debugf("Found custom Docker socket at %s", customSocketPath)
 		// validate the socket path
 		if _, err := os.Stat(customSocketPath); err != nil {

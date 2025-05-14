@@ -39,6 +39,10 @@ const (
 	DockerSocketPath = "/var/run/docker.sock"
 	// DockerDesktopMacSocketPath is the Docker Desktop socket path on macOS
 	DockerDesktopMacSocketPath = ".docker/run/docker.sock"
+	// DockerSocketSuffix is the suffix for Docker socket files
+	DockerSocketSuffix = "docker.sock"
+	// PodmanSocketSuffix is the suffix for Podman socket files
+	PodmanSocketSuffix = "podman.sock"
 )
 
 var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
@@ -137,10 +141,10 @@ func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
 	if customSocketPath := os.Getenv("TOOLHIVE_CONTAINER_SOCKET"); customSocketPath != "" {
 		logger.Debugf("Found custom container socket at %s", customSocketPath)
 		// check if it's docker or podman
-		if strings.HasSuffix(customSocketPath, "docker.sock") {
+		if strings.HasSuffix(customSocketPath, DockerSocketSuffix) {
 			return customSocketPath, runtime.TypeDocker, nil
 		}
-		if strings.HasSuffix(customSocketPath, "podman.sock") {
+		if strings.HasSuffix(customSocketPath, PodmanSocketSuffix) {
 			return customSocketPath, runtime.TypePodman, nil
 		}
 		return "", rt, fmt.Errorf("unsupported container runtime: %s", rt)

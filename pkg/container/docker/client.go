@@ -133,6 +133,18 @@ func (c *Client) ping(ctx context.Context) error {
 
 // findContainerSocket finds a container socket path, preferring Podman over Docker
 func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
+	// check if there is a custom socket path
+	if customSocketPath := os.Getenv("TOOLHIVE_CONTAINER_SOCKET"); customSocketPath != "" {
+		logger.Debugf("Found custom container socket at %s", customSocketPath)
+		// check if it's docker or podman
+		if strings.HasSuffix(customSocketPath, "docker.sock") {
+			return customSocketPath, runtime.TypeDocker, nil
+		}
+		if strings.HasSuffix(customSocketPath, "podman.sock") {
+			return customSocketPath, runtime.TypePodman, nil
+		}
+		return "", rt, fmt.Errorf("unsupported container runtime: %s", rt)
+	}
 
 	if rt == runtime.TypePodman {
 		// Try Podman sockets first

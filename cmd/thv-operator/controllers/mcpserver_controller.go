@@ -394,8 +394,12 @@ func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *cor
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      svcName,
 			Namespace: m.Namespace,
+			Annotations: map[string]string{
+				"cloud.google.com/l4-rbs": "enabled",
+			},
 		},
 		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeLoadBalancer,
 			Selector: ls,
 			Ports: []corev1.ServicePort{{
 				Port:       m.Spec.Port,

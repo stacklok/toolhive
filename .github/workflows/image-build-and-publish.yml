@@ -86,7 +86,7 @@ jobs:
       id-token: write
 
     env:
-      BASE_REPO: "ghcr.io/stacklok/toolhive/operator"
+      BASE_REPO: "ghcr.io/hawkli-1994/toolhive/operator"
 
     steps:
       - name: Checkout repository

@@ -40,6 +40,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
   -e, --env stringArray             Environment variables to pass to the MCP server (format: KEY=VALUE)
   -f, --foreground                  Run in foreground mode (block until container exits)
   -h, --help                        help for run
+      --host string                 Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --k8s-pod-patch string        JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)
       --name string                 Name of the MCP server (auto-generated from image if not provided)
       --oidc-audience string        Expected audience for the token
@@ -49,7 +50,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --permission-profile string   Permission profile to use (none, network, or path to JSON file) (default "network")
       --port int                    Port for the HTTP proxy to listen on (host port)
       --secret stringArray          Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
-      --target-host string          Host to forward traffic to (only applicable to SSE transport) (default "localhost")
+      --target-host string          Host to forward traffic to (only applicable to SSE transport) (default "127.0.0.1")
       --target-port int             Port for the container to expose (only applicable to SSE transport)
       --transport string            Transport mode (sse or stdio) (default "stdio")
   -v, --volume stringArray          Mount a volume into the container (format: host-path:container-path[:ro])

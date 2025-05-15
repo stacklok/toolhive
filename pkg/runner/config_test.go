@@ -804,6 +804,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	runtime := &mockRuntime{}
 	cmdArgs := []string{"arg1", "arg2"}
 	name := "test-server"
+	host := "localhost"
 	debug := true
 	volumes := []string{"/host:/container"}
 	secretsList := []string{"secret1,target=ENV_VAR1"}
@@ -819,6 +820,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		runtime,
 		cmdArgs,
 		name,
+		host,
 		debug,
 		volumes,
 		secretsList,

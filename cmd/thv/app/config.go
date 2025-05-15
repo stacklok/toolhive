@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/transport"
 )
 
 var configCmd = &cobra.Command{
@@ -262,7 +263,7 @@ func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 		}
 
 		// Generate URL for the MCP server
-		url := client.GenerateMCPServerURL("localhost", port, name)
+		url := client.GenerateMCPServerURL(transport.LocalhostIPv4, port, name)
 
 		// Update each configuration file
 		for _, clientConfig := range clientConfigs {

@@ -15,6 +15,7 @@ thv proxy [flags] SERVER_NAME
 
 ```
   -h, --help                    help for proxy
+      --host string             Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --oidc-audience string    Expected audience for the token
       --oidc-client-id string   OIDC client ID
       --oidc-issuer string      OIDC issuer URL (e.g., https://accounts.google.com)

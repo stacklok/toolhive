@@ -48,8 +48,8 @@ func init() {
 	registryCmd.AddCommand(registryInfoCmd)
 
 	// Add flags for list and info commands
-	registryListCmd.Flags().StringVar(&registryFormat, "format", "text", "Output format (json or text)")
-	registryInfoCmd.Flags().StringVar(&registryFormat, "format", "text", "Output format (json or text)")
+	registryListCmd.Flags().StringVar(&registryFormat, "format", FormatText, "Output format (json or text)")
+	registryInfoCmd.Flags().StringVar(&registryFormat, "format", FormatText, "Output format (json or text)")
 }
 
 func registryListCmdFunc(_ *cobra.Command, _ []string) error {
@@ -66,7 +66,7 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 
 	// Output based on format
 	switch registryFormat {
-	case "json":
+	case FormatJSON:
 		return printJSONServers(servers)
 	default:
 		printTextServers(servers)
@@ -84,7 +84,7 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 
 	// Output based on format
 	switch registryFormat {
-	case "json":
+	case FormatJSON:
 		return printJSONServer(server)
 	default:
 		printTextServerInfo(serverName, server)

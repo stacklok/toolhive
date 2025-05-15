@@ -41,6 +41,9 @@ type RunConfig struct {
 	// Transport is the transport mode (sse or stdio)
 	Transport types.TransportType `json:"transport" yaml:"transport"`
 
+	// Host is the host for the HTTP proxy
+	Host string `json:"host" yaml:"host"`
+
 	// Port is the port for the HTTP proxy to listen on (host port)
 	Port int `json:"port" yaml:"port"`
 
@@ -120,6 +123,7 @@ func NewRunConfigFromFlags(
 	runtime rt.Runtime,
 	cmdArgs []string,
 	name string,
+	host string,
 	debug bool,
 	volumes []string,
 	secretsList []string,
@@ -143,6 +147,7 @@ func NewRunConfigFromFlags(
 		TargetHost:                  targetHost,
 		ContainerLabels:             make(map[string]string),
 		EnvVars:                     make(map[string]string),
+		Host:                        host,
 	}
 
 	// Set OIDC config if any values are provided

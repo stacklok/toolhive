@@ -125,7 +125,8 @@ func init() {
 		"",
 		"Path to a custom CA certificate file to use for container builds",
 	)
-	runCmd.Flags().BoolVarP(&runSecure, "--secure", "s", false, "Run in secure mode (blocks if container fails verification)")
+	runCmd.Flags().BoolVarP(&runSecure, "secure", "s", false, "Run in secure mode (blocks if container fails verification)")
+
 	// Add OIDC validation flags
 	AddOIDCFlags(runCmd)
 }

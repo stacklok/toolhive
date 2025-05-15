@@ -25,6 +25,7 @@ import (
 	"github.com/docker/go-connections/nat"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/sigstore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -700,12 +701,26 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 	return nil
 }
 
-// VerifyImage verifies the signature of an image
-func (*Client) VerifyImage(_ context.Context, _ *registry.Server, image string) (bool, error) {
-	// TODO: Implement actual image signature verification logic
+// VerifyImage verifies a container image
+func (_ *Client) VerifyImage(ctx context.Context, _ *registry.Server, image string) (bool, error) {
 	logger.Infof("Verifying image: %s", image)
 
-	// Always return true for now
+	verifier, err := sigstore.New()
+	if err != nil {
+		return false, fmt.Errorf("error creating verifier")
+	}
+
+	res, err := verifier.Verify(ctx, image)
+	if err != nil {
+		return false, fmt.Errorf("error verifying image: %w", err)
+	}
+	// Check if the image is signed and verified
+	for _, r := range res {
+		if !r.IsSigned || !r.IsVerified {
+			return false, fmt.Errorf("image is not signed or verified")
+		}
+	}
+	// TODO: extend the verification with information from the registry
 	return true, nil
 }
 

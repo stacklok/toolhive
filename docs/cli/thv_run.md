@@ -49,6 +49,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --permission-profile string   Permission profile to use (none, network, or path to JSON file) (default "network")
       --port int                    Port for the HTTP proxy to listen on (host port)
       --secret stringArray          Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
+  -s, --secure                      Run in secure mode (blocks if container fails verification)
       --target-host string          Host to forward traffic to (only applicable to SSE transport) (default "localhost")
       --target-port int             Port for the container to expose (only applicable to SSE transport)
       --transport string            Transport mode (sse or stdio) (default "stdio")

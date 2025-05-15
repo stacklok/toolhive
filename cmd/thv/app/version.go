@@ -1,8 +1,8 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -11,6 +11,7 @@ import (
 
 // newVersionCmd creates a new version command
 func newVersionCmd() *cobra.Command {
+	var outputFormat string
 	var jsonOutput bool
 
 	cmd := &cobra.Command{
@@ -20,7 +21,7 @@ func newVersionCmd() *cobra.Command {
 		Run: func(_ *cobra.Command, _ []string) {
 			info := versions.GetVersionInfo()
 
-			if jsonOutput {
+			if outputFormat == FormatJSON {
 				printJSONVersionInfo(info)
 			} else {
 				printVersionInfo(info)
@@ -28,7 +29,17 @@ func newVersionCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output version information as JSON")
+	// Keep the --json flag for backward compatibility
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output version information as JSON (deprecated, use --format instead)")
+	// Add the --format flag for consistency with other commands
+	cmd.Flags().StringVar(&outputFormat, "format", FormatText, "Output format (json or text)")
+
+	// If --json is set, override the format
+	cmd.PreRun = func(_ *cobra.Command, _ []string) {
+		if jsonOutput {
+			outputFormat = "json"
+		}
+	}
 
 	return cmd
 }
@@ -44,26 +55,12 @@ func printVersionInfo(info versions.VersionInfo) {
 
 // printJSONVersionInfo prints the version information as JSON
 func printJSONVersionInfo(info versions.VersionInfo) {
-	// Simple JSON formatting without importing encoding/json
-	jsonStr := fmt.Sprintf(`{
-  "version": "%s",
-  "commit": "%s",
-  "build_date": "%s",
-  "go_version": "%s",
-  "platform": "%s"
-}`,
-		escapeJSON(info.Version),
-		escapeJSON(info.Commit),
-		escapeJSON(info.BuildDate),
-		escapeJSON(info.GoVersion),
-		escapeJSON(info.Platform))
+	// Use encoding/json for proper JSON formatting
+	jsonData, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		fmt.Printf("Error marshaling JSON: %v\n", err)
+		return
+	}
 
-	fmt.Printf("%s", jsonStr)
-}
-
-// escapeJSON escapes special characters in JSON strings
-func escapeJSON(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	return s
+	fmt.Printf("%s", jsonData)
 }

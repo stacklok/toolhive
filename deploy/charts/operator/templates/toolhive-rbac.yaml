@@ -1,0 +1,34 @@
+{{- if .Values.toolhive.rbac.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.toolhive.rbac.serviceAccount.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "toolhive.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.toolhive.rbac.role.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "toolhive.labels" . | nindent 4 }}
+rules:
+  {{- toYaml .Values.toolhive.rbac.role.rules | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.toolhive.rbac.role.bindingName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "toolhive.labels" . | nindent 4 }}
+subjects:
+- kind: ServiceAccount
+  name: {{ .Values.toolhive.rbac.serviceAccount.name }}
+roleRef:
+  kind: Role
+  name: {{ .Values.toolhive.rbac.role.name }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

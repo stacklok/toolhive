@@ -47,7 +47,7 @@ type ContainerOutput struct {
 
 func init() {
 	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all containers (default shows just running)")
-	listCmd.Flags().StringVar(&listFormat, "format", "text", "Output format (json, text, or mcpservers)")
+	listCmd.Flags().StringVar(&listFormat, "format", FormatText, "Output format (json, text, or mcpservers)")
 }
 
 func listCmdFunc(cmd *cobra.Command, _ []string) error {
@@ -66,14 +66,13 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 
 	if len(toolHiveContainers) == 0 {
-		logger.Info("No MCP servers found")
+		fmt.Println("No MCP servers found")
 		return nil
 	}
 
 	// Output based on format
 	switch listFormat {
-	//nolint:goconst
-	case "json":
+	case FormatJSON:
 		return printJSONOutput(toolHiveContainers)
 	case "mcpservers":
 		return printMCPServersOutput(toolHiveContainers)
@@ -139,8 +138,8 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}
 
-	// Print JSON
-	logger.Info(string(jsonData))
+	// Print JSON directly to stdout
+	fmt.Println(string(jsonData))
 	return nil
 }
 
@@ -191,8 +190,8 @@ func printMCPServersOutput(containers []rt.ContainerInfo) error {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}
 
-	// Print JSON
-	logger.Info(string(jsonData))
+	// Print JSON directly to stdout
+	fmt.Println(string(jsonData))
 	return nil
 }
 
@@ -248,6 +247,6 @@ func printTextOutput(containers []rt.ContainerInfo) {
 
 	// Flush the tabwriter
 	if err := w.Flush(); err != nil {
-		logger.Infof("Warning: Failed to flush tabwriter: %v", err)
+		logger.Errorf("Warning: Failed to flush tabwriter: %v", err)
 	}
 }

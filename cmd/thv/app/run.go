@@ -67,6 +67,7 @@ var (
 	runAuthzConfig       string
 	runK8sPodPatch       string
 	runCACertPath        string
+	runSecure            bool
 )
 
 func init() {
@@ -124,7 +125,7 @@ func init() {
 		"",
 		"Path to a custom CA certificate file to use for container builds",
 	)
-
+	runCmd.Flags().BoolVarP(&runSecure, "--secure", "s", false, "Run in secure mode (blocks if container fails verification)")
 	// Add OIDC validation flags
 	AddOIDCFlags(runCmd)
 }
@@ -211,6 +212,18 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		// Server not found in registry, treat as direct image
 		logDebug(debugMode, "Server '%s' not found in registry, treating as Docker image", serverOrImage)
 		config.Image = serverOrImage
+	}
+
+	// Verify the image if secure mode is enabled
+	if runSecure {
+		imageSafe, err := rt.VerifyImage(ctx, server, config.Image)
+		if err != nil {
+			return fmt.Errorf("failed to verify image: %v", err)
+		}
+		if !imageSafe {
+			return fmt.Errorf("image verification failed: %s", config.Image)
+		}
+		logger.Infof("Image %s verified successfully", config.Image)
 	}
 
 	if err := pullImage(ctx, config.Image, rt); err != nil {

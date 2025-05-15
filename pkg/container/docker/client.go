@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 // Common socket paths
@@ -699,8 +700,8 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 	return nil
 }
 
-// VerifyImage verifies a container image
-func (c *Client) VerifyImage(_ context.Context, image string) (bool, error) {
+// VerifyImage verifies the signature of an image
+func (*Client) VerifyImage(_ context.Context, _ *registry.Server, image string) (bool, error) {
 	// TODO: Implement actual image signature verification logic
 	logger.Infof("Verifying image: %s", image)
 

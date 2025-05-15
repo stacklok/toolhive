@@ -31,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry"
 	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -519,7 +520,7 @@ func (*Client) PullImage(_ context.Context, imageName string) error {
 }
 
 // VerifyImage verifies a container image
-func (*Client) VerifyImage(_ context.Context, image string) (bool, error) {
+func (*Client) VerifyImage(_ context.Context, _ *registry.Server, image string) (bool, error) {
 	// TODO: Implement actual image signature verification logic
 	// This could be done via sigtore-go too but I assume we may want to leverage admission controllers
 	// or image policy webhooks in k8s

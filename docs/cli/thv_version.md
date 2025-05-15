@@ -13,8 +13,9 @@ thv version [flags]
 ### Options
 
 ```
-  -h, --help   help for version
-      --json   Output version information as JSON
+      --format string   Output format (json or text) (default "text")
+  -h, --help            help for version
+      --json            Output version information as JSON (deprecated, use --format instead)
 ```
 
 ### Options inherited from parent commands

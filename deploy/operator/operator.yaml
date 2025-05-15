@@ -20,7 +20,7 @@ spec:
       serviceAccountName: toolhive-operator
       containers:
       - name: manager
-        image: ghcr.io/stacklok/toolhive/operator:latest
+        image: ghcr.io/hawkli-1994/toolhive/operator:latest
         imagePullPolicy: Always
         args:
         - --leader-elect

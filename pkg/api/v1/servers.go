@@ -167,7 +167,7 @@ func (s *ServerRoutes) createServer(w http.ResponseWriter, r *http.Request) {
 	}
 	// Let the manager handle the port mapping.
 	// Configure ports and target host
-	if _, err := runConfig.WithPorts(0, 0); err != nil {
+	if _, err := runConfig.WithPorts(0, req.TargetPort); err != nil {
 		http.Error(w, "Unable to configure ports", http.StatusInternalServerError)
 	}
 
@@ -228,6 +228,7 @@ type createRequest struct {
 	Name              string                    `json:"name"`
 	Image             string                    `json:"image"`
 	CmdArguments      []string                  `json:"cmd_arguments"`
+	TargetPort        int                       `json:"target_port"`
 	EnvVars           []string                  `json:"env_vars"`
 	Secrets           []secrets.SecretParameter `json:"secrets"`
 	Volumes           []string                  `json:"volumes"`

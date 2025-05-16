@@ -173,9 +173,16 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	var expectURL string
+	schema := "http"
+	if service != nil && len(service.Status.LoadBalancer.Ingress) > 0 && service.Status.LoadBalancer.Ingress[0].IP != "" {
+		expectURL = fmt.Sprintf("%s://%s:%d/sse", schema, service.Status.LoadBalancer.Ingress[0].IP, mcpServer.Spec.Port)
+	} else {
+		expectURL = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", service.Name, service.Namespace, mcpServer.Spec.Port)
+	}
 	// Update the MCPServer status with the service URL
-	if mcpServer.Status.URL == "" {
-		mcpServer.Status.URL = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", service.Name, service.Namespace, mcpServer.Spec.Port)
+	if mcpServer.Status.URL == "" || mcpServer.Status.URL != expectURL {
+		mcpServer.Status.URL = expectURL
 		err = r.Status().Update(ctx, mcpServer)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update MCPServer status")

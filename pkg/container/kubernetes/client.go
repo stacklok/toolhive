@@ -798,7 +798,7 @@ func (c *Client) createHeadlessService(
 	}
 
 	// Create service type based on whether we have node ports
-	serviceType := corev1.ServiceTypeClusterIP
+	serviceType := corev1.ServiceTypeLoadBalancer
 	for _, sp := range servicePorts {
 		if sp.NodePort != nil {
 			serviceType = corev1.ServiceTypeNodePort
@@ -813,6 +813,9 @@ func (c *Client) createHeadlessService(
 	// Create the service apply configuration
 	serviceApply := corev1apply.Service(svcName, namespace).
 		WithLabels(labels).
+		WithAnnotations(map[string]string{
+			"cloud.google.com/l4-rbs": "enabled",
+		}).
 		WithSpec(corev1apply.ServiceSpec().
 			WithSelector(map[string]string{
 				"app": containerName,

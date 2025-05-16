@@ -24,6 +24,7 @@ func ServerRouter(manager lifecycle.Manager) http.Handler {
 	r.Get("/", routes.listServers)
 	r.Get("/{name}", routes.getServer)
 	r.Post("/{name}/stop", routes.stopServer)
+	r.Post("/{name}/restart", routes.restartServer)
 	r.Delete("/{name}", routes.deleteServer)
 	return r
 }
@@ -94,6 +95,22 @@ func (s *ServerRoutes) deleteServer(w http.ResponseWriter, r *http.Request) {
 		}
 		logger.Errorf("Failed to delete server: %v", err)
 		http.Error(w, "Failed to delete server", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *ServerRoutes) restartServer(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := chi.URLParam(r, "name")
+	err := s.manager.RestartContainer(ctx, name)
+	if err != nil {
+		if errors.Is(err, lifecycle.ErrContainerNotFound) {
+			http.Error(w, "Server not found", http.StatusNotFound)
+			return
+		}
+		logger.Errorf("Failed to restart server: %v", err)
+		http.Error(w, "Failed to restart server", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

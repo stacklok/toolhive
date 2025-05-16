@@ -208,7 +208,11 @@ func (s *ServerRoutes) createServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return name so that the client will get the auto-generated name.
-	if err = json.NewEncoder(w).Encode(createServerResponse{Name: runConfig.ContainerName}); err != nil {
+	resp := createServerResponse{
+		Name: runConfig.ContainerName,
+		Port: runConfig.Port,
+	}
+	if err = json.NewEncoder(w).Encode(resp); err != nil {
 		http.Error(w, "Failed to marshal server details", http.StatusInternalServerError)
 		return
 	}
@@ -242,4 +246,5 @@ type oidcOptions struct {
 
 type createServerResponse struct {
 	Name string `json:"name"`
+	Port int    `json:"port"`
 }

@@ -55,6 +55,9 @@ type MCPServerReconciler struct {
 // Allow the operator to manage events
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
+// Allow the operator to manage StatefulSets
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=create;delete;get;list;patch;update;watch
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
@@ -86,16 +89,38 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			if err := r.finalizeMCPServer(ctx, mcpServer); err != nil {
 				return ctrl.Result{}, err
 			}
-			// delete statefulset
+
+			// Try to clean up any StatefulSet with the same name
+			// This is a fallback mechanism since we should ideally use owner references
 			statefulset := &appsv1.StatefulSet{}
 			err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, statefulset)
 			if err != nil {
-				return ctrl.Result{}, err
-			}
-			err = r.Delete(ctx, statefulset)
-			if err != nil {
-				// ignore any errors
-				ctxLogger.Error(err, "Failed to delete StatefulSet")
+				if !errors.IsNotFound(err) {
+					// Log the error but don't fail the reconciliation
+					ctxLogger.Error(err, "Failed to get StatefulSet during cleanup",
+						"StatefulSet.Name", mcpServer.Name,
+						"StatefulSet.Namespace", mcpServer.Namespace)
+				} else {
+					ctxLogger.Info("No StatefulSet found for cleanup",
+						"StatefulSet.Name", mcpServer.Name,
+						"StatefulSet.Namespace", mcpServer.Namespace)
+				}
+			} else {
+				// StatefulSet exists, try to delete it with a background deletion policy
+				deleteOpts := []client.DeleteOption{
+					client.PropagationPolicy(metav1.DeletePropagationBackground),
+				}
+				err = r.Delete(ctx, statefulset, deleteOpts...)
+				if err != nil {
+					// Log the error but don't fail the reconciliation
+					ctxLogger.Error(err, "Failed to delete StatefulSet",
+						"StatefulSet.Name", statefulset.Name,
+						"StatefulSet.Namespace", statefulset.Namespace)
+				} else {
+					ctxLogger.Info("Successfully triggered StatefulSet deletion",
+						"StatefulSet.Name", statefulset.Name,
+						"StatefulSet.Namespace", statefulset.Namespace)
+				}
 			}
 
 			// Remove the finalizer. Once all finalizers have been removed, the object will be deleted.

@@ -86,6 +86,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			if err := r.finalizeMCPServer(ctx, mcpServer); err != nil {
 				return ctrl.Result{}, err
 			}
+			// delete statefulset
+			statefulset := &appsv1.StatefulSet{}
+			err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, statefulset)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			err = r.Delete(ctx, statefulset)
+			if err != nil {
+				// ignore any errors
+				ctxLogger.Error(err, "Failed to delete StatefulSet")
+			}
 
 			// Remove the finalizer. Once all finalizers have been removed, the object will be deleted.
 			controllerutil.RemoveFinalizer(mcpServer, "mcpserver.toolhive.stacklok.dev/finalizer")
@@ -178,7 +189,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if service != nil && len(service.Status.LoadBalancer.Ingress) > 0 && service.Status.LoadBalancer.Ingress[0].IP != "" {
 		expectURL = fmt.Sprintf("%s://%s:%d/sse", schema, service.Status.LoadBalancer.Ingress[0].IP, mcpServer.Spec.Port)
 	} else {
-		expectURL = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", service.Name, service.Namespace, mcpServer.Spec.Port)
+		expectURL = ""
 	}
 	// Update the MCPServer status with the service URL
 	if mcpServer.Status.URL == "" || mcpServer.Status.URL != expectURL {

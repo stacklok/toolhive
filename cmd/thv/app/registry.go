@@ -108,6 +108,7 @@ func printJSONServers(servers []*registry.Server) error {
 // printJSONServer prints a single server in JSON format
 func printJSONServer(server *registry.Server) error {
 	// Marshal to JSON
+
 	jsonData, err := json.MarshalIndent(server, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)

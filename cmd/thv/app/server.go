@@ -23,8 +23,12 @@ var serveCmd = &cobra.Command{
 		// Ensure server is shutdown gracefully on Ctrl+C.
 		ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt)
 		defer cancel()
+
+		// Get debug mode flag
+		debugMode, _ := cmd.Flags().GetBool("debug")
+
 		address := fmt.Sprintf("%s:%d", host, port)
-		return s.Serve(ctx, address)
+		return s.Serve(ctx, address, debugMode)
 	},
 }
 

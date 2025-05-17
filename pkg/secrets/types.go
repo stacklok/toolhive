@@ -20,8 +20,8 @@ type Provider interface {
 
 // SecretParameter represents a parsed `--secret` parameter.
 type SecretParameter struct {
-	Name   string
-	Target string
+	Name   string `json:"name"`
+	Target string `json:"target"`
 }
 
 // ParseSecretParameter creates an instance of SecretParameter from a string.
@@ -44,4 +44,14 @@ func ParseSecretParameter(parameter string) (SecretParameter, error) {
 		Name:   name,
 		Target: target,
 	}, nil
+}
+
+// SecretParametersToCLI does the reverse of `ParseSecretParameter`
+// TODO: It may be possible to get rid of this with refactoring.
+func SecretParametersToCLI(params []SecretParameter) []string {
+	result := make([]string, len(params))
+	for i, p := range params {
+		result[i] = fmt.Sprintf("%s,target=%s", p.Name, p.Target)
+	}
+	return result
 }

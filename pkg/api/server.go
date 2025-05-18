@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
+	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -25,7 +26,7 @@ const (
 
 // Serve starts the HTTP server on the given address and serves the API.
 // It is assumed that the caller sets up appropriate signal handling.
-func Serve(ctx context.Context, address string) error {
+func Serve(ctx context.Context, address string, debugMode bool) error {
 	r := chi.NewRouter()
 	r.Use(
 		middleware.RequestID,
@@ -38,10 +39,16 @@ func Serve(ctx context.Context, address string) error {
 		logger.Panicf("failed to create lifecycle manager: %v", err)
 	}
 
+	// Create container runtime
+	rt, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container runtime: %v", err)
+	}
+
 	routers := map[string]http.Handler{
 		"/health":             v1.HealthcheckRouter(),
 		"/api/v1beta/version": v1.VersionRouter(),
-		"/api/v1beta/servers": v1.ServerRouter(manager),
+		"/api/v1beta/servers": v1.ServerRouter(manager, rt, debugMode),
 	}
 	for prefix, router := range routers {
 		r.Mount(prefix, router)

@@ -31,15 +31,9 @@ func configureRunConfig(
 	transport string,
 	port int,
 	targetPort int,
-	targetHost string,
 	envVarStrings []string,
 ) error {
 	var err error
-
-	// Check if permission profile is provided
-	if config.PermissionProfileNameOrPath == "" {
-		return fmt.Errorf("permission profile is required")
-	}
 
 	// Set transport
 	if _, err = config.WithTransport(transport); err != nil {
@@ -50,9 +44,6 @@ func configureRunConfig(
 	if _, err = config.WithPorts(port, targetPort); err != nil {
 		return err
 	}
-
-	// Set target host
-	config.TargetHost = targetHost
 
 	// Set permission profile (mandatory)
 	if _, err = config.ParsePermissionProfile(); err != nil {

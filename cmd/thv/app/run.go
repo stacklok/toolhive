@@ -218,7 +218,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Configure the RunConfig with transport, ports, permissions, etc.
-	if err := configureRunConfig(config, runTransport, runPort, runTargetPort, runTargetHost, runEnv); err != nil {
+	if err := configureRunConfig(config, runTransport, runPort, runTargetPort, runEnv); err != nil {
 		return err
 	}
 

@@ -43,7 +43,7 @@ const scalarHTML = `<!doctype html>
 </html>`
 
 // ServeScalar serves the Scalar API reference page
-func ServeScalar(w http.ResponseWriter, r *http.Request) {
+func ServeScalar(w http.ResponseWriter, _ *http.Request) {
 	// Get the OpenAPI specification
 	spec, err := json.Marshal(openapiSpec)
 	if err != nil {
@@ -55,5 +55,7 @@ func ServeScalar(w http.ResponseWriter, r *http.Request) {
 	html := fmt.Sprintf(scalarHTML, spec)
 
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(html))
+	if _, err := w.Write([]byte(html)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }

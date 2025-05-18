@@ -13,8 +13,9 @@ func init() {
 	openapiSpec = &openapi3.T{
 		OpenAPI: "3.1.1",
 		Info: &openapi3.Info{
-			Title:          "ToolHive API",
-			Description:    "A REST API for managing ToolHive servers and containers. This API allows you to create, manage, and monitor containerized servers in your ToolHive environment.",
+			Title: "ToolHive API",
+			Description: "A REST API for managing ToolHive servers and containers. " +
+				"This API allows you to create, manage, and monitor containerized servers in your ToolHive environment.",
 			Version:        "1.0.0",
 			TermsOfService: "https://github.com/stacklok/toolhive/blob/main/LICENSE",
 			Contact: &openapi3.Contact{
@@ -819,7 +820,10 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
-func ServeOpenAPI(w http.ResponseWriter, r *http.Request) {
+// ServeOpenAPI writes the OpenAPI specification as JSON to the response.
+func ServeOpenAPI(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(openapiSpec)
+	if err := json.NewEncoder(w).Encode(openapiSpec); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }

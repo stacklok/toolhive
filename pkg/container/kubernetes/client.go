@@ -29,6 +29,7 @@ import (
 	"k8s.io/client-go/tools/watch"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -520,9 +521,15 @@ func (*Client) PullImage(_ context.Context, imageName string) error {
 }
 
 // VerifyImage verifies a container image
-func (*Client) VerifyImage(_ context.Context, _ *registry.Server, _ string) (bool, error) {
-	// Verify the image
-	return true, nil
+func (*Client) VerifyImage(_ context.Context, serverInfo *registry.Server, imageRef string) (bool, error) {
+	// Create a new verifier
+	v, err := verifier.New()
+	if err != nil {
+		return false, fmt.Errorf("error creating verifier")
+	}
+
+	// Verify the image passing the server info
+	return v.VerifyServer(imageRef, serverInfo)
 }
 
 // BuildImage implements runtime.Runtime.

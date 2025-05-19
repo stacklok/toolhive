@@ -4,8 +4,12 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/stacklok/toolhive/pkg/config"
 )
 
 //go:embed data/registry.json
@@ -20,11 +24,46 @@ var (
 // GetRegistry returns the MCP server registry
 func GetRegistry() (*Registry, error) {
 	registryOnce.Do(func() {
-		// Load the embedded registry data
-		data, err := registryFS.ReadFile("data/registry.json")
+
+		// Load the config to check if a custom registry URL was provided
+		cfg, err := config.LoadOrCreateConfig()
 		if err != nil {
-			registryErr = fmt.Errorf("failed to read embedded registry data: %w", err)
+			registryErr = fmt.Errorf("failed to load config: %w", err)
 			return
+		}
+		registryUrl := cfg.RegistryConfig.Url
+
+		var data []byte
+
+		// Check if the custom registry URL if different than the default value
+		if len(registryUrl) > 0 && registryUrl != "" {
+			// Fetch registry data from the provided URL
+			resp, err := http.Get(registryUrl)
+			if err != nil {
+				registryErr = fmt.Errorf("failed to fetch registry data from URL %s: %w", registryUrl, err)
+				return
+			}
+			defer resp.Body.Close()
+
+			// Check if the response status code is OK
+			if resp.StatusCode != http.StatusOK {
+				registryErr = fmt.Errorf("failed to fetch registry data from URL %s: status code %d", registryUrl, resp.StatusCode)
+				return
+			}
+
+			// Read the response body
+			data, err = io.ReadAll(resp.Body)
+			if err != nil {
+				registryErr = fmt.Errorf("failed to read registry data from URL %s: %w", registryUrl, err)
+				return
+			}
+		} else {
+			// Load the embedded registry data
+			data, err = registryFS.ReadFile("data/registry.json")
+			if err != nil {
+				registryErr = fmt.Errorf("failed to read embedded registry data: %w", err)
+				return
+			}
 		}
 
 		// Parse the JSON

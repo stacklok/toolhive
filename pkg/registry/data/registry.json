@@ -745,7 +745,14 @@
         "get_code_scanning_alert",
         "list_code_scanning_alerts"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "provenance": {
+        "repository_uri": "https://github.com/github/github-mcp-server",
+        "repository_ref": "refs/tags/v0.3.0",
+        "signer_identity": "/.github/workflows/docker-publish.yml",
+        "runner_environment": "github-hosted",
+        "cert_issuer": "https://token.actions.githubusercontent.com"
+      }
     },
     "gitlab": {
       "args": [],

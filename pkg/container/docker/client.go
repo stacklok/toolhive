@@ -25,8 +25,10 @@ import (
 	"github.com/docker/go-connections/nat"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 // Common socket paths
@@ -697,6 +699,18 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 	}
 
 	return nil
+}
+
+// VerifyImage verifies a container image
+func (*Client) VerifyImage(_ context.Context, serverInfo *registry.Server, imageRef string) (bool, error) {
+	// Create a new verifier
+	v, err := verifier.New()
+	if err != nil {
+		return false, fmt.Errorf("error creating verifier")
+	}
+
+	// Verify the image passing the server info
+	return v.VerifyServer(imageRef, serverInfo)
 }
 
 // BuildImage builds a Docker image from a Dockerfile in the specified context directory

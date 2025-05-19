@@ -15,6 +15,7 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -71,6 +72,10 @@ func (*mockRuntime) ImageExists(_ context.Context, _ string) (bool, error) {
 
 func (*mockRuntime) PullImage(_ context.Context, _ string) error {
 	return nil
+}
+
+func (*mockRuntime) VerifyImage(_ context.Context, _ *registry.Server, _ string) (bool, error) {
+	return true, nil
 }
 
 func (*mockRuntime) BuildImage(_ context.Context, _, _ string) error {

@@ -52,6 +52,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(logsCommand())
 	rootCmd.AddCommand(newSecretCommand())
+	rootCmd.AddCommand(inspectorCommand())
 
 	// Skip update check for completion command
 	if !IsCompletionCommand(os.Args) {

@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -135,6 +136,13 @@ func NewRunConfigFromFlags(
 	oidcJwksURL string,
 	oidcClientID string,
 ) *RunConfig {
+	// Ensure default values for host and targetHost
+	if host == "" {
+		host = transport.LocalhostIPv4
+	}
+	if targetHost == "" {
+		targetHost = transport.LocalhostIPv4
+	}
 	config := &RunConfig{
 		Runtime:                     runtime,
 		CmdArgs:                     cmdArgs,
@@ -170,10 +178,10 @@ func (c *RunConfig) WithAuthz(config *authz.Config) *RunConfig {
 }
 
 // WithTransport parses and sets the transport type
-func (c *RunConfig) WithTransport(transport string) (*RunConfig, error) {
-	transportType, err := types.ParseTransportType(transport)
+func (c *RunConfig) WithTransport(t string) (*RunConfig, error) {
+	transportType, err := types.ParseTransportType(t)
 	if err != nil {
-		return c, fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", transport)
+		return c, fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", t)
 	}
 	c.Transport = transportType
 	return c, nil

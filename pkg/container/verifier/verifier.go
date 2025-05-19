@@ -142,30 +142,12 @@ func isVerificationResultMatchingServerProvenance(r *verify.VerificationResult, 
 		return false
 	}
 
-	// Extract the signer identity from the certificate
-	siIdentity, err := signerIdentityFromCertificate(r.Signature.Certificate)
-	if err != nil {
-		logger.Error("error parsing signer identity")
-	}
-
-	// Compare repository name and reference, signer identity, runner environment, and cert issuer
-	if p.RepositoryURI != r.Signature.Certificate.SourceRepositoryURI {
-		return false
-	}
-	if p.RepositoryRef != r.Signature.Certificate.SourceRepositoryRef {
-		return false
-	}
-	if p.SignerIdentity != siIdentity {
-		return false
-	}
-	if p.RunnerEnvironment != r.Signature.Certificate.RunnerEnvironment {
-		return false
-	}
-	if p.CertIssuer != r.Signature.Certificate.Issuer {
+	// Compare the base properties of the verification result and the server provenance
+	if !compareBaseProperties(r, p) {
 		return false
 	}
 
-	// Compare the attestations if they are set/exist
+	// If the attestations are not set, we can skip this check
 	if p.Attestation != nil && r.Statement != nil && p.Attestation.Predicate != nil && r.Statement.Predicate != nil {
 		if p.Attestation.PredicateType != r.Statement.PredicateType {
 			return false
@@ -176,11 +158,23 @@ func isVerificationResultMatchingServerProvenance(r *verify.VerificationResult, 
 	return true
 }
 
-func branchFromRef(ref string) string {
-	if strings.HasPrefix(ref, "refs/heads/") {
-		return ref[len("refs/heads/"):]
+// compareBaseProperties compares the base properties of the verification result and the server provenance
+func compareBaseProperties(r *verify.VerificationResult, p *registry.Provenance) bool {
+	// Extract the signer identity from the certificate
+	siIdentity, err := signerIdentityFromCertificate(r.Signature.Certificate)
+	if err != nil {
+		logger.Error("error parsing signer identity")
 	}
-	return ""
+
+	// Compare repository name and reference, signer identity, runner environment, and cert issuer
+	if p.RepositoryURI != r.Signature.Certificate.SourceRepositoryURI ||
+		p.RepositoryRef != r.Signature.Certificate.SourceRepositoryRef ||
+		p.RunnerEnvironment != r.Signature.Certificate.RunnerEnvironment ||
+		p.CertIssuer != r.Signature.Certificate.Issuer ||
+		p.SignerIdentity != siIdentity {
+		return false
+	}
+	return true
 }
 
 // signerIdentityFromCertificate returns the signer identity. When the identity

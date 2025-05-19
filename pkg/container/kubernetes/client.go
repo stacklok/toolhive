@@ -520,7 +520,7 @@ func (*Client) PullImage(_ context.Context, imageName string) error {
 }
 
 // VerifyImage verifies a container image
-func (_ *Client) VerifyImage(_ context.Context, serverInfo *registry.Server, image string) (bool, error) {
+func (*Client) VerifyImage(_ context.Context, _ *registry.Server, _ string) (bool, error) {
 	// Verify the image
 	return true, nil
 }

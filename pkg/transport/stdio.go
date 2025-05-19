@@ -343,11 +343,7 @@ func (t *StdioTransport) processBuffer(ctx context.Context, buffer *bytes.Buffer
 			// Remove the trailing newline
 			line = line[:len(line)-1]
 		}
-
-		// Try to parse as JSON-RPC
-		if line != "" {
-			t.parseAndForwardJSONRPC(ctx, line)
-		}
+		t.parseAndForwardJSONRPC(ctx, line)
 	}
 }
 
@@ -373,11 +369,12 @@ func sanitizeBinaryString(input string) string {
 	// Extract just the JSON object, discarding everything else
 	jsonObj := input[startIdx : endIdx+1]
 
-	// Remove all whitespace and control characters
+	// Remove all whitespace, control characters, and replacement characters
 	var buffer bytes.Buffer
 
 	for _, r := range jsonObj {
-		if unicode.IsPrint(r) || isSpace(r) {
+		// Skip replacement character (U+FFFD) and non-printable characters
+		if r != '\uFFFD' && (unicode.IsPrint(r) || isSpace(r)) {
 			buffer.WriteRune(r)
 		}
 	}
@@ -397,22 +394,11 @@ func isSpace(r rune) bool {
 func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string) {
 	// Log the raw line for debugging
 	logger.Infof("JSON-RPC raw: %s", line)
+	jsonData := sanitizeJSONString(line)
+	logger.Infof("Sanitized JSON: %s", jsonData)
 
-	// Check if the line contains binary data
-	hasBinaryData := false
-	for _, c := range line {
-		if !unicode.IsPrint(c) && !isSpace(c) {
-			hasBinaryData = true
-		}
-	}
-
-	// If the line contains binary data, try to sanitize it
-	var jsonData string
-	if hasBinaryData {
-		jsonData = sanitizeJSONString(line)
-		logger.Infof("Sanitized JSON: %s", jsonData)
-	} else {
-		jsonData = line
+	if jsonData == "" || jsonData == "[]" {
+		return
 	}
 
 	// Try to parse the JSON

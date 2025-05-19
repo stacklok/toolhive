@@ -30,9 +30,8 @@ type sigstoreBundle struct {
 	digestAlgo  string
 }
 
-// bundleFromOCIImage returns a ProtobufBundle based on OCI image reference.
-func bundleFromOCIImage(imageRef string, auth authn.Authenticator) ([]sigstoreBundle, error) {
-
+// bundleFromSigstoreSignedImage returns a bundle from a Sigstore signed image
+func bundleFromSigstoreSignedImage(imageRef string, auth authn.Authenticator) ([]sigstoreBundle, error) {
 	// Get the signature manifest from the OCI image reference
 	signatureRef, err := getSignatureReferenceFromOCIImage(imageRef, auth)
 	if err != nil {

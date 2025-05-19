@@ -747,6 +747,7 @@
       ],
       "transport": "stdio",
       "provenance": {
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev",
         "repository_uri": "https://github.com/github/github-mcp-server",
         "repository_ref": "refs/tags/v0.3.0",
         "signer_identity": "/.github/workflows/docker-publish.yml",

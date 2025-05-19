@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	// TrustedRootSigstoreGitHub is the GitHub trusted root repository for sigstore
+	// TrustedRootSigstoreGitHub is the GitHub trusted root repository for sigstore (used for private repos, Enterprise)
 	TrustedRootSigstoreGitHub = "tuf-repo.github.com"
 	// TrustedRootSigstorePublicGoodInstance is the public trusted root repository for sigstore
 	TrustedRootSigstorePublicGoodInstance = "tuf-repo-cdn.sigstore.dev"
@@ -36,8 +36,19 @@ type Result struct {
 }
 
 // New creates a new Sigstore verifier
-func New() (*Sigstore, error) {
-	sigstoreTUFRepoURL := TrustedRootSigstorePublicGoodInstance
+func New(serverInfo *registry.Server) (*Sigstore, error) {
+	// Fail the verification early if the server information is not set
+	if serverInfo == nil || serverInfo.Provenance == nil {
+		return nil, ErrProvenanceServerInformationNotSet
+	}
+	sigstoreTUFRepoURL := serverInfo.Provenance.SigstoreURL
+
+	// Default the sigstoreTUFRepoURL to the sigstore public trusted root repo if not provided.
+	// Note: Update this if we want to support more sigstore instances
+	if sigstoreTUFRepoURL == "" {
+		sigstoreTUFRepoURL = TrustedRootSigstorePublicGoodInstance
+	}
+
 	// Get the sigstore options for the TUF client and the verifier
 	tufOpts, opts, err := getSigstoreOptions(sigstoreTUFRepoURL)
 	if err != nil {
@@ -110,11 +121,6 @@ func getVerifiedResults(
 
 // VerifyServer verifies the server information for the given image reference
 func (s *Sigstore) VerifyServer(imageRef string, serverInfo *registry.Server) (bool, error) {
-	// Fail the verification early if the server information is not set
-	if serverInfo == nil || serverInfo.Provenance == nil {
-		return false, ErrProvenanceServerInformationNotSet
-	}
-
 	// Get the verification results for the image reference
 	results, err := s.GetVerificationResults(imageRef)
 	if err != nil {

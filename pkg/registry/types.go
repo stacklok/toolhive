@@ -53,6 +53,7 @@ type Server struct {
 
 // Provenance contains metadata about the image's provenance and signing status
 type Provenance struct {
+	SigstoreURL       string               `json:"sigstore_url"`
 	RepositoryURI     string               `json:"repository_uri"`
 	RepositoryRef     string               `json:"repository_ref"`
 	SignerIdentity    string               `json:"signer_identity"`

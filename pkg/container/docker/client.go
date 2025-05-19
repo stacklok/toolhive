@@ -704,9 +704,9 @@ func (c *Client) PullImage(ctx context.Context, imageName string) error {
 // VerifyImage verifies a container image
 func (*Client) VerifyImage(_ context.Context, serverInfo *registry.Server, imageRef string) (bool, error) {
 	// Create a new verifier
-	v, err := verifier.New()
+	v, err := verifier.New(serverInfo)
 	if err != nil {
-		return false, fmt.Errorf("error creating verifier")
+		return false, err
 	}
 
 	// Verify the image passing the server info

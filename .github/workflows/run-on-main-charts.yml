@@ -1,0 +1,18 @@
+# These set of workflows run on every push to the main branch
+name: Main build for Helm Charts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - deploy/charts/**
+
+jobs:
+  publish-charts:
+    name: Publish Helm Charts
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/releaser-helm-charts.yml

@@ -323,7 +323,7 @@ func verifyImage(ctx context.Context, image string, rt runtime.Runtime, server *
 			return fmt.Errorf("image verification failed: %v", err)
 		}
 		if !isSafe {
-			if verifySetting == "warn" {
+			if verifySetting == verifyImageWarn {
 				logger.Warnf("MCP server %s failed image verification", server.Name)
 			} else {
 				return fmt.Errorf("MCP server %s failed image verification", server.Name)

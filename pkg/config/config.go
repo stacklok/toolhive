@@ -24,9 +24,9 @@ const lockTimeout = 1 * time.Second
 
 // Config represents the configuration of the application.
 type Config struct {
-	Secrets        Secrets        `yaml:"secrets"`
-	Clients        Clients        `yaml:"clients"`
-	RegistryConfig RegistryConfig `yaml:"registry_config"`
+	Secrets     Secrets `yaml:"secrets"`
+	Clients     Clients `yaml:"clients"`
+	RegistryUrl string  `yaml:"registry_url"`
 }
 
 // Secrets contains the settings for secrets management.
@@ -52,11 +52,6 @@ func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 type Clients struct {
 	AutoDiscovery     bool     `yaml:"auto_discovery"`
 	RegisteredClients []string `yaml:"registered_clients"`
-}
-
-// Registry contains settings for the MCP server registry.
-type RegistryConfig struct {
-	Url string `yaml:"url"` //~/Library/Application\ Support/toolhive/config.yaml
 }
 
 // defaultPathGenerator generates the default config path using xdg
@@ -99,9 +94,7 @@ func LoadOrCreateConfig() (*Config, error) {
 			Clients: Clients{
 				AutoDiscovery: true,
 			},
-			RegistryConfig: RegistryConfig{
-				Url: "",
-			},
+			RegistryUrl: "",
 		}
 
 		// Prompt user explicitly for auto discovery behaviour.

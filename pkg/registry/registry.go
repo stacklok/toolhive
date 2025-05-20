@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/config"
 )
@@ -23,6 +24,7 @@ var (
 
 // GetRegistry returns the MCP server registry
 func GetRegistry() (*Registry, error) {
+	var registry *Registry
 	registryOnce.Do(func() {
 
 		// Load the config to check if a custom registry URL was provided
@@ -31,45 +33,20 @@ func GetRegistry() (*Registry, error) {
 			registryErr = fmt.Errorf("failed to load config: %w", err)
 			return
 		}
-		registryUrl := cfg.RegistryConfig.Url
-
-		var data []byte
+		registryUrl := cfg.RegistryUrl
 
 		// Check if the custom registry URL if different than the default value
-		if len(registryUrl) > 0 && registryUrl != "" {
+		if len(registryUrl) > 0 {
 			// Fetch registry data from the provided URL
-			resp, err := http.Get(registryUrl)
-			if err != nil {
-				registryErr = fmt.Errorf("failed to fetch registry data from URL %s: %w", registryUrl, err)
-				return
-			}
-			defer resp.Body.Close()
-
-			// Check if the response status code is OK
-			if resp.StatusCode != http.StatusOK {
-				registryErr = fmt.Errorf("failed to fetch registry data from URL %s: status code %d", registryUrl, resp.StatusCode)
-				return
-			}
-
-			// Read the response body
-			data, err = io.ReadAll(resp.Body)
-			if err != nil {
-				registryErr = fmt.Errorf("failed to read registry data from URL %s: %w", registryUrl, err)
-				return
-			}
+			fmt.Printf("Fetching registry data from URL: %s\n", registryUrl)
+			registry, registryErr = getRemoteRegistry(registryUrl)
 		} else {
 			// Load the embedded registry data
-			data, err = registryFS.ReadFile("data/registry.json")
-			if err != nil {
-				registryErr = fmt.Errorf("failed to read embedded registry data: %w", err)
-				return
-			}
+			fmt.Printf("Loading embedded registry data\n")
+			registry, registryErr = getEmbeddedRegistry()
 		}
-
-		// Parse the JSON
-		registry = &Registry{}
-		if err := json.Unmarshal(data, registry); err != nil {
-			registryErr = fmt.Errorf("failed to parse registry data: %w", err)
+		// Make sure we have a valid registry
+		if registryErr != nil {
 			return
 		}
 
@@ -80,6 +57,60 @@ func GetRegistry() (*Registry, error) {
 	})
 
 	return registry, registryErr
+}
+
+func getRemoteRegistry(registryUrl string) (*Registry, error) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	resp, err := client.Get(registryUrl)
+	if err != nil {
+		registryErr = fmt.Errorf("failed to fetch registry data from URL %s: %w", registryUrl, err)
+		return nil, registryErr
+	}
+	defer resp.Body.Close()
+
+	// Check if the response status code is OK
+	if resp.StatusCode != http.StatusOK {
+		registryErr = fmt.Errorf("response status code from URL %s not OK: status code %d", registryUrl, resp.StatusCode)
+		return nil, registryErr
+	}
+
+	// Read the response body
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		registryErr = fmt.Errorf("failed to read registry data from response body: %w", err)
+		return nil, registryErr
+	}
+
+	registry, parseErr := parseRegistryData(data)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+
+	return registry, nil
+}
+
+func getEmbeddedRegistry() (*Registry, error) {
+	data, err := registryFS.ReadFile("data/registry.json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read embedded registry data: %w", err)
+	}
+
+	registry, parseErr := parseRegistryData(data)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+
+	return registry, nil
+}
+
+func parseRegistryData(data []byte) (*Registry, error) {
+	registry := &Registry{}
+	if err := json.Unmarshal(data, registry); err != nil {
+		return nil, fmt.Errorf("failed to parse registry data: %w", err)
+	}
+	return registry, nil
 }
 
 // GetServer returns a server from the registry by name

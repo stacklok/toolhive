@@ -96,7 +96,7 @@ func LoadOrCreateConfig() (*Config, error) {
 		}
 
 		// Prompt user explicitly for auto discovery behaviour.
-		logger.Info("Would you like to enable auto discovery and configuraion of MCP clients? (y/n) [n]: ")
+		logger.Info("Would you like to enable auto discovery and configuration of MCP clients? (y/n) [n]: ")
 		reader := bufio.NewReader(os.Stdin)
 		input, err := reader.ReadString('\n')
 		if err != nil {

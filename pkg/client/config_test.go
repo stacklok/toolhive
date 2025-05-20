@@ -240,7 +240,7 @@ func TestFindClientConfigs(t *testing.T) {
 		_, err = FindClientConfigs()
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to validate config file format")
-		// we check if cursor is in the error message because thats the
+		// we check if cursor is in the error message because that's the
 		// config file that we inserted the bad json into
 		assert.Contains(t, err.Error(), "cursor")
 	})

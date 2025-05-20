@@ -462,7 +462,7 @@ func removeClientConfigurations(containerName string) error {
 		logger.Infof("Removing MCP server from client configuration: %s", c.Path)
 
 		if err := c.ConfigUpdater.Remove(containerName); err != nil {
-			logger.Warnf("Warning: Failed to remove MCP server from client configurationn %s: %v", c.Path, err)
+			logger.Warnf("Warning: Failed to remove MCP server from client configuration %s: %v", c.Path, err)
 			continue
 		}
 

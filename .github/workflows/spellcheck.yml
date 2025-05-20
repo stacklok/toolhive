@@ -1,0 +1,21 @@
+name: Spellcheck
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+
+jobs:
+  codespell:
+    name: Codespell
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Codespell
+        uses: codespell-project/actions-codespell@v2
+        with:
+          skip: .git
+          check_filenames: true
+          check_hidden: true

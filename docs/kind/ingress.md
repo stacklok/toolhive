@@ -71,7 +71,7 @@ Content-Length: 0
 Connection: keep-alive
 ```
 
-If you recieve an `OK` response, then you have successfully confirmed that you have an Ingress setup working for your cluster. 
+If you receive an `OK` response, then you have successfully confirmed that you have an Ingress setup working for your cluster. 
 
 To add Ingress for your applications, this can be done using the standard `Ingress` resource.
 

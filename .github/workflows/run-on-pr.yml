@@ -4,8 +4,13 @@ name: PR Checks
 on:
   workflow_dispatch:
   pull_request:
+    paths-ignore:
+      - deploy/charts/**
 
 jobs:
+  spellcheck:
+    name: Spellcheck
+    uses: ./.github/workflows/spellcheck.yml
   linting:
     name: Linting
     uses: ./.github/workflows/lint.yml

@@ -26,6 +26,7 @@ jobs:
         uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # pin@v1.7.0
         with:
           config: cr.yaml
+          charts_dir: deploy/charts
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 

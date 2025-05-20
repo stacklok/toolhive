@@ -71,7 +71,7 @@ tasks:
   build-operator-image:
     desc: Build the operator image with ko
     cmds:
-      - ko build --platform linux/amd64,linux/arm64 --local ./cmd/thv-operator
+      - ko build --local -B ./cmd/thv-operator
 
   operator-install-crds:
     desc: Install CRDs into the K8s cluster
@@ -92,9 +92,9 @@ tasks:
     desc: Build the ToolHive runtime and Operator image locally and deploy it to the K8s cluster
     vars:
       OPERATOR_IMAGE:
-        sh: KO_DOCKER_REPO=kind.local ko build --platform linux/amd64 --local -B ./cmd/thv-operator | tail -n 1
+        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
       TOOLHIVE_IMAGE:
-        sh: KO_DOCKER_REPO=kind.local ko build --platform linux/amd64 --local -B ./cmd/thv | tail -n 1
+        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv | tail -n 1
     cmds:
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
       - kind load docker-image {{.OPERATOR_IMAGE}}
@@ -103,7 +103,7 @@ tasks:
       - kubectl apply -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
       - kubectl apply -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
       - kubectl apply -f deploy/operator/toolhive_rbac.yaml --kubeconfig kconfig.yaml
-      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve --platform linux/amd64 -B -f deploy/operator/operator_local.yaml) --kubeconfig kconfig.yaml
+      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve -B -f deploy/operator/operator_local.yaml) --kubeconfig kconfig.yaml
 
   operator-undeploy:
     desc: Undeploy operator from the K8s cluster

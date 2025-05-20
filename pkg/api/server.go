@@ -47,10 +47,10 @@ func Serve(ctx context.Context, address string, debugMode bool) error {
 
 	routers := map[string]http.Handler{
 		"/health":             v1.HealthcheckRouter(),
+		"/api/":               http.HandlerFunc(ServeScalar),
+		"/api/openapi.json":   http.HandlerFunc(ServeOpenAPI),
 		"/api/v1beta/version": v1.VersionRouter(),
 		"/api/v1beta/servers": v1.ServerRouter(manager, rt, debugMode),
-		"/openapi.json":       http.HandlerFunc(ServeOpenAPI),
-		"/":                   http.HandlerFunc(ServeScalar),
 	}
 	for prefix, router := range routers {
 		r.Mount(prefix, router)

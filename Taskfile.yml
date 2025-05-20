@@ -160,13 +160,17 @@ tasks:
       - helm upgrade --install toolhive-operator deploy/charts/operator --namespace toolhive-system --create-namespace --kubeconfig kconfig.yaml
 
   operator-deploy-local:
-    desc: Build the Operator image locally and deploy it to the K8s cluster
+    desc: Build the ToolHive runtime and Operator image locally and deploy it to the K8s cluster
     vars:
-      IMAGE:
+      OPERATOR_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --platform linux/amd64 --local -B ./cmd/thv-operator | tail -n 1
+      TOOLHIVE_IMAGE:
+        sh: KO_DOCKER_REPO=kind.local ko build --platform linux/amd64 --local -B ./cmd/thv | tail -n 1
     cmds:
-      - echo "Loading image {{.IMAGE}} into kind..."
-      - kind load docker-image {{.IMAGE}}
+      - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
+      - kind load docker-image {{.OPERATOR_IMAGE}}
+      - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."
+      - kind load docker-image {{.TOOLHIVE_IMAGE}}
       - kubectl apply -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
       - kubectl apply -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
       - kubectl apply -f deploy/operator/toolhive_rbac.yaml --kubeconfig kconfig.yaml

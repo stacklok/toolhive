@@ -1,0 +1,9 @@
+operator:
+  extraVolumeMounts:
+    - name: test
+      mountPath: /somepath
+      readOnly: true
+  extraVolumes:
+    - name: test
+      emptyDir:
+        sizeLimit: 5Mi

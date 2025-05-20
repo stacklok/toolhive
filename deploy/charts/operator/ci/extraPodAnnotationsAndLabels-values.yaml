@@ -1,0 +1,5 @@
+operator:
+  podAnnotations:
+    testFoo: testFooValue
+  podLabels:
+    testBar: testBarValue

@@ -13,6 +13,10 @@ operator:
   image: ghcr.io/stacklok/toolhive/operator:latest
   imagePullPolicy: IfNotPresent
 
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive:latest
+
+  env: {}
+
   ports:
   - containerPort: 8080
     name: metrics

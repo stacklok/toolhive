@@ -42,6 +42,12 @@ spec:
           - --leader-elect
           ports:
             {{- toYaml .Values.operator.ports | nindent 12 }}
+          env:
+          - name: TOOLHIVE_RUNNER_IMAGE
+            value: "{{ .Values.operator.toolhiveRunnerImage }}"
+          {{- if .Values.operator.env }}
+            {{- toYaml .Values.operator.env | nindent 12 }}
+          {{- end }}
           livenessProbe:
             {{- toYaml .Values.operator.livenessProbe | nindent 12 }}
           readinessProbe:

@@ -100,10 +100,13 @@ tasks:
       - kind load docker-image {{.OPERATOR_IMAGE}}
       - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."
       - kind load docker-image {{.TOOLHIVE_IMAGE}}
-      - kubectl apply -f deploy/operator/namespace.yaml --kubeconfig kconfig.yaml
-      - kubectl apply -f deploy/operator/rbac.yaml --kubeconfig kconfig.yaml
-      - kubectl apply -f deploy/operator/toolhive_rbac.yaml --kubeconfig kconfig.yaml
-      - kubectl apply -f <(KO_DOCKER_REPO=kind.local ko resolve -B -f deploy/operator/operator_local.yaml) --kubeconfig kconfig.yaml
+      - |
+        helm upgrade --install toolhive-operator deploy/charts/operator \
+        --set operator.image={{.OPERATOR_IMAGE}} \
+        --set operator.toolhiveRunnerImage={{.TOOLHIVE_IMAGE}} \
+        --namespace toolhive-system \
+        --create-namespace \
+        --kubeconfig kconfig.yaml
 
   operator-undeploy:
     desc: Undeploy operator from the K8s cluster

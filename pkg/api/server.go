@@ -1,6 +1,17 @@
 // Package api contains the REST API for ToolHive.
 package api
 
+// The OpenAPI spec is generated using "github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc4"
+// To update the OpenAPI spec, run:
+// install swag:
+//	go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc4
+// generate the spec:
+//	swag init -g pkg/api/server.go --v3.1
+
+// @title           ToolHive API
+// @version         1.0
+// @description     This is the ToolHive API server.
+
 import (
 	"context"
 	"errors"
@@ -47,8 +58,7 @@ func Serve(ctx context.Context, address string, debugMode bool) error {
 
 	routers := map[string]http.Handler{
 		"/health":             v1.HealthcheckRouter(),
-		"/api/":               http.HandlerFunc(ServeScalar),
-		"/api/openapi.json":   http.HandlerFunc(ServeOpenAPI),
+		"/api/":               DocsRouter(),
 		"/api/v1beta/version": v1.VersionRouter(),
 		"/api/v1beta/servers": v1.ServerRouter(manager, rt, debugMode),
 	}

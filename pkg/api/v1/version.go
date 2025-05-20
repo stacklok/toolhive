@@ -21,6 +21,13 @@ type versionResponse struct {
 	Version string `json:"version"`
 }
 
+//	 getVersion
+//		@Summary		Get server version
+//		@Description	Returns the current version of the server
+//		@Tags			version
+//		@Produce		json
+//		@Success		200	{object}	versionResponse
+//		@Router			/api/v1beta/version [get]
 func getVersion(w http.ResponseWriter, _ *http.Request) {
 	versionInfo := versions.GetVersionInfo()
 	err := json.NewEncoder(w).Encode(versionResponse{Version: versionInfo.Version})

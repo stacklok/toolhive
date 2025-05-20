@@ -1,5 +1,7 @@
 # These set of workflows run on every push to the main branch
 name: PR Checks Helm Charts
+permissions:
+  contents: read
 
 on:
   workflow_dispatch:

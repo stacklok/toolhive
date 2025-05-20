@@ -48,6 +48,7 @@ type Proxy interface {
 //nolint:revive // Intentionally named HTTPSSEProxy despite package name
 type HTTPSSEProxy struct {
 	// Basic configuration
+	host          string
 	port          int
 	containerName string
 	middlewares   []types.Middleware
@@ -69,9 +70,10 @@ type HTTPSSEProxy struct {
 }
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
-func NewHTTPSSEProxy(port int, containerName string, middlewares ...types.Middleware) *HTTPSSEProxy {
+func NewHTTPSSEProxy(host string, port int, containerName string, middlewares ...types.Middleware) *HTTPSSEProxy {
 	return &HTTPSSEProxy{
 		middlewares:     middlewares,
+		host:            host,
 		port:            port,
 		containerName:   containerName,
 		shutdownCh:      make(chan struct{}),
@@ -109,7 +111,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 
 	// Create the server
 	p.server = &http.Server{
-		Addr:              fmt.Sprintf(":%d", p.port),
+		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
@@ -117,8 +119,8 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Start the server in a goroutine
 	go func() {
 		logger.Infof("HTTP proxy started for container %s on port %d", p.containerName, p.port)
-		logger.Infof("SSE endpoint: http://localhost:%d%s", p.port, ssecommon.HTTPSSEEndpoint)
-		logger.Infof("JSON-RPC endpoint: http://localhost:%d%s", p.port, ssecommon.HTTPMessagesEndpoint)
+		logger.Infof("SSE endpoint: http://%s:%d%s", p.host, p.port, ssecommon.HTTPSSEEndpoint)
+		logger.Infof("JSON-RPC endpoint: http://%s:%d%s", p.host, p.port, ssecommon.HTTPMessagesEndpoint)
 
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Errorf("HTTP server error: %v", err)

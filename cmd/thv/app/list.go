@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport"
 )
 
 var listCmd = &cobra.Command{
@@ -28,10 +29,7 @@ var (
 )
 
 // Constants for list command
-const (
-	defaultHost      = "localhost"
-	unknownTransport = "unknown"
-)
+const unknownTransport = "unknown"
 
 // ContainerOutput represents container information for JSON output
 type ContainerOutput struct {
@@ -100,9 +98,9 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 		}
 
 		// Get transport type from labels
-		transport := labels.GetTransportType(c.Labels)
-		if transport == "" {
-			transport = unknownTransport
+		t := labels.GetTransportType(c.Labels)
+		if t == "" {
+			t = unknownTransport
 		}
 
 		// Get tool type from labels
@@ -117,7 +115,7 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 		// Generate URL for the MCP server
 		url := ""
 		if port > 0 {
-			url = client.GenerateMCPServerURL(defaultHost, port, name)
+			url = client.GenerateMCPServerURL(transport.LocalhostIPv4, port, name)
 		}
 
 		output = append(output, ContainerOutput{
@@ -125,7 +123,7 @@ func printJSONOutput(containers []rt.ContainerInfo) error {
 			Name:      name,
 			Image:     c.Image,
 			State:     c.State,
-			Transport: transport,
+			Transport: t,
 			ToolType:  toolType,
 			Port:      port,
 			URL:       url,
@@ -173,7 +171,7 @@ func printMCPServersOutput(containers []rt.ContainerInfo) error {
 		// Generate URL for the MCP server
 		url := ""
 		if port > 0 {
-			url = client.GenerateMCPServerURL(defaultHost, port, name)
+			url = client.GenerateMCPServerURL(transport.LocalhostIPv4, port, name)
 		}
 
 		// Add the MCP server to the map
@@ -216,9 +214,9 @@ func printTextOutput(containers []rt.ContainerInfo) {
 		}
 
 		// Get transport type from labels
-		transport := labels.GetTransportType(c.Labels)
-		if transport == "" {
-			transport = unknownTransport
+		t := labels.GetTransportType(c.Labels)
+		if t == "" {
+			t = unknownTransport
 		}
 
 		// Get port from labels
@@ -230,7 +228,7 @@ func printTextOutput(containers []rt.ContainerInfo) {
 		// Generate URL for the MCP server
 		url := ""
 		if port > 0 {
-			url = client.GenerateMCPServerURL(defaultHost, port, name)
+			url = client.GenerateMCPServerURL(transport.LocalhostIPv4, port, name)
 		}
 
 		// Print container information
@@ -239,7 +237,7 @@ func printTextOutput(containers []rt.ContainerInfo) {
 			name,
 			c.Image,
 			c.State,
-			transport,
+			t,
 			port,
 			url,
 		)

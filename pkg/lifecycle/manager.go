@@ -209,9 +209,14 @@ func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig) error {
 		detachedArgs = append(detachedArgs, "--name", runConfig.ContainerName)
 	}
 
+	if runConfig.Host != "" {
+		detachedArgs = append(detachedArgs, "--host", runConfig.Host)
+	}
+
 	if runConfig.Port != 0 {
 		detachedArgs = append(detachedArgs, "--port", fmt.Sprintf("%d", runConfig.Port))
 	}
+
 	if runConfig.TargetPort != 0 {
 		detachedArgs = append(detachedArgs, "--target-port", fmt.Sprintf("%d", runConfig.TargetPort))
 	}

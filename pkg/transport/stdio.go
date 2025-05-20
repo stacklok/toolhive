@@ -24,6 +24,7 @@ import (
 // StdioTransport implements the Transport interface using standard input/output.
 // It acts as a proxy between the MCP client and the container's stdin/stdout.
 type StdioTransport struct {
+	host          string
 	port          int
 	containerID   string
 	containerName string
@@ -51,12 +52,14 @@ type StdioTransport struct {
 
 // NewStdioTransport creates a new stdio transport.
 func NewStdioTransport(
+	host string,
 	port int,
 	runtime rt.Runtime,
 	debug bool,
 	middlewares ...types.Middleware,
 ) *StdioTransport {
 	return &StdioTransport{
+		host:        host,
 		port:        port,
 		runtime:     runtime,
 		debug:       debug,
@@ -148,7 +151,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	}
 
 	// Create and start the HTTP SSE proxy with middlewares
-	t.httpProxy = httpsse.NewHTTPSSEProxy(t.port, t.containerName, t.middlewares...)
+	t.httpProxy = httpsse.NewHTTPSSEProxy(t.host, t.port, t.containerName, t.middlewares...)
 	if err := t.httpProxy.Start(ctx); err != nil {
 		return err
 	}

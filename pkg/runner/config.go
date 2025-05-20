@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -40,6 +41,9 @@ type RunConfig struct {
 
 	// Transport is the transport mode (sse or stdio)
 	Transport types.TransportType `json:"transport" yaml:"transport"`
+
+	// Host is the host for the HTTP proxy
+	Host string `json:"host" yaml:"host"`
 
 	// Port is the port for the HTTP proxy to listen on (host port)
 	Port int `json:"port" yaml:"port"`
@@ -120,6 +124,7 @@ func NewRunConfigFromFlags(
 	runtime rt.Runtime,
 	cmdArgs []string,
 	name string,
+	host string,
 	debug bool,
 	volumes []string,
 	secretsList []string,
@@ -131,6 +136,13 @@ func NewRunConfigFromFlags(
 	oidcJwksURL string,
 	oidcClientID string,
 ) *RunConfig {
+	// Ensure default values for host and targetHost
+	if host == "" {
+		host = transport.LocalhostIPv4
+	}
+	if targetHost == "" {
+		targetHost = transport.LocalhostIPv4
+	}
 	config := &RunConfig{
 		Runtime:                     runtime,
 		CmdArgs:                     cmdArgs,
@@ -143,6 +155,7 @@ func NewRunConfigFromFlags(
 		TargetHost:                  targetHost,
 		ContainerLabels:             make(map[string]string),
 		EnvVars:                     make(map[string]string),
+		Host:                        host,
 	}
 
 	// Set OIDC config if any values are provided
@@ -165,10 +178,10 @@ func (c *RunConfig) WithAuthz(config *authz.Config) *RunConfig {
 }
 
 // WithTransport parses and sets the transport type
-func (c *RunConfig) WithTransport(transport string) (*RunConfig, error) {
-	transportType, err := types.ParseTransportType(transport)
+func (c *RunConfig) WithTransport(t string) (*RunConfig, error) {
+	transportType, err := types.ParseTransportType(t)
 	if err != nil {
-		return c, fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", transport)
+		return c, fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", t)
 	}
 	c.Transport = transportType
 	return c, nil

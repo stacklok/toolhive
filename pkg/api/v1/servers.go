@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/transport"
 )
 
 // ServerRoutes defines the routes for server management.
@@ -144,12 +145,13 @@ func (s *ServerRoutes) createServer(w http.ResponseWriter, r *http.Request) {
 		s.containerRuntime,
 		req.CmdArguments,
 		req.Name,
+		req.Host,
 		s.debugMode,
 		req.Volumes,
 		runSecrets,
 		req.AuthzConfig,
 		req.PermissionProfile,
-		"localhost", // Seems like a reasonable default for now.
+		transport.LocalhostIPv4, // Seems like a reasonable default for now.
 		req.OIDC.Issuer,
 		req.OIDC.Audience,
 		req.OIDC.JwksURL,
@@ -227,6 +229,7 @@ type serverListResponse struct {
 type createRequest struct {
 	Name              string                    `json:"name"`
 	Image             string                    `json:"image"`
+	Host              string                    `json:"host"`
 	CmdArguments      []string                  `json:"cmd_arguments"`
 	TargetPort        int                       `json:"target_port"`
 	EnvVars           []string                  `json:"env_vars"`

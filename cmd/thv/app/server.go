@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	host string
-	port int
+	host       string
+	port       int
+	enableDocs bool
 )
 
 var serveCmd = &cobra.Command{
@@ -28,11 +29,13 @@ var serveCmd = &cobra.Command{
 		debugMode, _ := cmd.Flags().GetBool("debug")
 
 		address := fmt.Sprintf("%s:%d", host, port)
-		return s.Serve(ctx, address, debugMode)
+		return s.Serve(ctx, address, debugMode, enableDocs)
 	},
 }
 
 func init() {
 	serveCmd.Flags().StringVar(&host, "host", "127.0.0.1", "Host address to bind the server to")
 	serveCmd.Flags().IntVar(&port, "port", 8080, "Port to bind the server to")
+	serveCmd.Flags().BoolVar(&enableDocs, "openapi", false,
+		"Enable OpenAPI documentation endpoints (/api/openapi.json and /api/doc)")
 }

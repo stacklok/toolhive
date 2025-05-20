@@ -37,7 +37,7 @@ const (
 
 // Serve starts the HTTP server on the given address and serves the API.
 // It is assumed that the caller sets up appropriate signal handling.
-func Serve(ctx context.Context, address string, debugMode bool) error {
+func Serve(ctx context.Context, address string, debugMode bool, enableDocs bool) error {
 	r := chi.NewRouter()
 	r.Use(
 		middleware.RequestID,
@@ -58,10 +58,15 @@ func Serve(ctx context.Context, address string, debugMode bool) error {
 
 	routers := map[string]http.Handler{
 		"/health":             v1.HealthcheckRouter(),
-		"/api/":               DocsRouter(),
 		"/api/v1beta/version": v1.VersionRouter(),
 		"/api/v1beta/servers": v1.ServerRouter(manager, rt, debugMode),
 	}
+
+	// Only mount docs router if enabled
+	if enableDocs {
+		routers["/api/"] = DocsRouter()
+	}
+
 	for prefix, router := range routers {
 		r.Mount(prefix, router)
 	}

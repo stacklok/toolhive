@@ -1,0 +1,16 @@
+repos:
+  - repo: https://github.com/norwoodj/helm-docs
+    rev: v1.2.0
+    hooks:
+      - id: helm-docs
+        args:
+          # Make the tool search for charts only under the ``charts` directory
+          - --chart-search-root=deploy/charts
+          # The `./` makes it relative to the chart-search-root set above
+          - --template-files=./_templates.gotmpl
+          # A base filename makes it relative to each chart directory found
+          - --template-files=README.md.gotmpl
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+    - id: codespell

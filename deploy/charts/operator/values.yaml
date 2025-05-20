@@ -1,22 +1,28 @@
-# This is to override the chart name.
+# -- Override the name of the chart
 nameOverride: ""
+# -- Provide a fully-qualified name override for resources
 fullnameOverride: "toolhive-operator"
 
-# All values for the operator deployment and associated resources
+# -- All values for the operator deployment and associated resources
 operator:
 
-  # This will set the replicaset count more information can be found here: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/
+  # -- Number of replicas for the operator deployment
   replicaCount: 1
 
-  # This sets the container image more information can be found here: https://kubernetes.io/docs/concepts/containers/images/
+  # -- List of image pull secrets to use
   imagePullSecrets: []
+  # -- Container image for the operator
   image: ghcr.io/stacklok/toolhive/operator:latest
+  # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
+  # -- Image to use for Toolhive runners
   toolhiveRunnerImage: ghcr.io/stacklok/toolhive:latest
 
+  # -- Environment variables to set in the operator container
   env: {}
 
+  # -- List of ports to expose from the operator container
   ports:
   - containerPort: 8080
     name: metrics
@@ -25,16 +31,16 @@ operator:
     name: health
     protocol: TCP
 
-  # This is for setting Kubernetes Annotations to a Pod.
-  # For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+  # -- Annotations to add to the operator pod
   podAnnotations: {}
-  # This is for setting Kubernetes Labels to a Pod.
-  # For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+  # -- Labels to add to the operator pod
   podLabels: {}
 
+  # -- Pod security context settings
   podSecurityContext:
     runAsNonRoot: true
 
+  # -- Container security context settings for the operator
   containerSecurityContext:
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
@@ -44,13 +50,14 @@ operator:
       drop:
       - ALL
 
-    # This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+  # -- Liveness probe configuration for the operator
   livenessProbe:
     httpGet:
       path: /healthz
       port: health
     initialDelaySeconds: 15
     periodSeconds: 20
+  # -- Readiness probe configuration for the operator
   readinessProbe:
     httpGet:
       path: /readyz
@@ -58,14 +65,20 @@ operator:
     initialDelaySeconds: 5
     periodSeconds: 10
 
-  # This section is for setting up autoscaling more information can be found here: https://kubernetes.io/docs/concepts/workloads/autoscaling/
+  # -- Configuration for horizontal pod autoscaling
   autoscaling:
+    # -- Enable autoscaling for the operator
     enabled: false
+    # -- Minimum number of replicas
     minReplicas: 1
+    # -- Maximum number of replicas
     maxReplicas: 100
+    # -- Target CPU utilization percentage for autoscaling
     targetCPUUtilizationPercentage: 80
+    # -- Target memory utilization percentage for autoscaling (uncomment to enable)
     # targetMemoryUtilizationPercentage: 80
 
+  # -- Resource requests and limits for the operator container
   resources:
     limits:
       cpu: 500m
@@ -74,24 +87,27 @@ operator:
       cpu: 10m
       memory: 64Mi
 
-  # This section builds out the service account more information can be found here: https://kubernetes.io/docs/concepts/security/service-accounts/
+  # -- Service account configuration for the operator
   serviceAccount:
-    # Specifies whether a service account should be created
+    # -- Specifies whether a service account should be created
     create: true
-    # Automatically mount a ServiceAccount's API credentials?
+    # -- Automatically mount a ServiceAccount's API credentials
     automountServiceAccountToken: true
-    # Annotations to add to the service account
+    # -- Annotations to add to the service account
     annotations: {}
-    # Labels to add to the service account
+    # -- Labels to add to the service account
     labels: {}
-    # The name of the service account to use.
-    # If not set and create is true, a name is generated using the fullname template
+    # -- The name of the service account to use. If not set and create is true, a name is generated.
     name: "toolhive-operator"
 
+  # -- Leader election role configuration
   leaderElectionRole:
+    # -- Name of the role for leader election
     name: toolhive-operator-leader-election-role
     binding:
+      # -- Name of the role binding for leader election
       name: toolhive-operator-leader-election-rolebinding
+    # -- Rules for the leader election role
     rules:
     - apiGroups:
       - ""
@@ -125,55 +141,66 @@ operator:
       - create
       - patch
 
-  # Additional volumes on the output Deployment definition.
+  # -- Additional volumes to mount on the operator pod
   volumes: []
   # - name: foo
   #   secret:
   #     secretName: mysecret
   #     optional: false
 
-  # Additional volumeMounts on the output Deployment definition.
+  # -- Additional volume mounts on the operator container
   volumeMounts: []
   # - name: foo
   #   mountPath: "/etc/foo"
   #   readOnly: true
 
+  # -- Node selector for the operator pod
   nodeSelector: {}
 
+  # -- Tolerations for the operator pod
   tolerations: []
 
+  # -- Affinity settings for the operator pod
   affinity: {}
 
-# specific values for resources related to the toolhive pods. not related to the operator.
+# -- Configuration for resources related to toolhive pods (not related to the operator)
 toolhive:
+  # -- RBAC configuration for toolhive
   rbac:
+    # -- Enable RBAC for toolhive
     enabled: true
+    # -- Service account configuration for toolhive
     serviceAccount:
+      # -- Name of the service account for toolhive
       name: toolhive
+    # -- Role configuration for toolhive
     role:
+      # -- Name of the role for toolhive
       name: toolhive
+      # -- Name of the role binding for toolhive
       bindingName: toolhive-binding
+      # -- Rules for the toolhive role
       rules:
         # StatefulSet management
         - apiGroups: ["apps"]
           resources: ["statefulsets"]
           verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "apply"]
-        
+
         # Service management
         - apiGroups: [""]
           resources: ["services"]
           verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "apply"]
-        
+
         # Pod management
         - apiGroups: [""]
           resources: ["pods"]
           verbs: ["get", "list", "watch"]
-        
+
         # Pod logs
         - apiGroups: [""]
           resources: ["pods/log"]
           verbs: ["get"]
-        
+
         # Pod attach (for attaching to containers)
         - apiGroups: [""]
           resources: ["pods/attach"]

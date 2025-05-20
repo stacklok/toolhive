@@ -1,0 +1,21 @@
+# These set of workflows run on every push to the main branch
+name: PR Checks Helm Charts
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - deploy/charts/**
+
+jobs:
+  spellcheck:
+    name: Spellcheck
+    uses: ./.github/workflows/spellcheck.yml
+  linting:
+    name: Linting
+    uses: ./.github/workflows/lint-helm-charts.yml
+  tests:
+    name: Tests
+    uses: ./.github/workflows/test-helm-charts.yml

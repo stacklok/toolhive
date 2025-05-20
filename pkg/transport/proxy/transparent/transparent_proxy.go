@@ -24,6 +24,7 @@ import (
 //nolint:revive // Intentionally named TransparentProxy despite package name
 type TransparentProxy struct {
 	// Basic configuration
+	host          string
 	port          int
 	containerName string
 	targetURI     string
@@ -43,12 +44,14 @@ type TransparentProxy struct {
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
 func NewTransparentProxy(
+	host string,
 	port int,
 	containerName string,
 	targetURI string,
 	middlewares ...types.Middleware,
 ) *TransparentProxy {
 	return &TransparentProxy{
+		host:          host,
 		port:          port,
 		containerName: containerName,
 		targetURI:     targetURI,
@@ -86,15 +89,15 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 
 	// Create the server
 	p.server = &http.Server{
-		Addr:              fmt.Sprintf(":%d", p.port),
+		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           finalHandler,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 
 	// Start the server in a goroutine
 	go func() {
-		logger.Infof("Transparent proxy started for container %s on port %d -> %s",
-			p.containerName, p.port, p.targetURI)
+		logger.Infof("Transparent proxy started for container %s on %s:%d -> %s",
+			p.containerName, p.host, p.port, p.targetURI)
 
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Errorf("Transparent proxy error: %v", err)

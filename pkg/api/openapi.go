@@ -116,6 +116,12 @@ func addServerPaths() {
 									Example: "mcp/puppeteer:latest",
 								},
 							},
+							"host": {
+								Value: &openapi3.Schema{
+									Type:    &openapi3.Types{"string"},
+									Example: "localhost",
+								},
+							},
 							"cmd_arguments": {
 								Value: &openapi3.Schema{
 									Type: &openapi3.Types{"array"},
@@ -156,7 +162,7 @@ func addServerPaths() {
 														Type: &openapi3.Types{"string"},
 													},
 												},
-												"value": {
+												"target": {
 													Value: &openapi3.Schema{
 														Type: &openapi3.Types{"string"},
 													},
@@ -424,47 +430,18 @@ func addResponses() {
 								Value: &openapi3.Schema{
 									Type: &openapi3.Types{"object"},
 									Properties: map[string]*openapi3.SchemaRef{
-										"id": {
-											Value: &openapi3.Schema{
-												Type: &openapi3.Types{"string"},
-											},
-										},
-										"name": {
-											Value: &openapi3.Schema{
-												Type: &openapi3.Types{"string"},
-											},
-										},
-										"image": {
-											Value: &openapi3.Schema{
-												Type: &openapi3.Types{"string"},
-											},
-										},
-										"status": {
-											Value: &openapi3.Schema{
-												Type: &openapi3.Types{"string"},
-											},
-										},
-										"state": {
-											Value: &openapi3.Schema{
-												Type: &openapi3.Types{"string"},
-											},
-										},
-										"created": {
-											Value: &openapi3.Schema{
-												Type:   &openapi3.Types{"string"},
-												Format: "date-time",
-											},
-										},
+										"id":      {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+										"name":    {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+										"image":   {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+										"status":  {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+										"state":   {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+										"created": {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "date-time"}},
 										"labels": {
 											Value: &openapi3.Schema{
 												Type: &openapi3.Types{"object"},
 												AdditionalProperties: openapi3.AdditionalProperties{
-													Has: boolPtr(true),
-													Schema: &openapi3.SchemaRef{
-														Value: &openapi3.Schema{
-															Type: &openapi3.Types{"string"},
-														},
-													},
+													Has:    boolPtr(true),
+													Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
 												},
 											},
 										},
@@ -475,21 +452,9 @@ func addResponses() {
 													Value: &openapi3.Schema{
 														Type: &openapi3.Types{"object"},
 														Properties: map[string]*openapi3.SchemaRef{
-															"container_port": {
-																Value: &openapi3.Schema{
-																	Type: &openapi3.Types{"integer"},
-																},
-															},
-															"host_port": {
-																Value: &openapi3.Schema{
-																	Type: &openapi3.Types{"integer"},
-																},
-															},
-															"protocol": {
-																Value: &openapi3.Schema{
-																	Type: &openapi3.Types{"string"},
-																},
-															},
+															"container_port": {Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+															"host_port":      {Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+															"protocol":       {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
 														},
 													},
 												},
@@ -594,47 +559,18 @@ func addResponses() {
 			Content: openapi3.NewContentWithJSONSchema(&openapi3.Schema{
 				Type: &openapi3.Types{"object"},
 				Properties: map[string]*openapi3.SchemaRef{
-					"id": {
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{"string"},
-						},
-					},
-					"name": {
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{"string"},
-						},
-					},
-					"image": {
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{"string"},
-						},
-					},
-					"status": {
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{"string"},
-						},
-					},
-					"state": {
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{"string"},
-						},
-					},
-					"created": {
-						Value: &openapi3.Schema{
-							Type:   &openapi3.Types{"string"},
-							Format: "date-time",
-						},
-					},
+					"id":      {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+					"name":    {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+					"image":   {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+					"status":  {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+					"state":   {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+					"created": {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "date-time"}},
 					"labels": {
 						Value: &openapi3.Schema{
 							Type: &openapi3.Types{"object"},
 							AdditionalProperties: openapi3.AdditionalProperties{
-								Has: boolPtr(true),
-								Schema: &openapi3.SchemaRef{
-									Value: &openapi3.Schema{
-										Type: &openapi3.Types{"string"},
-									},
-								},
+								Has:    boolPtr(true),
+								Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
 							},
 						},
 					},
@@ -645,21 +581,9 @@ func addResponses() {
 								Value: &openapi3.Schema{
 									Type: &openapi3.Types{"object"},
 									Properties: map[string]*openapi3.SchemaRef{
-										"container_port": {
-											Value: &openapi3.Schema{
-												Type: &openapi3.Types{"integer"},
-											},
-										},
-										"host_port": {
-											Value: &openapi3.Schema{
-												Type: &openapi3.Types{"integer"},
-											},
-										},
-										"protocol": {
-											Value: &openapi3.Schema{
-												Type: &openapi3.Types{"string"},
-											},
-										},
+										"container_port": {Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+										"host_port":      {Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+										"protocol":       {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
 									},
 								},
 							},

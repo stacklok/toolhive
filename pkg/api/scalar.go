@@ -1,8 +1,6 @@
 package api
 
 import (
-	"encoding/json"
-	"fmt"
 	"net/http"
 )
 
@@ -14,26 +12,46 @@ const scalarHTML = `<!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
   </head>
   <body>
-    <script id="api-reference" type="application/json">
-    %s
-    </script>
+    <script id="api-reference" data-url="/openapi.json"></script>
     <script>
+      const servers = [
+        {
+          name: "ToolHive",
+          url: url,
+          description: "ToolHive server",
+        },
+        {
+          name: "Localhost",
+          url: "http://localhost:8080",
+          description: "Local development server",
+        },
+        {
+          name: "Custom",
+          url: "{custom-server-url}",
+          description: "Custom server",
+          variables: {
+            "custom-server-url": {
+              name: "Custom Server URL",
+              type: "string",
+              default: "http://localhost:8080",
+            },
+          },
+        },
+      ];
+
+      // if dev and current url is localhost, remove localhost from servers
+      if (window.location.hostname === "localhost") {
+        servers = servers.filter(server => server.name !== "Localhost");
+      }
+
       var configuration = {
         theme: "saturn",
         metaData: {
           title: "ToolHive API",
           description: "API Reference for ToolHive",
         },
-        servers: [
-          {
-            name: "Development",
-            url: "http://localhost:8080",
-            description: "Local development server"
-          }
-        ],
-        showServers: true,
-        allowCustomServers: true
-      }
+        servers
+      };
 
       document.getElementById('api-reference').dataset.configuration =
         JSON.stringify(configuration)
@@ -44,18 +62,8 @@ const scalarHTML = `<!doctype html>
 
 // ServeScalar serves the Scalar API reference page
 func ServeScalar(w http.ResponseWriter, _ *http.Request) {
-	// Get the OpenAPI specification
-	spec, err := json.Marshal(openapiSpec)
-	if err != nil {
-		http.Error(w, "Failed to marshal OpenAPI specification", http.StatusInternalServerError)
-		return
-	}
-
-	// Insert the OpenAPI specification into the HTML template
-	html := fmt.Sprintf(scalarHTML, spec)
-
 	w.Header().Set("Content-Type", "text/html")
-	if _, err := w.Write([]byte(html)); err != nil {
+	if _, err := w.Write([]byte(scalarHTML)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

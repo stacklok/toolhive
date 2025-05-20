@@ -1,2 +1,2 @@
 generate-release-notes: true
-
+charts_dir: deploy/charts

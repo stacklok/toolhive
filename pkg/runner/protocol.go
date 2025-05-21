@@ -29,14 +29,6 @@ func HandleProtocolScheme(
 	serverOrImage string,
 	caCertPath string,
 ) (string, error) {
-	// Check if the serverOrImage starts with a protocol scheme
-	if !strings.HasPrefix(serverOrImage, UVXScheme) &&
-		!strings.HasPrefix(serverOrImage, NPXScheme) &&
-		!strings.HasPrefix(serverOrImage, GOScheme) {
-		// No protocol scheme, return the original serverOrImage
-		return serverOrImage, nil
-	}
-
 	var transportType templates.TransportType
 	var packageName string
 
@@ -130,4 +122,11 @@ func HandleProtocolScheme(
 // is a version in the package name, the @ is replaced with a dash.
 func packageNameToImageName(packageName string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(packageName, "/", "-"), "@", "-")
+}
+
+// IsImageProtocolScheme checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
+func IsImageProtocolScheme(serverOrImage string) bool {
+	return strings.HasPrefix(serverOrImage, UVXScheme) ||
+		strings.HasPrefix(serverOrImage, NPXScheme) ||
+		strings.HasPrefix(serverOrImage, GOScheme)
 }

@@ -167,19 +167,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
-	// Check if the serverOrImage contains a protocol scheme (uvx://, npx://, or go://)
-	// and build a Docker image for it if needed
-	processedImage, err := runner.HandleProtocolScheme(ctx, rt, serverOrImage, runCACertPath)
-	if err != nil {
-		return fmt.Errorf("failed to process protocol scheme: %v", err)
-	}
-
-	// Update serverOrImage with the processed image if it was changed
-	if processedImage != serverOrImage {
-		logger.Debugf("Using built image: %s instead of %s", processedImage, serverOrImage)
-		serverOrImage = processedImage
-	}
-
 	// Initialize a new RunConfig with values from command-line flags
 	config := runner.NewRunConfigFromFlags(
 		rt,
@@ -203,29 +190,36 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		config.K8sPodTemplatePatch = runK8sPodPatch
 	}
 
-	// Try to find the server in the registry
-	// Skip registry lookup if we already processed a protocol scheme
 	var server *registry.Server
-	if processedImage == serverOrImage {
+
+	// Check if the serverOrImage is a protocol scheme, e.g., uvx://, npx://, or go://
+	if runner.IsImageProtocolScheme(serverOrImage) {
+		logger.Debugf("Detected protocol scheme: %s", serverOrImage)
+		// Process the protocol scheme and build the image
+		generatedImage, err := runner.HandleProtocolScheme(ctx, rt, serverOrImage, runCACertPath)
+		if err != nil {
+			return fmt.Errorf("failed to process protocol scheme: %v", err)
+		}
+		// Update the image in the config with the generated image
+		logger.Debugf("Using built image: %s instead of %s", generatedImage, serverOrImage)
+		config.Image = generatedImage
+	} else {
+		logger.Debugf("No protocol scheme detected, using image: %s", serverOrImage)
+		// Try to find the server in the registry
 		server, err = registry.GetServer(serverOrImage)
-	} else {
-		// We already processed a protocol scheme, so we don't need to look up in the registry
-		err = fmt.Errorf("server not found in registry")
+		if err != nil {
+			// Server isn't found in registry, treat as direct image
+			logger.Debugf("Server '%s' not found in registry: %v", serverOrImage, err)
+			config.Image = serverOrImage
+		} else {
+			// Server found in registry
+			logger.Debugf("Found server '%s' in registry: %v", serverOrImage, server)
+			// Apply registry settings to config
+			applyRegistrySettings(cmd, serverOrImage, server, config, debugMode)
+		}
 	}
 
-	// Set the image based on whether we found a registry entry
-	if err == nil {
-		// Server found in registry
-		logDebug(debugMode, "Found server '%s' in registry", serverOrImage)
-
-		// Apply registry settings to config
-		applyRegistrySettings(cmd, serverOrImage, server, config, debugMode)
-	} else {
-		// Server not found in registry, treat as direct image
-		logDebug(debugMode, "Server '%s' not found in registry, treating as Docker image", serverOrImage)
-		config.Image = serverOrImage
-	}
-
+	// Pull the image if necessary
 	if err := pullImage(ctx, config.Image, rt); err != nil {
 		return fmt.Errorf("failed to retrieve or pull image: %v", err)
 	}

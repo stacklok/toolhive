@@ -18,7 +18,7 @@
 ## TL;DR
 
 ```console
-helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator --create-namespace
+helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator -n toolhive-system --create-namespace
 ```
 
 ## Prerequisites
@@ -33,7 +33,7 @@ helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-opera
 Install one of the available versions:
 
 ```shell
-helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version>
+helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version> -n toolhive-system --create-namespace
 ```
 
 > **Tip**: List all releases using `helm list`

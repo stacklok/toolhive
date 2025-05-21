@@ -1,7 +1,7 @@
 
 # ToolHive Operator Helm Chart
 
-![Version: 0.0.3](https://img.shields.io/badge/Version-0.0.3-informational?style=flat-square)
+![Version: 0.0.4](https://img.shields.io/badge/Version-0.0.4-informational?style=flat-square)
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 
 A Helm chart for deploying the ToolHive Operator into Kubernetes.
@@ -11,7 +11,7 @@ A Helm chart for deploying the ToolHive Operator into Kubernetes.
 ## TL;DR
 
 ```console
-helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator --create-namespace
+helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator -n toolhive-system --create-namespace
 ```
 
 ## Prerequisites
@@ -26,7 +26,7 @@ helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-opera
 Install one of the available versions:
 
 ```shell
-helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version>
+helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version> -n toolhive-system --create-namespace
 ```
 
 > **Tip**: List all releases using `helm list`

@@ -47,6 +47,25 @@ type Server struct {
 	Tags []string `json:"tags,omitempty"`
 	// DockerTags lists the available Docker tags for this server image
 	DockerTags []string `json:"docker_tags,omitempty"`
+	// Provenance contains verification and signing metadata
+	Provenance *Provenance `json:"provenance,omitempty"`
+}
+
+// Provenance contains metadata about the image's provenance and signing status
+type Provenance struct {
+	SigstoreURL       string               `json:"sigstore_url"`
+	RepositoryURI     string               `json:"repository_uri"`
+	RepositoryRef     string               `json:"repository_ref"`
+	SignerIdentity    string               `json:"signer_identity"`
+	RunnerEnvironment string               `json:"runner_environment"`
+	CertIssuer        string               `json:"cert_issuer"`
+	Attestation       *VerifiedAttestation `json:"attestation,omitempty"`
+}
+
+// VerifiedAttestation represents the verified attestation information
+type VerifiedAttestation struct {
+	PredicateType string `json:"predicate_type,omitempty"`
+	Predicate     any    `json:"predicate,omitempty"`
 }
 
 // EnvVar represents an environment variable for an MCP server

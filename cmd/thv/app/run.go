@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -55,6 +57,13 @@ permission profile. Additional configuration can be provided via flags.`,
 	},
 }
 
+const (
+	verifyImageWarn     = "warn"
+	verifyImageEnabled  = "enabled"
+	verifyImageDisabled = "disabled"
+	verifyImageDefault  = verifyImageWarn
+)
+
 var (
 	runTransport         string
 	runName              string
@@ -70,6 +79,7 @@ var (
 	runAuthzConfig       string
 	runK8sPodPatch       string
 	runCACertPath        string
+	runVerifyImage       string
 )
 
 func init() {
@@ -127,6 +137,12 @@ func init() {
 		"ca-cert",
 		"",
 		"Path to a custom CA certificate file to use for container builds",
+	)
+	runCmd.Flags().StringVar(
+		&runVerifyImage,
+		"image-verification",
+		verifyImageDefault,
+		fmt.Sprintf("Set image verification mode (%s, %s, %s)", verifyImageWarn, verifyImageEnabled, verifyImageDisabled),
 	)
 
 	// Add OIDC validation flags
@@ -219,6 +235,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Verify the image against the expected provenance info (if applicable)
+	if err := verifyImage(ctx, config.Image, rt, server, runVerifyImage); err != nil {
+		return err
+	}
+
 	// Pull the image if necessary
 	if err := pullImage(ctx, config.Image, rt); err != nil {
 		return fmt.Errorf("failed to retrieve or pull image: %v", err)
@@ -283,6 +304,36 @@ func pullImage(ctx context.Context, image string, rt runtime.Runtime) error {
 		}
 	}
 
+	return nil
+}
+
+// verifyImage verifies the image using the specified verification setting (warn, enabled, or disabled)
+func verifyImage(ctx context.Context, image string, rt runtime.Runtime, server *registry.Server, verifySetting string) error {
+	switch verifySetting {
+	case verifyImageDisabled:
+		logger.Warn("Image verification is disabled")
+	case verifyImageWarn, verifyImageEnabled:
+		isSafe, err := rt.VerifyImage(ctx, server, image)
+		if err != nil {
+			// This happens if we have no provenance entry in the registry for this server. No need to fail, but do warn.
+			if errors.Is(err, verifier.ErrProvenanceServerInformationNotSet) {
+				logger.Infof("MCP server %s has no provenance information set, skipping image verification", image)
+				return nil
+			}
+			return fmt.Errorf("image verification failed: %v", err)
+		}
+		if !isSafe {
+			if verifySetting == verifyImageWarn {
+				logger.Warnf("MCP server %s failed image verification", image)
+			} else {
+				return fmt.Errorf("MCP server %s failed image verification", image)
+			}
+		} else {
+			logger.Infof("MCP server %s is verified successfully", image)
+		}
+	default:
+		return fmt.Errorf("invalid value for --image-verification: %s", verifySetting)
+	}
 	return nil
 }
 

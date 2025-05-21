@@ -97,9 +97,15 @@ func (d *defaultManager) DeleteContainer(ctx context.Context, name string, force
 	isRunning := isContainerRunning(container)
 	containerLabels := container.Labels
 
-	// Check if the container is running and force is not specified
-	if isRunning && !forceDelete {
-		return fmt.Errorf("container %s is running. Use -f to force remove", name)
+	// Check if the container is running
+	if isRunning {
+		if !forceDelete {
+			return fmt.Errorf("container %s is running. Stop the container or use -f to force remove", name)
+		}
+		// Stop the container if it's running
+		if err := d.stopContainer(ctx, containerID, name); err != nil {
+			logger.Warnf("Warning: Failed to stop container: %v", err)
+		}
 	}
 
 	// Remove the container

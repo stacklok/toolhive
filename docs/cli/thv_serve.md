@@ -13,10 +13,11 @@ thv serve [flags]
 ### Options
 
 ```
-  -h, --help          help for serve
-      --host string   Host address to bind the server to (default "127.0.0.1")
-      --openapi       Enable OpenAPI documentation endpoints (/api/openapi.json and /api/doc)
-      --port int      Port to bind the server to (default 8080)
+  -h, --help            help for serve
+      --host string     Host address to bind the server to (default "127.0.0.1")
+      --openapi         Enable OpenAPI documentation endpoints (/api/openapi.json and /api/doc)
+      --port int        Port to bind the server to (default 8080)
+      --socket string   UNIX socket path to bind the server to (overrides host and port if provided)
 ```
 
 ### Options inherited from parent commands

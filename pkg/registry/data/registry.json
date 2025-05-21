@@ -749,7 +749,6 @@
       "provenance": {
         "sigstore_url": "tuf-repo-cdn.sigstore.dev",
         "repository_uri": "https://github.com/github/github-mcp-server",
-        "repository_ref": "refs/tags/v0.3.0",
         "signer_identity": "/.github/workflows/docker-publish.yml",
         "runner_environment": "github-hosted",
         "cert_issuer": "https://token.actions.githubusercontent.com"
@@ -1082,7 +1081,6 @@
       "provenance": {
         "sigstore_url": "tuf-repo-cdn.sigstore.dev",
         "repository_uri": "https://github.com/StacklokLabs/mkp",
-        "repository_ref": "refs/tags/v0.0.9",
         "signer_identity": "/.github/workflows/release.yml",
         "runner_environment": "github-hosted",
         "cert_issuer": "https://token.actions.githubusercontent.com"
@@ -1259,7 +1257,6 @@
       "provenance": {
         "sigstore_url": "tuf-repo-cdn.sigstore.dev",
         "repository_uri": "https://github.com/StacklokLabs/osv-mcp",
-        "repository_ref": "refs/tags/v0.0.4",
         "signer_identity": "/.github/workflows/release.yml",
         "runner_environment": "github-hosted",
         "cert_issuer": "https://token.actions.githubusercontent.com"

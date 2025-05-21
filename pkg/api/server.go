@@ -1,6 +1,17 @@
 // Package api contains the REST API for ToolHive.
 package api
 
+// The OpenAPI spec is generated using "github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc4"
+// To update the OpenAPI spec, run:
+// install swag:
+//	go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc4
+// generate the spec:
+//	swag init -g pkg/api/server.go --v3.1
+
+// @title           ToolHive API
+// @version         1.0
+// @description     This is the ToolHive API server.
+
 import (
 	"context"
 	"errors"
@@ -26,7 +37,7 @@ const (
 
 // Serve starts the HTTP server on the given address and serves the API.
 // It is assumed that the caller sets up appropriate signal handling.
-func Serve(ctx context.Context, address string, debugMode bool) error {
+func Serve(ctx context.Context, address string, debugMode bool, enableDocs bool) error {
 	r := chi.NewRouter()
 	r.Use(
 		middleware.RequestID,
@@ -50,6 +61,12 @@ func Serve(ctx context.Context, address string, debugMode bool) error {
 		"/api/v1beta/version": v1.VersionRouter(),
 		"/api/v1beta/servers": v1.ServerRouter(manager, rt, debugMode),
 	}
+
+	// Only mount docs router if enabled
+	if enableDocs {
+		routers["/api/"] = DocsRouter()
+	}
+
 	for prefix, router := range routers {
 		r.Mount(prefix, router)
 	}

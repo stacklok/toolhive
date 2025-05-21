@@ -23,6 +23,12 @@ type ServerRoutes struct {
 	debugMode        bool
 }
 
+//	@title			ToolHive API
+//	@version		1.0
+//	@description	This is the ToolHive API server.
+//	@servers		[ { "url": "http://localhost:8080/api/v1" } ]
+//	@basePath		/api/v1
+
 // ServerRouter creates a new ServerRoutes instance.
 func ServerRouter(
 	manager lifecycle.Manager,
@@ -45,6 +51,13 @@ func ServerRouter(
 	return r
 }
 
+//	 listServers
+//		@Summary		List all servers
+//		@Description	Get a list of all running servers
+//		@Tags			servers
+//		@Produce		json
+//		@Success		200	{object}	serverListResponse
+//		@Router			/api/v1beta/servers [get]
 func (s *ServerRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	listAll := r.URL.Query().Get("all") == "true"
@@ -62,6 +75,16 @@ func (s *ServerRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// getServer
+//
+//	@Summary		Get server details
+//	@Description	Get details of a specific server
+//	@Tags			servers
+//	@Produce		json
+//	@Param			name	path		string	true	"Server name"
+//	@Success		200		{object}	runtime.ContainerInfo
+//	@Failure		404		{string}	string	"Not Found"
+//	@Router			/api/v1beta/servers/{name} [get]
 func (s *ServerRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
@@ -83,6 +106,15 @@ func (s *ServerRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// stopServer
+//
+//	@Summary		Stop a server
+//	@Description	Stop a running server
+//	@Tags			servers
+//	@Param			name	path		string	true	"Server name"
+//	@Success		204		{string}	string	"No Content"
+//	@Failure		404		{string}	string	"Not Found"
+//	@Router			/api/v1beta/servers/{name}/stop [post]
 func (s *ServerRoutes) stopServer(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
@@ -99,6 +131,16 @@ func (s *ServerRoutes) stopServer(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// deleteServer
+//
+//	@Summary		Delete a server
+//	@Description	Delete a server
+//	@Tags			servers
+//	@Param			name	path		string	true	"Server name"
+//	@Param			force	query		boolean	false	"Force deletion"
+//	@Success		204		{string}	string	"No Content"
+//	@Failure		404		{string}	string	"Not Found"
+//	@Router			/api/v1beta/servers/{name} [delete]
 func (s *ServerRoutes) deleteServer(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
@@ -116,6 +158,15 @@ func (s *ServerRoutes) deleteServer(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// restartServer
+//
+//	@Summary		Restart a server
+//	@Description	Restart a running server
+//	@Tags			servers
+//	@Param			name	path		string	true	"Server name"
+//	@Success		204		{string}	string	"No Content"
+//	@Failure		404		{string}	string	"Not Found"
+//	@Router			/api/v1beta/servers/{name}/restart [post]
 func (s *ServerRoutes) restartServer(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
@@ -132,6 +183,18 @@ func (s *ServerRoutes) restartServer(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// createServer
+//
+//	@Summary		Create a new server
+//	@Description	Create and start a new server
+//	@Tags			servers
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		createRequest	true	"Create server request"
+//	@Success		201		{object}	createServerResponse
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		409		{string}	string	"Conflict"
+//	@Router			/api/v1beta/servers [post]
 func (s *ServerRoutes) createServer(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -221,34 +284,65 @@ func (s *ServerRoutes) createServer(w http.ResponseWriter, r *http.Request) {
 }
 
 // Response type definitions.
-// TODO: Generate these from OpenAPI specs.
+
+// serverListResponse represents the response for listing servers
+//
+//	@Description	Response containing a list of servers
 type serverListResponse struct {
+	// List of container information for each server
 	Servers []runtime.ContainerInfo `json:"servers"`
 }
 
+// createRequest represents the request to create a new server
+//
+//	@Description	Request to create a new server
 type createRequest struct {
-	Name              string                    `json:"name"`
-	Image             string                    `json:"image"`
-	Host              string                    `json:"host"`
-	CmdArguments      []string                  `json:"cmd_arguments"`
-	TargetPort        int                       `json:"target_port"`
-	EnvVars           []string                  `json:"env_vars"`
-	Secrets           []secrets.SecretParameter `json:"secrets"`
-	Volumes           []string                  `json:"volumes"`
-	Transport         string                    `json:"transport"`
-	AuthzConfig       string                    `json:"authz_config"`
-	OIDC              oidcOptions               `json:"oidc"`
-	PermissionProfile string                    `json:"permission_profile"`
+	// Name of the server
+	Name string `json:"name"`
+	// Docker image to use
+	Image string `json:"image"`
+	// Host to bind to
+	Host string `json:"host"`
+	// Command arguments to pass to the container
+	CmdArguments []string `json:"cmd_arguments"`
+	// Port to expose from the container
+	TargetPort int `json:"target_port"`
+	// Environment variables to set in the container
+	EnvVars []string `json:"env_vars"`
+	// Secret parameters to inject
+	Secrets []secrets.SecretParameter `json:"secrets"`
+	// Volume mounts
+	Volumes []string `json:"volumes"`
+	// Transport configuration
+	Transport string `json:"transport"`
+	// Authorization configuration
+	AuthzConfig string `json:"authz_config"`
+	// OIDC configuration options
+	OIDC oidcOptions `json:"oidc"`
+	// Permission profile to apply
+	PermissionProfile string `json:"permission_profile"`
 }
 
+// oidcOptions represents OIDC configuration options
+//
+//	@Description	OIDC configuration for server authentication
 type oidcOptions struct {
-	Issuer   string `json:"issuer"`
+	// OIDC issuer URL
+	Issuer string `json:"issuer"`
+	// Expected audience
 	Audience string `json:"audience"`
-	JwksURL  string `json:"jwks_url"`
+	// JWKS URL for key verification
+	JwksURL string `json:"jwks_url"`
+	// OAuth2 client ID
 	ClientID string `json:"client_id"`
 }
 
+// createServerResponse represents the response for server creation
+//
+//	@Description	Response after successfully creating a server
 type createServerResponse struct {
+	// Name of the created server
 	Name string `json:"name"`
-	Port int    `json:"port"`
+	// Port the server is listening on
+	Port int `json:"port"`
 }

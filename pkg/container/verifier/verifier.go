@@ -171,14 +171,36 @@ func compareBaseProperties(r *verify.VerificationResult, p *registry.Provenance)
 	if err != nil {
 		logger.Error("error parsing signer identity")
 	}
-
 	// Compare repository name and reference, signer identity, runner environment, and cert issuer
-	if p.RepositoryURI != r.Signature.Certificate.SourceRepositoryURI ||
-		p.RepositoryRef != r.Signature.Certificate.SourceRepositoryRef ||
-		p.RunnerEnvironment != r.Signature.Certificate.RunnerEnvironment ||
-		p.CertIssuer != r.Signature.Certificate.Issuer ||
-		p.SignerIdentity != siIdentity {
-		return false
+	if p.RepositoryURI != "" {
+		// If the repository URI is set, we need to compare it with the verification result
+		if p.RepositoryURI != r.Signature.Certificate.SourceRepositoryURI {
+			return false
+		}
+	}
+	if p.RepositoryRef != "" {
+		// If the repository reference is set, we need to compare it with the verification result
+		if p.RepositoryRef != r.Signature.Certificate.SourceRepositoryRef {
+			return false
+		}
+	}
+	if p.RunnerEnvironment != "" {
+		// If the runner environment is set, we need to compare it with the verification result
+		if p.RunnerEnvironment != r.Signature.Certificate.RunnerEnvironment {
+			return false
+		}
+	}
+	if p.CertIssuer != "" {
+		// If the certificate issuer is set, we need to compare it with the verification result
+		if p.CertIssuer != r.Signature.Certificate.Issuer {
+			return false
+		}
+	}
+	if p.SignerIdentity != "" {
+		// If the signer identity is set, we need to compare it with the verification result
+		if p.SignerIdentity != siIdentity {
+			return false
+		}
 	}
 	return true
 }

@@ -24,7 +24,6 @@ var (
 
 // GetRegistry returns the MCP server registry
 func GetRegistry() (*Registry, error) {
-	var registry *Registry
 	registryOnce.Do(func() {
 
 		// Load the config to check if a custom registry URL was provided

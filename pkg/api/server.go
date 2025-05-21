@@ -38,6 +38,43 @@ const (
 	socketPermissions = 0660 // Socket file permissions (owner/group read-write)
 )
 
+func setupTCPListener(address string) (net.Listener, error) {
+	return net.Listen("tcp", address)
+}
+
+func setupUnixSocket(address string) (net.Listener, error) {
+	// Remove the socket file if it already exists
+	if _, err := os.Stat(address); err == nil {
+		if err := os.Remove(address); err != nil {
+			return nil, fmt.Errorf("failed to remove existing socket: %v", err)
+		}
+	}
+
+	// Create the directory for the socket file if it doesn't exist
+	if err := os.MkdirAll(filepath.Dir(address), 0750); err != nil {
+		return nil, fmt.Errorf("failed to create socket directory: %v", err)
+	}
+
+	// Create UNIX socket listener
+	listener, err := net.Listen("unix", address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create UNIX socket listener: %v", err)
+	}
+
+	// Set file permissions on the socket to allow other local processes to connect
+	if err := os.Chmod(address, socketPermissions); err != nil {
+		return nil, fmt.Errorf("failed to set socket permissions: %v", err)
+	}
+
+	return listener, nil
+}
+
+func cleanupUnixSocket(address string) {
+	if err := os.Remove(address); err != nil && !os.IsNotExist(err) {
+		logger.Warnf("failed to remove socket file: %v", err)
+	}
+}
+
 // Serve starts the server on the given address and serves the API.
 // It is assumed that the caller sets up appropriate signal handling.
 // If isUnixSocket is true, address is treated as a UNIX socket path.
@@ -87,37 +124,14 @@ func Serve(ctx context.Context, address string, isUnixSocket bool, debugMode boo
 	var addrType string
 
 	if isUnixSocket {
-		// Remove the socket file if it already exists
-		if _, err := os.Stat(address); err == nil {
-			if err := os.Remove(address); err != nil {
-				return fmt.Errorf("failed to remove existing socket: %v", err)
-			}
-		}
-
-		// Create the directory for the socket file if it doesn't exist
-		if err := os.MkdirAll(filepath.Dir(address), 0755); err != nil {
-			return fmt.Errorf("failed to create socket directory: %v", err)
-		}
-
-		// Create UNIX socket listener
-		listener, err = net.Listen("unix", address)
-		if err != nil {
-			return fmt.Errorf("failed to create UNIX socket listener: %v", err)
-		}
-
-		// Set file permissions on the socket to allow other local processes to connect
-		if err := os.Chmod(address, socketPermissions); err != nil {
-			return fmt.Errorf("failed to set socket permissions: %v", err)
-		}
-
+		listener, err = setupUnixSocket(address)
 		addrType = "UNIX socket"
 	} else {
-		// Create TCP listener
-		listener, err = net.Listen("tcp", address)
-		if err != nil {
-			return fmt.Errorf("failed to create TCP listener: %v", err)
-		}
+		listener, err = setupTCPListener(address)
 		addrType = "HTTP"
+	}
+	if err != nil {
+		return err
 	}
 
 	logger.Infof("starting %s server", addrType, address)
@@ -129,23 +143,18 @@ func Serve(ctx context.Context, address string, isUnixSocket bool, debugMode boo
 		}
 	}()
 
-	// Cleanup function for when server exits
-	cleanup := func() {
-		if isUnixSocket {
-			if err := os.Remove(address); err != nil && !os.IsNotExist(err) {
-				logger.Warnf("failed to remove socket file: %v", err)
-			}
-		}
-	}
-
-	// Kill server on context shutdown.
 	<-ctx.Done()
 	if err := srv.Shutdown(ctx); err != nil {
-		cleanup()
-		return fmt.Errorf("server shutdown failed:%+v", err)
+		if isUnixSocket {
+			cleanupUnixSocket(address)
+		}
+		return fmt.Errorf("server shutdown failed: %w", err)
 	}
 
-	cleanup()
+	if isUnixSocket {
+		cleanupUnixSocket(address)
+	}
+
 	logger.Infof("%s server stopped", addrType)
 	return nil
 }

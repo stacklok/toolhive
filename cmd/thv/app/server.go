@@ -46,5 +46,6 @@ func init() {
 	serveCmd.Flags().IntVar(&port, "port", 8080, "Port to bind the server to")
 	serveCmd.Flags().BoolVar(&enableDocs, "openapi", false,
 		"Enable OpenAPI documentation endpoints (/api/openapi.json and /api/doc)")
-	serveCmd.Flags().StringVar(&socketPath, "socket", "", "UNIX socket path to bind the server to (overrides host and port if provided)")
+	serveCmd.Flags().StringVar(&socketPath, "socket", "", "UNIX socket path to bind the "+
+		"server to (overrides host and port if provided)")
 }

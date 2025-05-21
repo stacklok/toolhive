@@ -317,19 +317,19 @@ func verifyImage(ctx context.Context, image string, rt runtime.Runtime, server *
 		if err != nil {
 			// This happens if we have no provenance entry in the registry for this server. No need to fail, but do warn.
 			if errors.Is(err, verifier.ErrProvenanceServerInformationNotSet) {
-				logger.Infof("MCP server %s has no provenance information set, skipping image verification", image)
+				logger.Warnf("⚠️  MCP server %s has no provenance information set, skipping image verification", image)
 				return nil
 			}
-			return fmt.Errorf("image verification failed: %v", err)
+			return fmt.Errorf("❌ image verification failed: %v", err)
 		}
 		if !isSafe {
 			if verifySetting == verifyImageWarn {
-				logger.Warnf("MCP server %s failed image verification", image)
+				logger.Warnf("❌ MCP server %s failed image verification", image)
 			} else {
-				return fmt.Errorf("MCP server %s failed image verification", image)
+				return fmt.Errorf("❌ MCP server %s failed image verification", image)
 			}
 		} else {
-			logger.Infof("MCP server %s is verified successfully", image)
+			logger.Infof("✅ MCP server %s is verified successfully", image)
 		}
 	default:
 		return fmt.Errorf("invalid value for --image-verification: %s", verifySetting)

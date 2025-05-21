@@ -18,7 +18,8 @@ go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc4
 2. Generate the OpenAPI specification:
 
    ```bash
-   swag init -g pkg/api/server.go --v3.1
+   # at the root of the repository run:
+   swag init -g pkg/api/server.go --v3.1 -o docs/server
    ```
 
    This will generate:

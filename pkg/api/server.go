@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -33,11 +35,13 @@ import (
 const (
 	middlewareTimeout = 60 * time.Second
 	readHeaderTimeout = 10 * time.Second
+	socketPermissions = 0660 // Socket file permissions (owner/group read-write)
 )
 
-// Serve starts the HTTP server on the given address and serves the API.
+// Serve starts the server on the given address and serves the API.
 // It is assumed that the caller sets up appropriate signal handling.
-func Serve(ctx context.Context, address string, debugMode bool, enableDocs bool) error {
+// If isUnixSocket is true, address is treated as a UNIX socket path.
+func Serve(ctx context.Context, address string, isUnixSocket bool, debugMode bool, enableDocs bool) error {
 	r := chi.NewRouter()
 	r.Use(
 		middleware.RequestID,
@@ -78,21 +82,70 @@ func Serve(ctx context.Context, address string, debugMode bool, enableDocs bool)
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
-	logger.Infof("starting http server on %s", srv.Addr)
+	// Create a listener based on the connection type
+	var listener net.Listener
+	var addrType string
+
+	if isUnixSocket {
+		// Remove the socket file if it already exists
+		if _, err := os.Stat(address); err == nil {
+			if err := os.Remove(address); err != nil {
+				return fmt.Errorf("failed to remove existing socket: %v", err)
+			}
+		}
+
+		// Create the directory for the socket file if it doesn't exist
+		if err := os.MkdirAll(filepath.Dir(address), 0755); err != nil {
+			return fmt.Errorf("failed to create socket directory: %v", err)
+		}
+
+		// Create UNIX socket listener
+		listener, err = net.Listen("unix", address)
+		if err != nil {
+			return fmt.Errorf("failed to create UNIX socket listener: %v", err)
+		}
+
+		// Set file permissions on the socket to allow other local processes to connect
+		if err := os.Chmod(address, socketPermissions); err != nil {
+			return fmt.Errorf("failed to set socket permissions: %v", err)
+		}
+
+		addrType = "UNIX socket"
+	} else {
+		// Create TCP listener
+		listener, err = net.Listen("tcp", address)
+		if err != nil {
+			return fmt.Errorf("failed to create TCP listener: %v", err)
+		}
+		addrType = "HTTP"
+	}
+
+	logger.Infof("starting %s server", addrType, address)
 
 	// Start server.
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Panicf("server stopped with error: %v", err)
 		}
 	}()
 
+	// Cleanup function for when server exits
+	cleanup := func() {
+		if isUnixSocket {
+			if err := os.Remove(address); err != nil && !os.IsNotExist(err) {
+				logger.Warnf("failed to remove socket file: %v", err)
+			}
+		}
+	}
+
 	// Kill server on context shutdown.
 	<-ctx.Done()
 	if err := srv.Shutdown(ctx); err != nil {
+		cleanup()
 		return fmt.Errorf("server shutdown failed:%+v", err)
 	}
 
-	logger.Infof("http server stopped")
+	cleanup()
+	logger.Infof("%s server stopped", addrType)
 	return nil
 }

@@ -1078,7 +1078,15 @@
         "get_resource",
         "apply_resource"
       ],
-      "transport": "sse"
+      "transport": "sse",
+      "provenance": {
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev",
+        "repository_uri": "https://github.com/StacklokLabs/mkp",
+        "repository_ref": "refs/tags/v0.0.9",
+        "signer_identity": "/.github/workflows/release.yml",
+        "runner_environment": "github-hosted",
+        "cert_issuer": "https://token.actions.githubusercontent.com"
+      }
     },
     "memory": {
       "args": [],
@@ -1247,7 +1255,15 @@
         "query_vulnerabilities_batch",
         "get_vulnerability"
       ],
-      "transport": "sse"
+      "transport": "sse",
+      "provenance": {
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev",
+        "repository_uri": "https://github.com/StacklokLabs/osv-mcp",
+        "repository_ref": "refs/tags/v0.0.4",
+        "signer_identity": "/.github/workflows/release.yml",
+        "runner_environment": "github-hosted",
+        "cert_issuer": "https://token.actions.githubusercontent.com"
+      }
     },
     "perplexity-ask": {
       "args": [],

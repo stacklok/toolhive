@@ -33,11 +33,14 @@ consistency, and security.
   - [Find and run an MCP server](#find-and-run-an-mcp-server)
   - [Manage MCP servers](#manage-mcp-servers)
   - [Secrets management](#secrets-management)
+    - [`encrypted`](#encrypted)
+    - [`1password`](#1password)
   - [Run a custom MCP server](#run-a-custom-mcp-server)
   - [Run MCP servers using protocol schemes](#run-mcp-servers-using-protocol-schemes)
 - [Advanced usage](#advanced-usage)
   - [Customize permissions](#customize-permissions)
   - [Run ToolHive in Kubernetes](#run-toolhive-in-kubernetes)
+- [API Documentation](#api-documentation)
 - [Contributing to ToolHive](#contributing-to-toolhive)
 - [License](#license)
 
@@ -298,6 +301,7 @@ ToolHive offers integration with multiple secret providers:
 - `1password`
 
 #### `encrypted`
+
 This example enables ToolHive's encrypted secrets store, creates a secret for a
 GitHub authentication token, and runs the GitHub MCP server with the token:
 
@@ -317,6 +321,7 @@ For more details on managing secrets, see the
 `thv secret --help`.
 
 #### `1password`
+
 This example enables ToolHive's 1Password integration for retrieving secrets.
 
 To enable the `1password` provider:
@@ -341,7 +346,6 @@ Secret op://test/login/password: my-test-passywordy
 For more details on managing secrets, see the
 [`thv secret` command reference](./docs/cli/thv_secret.md) or run
 `thv secret --help`.
-
 
 ### Run a custom MCP server
 
@@ -468,6 +472,10 @@ Check out the
 guide to get started.
 
 [Deploy MCP Servers in Kubernetes with ToolHive Operator](./docs/kind/deploying-mcp-server-with-operator.md)
+
+## API Documentation
+
+Full OpenAPI 3.1.0 REST API generation and documentation is available in the [docs/server](./docs/server) directory.
 
 ## Contributing to ToolHive
 

@@ -3,6 +3,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -86,6 +87,7 @@ func (c *THVCommand) RunWithTimeout(timeout time.Duration) (string, string, erro
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+
 	return stdout.String(), stderr.String(), err
 }
 
@@ -138,12 +140,32 @@ func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Durati
 
 // StopAndRemoveMCPServer stops and removes an MCP server
 func StopAndRemoveMCPServer(config *TestConfig, serverName string) error {
-	// Try to stop the server first
-	_, _, _ = NewTHVCommand(config, "stop", serverName).Run()
+	const maxRetries = 5
+	const delay = 500 * time.Millisecond
 
-	// Then remove it
-	_, _, err := NewTHVCommand(config, "rm", "-f", serverName).Run()
-	return err
+	var lastErr error
+
+	// Retry stopping the server
+	for i := 0; i < maxRetries; i++ {
+		_, _, err := NewTHVCommand(config, "stop", serverName).Run()
+		if err == nil {
+			break
+		}
+		lastErr = err
+		time.Sleep(delay)
+	}
+
+	// Retry removing the server
+	for i := 0; i < maxRetries; i++ {
+		_, _, err := NewTHVCommand(config, "rm", "-f", serverName).Run()
+		if err == nil {
+			return nil // success
+		}
+		lastErr = err
+		time.Sleep(delay)
+	}
+
+	return errors.New("failed to stop and remove MCP server after retries: " + lastErr.Error())
 }
 
 // GetMCPServerURL gets the URL for an MCP server

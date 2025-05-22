@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -116,11 +117,18 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
+			// remove path from server url
+			parsedURL, err := url.Parse(osvServerURL)
+			if err != nil {
+				GinkgoWriter.Printf("Failed to parse OSV server URL: %v\n", err)
+			}
+			base := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
+
 			By("Starting the proxy with OAuth configuration")
 			proxyCmd = startProxyWithOAuth(
 				config,
 				proxyServerName,
-				osvServerURL,
+				base,
 				proxyPort,
 				mockOIDCBaseURL,
 				clientID,
@@ -152,11 +160,18 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
+			// remove path from server url
+			parsedURL, err := url.Parse(osvServerURL)
+			if err != nil {
+				GinkgoWriter.Printf("Failed to parse OSV server URL: %v\n", err)
+			}
+			base := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
+
 			By("Starting the proxy with OAuth auto-detection")
 			proxyCmd = startProxyWithOAuthDetection(
 				config,
 				proxyServerName,
-				osvServerURL,
+				base,
 				proxyPort,
 				clientID,
 				clientSecret,
@@ -177,11 +192,18 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
+			// remove path from server url
+			parsedURL, err := url.Parse(osvServerURL)
+			if err != nil {
+				GinkgoWriter.Printf("Failed to parse OSV server URL: %v\n", err)
+			}
+			base := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
+
 			By("Starting the proxy with invalid OAuth credentials")
 			proxyCmd = startProxyWithOAuth(
 				config,
 				proxyServerName,
-				osvServerURL,
+				base,
 				proxyPort,
 				mockOIDCBaseURL,
 				"invalid-client",
@@ -213,11 +235,18 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
+			// remove path from server url
+			parsedURL, err := url.Parse(osvServerURL)
+			if err != nil {
+				GinkgoWriter.Printf("Failed to parse OSV server URL: %v\n", err)
+			}
+			base := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
+
 			By("Starting the proxy with missing OAuth issuer but remote-auth enabled")
 			proxyCmd = startProxyWithOAuth(
 				config,
 				proxyServerName,
-				osvServerURL,
+				base,
 				proxyPort,
 				"", // Empty issuer
 				clientID,
@@ -249,11 +278,18 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
+			// remove path from server url
+			parsedURL, err := url.Parse(osvServerURL)
+			if err != nil {
+				GinkgoWriter.Printf("Failed to parse OSV server URL: %v\n", err)
+			}
+			base := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
+
 			By("Starting the proxy with auto-detection (no --remote-auth flag)")
 			proxyCmd = startProxyWithAutoDetection(
 				config,
 				proxyServerName,
-				osvServerURL,
+				base,
 				proxyPort,
 				clientID,
 				clientSecret,
@@ -361,9 +397,9 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 
 // Helper functions
 
-func checkServerHealth(url string) error {
+func checkServerHealth(healthUrl string) error {
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(url)
+	resp, err := client.Get(healthUrl)
 	if err != nil {
 		return err
 	}

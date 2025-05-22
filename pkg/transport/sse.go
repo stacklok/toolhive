@@ -201,7 +201,6 @@ func (t *SSETransport) Start(ctx context.Context) error {
 
 	// Use the target port for the container
 	containerPort := t.targetPort
-
 	targetURI := fmt.Sprintf("http://%s:%d", targetHost, containerPort)
 	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
 		t.port, targetURI)

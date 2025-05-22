@@ -86,6 +86,7 @@ func (c *THVCommand) RunWithTimeout(timeout time.Duration) (string, string, erro
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+
 	return stdout.String(), stderr.String(), err
 }
 

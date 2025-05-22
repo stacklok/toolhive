@@ -153,6 +153,7 @@ func WaitForMCPServerReady(config *TestConfig, serverURL string, timeout time.Du
 			// Before timing out, debug the server state
 			GinkgoWriter.Printf("MCP server connection timed out, debugging server state...\n")
 			DebugServerState(config, serverName)
+
 			return fmt.Errorf("timeout waiting for MCP server to be ready at %s", serverURL)
 		case <-ticker.C:
 			// Try to create a client and initialize

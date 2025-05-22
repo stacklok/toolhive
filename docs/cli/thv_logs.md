@@ -4,7 +4,7 @@ Output the logs of an MCP server
 
 ### Synopsis
 
-Output the logs of an MCP server managed by Vibe Tool.
+Output the logs of an MCP server managed by ToolHive.
 
 ```
 thv logs [container-name] [flags]
@@ -13,8 +13,8 @@ thv logs [container-name] [flags]
 ### Options
 
 ```
-  -h, --help   help for logs
-  -t, --tail   Tail the logs
+  -t, --follow   Follow log output
+  -h, --help     help for logs
 ```
 
 ### Options inherited from parent commands

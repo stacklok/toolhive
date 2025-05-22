@@ -6,7 +6,7 @@ package api
 // install swag:
 //	go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc4
 // generate the spec:
-//	swag init -g pkg/api/server.go --v3.1
+//	swag init -g pkg/api/server.go --v3.1 -o docs/server
 
 // @title           ToolHive API
 // @version         1.0

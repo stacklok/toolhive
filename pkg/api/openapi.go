@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/stacklok/toolhive/docs"
+	"github.com/stacklok/toolhive/docs/server"
 )
 
 // ServeOpenAPI writes the OpenAPI specification as JSON to the response.
@@ -19,7 +19,7 @@ func ServeOpenAPI(w http.ResponseWriter, _ *http.Request) {
 
 	// Parse the OpenAPI spec into a proper JSON object
 	var openAPISpec map[string]interface{}
-	if err := json.Unmarshal([]byte(docs.SwaggerInfo.ReadDoc()), &openAPISpec); err != nil {
+	if err := json.Unmarshal([]byte(server.SwaggerInfo.ReadDoc()), &openAPISpec); err != nil {
 		http.Error(w, "Failed to parse OpenAPI specification", http.StatusInternalServerError)
 		return
 	}

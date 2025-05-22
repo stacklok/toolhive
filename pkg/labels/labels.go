@@ -43,6 +43,12 @@ func AddStandardLabels(labels map[string]string, containerName, containerBaseNam
 	labels[LabelToolType] = "mcp"
 }
 
+// AddNetworkLabels adds network-related labels to a network
+func AddNetworkLabels(labels map[string]string, networkName string) {
+	labels[LabelEnabled] = "true"
+	labels[LabelName] = networkName
+}
+
 // FormatToolHiveFilter formats a filter for ToolHive containers
 func FormatToolHiveFilter() string {
 	return fmt.Sprintf("%s=true", LabelEnabled)

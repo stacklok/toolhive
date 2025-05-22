@@ -145,7 +145,7 @@ func (s *ServerRoutes) deleteServer(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 	forceDelete := r.URL.Query().Get("force") == "true"
-	err := s.manager.DeleteContainer(ctx, name, forceDelete)
+	err := s.manager.DeleteContainer(ctx, name, forceDelete, true)
 	if err != nil {
 		if errors.Is(err, lifecycle.ErrContainerNotFound) {
 			http.Error(w, "Server not found", http.StatusNotFound)

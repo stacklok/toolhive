@@ -90,6 +90,14 @@ func (*mockRuntime) String() string {
 	return "mock"
 }
 
+func (*mockRuntime) CreateNetwork(_ context.Context, _ string, _ map[string]string, _ bool) (string, error) {
+	return "mock-network", nil
+}
+
+func (*mockRuntime) DeleteNetwork(_ context.Context, _ string) error {
+	return nil
+}
+
 func TestNewRunConfig(t *testing.T) {
 	config := NewRunConfig()
 	assert.NotNil(t, config, "NewRunConfig should return a non-nil config")

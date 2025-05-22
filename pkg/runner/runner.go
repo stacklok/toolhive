@@ -6,13 +6,17 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	lb "github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -23,6 +27,9 @@ import (
 type Runner struct {
 	// Config is the configuration for the runner
 	Config *RunConfig
+
+	// Mutex for protecting shared state
+	mutex sync.Mutex
 }
 
 // NewRunner creates a new Runner with the provided configuration
@@ -30,6 +37,44 @@ func NewRunner(runConfig *RunConfig) *Runner {
 	return &Runner{
 		Config: runConfig,
 	}
+}
+
+// Starts an egress container for the MCP server
+func (r *Runner) setupEgressContainer(ctx context.Context, containerName string, egressImage string) error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	// Create container options
+	containerOptions := rt.NewCreateContainerOptions()
+
+	// container name is name of container + "-egress"
+	egressContainerName := fmt.Sprintf("%s-egress", containerName)
+
+	cmdArgs := []string{}
+	envVars := map[string]string{}
+
+	labels := map[string]string{}
+	lb.AddStandardLabels(labels, egressContainerName, egressContainerName, "stdio", 80)
+
+	// Create the container
+	logger.Infof("Creating container %s from image %s...", egressContainerName, egressImage)
+	containerID, err := r.Config.Runtime.CreateContainer(
+		ctx,
+		egressImage,
+		egressContainerName,
+		cmdArgs,
+		envVars,
+		labels,
+		permissions.BuiltinEgressProfile(),
+		"stdio",
+		containerOptions,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create container: %v", err)
+	}
+	logger.Infof("Container created with ID: %s", containerID)
+
+	return nil
 }
 
 // Run runs the MCP server with the provided configuration
@@ -110,6 +155,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Create networks if they do not exist
+	internalNetworkLabels := map[string]string{}
+	lb.AddNetworkLabels(internalNetworkLabels, "toolhive-internal")
+	_, err = r.Config.Runtime.CreateNetwork(ctx, "toolhive-internal", internalNetworkLabels, true)
+	if err != nil {
+		return fmt.Errorf("failed to create internal network: %v", err)
+	}
+
+	externalNetworkLabels := map[string]string{}
+	lb.AddNetworkLabels(externalNetworkLabels, "toolhive-external")
+	_, err = r.Config.Runtime.CreateNetwork(ctx, "toolhive-external", externalNetworkLabels, false)
+	if err != nil {
+		return fmt.Errorf("failed to create external network: %v", err)
+	}
+
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)
 	if err := transportHandler.Setup(
@@ -132,6 +192,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	// clients should be updated, if any.
 	if err := updateClientConfigurations(r.Config.ContainerName, "localhost", r.Config.Port); err != nil {
 		logger.Warnf("Warning: Failed to update client configurations: %v", err)
+	}
+
+	// spin up the egress container
+	if err := r.setupEgressContainer(ctx, r.Config.ContainerName, r.Config.EgressImage); err != nil {
+		return fmt.Errorf("failed to set up egress container: %v", err)
 	}
 
 	// Define a function to stop the MCP server

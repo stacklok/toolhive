@@ -1206,6 +1206,78 @@
       ],
       "transport": "sse"
     },
+    "oci-registry": {
+      "args": [],
+      "description": "The OCI Registry MCP Server enables secure and seamless querying of OCI container registries, providing tools for image introspection, tag discovery, and manifest/config retrieval.",
+      "env_vars": [
+        {
+          "description": "Bearer token for OCI registry authentication",
+          "name": "OCI_TOKEN",
+          "required": false
+        },
+        {
+          "description": "Username for registry authentication",
+          "name": "OCI_USERNAME",
+          "required": false
+        },
+        {
+          "description": "Password for registry authentication",
+          "name": "OCI_PASSWORD",
+          "required": false
+        }
+      ],
+      "image": "ghcr.io/stackloklabs/ocireg-mcp/server:latest",
+      "metadata": {
+        "last_updated": "2025-05-21T00:00:00Z",
+        "pulls": 10,
+        "stars": 2
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              "*"
+            ],
+            "allow_port": [
+              443
+            ],
+            "allow_transport": [
+              "tcp"
+            ],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/StacklokLabs/ocireg-mcp",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/release.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
+      "repository_url": "https://github.com/StacklokLabs/ocireg-mcp",
+      "tags": [
+        "oci",
+        "registry",
+        "containers",
+        "images",
+        "tags",
+        "manifest",
+        "config",
+        "mcp",
+        "docker"
+      ],
+      "target_port": 8080,
+      "tools": [
+        "get_image_info",
+        "list_tags",
+        "get_image_manifest",
+        "get_image_config"
+      ],
+      "transport": "sse"
+    },
     "osv": {
       "args": [],
       "description": "An MCP (Model Context Protocol) server that provides access to the OSV (Open Source Vulnerabilities) database. This server allows LLM-powered applications to query the OSV database for vulnerability information about packages and commits.",

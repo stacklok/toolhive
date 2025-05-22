@@ -13,22 +13,22 @@ import (
 )
 
 var (
-	tailFlag bool
+	followFlag bool
 )
 
 func logsCommand() *cobra.Command {
 	logsCommand := &cobra.Command{
 		Use:   "logs [container-name]",
 		Short: "Output the logs of an MCP server",
-		Long:  `Output the logs of an MCP server managed by Vibe Tool.`,
+		Long:  `Output the logs of an MCP server managed by ToolHive.`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return logsCmdFunc(cmd, args)
 		},
 	}
 
-	logsCommand.Flags().BoolVarP(&tailFlag, "tail", "t", false, "Tail the logs")
-	err := viper.BindPFlag("tail", logsCommand.Flags().Lookup("tail"))
+	logsCommand.Flags().BoolVarP(&followFlag, "follow", "t", false, "Follow log output")
+	err := viper.BindPFlag("follow", logsCommand.Flags().Lookup("follow"))
 	if err != nil {
 		logger.Errorf("failed to bind flag: %v", err)
 	}
@@ -56,7 +56,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 	// Find the container with the given name
 	var containerID string
 	for _, c := range containers {
-		// Check if the container is managed by Vibe Tool
+		// Check if the container is managed by ToolHive
 		if !labels.IsToolHiveContainer(c.Labels) {
 			continue
 		}
@@ -79,8 +79,8 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	tail := viper.GetBool("tail")
-	logs, err := runtime.ContainerLogs(ctx, containerID, tail)
+	follow := viper.GetBool("follow")
+	logs, err := runtime.ContainerLogs(ctx, containerID, follow)
 	if err != nil {
 		return fmt.Errorf("failed to get container logs: %v", err)
 	}

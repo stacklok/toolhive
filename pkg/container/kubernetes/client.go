@@ -204,7 +204,7 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 }
 
 // ContainerLogs implements runtime.Runtime.
-func (c *Client) ContainerLogs(ctx context.Context, containerID string, tail bool) (string, error) {
+func (c *Client) ContainerLogs(ctx context.Context, containerID string, follow bool) (string, error) {
 	// In Kubernetes, containerID is the statefulset name
 	namespace := getCurrentNamespace()
 
@@ -226,7 +226,7 @@ func (c *Client) ContainerLogs(ctx context.Context, containerID string, tail boo
 	// Get logs from the pod
 	logOptions := &corev1.PodLogOptions{
 		Container:  mcpContainerName,
-		Follow:     tail,
+		Follow:     follow,
 		Previous:   false,
 		Timestamps: true,
 	}

@@ -13,7 +13,7 @@ thv logs [container-name] [flags]
 ### Options
 
 ```
-  -t, --follow   Follow log output
+  -f, --follow   Follow log output
   -h, --help     help for logs
 ```
 

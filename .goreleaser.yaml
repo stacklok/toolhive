@@ -16,7 +16,7 @@ builds:
       - "-X github.com/stacklok/toolhive/pkg/versions.BuildDate={{ .Date }}"
     goos:
       - linux
-#      - windows
+      - windows
       - darwin
     goarch:
       - amd64

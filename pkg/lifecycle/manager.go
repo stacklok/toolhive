@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"syscall"
 
 	"github.com/adrg/xdg"
 
@@ -312,9 +311,7 @@ func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig) error {
 
 	// Detach the process from the terminal
 	detachedCmd.Stdin = nil
-	detachedCmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true, // Create a new session
-	}
+	detachedCmd.SysProcAttr = getSysProcAttr()
 
 	// Start the detached process
 	if err := detachedCmd.Start(); err != nil {

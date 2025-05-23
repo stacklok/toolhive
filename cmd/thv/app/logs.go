@@ -27,7 +27,7 @@ func logsCommand() *cobra.Command {
 		},
 	}
 
-	logsCommand.Flags().BoolVarP(&followFlag, "follow", "t", false, "Follow log output")
+	logsCommand.Flags().BoolVarP(&followFlag, "follow", "f", false, "Follow log output")
 	err := viper.BindPFlag("follow", logsCommand.Flags().Lookup("follow"))
 	if err != nil {
 		logger.Errorf("failed to bind flag: %v", err)

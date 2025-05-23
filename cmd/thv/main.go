@@ -2,7 +2,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/stacklok/toolhive/cmd/thv/app"
@@ -14,7 +13,6 @@ func main() {
 	logger.Initialize()
 
 	if err := app.NewRootCmd().Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "there was an error: %v\n", err)
 		os.Exit(1)
 	}
 }

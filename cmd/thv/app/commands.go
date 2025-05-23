@@ -53,6 +53,9 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(logsCommand())
 	rootCmd.AddCommand(newSecretCommand())
 
+	// Silence printing the usage on error
+	rootCmd.SilenceUsage = true
+
 	// Skip update check for completion command
 	if !IsCompletionCommand(os.Args) {
 		checkForUpdates()

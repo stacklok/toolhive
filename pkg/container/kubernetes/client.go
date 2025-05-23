@@ -15,7 +15,6 @@ import (
 	backoff "github.com/cenkalti/backoff/v4"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -258,6 +257,7 @@ func (c *Client) CreateContainer(ctx context.Context,
 	containerLabels map[string]string,
 	_ *permissions.Profile, // TODO: Implement permission profile support for Kubernetes
 	transportType string,
+	_ interface{},
 	options *runtime.CreateContainerOptions) (string, error) {
 	namespace := getCurrentNamespace()
 	containerLabels["app"] = containerName
@@ -570,81 +570,13 @@ func (*Client) StopContainer(_ context.Context, _ string) error {
 }
 
 func (c *Client) CreateNetwork(ctx context.Context, name string, labels map[string]string, internal bool) (string, error) {
-	namespace := getCurrentNamespace()
-
-	// Check if the NetworkPolicy already exists
-	_, err := c.client.NetworkingV1().NetworkPolicies(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err == nil {
-		return name, nil // NetworkPolicy already exists
-	}
-	if !errors.IsNotFound(err) {
-		return "", fmt.Errorf("failed to check if NetworkPolicy exists: %w", err)
-	}
-
-	// Define the NetworkPolicy spec based on the 'internal' flag
-	policyTypes := []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}
-	var ingressRules []networkingv1.NetworkPolicyIngressRule
-
-	if internal {
-		// Restrict ingress to pods with the same labels
-		ingressRules = []networkingv1.NetworkPolicyIngressRule{
-			{
-				From: []networkingv1.NetworkPolicyPeer{
-					{
-						PodSelector: &metav1.LabelSelector{
-							MatchLabels: labels,
-						},
-					},
-				},
-			},
-		}
-	} else {
-		// Allow all ingress traffic
-		ingressRules = []networkingv1.NetworkPolicyIngressRule{
-			{
-				From: []networkingv1.NetworkPolicyPeer{
-					{
-						NamespaceSelector: &metav1.LabelSelector{},
-					},
-				},
-			},
-		}
-	}
-
-	// Create the NetworkPolicy object
-	policy := &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels:    labels,
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
-				MatchLabels: labels,
-			},
-			PolicyTypes: policyTypes,
-			Ingress:     ingressRules,
-		},
-	}
-
-	// Create the NetworkPolicy in Kubernetes
-	_, err = c.client.NetworkingV1().NetworkPolicies(namespace).Create(ctx, policy, metav1.CreateOptions{})
-	if err != nil {
-		return "", fmt.Errorf("failed to create NetworkPolicy: %w", err)
-	}
-
-	return name, nil
+	// just noop
+	logger.Infof("CreateNetwork is not supported in Kubernetes runtime. Skipping network creation.")
+	return "", nil
 }
 
 func (c *Client) DeleteNetwork(ctx context.Context, name string) error {
-	namespace := getCurrentNamespace() // Implement this function to retrieve the current namespace
-
-	err := c.client.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, name, metav1.DeleteOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to delete network policy %q in namespace %q: %w", name, namespace, err)
-	}
-
-	fmt.Printf("Network policy %q in namespace %q has been deleted successfully.\n", name, namespace)
+	logger.Infof("DeleteNetwork is not supported in Kubernetes runtime. Skipping network deletion.")
 	return nil
 }
 

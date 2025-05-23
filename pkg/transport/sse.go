@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/docker/docker/api/types/network"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -139,6 +140,12 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 
 	// Create the container
 	logger.Infof("Creating container %s from image %s...", containerName, image)
+	// Create the container
+	internalNetworkName := fmt.Sprintf("toolhive-%s-internal", containerName)
+	networking := map[string]*network.EndpointSettings{
+		internalNetworkName: {},
+	}
+
 	containerID, err := t.runtime.CreateContainer(
 		ctx,
 		image,
@@ -148,6 +155,7 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 		labels,
 		permissionProfile,
 		"sse",
+		networking,
 		containerOptions,
 	)
 	if err != nil {

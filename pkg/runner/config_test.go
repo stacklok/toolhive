@@ -29,6 +29,7 @@ func (*mockRuntime) CreateContainer(
 	_, _ map[string]string,
 	_ *permissions.Profile,
 	_ string,
+	_ interface{},
 	_ *rt.CreateContainerOptions,
 ) (string, error) {
 	return "container-id", nil

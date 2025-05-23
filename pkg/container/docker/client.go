@@ -307,6 +307,7 @@ func (c *Client) CreateContainer(
 	envVars, labels map[string]string,
 	permissionProfile *permissions.Profile,
 	transportType string,
+	networking interface{},
 	options *runtime.CreateContainerOptions,
 ) (string, error) {
 	// Get permission config from profile
@@ -376,12 +377,22 @@ func (c *Client) CreateContainer(
 		// Container was removed and needs to be recreated
 	}
 
+	var networkingConfig *network.NetworkingConfig
+	if networking != nil {
+		endpointsConfig, ok := networking.(map[string]*network.EndpointSettings)
+		if !ok {
+			return "", fmt.Errorf("invalid type for Docker networking config: %T", networking)
+		}
+		networkingConfig = &network.NetworkingConfig{
+			EndpointsConfig: endpointsConfig,
+		}
+	}
 	// Create the container
 	resp, err := c.client.ContainerCreate(
 		ctx,
 		config,
 		hostConfig,
-		&network.NetworkingConfig{},
+		networkingConfig,
 		nil,
 		name,
 	)

@@ -54,15 +54,19 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %v", err)
 	}
-	fmt.Println("ToolHive containers:", toolHiveContainers)
+
+	// Delete associated internal network
+	networkName := "toolhive-" + containerName + "-internal"
+	if err := manager.DeleteNetwork(ctx, networkName); err != nil {
+		// just log the error and continue
+		logger.Warnf("failed to delete network %q: %v", networkName, err)
+	}
 
 	if len(toolHiveContainers) == 0 {
-		// remove networks
-		if err := manager.DeleteNetwork(ctx, "toolhive-internal"); err != nil {
-			return fmt.Errorf("failed to delete network: %v", err)
-		}
+		// remove external network
 		if err := manager.DeleteNetwork(ctx, "toolhive-external"); err != nil {
-			return fmt.Errorf("failed to delete network: %v", err)
+			// just log the error and continue
+			logger.Warnf("failed to delete network %q: %v", "toolhive-external", err)
 		}
 	}
 

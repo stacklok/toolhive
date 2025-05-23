@@ -53,6 +53,7 @@ type Runtime interface {
 		envVars, labels map[string]string,
 		permissionProfile *permissions.Profile,
 		transportType string,
+		networkEndpoint interface{},
 		options *CreateContainerOptions,
 	) (string, error)
 

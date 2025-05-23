@@ -381,7 +381,7 @@ func (c *Client) DeployWorkload(
 		ctx,
 		config,
 		hostConfig,
-		&network.NetworkingConfig{},
+		nil,
 		nil,
 		name,
 	)

@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/docker/docker/api/types/network"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
@@ -57,6 +58,11 @@ func (r *Runner) setupEgressContainer(ctx context.Context, containerName string,
 	lb.AddStandardLabels(labels, egressContainerName, egressContainerName, "stdio", 80)
 
 	// Create the container
+	internalNetworkName := fmt.Sprintf("toolhive-%s-internal", containerName)
+	networking := map[string]*network.EndpointSettings{
+		"toolhive-external": {},
+		internalNetworkName: {},
+	}
 	logger.Infof("Creating container %s from image %s...", egressContainerName, egressImage)
 	containerID, err := r.Config.Runtime.CreateContainer(
 		ctx,
@@ -67,6 +73,7 @@ func (r *Runner) setupEgressContainer(ctx context.Context, containerName string,
 		labels,
 		permissions.BuiltinEgressProfile(),
 		"stdio",
+		networking,
 		containerOptions,
 	)
 	if err != nil {
@@ -157,8 +164,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Create networks if they do not exist
 	internalNetworkLabels := map[string]string{}
-	lb.AddNetworkLabels(internalNetworkLabels, "toolhive-internal")
-	_, err = r.Config.Runtime.CreateNetwork(ctx, "toolhive-internal", internalNetworkLabels, true)
+	networkName := "toolhive-" + r.Config.ContainerName + "-internal"
+	lb.AddNetworkLabels(internalNetworkLabels, networkName)
+	_, err = r.Config.Runtime.CreateNetwork(ctx, networkName, internalNetworkLabels, true)
 	if err != nil {
 		return fmt.Errorf("failed to create internal network: %v", err)
 	}
@@ -167,8 +175,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	lb.AddNetworkLabels(externalNetworkLabels, "toolhive-external")
 	_, err = r.Config.Runtime.CreateNetwork(ctx, "toolhive-external", externalNetworkLabels, false)
 	if err != nil {
-		return fmt.Errorf("failed to create external network: %v", err)
+		// just log the error and continue
+		logger.Warnf("failed to create external network %q: %v", "toolhive-external", err)
 	}
+
+	// spin up the egress container
+	fmt.Println("i setup egress container")
+	if err := r.setupEgressContainer(ctx, r.Config.ContainerName, r.Config.EgressImage); err != nil {
+		return fmt.Errorf("failed to set up egress container: %v", err)
+	}
+	fmt.Println("after")
+
+	// add extra env vars
+	egressHost := fmt.Sprintf("http://%s:3128", r.Config.ContainerName+"-egress")
+	r.Config.EnvVars["HTTP_PROXY"] = egressHost
+	r.Config.EnvVars["HTTPS_PROXY"] = egressHost
+	r.Config.EnvVars["NO_PROXY"] = fmt.Sprintf("localhost,127.0.1,::1,%s", r.Config.Host)
+	fmt.Println("In en vars")
+	fmt.Println(r.Config.EnvVars)
 
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)
@@ -192,11 +216,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	// clients should be updated, if any.
 	if err := updateClientConfigurations(r.Config.ContainerName, "localhost", r.Config.Port); err != nil {
 		logger.Warnf("Warning: Failed to update client configurations: %v", err)
-	}
-
-	// spin up the egress container
-	if err := r.setupEgressContainer(ctx, r.Config.ContainerName, r.Config.EgressImage); err != nil {
-		return fmt.Errorf("failed to set up egress container: %v", err)
 	}
 
 	// Define a function to stop the MCP server

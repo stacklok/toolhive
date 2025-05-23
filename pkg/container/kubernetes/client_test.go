@@ -178,6 +178,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 				map[string]string{"test-label": "test-value"},
 				nil,
 				"stdio",
+				nil,
 				options,
 			)
 
@@ -663,6 +664,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 				map[string]string{"test-label": "test-value"},
 				nil,
 				tc.transportType,
+				nil,
 				tc.options,
 			)
 

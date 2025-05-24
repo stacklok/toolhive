@@ -695,7 +695,7 @@ func getToolhiveRunnerImage() string {
 	image := os.Getenv("TOOLHIVE_RUNNER_IMAGE")
 	if image == "" {
 		// Default to the published image
-		image = "ghcr.io/hawkli-1994/toolhive:latest"
+		image = "ghcr.io/hawkli-1994/toolhive:0.0.1-dev.8_0b11f9f"
 	}
 	return image
 }

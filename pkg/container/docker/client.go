@@ -80,8 +80,8 @@ func NewClient(ctx context.Context) (*Client, error) {
 
 		c, err := NewClientWithSocketPath(ctx, socketPath, runtimeType)
 		if err != nil {
-			logger.Debugf("Failed to create client for %s: %v", sp, err)
 			lastErr = err
+			logger.Debugf("Failed to create client for %s: %v", sp, err)
 			continue
 		}
 
@@ -307,6 +307,7 @@ func (c *Client) CreateContainer(
 	envVars, labels map[string]string,
 	permissionProfile *permissions.Profile,
 	transportType string,
+	networking interface{},
 	options *runtime.CreateContainerOptions,
 ) (string, error) {
 	// Get permission config from profile
@@ -376,12 +377,22 @@ func (c *Client) CreateContainer(
 		// Container was removed and needs to be recreated
 	}
 
+	var networkingConfig *network.NetworkingConfig
+	if networking != nil {
+		endpointsConfig, ok := networking.(map[string]*network.EndpointSettings)
+		if !ok {
+			return "", fmt.Errorf("invalid type for Docker networking config: %T", networking)
+		}
+		networkingConfig = &network.NetworkingConfig{
+			EndpointsConfig: endpointsConfig,
+		}
+	}
 	// Create the container
 	resp, err := c.client.ContainerCreate(
 		ctx,
 		config,
 		hostConfig,
-		&network.NetworkingConfig{},
+		networkingConfig,
 		nil,
 		name,
 	)
@@ -989,6 +1000,11 @@ func (c *Client) getPermissionConfigFromProfile(
 		return nil, fmt.Errorf("unsupported transport type: %s", transportType)
 	}
 
+	// Add necessary capabilities for egress containers
+	if profile.Name == permissions.ProfileEgress {
+		config.CapAdd = append(config.CapAdd, "CAP_SETUID", "CAP_SETGID")
+	}
+
 	return config, nil
 }
 
@@ -1333,4 +1349,55 @@ func (c *Client) handleExistingContainer(
 
 	// Container was removed and needs to be recreated
 	return false, nil
+}
+
+// CreateNetwork creates a network following configuration.
+func (c *Client) CreateNetwork(
+	ctx context.Context,
+	name string,
+	labels map[string]string,
+	internal bool,
+) (string, error) {
+	// Check if the network already exists
+	networks, err := c.client.NetworkList(ctx, network.ListOptions{
+		Filters: filters.NewArgs(filters.Arg("name", name)),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to list networks: %w", err)
+	}
+	if len(networks) > 0 {
+		// Network already exists, return its ID
+		return networks[0].ID, nil
+	}
+
+	networkCreate := network.CreateOptions{
+		Driver:   "bridge",
+		Internal: internal,
+		Labels:   labels,
+	}
+
+	resp, err := c.client.NetworkCreate(ctx, name, networkCreate)
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
+// DeleteNetwork deletes a network by name.
+func (c *Client) DeleteNetwork(ctx context.Context, name string) error {
+	// find the network by name
+	networks, err := c.client.NetworkList(ctx, network.ListOptions{
+		Filters: filters.NewArgs(filters.Arg("name", name)),
+	})
+	if err != nil {
+		return err
+	}
+	if len(networks) == 0 {
+		return fmt.Errorf("network %s not found", name)
+	}
+
+	if err := c.client.NetworkRemove(ctx, networks[0].ID); err != nil {
+		return fmt.Errorf("failed to remove network %s: %w", name, err)
+	}
+	return nil
 }

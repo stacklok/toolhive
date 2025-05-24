@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/docker/docker/api/types/network"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -105,6 +106,12 @@ func (t *StdioTransport) Setup(
 
 	// Create the container
 	logger.Infof("Creating container %s from image %s...", containerName, image)
+	// Create the container
+	internalNetworkName := fmt.Sprintf("toolhive-%s-internal", containerName)
+	networking := map[string]*network.EndpointSettings{
+		internalNetworkName: {},
+	}
+
 	containerID, err := t.runtime.CreateContainer(
 		ctx,
 		image,
@@ -114,6 +121,7 @@ func (t *StdioTransport) Setup(
 		labels,
 		permissionProfile,
 		"stdio",
+		networking,
 		containerOptions,
 	)
 	if err != nil {

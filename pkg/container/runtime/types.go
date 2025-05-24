@@ -53,6 +53,7 @@ type Runtime interface {
 		envVars, labels map[string]string,
 		permissionProfile *permissions.Profile,
 		transportType string,
+		networkEndpoint interface{},
 		options *CreateContainerOptions,
 	) (string, error)
 
@@ -88,6 +89,12 @@ type Runtime interface {
 
 	// BuildImage builds a Docker image from a Dockerfile in the specified context directory
 	BuildImage(ctx context.Context, contextDir, imageName string) error
+
+	// CreateNetwork creates a network
+	CreateNetwork(ctx context.Context, networkName string, labels map[string]string, internal bool) (string, error)
+
+	// DeleteNetwork deletes a network
+	DeleteNetwork(ctx context.Context, networkName string) error
 }
 
 // Monitor defines the interface for container monitoring

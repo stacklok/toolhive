@@ -17,10 +17,15 @@ const (
 	ProfileNone = "none"
 	// ProfileNetwork is the name of the built-in profile with network permissions
 	ProfileNetwork = "network"
+	// ProfileEgress is the name of the built-in profile with egress permissions
+	ProfileEgress = "egress"
 )
 
 // Profile represents a permission profile for a container
 type Profile struct {
+	// Name is the name of the profile
+	Name string `json:"name,omitempty"`
+
 	// Read is a list of mount declarations that the container can read from
 	// These can be in the following formats:
 	// - A single path: The same path will be mounted from host to container
@@ -60,6 +65,7 @@ type OutboundNetworkPermissions struct {
 // NewProfile creates a new permission profile
 func NewProfile() *Profile {
 	return &Profile{
+		Name:  ProfileNone,
 		Read:  []MountDeclaration{},
 		Write: []MountDeclaration{},
 		Network: &NetworkPermissions{
@@ -94,6 +100,7 @@ func FromFile(path string) (*Profile, error) {
 // BuiltinNoneProfile returns the built-in profile with no permissions
 func BuiltinNoneProfile() *Profile {
 	return &Profile{
+		Name:  ProfileNone,
 		Read:  []MountDeclaration{},
 		Write: []MountDeclaration{},
 		Network: &NetworkPermissions{
@@ -110,6 +117,7 @@ func BuiltinNoneProfile() *Profile {
 // BuiltinNetworkProfile returns the built-in network profile
 func BuiltinNetworkProfile() *Profile {
 	return &Profile{
+		Name:  ProfileNetwork,
 		Read:  []MountDeclaration{},
 		Write: []MountDeclaration{},
 		Network: &NetworkPermissions{
@@ -118,6 +126,23 @@ func BuiltinNetworkProfile() *Profile {
 				AllowTransport:   []string{},
 				AllowHost:        []string{},
 				AllowPort:        []int{},
+			},
+		},
+	}
+}
+
+// BuiltinEgressProfile returns the built-in egress profile
+func BuiltinEgressProfile() *Profile {
+	return &Profile{
+		Name:  ProfileEgress,
+		Read:  []MountDeclaration{},
+		Write: []MountDeclaration{},
+		Network: &NetworkPermissions{
+			Outbound: &OutboundNetworkPermissions{
+				InsecureAllowAll: true,
+				AllowTransport:   []string{"tcp", "udp"},
+				AllowHost:        []string{"*"},
+				AllowPort:        []int{0, 65535},
 			},
 		},
 	}

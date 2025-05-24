@@ -46,5 +46,16 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Stop associated egress container
+	egressContainerName := containerName + "-egress"
+	err = manager.StopContainer(ctx, egressContainerName)
+	if err != nil {
+		if errors.Is(err, lifecycle.ErrContainerNotFound) {
+			logger.Infof("Egress container %s is not running", egressContainerName)
+		} else {
+			return fmt.Errorf("failed to stop egress container %q: %w", egressContainerName, err)
+		}
+	}
+
 	return nil
 }

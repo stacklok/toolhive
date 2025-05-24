@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/docker/docker/api/types/network"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	lb "github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -23,6 +28,9 @@ import (
 type Runner struct {
 	// Config is the configuration for the runner
 	Config *RunConfig
+
+	// Mutex for protecting shared state
+	mutex sync.Mutex
 }
 
 // NewRunner creates a new Runner with the provided configuration
@@ -30,6 +38,50 @@ func NewRunner(runConfig *RunConfig) *Runner {
 	return &Runner{
 		Config: runConfig,
 	}
+}
+
+// Starts an egress container for the MCP server
+func (r *Runner) setupEgressContainer(ctx context.Context, containerName string, egressImage string) error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	// Create container options
+	containerOptions := rt.NewCreateContainerOptions()
+
+	// container name is name of container + "-egress"
+	egressContainerName := fmt.Sprintf("%s-egress", containerName)
+
+	cmdArgs := []string{}
+	envVars := map[string]string{}
+
+	labels := map[string]string{}
+	lb.AddStandardLabels(labels, egressContainerName, egressContainerName, "stdio", 80)
+
+	// Create the container
+	internalNetworkName := fmt.Sprintf("toolhive-%s-internal", containerName)
+	networking := map[string]*network.EndpointSettings{
+		"toolhive-external": {},
+		internalNetworkName: {},
+	}
+	logger.Infof("Creating container %s from image %s...", egressContainerName, egressImage)
+	containerID, err := r.Config.Runtime.CreateContainer(
+		ctx,
+		egressImage,
+		egressContainerName,
+		cmdArgs,
+		envVars,
+		labels,
+		permissions.BuiltinEgressProfile(),
+		"stdio",
+		networking,
+		containerOptions,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create container: %v", err)
+	}
+	logger.Infof("Container created with ID: %s", containerID)
+
+	return nil
 }
 
 // Run runs the MCP server with the provided configuration
@@ -109,6 +161,38 @@ func (r *Runner) Run(ctx context.Context) error {
 			return err
 		}
 	}
+
+	// Create networks if they do not exist
+	internalNetworkLabels := map[string]string{}
+	networkName := "toolhive-" + r.Config.ContainerName + "-internal"
+	lb.AddNetworkLabels(internalNetworkLabels, networkName)
+	_, err = r.Config.Runtime.CreateNetwork(ctx, networkName, internalNetworkLabels, true)
+	if err != nil {
+		return fmt.Errorf("failed to create internal network: %v", err)
+	}
+
+	externalNetworkLabels := map[string]string{}
+	lb.AddNetworkLabels(externalNetworkLabels, "toolhive-external")
+	_, err = r.Config.Runtime.CreateNetwork(ctx, "toolhive-external", externalNetworkLabels, false)
+	if err != nil {
+		// just log the error and continue
+		logger.Warnf("failed to create external network %q: %v", "toolhive-external", err)
+	}
+
+	// spin up the egress container
+	fmt.Println("i setup egress container")
+	if err := r.setupEgressContainer(ctx, r.Config.ContainerName, r.Config.EgressImage); err != nil {
+		return fmt.Errorf("failed to set up egress container: %v", err)
+	}
+	fmt.Println("after")
+
+	// add extra env vars
+	egressHost := fmt.Sprintf("http://%s:3128", r.Config.ContainerName+"-egress")
+	r.Config.EnvVars["HTTP_PROXY"] = egressHost
+	r.Config.EnvVars["HTTPS_PROXY"] = egressHost
+	r.Config.EnvVars["NO_PROXY"] = fmt.Sprintf("localhost,127.0.1,::1,%s", r.Config.Host)
+	fmt.Println("In en vars")
+	fmt.Println(r.Config.EnvVars)
 
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)

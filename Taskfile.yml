@@ -23,18 +23,30 @@ tasks:
       - golangci-lint run --fix ./...
 
   test:
-    desc: Run tests
+    desc: Run unit tests (excluding e2e tests)
     cmds:
-      - go test -v ./...
+      - go test -v $(go list ./... | grep -v '/test/e2e')
 
   test-coverage:
-    desc: Run tests with coverage analysis
+    desc: Run unit tests with coverage analysis (excluding e2e tests)
     cmds:
       - mkdir -p coverage
-      - go test -coverprofile=coverage/coverage.out ./...
+      - go test -coverprofile=coverage/coverage.out $(go list ./... | grep -v '/test/e2e')
       - go tool cover -func=coverage/coverage.out
       - echo "Generating HTML coverage report in coverage/coverage.html"
       - go tool cover -html=coverage/coverage.out -o coverage/coverage.html
+
+  test-e2e:
+    desc: Run end-to-end tests
+    deps: [build]
+    env:
+      THV_BINARY: ./bin/thv
+    cmds:
+      - ./test/e2e/run_tests.sh
+
+  test-all:
+    desc: Run all tests (unit and e2e)
+    deps: [test, test-e2e]
 
   build:
     desc: Build the binary

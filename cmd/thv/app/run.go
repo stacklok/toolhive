@@ -145,6 +145,11 @@ func init() {
 		fmt.Sprintf("Set image verification mode (%s, %s, %s)", verifyImageWarn, verifyImageEnabled, verifyImageDisabled),
 	)
 
+	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
+	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
+		logger.Warnf("Error hiding flag: %v", err)
+	}
+
 	// Add OIDC validation flags
 	AddOIDCFlags(runCmd)
 }

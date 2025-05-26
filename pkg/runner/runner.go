@@ -45,7 +45,7 @@ func (r *Runner) setupEgressContainer(ctx context.Context, containerName string,
 	defer r.mutex.Unlock()
 
 	// Create container options
-	containerOptions := rt.NewCreateContainerOptions()
+	containerOptions := rt.NewDeployWorkloadOptions()
 
 	// container name is name of container + "-egress"
 	egressContainerName := fmt.Sprintf("%s-egress", containerName)
@@ -57,7 +57,7 @@ func (r *Runner) setupEgressContainer(ctx context.Context, containerName string,
 	lb.AddStandardLabels(labels, egressContainerName, egressContainerName, "stdio", 80)
 
 	logger.Infof("Creating container %s from image %s...", egressContainerName, egressImage)
-	containerID, err := r.Config.Runtime.CreateContainer(
+	containerID, err := r.Config.Runtime.DeployWorkload(
 		ctx,
 		egressImage,
 		egressContainerName,

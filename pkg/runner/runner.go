@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -39,8 +40,93 @@ func NewRunner(runConfig *RunConfig) *Runner {
 	}
 }
 
+func (r *Runner) createTempSquidConf(networkPermissions *permissions.NetworkPermissions) (string, error) {
+	// Define the Squid configuration content
+	var sb strings.Builder
+
+	// Define the HTTP port and visible hostname
+	sb.WriteString("http_port 3128\n")
+	sb.WriteString("visible_hostname squid-proxy\n\n")
+
+	// Enable access logging
+	sb.WriteString("access_log stdio:/var/log/squid/access.log squid\n\n")
+
+	// Handle InsecureAllowAll
+	if networkPermissions.Outbound != nil && networkPermissions.Outbound.InsecureAllowAll {
+		sb.WriteString("# Allow all traffic\n")
+		sb.WriteString("http_access allow all\n")
+	} else {
+		// Define ACLs based on AllowPort
+		if len(networkPermissions.Outbound.AllowPort) > 0 {
+			sb.WriteString("# Define allowed ports\n")
+			sb.WriteString("acl allowed_ports port")
+			for _, port := range networkPermissions.Outbound.AllowPort {
+				sb.WriteString(fmt.Sprintf(" %d", port))
+			}
+			sb.WriteString("\n")
+		}
+
+		// Define ACLs based on AllowHost
+		if len(networkPermissions.Outbound.AllowHost) > 0 {
+			sb.WriteString("# Define allowed destinations\n")
+			sb.WriteString("acl allowed_dsts dstdomain")
+			for _, host := range networkPermissions.Outbound.AllowHost {
+				sb.WriteString(fmt.Sprintf(" %s", host))
+			}
+			sb.WriteString("\n")
+		}
+
+		// Define ACLs based on AllowTransport
+		if len(networkPermissions.Outbound.AllowTransport) > 0 {
+			sb.WriteString("# Define allowed methods\n")
+			sb.WriteString("acl allowed_methods method")
+			for _, method := range networkPermissions.Outbound.AllowTransport {
+				sb.WriteString(fmt.Sprintf(" %s", strings.ToUpper(method)))
+			}
+			sb.WriteString("\n")
+		}
+
+		// Construct http_access rules
+		sb.WriteString("\n# Define http_access rules\n")
+
+		// Allow access based on defined ACLs
+		conditions := []string{}
+		if len(networkPermissions.Outbound.AllowPort) > 0 {
+			conditions = append(conditions, "allowed_ports")
+		}
+		if len(networkPermissions.Outbound.AllowHost) > 0 {
+			conditions = append(conditions, "allowed_dsts")
+		}
+		if len(networkPermissions.Outbound.AllowTransport) > 0 {
+			conditions = append(conditions, "allowed_methods")
+		}
+
+		if len(conditions) > 0 {
+			sb.WriteString("http_access allow " + strings.Join(conditions, " ") + "\n")
+		}
+
+		// Deny all other access
+		sb.WriteString("http_access deny all\n")
+	}
+
+	// Create a temporary file
+	tmpFile, err := os.CreateTemp("", "squid-*.conf")
+	if err != nil {
+		return "", err
+	}
+
+	// Write the configuration content to the file
+	if _, err := tmpFile.WriteString(sb.String()); err != nil {
+		tmpFile.Close()
+		return "", fmt.Errorf("failed to write to temporary file: %v", err)
+	}
+
+	return tmpFile.Name(), nil
+}
+
 // Starts an egress container for the MCP server
-func (r *Runner) setupEgressContainer(ctx context.Context, containerName string, egressImage string) error {
+func (r *Runner) setupEgressContainer(ctx context.Context, containerName string, egressImage string, networkPermissions *permissions.NetworkPermissions) error {
+	fmt.Printf("Setting up egress container for %s with image %s...\n", containerName, egressImage)
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
@@ -56,15 +142,24 @@ func (r *Runner) setupEgressContainer(ctx context.Context, containerName string,
 	labels := map[string]string{}
 	lb.AddStandardLabels(labels, egressContainerName, egressContainerName, "stdio", 80)
 
+	// generate the squid configuration and mount it
+	squidConfPath, err := r.createTempSquidConf(networkPermissions)
+	if err != nil {
+		return fmt.Errorf("failed to create temporary squid.conf: %v", err)
+	}
+	mount := permissions.MountDeclaration(fmt.Sprintf("%s:/etc/squid/squid.conf", squidConfPath))
+	profile := permissions.BuiltinEgressProfile()
+	profile.Read = append(profile.Read, mount)
+
 	logger.Infof("Creating container %s from image %s...", egressContainerName, egressImage)
 	containerID, err := r.Config.Runtime.DeployWorkload(
 		ctx,
 		egressImage,
-		egressContainerName,
+		containerName,
 		cmdArgs,
 		envVars,
 		labels,
-		permissions.BuiltinEgressProfile(),
+		profile,
 		"stdio",
 		containerOptions,
 		false,
@@ -174,7 +269,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// spin up the egress container
-	if err := r.setupEgressContainer(ctx, r.Config.ContainerName, r.Config.EgressImage); err != nil {
+	if err := r.setupEgressContainer(ctx, r.Config.ContainerName, r.Config.EgressImage, r.Config.PermissionProfile.Network); err != nil {
 		return fmt.Errorf("failed to set up egress container: %v", err)
 	}
 

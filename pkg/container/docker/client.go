@@ -302,7 +302,8 @@ func setupPortBindings(hostConfig *container.HostConfig, portBindings map[string
 // If options is nil, default options will be used.
 func (c *Client) DeployWorkload(
 	ctx context.Context,
-	image, name string,
+	image,
+	name string,
 	command []string,
 	envVars,
 	labels map[string]string,
@@ -359,8 +360,13 @@ func (c *Client) DeployWorkload(
 		}
 	}
 
+	containerName := name
+	if isEgress {
+		containerName = fmt.Sprintf("%s-egress", name)
+	}
+
 	// Check if container with this name already exists
-	existingID, err := c.findExistingContainer(ctx, name)
+	existingID, err := c.findExistingContainer(ctx, containerName)
 	if err != nil {
 		return "", err
 	}
@@ -388,10 +394,9 @@ func (c *Client) DeployWorkload(
 		}
 	} else if isEgress {
 		internalNetworkName := fmt.Sprintf("toolhive-%s-internal", name)
-		externalNetworkName := fmt.Sprintf("toolhive-%s-external", name)
 		endpointsConfig = map[string]*network.EndpointSettings{
 			internalNetworkName: {},
-			externalNetworkName: {},
+			"toolhive-external": {},
 		}
 	}
 	networkConfig := &network.NetworkingConfig{
@@ -405,7 +410,7 @@ func (c *Client) DeployWorkload(
 		hostConfig,
 		networkConfig,
 		nil,
-		name,
+		containerName,
 	)
 	if err != nil {
 		return "", NewContainerError(err, "", fmt.Sprintf("failed to create container: %v", err))
@@ -960,29 +965,6 @@ func convertRelativePathToAbsolute(source string, mountDecl permissions.MountDec
 	return absPath, true
 }
 
-// needsNetworkAccess determines if the container needs network access
-func (*Client) needsNetworkAccess(profile *permissions.Profile, transportType string) bool {
-	// SSE transport always needs network access
-	if transportType == "sse" {
-		return true
-	}
-
-	// Check if the profile has network settings that require network access
-	if profile.Network != nil && profile.Network.Outbound != nil {
-		outbound := profile.Network.Outbound
-
-		// Any of these conditions require network access
-		if outbound.InsecureAllowAll ||
-			len(outbound.AllowTransport) > 0 ||
-			len(outbound.AllowHost) > 0 ||
-			len(outbound.AllowPort) > 0 {
-			return true
-		}
-	}
-
-	return false
-}
-
 // getPermissionConfigFromProfile converts a permission profile to a container permission config
 func (c *Client) getPermissionConfigFromProfile(
 	profile *permissions.Profile,
@@ -1000,11 +982,6 @@ func (c *Client) getPermissionConfigFromProfile(
 	// Add mounts
 	c.addReadOnlyMounts(config, profile.Read)
 	c.addReadWriteMounts(config, profile.Write)
-
-	// Determine network mode
-	if c.needsNetworkAccess(profile, transportType) {
-		config.NetworkMode = "bridge"
-	}
 
 	// Validate transport type
 	if transportType != "sse" && transportType != "stdio" {

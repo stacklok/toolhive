@@ -115,8 +115,6 @@ func (t *StdioTransport) Setup(
 		permissionProfile,
 		"stdio",
 		containerOptions,
-		true,
-		false,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create container: %v", err)

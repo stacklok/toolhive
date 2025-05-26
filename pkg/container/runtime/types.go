@@ -81,8 +81,6 @@ type Runtime interface {
 		permissionProfile *permissions.Profile,
 		transportType string,
 		options *DeployWorkloadOptions,
-		isMcpServer bool,
-		isEgress bool,
 	) (string, error)
 
 	// ListWorkloads lists all deployed workloads managed by this runtime.
@@ -133,12 +131,6 @@ type Runtime interface {
 
 	// BuildImage builds a Docker image from a Dockerfile in the specified context directory
 	BuildImage(ctx context.Context, contextDir, imageName string) error
-
-	// CreateNetwork creates a network
-	CreateNetwork(ctx context.Context, networkName string, labels map[string]string, internal bool) (string, error)
-
-	// DeleteNetwork deletes a network
-	DeleteNetwork(ctx context.Context, networkName string) error
 }
 
 // Monitor defines the interface for container monitoring

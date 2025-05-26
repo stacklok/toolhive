@@ -179,8 +179,6 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 				nil,
 				"stdio",
 				options,
-				false,
-				false,
 			)
 
 			// Check that there was no error
@@ -666,8 +664,6 @@ func TestCreateContainerWithMCP(t *testing.T) {
 				nil,
 				tc.transportType,
 				tc.options,
-				false,
-				false,
 			)
 
 			// Check that there was no error

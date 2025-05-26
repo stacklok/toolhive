@@ -30,8 +30,6 @@ type Manager interface {
 	ListContainers(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error)
 	// DeleteContainer deletes a container and its associated proxy process.
 	DeleteContainer(ctx context.Context, name string, forceDelete bool, removeConfig bool) error
-	// DeleteNetwork deletes a network.
-	DeleteNetwork(ctx context.Context, name string) error
 	// StopContainer stops a container and its associated proxy process.
 	StopContainer(ctx context.Context, name string) error
 	// RunContainer runs a container in the foreground.
@@ -135,27 +133,6 @@ func (d *defaultManager) DeleteContainer(ctx context.Context, name string, force
 			} else {
 				logger.Infof("Client configurations for %s removed", name)
 			}
-		}
-	}
-
-	// Delete networks if there are no containers using them.
-	toolHiveContainers, err := d.ListContainers(ctx, true)
-	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Delete associated internal network
-	networkName := "toolhive-" + name + "-internal"
-	if err := d.DeleteNetwork(ctx, networkName); err != nil {
-		// just log the error and continue
-		logger.Warnf("failed to delete network %q: %v", networkName, err)
-	}
-
-	if len(toolHiveContainers) == 0 {
-		// remove external network
-		if err := d.DeleteNetwork(ctx, "toolhive-external"); err != nil {
-			// just log the error and continue
-			logger.Warnf("failed to delete network %q: %v", "toolhive-external", err)
 		}
 	}
 
@@ -464,16 +441,6 @@ func (d *defaultManager) stopContainer(ctx context.Context, containerID, contain
 	}
 
 	logger.Infof("Container %s stopped", containerName)
-	return nil
-}
-
-func (d *defaultManager) DeleteNetwork(ctx context.Context, name string) error {
-	// Remove the network
-	logger.Infof("Removing network %s...", name)
-	if err := d.runtime.DeleteNetwork(ctx, name); err != nil {
-		return fmt.Errorf("failed to remove network: %v", err)
-	}
-
 	return nil
 }
 

@@ -256,9 +256,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	containerLabels map[string]string,
 	_ *permissions.Profile, // TODO: Implement permission profile support for Kubernetes
 	transportType string,
-	options *runtime.DeployWorkloadOptions,
-	_ bool,
-	_ bool) (string, error) {
+	options *runtime.DeployWorkloadOptions) (string, error) {
 	namespace := getCurrentNamespace()
 	containerLabels["app"] = containerName
 	containerLabels["toolhive"] = "true"
@@ -566,19 +564,6 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 
 // StopWorkload implements runtime.Runtime.
 func (*Client) StopWorkload(_ context.Context, _ string) error {
-	return nil
-}
-
-// CreateNetwork implements runtime.Runtime.
-func (*Client) CreateNetwork(_ context.Context, _ string, _ map[string]string, _ bool) (string, error) {
-	// just noop
-	logger.Infof("CreateNetwork is not supported in Kubernetes runtime. Skipping network creation.")
-	return "", nil
-}
-
-// DeleteNetwork implements runtime.Runtime.
-func (*Client) DeleteNetwork(_ context.Context, _ string) error {
-	logger.Infof("DeleteNetwork is not supported in Kubernetes runtime. Skipping network deletion.")
 	return nil
 }
 

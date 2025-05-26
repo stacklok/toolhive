@@ -232,8 +232,6 @@ func (c *RunConfig) ParsePermissionProfile() (*RunConfig, error) {
 		permProfile = permissions.BuiltinNoneProfile()
 	case permissions.ProfileNetwork:
 		permProfile = permissions.BuiltinNetworkProfile()
-	case permissions.ProfileEgress:
-		permProfile = permissions.BuiltinEgressProfile()
 	default:
 		// Try to load from file
 		permProfile, err = permissions.FromFile(c.PermissionProfileNameOrPath)

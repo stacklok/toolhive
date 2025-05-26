@@ -30,8 +30,6 @@ func (*mockRuntime) DeployWorkload(
 	_ *permissions.Profile,
 	_ string,
 	_ *rt.DeployWorkloadOptions,
-	_ bool,
-	_ bool,
 ) (string, error) {
 	return "container-id", nil
 }
@@ -90,14 +88,6 @@ func (*mockRuntime) Name() string {
 
 func (*mockRuntime) String() string {
 	return "mock"
-}
-
-func (*mockRuntime) CreateNetwork(_ context.Context, _ string, _ map[string]string, _ bool) (string, error) {
-	return "mock-network", nil
-}
-
-func (*mockRuntime) DeleteNetwork(_ context.Context, _ string) error {
-	return nil
 }
 
 func TestNewRunConfig(t *testing.T) {

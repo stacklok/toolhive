@@ -131,23 +131,6 @@ func BuiltinNetworkProfile() *Profile {
 	}
 }
 
-// BuiltinEgressProfile returns the built-in egress profile
-func BuiltinEgressProfile() *Profile {
-	return &Profile{
-		Name:  ProfileEgress,
-		Read:  []MountDeclaration{},
-		Write: []MountDeclaration{},
-		Network: &NetworkPermissions{
-			Outbound: &OutboundNetworkPermissions{
-				InsecureAllowAll: true,
-				AllowTransport:   []string{"tcp", "udp"},
-				AllowHost:        []string{"*"},
-				AllowPort:        []int{0, 65535},
-			},
-		},
-	}
-}
-
 // MountDeclaration represents a mount declaration for a container
 // It can be in one of the following formats:
 //   - A single path: The same path will be mounted from host to container

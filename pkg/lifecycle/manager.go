@@ -68,7 +68,7 @@ func (d *defaultManager) GetContainer(ctx context.Context, name string) (*rt.Con
 
 func (d *defaultManager) ListContainers(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error) {
 	// List containers
-	containers, err := d.runtime.ListContainers(ctx)
+	containers, err := d.runtime.ListWorkloads(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %v", err)
 	}
@@ -109,7 +109,7 @@ func (d *defaultManager) DeleteContainer(ctx context.Context, name string, force
 
 	// Remove the container
 	logger.Infof("Removing container %s...", name)
-	if err := d.runtime.RemoveContainer(ctx, containerID); err != nil {
+	if err := d.runtime.RemoveWorkload(ctx, containerID); err != nil {
 		return fmt.Errorf("failed to remove container: %v", err)
 	}
 
@@ -145,7 +145,7 @@ func (d *defaultManager) StopContainer(ctx context.Context, name string) error {
 	}
 
 	// Check if the container is running
-	running, err := d.runtime.IsContainerRunning(ctx, containerID)
+	running, err := d.runtime.IsWorkloadRunning(ctx, containerID)
 	if err != nil {
 		return fmt.Errorf("failed to check if container is running: %v", err)
 	}
@@ -359,7 +359,7 @@ func (d *defaultManager) RestartContainer(ctx context.Context, name string) erro
 	// If the container is running but the proxy is not, stop the container first
 	if container.ID != "" && running { // && !proxyRunning was previously here but is implied by previous if statement.
 		logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
-		if err := d.runtime.StopContainer(ctx, containerID); err != nil {
+		if err := d.runtime.StopWorkload(ctx, containerID); err != nil {
 			return fmt.Errorf("failed to stop container: %v", err)
 		}
 		logger.Infof("Container %s stopped", name)
@@ -388,7 +388,7 @@ func (d *defaultManager) findContainerID(ctx context.Context, name string) (stri
 
 func (d *defaultManager) findContainerByName(ctx context.Context, name string) (*rt.ContainerInfo, error) {
 	// List containers to find the one with the given name
-	containers, err := d.runtime.ListContainers(ctx)
+	containers, err := d.runtime.ListWorkloads(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %v", err)
 	}
@@ -417,7 +417,7 @@ func (d *defaultManager) findContainerByName(ctx context.Context, name string) (
 
 // getContainerBaseName gets the base container name from the container labels
 func (d *defaultManager) getContainerBaseName(ctx context.Context, containerID string) (string, error) {
-	containers, err := d.runtime.ListContainers(ctx)
+	containers, err := d.runtime.ListWorkloads(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to list containers: %v", err)
 	}
@@ -434,7 +434,7 @@ func (d *defaultManager) getContainerBaseName(ctx context.Context, containerID s
 // stopContainer stops the container
 func (d *defaultManager) stopContainer(ctx context.Context, containerID, containerName string) error {
 	logger.Infof("Stopping container %s...", containerName)
-	if err := d.runtime.StopContainer(ctx, containerID); err != nil {
+	if err := d.runtime.StopWorkload(ctx, containerID); err != nil {
 		return fmt.Errorf("failed to stop container: %w", err)
 	}
 

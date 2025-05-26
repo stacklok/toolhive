@@ -41,41 +41,84 @@ type PortMapping struct {
 	Protocol string
 }
 
-// Runtime defines the interface for container runtimes
+// Runtime defines the interface for container runtimes that manage workloads.
+//
+// A workload in ToolHive represents a complete deployment unit that may consist of:
+// - Primary MCP server container
+// - Sidecar containers (for logging, monitoring, proxying, etc.)
+// - Network configurations and port mappings
+// - Volume mounts and storage
+// - Service discovery and load balancing components
+// - Security policies and permission profiles
+//
+// This is a departure from simple container management, as modern deployments
+// often require orchestrating multiple interconnected components that work
+// together to provide a complete service.
 type Runtime interface {
-	// CreateContainer creates a container without starting it
-	// If options is nil, default options will be used
+	// DeployWorkload creates and starts a complete workload deployment.
+	// This includes the primary container, any required sidecars, networking setup,
+	// volume mounts, and service configuration. The workload is started as part
+	// of this operation, making it immediately available for use.
+	//
+	// Parameters:
+	// - image: The primary container image to deploy
+	// - name: The workload name (used for identification and networking)
+	// - command: Command to run in the primary container
+	// - envVars: Environment variables for the primary container
+	// - labels: Labels to apply to all workload components
+	// - permissionProfile: Security and permission configuration
+	// - transportType: Communication transport (sse, stdio, etc.)
+	// - options: Additional deployment options (ports, sidecars, etc.)
+	//
+	// Returns the workload ID for subsequent operations.
+	// If options is nil, default options will be used.
 	//todo: make args a struct to reduce number of args (linter going crazy)
-	CreateContainer(
+	DeployWorkload(
 		ctx context.Context,
 		image, name string,
 		command []string,
 		envVars, labels map[string]string,
 		permissionProfile *permissions.Profile,
 		transportType string,
-		options *CreateContainerOptions,
+		options *DeployWorkloadOptions,
 	) (string, error)
 
-	// ListContainers lists containers
-	ListContainers(ctx context.Context) ([]ContainerInfo, error)
+	// ListWorkloads lists all deployed workloads managed by this runtime.
+	// Returns information about each workload including its components,
+	// status, and resource usage.
+	ListWorkloads(ctx context.Context) ([]ContainerInfo, error)
 
-	// StopContainer stops a container
-	StopContainer(ctx context.Context, containerID string) error
+	// StopWorkload gracefully stops a running workload and all its components.
+	// This includes stopping the primary container, sidecars, and cleaning up
+	// any associated network resources. The workload remains available for restart.
+	StopWorkload(ctx context.Context, workloadID string) error
 
-	// RemoveContainer removes a container
-	RemoveContainer(ctx context.Context, containerID string) error
+	// RemoveWorkload completely removes a workload and all its components.
+	// This includes removing containers, cleaning up networks, volumes,
+	// and any other resources associated with the workload. This operation
+	// is irreversible.
+	RemoveWorkload(ctx context.Context, workloadID string) error
 
-	// ContainerLogs gets container logs
-	ContainerLogs(ctx context.Context, containerID string, follow bool) (string, error)
+	// GetWorkloadLogs retrieves logs from the primary container of the workload.
+	// If follow is true, the logs will be streamed continuously.
+	// For workloads with multiple containers, this returns logs from the
+	// main MCP server container.
+	GetWorkloadLogs(ctx context.Context, workloadID string, follow bool) (string, error)
 
-	// IsContainerRunning checks if a container is running
-	IsContainerRunning(ctx context.Context, containerID string) (bool, error)
+	// IsWorkloadRunning checks if a workload is currently running and healthy.
+	// This verifies that the primary container is running and that any
+	// required sidecars are also operational.
+	IsWorkloadRunning(ctx context.Context, workloadID string) (bool, error)
 
-	// GetContainerInfo gets container information
-	GetContainerInfo(ctx context.Context, containerID string) (ContainerInfo, error)
+	// GetWorkloadInfo retrieves detailed information about a workload.
+	// This includes status, resource usage, network configuration,
+	// and metadata about all components in the workload.
+	GetWorkloadInfo(ctx context.Context, workloadID string) (ContainerInfo, error)
 
-	// AttachContainer attaches to a container
-	AttachContainer(ctx context.Context, containerID string) (io.WriteCloser, io.ReadCloser, error)
+	// AttachToWorkload establishes a direct connection to the primary container
+	// of the workload for interactive communication. This is typically used
+	// for stdio transport where direct input/output streaming is required.
+	AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error)
 
 	// ImageExists checks if an image exists locally
 	ImageExists(ctx context.Context, image string) (bool, error)
@@ -126,8 +169,10 @@ type PermissionConfig struct {
 	SecurityOpt []string
 }
 
-// CreateContainerOptions represents options for creating a container
-type CreateContainerOptions struct {
+// DeployWorkloadOptions represents configuration options for deploying a workload.
+// These options control how the workload is deployed, including networking,
+// platform-specific configurations, and communication settings.
+type DeployWorkloadOptions struct {
 	// ExposedPorts is a map of container ports to expose
 	// The key is in the format "port/protocol" (e.g., "8080/tcp")
 	// The value is an empty struct (not used)
@@ -155,9 +200,11 @@ type PortBinding struct {
 	HostPort string
 }
 
-// NewCreateContainerOptions creates a new CreateContainerOptions with default values
-func NewCreateContainerOptions() *CreateContainerOptions {
-	return &CreateContainerOptions{
+// NewDeployWorkloadOptions creates a new DeployWorkloadOptions with default values.
+// This provides a baseline configuration suitable for most workload deployments,
+// with empty port mappings and standard communication settings.
+func NewDeployWorkloadOptions() *DeployWorkloadOptions {
+	return &DeployWorkloadOptions{
 		ExposedPorts:        make(map[string]struct{}),
 		PortBindings:        make(map[string][]PortBinding),
 		AttachStdio:         false,

@@ -164,12 +164,12 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 				client:                      clientset,
 				waitForStatefulSetReadyFunc: mockWaitForStatefulSetReady,
 			}
-			// Create container options with the pod template patch
-			options := runtime.NewCreateContainerOptions()
+			// Create workload options with the pod template patch
+			options := runtime.NewDeployWorkloadOptions()
 			options.K8sPodTemplatePatch = tc.k8sPodTemplatePatch
 
-			// Create the container
-			containerID, err := client.CreateContainer(
+			// Deploy the workload
+			containerID, err := client.DeployWorkload(
 				context.Background(),
 				"test-image",
 				"test-container",
@@ -437,7 +437,7 @@ func TestConfigureMCPContainer(t *testing.T) {
 		attachStdio         bool
 		envVars             []*corev1apply.EnvVarApplyConfiguration
 		transportType       string
-		options             *runtime.CreateContainerOptions
+		options             *runtime.DeployWorkloadOptions
 		expectedContainers  int
 		expectedImage       string
 		expectedCommand     []string
@@ -487,7 +487,7 @@ func TestConfigureMCPContainer(t *testing.T) {
 			attachStdio:     true,
 			envVars:         []*corev1apply.EnvVarApplyConfiguration{corev1apply.EnvVar().WithName("TEST_ENV").WithValue("test-value")},
 			transportType:   "sse",
-			options: &runtime.CreateContainerOptions{
+			options: &runtime.DeployWorkloadOptions{
 				ExposedPorts: map[string]struct{}{
 					"8080/tcp": {},
 				},
@@ -564,7 +564,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 		envVars             map[string]string
 		attachStdio         bool
 		transportType       string
-		options             *runtime.CreateContainerOptions
+		options             *runtime.DeployWorkloadOptions
 		expectedContainers  int
 		expectedImage       string
 		expectedCommand     []string
@@ -653,8 +653,8 @@ func TestCreateContainerWithMCP(t *testing.T) {
 				waitForStatefulSetReadyFunc: mockWaitForStatefulSetReady,
 			}
 
-			// Create the container
-			containerID, err := client.CreateContainer(
+			// Deploy the workload
+			containerID, err := client.DeployWorkload(
 				context.Background(),
 				tc.image,
 				"test-container",

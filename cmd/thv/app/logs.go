@@ -47,8 +47,8 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
-	// List containers to find the one with the given name
-	containers, err := runtime.ListContainers(ctx)
+	// List workloads to find the one with the given name
+	containers, err := runtime.ListWorkloads(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %w", err)
 	}
@@ -80,7 +80,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	follow := viper.GetBool("follow")
-	logs, err := runtime.ContainerLogs(ctx, containerID, follow)
+	logs, err := runtime.GetWorkloadLogs(ctx, containerID, follow)
 	if err != nil {
 		return fmt.Errorf("failed to get container logs: %v", err)
 	}

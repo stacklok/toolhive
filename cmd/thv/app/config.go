@@ -210,8 +210,8 @@ func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
-	// List containers
-	containers, err := runtime.ListContainers(ctx)
+	// List workloads
+	containers, err := runtime.ListWorkloads(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %v", err)
 	}

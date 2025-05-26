@@ -42,7 +42,6 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
   -h, --help                        help for run
       --host string                 Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --image-verification string   Set image verification mode (warn, enabled, disabled) (default "warn")
-      --k8s-pod-patch string        JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)
       --name string                 Name of the MCP server (auto-generated from image if not provided)
       --oidc-audience string        Expected audience for the token
       --oidc-client-id string       OIDC client ID

@@ -92,8 +92,6 @@ type RunConfig struct {
 
 	// Runtime is the container runtime to use (not serialized)
 	Runtime rt.Runtime `json:"-" yaml:"-"`
-
-	EgressImage string `json:"egress_image,omitempty" yaml:"egress_image,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -120,11 +118,6 @@ func NewRunConfig() *RunConfig {
 		EnvVars:         make(map[string]string),
 	}
 }
-
-// Set default egress image
-const (
-	defaultEgressImage = "ubuntu/squid:latest"
-)
 
 // NewRunConfigFromFlags creates a new RunConfig with values from command-line flags
 func NewRunConfigFromFlags(
@@ -163,7 +156,6 @@ func NewRunConfigFromFlags(
 		ContainerLabels:             make(map[string]string),
 		EnvVars:                     make(map[string]string),
 		Host:                        host,
-		EgressImage:                 defaultEgressImage,
 	}
 
 	// Set OIDC config if any values are provided

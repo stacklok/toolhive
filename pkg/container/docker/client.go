@@ -445,6 +445,12 @@ func (c *Client) createEgressContainer(ctx context.Context, containerName string
 	// permission profile for egress is network
 	permProfile := permissions.BuiltinNetworkProfile()
 
+	// pull the egress image if it is not already pulled
+	err := c.PullImage(ctx, EgressImage)
+	if err != nil {
+		return "", fmt.Errorf("failed to pull egress image: %v", err)
+	}
+
 	// Create container options
 	config := &container.Config{
 		Image:        EgressImage,

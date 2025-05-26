@@ -250,11 +250,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to retrieve or pull image: %v", err)
 	}
 
-	// pull the egress image if it is not already pulled
-	if err := pullImage(ctx, config.EgressImage, rt); err != nil {
-		return fmt.Errorf("failed to retrieve or pull egress image: %v", err)
-	}
-
 	// Configure the RunConfig with transport, ports, permissions, etc.
 	if err := configureRunConfig(config, runTransport, runPort, runTargetPort, runEnv); err != nil {
 		return err

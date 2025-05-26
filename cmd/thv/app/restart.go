@@ -32,5 +32,11 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Restart the container in a detached process.
-	return manager.RestartContainer(ctx, containerName)
+	err = manager.RestartContainer(ctx, containerName)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Container %s restarted successfully\n", containerName)
+	return nil
 }

@@ -13,9 +13,12 @@ jobs:
   tests:
     name: Tests
     uses: ./.github/workflows/test.yml
+  e2e-tests:
+    name: E2E Tests
+    uses: ./.github/workflows/e2e-tests.yml
   image-build-and-push:
     name: Build and Sign Image
-    needs: [ linting, tests ]
+    needs: [ linting, tests, e2e-tests ]
     permissions:
       contents: write
       packages: write

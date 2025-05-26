@@ -7,7 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/lifecycle"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 var stopCmd = &cobra.Command{
@@ -40,10 +39,12 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		// If the container is not found, treat as a non-fatal error.
 		if errors.Is(err, lifecycle.ErrContainerNotFound) {
-			logger.Infof("Container %s is not running", containerName)
+			fmt.Printf("Container %s is not running\n", containerName)
 		} else {
 			return fmt.Errorf("failed to delete container: %v", err)
 		}
+	} else {
+		fmt.Printf("Container %s stopped successfully\n", containerName)
 	}
 
 	return nil

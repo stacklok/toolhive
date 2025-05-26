@@ -41,5 +41,6 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to delete container: %v", err)
 	}
 
+	fmt.Printf("Container %s removed successfully\n", containerName)
 	return nil
 }

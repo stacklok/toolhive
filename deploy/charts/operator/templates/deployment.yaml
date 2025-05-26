@@ -45,6 +45,8 @@ spec:
           env:
           - name: TOOLHIVE_RUNNER_IMAGE
             value: "{{ .Values.operator.toolhiveRunnerImage }}"
+          - name: TOOLHIVE_PROXY_HOST
+            value: "{{ .Values.operator.proxyHost }}"
           {{- if .Values.operator.env }}
             {{- toYaml .Values.operator.env | nindent 12 }}
           {{- end }}

@@ -15,7 +15,6 @@ import (
 	backoff "github.com/cenkalti/backoff/v4"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -258,8 +257,8 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	_ *permissions.Profile, // TODO: Implement permission profile support for Kubernetes
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
-	isMcpServer bool,
-	isEgress bool) (string, error) {
+	_ bool,
+	_ bool) (string, error) {
 	namespace := getCurrentNamespace()
 	containerLabels["app"] = containerName
 	containerLabels["toolhive"] = "true"
@@ -570,13 +569,15 @@ func (*Client) StopWorkload(_ context.Context, _ string) error {
 	return nil
 }
 
-func (c *Client) CreateNetwork(ctx context.Context, name string, labels map[string]string, internal bool) (string, error) {
+// CreateNetwork implements runtime.Runtime.
+func (*Client) CreateNetwork(_ context.Context, _ string, _ map[string]string, _ bool) (string, error) {
 	// just noop
 	logger.Infof("CreateNetwork is not supported in Kubernetes runtime. Skipping network creation.")
 	return "", nil
 }
 
-func (c *Client) DeleteNetwork(ctx context.Context, name string) error {
+// DeleteNetwork implements runtime.Runtime.
+func (*Client) DeleteNetwork(_ context.Context, _ string) error {
 	logger.Infof("DeleteNetwork is not supported in Kubernetes runtime. Skipping network deletion.")
 	return nil
 }

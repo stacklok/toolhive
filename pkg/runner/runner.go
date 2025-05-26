@@ -40,7 +40,7 @@ func NewRunner(runConfig *RunConfig) *Runner {
 	}
 }
 
-func (r *Runner) createTempSquidConf(networkPermissions *permissions.NetworkPermissions) (string, error) {
+func (*Runner) createTempSquidConf(networkPermissions *permissions.NetworkPermissions) (string, error) { // nolint:gocyclo
 	// Define the Squid configuration content
 	var sb strings.Builder
 
@@ -117,7 +117,9 @@ func (r *Runner) createTempSquidConf(networkPermissions *permissions.NetworkPerm
 
 	// Write the configuration content to the file
 	if _, err := tmpFile.WriteString(sb.String()); err != nil {
-		tmpFile.Close()
+		if err := tmpFile.Close(); err != nil {
+			return "", fmt.Errorf("failed to close temporary file: %v", err)
+		}
 		return "", fmt.Errorf("failed to write to temporary file: %v", err)
 	}
 
@@ -125,7 +127,8 @@ func (r *Runner) createTempSquidConf(networkPermissions *permissions.NetworkPerm
 }
 
 // Starts an egress container for the MCP server
-func (r *Runner) setupEgressContainer(ctx context.Context, containerName string, egressImage string, networkPermissions *permissions.NetworkPermissions) error {
+func (r *Runner) setupEgressContainer(ctx context.Context, containerName string, egressImage string,
+	networkPermissions *permissions.NetworkPermissions) error {
 	fmt.Printf("Setting up egress container for %s with image %s...\n", containerName, egressImage)
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -269,7 +272,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// spin up the egress container
-	if err := r.setupEgressContainer(ctx, r.Config.ContainerName, r.Config.EgressImage, r.Config.PermissionProfile.Network); err != nil {
+	if err := r.setupEgressContainer(ctx, r.Config.ContainerName, r.Config.EgressImage,
+		r.Config.PermissionProfile.Network); err != nil {
 		return fmt.Errorf("failed to set up egress container: %v", err)
 	}
 

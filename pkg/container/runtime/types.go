@@ -81,6 +81,8 @@ type Runtime interface {
 		permissionProfile *permissions.Profile,
 		transportType string,
 		options *DeployWorkloadOptions,
+		isMcpServer bool,
+		isEgress bool,
 	) (string, error)
 
 	// ListWorkloads lists all deployed workloads managed by this runtime.

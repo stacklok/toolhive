@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/docker/docker/api/types/network"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
@@ -57,12 +56,6 @@ func (r *Runner) setupEgressContainer(ctx context.Context, containerName string,
 	labels := map[string]string{}
 	lb.AddStandardLabels(labels, egressContainerName, egressContainerName, "stdio", 80)
 
-	// Create the container
-	internalNetworkName := fmt.Sprintf("toolhive-%s-internal", containerName)
-	networking := map[string]*network.EndpointSettings{
-		"toolhive-external": {},
-		internalNetworkName: {},
-	}
 	logger.Infof("Creating container %s from image %s...", egressContainerName, egressImage)
 	containerID, err := r.Config.Runtime.CreateContainer(
 		ctx,
@@ -73,8 +66,9 @@ func (r *Runner) setupEgressContainer(ctx context.Context, containerName string,
 		labels,
 		permissions.BuiltinEgressProfile(),
 		"stdio",
-		networking,
 		containerOptions,
+		false,
+		true,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create container: %v", err)
@@ -180,19 +174,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// spin up the egress container
-	fmt.Println("i setup egress container")
 	if err := r.setupEgressContainer(ctx, r.Config.ContainerName, r.Config.EgressImage); err != nil {
 		return fmt.Errorf("failed to set up egress container: %v", err)
 	}
-	fmt.Println("after")
 
 	// add extra env vars
 	egressHost := fmt.Sprintf("http://%s:3128", r.Config.ContainerName+"-egress")
 	r.Config.EnvVars["HTTP_PROXY"] = egressHost
 	r.Config.EnvVars["HTTPS_PROXY"] = egressHost
 	r.Config.EnvVars["NO_PROXY"] = fmt.Sprintf("localhost,127.0.1,::1,%s", r.Config.Host)
-	fmt.Println("In en vars")
-	fmt.Println(r.Config.EnvVars)
 
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)

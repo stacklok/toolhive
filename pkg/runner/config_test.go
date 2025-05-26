@@ -30,6 +30,8 @@ func (*mockRuntime) DeployWorkload(
 	_ *permissions.Profile,
 	_ string,
 	_ *rt.DeployWorkloadOptions,
+	_ bool,
+	_ bool,
 ) (string, error) {
 	return "container-id", nil
 }

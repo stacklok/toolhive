@@ -138,6 +138,27 @@ func (d *defaultManager) DeleteContainer(ctx context.Context, name string, force
 		}
 	}
 
+	// Delete networks if there are no containers using them.
+	toolHiveContainers, err := d.ListContainers(ctx, true)
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %v", err)
+	}
+
+	// Delete associated internal network
+	networkName := "toolhive-" + name + "-internal"
+	if err := d.DeleteNetwork(ctx, networkName); err != nil {
+		// just log the error and continue
+		logger.Warnf("failed to delete network %q: %v", networkName, err)
+	}
+
+	if len(toolHiveContainers) == 0 {
+		// remove external network
+		if err := d.DeleteNetwork(ctx, "toolhive-external"); err != nil {
+			// just log the error and continue
+			logger.Warnf("failed to delete network %q: %v", "toolhive-external", err)
+		}
+	}
+
 	return nil
 }
 

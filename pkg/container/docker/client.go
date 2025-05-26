@@ -304,10 +304,13 @@ func (c *Client) DeployWorkload(
 	ctx context.Context,
 	image, name string,
 	command []string,
-	envVars, labels map[string]string,
+	envVars,
+	labels map[string]string,
 	permissionProfile *permissions.Profile,
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
+	isMcpServer bool,
+	isEgress bool,
 ) (string, error) {
 	// Get permission config from profile
 	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType)
@@ -376,12 +379,31 @@ func (c *Client) DeployWorkload(
 		// Container was removed and needs to be recreated
 	}
 
+	// create network depending on type
+	var endpointsConfig map[string]*network.EndpointSettings
+	if isMcpServer {
+		networkName := fmt.Sprintf("toolhive-%s-internal", name)
+		endpointsConfig = map[string]*network.EndpointSettings{
+			networkName: {},
+		}
+	} else if isEgress {
+		internalNetworkName := fmt.Sprintf("toolhive-%s-internal", name)
+		externalNetworkName := fmt.Sprintf("toolhive-%s-external", name)
+		endpointsConfig = map[string]*network.EndpointSettings{
+			internalNetworkName: {},
+			externalNetworkName: {},
+		}
+	}
+	networkConfig := &network.NetworkingConfig{
+		EndpointsConfig: endpointsConfig,
+	}
+
 	// Create the container
 	resp, err := c.client.ContainerCreate(
 		ctx,
 		config,
 		hostConfig,
-		nil,
+		networkConfig,
 		nil,
 		name,
 	)

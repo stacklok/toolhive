@@ -684,6 +684,26 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 	if err != nil {
 		return NewContainerError(err, workloadID, fmt.Sprintf("failed to stop workload: %v", err))
 	}
+
+	// stop egress container
+	containerResponse, err := c.client.ContainerInspect(ctx, workloadID)
+	if err != nil {
+		logger.Warnf("Failed to inspect container %s: %v", workloadID, err)
+	} else {
+		egressContainerName := fmt.Sprintf("%s-egress", containerResponse.Name)
+
+		// find the egress container by name
+		egressContainerId, err := c.findExistingContainer(ctx, egressContainerName)
+		if err != nil {
+			logger.Warnf("Failed to find egress container %s: %v", egressContainerName, err)
+		} else {
+			err = c.client.ContainerStop(ctx, egressContainerId, container.StopOptions{Timeout: &timeoutSeconds})
+			if err != nil {
+				logger.Warnf("Failed to stop egress container %s: %v", egressContainerName, err)
+			}
+		}
+	}
+
 	return nil
 }
 

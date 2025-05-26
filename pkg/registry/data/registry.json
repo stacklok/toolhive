@@ -1846,6 +1846,51 @@
       ],
       "transport": "stdio"
     },
+    "terraform": {
+      "args": [],
+      "description": "MCP Server for providing seamless integration with Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.\n\n\n\n\n",
+      "env_vars": [],
+      "image": "hashicorp/terraform-mcp-server:latest",
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [
+              443
+            ],
+            "allow_transport": [
+              "tcp"
+            ],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/hashicorp/terraform-mcp-server",
+      "tags": [
+        "terraform",
+        "iac",
+        "infrastructure",
+        "automation",
+        "providers",
+        "modules",
+        "hcl",
+        "plan",
+        "apply",
+        "destroy",
+        "aws",
+        "gcp",
+        "azure"
+      ],
+      "tools": [
+        "resolveProviderDocID",
+        "getProviderDocs",
+        "searchModules",
+        "moduleDetails"
+      ],
+      "transport": "stdio"
+    },
     "time": {
       "args": [],
       "description": "MCP server for time info and IANA timezone conversions with auto system timezone detection.\n\n\n\n\n",

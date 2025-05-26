@@ -41,8 +41,8 @@ func (m *ContainerMonitor) StartMonitoring(ctx context.Context) (<-chan error, e
 		return m.errorCh, nil // Already monitoring
 	}
 
-	// Check if the container exists and is running
-	running, err := m.runtime.IsContainerRunning(ctx, m.containerID)
+	// Check if the workload exists and is running
+	running, err := m.runtime.IsWorkloadRunning(ctx, m.containerID)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 			// Check if the container is still running
 			// Create a short timeout context for this check
 			checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			running, err := m.runtime.IsContainerRunning(checkCtx, m.containerID)
+			running, err := m.runtime.IsWorkloadRunning(checkCtx, m.containerID)
 			cancel() // Always cancel the context to avoid leaks
 			if err != nil {
 				// If the container is not found, it may have been removed
@@ -117,8 +117,8 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 				// Container has exited, get logs and info
 				// Create a short timeout context for these operations
 				infoCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				logs, _ := m.runtime.ContainerLogs(infoCtx, m.containerID, false)
-				info, _ := m.runtime.GetContainerInfo(infoCtx, m.containerID)
+				logs, _ := m.runtime.GetWorkloadLogs(infoCtx, m.containerID, false)
+				info, _ := m.runtime.GetWorkloadInfo(infoCtx, m.containerID)
 				cancel() // Always cancel the context to avoid leaks
 
 				exitErr := NewContainerError(

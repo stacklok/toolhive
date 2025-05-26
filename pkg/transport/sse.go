@@ -105,8 +105,8 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	envVars["FASTMCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
 	envVars["MCP_HOST"] = t.targetHost
 
-	// Create container options
-	containerOptions := rt.NewCreateContainerOptions()
+	// Create workload options
+	containerOptions := rt.NewDeployWorkloadOptions()
 	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
 
 	// For SSE transport, expose the target port in the container
@@ -138,8 +138,8 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	containerOptions.AttachStdio = false
 
 	// Create the container
-	logger.Infof("Creating container %s from image %s...", containerName, image)
-	containerID, err := t.runtime.CreateContainer(
+	logger.Infof("Deploying workload %s from image %s...", containerName, image)
+	containerID, err := t.runtime.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -245,8 +245,8 @@ func (t *SSETransport) Stop(ctx context.Context) error {
 
 	// Stop the container if runtime is available
 	if t.runtime != nil && t.containerID != "" {
-		if err := t.runtime.StopContainer(ctx, t.containerID); err != nil {
-			return fmt.Errorf("failed to stop container: %w", err)
+		if err := t.runtime.StopWorkload(ctx, t.containerID); err != nil {
+			return fmt.Errorf("failed to stop workload: %w", err)
 		}
 	}
 

@@ -297,17 +297,17 @@ func setupPortBindings(hostConfig *container.HostConfig, portBindings map[string
 	return nil
 }
 
-// CreateContainer creates a container without starting it.
-// It configures the container based on the provided permission profile and transport type.
+// DeployWorkload creates and starts a workload.
+// It configures the workload based on the provided permission profile and transport type.
 // If options is nil, default options will be used.
-func (c *Client) CreateContainer(
+func (c *Client) DeployWorkload(
 	ctx context.Context,
 	image, name string,
 	command []string,
 	envVars, labels map[string]string,
 	permissionProfile *permissions.Profile,
 	transportType string,
-	options *runtime.CreateContainerOptions,
+	options *runtime.DeployWorkloadOptions,
 ) (string, error) {
 	// Get permission config from profile
 	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType)
@@ -398,8 +398,8 @@ func (c *Client) CreateContainer(
 	return resp.ID, nil
 }
 
-// ListContainers lists containers
-func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, error) {
+// ListWorkloads lists workloads
+func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, error) {
 	// Create filter for toolhive containers
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("label", "toolhive=true")
@@ -451,11 +451,11 @@ func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, e
 	return result, nil
 }
 
-// StopContainer stops a container
-// If the container is already stopped, it returns success
-func (c *Client) StopContainer(ctx context.Context, containerID string) error {
-	// Check if the container is running
-	running, err := c.IsContainerRunning(ctx, containerID)
+// StopWorkload stops a workload
+// If the workload is already stopped, it returns success
+func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
+	// Check if the workload is running
+	running, err := c.IsWorkloadRunning(ctx, workloadID)
 	if err != nil {
 		// If the container doesn't exist, that's fine - it's already "stopped"
 		if err, ok := err.(*ContainerError); ok && err.Err == ErrContainerNotFound {
@@ -471,31 +471,31 @@ func (c *Client) StopContainer(ctx context.Context, containerID string) error {
 
 	// Use a reasonable timeout
 	timeoutSeconds := 30
-	err = c.client.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeoutSeconds})
+	err = c.client.ContainerStop(ctx, workloadID, container.StopOptions{Timeout: &timeoutSeconds})
 	if err != nil {
-		return NewContainerError(err, containerID, fmt.Sprintf("failed to stop container: %v", err))
+		return NewContainerError(err, workloadID, fmt.Sprintf("failed to stop workload: %v", err))
 	}
 	return nil
 }
 
-// RemoveContainer removes a container
-// If the container doesn't exist, it returns success
-func (c *Client) RemoveContainer(ctx context.Context, containerID string) error {
-	err := c.client.ContainerRemove(ctx, containerID, container.RemoveOptions{
+// RemoveWorkload removes a workload
+// If the workload doesn't exist, it returns success
+func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
+	err := c.client.ContainerRemove(ctx, workloadID, container.RemoveOptions{
 		Force: true,
 	})
 	if err != nil {
-		// If the container doesn't exist, that's fine - it's already removed
+		// If the workload doesn't exist, that's fine - it's already removed
 		if client.IsErrNotFound(err) {
 			return nil
 		}
-		return NewContainerError(err, containerID, fmt.Sprintf("failed to remove container: %v", err))
+		return NewContainerError(err, workloadID, fmt.Sprintf("failed to remove workload: %v", err))
 	}
 	return nil
 }
 
-// ContainerLogs gets container logs
-func (c *Client) ContainerLogs(ctx context.Context, containerID string, follow bool) (string, error) {
+// GetWorkloadLogs gets workload logs
+func (c *Client) GetWorkloadLogs(ctx context.Context, workloadID string, follow bool) (string, error) {
 	options := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -504,9 +504,9 @@ func (c *Client) ContainerLogs(ctx context.Context, containerID string, follow b
 	}
 
 	// Get logs
-	logs, err := c.client.ContainerLogs(ctx, containerID, options)
+	logs, err := c.client.ContainerLogs(ctx, workloadID, options)
 	if err != nil {
-		return "", NewContainerError(err, containerID, fmt.Sprintf("failed to get container logs: %v", err))
+		return "", NewContainerError(err, workloadID, fmt.Sprintf("failed to get workload logs: %v", err))
 	}
 	defer logs.Close()
 
@@ -514,44 +514,44 @@ func (c *Client) ContainerLogs(ctx context.Context, containerID string, follow b
 		_, err = io.Copy(os.Stdout, logs)
 		if err != nil && err != io.EOF {
 			logger.Errorf("Error reading container logs: %v", err)
-			return "", NewContainerError(err, containerID, fmt.Sprintf("failed to follow container logs: %v", err))
+			return "", NewContainerError(err, workloadID, fmt.Sprintf("failed to follow workload logs: %v", err))
 		}
 	}
 
 	// Read logs
 	logBytes, err := io.ReadAll(logs)
 	if err != nil {
-		return "", NewContainerError(err, containerID, fmt.Sprintf("failed to read container logs: %v", err))
+		return "", NewContainerError(err, workloadID, fmt.Sprintf("failed to read workload logs: %v", err))
 	}
 
 	return string(logBytes), nil
 }
 
-// IsContainerRunning checks if a container is running
-func (c *Client) IsContainerRunning(ctx context.Context, containerID string) (bool, error) {
-	// Inspect container
-	info, err := c.client.ContainerInspect(ctx, containerID)
+// IsWorkloadRunning checks if a workload is running
+func (c *Client) IsWorkloadRunning(ctx context.Context, workloadID string) (bool, error) {
+	// Inspect workload
+	info, err := c.client.ContainerInspect(ctx, workloadID)
 	if err != nil {
-		// Check if the error is because the container doesn't exist
+		// Check if the error is because the workload doesn't exist
 		if client.IsErrNotFound(err) {
-			return false, NewContainerError(ErrContainerNotFound, containerID, "container not found")
+			return false, NewContainerError(ErrContainerNotFound, workloadID, "workload not found")
 		}
-		return false, NewContainerError(err, containerID, fmt.Sprintf("failed to inspect container: %v", err))
+		return false, NewContainerError(err, workloadID, fmt.Sprintf("failed to inspect workload: %v", err))
 	}
 
 	return info.State.Running, nil
 }
 
-// GetContainerInfo gets container information
-func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runtime.ContainerInfo, error) {
-	// Inspect container
-	info, err := c.client.ContainerInspect(ctx, containerID)
+// GetWorkloadInfo gets workload information
+func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtime.ContainerInfo, error) {
+	// Inspect workload
+	info, err := c.client.ContainerInspect(ctx, workloadID)
 	if err != nil {
-		// Check if the error is because the container doesn't exist
+		// Check if the error is because the workload doesn't exist
 		if client.IsErrNotFound(err) {
-			return runtime.ContainerInfo{}, NewContainerError(ErrContainerNotFound, containerID, "container not found")
+			return runtime.ContainerInfo{}, NewContainerError(ErrContainerNotFound, workloadID, "workload not found")
 		}
-		return runtime.ContainerInfo{}, NewContainerError(err, containerID, fmt.Sprintf("failed to inspect container: %v", err))
+		return runtime.ContainerInfo{}, NewContainerError(err, workloadID, fmt.Sprintf("failed to inspect workload: %v", err))
 	}
 
 	// Extract port mappings
@@ -604,26 +604,26 @@ func (*readCloserWrapper) Close() error {
 	return nil
 }
 
-// AttachContainer attaches to a container
-func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.WriteCloser, io.ReadCloser, error) {
-	// Check if container exists and is running
-	running, err := c.IsContainerRunning(ctx, containerID)
+// AttachToWorkload attaches to a workload
+func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error) {
+	// Check if workload exists and is running
+	running, err := c.IsWorkloadRunning(ctx, workloadID)
 	if err != nil {
 		return nil, nil, err
 	}
 	if !running {
-		return nil, nil, NewContainerError(ErrContainerNotRunning, containerID, "container is not running")
+		return nil, nil, NewContainerError(ErrContainerNotRunning, workloadID, "workload is not running")
 	}
 
-	// Attach to container
-	resp, err := c.client.ContainerAttach(ctx, containerID, container.AttachOptions{
+	// Attach to workload
+	resp, err := c.client.ContainerAttach(ctx, workloadID, container.AttachOptions{
 		Stream: true,
 		Stdin:  true,
 		Stdout: true,
 		Stderr: true,
 	})
 	if err != nil {
-		return nil, nil, NewContainerError(ErrAttachFailed, containerID, fmt.Sprintf("failed to attach to container: %v", err))
+		return nil, nil, NewContainerError(ErrAttachFailed, workloadID, fmt.Sprintf("failed to attach to workload: %v", err))
 	}
 
 	// Wrap the reader in a ReadCloser
@@ -1321,13 +1321,13 @@ func (c *Client) handleExistingContainer(
 	}
 
 	// Configurations don't match, need to recreate the container
-	// Stop the container
-	if err := c.StopContainer(ctx, containerID); err != nil {
+	// Stop the workload
+	if err := c.StopWorkload(ctx, containerID); err != nil {
 		return false, err
 	}
 
-	// Remove the container
-	if err := c.RemoveContainer(ctx, containerID); err != nil {
+	// Remove the workload
+	if err := c.RemoveWorkload(ctx, containerID); err != nil {
 		return false, err
 	}
 

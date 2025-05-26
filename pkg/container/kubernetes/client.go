@@ -111,23 +111,23 @@ func getCurrentNamespace() string {
 	return "default"
 }
 
-// AttachContainer implements runtime.Runtime.
-func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.WriteCloser, io.ReadCloser, error) {
-	// AttachContainer attaches to a container in Kubernetes
+// AttachToWorkload implements runtime.Runtime.
+func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error) {
+	// AttachToWorkload attaches to a workload in Kubernetes
 	// This is a more complex operation in Kubernetes compared to Docker/Podman
 	// as it requires setting up an exec session to the pod
 
-	// First, we need to find the pod associated with the containerID (which is actually the statefulset name)
+	// First, we need to find the pod associated with the workloadID (which is actually the statefulset name)
 	namespace := getCurrentNamespace()
 	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app=%s", containerID),
+		LabelSelector: fmt.Sprintf("app=%s", workloadID),
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to find pod for container %s: %w", containerID, err)
+		return nil, nil, fmt.Errorf("failed to find pod for workload %s: %w", workloadID, err)
 	}
 
 	if len(pods.Items) == 0 {
-		return nil, nil, fmt.Errorf("no pods found for container %s", containerID)
+		return nil, nil, fmt.Errorf("no pods found for workload %s", workloadID)
 	}
 
 	// Use the first pod found
@@ -159,7 +159,7 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 		return nil, nil, fmt.Errorf("failed to create SPDY executor: %v", err)
 	}
 
-	logger.Infof("Attaching to pod %s container %s...", podName, containerID)
+	logger.Infof("Attaching to pod %s workload %s...", podName, workloadID)
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
@@ -180,7 +180,7 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 				Tty:    false,
 			})
 		}, backoffWithRetries, func(err error, duration time.Duration) {
-			logger.Errorf("Error attaching to container %s: %v. Retrying in %s...", containerID, err, duration)
+			logger.Errorf("Error attaching to workload %s: %v. Retrying in %s...", workloadID, err, duration)
 		})
 		if err != nil {
 			if statusErr, ok := err.(*errors.StatusError); ok {
@@ -203,21 +203,21 @@ func (c *Client) AttachContainer(ctx context.Context, containerID string) (io.Wr
 	return stdinWriter, stdoutReader, nil
 }
 
-// ContainerLogs implements runtime.Runtime.
-func (c *Client) ContainerLogs(ctx context.Context, containerID string, follow bool) (string, error) {
-	// In Kubernetes, containerID is the statefulset name
+// GetWorkloadLogs implements runtime.Runtime.
+func (c *Client) GetWorkloadLogs(ctx context.Context, workloadID string, follow bool) (string, error) {
+	// In Kubernetes, workloadID is the statefulset name
 	namespace := getCurrentNamespace()
 
 	// Get the pods associated with this statefulset
 	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app=%s", containerID),
+		LabelSelector: fmt.Sprintf("app=%s", workloadID),
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to list pods for statefulset %s: %w", containerID, err)
+		return "", fmt.Errorf("failed to list pods for statefulset %s: %w", workloadID, err)
 	}
 
 	if len(pods.Items) == 0 {
-		return "", fmt.Errorf("no pods found for statefulset %s", containerID)
+		return "", fmt.Errorf("no pods found for statefulset %s", workloadID)
 	}
 
 	// Use the first pod
@@ -247,8 +247,8 @@ func (c *Client) ContainerLogs(ctx context.Context, containerID string, follow b
 	return string(logBytes), nil
 }
 
-// CreateContainer implements runtime.Runtime.
-func (c *Client) CreateContainer(ctx context.Context,
+// DeployWorkload implements runtime.Runtime.
+func (c *Client) DeployWorkload(ctx context.Context,
 	image string,
 	containerName string,
 	command []string,
@@ -256,7 +256,7 @@ func (c *Client) CreateContainer(ctx context.Context,
 	containerLabels map[string]string,
 	_ *permissions.Profile, // TODO: Implement permission profile support for Kubernetes
 	transportType string,
-	options *runtime.CreateContainerOptions) (string, error) {
+	options *runtime.DeployWorkloadOptions) (string, error) {
 	namespace := getCurrentNamespace()
 	containerLabels["app"] = containerName
 	containerLabels["toolhive"] = "true"
@@ -344,26 +344,26 @@ func (c *Client) CreateContainer(ctx context.Context,
 	return createdStatefulSet.Name, nil
 }
 
-// GetContainerInfo implements runtime.Runtime.
-func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runtime.ContainerInfo, error) {
-	// In Kubernetes, containerID is the statefulset name
+// GetWorkloadInfo implements runtime.Runtime.
+func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtime.ContainerInfo, error) {
+	// In Kubernetes, workloadID is the statefulset name
 	namespace := getCurrentNamespace()
 
 	// Get the statefulset
-	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, containerID, metav1.GetOptions{})
+	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadID, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return runtime.ContainerInfo{}, fmt.Errorf("statefulset %s not found", containerID)
+			return runtime.ContainerInfo{}, fmt.Errorf("statefulset %s not found", workloadID)
 		}
-		return runtime.ContainerInfo{}, fmt.Errorf("failed to get statefulset %s: %w", containerID, err)
+		return runtime.ContainerInfo{}, fmt.Errorf("failed to get statefulset %s: %w", workloadID, err)
 	}
 
 	// Get the pods associated with this statefulset
 	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app=%s", containerID),
+		LabelSelector: fmt.Sprintf("app=%s", workloadID),
 	})
 	if err != nil {
-		return runtime.ContainerInfo{}, fmt.Errorf("failed to list pods for statefulset %s: %w", containerID, err)
+		return runtime.ContainerInfo{}, fmt.Errorf("failed to list pods for statefulset %s: %w", workloadID, err)
 	}
 
 	// Extract port mappings from pods
@@ -373,7 +373,7 @@ func (c *Client) GetContainerInfo(ctx context.Context, containerID string) (runt
 	}
 
 	// Get ports from associated service (for SSE transport)
-	service, err := c.client.CoreV1().Services(namespace).Get(ctx, containerID, metav1.GetOptions{})
+	service, err := c.client.CoreV1().Services(namespace).Get(ctx, workloadID, metav1.GetOptions{})
 	if err == nil {
 		// Service exists, add its ports
 		ports = extractPortMappingsFromService(service, ports)
@@ -430,26 +430,26 @@ func (*Client) ImageExists(_ context.Context, imageName string) (bool, error) {
 	return true, nil
 }
 
-// IsContainerRunning implements runtime.Runtime.
-func (c *Client) IsContainerRunning(ctx context.Context, containerID string) (bool, error) {
-	// In Kubernetes, containerID is the statefulset name
+// IsWorkloadRunning implements runtime.Runtime.
+func (c *Client) IsWorkloadRunning(ctx context.Context, workloadID string) (bool, error) {
+	// In Kubernetes, workloadID is the statefulset name
 	namespace := getCurrentNamespace()
 
 	// Get the statefulset
-	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, containerID, metav1.GetOptions{})
+	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadID, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return false, fmt.Errorf("statefulset %s not found", containerID)
+			return false, fmt.Errorf("statefulset %s not found", workloadID)
 		}
-		return false, fmt.Errorf("failed to get statefulset %s: %w", containerID, err)
+		return false, fmt.Errorf("failed to get statefulset %s: %w", workloadID, err)
 	}
 
 	// Check if the statefulset has at least one ready replica
 	return statefulset.Status.ReadyReplicas > 0, nil
 }
 
-// ListContainers implements runtime.Runtime.
-func (c *Client) ListContainers(ctx context.Context) ([]runtime.ContainerInfo, error) {
+// ListWorkloads implements runtime.Runtime.
+func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, error) {
 	// Create label selector for toolhive containers
 	labelSelector := "toolhive=true"
 
@@ -541,29 +541,29 @@ func (*Client) BuildImage(_ context.Context, _, _ string) error {
 	return fmt.Errorf("building images directly is not supported in Kubernetes runtime")
 }
 
-// RemoveContainer implements runtime.Runtime.
-func (c *Client) RemoveContainer(ctx context.Context, containerID string) error {
-	// In Kubernetes, we remove a container by deleting the statefulset
+// RemoveWorkload implements runtime.Runtime.
+func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
+	// In Kubernetes, we remove a workload by deleting the statefulset
 	namespace := getCurrentNamespace()
 
 	// Delete the statefulset
 	deleteOptions := metav1.DeleteOptions{}
-	err := c.client.AppsV1().StatefulSets(namespace).Delete(ctx, containerID, deleteOptions)
+	err := c.client.AppsV1().StatefulSets(namespace).Delete(ctx, workloadID, deleteOptions)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// If the statefulset doesn't exist, that's fine
-			logger.Infof("Statefulset %s not found, nothing to remove", containerID)
+			logger.Infof("Statefulset %s not found, nothing to remove", workloadID)
 			return nil
 		}
-		return fmt.Errorf("failed to delete statefulset %s: %w", containerID, err)
+		return fmt.Errorf("failed to delete statefulset %s: %w", workloadID, err)
 	}
 
-	logger.Infof("Deleted statefulset %s", containerID)
+	logger.Infof("Deleted statefulset %s", workloadID)
 	return nil
 }
 
-// StopContainer implements runtime.Runtime.
-func (*Client) StopContainer(_ context.Context, _ string) error {
+// StopWorkload implements runtime.Runtime.
+func (*Client) StopWorkload(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -626,7 +626,7 @@ func parsePortString(portStr string) (int, error) {
 // configureContainerPorts adds port configurations to a container for SSE transport
 func configureContainerPorts(
 	containerConfig *corev1apply.ContainerApplyConfiguration,
-	options *runtime.CreateContainerOptions,
+	options *runtime.DeployWorkloadOptions,
 ) (*corev1apply.ContainerApplyConfiguration, error) {
 	if options == nil {
 		return containerConfig, nil
@@ -709,7 +709,7 @@ func createServicePortConfig(portNum int) *corev1apply.ServicePortApplyConfigura
 
 // processExposedPorts processes exposed ports and adds them to the port map
 func processExposedPorts(
-	options *runtime.CreateContainerOptions,
+	options *runtime.DeployWorkloadOptions,
 	portMap map[int32]*corev1apply.ServicePortApplyConfiguration,
 ) error {
 	for portStr := range options.ExposedPorts {
@@ -733,7 +733,7 @@ func processExposedPorts(
 }
 
 // createServicePorts creates service port configurations from container options
-func createServicePorts(options *runtime.CreateContainerOptions) ([]*corev1apply.ServicePortApplyConfiguration, error) {
+func createServicePorts(options *runtime.DeployWorkloadOptions) ([]*corev1apply.ServicePortApplyConfiguration, error) {
 	if options == nil {
 		return nil, nil
 	}
@@ -797,7 +797,7 @@ func (c *Client) createHeadlessService(
 	containerName string,
 	namespace string,
 	labels map[string]string,
-	options *runtime.CreateContainerOptions,
+	options *runtime.DeployWorkloadOptions,
 ) error {
 	// Create service ports from the container ports
 	servicePorts, err := createServicePorts(options)
@@ -1108,7 +1108,7 @@ func configureMCPContainer(
 	attachStdio bool,
 	envVarList []*corev1apply.EnvVarApplyConfiguration,
 	transportType string,
-	options *runtime.CreateContainerOptions,
+	options *runtime.DeployWorkloadOptions,
 ) error {
 	// Get the "mcp" container if it exists
 	mcpContainer := getMCPContainer(podTemplateSpec)

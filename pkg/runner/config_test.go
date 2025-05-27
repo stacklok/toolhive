@@ -22,14 +22,14 @@ import (
 // mockRuntime implements the Runtime interface for testing
 type mockRuntime struct{}
 
-func (*mockRuntime) CreateContainer(
+func (*mockRuntime) DeployWorkload(
 	_ context.Context,
 	_, _ string,
 	_ []string,
 	_, _ map[string]string,
 	_ *permissions.Profile,
 	_ string,
-	_ *rt.CreateContainerOptions,
+	_ *rt.DeployWorkloadOptions,
 ) (string, error) {
 	return "container-id", nil
 }
@@ -38,31 +38,31 @@ func (*mockRuntime) StartContainer(_ context.Context, _ string) error {
 	return nil
 }
 
-func (*mockRuntime) ListContainers(_ context.Context) ([]rt.ContainerInfo, error) {
+func (*mockRuntime) ListWorkloads(_ context.Context) ([]rt.ContainerInfo, error) {
 	return []rt.ContainerInfo{}, nil
 }
 
-func (*mockRuntime) StopContainer(_ context.Context, _ string) error {
+func (*mockRuntime) StopWorkload(_ context.Context, _ string) error {
 	return nil
 }
 
-func (*mockRuntime) RemoveContainer(_ context.Context, _ string) error {
+func (*mockRuntime) RemoveWorkload(_ context.Context, _ string) error {
 	return nil
 }
 
-func (*mockRuntime) ContainerLogs(_ context.Context, _ string, _ bool) (string, error) {
+func (*mockRuntime) GetWorkloadLogs(_ context.Context, _ string, _ bool) (string, error) {
 	return "", nil
 }
 
-func (*mockRuntime) IsContainerRunning(_ context.Context, _ string) (bool, error) {
+func (*mockRuntime) IsWorkloadRunning(_ context.Context, _ string) (bool, error) {
 	return true, nil
 }
 
-func (*mockRuntime) GetContainerInfo(_ context.Context, _ string) (rt.ContainerInfo, error) {
+func (*mockRuntime) GetWorkloadInfo(_ context.Context, _ string) (rt.ContainerInfo, error) {
 	return rt.ContainerInfo{}, nil
 }
 
-func (*mockRuntime) AttachContainer(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, error) {
+func (*mockRuntime) AttachToWorkload(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, error) {
 	return nil, nil, nil
 }
 

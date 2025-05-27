@@ -1,0 +1,59 @@
+name: E2E Tests
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Ginkgo CLI
+        run: go install github.com/onsi/ginkgo/v2/ginkgo@latest
+
+      - name: Build ToolHive binary
+        run: |
+          task build
+          # Verify the binary was created and is executable
+          ls -la ./bin/
+          chmod +x ./bin/thv
+
+      - name: Set up container runtime (Docker)
+        run: |
+          # Docker is already installed on ubuntu-latest
+          docker --version
+          # Start Docker daemon if not running
+          sudo systemctl start docker
+
+      - name: Run E2E tests
+        env:
+          THV_BINARY: ${{ github.workspace }}/bin/thv
+          TEST_TIMEOUT: 15m
+        run: ./test/e2e/run_tests.sh
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-test-results
+          path: |
+            test/e2e/ginkgo-report.xml
+            test/e2e/junit-report.xml
+          retention-days: 7

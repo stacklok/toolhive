@@ -1078,7 +1078,6 @@
         "get",
         "list"
       ],
-      "target_port": 8080,
       "tools": [
         "list_resources",
         "get_resource",
@@ -1269,7 +1268,6 @@
         "mcp",
         "docker"
       ],
-      "target_port": 8080,
       "tools": [
         "get_image_info",
         "list_tags",
@@ -1326,7 +1324,6 @@
         "security-scanning",
         "vulnerability-detection"
       ],
-      "target_port": 8080,
       "tools": [
         "query_vulnerability",
         "query_vulnerabilities_batch",

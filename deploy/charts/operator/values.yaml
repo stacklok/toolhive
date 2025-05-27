@@ -19,6 +19,9 @@ operator:
   # -- Image to use for Toolhive runners
   toolhiveRunnerImage: ghcr.io/stacklok/toolhive:latest
 
+  # -- Host for the proxy deployed by the operator
+  proxyHost: 0.0.0.0
+
   # -- Environment variables to set in the operator container
   env: {}
 

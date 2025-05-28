@@ -268,15 +268,6 @@ func (a *CedarAuthorizer) IsAuthorized(
 	return decision == cedar.Allow, nil
 }
 
-// extractClaimsFromContext extracts JWT claims from the context.
-// This assumes that the JWT middleware has already run and added the claims to the context.
-func extractClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool) {
-	// Import the auth package to use its ClaimsContextKey
-	// Get the claims from the context
-	claims, ok := ctx.Value(auth.ClaimsContextKey{}).(jwt.MapClaims)
-	return claims, ok
-}
-
 // extractClientIDFromClaims extracts the client ID from JWT claims.
 // By default, it uses the "sub" (subject) claim as the client ID.
 // This can be customized based on your JWT token structure.
@@ -528,7 +519,7 @@ func (a *CedarAuthorizer) AuthorizeWithJWTClaims(
 	arguments map[string]interface{},
 ) (bool, error) {
 	// Extract JWT claims from the context
-	claims, ok := extractClaimsFromContext(ctx)
+	claims, ok := auth.GetClaimsFromContext(ctx)
 	if !ok {
 		return false, ErrMissingPrincipal
 	}

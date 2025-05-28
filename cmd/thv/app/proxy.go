@@ -72,32 +72,29 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	// Create middlewares slice
 	var middlewares []types.Middleware
 
-	// Create JWT validator if OIDC flags are provided
+	// Get OIDC configuration if enabled
+	var oidcConfig *auth.JWTValidatorConfig
 	if IsOIDCEnabled(cmd) {
-		logger.Info("OIDC validation enabled")
-
 		// Get OIDC flag values
 		issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
 		audience := GetStringFlagOrEmpty(cmd, "oidc-audience")
 		jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 		clientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
 
-		// Create JWT validator
-		jwtValidator, err := auth.NewJWTValidator(ctx, auth.JWTValidatorConfig{
+		oidcConfig = &auth.JWTValidatorConfig{
 			Issuer:   issuer,
 			Audience: audience,
 			JWKSURL:  jwksURL,
 			ClientID: clientID,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create JWT validator: %v", err)
 		}
-
-		// Add JWT validation middleware
-		middlewares = append(middlewares, jwtValidator.Middleware)
-	} else {
-		logger.Info("OIDC validation disabled")
 	}
+
+	// Get authentication middleware
+	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create authentication middleware: %v", err)
+	}
+	middlewares = append(middlewares, authMiddleware)
 
 	// Create the transparent proxy
 	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",

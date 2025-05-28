@@ -47,24 +47,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		Debug:      r.Config.Debug,
 	}
 
-	// Add OIDC middleware if OIDC validation is enabled
-	if r.Config.OIDCConfig != nil {
-		logger.Info("OIDC validation enabled for transport")
-
-		// Create JWT validator
-		jwtValidator, err := auth.NewJWTValidator(ctx, auth.JWTValidatorConfig{
-			Issuer:   r.Config.OIDCConfig.Issuer,
-			Audience: r.Config.OIDCConfig.Audience,
-			JWKSURL:  r.Config.OIDCConfig.JWKSURL,
-			ClientID: r.Config.OIDCConfig.ClientID,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create JWT validator: %v", err)
-		}
-
-		// Add JWT validation middleware to transport config
-		transportConfig.Middlewares = append(transportConfig.Middlewares, jwtValidator.Middleware)
+	// Get authentication middleware
+	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
+	transportConfig.Middlewares = append(transportConfig.Middlewares, authMiddleware)
 
 	// Add authorization middleware if authorization configuration is provided
 	if r.Config.AuthzConfig != nil {

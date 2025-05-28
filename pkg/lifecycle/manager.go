@@ -116,6 +116,11 @@ func (d *defaultManager) DeleteContainer(ctx context.Context, name string, force
 	// Get the base name from the container labels
 	baseName := labels.GetContainerBaseName(containerLabels)
 	if baseName != "" {
+		// Clean up temporary permission profile before deleting saved state
+		if err := d.cleanupTempPermissionProfile(ctx, baseName); err != nil {
+			logger.Warnf("Warning: Failed to cleanup temporary permission profile: %v", err)
+		}
+
 		// Delete the saved state if it exists
 		if err := runner.DeleteSavedConfig(ctx, baseName); err != nil {
 			logger.Warnf("Warning: Failed to delete saved state: %v", err)
@@ -502,4 +507,24 @@ func needSecretsPassword(secretOptions []string) bool {
 	// Ignore err - if the flag is not set, it's not needed.
 	providerType, _ := config.GetConfig().Secrets.GetProviderType()
 	return providerType == secrets.EncryptedType
+}
+
+// cleanupTempPermissionProfile cleans up temporary permission profile files for a given base name
+func (*defaultManager) cleanupTempPermissionProfile(ctx context.Context, baseName string) error {
+	// Try to load the saved configuration to get the permission profile path
+	r, err := runner.LoadState(ctx, baseName)
+	if err != nil {
+		// If we can't load the state, there's nothing to clean up
+		logger.Debugf("Could not load state for %s, skipping permission profile cleanup: %v", baseName, err)
+		return nil
+	}
+
+	// Clean up the temporary permission profile if it exists
+	if r.Config.PermissionProfileNameOrPath != "" {
+		if err := CleanupTempPermissionProfile(r.Config.PermissionProfileNameOrPath); err != nil {
+			return fmt.Errorf("failed to cleanup temporary permission profile: %v", err)
+		}
+	}
+
+	return nil
 }

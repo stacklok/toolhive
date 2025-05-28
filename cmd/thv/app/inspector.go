@@ -124,14 +124,14 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	go func() {
 		inspectorURL := fmt.Sprintf("http://localhost:%d", inspectorUIPort)
 		for {
-			resp, err := http.Get(inspectorURL)
+			resp, err := http.Get(inspectorURL) //nolint:gosec // URL is constructed from trusted local port
 			if err == nil && resp.StatusCode == 200 {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				statusChan <- true
 				return
 			}
 			if resp != nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 			// Small delay before checking again
 			select {
@@ -148,7 +148,9 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	select {
 	case <-statusChan:
 		logger.Infof("Connected to MCP server: %s", serverName)
-		inspectorURL := fmt.Sprintf("http://localhost:%d?transport=sse&serverUrl=http://host.docker.internal:%d/sse", inspectorUIPort, serverPort)
+		inspectorURL := fmt.Sprintf(
+			"http://localhost:%d?transport=sse&serverUrl=http://host.docker.internal:%d/sse",
+			inspectorUIPort, serverPort)
 		logger.Infof("Inspector UI is now available at %s", inspectorURL)
 		return nil
 	case <-ctx.Done():

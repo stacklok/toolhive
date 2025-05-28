@@ -55,7 +55,7 @@ const (
 	// TransportTypeSSE represents the SSE transport.
 	TransportTypeSSE TransportType = "sse"
 
-	// TransportTypeBridge represents the bridge network mode for container networking.
+	// TransportTypeHttp represents the HTTP transport mode.
 	TransportTypeHttp TransportType = "http"
 )
 

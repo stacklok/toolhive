@@ -30,6 +30,9 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 			config.TargetHost,
 			config.Middlewares...,
 		), nil
+	case types.TransportTypeHttp:
+		// HTTP transport is not implemented yet
+		return nil, errors.ErrUnsupportedTransport
 	default:
 		return nil, errors.ErrUnsupportedTransport
 	}

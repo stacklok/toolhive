@@ -246,10 +246,9 @@ func (h *inspectorTestHelper) waitForInspectorUIUnavailable(timeout time.Duratio
 func (h *inspectorTestHelper) verifyInspectorUIAccessible() {
 	response, err := h.client.Get(h.inspectorURL)
 	Expect(err).ToNot(HaveOccurred(), "Inspector UI should be accessible")
+	Expect(response).ToNot(BeNil(), "Response should not be nil")
 	Expect(response.StatusCode).To(Equal(200), "Inspector UI should return 200 OK")
-	if response != nil {
-		response.Body.Close()
-	}
+	_ = response.Body.Close()
 }
 
 // verifyInspectorUIUnavailable verifies that the inspector UI is not accessible
@@ -262,7 +261,7 @@ func (h *inspectorTestHelper) verifyInspectorUIUnavailable() {
 }
 
 // waitForInspectorCompletion waits for the inspector process to complete or timeout
-func (h *inspectorTestHelper) waitForInspectorCompletion(done chan error, timeout time.Duration) {
+func (*inspectorTestHelper) waitForInspectorCompletion(done chan error, timeout time.Duration) {
 	select {
 	case err := <-done:
 		if err != nil && !strings.Contains(err.Error(), "context deadline exceeded") {

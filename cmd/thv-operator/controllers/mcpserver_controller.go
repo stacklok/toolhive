@@ -230,6 +230,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 	args = append(args, fmt.Sprintf("--transport=%s", m.Spec.Transport))
 	args = append(args, fmt.Sprintf("--host=%s", getProxyHost()))
 
+	// For SSE transport, set the target-host to the Kubernetes DNS entry for the service
+	if m.Spec.Transport == "sse" {
+		serviceName := createServiceName(m.Name)
+		targetHost := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, m.Namespace)
+		args = append(args, fmt.Sprintf("--target-host=%s", targetHost))
+	}
+
 	// Add pod template patch if provided
 	if m.Spec.PodTemplateSpec != nil {
 		podTemplatePatch, err := json.Marshal(m.Spec.PodTemplateSpec)
@@ -529,6 +536,23 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 		}
 		if !found {
 			return true
+		}
+
+		// Check if the target-host has changed for SSE transport
+		if mcpServer.Spec.Transport == "sse" {
+			serviceName := createServiceName(mcpServer.Name)
+			targetHost := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, mcpServer.Namespace)
+			targetHostArg := fmt.Sprintf("--target-host=%s", targetHost)
+			found = false
+			for _, arg := range container.Args {
+				if arg == targetHostArg {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return true
+			}
 		}
 
 		// Check if the pod template spec has changed

@@ -3,7 +3,6 @@ package e2e
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -211,69 +210,4 @@ func CheckTHVBinaryAvailable(config *TestConfig) error {
 		return fmt.Errorf("thv binary not available at %s: %w", config.THVBinary, err)
 	}
 	return nil
-}
-
-// GetContainerInfo gets information about a specific container
-func GetContainerInfo(config *TestConfig, containerName string) (map[string]interface{}, error) {
-	stdout, stderr, err := NewTHVCommand(config, "list", "--format", "json").Run()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %w (stderr: %s)", err, stderr)
-	}
-
-	// Try to parse as JSON array first
-	var containers []map[string]interface{}
-	if err := json.Unmarshal([]byte(stdout), &containers); err != nil {
-		// If that fails, try single object
-		var singleContainer map[string]interface{}
-		if err2 := json.Unmarshal([]byte(stdout), &singleContainer); err2 != nil {
-			return nil, fmt.Errorf("failed to parse container list JSON: %w", err)
-		}
-		containers = []map[string]interface{}{singleContainer}
-	}
-
-	// Find the container by name
-	for _, container := range containers {
-		if name, ok := container["name"].(string); ok && name == containerName {
-			return container, nil
-		}
-	}
-
-	return nil, fmt.Errorf("container %s not found", containerName)
-}
-
-// VerifyContainerLabels verifies that a container has the expected labels
-func VerifyContainerLabels(containerInfo map[string]interface{}, expectedLabels map[string]string) error {
-	labels, ok := containerInfo["labels"].(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("container has no labels or labels are not in expected format")
-	}
-
-	for key, expectedValue := range expectedLabels {
-		if actualValue, exists := labels[key]; !exists {
-			return fmt.Errorf("expected label %s not found", key)
-		} else if actualValueStr, ok := actualValue.(string); !ok || actualValueStr != expectedValue {
-			return fmt.Errorf("label %s has value %v, expected %s", key, actualValue, expectedValue)
-		}
-	}
-
-	return nil
-}
-
-// GetContainerPorts gets the port mappings for a container
-func GetContainerPorts(containerInfo map[string]interface{}) (map[string]string, error) {
-	ports := make(map[string]string)
-	
-	if portMappings, ok := containerInfo["ports"].([]interface{}); ok {
-		for _, mapping := range portMappings {
-			if portMap, ok := mapping.(map[string]interface{}); ok {
-				if privatePort, ok := portMap["private_port"].(float64); ok {
-					if publicPort, ok := portMap["public_port"].(float64); ok {
-						ports[fmt.Sprintf("%.0f", privatePort)] = fmt.Sprintf("%.0f", publicPort)
-					}
-				}
-			}
-		}
-	}
-	
-	return ports, nil
 }

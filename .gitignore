@@ -30,6 +30,8 @@ go.work
 
 .roo/
 ^thv$
+
+.claude/
 kconfig.yaml
 
 .DS_Store

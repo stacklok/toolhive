@@ -21,9 +21,11 @@ ToolHive supports three ways to run an MCP server:
    $ thv run uvx://package-name [-- args...]
    $ thv run npx://package-name [-- args...]
    $ thv run go://package-name [-- args...]
+   $ thv run go://./local-path [-- args...]
    Automatically generates a container that runs the specified package
    using either uvx (Python with uv package manager), npx (Node.js),
-   or go (Golang)
+   or go (Golang). For Go, you can also specify local paths starting
+   with './' or '../' to build and run local Go projects.
 
 The container will be started with the specified transport mode and
 permission profile. Additional configuration can be provided via flags.

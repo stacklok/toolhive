@@ -21,25 +21,11 @@ consistency, and security.
 ## Contents <!-- omit in toc -->
 
 - [Why ToolHive?](#why-toolhive)
-  - [Key benefits](#key-benefits)
 - [Getting started](#getting-started)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
-  - [Quickstart - run your first MCP server](#quickstart---run-your-first-mcp-server)
 - [Client compatibility](#client-compatibility)
 - [Architecture overview](#architecture-overview)
 - [Usage examples](#usage-examples)
-  - [Register clients](#register-clients)
-  - [Find and run an MCP server](#find-and-run-an-mcp-server)
-  - [Manage MCP servers](#manage-mcp-servers)
-  - [Secrets management](#secrets-management)
-    - [`encrypted`](#encrypted)
-    - [`1password`](#1password)
-  - [Run a custom MCP server](#run-a-custom-mcp-server)
-  - [Run MCP servers using protocol schemes](#run-mcp-servers-using-protocol-schemes)
 - [Advanced usage](#advanced-usage)
-  - [Customize permissions](#customize-permissions)
-  - [Run ToolHive in Kubernetes](#run-toolhive-in-kubernetes)
 - [API Documentation](#api-documentation)
 - [Contributing to ToolHive](#contributing-to-toolhive)
 - [License](#license)
@@ -156,15 +142,21 @@ content.
 
 ToolHive has been tested with the following clients:
 
-| Client            | Supported | Notes                                  |
-| ----------------- | --------- | -------------------------------------- |
-| Copilot (VS Code) | ✅        | v1.99.0+ or Insiders version           |
-| Cursor            | ✅        |                                        |
-| Roo Code          | ✅        |                                        |
-| PydanticAI        | ✅        |                                        |
-| Claude Code       | ✅        |                                        |
-| Continue          | ❌        | Continue doesn't yet support SSE       |
-| Claude Desktop    | ❌        | Claude Desktop doesn't yet support SSE |
+| Client                     | Supported | Auto-discovery | Notes                                     |
+| -------------------------- | --------- | -------------- | ----------------------------------------- |
+| GitHub Copilot (VS Code)   | ✅        | ✅             | v1.99.0+ or Insiders version              |
+| Cursor                     | ✅        | ✅             | v0.47.0+                                  |
+| Roo Code                   | ✅        | ✅             | v3.9.0+                                   |
+| Claude Code                | ✅        | ✅             | v0.2.54+                                  |
+| Cline                      | ✅        | ❌             | v3.8.5+, requires manual configuration    |
+| Continue                   | ✅        | ❌             | Pre-release extension v1.39+ ([issue][1]) |
+| PydanticAI                 | ✅        | ❌             |                                           |
+| GitHub Copilot (JetBrains) | ❌        | ❌             | No support for HTTP/SSE MCPs ([issue][2]) |
+| Claude Desktop             | ❌        | ❌             | No support for HTTP/SSE MCPs ([issue][3]) |
+
+[1]: https://github.com/continuedev/continue/issues/5359
+[2]: https://github.com/microsoft/copilot-intellij-feedback/issues/224
+[3]: https://github.com/orgs/modelcontextprotocol/discussions/16
 
 Other clients and development libraries that support the SSE protocol can also
 be used with ToolHive.
@@ -264,9 +256,8 @@ pull the image and start the server.
 
 We're always looking to expand our MCP server registry. If you have a specific
 server you'd like to see included, feel free to
-[open an issue](https://github.com/stacklok/toolhive/issues) or submit a
-pull request to update the [registry.json](pkg/registry/data/registry.json)
-file.
+[open an issue](https://github.com/stacklok/toolhive/issues) or submit a pull
+request to update the [registry.json](pkg/registry/data/registry.json) file.
 
 ### Manage MCP servers
 
@@ -331,9 +322,14 @@ $ thv config secrets-provider 1password
 Secrets provider type updated to: 1password
 ```
 
-To allow ToolHive to retrieve secrets from your 1Password make sure you setup a [Service Account](https://developer.1password.com/docs/sdks/#step-1-create-a-service-account) and set the `OP_SERVICE_ACCOUNT_TOKEN` variable before running any ToolHive commands that use it.
+To allow ToolHive to retrieve secrets from your 1Password make sure you setup a
+[Service Account](https://developer.1password.com/docs/sdks/#step-1-create-a-service-account)
+and set the `OP_SERVICE_ACCOUNT_TOKEN` variable before running any ToolHive
+commands that use it.
 
-When you are referencing a secret make sure to follow the [secret reference](https://developer.1password.com/docs/cli/secret-references/#step-3-resolve-secret-references) required by 1Password
+When you are referencing a secret make sure to follow the
+[secret reference](https://developer.1password.com/docs/cli/secret-references/#step-3-resolve-secret-references)
+required by 1Password
 
 ```bash
 # `op://<vault-name>/<item-name>/[section-name/]<field-name>`
@@ -341,7 +337,9 @@ $ OP_SERVICE_ACCOUNT_TOKEN="<token>" thv secret get op://test/login/password
 Secret op://test/login/password: my-test-passywordy
 ```
 
-> Note: Only getting of secrets is supported with 1Password currently. If there is a demand to support setting of secrets in future, we will look into adding this capability.
+> Note: Only getting of secrets is supported with 1Password currently. If there
+> is a demand to support setting of secrets in future, we will look into adding
+> this capability.
 
 For more details on managing secrets, see the
 [`thv secret` command reference](./docs/cli/thv_secret.md) or run
@@ -383,7 +381,9 @@ simplicity. When invoked:
 
 ### Run MCP servers using protocol schemes
 
-ToolHive supports running MCP servers directly from package managers using protocol schemes. This allows you to run MCP servers without having to build and publish Docker images first.
+ToolHive supports running MCP servers directly from package managers using
+protocol schemes. This allows you to run MCP servers without having to build and
+publish Docker images first.
 
 Currently, three protocol schemes are supported:
 
@@ -409,7 +409,8 @@ Or to run a Go-based MCP server:
 thv run go://github.com/example/go-mcp-server@latest
 ```
 
-For Go-based MCP servers, you can also run local projects by providing a local path:
+For Go-based MCP servers, you can also run local projects by providing a local
+path:
 
 ```bash
 # Run from a relative path
@@ -431,15 +432,16 @@ When you use a protocol scheme, ToolHive will:
 4. Build a Docker image with the package installed or source code copied
 5. Run the MCP server using the built image
 
-Note that in this case, you still might need to specify additional arguments like the
-transport method, volumes, and environment variables. So, the command might look like:
+Note that in this case, you still might need to specify additional arguments
+like the transport method, volumes, and environment variables. So, the command
+might look like:
 
 ```bash
 thv run --transport sse --name my-mcp-server --port 8080 uvx://some-sse-mcp-server@latest -- my-mcp-server-args
 ```
 
-Read the documentation for the specific MCP server to see if it requires any additional
-arguments.
+Read the documentation for the specific MCP server to see if it requires any
+additional arguments.
 
 ## Advanced usage
 
@@ -478,9 +480,10 @@ Two built-in profiles are included for convenience:
 
 ### Run ToolHive in Kubernetes
 
-ToolHive can also be used to deploy MCP servers in a Kubernetes cluster via our new Operator. This
-functionality is still under active development for production use cases, but we
-invite you to try it out locally using a Kind cluster.
+ToolHive can also be used to deploy MCP servers in a Kubernetes cluster via our
+new Operator. This functionality is still under active development for
+production use cases, but we invite you to try it out locally using a Kind
+cluster.
 
 Check out the
 [Run ToolHive Operator in Kubernetes using kind](./docs/kind/deploying-toolhive-operator.md)
@@ -490,7 +493,8 @@ guide to get started.
 
 ## API Documentation
 
-Full OpenAPI 3.1.0 REST API generation and documentation is available in the [docs/server](./docs/server) directory.
+Full OpenAPI 3.1.0 REST API generation and documentation is available in the
+[docs/server](./docs/server) directory.
 
 ## Contributing to ToolHive
 
@@ -498,8 +502,8 @@ We welcome contributions to ToolHive! If you'd like to contribute, please review
 the [CONTRIBUTING guide](./CONTRIBUTING.md) for details on how to get started.
 
 If you run into a bug or have a feature request, please
-[open an issue](https://github.com/stacklok/toolhive/issues) in the
-repository or join us in the `#toolhive-developers` channel on our
+[open an issue](https://github.com/stacklok/toolhive/issues) in the repository
+or join us in the `#toolhive-developers` channel on our
 [community Discord server](https://discord.gg/stacklok).
 
 ## License

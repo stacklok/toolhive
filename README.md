@@ -409,12 +409,27 @@ Or to run a Go-based MCP server:
 thv run go://github.com/example/go-mcp-server@latest
 ```
 
+For Go-based MCP servers, you can also run local projects by providing a local path:
+
+```bash
+# Run from a relative path
+thv run go://./cmd/my-mcp-server
+
+# Run from the current directory
+cd my-go-mcp-project
+thv run go://.
+
+# Run from an absolute path
+thv run go:///path/to/my-go-project
+```
+
 When you use a protocol scheme, ToolHive will:
 
-1. Detect the protocol scheme and extract the package name
-2. Generate a Dockerfile based on the appropriate template
-3. Build a Docker image with the package installed
-4. Run the MCP server using the built image
+1. Detect the protocol scheme and extract the package name or path
+2. For local Go paths, copy the source code into the build context
+3. Generate a Dockerfile based on the appropriate template
+4. Build a Docker image with the package installed or source code copied
+5. Run the MCP server using the built image
 
 Note that in this case, you still might need to specify additional arguments like the
 transport method, volumes, and environment variables. So, the command might look like:

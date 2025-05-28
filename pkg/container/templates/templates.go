@@ -20,6 +20,8 @@ type TemplateData struct {
 	MCPArgs []string
 	// CACertContent is the content of the custom CA certificate to include in the image.
 	CACertContent string
+	// IsLocalPath indicates if the MCPPackage is a local path that should be copied into the container.
+	IsLocalPath bool
 }
 
 // TransportType represents the type of transport to use.

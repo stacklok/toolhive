@@ -6,9 +6,6 @@
       "permit(principal, action == Action::\"call_tool\", resource == Tool::\"weather\");",
       "permit(principal, action == Action::\"get_prompt\", resource == Prompt::\"greeting\");",
       "permit(principal, action == Action::\"read_resource\", resource == Resource::\"data\");",
-      "permit(principal, action == Action::\"list_tools\", resource == FeatureType::\"tool\");",
-      "permit(principal, action == Action::\"list_prompts\", resource == FeatureType::\"prompt\");",
-      "permit(principal, action == Action::\"list_resources\", resource == FeatureType::\"resource\");",
       "permit(principal, action == Action::\"call_tool\", resource in Tool::[\"calculator\", \"translator\"]) when { principal.claim_roles.contains(\"admin\") };"
     ],
     "entities_json": "[]"

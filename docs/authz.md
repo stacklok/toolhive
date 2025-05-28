@@ -137,9 +137,11 @@ In the context of MCP servers, the following entities are used:
     - `Action::"call_tool"`: Call a tool
     - `Action::"get_prompt"`: Get a prompt
     - `Action::"read_resource"`: Read a resource
-    - `Action::"list_tools"`: List available tools
-    - `Action::"list_prompts"`: List available prompts
-    - `Action::"list_resources"`: List available resources
+
+  Note: List operations (`tools/list`, `prompts/list`, `resources/list`) are always
+  allowed but the response is filtered based on the corresponding call/get/read policies.
+  Define policies for the specific operations (call_tool, get_prompt, read_resource)
+  and the list responses will automatically show only the items the user is authorized to access.
 
 - **Resource**: The object being accessed.
   - Format: `<type>::<id>`
@@ -177,13 +179,22 @@ permit(principal, action == Action::"read_resource", resource == Resource::"data
 
 This policy allows any client to read the data resource.
 
-#### Allow listing tools
+#### List operations
 
+List operations (`tools/list`, `prompts/list`, `resources/list`) do not require explicit policies.
+They are always allowed but the response is automatically filtered based on the user's permissions
+for the corresponding operations:
+
+- `tools/list` shows only tools the user can call (based on `call_tool` policies)
+- `prompts/list` shows only prompts the user can get (based on `get_prompt` policies)
+- `resources/list` shows only resources the user can read (based on `read_resource` policies)
+
+For example, if you have this policy:
 ```plain
-permit(principal, action == Action::"list_tools", resource == FeatureType::"tool");
+permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 ```
 
-This policy allows any client to list available tools.
+Then `tools/list` will only show the "weather" tool for that user.
 
 #### Allow a specific client to call any tool
 

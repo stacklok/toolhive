@@ -146,6 +146,10 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 // This middleware extracts the MCP message from the request, determines the feature,
 // operation, and resource ID, and authorizes the request using Cedar policies.
 //
+// For list operations (tools/list, prompts/list, resources/list), the middleware allows
+// the request to proceed but intercepts the response to filter out items that the user
+// is not authorized to access based on the corresponding call/get/read policies.
+//
 // Example usage:
 //
 //	// Create a Cedar authorizer with a policy that covers all tools and resources
@@ -212,6 +216,25 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Handle list operations differently - allow them through but filter the response
+		if featureOp.Operation == MCPOperationList {
+			// Create a response filtering writer to intercept and filter the response
+			filteringWriter := NewResponseFilteringWriter(w, a, r, req.Method)
+
+			// Call the next handler with the filtering writer
+			next.ServeHTTP(filteringWriter, r)
+
+			// Flush the filtered response
+			if err := filteringWriter.Flush(); err != nil {
+				// If flushing fails, we've already started writing the response,
+				// so we can't return an error response. Just log it.
+				// In a real application, you might want to use a proper logger here.
+				fmt.Printf("Error flushing filtered response: %v\n", err)
+			}
+			return
+		}
+
+		// For non-list operations, perform authorization as before
 		// Extract resource ID and arguments from the params
 		resourceID, arguments := extractResourceAndArguments(req.Method, req.Params)
 

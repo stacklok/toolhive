@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -151,6 +152,39 @@ func TestMiddleware(t *testing.T) {
 					"version": "1.0.0",
 				},
 			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Tools list is always allowed but filtered",
+			method: string(mcp.MethodToolsList),
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Prompts list is always allowed but filtered",
+			method: string(mcp.MethodPromptsList),
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Resources list is always allowed but filtered",
+			method: string(mcp.MethodResourcesList),
+			params: map[string]interface{}{},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",

@@ -98,6 +98,8 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	mux := http.NewServeMux()
 
 	// Add handlers for SSE and JSON-RPC with middlewares
+	// At some point we should add support for Streamable HTTP transport here
+	// https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http
 	mux.Handle(ssecommon.HTTPSSEEndpoint, applyMiddlewares(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {

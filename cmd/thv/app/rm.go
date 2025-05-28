@@ -37,7 +37,7 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Delete container.
-	if err := manager.DeleteContainer(ctx, containerName, rmForce); err != nil {
+	if err := manager.DeleteContainer(ctx, containerName, rmForce, true); err != nil {
 		return fmt.Errorf("failed to delete container: %v", err)
 	}
 

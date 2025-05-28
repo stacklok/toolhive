@@ -29,7 +29,7 @@ type Manager interface {
 	// ListContainers lists all ToolHive-managed containers.
 	ListContainers(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error)
 	// DeleteContainer deletes a container and its associated proxy process.
-	DeleteContainer(ctx context.Context, name string, forceDelete bool) error
+	DeleteContainer(ctx context.Context, name string, forceDelete bool, removeConfig bool) error
 	// StopContainer stops a container and its associated proxy process.
 	StopContainer(ctx context.Context, name string) error
 	// RunContainer runs a container in the foreground.
@@ -85,7 +85,7 @@ func (d *defaultManager) ListContainers(ctx context.Context, listAll bool) ([]rt
 	return toolHiveContainers, nil
 }
 
-func (d *defaultManager) DeleteContainer(ctx context.Context, name string, forceDelete bool) error {
+func (d *defaultManager) DeleteContainer(ctx context.Context, name string, forceDelete bool, removeConfig bool) error {
 	// We need several fields from the container struct for deletion.
 	container, err := d.findContainerByName(ctx, name)
 	if err != nil {
@@ -113,24 +113,26 @@ func (d *defaultManager) DeleteContainer(ctx context.Context, name string, force
 		return fmt.Errorf("failed to remove container: %v", err)
 	}
 
-	// Get the base name from the container labels
-	baseName := labels.GetContainerBaseName(containerLabels)
-	if baseName != "" {
-		// Delete the saved state if it exists
-		if err := runner.DeleteSavedConfig(ctx, baseName); err != nil {
-			logger.Warnf("Warning: Failed to delete saved state: %v", err)
-		} else {
-			logger.Infof("Saved state for %s removed", baseName)
+	if removeConfig {
+		// Get the base name from the container labels
+		baseName := labels.GetContainerBaseName(containerLabels)
+		if baseName != "" {
+			// Delete the saved state if it exists
+			if err := runner.DeleteSavedConfig(ctx, baseName); err != nil {
+				logger.Warnf("Warning: Failed to delete saved state: %v", err)
+			} else {
+				logger.Infof("Saved state for %s removed", baseName)
+			}
 		}
-	}
 
-	logger.Infof("Container %s removed", name)
+		logger.Infof("Container %s removed", name)
 
-	if shouldRemoveClientConfig() {
-		if err := removeClientConfigurations(name); err != nil {
-			logger.Warnf("Warning: Failed to remove client configurations: %v", err)
-		} else {
-			logger.Infof("Client configurations for %s removed", name)
+		if shouldRemoveClientConfig() {
+			if err := removeClientConfigurations(name); err != nil {
+				logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+			} else {
+				logger.Infof("Client configurations for %s removed", name)
+			}
 		}
 	}
 

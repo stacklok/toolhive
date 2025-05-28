@@ -190,6 +190,10 @@ type DeployWorkloadOptions struct {
 	// K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
 	// Only applicable when using Kubernetes runtime
 	K8sPodTemplatePatch string
+
+	// SSEHeadlessServiceName is the name of the Kubernetes service to use for the workload
+	// Only applicable when using Kubernetes runtime and SSE transport
+	SSEHeadlessServiceName string
 }
 
 // PortBinding represents a host port binding

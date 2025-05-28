@@ -175,6 +175,31 @@ func TestShouldSkipPath(t *testing.T) {
 			path:     "cmd/server/main.go",
 			expected: false,
 		},
+		{
+			name:     "tmp file with wildcard pattern",
+			path:     "temp.tmp",
+			expected: true,
+		},
+		{
+			name:     "log file with wildcard pattern",
+			path:     "application.log",
+			expected: true,
+		},
+		{
+			name:     "nested tmp file",
+			path:     "logs/debug.tmp",
+			expected: true,
+		},
+		{
+			name:     "nested log file",
+			path:     "logs/app.log",
+			expected: true,
+		},
+		{
+			name:     "file that doesn't match wildcard",
+			path:     "config.yaml",
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {

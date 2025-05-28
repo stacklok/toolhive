@@ -254,8 +254,9 @@ func copyLocalSource(sourcePath, destDir string) error {
 
 // shouldSkipPath determines if a path should be skipped during copying.
 // This includes common directories like .git, node_modules, vendor, etc.
+// Supports wildcard patterns using filepath.Match.
 func shouldSkipPath(relPath string) bool {
-	skipDirs := []string{
+	skipPatterns := []string{
 		".git",
 		".gitignore",
 		"node_modules",
@@ -266,7 +267,6 @@ func shouldSkipPath(relPath string) bool {
 		".idea",
 		"*.tmp",
 		"*.log",
-		".dockerignore",
 		"Dockerfile",
 		"docker-compose.yml",
 		"docker-compose.yaml",
@@ -274,8 +274,13 @@ func shouldSkipPath(relPath string) bool {
 
 	pathParts := strings.Split(relPath, string(filepath.Separator))
 	for _, part := range pathParts {
-		for _, skipDir := range skipDirs {
-			if part == skipDir || strings.HasPrefix(part, skipDir) {
+		for _, pattern := range skipPatterns {
+			// Try wildcard matching first
+			if matched, err := filepath.Match(pattern, part); err == nil && matched {
+				return true
+			}
+			// Fallback to prefix matching for non-wildcard patterns
+			if !strings.Contains(pattern, "*") && strings.HasPrefix(part, pattern) {
 				return true
 			}
 		}

@@ -1,5 +1,13 @@
 FROM python:3.12-slim
 
+{{if .CACertContent}}
+# Add custom CA certificate BEFORE any network operations
+# This ensures that package managers can verify TLS certificates in corporate networks
+COPY ca-cert.crt /tmp/custom-ca.crt
+RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
+    rm /tmp/custom-ca.crt
+{{end}}
+
 # Install uv package manager and CA certificates
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     pip install --no-cache-dir uv && \
@@ -18,10 +26,11 @@ RUN groupadd -r appgroup && \
     chown -R appuser:appgroup /home/appuser
 
 {{if .CACertContent}}
-# Add custom CA certificate
-RUN mkdir -p /usr/local/share/ca-certificates
-COPY ca-cert.crt /usr/local/share/ca-certificates/
-RUN chmod 644 /usr/local/share/ca-certificates/ca-cert.crt && \
+# Properly install the custom CA certificate using standard tools
+RUN mkdir -p /usr/local/share/ca-certificates && \
+    cp /tmp/custom-ca.crt /usr/local/share/ca-certificates/custom-ca.crt 2>/dev/null || \
+    echo "CA cert already added to bundle" && \
+    chmod 644 /usr/local/share/ca-certificates/custom-ca.crt 2>/dev/null || true && \
     update-ca-certificates
 {{end}}
 

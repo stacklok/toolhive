@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/certs"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -63,8 +64,14 @@ func HandleProtocolScheme(
 			return "", fmt.Errorf("failed to read CA certificate file: %w", err)
 		}
 
+		// Validate that the file contains a valid PEM certificate
+		if err := certs.ValidateCACertificate(caCertContent); err != nil {
+			return "", fmt.Errorf("invalid CA certificate: %w", err)
+		}
+
 		// Add the CA certificate content to the template data
 		templateData.CACertContent = string(caCertContent)
+		logger.Debugf("Successfully validated and loaded CA certificate")
 	}
 
 	// Get the Dockerfile content

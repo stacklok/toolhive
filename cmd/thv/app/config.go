@@ -57,9 +57,10 @@ var registerClientCmd = &cobra.Command{
 	Short: "Register a client for MCP server configuration",
 	Long: `Register a client for MCP server configuration.
 Valid clients are:
-  - roo-code: Roo Code extension for VS Code
-  - cursor: Cursor editor
   - claude-code: Claude Code CLI
+  - cline: Cline extension for VS Code
+  - cursor: Cursor editor
+  - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition`,
 	Args: cobra.ExactArgs(1),
@@ -71,9 +72,10 @@ var removeClientCmd = &cobra.Command{
 	Short: "Remove a client from MCP server configuration",
 	Long: `Remove a client from MCP server configuration.
 Valid clients are:
-  - roo-code: Roo Code extension for VS Code
-  - cursor: Cursor editor
   - claude-code: Claude Code CLI
+  - cline: Cline extension for VS Code
+  - cursor: Cursor editor
+  - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition`,
 	Args: cobra.ExactArgs(1),
@@ -166,10 +168,12 @@ func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cursor", "claude-code", "vscode-insider", "vscode":
+	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, claude-code, vscode, vscode-insider)", clientType)
+		return fmt.Errorf(
+			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider)",
+			clientType)
 	}
 
 	err := config.UpdateConfig(func(c *config.Config) {
@@ -203,10 +207,12 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cursor", "claude-code", "vscode-insider", "vscode":
+	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, claude-code, vscode, vscode-insider)", clientType)
+		return fmt.Errorf(
+			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider)",
+			clientType)
 	}
 
 	err := config.UpdateConfig(func(c *config.Config) {

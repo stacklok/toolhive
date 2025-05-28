@@ -26,6 +26,8 @@ type MCPClient string
 const (
 	// RooCode represents the Roo Code extension for VS Code.
 	RooCode MCPClient = "roo-code"
+	// Cline represents the Cline extension for VS Code.
+	Cline MCPClient = "cline"
 	// Cursor represents the Cursor editor.
 	Cursor MCPClient = "cursor"
 	// VSCodeInsider represents the VS Code Insiders editor.
@@ -60,6 +62,19 @@ var supportedClientIntegrations = []mcpClientConfig{
 		Description: "VS Code Roo Code extension",
 		RelPath: []string{
 			"Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json",
+		},
+		PlatformPrefix: map[string][]string{
+			"linux":  {".config"},
+			"darwin": {"Library", "Application Support"},
+		},
+		MCPServersPathPrefix: "/mcpServers",
+		Extension:            JSON,
+	},
+	{
+		ClientType:  Cline,
+		Description: "VS Code Cline extension",
+		RelPath: []string{
+			"Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json",
 		},
 		PlatformPrefix: map[string][]string{
 			"linux":  {".config"},

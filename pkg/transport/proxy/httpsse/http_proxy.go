@@ -98,7 +98,17 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	mux := http.NewServeMux()
 
 	// Add handlers for SSE and JSON-RPC with middlewares
-	mux.Handle(ssecommon.HTTPSSEEndpoint, applyMiddlewares(http.HandlerFunc(p.handleSSEConnection), p.middlewares...))
+	mux.Handle(ssecommon.HTTPSSEEndpoint, applyMiddlewares(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			p.handleSSEConnection(w, r)
+		}),
+		p.middlewares...,
+	))
+
 	mux.Handle(ssecommon.HTTPMessagesEndpoint, applyMiddlewares(http.HandlerFunc(p.handlePostRequest), p.middlewares...))
 
 	// Add a simple health check endpoint (no middlewares)
@@ -245,6 +255,10 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	// Start keep-alive ticker
+	keepAliveTicker := time.NewTicker(30 * time.Second)
+	defer keepAliveTicker.Stop()
+
 	// Create a goroutine to monitor for client disconnection
 	go func() {
 		<-ctx.Done()
@@ -265,6 +279,10 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 				return
 			}
 			fmt.Fprint(w, msg)
+			flusher.Flush()
+		case <-keepAliveTicker.C:
+			// Send SSE comment as keep-alive
+			fmt.Fprint(w, ": keep-alive\n\n")
 			flusher.Flush()
 		}
 	}

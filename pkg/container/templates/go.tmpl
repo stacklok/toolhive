@@ -37,6 +37,15 @@ ENV CGO_ENABLED=0 \
     GOARCH=amd64 \
     GO111MODULE=on
 
+{{if .IsLocalPath}}
+# Copy the local source code
+COPY . /app/
+
+# Change ownership of copied files to appuser
+USER root
+RUN chown -R appuser:appgroup /app
+{{end}}
+
 # Switch to non-root user
 USER appuser
 

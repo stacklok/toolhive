@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,49 +31,83 @@ func HandleProtocolScheme(
 	serverOrImage string,
 	caCertPath string,
 ) (string, error) {
-	var transportType templates.TransportType
-	var packageName string
+	transportType, packageName, err := parseProtocolScheme(serverOrImage)
+	if err != nil {
+		return "", err
+	}
 
-	// Extract the transport type and package name based on the protocol scheme
+	templateData, err := createTemplateData(transportType, packageName, caCertPath)
+	if err != nil {
+		return "", err
+	}
+
+	return buildImageFromTemplate(ctx, runtime, transportType, packageName, templateData)
+}
+
+// parseProtocolScheme extracts the transport type and package name from the protocol scheme.
+func parseProtocolScheme(serverOrImage string) (templates.TransportType, string, error) {
 	if strings.HasPrefix(serverOrImage, UVXScheme) {
-		transportType = templates.TransportTypeUVX
-		packageName = strings.TrimPrefix(serverOrImage, UVXScheme)
-	} else if strings.HasPrefix(serverOrImage, NPXScheme) {
-		transportType = templates.TransportTypeNPX
-		packageName = strings.TrimPrefix(serverOrImage, NPXScheme)
-	} else if strings.HasPrefix(serverOrImage, GOScheme) {
-		transportType = templates.TransportTypeGO
-		packageName = strings.TrimPrefix(serverOrImage, GOScheme)
-	} else {
-		return "", fmt.Errorf("unsupported protocol scheme: %s", serverOrImage)
+		return templates.TransportTypeUVX, strings.TrimPrefix(serverOrImage, UVXScheme), nil
 	}
+	if strings.HasPrefix(serverOrImage, NPXScheme) {
+		return templates.TransportTypeNPX, strings.TrimPrefix(serverOrImage, NPXScheme), nil
+	}
+	if strings.HasPrefix(serverOrImage, GOScheme) {
+		return templates.TransportTypeGO, strings.TrimPrefix(serverOrImage, GOScheme), nil
+	}
+	return "", "", fmt.Errorf("unsupported protocol scheme: %s", serverOrImage)
+}
 
-	// Create template data
+// createTemplateData creates the template data with optional CA certificate.
+func createTemplateData(transportType templates.TransportType, packageName, caCertPath string) (templates.TemplateData, error) {
+	// Check if this is a local path (for Go packages only)
+	isLocalPath := transportType == templates.TransportTypeGO && isLocalGoPath(packageName)
+
 	templateData := templates.TemplateData{
-		MCPPackage: packageName,
-		MCPArgs:    []string{}, // No additional arguments for now
+		MCPPackage:  packageName,
+		MCPArgs:     []string{}, // No additional arguments for now
+		IsLocalPath: isLocalPath,
 	}
 
-	// If a CA certificate path is provided, read the certificate and add it to the template data
 	if caCertPath != "" {
-		logger.Debugf("Using custom CA certificate from: %s", caCertPath)
-
-		// Read the CA certificate file
-		// #nosec G304 -- This is a user-provided file path that we need to read
-		caCertContent, err := os.ReadFile(caCertPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to read CA certificate file: %w", err)
+		if err := addCACertToTemplate(caCertPath, &templateData); err != nil {
+			return templateData, err
 		}
-
-		// Validate that the file contains a valid PEM certificate
-		if err := certs.ValidateCACertificate(caCertContent); err != nil {
-			return "", fmt.Errorf("invalid CA certificate: %w", err)
-		}
-
-		// Add the CA certificate content to the template data
-		templateData.CACertContent = string(caCertContent)
-		logger.Debugf("Successfully validated and loaded CA certificate")
 	}
+
+	return templateData, nil
+}
+
+// addCACertToTemplate reads and validates a CA certificate, adding it to the template data.
+func addCACertToTemplate(caCertPath string, templateData *templates.TemplateData) error {
+	logger.Debugf("Using custom CA certificate from: %s", caCertPath)
+
+	// Read the CA certificate file
+	// #nosec G304 -- This is a user-provided file path that we need to read
+	caCertContent, err := os.ReadFile(caCertPath)
+	if err != nil {
+		return fmt.Errorf("failed to read CA certificate file: %w", err)
+	}
+
+	// Validate that the file contains a valid PEM certificate
+	if err := certs.ValidateCACertificate(caCertContent); err != nil {
+		return fmt.Errorf("invalid CA certificate: %w", err)
+	}
+
+	// Add the CA certificate content to the template data
+	templateData.CACertContent = string(caCertContent)
+	logger.Debugf("Successfully validated and loaded CA certificate")
+	return nil
+}
+
+// buildImageFromTemplate builds a Docker image from the template data.
+func buildImageFromTemplate(
+	ctx context.Context,
+	runtime rt.Runtime,
+	transportType templates.TransportType,
+	packageName string,
+	templateData templates.TemplateData,
+) (string, error) {
 
 	// Get the Dockerfile content
 	dockerfileContent, err := templates.GetDockerfileTemplate(transportType, templateData)
@@ -86,6 +121,14 @@ func HandleProtocolScheme(
 		return "", fmt.Errorf("failed to create temporary directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
+
+	// If this is a local Go path, copy the source files to the build context
+	if templateData.IsLocalPath {
+		if err := copyLocalSource(packageName, tempDir); err != nil {
+			return "", fmt.Errorf("failed to copy local source: %w", err)
+		}
+		logger.Debugf("Copied local source from %s to build context", packageName)
+	}
 
 	// Write the Dockerfile to the temporary directory
 	dockerfilePath := filepath.Join(tempDir, "Dockerfile")
@@ -127,8 +170,149 @@ func HandleProtocolScheme(
 
 // Replace slashes with dashes to create a valid Docker image name. If there
 // is a version in the package name, the @ is replaced with a dash.
+// For local paths, we clean up the path to make it a valid image name.
 func packageNameToImageName(packageName string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(packageName, "/", "-"), "@", "-")
+	imageName := packageName
+
+	// Handle local paths by cleaning them up
+	imageName = strings.TrimPrefix(imageName, "./")
+	imageName = strings.TrimPrefix(imageName, "../")
+
+	// Replace problematic characters
+	imageName = strings.ReplaceAll(imageName, "/", "-")
+	imageName = strings.ReplaceAll(imageName, "@", "-")
+	imageName = strings.ReplaceAll(imageName, ".", "-")
+
+	// Ensure the name doesn't start with a dash
+	imageName = strings.TrimPrefix(imageName, "-")
+
+	// If the name is empty after cleaning, use a default
+	if imageName == "" || imageName == "-" {
+		imageName = "toolhive-container"
+	}
+
+	return imageName
+}
+
+// isLocalGoPath checks if the given path is a local Go path that should be copied into the container.
+// Local paths start with "." (relative) or "/" (absolute).
+func isLocalGoPath(path string) bool {
+	return strings.HasPrefix(path, "./") || strings.HasPrefix(path, "../") || strings.HasPrefix(path, "/") || path == "."
+}
+
+// copyLocalSource copies the local source directory to the build context directory.
+// It recursively copies all files and directories, preserving the structure.
+func copyLocalSource(sourcePath, destDir string) error {
+	// Get the absolute path of the source
+	absSourcePath, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path for %s: %w", sourcePath, err)
+	}
+
+	// Check if the source path exists
+	_, err = os.Stat(absSourcePath)
+	if err != nil {
+		return fmt.Errorf("source path does not exist: %s: %w", absSourcePath, err)
+	}
+
+	// Walk through the source directory and copy all files
+	return filepath.Walk(absSourcePath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Calculate the relative path from the source root
+		relPath, err := filepath.Rel(absSourcePath, path)
+		if err != nil {
+			return fmt.Errorf("failed to get relative path: %w", err)
+		}
+
+		// Skip the root directory itself
+		if relPath == "." {
+			return nil
+		}
+
+		// Calculate the destination path
+		destPath := filepath.Join(destDir, relPath)
+
+		// Skip common directories that shouldn't be copied
+		if shouldSkipPath(relPath) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if info.IsDir() {
+			// Create directory
+			return os.MkdirAll(destPath, info.Mode())
+		}
+		// Copy file
+		return copyFile(path, destPath, info.Mode())
+	})
+}
+
+// shouldSkipPath determines if a path should be skipped during copying.
+// This includes common directories like .git, node_modules, vendor, etc.
+func shouldSkipPath(relPath string) bool {
+	skipDirs := []string{
+		".git",
+		".gitignore",
+		"node_modules",
+		"vendor",
+		".DS_Store",
+		"Thumbs.db",
+		".vscode",
+		".idea",
+		"*.tmp",
+		"*.log",
+		".dockerignore",
+		"Dockerfile",
+		"docker-compose.yml",
+		"docker-compose.yaml",
+	}
+
+	pathParts := strings.Split(relPath, string(filepath.Separator))
+	for _, part := range pathParts {
+		for _, skipDir := range skipDirs {
+			if part == skipDir || strings.HasPrefix(part, skipDir) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// copyFile copies a single file from src to dst with the given mode.
+func copyFile(src, dst string, mode os.FileMode) error {
+	// Create the destination directory if it doesn't exist
+	if err := os.MkdirAll(filepath.Dir(dst), 0750); err != nil {
+		return fmt.Errorf("failed to create destination directory: %w", err)
+	}
+
+	// Open source file
+	// #nosec G304 -- This is a controlled file copy operation within the build context
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %w", err)
+	}
+	defer srcFile.Close()
+
+	// Create destination file
+	// #nosec G304 -- This is a controlled file copy operation within the build context
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %w", err)
+	}
+	defer dstFile.Close()
+
+	// Copy file contents
+	_, err = io.Copy(dstFile, srcFile)
+	if err != nil {
+		return fmt.Errorf("failed to copy file contents: %w", err)
+	}
+
+	return nil
 }
 
 // IsImageProtocolScheme checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)

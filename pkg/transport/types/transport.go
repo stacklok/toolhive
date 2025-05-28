@@ -54,6 +54,9 @@ const (
 
 	// TransportTypeSSE represents the SSE transport.
 	TransportTypeSSE TransportType = "sse"
+
+	// TransportTypeBridge represents the bridge network mode for container networking.
+	TransportTypeHttp TransportType = "http"
 )
 
 // String returns the string representation of the transport type.
@@ -68,6 +71,8 @@ func ParseTransportType(s string) (TransportType, error) {
 		return TransportTypeStdio, nil
 	case "sse", "SSE":
 		return TransportTypeSSE, nil
+	case "http", "HTTP":
+		return TransportTypeHttp, nil
 	default:
 		return "", errors.ErrUnsupportedTransport
 	}

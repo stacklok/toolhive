@@ -40,7 +40,7 @@ tasks:
     desc: Run end-to-end tests
     deps: [build]
     env:
-      # THV_BINARY: ./bin/thv
+      THV_BINARY: ./bin/thv
     cmds:
       - go install github.com/onsi/ginkgo/v2/ginkgo
       - ./test/e2e/run_tests.sh

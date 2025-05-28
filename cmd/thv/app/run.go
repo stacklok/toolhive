@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/verifier"
@@ -189,7 +190,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize a new RunConfig with values from command-line flags
-	config := runner.NewRunConfigFromFlags(
+	runConfig := runner.NewRunConfigFromFlags(
 		rt,
 		cmdArgs,
 		runName,
@@ -208,7 +209,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Set the Kubernetes pod template patch if provided
 	if runK8sPodPatch != "" {
-		config.K8sPodTemplatePatch = runK8sPodPatch
+		runConfig.K8sPodTemplatePatch = runK8sPodPatch
 	}
 
 	var server *registry.Server
@@ -217,13 +218,14 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	if runner.IsImageProtocolScheme(serverOrImage) {
 		logger.Debugf("Detected protocol scheme: %s", serverOrImage)
 		// Process the protocol scheme and build the image
-		generatedImage, err := runner.HandleProtocolScheme(ctx, rt, serverOrImage, runCACertPath)
+		caCertPath := resolveCACertPath(runCACertPath)
+		generatedImage, err := runner.HandleProtocolScheme(ctx, rt, serverOrImage, caCertPath)
 		if err != nil {
 			return fmt.Errorf("failed to process protocol scheme: %v", err)
 		}
-		// Update the image in the config with the generated image
+		// Update the image in the runConfig with the generated image
 		logger.Debugf("Using built image: %s instead of %s", generatedImage, serverOrImage)
-		config.Image = generatedImage
+		runConfig.Image = generatedImage
 	} else {
 		logger.Debugf("No protocol scheme detected, using image: %s", serverOrImage)
 		// Try to find the server in the registry
@@ -231,32 +233,32 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			// Server isn't found in registry, treat as direct image
 			logger.Debugf("Server '%s' not found in registry: %v", serverOrImage, err)
-			config.Image = serverOrImage
+			runConfig.Image = serverOrImage
 		} else {
 			// Server found in registry
 			logger.Debugf("Found server '%s' in registry: %v", serverOrImage, server)
-			// Apply registry settings to config
-			applyRegistrySettings(cmd, serverOrImage, server, config, debugMode)
+			// Apply registry settings to runConfig
+			applyRegistrySettings(cmd, serverOrImage, server, runConfig, debugMode)
 		}
 	}
 
 	// Verify the image against the expected provenance info (if applicable)
-	if err := verifyImage(ctx, config.Image, rt, server, runVerifyImage); err != nil {
+	if err := verifyImage(ctx, runConfig.Image, rt, server, runVerifyImage); err != nil {
 		return err
 	}
 
 	// Pull the image if necessary
-	if err := pullImage(ctx, config.Image, rt); err != nil {
+	if err := pullImage(ctx, runConfig.Image, rt); err != nil {
 		return fmt.Errorf("failed to retrieve or pull image: %v", err)
 	}
 
 	// Configure the RunConfig with transport, ports, permissions, etc.
-	if err := configureRunConfig(config, runTransport, runPort, runTargetPort, runEnv); err != nil {
+	if err := configureRunConfig(runConfig, runTransport, runPort, runTargetPort, runEnv); err != nil {
 		return err
 	}
 
 	// Run the MCP server
-	return RunMCPServer(ctx, config, runForeground)
+	return RunMCPServer(ctx, runConfig, runForeground)
 }
 
 // pullImage pulls an image from a remote registry if it has the "latest" tag
@@ -348,15 +350,15 @@ func applyRegistrySettings(
 	cmd *cobra.Command,
 	serverName string,
 	server *registry.Server,
-	config *runner.RunConfig,
+	runConfig *runner.RunConfig,
 	debugMode bool,
 ) {
 	// Use the image from the registry
-	config.Image = server.Image
+	runConfig.Image = server.Image
 
 	// If name is not provided, use the server name from registry
-	if config.Name == "" {
-		config.Name = serverName
+	if runConfig.Name == "" {
+		runConfig.Name = serverName
 	}
 
 	// Use registry transport if not overridden
@@ -377,12 +379,12 @@ func applyRegistrySettings(
 	// Prepend registry args to command-line args if available
 	if len(server.Args) > 0 {
 		logDebug(debugMode, "Prepending registry args: %v", server.Args)
-		config.CmdArgs = append(server.Args, config.CmdArgs...)
+		runConfig.CmdArgs = append(server.Args, runConfig.CmdArgs...)
 	}
 
 	// Process environment variables from registry
 	// This will be merged with command-line env vars in configureRunConfig
-	envVarStrings := processEnvironmentVariables(server.EnvVars, runEnv, config.Secrets, debugMode)
+	envVarStrings := processEnvironmentVariables(server.EnvVars, runEnv, runConfig.Secrets, debugMode)
 	runEnv = envVarStrings
 
 	// Create a temporary file for the permission profile if not explicitly provided
@@ -393,7 +395,7 @@ func applyRegistrySettings(
 			logger.Warnf("Warning: Failed to create permission profile file: %v", err)
 		} else {
 			// Update the permission profile path
-			config.PermissionProfileNameOrPath = permProfilePath
+			runConfig.PermissionProfileNameOrPath = permProfilePath
 		}
 	}
 }
@@ -528,4 +530,22 @@ func ValidateAndNormaliseHostFlag(host string) (string, error) {
 	}
 
 	return "", fmt.Errorf("could not resolve host: %s", host)
+}
+
+// resolveCACertPath determines the CA certificate path to use, prioritizing command-line flag over configuration
+func resolveCACertPath(flagValue string) string {
+	// If command-line flag is provided, use it (highest priority)
+	if flagValue != "" {
+		return flagValue
+	}
+
+	// Otherwise, check configuration
+	cfg := config.GetConfig()
+	if cfg.CACertificatePath != "" {
+		logger.Debugf("Using configured CA certificate: %s", cfg.CACertificatePath)
+		return cfg.CACertificatePath
+	}
+
+	// No CA certificate configured
+	return ""
 }

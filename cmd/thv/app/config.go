@@ -3,9 +3,12 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/certs"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
@@ -77,6 +80,32 @@ Valid clients are:
 	RunE: removeClientCmdFunc,
 }
 
+var setCACertCmd = &cobra.Command{
+	Use:   "set-ca-cert <path>",
+	Short: "Set the default CA certificate for container builds",
+	Long: `Set the default CA certificate file path that will be used for all container builds.
+This is useful in corporate environments with TLS inspection where custom CA certificates are required.
+
+Example:
+  thv config set-ca-cert /path/to/corporate-ca.crt`,
+	Args: cobra.ExactArgs(1),
+	RunE: setCACertCmdFunc,
+}
+
+var getCACertCmd = &cobra.Command{
+	Use:   "get-ca-cert",
+	Short: "Get the currently configured CA certificate path",
+	Long:  "Display the path to the CA certificate file that is currently configured for container builds.",
+	RunE:  getCACertCmdFunc,
+}
+
+var unsetCACertCmd = &cobra.Command{
+	Use:   "unset-ca-cert",
+	Short: "Remove the configured CA certificate",
+	Long:  "Remove the CA certificate configuration, reverting to default behavior without custom CA certificates.",
+	RunE:  unsetCACertCmdFunc,
+}
+
 func init() {
 	// Add config command to root command
 	rootCmd.AddCommand(configCmd)
@@ -87,6 +116,9 @@ func init() {
 	configCmd.AddCommand(registerClientCmd)
 	configCmd.AddCommand(removeClientCmd)
 	configCmd.AddCommand(listRegisteredClientsCmd)
+	configCmd.AddCommand(setCACertCmd)
+	configCmd.AddCommand(getCACertCmd)
+	configCmd.AddCommand(unsetCACertCmd)
 }
 
 func secretsProviderCmdFunc(_ *cobra.Command, args []string) error {
@@ -277,6 +309,75 @@ func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 		}
 	}
 
+	return nil
+}
+
+func setCACertCmdFunc(_ *cobra.Command, args []string) error {
+	certPath := filepath.Clean(args[0])
+
+	// Validate that the file exists and is readable
+	if _, err := os.Stat(certPath); err != nil {
+		return fmt.Errorf("CA certificate file not found or not accessible: %w", err)
+	}
+
+	// Read and validate the certificate
+	certContent, err := os.ReadFile(certPath)
+	if err != nil {
+		return fmt.Errorf("failed to read CA certificate file: %w", err)
+	}
+
+	// Validate the certificate format
+	if err := certs.ValidateCACertificate(certContent); err != nil {
+		return fmt.Errorf("invalid CA certificate: %w", err)
+	}
+
+	// Update the configuration
+	err = config.UpdateConfig(func(c *config.Config) {
+		c.CACertificatePath = certPath
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	fmt.Printf("Successfully set CA certificate path: %s\n", certPath)
+	return nil
+}
+
+func getCACertCmdFunc(_ *cobra.Command, _ []string) error {
+	cfg := config.GetConfig()
+
+	if cfg.CACertificatePath == "" {
+		fmt.Println("No CA certificate is currently configured.")
+		return nil
+	}
+
+	fmt.Printf("Current CA certificate path: %s\n", cfg.CACertificatePath)
+
+	// Check if the file still exists
+	if _, err := os.Stat(cfg.CACertificatePath); err != nil {
+		fmt.Printf("Warning: The configured CA certificate file is not accessible: %v\n", err)
+	}
+
+	return nil
+}
+
+func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
+	cfg := config.GetConfig()
+
+	if cfg.CACertificatePath == "" {
+		fmt.Println("No CA certificate is currently configured.")
+		return nil
+	}
+
+	// Update the configuration
+	err := config.UpdateConfig(func(c *config.Config) {
+		c.CACertificatePath = ""
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	fmt.Println("Successfully removed CA certificate configuration.")
 	return nil
 }
 

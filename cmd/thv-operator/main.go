@@ -21,6 +21,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/operator/telemetry"
 )
 
 var (
@@ -79,6 +80,15 @@ func main() {
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
+		os.Exit(1)
+	}
+
+	// Set up telemetry service - only runs when elected as leader
+	telemetryService := telemetry.NewService(mgr.GetClient(), "")
+	if err := mgr.Add(&telemetry.LeaderTelemetryRunnable{
+		TelemetryService: telemetryService,
+	}); err != nil {
+		setupLog.Error(err, "unable to add telemetry runnable")
 		os.Exit(1)
 	}
 

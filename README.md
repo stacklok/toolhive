@@ -30,6 +30,7 @@ consistency, and security.
 - [Architecture overview](#architecture-overview)
 - [Usage examples](#usage-examples)
   - [Register clients](#register-clients)
+  - [Configure custom registry](#configure-custom-registry)
   - [Find and run an MCP server](#find-and-run-an-mcp-server)
   - [Manage MCP servers](#manage-mcp-servers)
   - [Secrets management](#secrets-management)
@@ -162,7 +163,7 @@ ToolHive has been tested with the following clients:
 | Cursor                     | ✅        | ✅             | v0.47.0+                                  |
 | Roo Code                   | ✅        | ✅             | v3.9.0+                                   |
 | Claude Code                | ✅        | ✅             | v0.2.54+                                  |
-| Cline                      | ✅        | ❌             | v3.8.5+, requires manual configuration    |
+| Cline                      | ✅        | ✅             | v3.8.5+                                   |
 | Continue                   | ✅        | ❌             | Pre-release extension v1.39+ ([issue][1]) |
 | PydanticAI                 | ✅        | ❌             |                                           |
 | GitHub Copilot (JetBrains) | ❌        | ❌             | No support for HTTP/SSE MCPs ([issue][2]) |
@@ -236,6 +237,27 @@ thv config list-registered-clients
 # Remove a client
 thv config remove-client <client-name>
 ```
+
+### Configure custom registry
+
+By default, ToolHive uses a built-in registry of curated MCP servers. However, you can configure ToolHive to use a custom remote registry instead.
+
+To set a custom registry URL:
+
+```bash
+# Set a custom registry URL
+thv config set-registry-url https://example.com/custom-registry.json
+
+# View the currently configured registry URL
+thv config get-registry-url
+
+# Remove the custom registry URL and revert to the built-in registry
+thv config unset-registry-url
+```
+
+The custom registry must be a JSON file that follows the same format as the [built-in registry](pkg/registry/data/registry.json). When a custom registry URL is configured, ToolHive will fetch the registry data from that URL instead of using the embedded registry.
+
+This feature is useful for organizations that want to maintain their own curated list of MCP servers or for testing custom registry configurations.
 
 ### Find and run an MCP server
 

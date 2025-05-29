@@ -362,6 +362,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case ClaudeCode:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"ClaudeCode config should contain mcpServers key")
+			case Cline:
+				assert.Contains(t, string(content), `"mcpServers":`,
+					"Cline config should contain mcpServers key")
 			}
 		}
 	})
@@ -387,7 +390,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case VSCode, VSCodeInsider:
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
-			case Cursor, RooCode, ClaudeCode:
+			case Cursor, RooCode, ClaudeCode, Cline:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}

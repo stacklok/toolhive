@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -57,9 +58,10 @@ var registerClientCmd = &cobra.Command{
 	Short: "Register a client for MCP server configuration",
 	Long: `Register a client for MCP server configuration.
 Valid clients are:
-  - roo-code: Roo Code extension for VS Code
-  - cursor: Cursor editor
   - claude-code: Claude Code CLI
+  - cline: Cline extension for VS Code
+  - cursor: Cursor editor
+  - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition`,
 	Args: cobra.ExactArgs(1),
@@ -71,9 +73,10 @@ var removeClientCmd = &cobra.Command{
 	Short: "Remove a client from MCP server configuration",
 	Long: `Remove a client from MCP server configuration.
 Valid clients are:
-  - roo-code: Roo Code extension for VS Code
-  - cursor: Cursor editor
   - claude-code: Claude Code CLI
+  - cline: Cline extension for VS Code
+  - cursor: Cursor editor
+  - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition`,
 	Args: cobra.ExactArgs(1),
@@ -106,6 +109,32 @@ var unsetCACertCmd = &cobra.Command{
 	RunE:  unsetCACertCmdFunc,
 }
 
+var setRegistryURLCmd = &cobra.Command{
+	Use:   "set-registry-url <url>",
+	Short: "Set the MCP server registry URL",
+	Long: `Set the URL for the remote MCP server registry.
+This allows you to use a custom registry instead of the built-in one.
+
+Example:
+  thv config set-registry-url https://example.com/registry.json`,
+	Args: cobra.ExactArgs(1),
+	RunE: setRegistryURLCmdFunc,
+}
+
+var getRegistryURLCmd = &cobra.Command{
+	Use:   "get-registry-url",
+	Short: "Get the currently configured registry URL",
+	Long:  "Display the URL of the remote registry that is currently configured.",
+	RunE:  getRegistryURLCmdFunc,
+}
+
+var unsetRegistryURLCmd = &cobra.Command{
+	Use:   "unset-registry-url",
+	Short: "Remove the configured registry URL",
+	Long:  "Remove the registry URL configuration, reverting to the built-in registry.",
+	RunE:  unsetRegistryURLCmdFunc,
+}
+
 func init() {
 	// Add config command to root command
 	rootCmd.AddCommand(configCmd)
@@ -119,6 +148,9 @@ func init() {
 	configCmd.AddCommand(setCACertCmd)
 	configCmd.AddCommand(getCACertCmd)
 	configCmd.AddCommand(unsetCACertCmd)
+	configCmd.AddCommand(setRegistryURLCmd)
+	configCmd.AddCommand(getRegistryURLCmd)
+	configCmd.AddCommand(unsetRegistryURLCmd)
 }
 
 func secretsProviderCmdFunc(_ *cobra.Command, args []string) error {
@@ -166,10 +198,12 @@ func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cursor", "claude-code", "vscode-insider", "vscode":
+	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, claude-code, vscode, vscode-insider)", clientType)
+		return fmt.Errorf(
+			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider)",
+			clientType)
 	}
 
 	err := config.UpdateConfig(func(c *config.Config) {
@@ -203,10 +237,12 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cursor", "claude-code", "vscode-insider", "vscode":
+	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode":
 		// Valid client type
 	default:
-		return fmt.Errorf("invalid client type: %s (valid types: roo-code, cursor, claude-code, vscode, vscode-insider)", clientType)
+		return fmt.Errorf(
+			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider)",
+			clientType)
 	}
 
 	err := config.UpdateConfig(func(c *config.Config) {
@@ -378,6 +414,58 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	fmt.Println("Successfully removed CA certificate configuration.")
+	return nil
+}
+
+func setRegistryURLCmdFunc(_ *cobra.Command, args []string) error {
+	registryURL := args[0]
+
+	// Basic URL validation - check if it starts with http:// or https://
+	if registryURL != "" && !strings.HasPrefix(registryURL, "http://") && !strings.HasPrefix(registryURL, "https://") {
+		return fmt.Errorf("registry URL must start with http:// or https://")
+	}
+
+	// Update the configuration
+	err := config.UpdateConfig(func(c *config.Config) {
+		c.RegistryUrl = registryURL
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	fmt.Printf("Successfully set registry URL: %s\n", registryURL)
+	return nil
+}
+
+func getRegistryURLCmdFunc(_ *cobra.Command, _ []string) error {
+	cfg := config.GetConfig()
+
+	if cfg.RegistryUrl == "" {
+		fmt.Println("No custom registry URL is currently configured. Using built-in registry.")
+		return nil
+	}
+
+	fmt.Printf("Current registry URL: %s\n", cfg.RegistryUrl)
+	return nil
+}
+
+func unsetRegistryURLCmdFunc(_ *cobra.Command, _ []string) error {
+	cfg := config.GetConfig()
+
+	if cfg.RegistryUrl == "" {
+		fmt.Println("No custom registry URL is currently configured.")
+		return nil
+	}
+
+	// Update the configuration
+	err := config.UpdateConfig(func(c *config.Config) {
+		c.RegistryUrl = ""
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	fmt.Println("Successfully removed registry URL configuration. Will use built-in registry.")
 	return nil
 }
 

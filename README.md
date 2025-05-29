@@ -163,7 +163,7 @@ ToolHive has been tested with the following clients:
 | Cursor                     | ✅        | ✅             | v0.47.0+                                  |
 | Roo Code                   | ✅        | ✅             | v3.9.0+                                   |
 | Claude Code                | ✅        | ✅             | v0.2.54+                                  |
-| Cline                      | ✅        | ❌             | v3.8.5+, requires manual configuration    |
+| Cline                      | ✅        | ✅             | v3.8.5+                                   |
 | Continue                   | ✅        | ❌             | Pre-release extension v1.39+ ([issue][1]) |
 | PydanticAI                 | ✅        | ❌             |                                           |
 | GitHub Copilot (JetBrains) | ❌        | ❌             | No support for HTTP/SSE MCPs ([issue][2]) |

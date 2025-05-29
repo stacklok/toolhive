@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/updates"
 )
@@ -56,8 +57,8 @@ func NewRootCmd() *cobra.Command {
 	// Silence printing the usage on error
 	rootCmd.SilenceUsage = true
 
-	// Skip update check for completion command
-	if !IsCompletionCommand(os.Args) {
+	// Skip update check for completion command or if we are running in kubernetes
+	if !IsCompletionCommand(os.Args) && !container.IsKubernetesRuntime() {
 		checkForUpdates()
 	}
 

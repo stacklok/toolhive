@@ -27,6 +27,7 @@ jobs:
         with:
           config: cr.yaml
           charts_dir: deploy/charts
+          mark_as_latest: false
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 

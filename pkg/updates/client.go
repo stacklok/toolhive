@@ -15,13 +15,20 @@ type VersionClient interface {
 
 // NewVersionClient creates a new instance of VersionClient.
 func NewVersionClient() VersionClient {
+	return NewVersionClientWithSuffix("")
+}
+
+// NewVersionClientWithSuffix creates a new instance of VersionClient with an optional user agent suffix.
+func NewVersionClientWithSuffix(suffix string) VersionClient {
 	return &defaultVersionClient{
 		versionEndpoint: defaultVersionAPI,
+		userAgentSuffix: suffix,
 	}
 }
 
 type defaultVersionClient struct {
 	versionEndpoint string
+	userAgentSuffix string
 }
 
 const (
@@ -41,6 +48,9 @@ func (d *defaultVersionClient) GetLatestVersion(instanceID string, currentVersio
 
 	// Set headers
 	userAgent := fmt.Sprintf("toolhive/%s", currentVersion)
+	if d.userAgentSuffix != "" {
+		userAgent += " " + d.userAgentSuffix
+	}
 	// Add `dev` to the user agent for Stacklok devs.
 	if os.Getenv("TOOLHIVE_DEV") != "" {
 		userAgent += " dev"

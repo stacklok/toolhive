@@ -166,3 +166,74 @@ func TestSave(t *testing.T) {
 		})
 	})
 }
+
+func TestRegistryURLConfig(t *testing.T) {
+	logger.Initialize()
+
+	t.Run("TestSetAndGetRegistryURL", func(t *testing.T) {
+		tempDir, cleanup := SetupTestConfig(t, &Config{
+			Secrets: Secrets{
+				ProviderType: "encrypted",
+			},
+			Clients: Clients{
+				AutoDiscovery:     false,
+				RegisteredClients: []string{},
+			},
+			RegistryUrl: "",
+		})
+		defer cleanup()
+
+		// Test setting a registry URL
+		testURL := "https://example.com/registry.json"
+		err := UpdateConfig(func(c *Config) {
+			c.RegistryUrl = testURL
+		})
+		require.NoError(t, err)
+
+		// Load the config and verify the URL was set
+		config, err := LoadOrCreateConfig()
+		require.NoError(t, err)
+		assert.Equal(t, testURL, config.RegistryUrl)
+
+		// Test unsetting the registry URL
+		err = UpdateConfig(func(c *Config) {
+			c.RegistryUrl = ""
+		})
+		require.NoError(t, err)
+
+		// Load the config and verify the URL was unset
+		config, err = LoadOrCreateConfig()
+		require.NoError(t, err)
+		assert.Equal(t, "", config.RegistryUrl)
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("TestRegistryURLPersistence", func(t *testing.T) {
+		tempDir, cleanup := SetupTestConfig(t, nil)
+		defer cleanup()
+
+		testURL := "https://custom-registry.example.com/registry.json"
+
+		// Set the registry URL
+		err := UpdateConfig(func(c *Config) {
+			c.RegistryUrl = testURL
+		})
+		require.NoError(t, err)
+
+		// Load config again to verify persistence
+		config, err := LoadOrCreateConfig()
+		require.NoError(t, err)
+		assert.Equal(t, testURL, config.RegistryUrl)
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+}

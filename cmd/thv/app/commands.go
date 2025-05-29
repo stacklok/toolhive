@@ -2,12 +2,9 @@
 package app
 
 import (
-	"os"
-
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/updates"
 )
@@ -34,7 +31,7 @@ container-based isolation for running MCP servers.`,
 }
 
 // NewRootCmd creates a new root command for the ToolHive CLI.
-func NewRootCmd() *cobra.Command {
+func NewRootCmd(enableUpdates bool) *cobra.Command {
 	// Add persistent flags
 	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug mode")
 	err := viper.BindPFlag("debug", rootCmd.PersistentFlags().Lookup("debug"))
@@ -57,8 +54,7 @@ func NewRootCmd() *cobra.Command {
 	// Silence printing the usage on error
 	rootCmd.SilenceUsage = true
 
-	// Skip update check for completion command or if we are running in kubernetes
-	if !IsCompletionCommand(os.Args) && !container.IsKubernetesRuntime() {
+	if enableUpdates {
 		checkForUpdates()
 	}
 

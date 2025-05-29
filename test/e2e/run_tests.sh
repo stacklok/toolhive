@@ -14,6 +14,9 @@ NC='\033[0m' # No Color
 echo -e "${GREEN}ToolHive E2E Test Runner${NC}"
 echo "================================"
 
+# Set TOOLHIVE_DEV environment variable to true
+export TOOLHIVE_DEV=true
+
 # Check if thv binary exists
 THV_BINARY="${THV_BINARY:-thv}"
 if ! command -v "$THV_BINARY" &> /dev/null; then

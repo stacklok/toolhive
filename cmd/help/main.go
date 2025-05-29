@@ -19,7 +19,7 @@ func main() {
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			return doc.GenMarkdownTree(cli.NewRootCmd(), dir)
+			return doc.GenMarkdownTree(cli.NewRootCmd(false), dir)
 		},
 	}
 	root.Flags().StringVarP(&dir, "dir", "d", "doc", "Path to directory in which to generate docs")

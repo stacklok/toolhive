@@ -230,10 +230,10 @@ func writeCACertificate(buildContextDir, caCertContent string, isLocalPath bool)
 // generateImageName generates a unique Docker image name based on the package and transport type.
 func generateImageName(transportType templates.TransportType, packageName string) string {
 	tag := time.Now().Format("20060102150405")
-	return fmt.Sprintf("toolhivelocal/%s-%s:%s",
+	return strings.ToLower(fmt.Sprintf("toolhivelocal/%s-%s:%s",
 		string(transportType),
 		packageNameToImageName(packageName),
-		tag)
+		tag))
 }
 
 // buildImageFromTemplate builds a Docker image from the template data.

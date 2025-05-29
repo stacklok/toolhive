@@ -941,7 +941,7 @@ func convertRelativePathToAbsolute(source string, mountDecl permissions.MountDec
 // needsNetworkAccess determines if the container needs network access
 func (*Client) needsNetworkAccess(profile *permissions.Profile, transportType string) bool {
 	// SSE transport always needs network access
-	if transportType == "sse" {
+	if transportType == "sse" || transportType == "inspector" {
 		return true
 	}
 
@@ -985,7 +985,7 @@ func (c *Client) getPermissionConfigFromProfile(
 	}
 
 	// Validate transport type
-	if transportType != "sse" && transportType != "stdio" {
+	if transportType != "sse" && transportType != "stdio" && transportType != "inspector" {
 		return nil, fmt.Errorf("unsupported transport type: %s", transportType)
 	}
 

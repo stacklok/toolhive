@@ -103,16 +103,16 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	labelsMap := map[string]string{}
-	labels.AddStandardLabels(labelsMap, "inspector", "inspector", string(types.TransportTypeHttp), inspectorUIPort)
+	labels.AddStandardLabels(labelsMap, "inspector", "inspector", string(types.TransportTypeInspector), inspectorUIPort)
 	_, err = rt.DeployWorkload(
 		ctx,
 		processedImage,
 		"inspector",
 		[]string{}, // No custom command needed
 		nil,
-		labelsMap,                      // Add toolhive label
-		&permissions.Profile{},         // Empty profile as we don't need special permissions
-		string(types.TransportTypeSSE), // Use bridge network for port bindings
+		labelsMap,              // Add toolhive label
+		&permissions.Profile{}, // Empty profile as we don't need special permissions
+		string(types.TransportTypeInspector),
 		options,
 	)
 	if err != nil {

@@ -55,8 +55,8 @@ const (
 	// TransportTypeSSE represents the SSE transport.
 	TransportTypeSSE TransportType = "sse"
 
-	// TransportTypeHttp represents the HTTP transport mode.
-	TransportTypeHttp TransportType = "http"
+	// TransportTypeInspector represents the transport mode for MCP Inspector.
+	TransportTypeInspector TransportType = "inspector"
 )
 
 // String returns the string representation of the transport type.
@@ -71,8 +71,8 @@ func ParseTransportType(s string) (TransportType, error) {
 		return TransportTypeStdio, nil
 	case "sse", "SSE":
 		return TransportTypeSSE, nil
-	case "http", "HTTP":
-		return TransportTypeHttp, nil
+	case "inspector", "INSPECTOR":
+		return TransportTypeInspector, nil
 	default:
 		return "", errors.ErrUnsupportedTransport
 	}

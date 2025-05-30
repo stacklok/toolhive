@@ -8194,7 +8194,7 @@ spec:
                   type: object
                 type: array
               targetPort:
-                description: TargetPort is the port that MCP server listens on
+                description: TargetPort is the port that MCP server listens to
                 format: int32
                 maximum: 65535
                 minimum: 1

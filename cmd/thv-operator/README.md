@@ -127,7 +127,7 @@ kubectl describe mcpserver <name>
 | `image`             | Container image for the MCP server              | Yes      | -       |
 | `transport`         | Transport method (stdio or sse)                 | No       | stdio   |
 | `port`              | Port to expose the MCP server on                | No       | 8080    |
-| `targetPort`        | Port to that MCP server listens on              | No       | -       |
+| `targetPort`        | Port that MCP server listens to                 | No       | -       |
 | `args`              | Additional arguments to pass to the MCP server  | No       | -       |
 | `env`               | Environment variables to set in the container   | No       | -       |
 | `volumes`           | Volumes to mount in the container               | No       | -       |

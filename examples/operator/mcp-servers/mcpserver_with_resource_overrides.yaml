@@ -1,0 +1,46 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-with-overrides
+  namespace: toolhive-system
+spec:
+  image: docker.io/mcp/github
+  transport: stdio
+  port: 8080
+  permissionProfile:
+    type: builtin
+    name: network
+  secrets:
+    - name: github-token
+      key: GITHUB_PERSONAL_ACCESS_TOKEN
+  env:
+    - name: GITHUB_API_URL
+      value: https://api.github.com
+    - name: LOG_LEVEL
+      value: info
+  resources:
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+  resourceOverrides:
+    proxyDeployment:
+      annotations:
+        example.com/deployment-annotation: "custom-deployment-value"
+        monitoring.example.com/scrape: "true"
+        monitoring.example.com/port: "8080"
+      labels:
+        example.com/deployment-label: "custom-deployment-label"
+        environment: "production"
+        team: "platform"
+    proxyService:
+      annotations:
+        example.com/service-annotation: "custom-service-value"
+        service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+        external-dns.alpha.kubernetes.io/hostname: "github-mcp.example.com"
+      labels:
+        example.com/service-label: "custom-service-label"
+        environment: "production"
+        team: "platform"

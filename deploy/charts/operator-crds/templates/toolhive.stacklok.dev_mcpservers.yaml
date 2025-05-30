@@ -8140,6 +8140,41 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              resourceOverrides:
+                description: ResourceOverrides allows overriding annotations and labels
+                  for resources created by the operator
+                properties:
+                  proxyDeployment:
+                    description: ProxyDeployment defines overrides for the Proxy Deployment
+                      resource (toolhive proxy)
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations to add or override on the resource
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels to add or override on the resource
+                        type: object
+                    type: object
+                  proxyService:
+                    description: ProxyService defines overrides for the Proxy Service
+                      resource (points to the proxy deployment)
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations to add or override on the resource
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels to add or override on the resource
+                        type: object
+                    type: object
+                type: object
               resources:
                 description: Resources defines the resource requirements for the MCP
                   server container

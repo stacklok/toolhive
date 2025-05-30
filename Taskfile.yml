@@ -42,6 +42,7 @@ tasks:
     env:
       THV_BINARY: ./bin/thv
     cmds:
+      - go install github.com/onsi/ginkgo/v2/ginkgo
       - ./test/e2e/run_tests.sh
 
   test-all:

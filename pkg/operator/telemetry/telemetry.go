@@ -114,7 +114,6 @@ func (s *Service) CheckForUpdates(ctx context.Context) error {
 	currentVersion := versions.GetVersionInfo().Version
 	latestVersion, err := s.versionClient.GetLatestVersion(data.InstanceID, currentVersion)
 	if err != nil {
-		logger.Error(err, "Failed to check for updates")
 		return fmt.Errorf("failed to check for updates: %w", err)
 	}
 

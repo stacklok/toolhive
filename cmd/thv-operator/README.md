@@ -76,8 +76,9 @@ apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
   name: github
+  namespace: toolhive-system
 spec:
-  image: docker.io/mcp/github
+  image: ghcr.io/github/github-mcp-server
   transport: stdio
   port: 8080
   permissionProfile:
@@ -92,7 +93,7 @@ spec:
 First, create the secret:
 
 ```bash
-kubectl create secret generic github-token --from-literal=token=your-token
+kubectl create secret generic github-token -n toolhive-system --from-literal=token=<YOUR_GITHUB_TOKEN>
 ```
 
 Then apply the MCPServer resource.

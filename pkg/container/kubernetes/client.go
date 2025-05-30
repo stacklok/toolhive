@@ -848,6 +848,8 @@ func (c *Client) createHeadlessService(
 	}
 
 	logger.Infof("Created headless service %s for SSE transport", containerName)
+
+	options.SSEHeadlessServiceName = svcName
 	return nil
 }
 

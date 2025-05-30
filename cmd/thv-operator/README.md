@@ -20,31 +20,18 @@ The operator introduces a new Custom Resource Definition (CRD) called `MCPServer
 - Kubernetes cluster (v1.19+)
 - kubectl configured to communicate with your cluster
 
-### Installing the Operator
+### Installing the Operator via Helm
 
 1. Install the CRD:
 
 ```bash
-kubectl apply -f deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
+helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds
 ```
 
-2. Create the operator namespace:
+2. Install the operator:
 
 ```bash
-kubectl apply -f deploy/operator/namespace.yaml
-```
-
-3. Set up RBAC:
-
-```bash
-kubectl apply -f deploy/operator/rbac.yaml
-kubectl apply -f deploy/operator/toolhive_rbac.yaml
-```
-
-4. Deploy the operator:
-
-```bash
-kubectl apply -f deploy/operator/operator.yaml
+helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version> -n toolhive-system --create-namespace
 ```
 
 ## Usage
@@ -172,7 +159,7 @@ The ConfigMap should contain a JSON permission profile.
 
 ## Examples
 
-See the `deploy/operator/samples/` directory for example MCPServer resources.
+See the `examples/operator/mcp-servers/` directory for example MCPServer resources.
 
 ## Development
 

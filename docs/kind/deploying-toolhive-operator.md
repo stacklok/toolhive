@@ -43,25 +43,13 @@ Once the cluster is running, follow these steps:
 1. Install the CRD:
 
 ```bash
-kubectl create -f https://raw.githubusercontent.com/stacklok/toolhive/main/deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
+helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds
 ```
 
-2. Create the operator namespace:
+2. Deploy the operator:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/stacklok/toolhive/main/deploy/operator/namespace.yaml
-```
-
-3. Set up RBAC:
-
-```bash
-kubectl apply -f https://raw.githubusercontent.com/stacklok/toolhive/main/deploy/operator/toolhive_rbac.yaml
-```
-
-4. Deploy the operator:
-
-```bash
-kubectl apply -f https://raw.githubusercontent.com/stacklok/toolhive/main/deploy/operator/operator.yaml
+helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator -n toolhive-system --create-namespace
 ```
 
 ## Installing the Operator Into an Existing Kind Cluster
@@ -85,24 +73,11 @@ $ task operator-deploy-local
 1. Install the CRD:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/stacklok/toolhive/main/deploy/operator/crds/toolhive.stacklok.dev_mcpservers.yaml
+helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds
 ```
 
-2. Create the operator namespace:
+2. Deploy the operator:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/stacklok/toolhive/main/deploy/operator/namespace.yaml
-```
-
-3. Set up RBAC:
-
-```bash
-kubectl apply -f https://raw.githubusercontent.com/stacklok/toolhive/main/deploy/operator/rbac.yaml
-kubectl apply -f https://raw.githubusercontent.com/stacklok/toolhive/main/deploy/operator/toolhive_rbac.yaml
-```
-
-4. Deploy the operator:
-
-```bash
-kubectl apply -f https://raw.githubusercontent.com/stacklok/toolhive/main/deploy/operator/operator.yaml
+helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator -n toolhive-system --create-namespace
 ```

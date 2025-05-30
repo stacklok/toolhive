@@ -318,10 +318,16 @@ func (c *Client) DeployWorkload(
 	// Determine if we should attach stdio
 	attachStdio := options == nil || options.AttachStdio
 
+	// Get the original image's CMD to properly handle command arguments
+	finalCmd, err := c.buildFinalCommand(ctx, image, command)
+	if err != nil {
+		return "", fmt.Errorf("failed to build final command: %w", err)
+	}
+
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,
-		Cmd:          command,
+		Cmd:          finalCmd,
 		Env:          convertEnvVars(envVars),
 		Labels:       labels,
 		AttachStdin:  attachStdio,
@@ -1292,6 +1298,36 @@ func compareContainerConfig(
 
 // handleExistingContainer checks if an existing container's configuration matches the desired configuration
 // Returns true if the container can be reused, false if it was removed and needs to be recreated
+// buildFinalCommand constructs the final command by combining the original image's CMD with provided arguments
+func (c *Client) buildFinalCommand(ctx context.Context, image string, command []string) ([]string, error) {
+	// If no command arguments are provided, let Docker use the image's default CMD
+	if len(command) == 0 {
+		return nil, nil
+	}
+
+	// Inspect the image to get its original CMD
+	imageInspect, err := c.client.ImageInspect(ctx, image)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect image %s: %w", image, err)
+	}
+
+	// Get the original CMD from the image
+	originalCmd := imageInspect.Config.Cmd
+
+	// If the image has no CMD, just use the provided command arguments
+	if len(originalCmd) == 0 {
+		return command, nil
+	}
+
+	// Combine the original CMD with the provided arguments
+	// The original CMD should contain the executable, and we append the arguments
+	finalCmd := make([]string, 0, len(originalCmd)+len(command))
+	finalCmd = append(finalCmd, originalCmd...)
+	finalCmd = append(finalCmd, command...)
+
+	return finalCmd, nil
+}
+
 func (c *Client) handleExistingContainer(
 	ctx context.Context,
 	containerID string,

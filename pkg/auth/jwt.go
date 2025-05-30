@@ -3,6 +3,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,14 +16,26 @@ import (
 
 // Common errors
 var (
-	ErrNoToken           = errors.New("no token provided")
-	ErrInvalidToken      = errors.New("invalid token")
-	ErrTokenExpired      = errors.New("token expired")
-	ErrInvalidIssuer     = errors.New("invalid issuer")
-	ErrInvalidAudience   = errors.New("invalid audience")
-	ErrMissingJWKSURL    = errors.New("missing JWKS URL")
-	ErrFailedToFetchJWKS = errors.New("failed to fetch JWKS")
+	ErrNoToken                 = errors.New("no token provided")
+	ErrInvalidToken            = errors.New("invalid token")
+	ErrTokenExpired            = errors.New("token expired")
+	ErrInvalidIssuer           = errors.New("invalid issuer")
+	ErrInvalidAudience         = errors.New("invalid audience")
+	ErrMissingJWKSURL          = errors.New("missing JWKS URL")
+	ErrFailedToFetchJWKS       = errors.New("failed to fetch JWKS")
+	ErrFailedToDiscoverOIDC    = errors.New("failed to discover OIDC configuration")
+	ErrMissingIssuerAndJWKSURL = errors.New("either issuer or JWKS URL must be provided")
 )
+
+// OIDCDiscoveryDocument represents the OIDC discovery document structure
+type OIDCDiscoveryDocument struct {
+	Issuer                string `json:"issuer"`
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	UserinfoEndpoint      string `json:"userinfo_endpoint"`
+	JWKSURI               string `json:"jwks_uri"`
+	// Add other fields as needed
+}
 
 // JWTValidator validates JWT tokens.
 type JWTValidator struct {
@@ -51,6 +64,44 @@ type JWTValidatorConfig struct {
 	ClientID string
 }
 
+// discoverOIDCConfiguration discovers OIDC configuration from the issuer's well-known endpoint
+func discoverOIDCConfiguration(ctx context.Context, issuer string) (*OIDCDiscoveryDocument, error) {
+	// Construct the well-known endpoint URL
+	wellKnownURL := strings.TrimSuffix(issuer, "/") + "/.well-known/openid_configuration"
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnownURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Make the request
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch OIDC configuration: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("OIDC discovery endpoint returned status %d", resp.StatusCode)
+	}
+
+	// Parse the response
+	var doc OIDCDiscoveryDocument
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		return nil, fmt.Errorf("failed to decode OIDC configuration: %w", err)
+	}
+
+	// Validate that we got the required fields
+	if doc.JWKSURI == "" {
+		return nil, fmt.Errorf("OIDC configuration missing jwks_uri")
+	}
+
+	return &doc, nil
+}
+
 // NewJWTValidatorConfig creates a new JWTValidatorConfig with the provided parameters
 func NewJWTValidatorConfig(issuer, audience, jwksURL, clientID string) *JWTValidatorConfig {
 	// Only create a config if at least one parameter is provided
@@ -68,15 +119,27 @@ func NewJWTValidatorConfig(issuer, audience, jwksURL, clientID string) *JWTValid
 
 // NewJWTValidator creates a new JWT validator.
 func NewJWTValidator(ctx context.Context, config JWTValidatorConfig) (*JWTValidator, error) {
-	if config.JWKSURL == "" {
-		return nil, ErrMissingJWKSURL
+	jwksURL := config.JWKSURL
+
+	// If JWKS URL is not provided but issuer is, try to discover it
+	if jwksURL == "" && config.Issuer != "" {
+		doc, err := discoverOIDCConfiguration(ctx, config.Issuer)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrFailedToDiscoverOIDC, err)
+		}
+		jwksURL = doc.JWKSURI
+	}
+
+	// Ensure we have a JWKS URL either provided or discovered
+	if jwksURL == "" {
+		return nil, ErrMissingIssuerAndJWKSURL
 	}
 
 	// Create a new JWKS client with auto-refresh
 	cache := jwk.NewCache(ctx)
 
 	// Register the JWKS URL with the cache
-	err := cache.Register(config.JWKSURL)
+	err := cache.Register(jwksURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register JWKS URL: %w", err)
 	}
@@ -84,7 +147,7 @@ func NewJWTValidator(ctx context.Context, config JWTValidatorConfig) (*JWTValida
 	return &JWTValidator{
 		issuer:     config.Issuer,
 		audience:   config.Audience,
-		jwksURL:    config.JWKSURL,
+		jwksURL:    jwksURL,
 		clientID:   config.ClientID,
 		jwksClient: cache,
 	}, nil

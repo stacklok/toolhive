@@ -127,12 +127,19 @@ func setupLocalBuildContext(packageName string) (*buildContext, error) {
 		return nil, fmt.Errorf("source path does not exist: %s: %w", absPath, err)
 	}
 
-	dockerfilePath := filepath.Join(absPath, "Dockerfile")
+	// For Go projects, use the current working directory as the build context
+	// to ensure go.mod and the entire project structure is available
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current working directory: %w", err)
+	}
 
-	logger.Debugf("Using local path as build context: %s", absPath)
+	dockerfilePath := filepath.Join(currentDir, "Dockerfile")
+
+	logger.Debugf("Using current working directory as build context: %s", currentDir)
 
 	return &buildContext{
-		Dir:            absPath,
+		Dir:            currentDir,
 		DockerfilePath: dockerfilePath,
 		CleanupFunc: func() {
 			// Clean up the temporary Dockerfile only if we created it

@@ -122,17 +122,18 @@ kubectl describe mcpserver <name>
 
 ### MCPServer Spec
 
-| Field | Description | Required | Default |
-|-------|-------------|----------|---------|
-| `image` | Container image for the MCP server | Yes | - |
-| `transport` | Transport method (stdio or sse) | No | stdio |
-| `port` | Port to expose the MCP server on | No | 8080 |
-| `args` | Additional arguments to pass to the MCP server | No | - |
-| `env` | Environment variables to set in the container | No | - |
-| `volumes` | Volumes to mount in the container | No | - |
-| `resources` | Resource requirements for the container | No | - |
-| `secrets` | References to secrets to mount in the container | No | - |
-| `permissionProfile` | Permission profile configuration | No | - |
+| Field               | Description                                     | Required | Default |
+|---------------------|-------------------------------------------------|----------|---------|
+| `image`             | Container image for the MCP server              | Yes      | -       |
+| `transport`         | Transport method (stdio or sse)                 | No       | stdio   |
+| `port`              | Port to expose the MCP server on                | No       | 8080    |
+| `targetPort`        | Port to that MCP server listens on              | No       | -       |
+| `args`              | Additional arguments to pass to the MCP server  | No       | -       |
+| `env`               | Environment variables to set in the container   | No       | -       |
+| `volumes`           | Volumes to mount in the container               | No       | -       |
+| `resources`         | Resource requirements for the container         | No       | -       |
+| `secrets`           | References to secrets to mount in the container | No       | -       |
+| `permissionProfile` | Permission profile configuration                | No       | -       |
 
 ### Permission Profiles
 

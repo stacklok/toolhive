@@ -6,9 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"reflect"
-
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -17,10 +14,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"os"
+	"reflect"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"strings"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -229,6 +229,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 	args = append(args, fmt.Sprintf("--name=%s", m.Name))
 	args = append(args, fmt.Sprintf("--transport=%s", m.Spec.Transport))
 	args = append(args, fmt.Sprintf("--host=%s", getProxyHost()))
+
+	if m.Spec.TargetPort != 0 {
+		args = append(args, fmt.Sprintf("--target-port=%d", m.Spec.TargetPort))
+	}
 
 	// Add pod template patch if provided
 	if m.Spec.PodTemplateSpec != nil {
@@ -587,6 +591,28 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 		if !reflect.DeepEqual(container.Resources, resourceRequirementsForMCPServer(mcpServer)) {
 			return true
 		}
+
+		// Check if the targetPort has changed
+		if mcpServer.Spec.TargetPort != 0 {
+			targetPortArg := fmt.Sprintf("--target-port=%d", mcpServer.Spec.TargetPort)
+			found := false
+			for _, arg := range container.Args {
+				if arg == targetPortArg {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return true
+			}
+		} else {
+			for _, arg := range container.Args {
+				if strings.HasPrefix(arg, "--target-port=") {
+					return true
+				}
+			}
+		}
+
 	}
 
 	// Check if the service account name has changed

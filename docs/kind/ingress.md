@@ -13,7 +13,7 @@ This document walks through setting up Ingress in a local Kind cluster. There ar
 To install the Nginx Ingress Controller, run the following:
 
 ```bash
-$ kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml
+kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml
 ```
 
 There are [known issues](https://github.com/kubernetes/ingress-nginx/issues/5968#issuecomment-849772666) around inconsistencies between the secret and the webhook `caBundle` resulting in the Nginx Ingress Controller not being fully running and operational.
@@ -38,7 +38,7 @@ Now, although the Nginx Ingress Controller is running, we need to hook with an I
 To confirm there is no IP, run:
 
 ```bash
-$ kubectl get svc/ingress-nginx-controller -n ingress-nginx -o=jsonpath='{.status.loadBalancer.ingress[0].ip}'
+kubectl get svc/ingress-nginx-controller -n ingress-nginx -o=jsonpath='{.status.loadBalancer.ingress[0].ip}'
 ```
 
 Follow the next section to learn how to assign an ExternalIP to an Ingress Controller in Kind.
@@ -54,7 +54,7 @@ After following the documentation, it should now be installed and running and qu
 To confirm that it has provided an IP address, you should now see an IP returned when you run:
 
 ```bash
-$ kubectl get svc/ingress-nginx-controller -n ingress-nginx -o=jsonpath='{.status.loadBalancer.ingress[0].ip}'
+kubectl get svc/ingress-nginx-controller -n ingress-nginx -o=jsonpath='{.status.loadBalancer.ingress[0].ip}'
 ```
 
 ### Test Nginx Ingress Controller and Kind Load Balancer Setup
@@ -128,7 +128,7 @@ We have also automated the installation of the Nginx Ingress Controller using a 
 To use, run:
 
 ```bash
-$ task kind-ingress-setup
+task kind-ingress-setup
 ```
 
 It will install the Nginx Ingress Controller and fix the secret inconsistencies. It does nothing with the `cloud-provider-kind` Load Balancer, so you will still need to run that yourself. But by the end of the task run, the controller will be waiting for an assigned IP.

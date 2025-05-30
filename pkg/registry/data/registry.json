@@ -1796,7 +1796,7 @@
     },
     "sqlite": {
       "args": [],
-      "description": "MCP server with SQLite for SQL queries, data analysis, and auto-generated business insights.\n\n\n\n\n",
+      "description": "MCP server with SQLite for SQL queries, data analysis, and auto-generated business insights.",
       "env_vars": [],
       "image": "mcp/sqlite:latest",
       "metadata": {
@@ -1845,7 +1845,7 @@
     },
     "terraform": {
       "args": [],
-      "description": "MCP Server for providing seamless integration with Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.\n\n\n\n\n",
+      "description": "MCP Server for providing seamless integration with Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.",
       "env_vars": [],
       "image": "hashicorp/terraform-mcp-server:latest",
       "metadata": {
@@ -1895,7 +1895,7 @@
     },
     "time": {
       "args": [],
-      "description": "MCP server for time info and IANA timezone conversions with auto system timezone detection.\n\n\n\n\n",
+      "description": "MCP server for time info and IANA timezone conversions with auto system timezone detection.",
       "env_vars": [],
       "image": "mcp/time:latest",
       "metadata": {

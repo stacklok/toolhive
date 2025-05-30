@@ -228,6 +228,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 	args = append(args, fmt.Sprintf("--port=%d", m.Spec.Port))
 	args = append(args, fmt.Sprintf("--name=%s", m.Name))
 	args = append(args, fmt.Sprintf("--transport=%s", m.Spec.Transport))
+	args = append(args, fmt.Sprintf("--host=%s", getProxyHost()))
 
 	// Add pod template patch if provided
 	if m.Spec.PodTemplateSpec != nil {
@@ -640,6 +641,15 @@ func labelsForMCPServer(name string) map[string]string {
 		"toolhive":                   "true",
 		"toolhive-name":              name,
 	}
+}
+
+// getProxyHost returns the host to bind the proxy to
+func getProxyHost() string {
+	host := os.Getenv("TOOLHIVE_PROXY_HOST")
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	return host
 }
 
 // getToolhiveRunnerImage returns the image to use for the toolhive runner container

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -37,4 +39,61 @@ func CreatePermissionProfileFile(serverName string, permProfile *permissions.Pro
 	logger.Debugf("Wrote permission profile to temporary file: %s", permProfilePath)
 
 	return permProfilePath, nil
+}
+
+// CleanupTempPermissionProfile removes a temporary permission profile file if it was created by toolhive
+func CleanupTempPermissionProfile(permissionProfilePath string) error {
+	if permissionProfilePath == "" {
+		return nil
+	}
+
+	// Check if this is a temporary file created by toolhive
+	if !isTempPermissionProfile(permissionProfilePath) {
+		logger.Debugf("Permission profile %s is not a temporary file, skipping cleanup", permissionProfilePath)
+		return nil
+	}
+
+	// Check if the file exists
+	if _, err := os.Stat(permissionProfilePath); os.IsNotExist(err) {
+		logger.Debugf("Temporary permission profile file %s does not exist, skipping cleanup", permissionProfilePath)
+		return nil
+	}
+
+	// Remove the temporary file
+	if err := os.Remove(permissionProfilePath); err != nil {
+		return fmt.Errorf("failed to remove temporary permission profile file %s: %v", permissionProfilePath, err)
+	}
+
+	logger.Debugf("Removed temporary permission profile file: %s", permissionProfilePath)
+	return nil
+}
+
+// isTempPermissionProfile checks if a file path is a temporary permission profile created by toolhive
+func isTempPermissionProfile(filePath string) bool {
+	if filePath == "" {
+		return false
+	}
+
+	// Get the base name of the file
+	fileName := filepath.Base(filePath)
+
+	// Check if it matches the pattern: toolhive-*-permissions-*.json
+	if !strings.HasPrefix(fileName, "toolhive-") ||
+		!strings.Contains(fileName, "-permissions-") ||
+		!strings.HasSuffix(fileName, ".json") {
+		return false
+	}
+
+	// Check if it's in a temporary directory (os.TempDir() or similar)
+	tempDir := os.TempDir()
+	fileDir := filepath.Dir(filePath)
+
+	// Check if the file is in the system temp directory or a subdirectory of it
+	relPath, err := filepath.Rel(tempDir, fileDir)
+	if err != nil {
+		return false
+	}
+
+	// If the relative path doesn't start with "..", then it's within the temp directory
+	return !strings.HasPrefix(relPath, "..")
 }

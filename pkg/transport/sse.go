@@ -156,6 +156,13 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	t.containerID = containerID
 	logger.Infof("Container created with ID: %s", containerID)
 
+	// If the SSEHeadlessServiceName is set, use it as the target host
+	// This is useful for Kubernetes deployments where the workload is
+	// exposed as a headless service.
+	if containerOptions.SSEHeadlessServiceName != "" {
+		t.targetHost = containerOptions.SSEHeadlessServiceName
+	}
+
 	return nil
 }
 

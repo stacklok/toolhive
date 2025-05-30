@@ -71,8 +71,18 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 
 	// Sort servers by last updated time (oldest first)
 	sort.Slice(servers, func(i, j int) bool {
-		timeI, errI := time.Parse(time.RFC3339, servers[i].server.Metadata.LastUpdated)
-		timeJ, errJ := time.Parse(time.RFC3339, servers[j].server.Metadata.LastUpdated)
+		var lastUpdatedI, lastUpdatedJ string
+
+		// Handle nil metadata
+		if servers[i].server.Metadata != nil {
+			lastUpdatedI = servers[i].server.Metadata.LastUpdated
+		}
+		if servers[j].server.Metadata != nil {
+			lastUpdatedJ = servers[j].server.Metadata.LastUpdated
+		}
+
+		timeI, errI := time.Parse(time.RFC3339, lastUpdatedI)
+		timeJ, errJ := time.Parse(time.RFC3339, lastUpdatedJ)
 
 		// If we can't parse either time, put it at the beginning to ensure it gets updated
 		if errI != nil {
@@ -137,6 +147,11 @@ func updateServerInfo(name string, server *registry.Server) error {
 	if server.RepositoryURL == "" {
 		logger.Warnf("Server %s has no repository URL, skipping", name)
 		return nil
+	}
+
+	// Initialize metadata if it's nil
+	if server.Metadata == nil {
+		server.Metadata = &registry.Metadata{}
 	}
 
 	// Extract owner and repo from repository URL

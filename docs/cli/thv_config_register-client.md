@@ -6,9 +6,10 @@ Register a client for MCP server configuration
 
 Register a client for MCP server configuration.
 Valid clients are:
-  - roo-code: Roo Code extension for VS Code
-  - cursor: Cursor editor
   - claude-code: Claude Code CLI
+  - cline: Cline extension for VS Code
+  - cursor: Cursor editor
+  - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition
 

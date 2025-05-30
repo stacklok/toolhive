@@ -126,12 +126,19 @@ func printTextServers(servers []*registry.Server) {
 
 	// Print server information
 	for _, server := range servers {
+		stars := 0
+		pulls := 0
+		if server.Metadata != nil {
+			stars = server.Metadata.Stars
+			pulls = server.Metadata.Pulls
+		}
+
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n",
 			server.Name,
 			truncateString(server.Description, 60),
 			server.Transport,
-			server.Metadata.Stars,
-			server.Metadata.Pulls,
+			stars,
+			pulls,
 		)
 	}
 
@@ -152,8 +159,14 @@ func printTextServerInfo(name string, server *registry.Server) {
 		fmt.Printf("Target Port: %d\n", server.TargetPort)
 	}
 	fmt.Printf("Repository URL: %s\n", server.RepositoryURL)
-	fmt.Printf("Popularity: %d stars, %d pulls\n", server.Metadata.Stars, server.Metadata.Pulls)
-	fmt.Printf("Last Updated: %s\n", server.Metadata.LastUpdated)
+
+	if server.Metadata != nil {
+		fmt.Printf("Popularity: %d stars, %d pulls\n", server.Metadata.Stars, server.Metadata.Pulls)
+		fmt.Printf("Last Updated: %s\n", server.Metadata.LastUpdated)
+	} else {
+		fmt.Printf("Popularity: 0 stars, 0 pulls\n")
+		fmt.Printf("Last Updated: N/A\n")
+	}
 
 	// Print tools
 	if len(server.Tools) > 0 {

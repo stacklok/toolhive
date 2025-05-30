@@ -21,7 +21,7 @@ func NewFactory() *Factory {
 
 // Create creates a container runtime
 func (*Factory) Create(ctx context.Context) (runtime.Runtime, error) {
-	if !isKubernetesRuntime() {
+	if !IsKubernetesRuntime() {
 		client, err := docker.NewClient(ctx)
 		if err != nil {
 			return nil, err
@@ -42,8 +42,8 @@ func NewMonitor(rt runtime.Runtime, containerID, containerName string) runtime.M
 	return docker.NewMonitor(rt, containerID, containerName)
 }
 
-// isKubernetesRuntime returns true if the runtime is Kubernetes
+// IsKubernetesRuntime returns true if the runtime is Kubernetes
 // isn't the best way to do this, but for now it's good enough
-func isKubernetesRuntime() bool {
+func IsKubernetesRuntime() bool {
 	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
 }

@@ -78,8 +78,9 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json",
 		},
 		PlatformPrefix: map[string][]string{
-			"linux":  {".config"},
-			"darwin": {"Library", "Application Support"},
+			"linux":   {".config"},
+			"darwin":  {"Library", "Application Support"},
+			"windows": {"AppData", "Roaming"},
 		},
 		MCPServersPathPrefix: "/mcpServers",
 		Extension:            JSON,

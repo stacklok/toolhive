@@ -22,6 +22,12 @@ type MCPServerSpec struct {
 	// +kubebuilder:default=8080
 	Port int32 `json:"port,omitempty"`
 
+	// TargetPort is the port that MCP server listens to
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	TargetPort int32 `json:"targetPort,omitempty"`
+
 	// Args are additional arguments to pass to the MCP server
 	// +optional
 	Args []string `json:"args,omitempty"`

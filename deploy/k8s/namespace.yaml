@@ -1,8 +1,0 @@
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: toolhive-deployment
-  labels:
-    app: toolhive
-    app.kubernetes.io/name: toolhive

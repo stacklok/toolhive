@@ -4,13 +4,13 @@ tasks:
   kind-setup:
     desc: Setup a local Kind cluster
     cmds:
-      - kind create cluster --name kind
-      - kind get kubeconfig > kconfig.yaml
+      - kind create cluster --name toolhive
+      - kind get kubeconfig --name toolhive > kconfig.yaml
 
   kind-destroy:
     desc: Destroy a local Kind cluster
     cmds:
-      - kind delete cluster --name kind
+      - kind delete cluster --name toolhive
       - rm kconfig.yaml
 
   kind-ingress-setup:
@@ -97,9 +97,9 @@ tasks:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv | tail -n 1
     cmds:
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
-      - kind load docker-image {{.OPERATOR_IMAGE}}
+      - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
       - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."
-      - kind load docker-image {{.TOOLHIVE_IMAGE}}
+      - kind load docker-image --name toolhive {{.TOOLHIVE_IMAGE}}
       - |
         helm upgrade --install toolhive-operator deploy/charts/operator \
         --set operator.image={{.OPERATOR_IMAGE}} \

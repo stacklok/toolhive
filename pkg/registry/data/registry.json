@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-05-30 00:21:17",
+  "last_updated": "2025-05-31 00:20:42",
   "servers": {
     "atlassian": {
       "args": [],
@@ -78,9 +78,9 @@
       ],
       "image": "mcp/atlassian:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:15Z",
-        "pulls": 4819,
-        "stars": 1711
+        "last_updated": "2025-05-31T00:20:40Z",
+        "pulls": 4929,
+        "stars": 1725
       },
       "permissions": {
         "network": {
@@ -167,9 +167,9 @@
       ],
       "image": "mcp/aws-kb-retrieval-server:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:16Z",
-        "pulls": 2831,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:42Z",
+        "pulls": 2889,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -217,9 +217,9 @@
       ],
       "image": "mcp/brave-search:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:14Z",
-        "pulls": 6552,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:39Z",
+        "pulls": 6605,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -271,9 +271,9 @@
       ],
       "image": "mcp/everart:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:15Z",
-        "pulls": 5047,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:41Z",
+        "pulls": 5158,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -313,9 +313,9 @@
       "env_vars": [],
       "image": "mcp/everything:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:14Z",
-        "pulls": 6580,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:39Z",
+        "pulls": 6723,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -363,9 +363,9 @@
       "env_vars": [],
       "image": "mcp/fetch:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:15Z",
-        "pulls": 7134,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:41Z",
+        "pulls": 7206,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -409,9 +409,9 @@
       "env_vars": [],
       "image": "mcp/filesystem:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:13Z",
-        "pulls": 10180,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:38Z",
+        "pulls": 10323,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -507,9 +507,9 @@
       ],
       "image": "mcp/firecrawl:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:16Z",
-        "pulls": 4687,
-        "stars": 3241
+        "last_updated": "2025-05-31T00:20:41Z",
+        "pulls": 4796,
+        "stars": 3248
       },
       "permissions": {
         "network": {
@@ -571,9 +571,9 @@
       ],
       "image": "mcp/gdrive:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:16Z",
-        "pulls": 4560,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:41Z",
+        "pulls": 4651,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -616,9 +616,9 @@
       "env_vars": [],
       "image": "mcp/git:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:17Z",
-        "pulls": 5002,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:42Z",
+        "pulls": 5076,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -677,9 +677,9 @@
       ],
       "image": "ghcr.io/github/github-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:15Z",
+        "last_updated": "2025-05-31T00:20:40Z",
         "pulls": 5000,
-        "stars": 14603
+        "stars": 14667
       },
       "permissions": {
         "network": {
@@ -771,9 +771,9 @@
       ],
       "image": "mcp/gitlab:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:15Z",
-        "pulls": 4155,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:40Z",
+        "pulls": 4232,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -833,9 +833,9 @@
       ],
       "image": "mcp/google-maps:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:14Z",
-        "pulls": 3346,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:40Z",
+        "pulls": 3411,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -896,9 +896,9 @@
       ],
       "image": "grafana/grafana-oss:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:14Z",
-        "pulls": 3010,
-        "stars": 849
+        "last_updated": "2025-05-31T00:20:39Z",
+        "pulls": 3080,
+        "stars": 852
       },
       "permissions": {
         "network": {
@@ -981,9 +981,9 @@
       ],
       "image": "voska/hass-mcp:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:14Z",
-        "pulls": 6278,
-        "stars": 85
+        "last_updated": "2025-05-31T00:20:39Z",
+        "pulls": 6424,
+        "stars": 87
       },
       "permissions": {
         "network": {
@@ -1029,18 +1029,18 @@
     },
     "k8s": {
       "args": [],
-      "description": "MKP is a Model Context Protocol (MCP) server for Kubernetes that allows LLM-powered applications to interact with Kubernetes clusters.\nIt provides tools for listing and applying Kubernetes resources through the MCP protocol.\n\nWhen running this server, you need to provide Kubernetes credentials. You can do this in several ways:\n\n1. Mount your kubeconfig file using the volume flag:\n    --volume /path/to/your/kubeconfig:/home/nonroot/.kube/config:ro\n\n2. Set the KUBECONFIG environment variable:\n    --env KUBECONFIG=/path/in/container/to/kubeconfig\n\n3. For in-cluster configuration (when running inside Kubernetes):\n    No additional configuration needed if proper service account is configured.",
+      "description": "MKP is a Model Context Protocol (MCP) server for Kubernetes that allows LLM-powered applications to interact with Kubernetes clusters.",
       "env_vars": [
         {
-          "description": "Path to the kubeconfig file for Kubernetes API authentication",
+          "description": "Path to the kubeconfig file for Kubernetes API authentication (mounted into the container with --volume)",
           "name": "KUBECONFIG",
           "required": false
         }
       ],
       "image": "ghcr.io/stackloklabs/mkp/server:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:16Z",
-        "pulls": 4608,
+        "last_updated": "2025-05-31T00:20:42Z",
+        "pulls": 4736,
         "stars": 28
       },
       "permissions": {
@@ -1097,9 +1097,9 @@
       ],
       "image": "mcp/memory:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:13Z",
-        "pulls": 7459,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:38Z",
+        "pulls": 7574,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -1162,8 +1162,8 @@
       ],
       "image": "aantti/mcp-netbird:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:13Z",
-        "pulls": 4042,
+        "last_updated": "2025-05-31T00:20:38Z",
+        "pulls": 4136,
         "stars": 32
       },
       "permissions": {
@@ -1227,8 +1227,8 @@
       ],
       "image": "ghcr.io/stackloklabs/ocireg-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:13Z",
-        "pulls": 802,
+        "last_updated": "2025-05-31T00:20:38Z",
+        "pulls": 901,
         "stars": 2
       },
       "permissions": {
@@ -1282,8 +1282,8 @@
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/osv-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:13Z",
-        "pulls": 3456,
+        "last_updated": "2025-05-31T00:20:38Z",
+        "pulls": 3550,
         "stars": 4
       },
       "permissions": {
@@ -1343,9 +1343,9 @@
       ],
       "image": "mcp/perplexity-ask:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:15Z",
-        "pulls": 5888,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:40Z",
+        "pulls": 6012,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -1382,9 +1382,9 @@
       "env_vars": [],
       "image": "mcp/postgres:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:15Z",
-        "pulls": 9232,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:40Z",
+        "pulls": 9369,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -1434,9 +1434,9 @@
       ],
       "image": "mcp/puppeteer:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:17Z",
-        "pulls": 12843,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:42Z",
+        "pulls": 12979,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -1495,8 +1495,8 @@
       ],
       "image": "ashiknesin/pushover-mcp:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:13Z",
-        "pulls": 6106,
+        "last_updated": "2025-05-31T00:20:39Z",
+        "pulls": 6248,
         "stars": 18
       },
       "permissions": {
@@ -1541,9 +1541,9 @@
       "env_vars": [],
       "image": "mcp/redis:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:16Z",
-        "pulls": 4076,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:41Z",
+        "pulls": 4161,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -1591,9 +1591,9 @@
       ],
       "image": "ghcr.io/semgrep/mcp:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:13Z",
-        "pulls": 4515,
-        "stars": 168
+        "last_updated": "2025-05-31T00:20:38Z",
+        "pulls": 4620,
+        "stars": 169
       },
       "permissions": {
         "network": {
@@ -1650,9 +1650,9 @@
       ],
       "image": "mcp/sentry:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:16Z",
-        "pulls": 5843,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:41Z",
+        "pulls": 5970,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -1689,9 +1689,9 @@
       "env_vars": [],
       "image": "mcp/sequentialthinking:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:14Z",
-        "pulls": 8030,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:39Z",
+        "pulls": 8123,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -1746,9 +1746,9 @@
       ],
       "image": "mcp/slack:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:14Z",
-        "pulls": 3895,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:40Z",
+        "pulls": 3971,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -1796,13 +1796,13 @@
     },
     "sqlite": {
       "args": [],
-      "description": "MCP server with SQLite for SQL queries, data analysis, and auto-generated business insights.\n\n\n\n\n",
+      "description": "MCP server with SQLite for SQL queries, data analysis, and auto-generated business insights.",
       "env_vars": [],
       "image": "mcp/sqlite:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:14Z",
-        "pulls": 6738,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:40Z",
+        "pulls": 6846,
+        "stars": 50193
       },
       "permissions": {
         "network": {
@@ -1845,13 +1845,13 @@
     },
     "terraform": {
       "args": [],
-      "description": "MCP Server for providing seamless integration with Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.\n\n\n\n\n",
+      "description": "MCP Server for providing seamless integration with Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.",
       "env_vars": [],
       "image": "hashicorp/terraform-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:13Z",
-        "pulls": 256,
-        "stars": 512
+        "last_updated": "2025-05-31T00:20:39Z",
+        "pulls": 384,
+        "stars": 519
       },
       "permissions": {
         "network": {
@@ -1895,13 +1895,13 @@
     },
     "time": {
       "args": [],
-      "description": "MCP server for time info and IANA timezone conversions with auto system timezone detection.\n\n\n\n\n",
+      "description": "MCP server for time info and IANA timezone conversions with auto system timezone detection.",
       "env_vars": [],
       "image": "mcp/time:latest",
       "metadata": {
-        "last_updated": "2025-05-30T00:21:16Z",
-        "pulls": 5073,
-        "stars": 49922
+        "last_updated": "2025-05-31T00:20:42Z",
+        "pulls": 5154,
+        "stars": 50193
       },
       "permissions": {
         "network": {

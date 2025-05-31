@@ -29,7 +29,7 @@ You can perform Kind operations manually by following the sections below.
 To setup a Local Kind Cluster manually, run:
 
 ```bash
-$ kind create cluster --name kind
+kind create cluster --name kind
 ```
 
 #### Getting Kind Config
@@ -39,7 +39,7 @@ We recommend having a dedicated kubeconfig file to keep things isolated from you
 To do this, run:
 
 ```bash
-$ kind get kubeconfig > kconfig.yaml
+kind get kubeconfig > kconfig.yaml
 ```
 
 This will output the kind cluster config to a file called `kconfig.yaml` in the directory of which the command is ran in. This file is added to the `.gitignore` of this repository, so there is no worry about checking it in.
@@ -49,7 +49,7 @@ This will output the kind cluster config to a file called `kconfig.yaml` in the 
 To destroy a local Kind cluster, run:
 
 ```bash
-$ kind delete clusters kind
+kind delete clusters kind
 ```
 
 ### Automatic Setup: Setup & Destroy a Local Kind Cluster
@@ -61,7 +61,7 @@ To automate the creation/destruction of a local Kind cluster, we have added a Ta
 To setup a Local Kind Cluster using Task, run:
 
 ```bash
-$ task kind-setup
+task kind-setup
 ```
 
 This will create a single node Kind cluster and it will output the kubeconfig into the `kconfig.yaml` file. This file is added to the `.gitignore` of this repository, so there is no worry about checking it in.
@@ -71,7 +71,7 @@ This will create a single node Kind cluster and it will output the kubeconfig in
 To destroy a local Kind cluster using Task, run:
 
 ```bash
-$ task kind-destroy
+task kind-destroy
 ```
 
 This will destroy the Kind cluster, as well as removing the `kconfig.yaml` kubeconfig file.

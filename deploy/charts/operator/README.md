@@ -1,4 +1,3 @@
-
 # ToolHive Operator Helm Chart
 
 ![Version: 0.0.7](https://img.shields.io/badge/Version-0.0.7-informational?style=flat-square)
@@ -44,7 +43,7 @@ The command removes all the Kubernetes components associated with the chart and 
 ## Values
 
 | Key | Type | Default | Description |
-|-----|-------------|------|---------|
+|-----|------|---------|-------------|
 | fullnameOverride | string | `"toolhive-operator"` | Provide a fully-qualified name override for resources |
 | nameOverride | string | `""` | Override the name of the chart |
 | operator | object | `{"affinity":{},"autoscaling":{"enabled":false,"maxReplicas":100,"minReplicas":1,"targetCPUUtilizationPercentage":80},"containerSecurityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000},"env":{},"image":"ghcr.io/stacklok/toolhive/operator:v0.0.38","imagePullPolicy":"IfNotPresent","imagePullSecrets":[],"leaderElectionRole":{"binding":{"name":"toolhive-operator-leader-election-rolebinding"},"name":"toolhive-operator-leader-election-role","rules":[{"apiGroups":[""],"resources":["configmaps"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":[""],"resources":["events"],"verbs":["create","patch"]}]},"livenessProbe":{"httpGet":{"path":"/healthz","port":"health"},"initialDelaySeconds":15,"periodSeconds":20},"nodeSelector":{},"podAnnotations":{},"podLabels":{},"podSecurityContext":{"runAsNonRoot":true},"ports":[{"containerPort":8080,"name":"metrics","protocol":"TCP"},{"containerPort":8081,"name":"health","protocol":"TCP"}],"proxyHost":"0.0.0.0","readinessProbe":{"httpGet":{"path":"/readyz","port":"health"},"initialDelaySeconds":5,"periodSeconds":10},"replicaCount":1,"resources":{"limits":{"cpu":"500m","memory":"128Mi"},"requests":{"cpu":"10m","memory":"64Mi"}},"serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"create":true,"labels":{},"name":"toolhive-operator"},"tolerations":[],"toolhiveRunnerImage":"ghcr.io/stacklok/toolhive:v0.0.38","volumeMounts":[],"volumes":[]}` | All values for the operator deployment and associated resources |

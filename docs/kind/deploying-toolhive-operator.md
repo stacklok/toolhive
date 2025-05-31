@@ -62,10 +62,10 @@ Run:
 
 ```bash
 # If you want to install the latest built operator image from Github (recommended)
-$ task operator-deploy-latest
+task operator-deploy-latest
 
 # If you want to built the operator image locally and deploy it (only recommended if you're doing development around the Operator)
-$ task operator-deploy-local
+task operator-deploy-local
 ```
 
 ### Manually

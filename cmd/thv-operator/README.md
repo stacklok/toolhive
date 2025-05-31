@@ -76,8 +76,9 @@ apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
   name: github
+  namespace: toolhive-system
 spec:
-  image: docker.io/mcp/github
+  image: ghcr.io/github/github-mcp-server
   transport: stdio
   port: 8080
   permissionProfile:
@@ -92,7 +93,7 @@ spec:
 First, create the secret:
 
 ```bash
-kubectl create secret generic github-token --from-literal=token=your-token
+kubectl create secret generic github-token -n toolhive-system --from-literal=token=<YOUR_GITHUB_TOKEN>
 ```
 
 Then apply the MCPServer resource.
@@ -122,17 +123,18 @@ kubectl describe mcpserver <name>
 
 ### MCPServer Spec
 
-| Field | Description | Required | Default |
-|-------|-------------|----------|---------|
-| `image` | Container image for the MCP server | Yes | - |
-| `transport` | Transport method (stdio or sse) | No | stdio |
-| `port` | Port to expose the MCP server on | No | 8080 |
-| `args` | Additional arguments to pass to the MCP server | No | - |
-| `env` | Environment variables to set in the container | No | - |
-| `volumes` | Volumes to mount in the container | No | - |
-| `resources` | Resource requirements for the container | No | - |
-| `secrets` | References to secrets to mount in the container | No | - |
-| `permissionProfile` | Permission profile configuration | No | - |
+| Field               | Description                                     | Required | Default |
+|---------------------|-------------------------------------------------|----------|---------|
+| `image`             | Container image for the MCP server              | Yes      | -       |
+| `transport`         | Transport method (stdio or sse)                 | No       | stdio   |
+| `port`              | Port to expose the MCP server on                | No       | 8080    |
+| `targetPort`        | Port that MCP server listens to                 | No       | -       |
+| `args`              | Additional arguments to pass to the MCP server  | No       | -       |
+| `env`               | Environment variables to set in the container   | No       | -       |
+| `volumes`           | Volumes to mount in the container               | No       | -       |
+| `resources`         | Resource requirements for the container         | No       | -       |
+| `secrets`           | References to secrets to mount in the container | No       | -       |
+| `permissionProfile` | Permission profile configuration                | No       | -       |
 
 ### Permission Profiles
 

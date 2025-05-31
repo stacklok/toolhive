@@ -6,7 +6,8 @@ on:
   pull_request:
     paths:
       - 'cmd/thv-operator/**'
-      - 'deploy/operator/**'
+      - 'deploy/charts/operator/**'
+      - 'deploy/charts/operator-crds/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/operator-ci.yml'
@@ -104,10 +105,11 @@ jobs:
       - name: Check for changes
         id: git-check
         run: |
-          git diff --exit-code deploy/operator/crds || echo "changes=true" >> $GITHUB_OUTPUT
+          git diff --exit-code deploy/charts/operator-crds/templates || echo "crd-changes=true" >> $GITHUB_OUTPUT
+          git diff --exit-code deploy/charts/operator/templates || echo "operator-changes=true" >> $GITHUB_OUTPUT
 
       - name: Fail if CRDs are not up to date
-        if: steps.git-check.outputs.changes == 'true'
+        if: steps.git-check.outputs.crd-changes == 'true' || steps.git-check.outputs.operator-changes == 'true'
         run: |
           echo "CRDs are not up to date. Please run 'task operator-manifests' and commit the changes."
           exit 1

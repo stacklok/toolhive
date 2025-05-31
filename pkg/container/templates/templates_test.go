@@ -127,6 +127,42 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantErr:         false,
 		},
 		{
+			name:          "GO transport with local path",
+			transportType: TransportTypeGO,
+			data: TemplateData{
+				MCPPackage:  "./cmd/server",
+				MCPArgs:     []string{"--arg1", "value"},
+				IsLocalPath: true,
+			},
+			wantContains: []string{
+				"FROM golang:1.24-alpine",
+				"COPY . /app/",
+				"ENTRYPOINT [\"go\", \"run\", \"./cmd/server\", \"--arg1\", \"value\"]",
+			},
+			wantNotContains: []string{
+				"Add custom CA certificate",
+			},
+			wantErr: false,
+		},
+		{
+			name:          "GO transport with local path - current directory",
+			transportType: TransportTypeGO,
+			data: TemplateData{
+				MCPPackage:  ".",
+				MCPArgs:     []string{},
+				IsLocalPath: true,
+			},
+			wantContains: []string{
+				"FROM golang:1.24-alpine",
+				"COPY . /app/",
+				"ENTRYPOINT [\"go\", \"run\", \".\"]",
+			},
+			wantNotContains: []string{
+				"Add custom CA certificate",
+			},
+			wantErr: false,
+		},
+		{
 			name:          "Unsupported transport",
 			transportType: "unsupported",
 			data: TemplateData{

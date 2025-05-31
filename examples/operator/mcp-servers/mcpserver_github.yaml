@@ -4,7 +4,7 @@ metadata:
   name: github
   namespace: toolhive-system
 spec:
-  image: docker.io/mcp/github
+  image: ghcr.io/github/github-mcp-server
   transport: stdio
   port: 8080
   permissionProfile:
@@ -12,7 +12,8 @@ spec:
     name: network
   secrets:
     - name: github-token
-      key: GITHUB_PERSONAL_ACCESS_TOKEN
+      token: token
+      targetEnvName: GITHUB_PERSONAL_ACCESS_TOKEN
   env:
     - name: GITHUB_API_URL
       value: https://api.github.com

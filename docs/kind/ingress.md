@@ -21,8 +21,8 @@ There are [known issues](https://github.com/kubernetes/ingress-nginx/issues/5968
 To fix these inconsistencies run:
 
 ```bash
-$ CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}')
-$ kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]'
+CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}')
+kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]'
 ```
 
 We should now be able to confirm that the Nginx Ingress Controller is running and healthy by running:

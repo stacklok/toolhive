@@ -1029,10 +1029,10 @@
     },
     "k8s": {
       "args": [],
-      "description": "MKP is a Model Context Protocol (MCP) server for Kubernetes that allows LLM-powered applications to interact with Kubernetes clusters.\nIt provides tools for listing and applying Kubernetes resources through the MCP protocol.\n\nWhen running this server, you need to provide Kubernetes credentials. You can do this in several ways:\n\n1. Mount your kubeconfig file using the volume flag:\n    --volume /path/to/your/kubeconfig:/home/nonroot/.kube/config:ro\n\n2. Set the KUBECONFIG environment variable:\n    --env KUBECONFIG=/path/in/container/to/kubeconfig\n\n3. For in-cluster configuration (when running inside Kubernetes):\n    No additional configuration needed if proper service account is configured.",
+      "description": "MKP is a Model Context Protocol (MCP) server for Kubernetes that allows LLM-powered applications to interact with Kubernetes clusters.",
       "env_vars": [
         {
-          "description": "Path to the kubeconfig file for Kubernetes API authentication",
+          "description": "Path to the kubeconfig file for Kubernetes API authentication (mounted into the container with --volume)",
           "name": "KUBECONFIG",
           "required": false
         }
@@ -1796,7 +1796,7 @@
     },
     "sqlite": {
       "args": [],
-      "description": "MCP server with SQLite for SQL queries, data analysis, and auto-generated business insights.\n\n\n\n\n",
+      "description": "MCP server with SQLite for SQL queries, data analysis, and auto-generated business insights.",
       "env_vars": [],
       "image": "mcp/sqlite:latest",
       "metadata": {
@@ -1845,7 +1845,7 @@
     },
     "terraform": {
       "args": [],
-      "description": "MCP Server for providing seamless integration with Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.\n\n\n\n\n",
+      "description": "MCP Server for providing seamless integration with Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.",
       "env_vars": [],
       "image": "hashicorp/terraform-mcp-server:latest",
       "metadata": {
@@ -1895,7 +1895,7 @@
     },
     "time": {
       "args": [],
-      "description": "MCP server for time info and IANA timezone conversions with auto system timezone detection.\n\n\n\n\n",
+      "description": "MCP server for time info and IANA timezone conversions with auto system timezone detection.",
       "env_vars": [],
       "image": "mcp/time:latest",
       "metadata": {

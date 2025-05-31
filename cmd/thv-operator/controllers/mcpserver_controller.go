@@ -47,8 +47,8 @@ type MCPServerReconciler struct {
 // Allow the operator read manage Pods
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 
-// Allow the operator read manage ConfigMaps
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// Allow the operator to manage ConfigMaps (including telemetry data)
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
 
 // Allow the operator read manage Secrets
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch

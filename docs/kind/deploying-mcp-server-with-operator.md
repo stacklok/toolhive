@@ -18,3 +18,10 @@ You should now be able to see the MCP server pods being created/running:
 ```bash
 kubectl get pods -n toolhive-system
 ```
+
+## Accessing MCP Server
+
+Depending on how you want to access the created MCP server, you can follow the relevant guides:
+
+- [Access via Ingress](./ingress.md)
+- [Access via Port-Forward](./ingress-port-forward.md)

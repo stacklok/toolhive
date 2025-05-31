@@ -8193,6 +8193,12 @@ spec:
                   - name
                   type: object
                 type: array
+              targetPort:
+                description: TargetPort is the port that MCP server listens to
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
               transport:
                 default: stdio
                 description: Transport is the transport method for the MCP server

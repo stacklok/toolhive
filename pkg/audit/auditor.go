@@ -196,10 +196,16 @@ func (*Auditor) mapMCPMethodToEventType(mcpMethod string) string {
 }
 
 // extractMCPMethod extracts the MCP method from the request body.
+// TODO: Implement actual JSON-RPC message parsing to extract method names.
+// See issue #552 for implementation details.
 func (*Auditor) extractMCPMethod(_ *http.Request) string {
-	// This is a simplified implementation
-	// In a real implementation, you might want to parse the JSON-RPC message
-	// For now, we'll return empty string and rely on path-based detection
+	// This is a simplified implementation that always returns empty
+	// In a real implementation, we need to:
+	// 1. Read and parse the JSON-RPC request body
+	// 2. Extract the "method" field from the JSON-RPC message
+	// 3. Handle both single messages and batch requests
+	// 4. Restore the request body for downstream handlers
+	// For now, we rely on path-based detection only
 	return ""
 }
 

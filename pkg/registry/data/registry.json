@@ -1478,63 +1478,6 @@
       ],
       "transport": "stdio"
     },
-    "pushover": {
-      "args": [],
-      "description": "A Model Context Protocol implementation for sending notifications via Pushover.net, enabling AI agents to send customizable push notifications to devices.",
-      "env_vars": [
-        {
-          "description": "Application token from Pushover.net",
-          "name": "PUSHOVER_TOKEN",
-          "required": true
-        },
-        {
-          "description": "User key from Pushover.net",
-          "name": "PUSHOVER_USER",
-          "required": true
-        }
-      ],
-      "image": "ashiknesin/pushover-mcp:latest",
-      "metadata": {
-        "last_updated": "2025-06-02T00:22:25Z",
-        "pulls": 6532,
-        "stars": 18
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [
-              "api.pushover.net"
-            ],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
-            "insecure_allow_all": false
-          }
-        },
-        "read": [],
-        "write": []
-      },
-      "repository_url": "https://github.com/ashiknesin/pushover-mcp",
-      "tags": [
-        "notifications",
-        "push-notifications",
-        "pushover",
-        "alerts",
-        "messaging",
-        "mobile",
-        "devices",
-        "communication",
-        "real-time",
-        "monitoring"
-      ],
-      "tools": [
-        "send"
-      ],
-      "transport": "stdio"
-    },
     "redis": {
       "args": [],
       "description": "A Model Context Protocol server that provides access to Redis databases. This server enables LLMs to interact with Redis key-value stores through a set of standardized tools.",

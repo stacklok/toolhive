@@ -68,6 +68,22 @@ func (r *Runner) Run(ctx context.Context) error {
 		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
 	}
 
+	// Add audit middleware if audit configuration is provided
+	if r.Config.AuditConfig != nil {
+		logger.Info("Audit logging enabled for transport")
+
+		// Set the component name if not already set
+		if r.Config.AuditConfig.Component == "" {
+			r.Config.AuditConfig.Component = r.Config.ContainerName
+		}
+
+		// Get the middleware from the configuration
+		middleware := r.Config.AuditConfig.CreateMiddleware()
+
+		// Add audit middleware to transport config
+		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
+	}
+
 	transportHandler, err := transport.NewFactory().Create(transportConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create transport: %v", err)

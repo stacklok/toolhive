@@ -522,6 +522,8 @@ golang.org/x/exp/event v0.0.0-20220217172124-1812c5b45e43 h1:Yn6OLQDombmcne/0Jf2
 golang.org/x/exp/event v0.0.0-20220217172124-1812c5b45e43/go.mod h1:AVlZHjhWbW/3yOcmKMtJiObwBPJajBlUpQXRijFNrNc=
 golang.org/x/exp/jsonrpc2 v0.0.0-20250305212735-054e65f0b394 h1:nGndmxp2Ri3USfp05j5mZ/iCdw11x9mKxm7td+min00=
 golang.org/x/exp/jsonrpc2 v0.0.0-20250305212735-054e65f0b394/go.mod h1:nPUl66QnKRf99UZqZolP9+aV0hDQ39vdswdEZj6OKZA=
+golang.org/x/exp/jsonrpc2 v0.0.0-20250531010427-b6e5de432a8b h1:fykv2LQFPSXU3HdV+evEn4IOntG4oaqVi5T4nXCiv2Q=
+golang.org/x/exp/jsonrpc2 v0.0.0-20250531010427-b6e5de432a8b/go.mod h1:nPUl66QnKRf99UZqZolP9+aV0hDQ39vdswdEZj6OKZA=
 golang.org/x/mod v0.2.0/go.mod h1:s0Qsj1ACt9ePp/hMypM3fl4fZqREWJwdYDEqhRiZZUA=
 golang.org/x/mod v0.3.0/go.mod h1:s0Qsj1ACt9ePp/hMypM3fl4fZqREWJwdYDEqhRiZZUA=
 golang.org/x/mod v0.24.0 h1:ZfthKaKaT4NrhGVZHO1/WDTwGES4De8KtWO0SIbNJMU=

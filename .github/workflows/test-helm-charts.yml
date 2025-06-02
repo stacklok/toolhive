@@ -20,7 +20,7 @@ jobs:
         with:
           version: v3.10.0
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # pin@v5
+      - uses: actions/setup-python@5db1cf9a59fb97c40a68accab29236f0da7e94db # pin@v5
         with:
           python-version: 3.12
 

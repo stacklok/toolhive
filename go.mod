@@ -12,7 +12,7 @@ require (
 	github.com/gofrs/flock v0.12.1
 	github.com/google/go-containerregistry v0.20.5
 	github.com/google/uuid v1.6.0
-	github.com/lestrrat-go/jwx/v2 v2.1.6
+	github.com/lestrrat-go/jwx/v3 v3.0.1
 	github.com/lestrrat-go/jwx/v3 v3.0.1
 	github.com/lmittmann/tint v1.1.1
 	github.com/mark3labs/mcp-go v0.31.0

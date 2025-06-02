@@ -13,6 +13,43 @@ The operator introduces a new Custom Resource Definition (CRD) called `MCPServer
 3. Configures the appropriate permissions and settings
 4. Manages the lifecycle of the MCP server
 
+```mermaid
+---
+config:
+  theme: dark
+  look: classic
+  layout: dagre
+---
+flowchart LR
+ subgraph Kubernetes
+   direction LR
+    namespace
+    User1["Client"]
+ end
+ subgraph namespace[namespace: toolhive-system]
+    operator["POD: Operator"]
+    sse
+    stdio
+ end
+
+ subgraph sse[SSE MCP Server Components]
+    operator -- creates --> THVProxySSE[POD: ToolHive-Proxy] & TPSSSE[SVC: ToolHive-Proxy]
+    THVProxySSE -- creates --> MCPServerSSE[POD: MCPServer] & MCPHeadlessSSE[SVC: MCPServer-HeadlessService]
+    User1 -- HTTP/SSE --> TPSSSE
+    TPSSSE -- HTTP/SSE --> THVProxySSE
+    THVProxySSE -- HTTP/SSE --> MCPHeadlessSSE
+    MCPHeadlessSSE -- HTTP/SSE --> MCPServerSSE
+ end
+
+ subgraph stdio[STDIO MCP Server Components]
+    operator -- creates --> THVProxySTDIO[POD: ToolHive-Proxy] & TPSSTDIO[SVC: ToolHive-Proxy]
+    THVProxySTDIO -- creates --> MCPServerSTDIO[POD: MCPServer]
+    User1 -- HTTP/SSE --> TPSSTDIO
+    TPSSTDIO -- HTTP/SSE --> THVProxySTDIO
+    THVProxySTDIO -- Attaches/STDIO --> MCPServerSTDIO
+ end
+```
+
 ## Installation
 
 ### Prerequisites

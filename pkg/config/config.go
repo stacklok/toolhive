@@ -26,6 +26,7 @@ const lockTimeout = 1 * time.Second
 type Config struct {
 	Secrets           Secrets `yaml:"secrets"`
 	Clients           Clients `yaml:"clients"`
+	Groups            []Group `yaml:"groups"`
 	RegistryUrl       string  `yaml:"registry_url"`
 	CACertificatePath string  `yaml:"ca_certificate_path,omitempty"`
 }
@@ -53,6 +54,11 @@ func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 type Clients struct {
 	AutoDiscovery     bool     `yaml:"auto_discovery"`
 	RegisteredClients []string `yaml:"registered_clients"`
+}
+
+// Group represents a group of MCP servers.
+type Group struct {
+	Name string `yaml:"name"`
 }
 
 // defaultPathGenerator generates the default config path using xdg

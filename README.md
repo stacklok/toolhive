@@ -295,6 +295,16 @@ server you'd like to see included, feel free to
 [open an issue](https://github.com/stacklok/toolhive/issues) or submit a pull
 request to update the [registry.json](pkg/registry/data/registry.json) file.
 
+#### Registry curation
+
+Our registry curation process uses a set of heuristics to evaluate MCP servers for quality,
+security, and compatibility before inclusion. We prioritize servers that demonstrate good
+documentation, active maintenance, and follow security best practices.
+
+For detailed information about our curation process, see:
+- [Registry Heuristics](./docs/registry/heuristics.md)
+- [Registry Management](./docs/registry/management.md)
+
 ### Manage MCP servers
 
 To list the running MCP servers:

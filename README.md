@@ -436,7 +436,7 @@ thv run uvx://awslabs.core-mcp-server@latest
 Or to run a Node.js-based MCP server:
 
 ```bash
-thv run npx://pulumi/mcp-server@latest
+thv run npx://@pulumi/mcp-server@latest
 ```
 
 Or to run a Go-based MCP server:

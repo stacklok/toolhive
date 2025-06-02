@@ -3,5 +3,6 @@
   "extends": [
     "config:recommended",
     "helpers:pinGitHubActionDigests"
-  ]
+  ],
+  "labels": ["dependencies"]
 }

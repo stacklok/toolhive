@@ -5,6 +5,7 @@ The [ToolHive Kubernetes Operator](../../cmd/thv-operator/README.md) manages MCP
 ## Prerequisites
 
 - Kind cluster with the [ToolHive Operator installed](./deploying-toolhive-operator.md)
+- kubectl installed
 
 ## Deploy MCP Server
 

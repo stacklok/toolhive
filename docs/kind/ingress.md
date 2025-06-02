@@ -1,16 +1,28 @@
-## Setting up Ingress in a Local Kind Cluster
+# Setting up Ingress in a Local Kind Cluster
 
 This document walks through setting up Ingress in a local Kind cluster. There are many examples of how to do this online but the intention of this document is so that when writing future ToolHive content, we can refer back to this guide when needing to setup Ingress in a local Kind cluster without polluting future content with the additional steps.
 
-### Prerequisites
+## Prerequisites
 
 - A [kind](https://kind.sigs.k8s.io/) cluster running locally. Follow our [Setup a Local Kind Cluster](./setup-kind-cluster.md) to do this.
 - Optional: [Task](https://taskfile.dev/installation/) to run automated steps with a cloned copy of the ToolHive repository
   (`git clone https://github.com/stacklok/toolhive`)
 
-### Install Nginx Ingress Controller
+## TL;DR
 
-To install the Nginx Ingress Controller, run the following:
+We have also automated the installation of the Nginx Ingress Controller using a Task.
+
+To use, run:
+
+```bash
+task kind-ingress-setup
+```
+
+It will install the Nginx Ingress Controller and fix the secret inconsistencies. It does nothing with the `cloud-provider-kind` Load Balancer, so you will still need to run that yourself. But by the end of the task run, the controller will be waiting for an assigned IP.
+
+## Manual Install of Nginx Ingress Controller
+
+To install the Nginx Ingress Controller manually, run the following:
 
 ```bash
 kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml
@@ -57,7 +69,7 @@ To confirm that it has provided an IP address, you should now see an IP returned
 kubectl get svc/ingress-nginx-controller -n ingress-nginx -o=jsonpath='{.status.loadBalancer.ingress[0].ip}'
 ```
 
-### Test Nginx Ingress Controller and Kind Load Balancer Setup
+## Test Nginx Ingress Controller and Kind Load Balancer Setup
 
 After following the two previous sections, we should now be able to confirm if we can connect to the Ingress Controller with our local terminal. Inside of a local terminal run:
 
@@ -99,7 +111,7 @@ spec:
               number: 8080
 ```
 
-### Ingress with a Local Hostname
+## Ingress with a Local Hostname
 
 If you prefer to use a friendly hostname instead of an IP address, modify your `/etc/hosts` file to include a mapping for the load balancer IP.
 
@@ -120,15 +132,3 @@ Content-Type: text/html
 Content-Length: 0
 Connection: keep-alive
 ```
-
-### Optional: Setup Ingress with Task
-
-We have also automated the installation of the Nginx Ingress Controller using a Task. 
-
-To use, run:
-
-```bash
-task kind-ingress-setup
-```
-
-It will install the Nginx Ingress Controller and fix the secret inconsistencies. It does nothing with the `cloud-provider-kind` Load Balancer, so you will still need to run that yourself. But by the end of the task run, the controller will be waiting for an assigned IP.

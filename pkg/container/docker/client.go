@@ -13,7 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types"
+	"github.com/containerd/errdefs"
+	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	dockerimage "github.com/docker/docker/api/types/image"
@@ -391,7 +392,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 	})
 	if err != nil {
 		// If the workload doesn't exist, that's fine - it's already removed
-		if client.IsErrNotFound(err) {
+		if errdefs.IsNotFound(err) {
 			return nil
 		}
 		return NewContainerError(err, workloadID, fmt.Sprintf("failed to remove workload: %v", err))
@@ -438,7 +439,7 @@ func (c *Client) IsWorkloadRunning(ctx context.Context, workloadID string) (bool
 	info, err := c.client.ContainerInspect(ctx, workloadID)
 	if err != nil {
 		// Check if the error is because the workload doesn't exist
-		if client.IsErrNotFound(err) {
+		if errdefs.IsNotFound(err) {
 			return false, NewContainerError(ErrContainerNotFound, workloadID, "workload not found")
 		}
 		return false, NewContainerError(err, workloadID, fmt.Sprintf("failed to inspect workload: %v", err))
@@ -453,7 +454,7 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtim
 	info, err := c.client.ContainerInspect(ctx, workloadID)
 	if err != nil {
 		// Check if the error is because the workload doesn't exist
-		if client.IsErrNotFound(err) {
+		if errdefs.IsNotFound(err) {
 			return runtime.ContainerInfo{}, NewContainerError(ErrContainerNotFound, workloadID, "workload not found")
 		}
 		return runtime.ContainerInfo{}, NewContainerError(err, workloadID, fmt.Sprintf("failed to inspect workload: %v", err))
@@ -641,7 +642,7 @@ func (c *Client) BuildImage(ctx context.Context, contextDir, imageName string) e
 	}
 
 	// Build the image
-	buildOptions := types.ImageBuildOptions{
+	buildOptions := build.ImageBuildOptions{
 		Tags:       []string{imageName},
 		Dockerfile: "Dockerfile",
 		Remove:     true,

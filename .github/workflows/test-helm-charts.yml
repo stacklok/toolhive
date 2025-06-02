@@ -16,7 +16,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Helm
-        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # pin@v4.3.0
+        uses: azure/setup-helm@5b950139b732971f3c4338f6d8bdc2015a47661c # pin@v4.3.0
         with:
           version: v3.10.0
 

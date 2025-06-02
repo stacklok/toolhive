@@ -31,11 +31,11 @@ task kind-destroy
 
 This will destroy the Kind cluster, as well as removing the `kconfig.yaml` kubeconfig file.
 
-### Manual Setup: Setup & Destroy a Local Kind Cluster
+## Manual Setup: Setup & Destroy a Local Kind Cluster
 
 You can perform Kind operations manually by following the sections below.
 
-#### Setup
+### Setup
 
 To setup a Local Kind Cluster manually, run:
 
@@ -43,7 +43,7 @@ To setup a Local Kind Cluster manually, run:
 kind create cluster --name toolhive
 ```
 
-#### Getting Kind Config
+### Getting Kind Config
 
 We recommend having a dedicated kubeconfig file to keep things isolated from your other cluster configs (even though Kind adds it to `~/.kube/config` automatically).
 
@@ -55,7 +55,7 @@ kind get kubeconfig --name toolhive > kconfig.yaml
 
 This will output the kind cluster config to a file called `kconfig.yaml` in the directory of which the command is ran in. This file is added to the `.gitignore` of this repository, so there is no worry about checking it in.
 
-#### Destroy
+### Destroy
 
 To destroy a local Kind cluster, run:
 

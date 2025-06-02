@@ -9,7 +9,7 @@ This document defines the criteria for including MCP (Model Context Protocol) se
 ### Open Source Requirements
 - Must be fully open source with no exceptions
 - Source code must be publicly accessible
-- Must use permissive licenses (Apache, MIT, BSD, etc.)
+- Must use an acceptable open source license (see [Acceptable Licenses](#acceptable-licenses) below)
 
 ### Security
 - Software provenance verification (Sigstore, GitHub Attestations)
@@ -105,3 +105,18 @@ This document defines the criteria for including MCP (Model Context Protocol) se
 - "Verified" vs "Experimental/Community" designations
 - Minimum threshold requirements (stars, maintainers, community indicators)
 - Regular re-evaluation frequency for automated checks
+
+## Acceptable Licenses
+
+The following open source licenses are accepted for MCP servers in the ToolHive registry:
+
+### Permissive Licenses
+Licenses such as Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause allow maximum flexibility
+for integration, modification, and redistribution with minimal restrictions,
+making MCP servers accessible across all project types and commercial applications.
+
+### Excluded Licenses
+
+Copyleft and restrictive licenses such as AGPL, GPL2 and 3 are excluded to ensure MCP servers can be
+freely integrated into various commercial and open source projects without legal
+complications or viral licensing requirements.

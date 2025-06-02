@@ -27,4 +27,4 @@ jobs:
         run: go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
 
       - name: Run pre-commit
-        uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # pin@v3.0.1
+        uses: pre-commit/action@576ff52938d158a24ac7e009dfa94b1455e7df99 # pin@v3.0.1

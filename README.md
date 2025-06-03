@@ -544,9 +544,9 @@ Have an MCP server in mind? We'll be happy to add it to our registry!
 
 Follow these steps to submit your MCP server for inclusion:
 
-1**Submit a request**: [Open a registry submission issue](https://github.com/stacklok/toolhive/issues/new?template=add-an-mcp-server.md) using our template
-2**Review process**: Our team will evaluate your submission based on security, quality, and community value (see [Registry Heuristics](./docs/registry/heuristics.md) for details)
-3**Approval**: Once approved, your server will be added to the registry!
+1. **Submit a request**: [Open a registry submission issue](https://github.com/stacklok/toolhive/issues/new?template=add-an-mcp-server.md) using our template
+2. **Review process**: Our team will evaluate your submission based on security, quality, and community value (see [Registry Heuristics](./docs/registry/heuristics.md) for details)
+3. **Approval**: Once approved, your server will be added to the registry!
 
 ## API Documentation
 

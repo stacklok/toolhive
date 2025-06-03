@@ -17,52 +17,52 @@ var log Logger
 
 // Debug logs a message at debug level using the singleton logger.
 func Debug(msg string, args ...any) {
-	log.Debug(msg, args)
+	log.Debug(msg, args...)
 }
 
 // Debugf logs a message at debug level using the singleton logger.
 func Debugf(msg string, args ...any) {
-	log.Debugf(msg, args)
+	log.Debugf(msg, args...)
 }
 
 // Info logs a message at info level using the singleton logger.
 func Info(msg string, args ...any) {
-	log.Info(msg, args)
+	log.Info(msg, args...)
 }
 
 // Infof logs a message at info level using the singleton logger.
 func Infof(msg string, args ...any) {
-	log.Infof(msg, args)
+	log.Infof(msg, args...)
 }
 
 // Warn logs a message at warning level using the singleton logger.
 func Warn(msg string, args ...any) {
-	log.Warn(msg, args)
+	log.Warn(msg, args...)
 }
 
 // Warnf logs a message at warning level using the singleton logger.
 func Warnf(msg string, args ...any) {
-	log.Warnf(msg, args)
+	log.Warnf(msg, args...)
 }
 
 // Error logs a message at error level using the singleton logger.
 func Error(msg string, args ...any) {
-	log.Error(msg, args)
+	log.Error(msg, args...)
 }
 
 // Errorf logs a message at error level using the singleton logger.
 func Errorf(msg string, args ...any) {
-	log.Errorf(msg, args)
+	log.Errorf(msg, args...)
 }
 
 // Panic logs a message at error level using the singleton logger and panics the program.
 func Panic(msg string, args ...any) {
-	log.Panic(msg, args)
+	log.Panic(msg, args...)
 }
 
 // Panicf logs a message at error level using the singleton logger and panics the program.
 func Panicf(msg string, args ...any) {
-	log.Panicf(msg, args)
+	log.Panicf(msg, args...)
 }
 
 // Logger provides a unified interface for logging

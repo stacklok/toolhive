@@ -12,6 +12,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/mcp"
 )
 
 // Auditor handles audit logging for HTTP requests.
@@ -137,30 +138,26 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 
 // determineEventType determines the event type based on the HTTP request.
 func (a *Auditor) determineEventType(r *http.Request) string {
-	path := r.URL.Path
-	method := r.Method
-
-	// Handle MCP-specific endpoints
-	if strings.Contains(path, "/sse") {
-		return EventTypeMCPInitialize // SSE connection establishment
+	// First, try to get the parsed MCP method from context
+	if mcpMethod := mcp.GetMCPMethod(r.Context()); mcpMethod != "" {
+		return a.mapMCPMethodToEventType(mcpMethod)
 	}
 
-	if strings.Contains(path, "/messages") && method == "POST" {
-		return a.determineMCPEventType(r)
+	// Fall back to path-based detection for non-MCP requests
+	path := r.URL.Path
+
+	// Handle SSE connection establishment
+	if strings.Contains(path, "/sse") {
+		return EventTypeMCPInitialize
+	}
+
+	// Handle MCP message endpoints that weren't parsed (malformed requests)
+	if strings.Contains(path, "/messages") && r.Method == "POST" {
+		return EventTypeMCPRequest
 	}
 
 	// Default for non-MCP requests
 	return EventTypeHTTPRequest
-}
-
-// determineMCPEventType determines the specific MCP event type from the request.
-func (a *Auditor) determineMCPEventType(r *http.Request) string {
-	// Try to parse the MCP message to determine the specific operation
-	if mcpMethod := a.extractMCPMethod(r); mcpMethod != "" {
-		return a.mapMCPMethodToEventType(mcpMethod)
-	}
-	// Default for unrecognized MCP messages
-	return EventTypeMCPRequest
 }
 
 // mapMCPMethodToEventType maps MCP method names to event types.
@@ -193,20 +190,6 @@ func (*Auditor) mapMCPMethodToEventType(mcpMethod string) string {
 	default:
 		return EventTypeMCPRequest
 	}
-}
-
-// extractMCPMethod extracts the MCP method from the request body.
-// TODO: Implement actual JSON-RPC message parsing to extract method names.
-// See issue #552 for implementation details.
-func (*Auditor) extractMCPMethod(_ *http.Request) string {
-	// This is a simplified implementation that always returns empty
-	// In a real implementation, we need to:
-	// 1. Read and parse the JSON-RPC request body
-	// 2. Extract the "method" field from the JSON-RPC message
-	// 3. Handle both single messages and batch requests
-	// 4. Restore the request body for downstream handlers
-	// For now, we rely on path-based detection only
-	return ""
 }
 
 // determineOutcome determines the outcome based on the HTTP status code.
@@ -325,6 +308,16 @@ func (*Auditor) extractTarget(r *http.Request, eventType string) map[string]stri
 
 	target[TargetKeyEndpoint] = r.URL.Path
 	target[TargetKeyMethod] = r.Method
+
+	// Add MCP method if available from parsed data
+	if mcpMethod := mcp.GetMCPMethod(r.Context()); mcpMethod != "" {
+		target[TargetKeyMethod] = mcpMethod
+	}
+
+	// Add resource ID if available from parsed data
+	if resourceID := mcp.GetMCPResourceID(r.Context()); resourceID != "" {
+		target[TargetKeyName] = resourceID
+	}
 
 	// Add event-specific target information
 	switch eventType {

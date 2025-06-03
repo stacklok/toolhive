@@ -40,6 +40,7 @@ consistency, and security.
   - [Run MCP servers using protocol schemes](#run-mcp-servers-using-protocol-schemes)
 - [Advanced usage](#advanced-usage)
   - [Customize permissions](#customize-permissions)
+  - [Security and middleware architecture](#security-and-middleware-architecture)
   - [Run ToolHive in Kubernetes](#run-toolhive-in-kubernetes)
 - [Add an MCP server to the registry](#add-an-mcp-server-to-the-registry)
 - [API Documentation](#api-documentation)
@@ -524,6 +525,14 @@ Two built-in profiles are included for convenience:
 - `none`: Grants minimal permissions with no network access.
 - `network`: Permits outbound network connections to any host on any port (not
   recommended for production use).
+
+### Security and middleware architecture
+
+ToolHive uses a layered middleware architecture to provide authentication, authorization, and auditing capabilities for MCP servers. The middleware chain ensures secure request processing and comprehensive observability.
+
+For detailed information about the middleware architecture, including request flow diagrams and configuration options, see the [Middleware Architecture](./docs/middleware.md) documentation.
+
+For authorization-specific configuration and Cedar policy examples, see the [Authorization Framework](./docs/authz.md) documentation.
 
 ### Run ToolHive in Kubernetes
 

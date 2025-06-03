@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -170,8 +171,8 @@ func TestCreateMiddleware(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Apply the middleware to the test handler
-	handler := middleware(testHandler)
+	// Apply the middleware chain: MCP parsing first, then authorization
+	handler := mcpparser.ParsingMiddleware(middleware(testHandler))
 	require.NotNil(t, handler, "Handler is nil")
 
 	// Create a test request with a valid JSON-RPC message
@@ -184,7 +185,7 @@ func TestCreateMiddleware(t *testing.T) {
 	jsonRPCMessageBytes, err := json.Marshal(jsonRPCMessage)
 	require.NoError(t, err, "Failed to marshal JSON-RPC message")
 
-	req, err := http.NewRequest(http.MethodPost, "/", bytes.NewBuffer(jsonRPCMessageBytes))
+	req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBuffer(jsonRPCMessageBytes))
 	require.NoError(t, err, "Failed to create request")
 	req.Header.Set("Content-Type", "application/json")
 

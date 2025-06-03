@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -53,6 +54,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
 	transportConfig.Middlewares = append(transportConfig.Middlewares, authMiddleware)
+
+	// Add MCP parsing middleware after authentication
+	logger.Info("MCP parsing middleware enabled for transport")
+	transportConfig.Middlewares = append(transportConfig.Middlewares, mcp.ParsingMiddleware)
 
 	// Add authorization middleware if authorization configuration is provided
 	if r.Config.AuthzConfig != nil {

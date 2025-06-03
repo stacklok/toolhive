@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/runner/state"
+	"github.com/stacklok/toolhive/pkg/state"
 )
 
 // DefaultAppName is the default application name used for state storage
@@ -15,7 +15,7 @@ const DefaultAppName = "toolhive"
 // SaveState saves the runner configuration to the state store
 func (r *Runner) SaveState(ctx context.Context) error {
 	// Create a state store
-	store, err := state.NewStore(DefaultAppName)
+	store, err := state.NewRunConfigStore(DefaultAppName)
 	if err != nil {
 		return fmt.Errorf("failed to create state store: %w", err)
 	}
@@ -40,7 +40,7 @@ func (r *Runner) SaveState(ctx context.Context) error {
 // This is a static method that returns a new Runner instance
 func LoadState(ctx context.Context, name string) (*Runner, error) {
 	// Create a state store
-	store, err := state.NewStore(DefaultAppName)
+	store, err := state.NewRunConfigStore(DefaultAppName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create state store: %w", err)
 	}
@@ -74,7 +74,7 @@ func LoadState(ctx context.Context, name string) (*Runner, error) {
 // ListSavedConfigs lists all saved run configurations
 func ListSavedConfigs(ctx context.Context) ([]string, error) {
 	// Create a state store
-	store, err := state.NewStore(DefaultAppName)
+	store, err := state.NewRunConfigStore(DefaultAppName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create state store: %w", err)
 	}
@@ -86,7 +86,7 @@ func ListSavedConfigs(ctx context.Context) ([]string, error) {
 // DeleteSavedConfig deletes a saved run configuration
 func DeleteSavedConfig(ctx context.Context, name string) error {
 	// Create a state store
-	store, err := state.NewStore(DefaultAppName)
+	store, err := state.NewRunConfigStore(DefaultAppName)
 	if err != nil {
 		return fmt.Errorf("failed to create state store: %w", err)
 	}

@@ -58,6 +58,32 @@ type MCPServerSpec struct {
 	// the `mcp` container name in the PodTemplateSpec.
 	// +optional
 	PodTemplateSpec *corev1.PodTemplateSpec `json:"podTemplateSpec,omitempty"`
+
+	// ResourceOverrides allows overriding annotations and labels for resources created by the operator
+	// +optional
+	ResourceOverrides *ResourceOverrides `json:"resourceOverrides,omitempty"`
+}
+
+// ResourceOverrides defines overrides for annotations and labels on created resources
+type ResourceOverrides struct {
+	// ProxyDeployment defines overrides for the Proxy Deployment resource (toolhive proxy)
+	// +optional
+	ProxyDeployment *ResourceMetadataOverrides `json:"proxyDeployment,omitempty"`
+
+	// ProxyService defines overrides for the Proxy Service resource (points to the proxy deployment)
+	// +optional
+	ProxyService *ResourceMetadataOverrides `json:"proxyService,omitempty"`
+}
+
+// ResourceMetadataOverrides defines metadata overrides for a resource
+type ResourceMetadataOverrides struct {
+	// Annotations to add or override on the resource
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// Labels to add or override on the resource
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // EnvVar represents an environment variable in a container

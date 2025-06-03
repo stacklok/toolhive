@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
 	"strings"
@@ -341,19 +342,34 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		}
 	}
 
+	// Prepare deployment metadata with overrides
+	deploymentLabels := ls
+	deploymentAnnotations := make(map[string]string)
+
+	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
+		if m.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
+			deploymentLabels = mergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.Labels)
+		}
+		if m.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
+			deploymentAnnotations = mergeAnnotations(make(map[string]string), m.Spec.ResourceOverrides.ProxyDeployment.Annotations)
+		}
+	}
+
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      m.Name,
-			Namespace: m.Namespace,
+			Name:        m.Name,
+			Namespace:   m.Namespace,
+			Labels:      deploymentLabels,
+			Annotations: deploymentAnnotations,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: ls,
+				MatchLabels: ls, // Keep original labels for selector
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: ls,
+					Labels: ls, // Keep original labels for pod template
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "toolhive",
@@ -396,13 +412,28 @@ func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *cor
 	// to avoid conflicts with the headless service
 	svcName := createServiceName(m.Name)
 
+	// Prepare service metadata with overrides
+	serviceLabels := ls
+	serviceAnnotations := make(map[string]string)
+
+	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyService != nil {
+		if m.Spec.ResourceOverrides.ProxyService.Labels != nil {
+			serviceLabels = mergeLabels(ls, m.Spec.ResourceOverrides.ProxyService.Labels)
+		}
+		if m.Spec.ResourceOverrides.ProxyService.Annotations != nil {
+			serviceAnnotations = mergeAnnotations(make(map[string]string), m.Spec.ResourceOverrides.ProxyService.Annotations)
+		}
+	}
+
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      svcName,
-			Namespace: m.Namespace,
+			Name:        svcName,
+			Namespace:   m.Namespace,
+			Labels:      serviceLabels,
+			Annotations: serviceAnnotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: ls,
+			Selector: ls, // Keep original labels for selector
 			Ports: []corev1.ServicePort{{
 				Port:       m.Spec.Port,
 				TargetPort: intstr.FromInt(int(m.Spec.Port)),
@@ -621,6 +652,27 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 		return true
 	}
 
+	// Check if the deployment metadata (labels/annotations) have changed due to resource overrides
+	expectedLabels := labelsForMCPServer(mcpServer.Name)
+	expectedAnnotations := make(map[string]string)
+
+	if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
+		if mcpServer.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
+			expectedLabels = mergeLabels(expectedLabels, mcpServer.Spec.ResourceOverrides.ProxyDeployment.Labels)
+		}
+		if mcpServer.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
+			expectedAnnotations = mergeAnnotations(make(map[string]string), mcpServer.Spec.ResourceOverrides.ProxyDeployment.Annotations)
+		}
+	}
+
+	if !maps.Equal(deployment.Labels, expectedLabels) {
+		return true
+	}
+
+	if !maps.Equal(deployment.Annotations, expectedAnnotations) {
+		return true
+	}
+
 	return false
 }
 
@@ -628,6 +680,27 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServer) bool {
 	// Check if the service port has changed
 	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != mcpServer.Spec.Port {
+		return true
+	}
+
+	// Check if the service metadata (labels/annotations) have changed due to resource overrides
+	expectedLabels := labelsForMCPServer(mcpServer.Name)
+	expectedAnnotations := make(map[string]string)
+
+	if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyService != nil {
+		if mcpServer.Spec.ResourceOverrides.ProxyService.Labels != nil {
+			expectedLabels = mergeLabels(expectedLabels, mcpServer.Spec.ResourceOverrides.ProxyService.Labels)
+		}
+		if mcpServer.Spec.ResourceOverrides.ProxyService.Annotations != nil {
+			expectedAnnotations = mergeAnnotations(make(map[string]string), mcpServer.Spec.ResourceOverrides.ProxyService.Annotations)
+		}
+	}
+
+	if !maps.Equal(service.Labels, expectedLabels) {
+		return true
+	}
+
+	if !maps.Equal(service.Annotations, expectedAnnotations) {
 		return true
 	}
 
@@ -668,6 +741,24 @@ func labelsForMCPServer(name string) map[string]string {
 		"toolhive":                   "true",
 		"toolhive-name":              name,
 	}
+}
+
+// mergeStringMaps merges override map with default map, with default map taking precedence
+// This ensures that operator-required metadata is preserved for proper functionality
+func mergeStringMaps(defaultMap, overrideMap map[string]string) map[string]string {
+	result := maps.Clone(overrideMap)
+	maps.Copy(result, defaultMap) // default map takes precedence
+	return result
+}
+
+// mergeLabels merges override labels with default labels, with default labels taking precedence
+func mergeLabels(defaultLabels, overrideLabels map[string]string) map[string]string {
+	return mergeStringMaps(defaultLabels, overrideLabels)
+}
+
+// mergeAnnotations merges override annotations with default annotations, with default annotations taking precedence
+func mergeAnnotations(defaultAnnotations, overrideAnnotations map[string]string) map[string]string {
+	return mergeStringMaps(defaultAnnotations, overrideAnnotations)
 }
 
 // getProxyHost returns the host to bind the proxy to

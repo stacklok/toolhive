@@ -12,6 +12,10 @@ import (
 
 //go:generate mockgen -destination=mocks/mock_onepassword.go -package=mocks -source=1password.go OPSecretsService
 
+// Err1PasswordReadOnly indicates that the 1Password secrets manager is read-only.
+// Is it returned by operations which attempt to change values in 1Password.
+var Err1PasswordReadOnly = fmt.Errorf("1Password secrets manager is read-only, write operations are not supported")
+
 // OPSecretsService defines the interface for the 1Password Secrets service
 type OPSecretsService interface {
 	Resolve(ctx context.Context, secretReference string) (string, error)
@@ -44,13 +48,13 @@ func (opm *OnePasswordManager) GetSecret(path string) (string, error) {
 // SetSecret is not supported for 1Password unless there is
 // demand for it.
 func (*OnePasswordManager) SetSecret(_, _ string) error {
-	return nil
+	return Err1PasswordReadOnly
 }
 
 // DeleteSecret is not supported for 1Password unless there is
 // demand for it.
 func (*OnePasswordManager) DeleteSecret(_ string) error {
-	return nil
+	return Err1PasswordReadOnly
 }
 
 // ListSecrets is not supported for 1Password unless there is

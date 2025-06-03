@@ -113,15 +113,9 @@ func TestSave(t *testing.T) {
 	logger.Initialize()
 
 	t.Run("TestSave", func(t *testing.T) {
-		// Create a temporary directory for the test
-		tempDir := t.TempDir()
-
-		// Save original XDG_CONFIG_HOME and restore after test
-		originalXDGConfigHome := os.Getenv("XDG_CONFIG_HOME")
-		t.Setenv("XDG_CONFIG_HOME", tempDir)
-		defer func() {
-			t.Setenv("XDG_CONFIG_HOME", originalXDGConfigHome)
-		}()
+		// Use the same pattern as other tests with proper mocking
+		tempDir, cleanup := SetupTestConfig(t, nil)
+		defer cleanup()
 
 		// Create a config instance
 		config := &Config{

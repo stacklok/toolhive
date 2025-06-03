@@ -110,12 +110,12 @@ func TestOnePasswordManager_UnsupportedOperations(t *testing.T) {
 
 	t.Run("SetSecret", func(t *testing.T) {
 		err := manager.SetSecret("test", "value")
-		assert.NoError(t, err, "SetSecret should return nil as it's not supported")
+		assert.Error(t, err, secrets.Err1PasswordReadOnly)
 	})
 
 	t.Run("DeleteSecret", func(t *testing.T) {
 		err := manager.DeleteSecret("test")
-		assert.NoError(t, err, "DeleteSecret should return nil as it's not supported")
+		assert.Error(t, err, secrets.Err1PasswordReadOnly)
 	})
 
 	t.Run("ListSecrets", func(t *testing.T) {

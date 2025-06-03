@@ -521,6 +521,19 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 		return err
 	}
 
+	// Step 2: Attempt to delete associated StatefulSet by name
+	sts := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{Name: m.Name, Namespace: m.Namespace}, sts)
+	if err == nil {
+		// StatefulSet found, delete it
+		if err := r.Delete(ctx, sts); err != nil {
+			return fmt.Errorf("failed to delete StatefulSet %s: %w", m.Name, err)
+		}
+	} else if !errors.IsNotFound(err) {
+		// Unexpected error (not just "not found")
+		return fmt.Errorf("failed to check StatefulSet %s: %w", m.Name, err)
+	}
+
 	// The owner references will automatically delete the deployment and service
 	// when the MCPServer is deleted, so we don't need to do anything here.
 	return nil

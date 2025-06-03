@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
 )
 
@@ -408,70 +409,162 @@ func applyRegistrySettings(
 func processEnvironmentVariables(
 	registryEnvVars []*registry.EnvVar,
 	cmdEnvVars []string,
-	secrets []string,
+	secretsConfig []string,
 	debugMode bool,
 ) ([]string, []string) {
 	// Create a new slice with capacity for all env vars
 	envVars := make([]string, 0, len(cmdEnvVars)+len(registryEnvVars))
-	secretsList := make([]string, 0, len(secrets))
+	secretsList := make([]string, 0, len(secretsConfig))
 
 	// Copy existing env vars and secrets
 	envVars = append(envVars, cmdEnvVars...)
-	secretsList = append(secretsList, secrets...)
+	secretsList = append(secretsList, secretsConfig...)
 
-	// Add required environment variables from registry if not already provided
+	// Initialize secrets manager if needed
+	secretsManager := initializeSecretsManagerIfNeeded(registryEnvVars)
+
+	// Process each environment variable from the registry
 	for _, envVar := range registryEnvVars {
-		// Check if the environment variable is already provided
-		found := isEnvVarProvided(envVar.Name, envVars, secretsList)
+		if isEnvVarProvided(envVar.Name, envVars, secretsList) {
+			continue
+		}
 
-		if !found {
-			if envVar.Required {
-				// Ask the user for the required environment variable
-				if envVar.Secret {
-					logger.Infof("Required secret environment variable: %s (%s)", envVar.Name, envVar.Description)
-				} else {
-					logger.Infof("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
-				}
-
-				fmt.Printf("Enter value for %s (input will be hidden): ", envVar.Name)
-				byteValue, err := term.ReadPassword(int(os.Stdin.Fd()))
-				fmt.Println() // Move to the next line after hidden input
-
-				if err != nil {
-					logger.Warnf("Warning: Failed to read input: %v", err)
-					// Skip this variable and continue to the next one
-					continue
-				}
-
-				// Trim whitespace from the input
-				value := strings.TrimSpace(string(byteValue))
-				if value != "" {
-					// For now, store all user-provided values as regular environment variables
-					// The secret flag is mainly for documentation and future enhancements
-					envVars = append(envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
-					if envVar.Secret {
-						logDebug(debugMode, "Added secret environment variable: %s", envVar.Name)
-					} else {
-						logDebug(debugMode, "Added environment variable: %s", envVar.Name)
-					}
-				}
-			} else if envVar.Default != "" {
-				// Apply default value for non-required environment variables
-				envVars = append(envVars, fmt.Sprintf("%s=%s", envVar.Name, envVar.Default))
-				if envVar.Secret {
-					logDebug(debugMode, "Using default value for secret environment variable %s", envVar.Name)
-				} else {
-					logDebug(debugMode, "Using default value for %s: %s", envVar.Name, envVar.Default)
-				}
+		if envVar.Required {
+			value, err := promptForEnvironmentVariable(envVar)
+			if err != nil {
+				logger.Warnf("Warning: Failed to read input for %s: %v", envVar.Name, err)
+				continue
 			}
+			if value != "" {
+				addEnvironmentVariable(envVar, value, secretsManager, &envVars, &secretsList, debugMode)
+			}
+		} else if envVar.Default != "" {
+			addEnvironmentVariable(envVar, envVar.Default, secretsManager, &envVars, &secretsList, debugMode)
 		}
 	}
 
 	return envVars, secretsList
 }
 
+// initializeSecretsManagerIfNeeded initializes the secrets manager if there are secret environment variables
+func initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secrets.Provider {
+	// Check if we have any secret environment variables
+	hasSecrets := false
+	for _, envVar := range registryEnvVars {
+		if envVar.Secret {
+			hasSecrets = true
+			break
+		}
+	}
+
+	if !hasSecrets {
+		return nil
+	}
+
+	secretsManager, err := getSecretsManager()
+	if err != nil {
+		logger.Warnf("Warning: Failed to initialize secrets manager: %v", err)
+		logger.Warnf("Secret environment variables will be stored as regular environment variables")
+		return nil
+	}
+
+	return secretsManager
+}
+
+// promptForEnvironmentVariable prompts the user for an environment variable value
+func promptForEnvironmentVariable(envVar *registry.EnvVar) (string, error) {
+	if envVar.Secret {
+		logger.Infof("Required secret environment variable: %s (%s)", envVar.Name, envVar.Description)
+	} else {
+		logger.Infof("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
+	}
+
+	fmt.Printf("Enter value for %s (input will be hidden): ", envVar.Name)
+	byteValue, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println() // Move to the next line after hidden input
+
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(string(byteValue)), nil
+}
+
+// addEnvironmentVariable adds an environment variable or secret to the appropriate list
+func addEnvironmentVariable(
+	envVar *registry.EnvVar,
+	value string,
+	secretsManager secrets.Provider,
+	envVars *[]string,
+	secretsList *[]string,
+	debugMode bool,
+) {
+	if envVar.Secret && secretsManager != nil {
+		addAsSecret(envVar, value, secretsManager, secretsList, envVars, debugMode)
+	} else {
+		addAsEnvironmentVariable(envVar, value, envVars, debugMode)
+	}
+}
+
+// addAsSecret stores the value as a secret and adds a secret reference
+func addAsSecret(
+	envVar *registry.EnvVar,
+	value string,
+	secretsManager secrets.Provider,
+	secretsList *[]string,
+	envVars *[]string,
+	debugMode bool,
+) {
+	var secretName string
+	if envVar.Required {
+		secretName = fmt.Sprintf("registry-user-%s", strings.ToLower(envVar.Name))
+	} else {
+		secretName = fmt.Sprintf("registry-default-%s", strings.ToLower(envVar.Name))
+	}
+
+	if err := secretsManager.SetSecret(secretName, value); err != nil {
+		logger.Warnf("Warning: Failed to store secret %s: %v", secretName, err)
+		logger.Warnf("Falling back to environment variable for %s", envVar.Name)
+		*envVars = append(*envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
+		logDebug(debugMode, "Added environment variable (secret fallback): %s", envVar.Name)
+	} else {
+		// Create secret reference for RunConfig
+		secretEntry := fmt.Sprintf("%s,target=%s", secretName, envVar.Name)
+		*secretsList = append(*secretsList, secretEntry)
+		if envVar.Required {
+			logDebug(debugMode, "Created secret for %s: %s", envVar.Name, secretName)
+		} else {
+			logDebug(debugMode, "Created secret with default value for %s: %s", envVar.Name, secretName)
+		}
+	}
+}
+
+// addAsEnvironmentVariable adds the value as a regular environment variable
+func addAsEnvironmentVariable(
+	envVar *registry.EnvVar,
+	value string,
+	envVars *[]string,
+	debugMode bool,
+) {
+	*envVars = append(*envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
+
+	if envVar.Secret {
+		if envVar.Required {
+			logDebug(debugMode, "Added secret as environment variable (no secrets manager): %s", envVar.Name)
+		} else {
+			logDebug(debugMode, "Added default secret as environment variable (no secrets manager): %s", envVar.Name)
+		}
+	} else {
+		if envVar.Required {
+			logDebug(debugMode, "Added environment variable: %s", envVar.Name)
+		} else {
+			logDebug(debugMode, "Using default value for %s: %s", envVar.Name, value)
+		}
+	}
+}
+
 // isEnvVarProvided checks if an environment variable is already provided
-func isEnvVarProvided(name string, envVars []string, secrets []string) bool {
+func isEnvVarProvided(name string, envVars []string, secretsConfig []string) bool {
 	// Check if the environment variable is already provided in the command line
 	for _, env := range envVars {
 		if strings.HasPrefix(env, name+"=") {
@@ -480,7 +573,7 @@ func isEnvVarProvided(name string, envVars []string, secrets []string) bool {
 	}
 
 	// Check if the environment variable is provided as a secret
-	return findEnvironmentVariableFromSecrets(secrets, name)
+	return findEnvironmentVariableFromSecrets(secretsConfig, name)
 }
 
 // hasLatestTag checks if the given image reference has the "latest" tag or no tag (which defaults to "latest")

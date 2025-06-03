@@ -18,12 +18,14 @@
         {
           "description": "Confluence API token for Cloud deployments",
           "name": "CONFLUENCE_API_TOKEN",
-          "required": false
+          "required": false,
+          "secret": true
         },
         {
           "description": "Confluence Personal Access Token for Server/Data Center deployments",
           "name": "CONFLUENCE_PERSONAL_TOKEN",
-          "required": false
+          "required": false,
+          "secret": true
         },
         {
           "description": "Verify SSL certificates for Confluence Server/Data Center (true/false)",
@@ -48,12 +50,14 @@
         {
           "description": "Jira API token for Cloud deployments",
           "name": "JIRA_API_TOKEN",
-          "required": false
+          "required": false,
+          "secret": true
         },
         {
           "description": "Jira Personal Access Token for Server/Data Center deployments",
           "name": "JIRA_PERSONAL_TOKEN",
-          "required": false
+          "required": false,
+          "secret": true
         },
         {
           "description": "Verify SSL certificates for Jira Server/Data Center (true/false)",
@@ -152,12 +156,14 @@
         {
           "description": "AWS access key ID for Bedrock Agent Runtime operations",
           "name": "AWS_ACCESS_KEY_ID",
-          "required": true
+          "required": true,
+          "secret": true
         },
         {
           "description": "AWS secret access key for Bedrock Agent Runtime operations",
           "name": "AWS_SECRET_ACCESS_KEY",
-          "required": true
+          "required": true,
+          "secret": true
         },
         {
           "description": "AWS region where the Knowledge Base is located",
@@ -212,7 +218,8 @@
         {
           "description": "Brave Search API key for web and local search capabilities",
           "name": "BRAVE_API_KEY",
-          "required": true
+          "required": true,
+          "secret": true
         }
       ],
       "image": "mcp/brave-search:latest",
@@ -266,7 +273,8 @@
         {
           "description": "EverArt API key for image generation",
           "name": "EVERART_API_KEY",
-          "required": true
+          "required": true,
+          "secret": true
         }
       ],
       "image": "mcp/everart:latest",
@@ -467,7 +475,8 @@
         {
           "description": "API key for FireCrawl service authentication",
           "name": "FIRECRAWL_API_KEY",
-          "required": true
+          "required": true,
+          "secret": true
         },
         {
           "description": "FireCrawl API URL (default: https://api.firecrawl.dev/v1)",
@@ -667,7 +676,8 @@
         {
           "description": "GitHub personal access token with appropriate permissions",
           "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
-          "required": true
+          "required": true,
+          "secret": true
         },
         {
           "description": "GitHub Enterprise Server hostname (optional)",
@@ -761,7 +771,8 @@
         {
           "description": "GitLab personal access token with appropriate permissions",
           "name": "GITLAB_PERSONAL_ACCESS_TOKEN",
-          "required": true
+          "required": true,
+          "secret": true
         },
         {
           "description": "Base URL for GitLab API (optional, defaults to https://gitlab.com/api/v4)",
@@ -828,7 +839,8 @@
         {
           "description": "Google Maps API key with appropriate permissions",
           "name": "GOOGLE_MAPS_API_KEY",
-          "required": true
+          "required": true,
+          "secret": true
         }
       ],
       "image": "mcp/google-maps:latest",
@@ -891,7 +903,8 @@
         {
           "description": "Service account token with appropriate permissions",
           "name": "GRAFANA_API_KEY",
-          "required": true
+          "required": true,
+          "secret": true
         }
       ],
       "image": "mcp/grafana:latest",
@@ -986,7 +999,8 @@
         {
           "description": "Home Assistant Long-Lived Access Token",
           "name": "HA_TOKEN",
-          "required": true
+          "required": true,
+          "secret": true
         }
       ],
       "image": "voska/hass-mcp:latest",
@@ -1162,7 +1176,8 @@
         {
           "description": "NetBird API token for authentication",
           "name": "NETBIRD_API_TOKEN",
-          "required": true
+          "required": true,
+          "secret": true
         },
         {
           "description": "NetBird API host (default is api.netbird.io)",
@@ -1222,7 +1237,8 @@
         {
           "description": "Bearer token for OCI registry authentication",
           "name": "OCI_TOKEN",
-          "required": false
+          "required": false,
+          "secret": true
         },
         {
           "description": "Username for registry authentication",
@@ -1232,7 +1248,8 @@
         {
           "description": "Password for registry authentication",
           "name": "OCI_PASSWORD",
-          "required": false
+          "required": false,
+          "secret": true
         }
       ],
       "image": "ghcr.io/stackloklabs/ocireg-mcp/server:latest",
@@ -1348,7 +1365,8 @@
         {
           "description": "Perplexity API key",
           "name": "PERPLEXITY_API_KEY",
-          "required": true
+          "required": true,
+          "secret": true
         }
       ],
       "image": "mcp/perplexity-ask:latest",
@@ -1539,7 +1557,8 @@
         {
           "description": "Token for connecting to Semgrep AppSec Platform",
           "name": "SEMGREP_APP_TOKEN",
-          "required": false
+          "required": false,
+          "secret": true
         }
       ],
       "image": "ghcr.io/semgrep/mcp:latest",
@@ -1598,7 +1617,8 @@
         {
           "description": "Sentry authentication token for API access",
           "name": "SENTRY_TOKEN",
-          "required": true
+          "required": true,
+          "secret": true
         }
       ],
       "image": "mcp/sentry:latest",
@@ -1689,7 +1709,8 @@
         {
           "description": "Bot User OAuth Token that starts with xoxb-",
           "name": "SLACK_BOT_TOKEN",
-          "required": true
+          "required": true,
+          "secret": true
         },
         {
           "description": "Slack Team ID that starts with T",

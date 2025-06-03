@@ -386,8 +386,9 @@ func applyRegistrySettings(
 
 	// Process environment variables from registry
 	// This will be merged with command-line env vars in configureRunConfig
-	envVarStrings := processEnvironmentVariables(server.EnvVars, runEnv, runConfig.Secrets, debugMode)
+	envVarStrings, secretStrings := processEnvironmentVariables(server.EnvVars, runEnv, runConfig.Secrets, debugMode)
 	runEnv = envVarStrings
+	runConfig.Secrets = secretStrings
 
 	// Create a temporary file for the permission profile if not explicitly provided
 	if !cmd.Flags().Changed("permission-profile") {
@@ -403,27 +404,34 @@ func applyRegistrySettings(
 }
 
 // processEnvironmentVariables processes environment variables from the registry
+// Returns two lists: regular environment variables and secrets
 func processEnvironmentVariables(
 	registryEnvVars []*registry.EnvVar,
 	cmdEnvVars []string,
 	secrets []string,
 	debugMode bool,
-) []string {
+) ([]string, []string) {
 	// Create a new slice with capacity for all env vars
 	envVars := make([]string, 0, len(cmdEnvVars)+len(registryEnvVars))
+	secretsList := make([]string, 0, len(secrets))
 
-	// Copy existing env vars
+	// Copy existing env vars and secrets
 	envVars = append(envVars, cmdEnvVars...)
+	secretsList = append(secretsList, secrets...)
 
 	// Add required environment variables from registry if not already provided
 	for _, envVar := range registryEnvVars {
 		// Check if the environment variable is already provided
-		found := isEnvVarProvided(envVar.Name, envVars, secrets)
+		found := isEnvVarProvided(envVar.Name, envVars, secretsList)
 
 		if !found {
 			if envVar.Required {
 				// Ask the user for the required environment variable
-				logger.Infof("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
+				if envVar.Secret {
+					logger.Infof("Required secret environment variable: %s (%s)", envVar.Name, envVar.Description)
+				} else {
+					logger.Infof("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
+				}
 
 				fmt.Printf("Enter value for %s (input will be hidden): ", envVar.Name)
 				byteValue, err := term.ReadPassword(int(os.Stdin.Fd()))
@@ -438,17 +446,28 @@ func processEnvironmentVariables(
 				// Trim whitespace from the input
 				value := strings.TrimSpace(string(byteValue))
 				if value != "" {
+					// For now, store all user-provided values as regular environment variables
+					// The secret flag is mainly for documentation and future enhancements
 					envVars = append(envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
+					if envVar.Secret {
+						logDebug(debugMode, "Added secret environment variable: %s", envVar.Name)
+					} else {
+						logDebug(debugMode, "Added environment variable: %s", envVar.Name)
+					}
 				}
 			} else if envVar.Default != "" {
 				// Apply default value for non-required environment variables
 				envVars = append(envVars, fmt.Sprintf("%s=%s", envVar.Name, envVar.Default))
-				logDebug(debugMode, "Using default value for %s: %s", envVar.Name, envVar.Default)
+				if envVar.Secret {
+					logDebug(debugMode, "Using default value for secret environment variable %s", envVar.Name)
+				} else {
+					logDebug(debugMode, "Using default value for %s: %s", envVar.Name, envVar.Default)
+				}
 			}
 		}
 	}
 
-	return envVars
+	return envVars, secretsList
 }
 
 // isEnvVarProvided checks if an environment variable is already provided

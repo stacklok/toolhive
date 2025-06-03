@@ -27,6 +27,12 @@ const (
 	EventTypeMCPCompletion = "mcp_completion"
 	// EventTypeMCPRootsListChanged represents an MCP roots list changed notification
 	EventTypeMCPRootsListChanged = "mcp_roots_list_changed"
+
+	// Fallback event types for unrecognized or generic requests
+	// EventTypeMCPRequest represents a generic MCP request when specific type cannot be determined
+	EventTypeMCPRequest = "mcp_request"
+	// EventTypeHTTPRequest represents a generic HTTP request (non-MCP)
+	EventTypeHTTPRequest = "http_request"
 )
 
 // MCP target types for audit events

@@ -130,6 +130,9 @@ func (c *Config) Validate() error {
 		EventTypeMCPLogging:          true,
 		EventTypeMCPCompletion:       true,
 		EventTypeMCPRootsListChanged: true,
+		// Fallback event types that can also be emitted by the middleware
+		EventTypeMCPRequest:  true,
+		EventTypeHTTPRequest: true,
 	}
 
 	for _, eventType := range c.EventTypes {

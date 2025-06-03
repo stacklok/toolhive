@@ -150,7 +150,7 @@ func (a *Auditor) determineEventType(r *http.Request) string {
 	}
 
 	// Default for non-MCP requests
-	return "http_request"
+	return EventTypeHTTPRequest
 }
 
 // determineMCPEventType determines the specific MCP event type from the request.
@@ -160,7 +160,7 @@ func (a *Auditor) determineMCPEventType(r *http.Request) string {
 		return a.mapMCPMethodToEventType(mcpMethod)
 	}
 	// Default for unrecognized MCP messages
-	return "mcp_request"
+	return EventTypeMCPRequest
 }
 
 // mapMCPMethodToEventType maps MCP method names to event types.
@@ -191,7 +191,7 @@ func (*Auditor) mapMCPMethodToEventType(mcpMethod string) string {
 	case "notifications/roots/list_changed":
 		return EventTypeMCPRootsListChanged
 	default:
-		return "mcp_request"
+		return EventTypeMCPRequest
 	}
 }
 

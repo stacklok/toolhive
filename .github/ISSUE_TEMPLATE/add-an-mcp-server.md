@@ -23,15 +23,15 @@ assignees: ''
 
 ## Submitter Checklist
 
-- [ ] I have read the [MCP Server Registry Inclusion Heuristics](docs/registry/heuristics.md)
+- [ ] I have read the [MCP Server Registry Inclusion Heuristics](https://github.com/stacklok/toolhive/blob/main/docs/registry/heuristics.md)
 - [ ] This server meets the basic requirements listed above
-- [ ] I understand this will undergo automated and manual review based on [Registry Management](docs/registry/management.md)
+- [ ] I understand this will undergo automated and manual review based on [Registry Management](https://github.com/stacklok/toolhive/blob/main/docs/registry/management.md)
 
 ---
 
 ## For Registry Maintainers Only
 
-Evaluate the request following the [MCP Server Registry Inclusion Heuristics](docs/registry/heuristics.md) document
+Evaluate the request following the [MCP Server Registry Inclusion Heuristics](https://github.com/stacklok/toolhive/blob/main/docs/registry/heuristics.md) document
 
 **Review Checklist:**
 - [ ] License verified

@@ -12,6 +12,7 @@ func TestGetRegistry(t *testing.T) {
 
 	if reg == nil {
 		t.Fatal("Registry is nil")
+		return
 	}
 
 	if reg.Version == "" {
@@ -36,6 +37,7 @@ func TestGetServer(t *testing.T) {
 
 	if server == nil {
 		t.Fatal("Server is nil")
+		return
 	}
 
 	if server.Image == "" {

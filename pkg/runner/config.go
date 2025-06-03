@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
@@ -81,6 +82,12 @@ type RunConfig struct {
 
 	// AuthzConfigPath is the path to the authorization configuration file
 	AuthzConfigPath string `json:"authz_config_path,omitempty" yaml:"authz_config_path,omitempty"`
+
+	// AuditConfig contains the audit logging configuration
+	AuditConfig *audit.Config `json:"audit_config,omitempty" yaml:"audit_config,omitempty"`
+
+	// AuditConfigPath is the path to the audit configuration file
+	AuditConfigPath string `json:"audit_config_path,omitempty" yaml:"audit_config_path,omitempty"`
 
 	// Secrets are the secret parameters to pass to the container
 	// Format: "<secret name>,target=<target environment variable>"
@@ -174,6 +181,12 @@ func NewRunConfigFromFlags(
 // WithAuthz adds authorization configuration to the RunConfig
 func (c *RunConfig) WithAuthz(config *authz.Config) *RunConfig {
 	c.AuthzConfig = config
+	return c
+}
+
+// WithAudit adds audit configuration to the RunConfig
+func (c *RunConfig) WithAudit(config *audit.Config) *RunConfig {
+	c.AuditConfig = config
 	return c
 }
 

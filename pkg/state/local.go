@@ -15,29 +15,26 @@ const (
 	// DefaultAppName is the default application name used for XDG paths
 	DefaultAppName = "toolhive"
 
-	// RunConfigsDir is the directory name for storing run configurations
-	RunConfigsDir = "runconfigs"
-
-	// FileExtension is the file extension for stored run configurations
+	// FileExtension is the file extension for stored configurations
 	FileExtension = ".json"
 )
 
 // LocalStore implements the Store interface using the local filesystem
 // following the XDG Base Directory Specification
 type LocalStore struct {
-	// basePath is the base directory path for storing run configurations
+	// basePath is the base directory path for storing configurations
 	basePath string
 }
 
-// NewLocalStore creates a new LocalStore with the given application name
+// NewLocalStore creates a new LocalStore with the given application name and store type
 // If appName is empty, DefaultAppName will be used
-func NewLocalStore(appName string) (*LocalStore, error) {
+func NewLocalStore(appName string, storeName string) (*LocalStore, error) {
 	if appName == "" {
 		appName = DefaultAppName
 	}
 
 	// Create the base directory path following XDG spec
-	basePath := filepath.Join(xdg.StateHome, appName, RunConfigsDir)
+	basePath := filepath.Join(xdg.StateHome, appName, storeName)
 
 	// Ensure the directory exists
 	if err := os.MkdirAll(basePath, 0750); err != nil {
@@ -49,7 +46,7 @@ func NewLocalStore(appName string) (*LocalStore, error) {
 	}, nil
 }
 
-// getFilePath returns the full file path for a run configuration
+// getFilePath returns the full file path for a configuration
 func (s *LocalStore) getFilePath(name string) string {
 	// Ensure the name has the correct extension
 	if !strings.HasSuffix(name, FileExtension) {

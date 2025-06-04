@@ -211,3 +211,26 @@ func CheckTHVBinaryAvailable(config *TestConfig) error {
 	}
 	return nil
 }
+
+// StartLongRunningTHVCommand starts a long-running ToolHive command and returns the process
+func StartLongRunningTHVCommand(config *TestConfig, args ...string) *exec.Cmd {
+	cmd := exec.Command(config.THVBinary, args...) //nolint:gosec // Intentional for e2e testing
+	cmd.Env = os.Environ()
+
+	// Capture stdout and stderr for debugging
+	cmd.Stdout = GinkgoWriter
+	cmd.Stderr = GinkgoWriter
+
+	err := cmd.Start()
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(),
+		fmt.Sprintf("Failed to start long-running command: %s %v", config.THVBinary, args))
+
+	return cmd
+}
+
+// StartDockerCommand starts a docker command with proper environment setup and returns the command
+func StartDockerCommand(args ...string) *exec.Cmd {
+	cmd := exec.Command("docker", args...) //nolint:gosec // Intentional for e2e testing
+	cmd.Env = os.Environ()
+	return cmd
+}

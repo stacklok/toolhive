@@ -41,6 +41,7 @@ var (
 	remoteAuthClientSecret string
 	remoteAuthScopes       []string
 	remoteAuthSkipBrowser  bool
+	remoteAuthTimeout      time.Duration
 	enableRemoteAuth       bool
 )
 
@@ -69,6 +70,8 @@ func init() {
 		[]string{"openid", "profile", "email"}, "OAuth scopes to request for remote server authentication")
 	proxyCmd.Flags().BoolVar(&remoteAuthSkipBrowser, "remote-auth-skip-browser", false,
 		"Skip opening browser for remote server OAuth flow")
+	proxyCmd.Flags().DurationVar(&remoteAuthTimeout, "remote-auth-timeout", 30*time.Second,
+		"Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s)")
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
@@ -251,9 +254,22 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 		return "", fmt.Errorf("failed to create OAuth flow: %w", err)
 	}
 
+	// Create a context with timeout for the OAuth flow
+	// Use the configured timeout, defaulting to 30 seconds if not set
+	oauthTimeout := remoteAuthTimeout
+	if oauthTimeout <= 0 {
+		oauthTimeout = 30 * time.Second
+	}
+
+	oauthCtx, cancel := context.WithTimeout(ctx, oauthTimeout)
+	defer cancel()
+
 	// Start OAuth flow
-	tokenResult, err := flow.Start(ctx, remoteAuthSkipBrowser)
+	tokenResult, err := flow.Start(oauthCtx, remoteAuthSkipBrowser)
 	if err != nil {
+		if oauthCtx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("OAuth flow timed out after %v - user did not complete authentication", oauthTimeout)
+		}
 		return "", fmt.Errorf("OAuth flow failed: %w", err)
 	}
 

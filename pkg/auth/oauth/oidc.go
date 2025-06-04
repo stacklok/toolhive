@@ -94,7 +94,7 @@ func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client 
 	// Parse the response
 	var doc OIDCDiscoveryDocument
 	decoder := json.NewDecoder(limitedReader)
-	decoder.DisallowUnknownFields() // Strict parsing
+	// Allow unknown fields for better compatibility with different OIDC providers
 	if err := decoder.Decode(&doc); err != nil {
 		return nil, fmt.Errorf("failed to decode OIDC configuration: %w", err)
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -254,6 +255,16 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		case mcpv1alpha1.PermissionProfileTypeConfigMap:
 			args = append(args, fmt.Sprintf("--permission-profile-path=/etc/toolhive/profiles/%s", m.Spec.PermissionProfile.Key))
 		}
+	}
+
+	// Add OIDC configuration args
+	if m.Spec.OIDCConfig != nil {
+		// Create a context with timeout for OIDC configuration operations
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		oidcArgs := r.generateOIDCArgs(ctx, m)
+		args = append(args, oidcArgs...)
 	}
 
 	// Add secrets
@@ -788,6 +799,143 @@ func formatSecretArg(secret mcpv1alpha1.SecretRef) string {
 		targetEnv = secret.TargetEnvName
 	}
 	return fmt.Sprintf("--secret=%s/%s,target=%s", secret.Name, secret.Key, targetEnv)
+}
+
+// generateOIDCArgs generates OIDC command-line arguments based on the OIDC configuration
+func (r *MCPServerReconciler) generateOIDCArgs(ctx context.Context, m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+
+	if m.Spec.OIDCConfig == nil {
+		return args
+	}
+
+	switch m.Spec.OIDCConfig.Type {
+	case mcpv1alpha1.OIDCConfigTypeKubernetes:
+		args = append(args, r.generateKubernetesOIDCArgs(m)...)
+	case mcpv1alpha1.OIDCConfigTypeConfigMap:
+		args = append(args, r.generateConfigMapOIDCArgs(ctx, m)...)
+	case mcpv1alpha1.OIDCConfigTypeInline:
+		args = append(args, r.generateInlineOIDCArgs(m)...)
+	}
+
+	return args
+}
+
+// generateKubernetesOIDCArgs generates OIDC args for Kubernetes service account token validation
+func (*MCPServerReconciler) generateKubernetesOIDCArgs(m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+	config := m.Spec.OIDCConfig.Kubernetes
+
+	// Set defaults if config is nil
+	if config == nil {
+		config = &mcpv1alpha1.KubernetesOIDCConfig{}
+	}
+
+	// Issuer (default: https://kubernetes.default.svc)
+	issuer := config.Issuer
+	if issuer == "" {
+		issuer = "https://kubernetes.default.svc"
+	}
+	args = append(args, fmt.Sprintf("--oidc-issuer=%s", issuer))
+
+	// Audience (default: toolhive)
+	audience := config.Audience
+	if audience == "" {
+		audience = "toolhive"
+	}
+	args = append(args, fmt.Sprintf("--oidc-audience=%s", audience))
+
+	// JWKS URL (default: https://kubernetes.default.svc/openid/v1/jwks)
+	jwksURL := config.JWKSURL
+	if jwksURL == "" {
+		jwksURL = "https://kubernetes.default.svc/openid/v1/jwks"
+	}
+	args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
+
+	// Client ID (format: {serviceAccount}.{namespace}.svc.cluster.local)
+	serviceAccount := config.ServiceAccount
+	if serviceAccount == "" {
+		serviceAccount = "default" // Use default service account if not specified
+	}
+
+	namespace := config.Namespace
+	if namespace == "" {
+		namespace = m.Namespace // Use MCPServer's namespace if not specified
+	}
+
+	clientID := fmt.Sprintf("%s.%s.svc.cluster.local", serviceAccount, namespace)
+	args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
+
+	return args
+}
+
+// generateConfigMapOIDCArgs generates OIDC args for ConfigMap-based configuration
+func (r *MCPServerReconciler) generateConfigMapOIDCArgs(ctx context.Context, m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+	config := m.Spec.OIDCConfig.ConfigMap
+
+	if config == nil {
+		return args
+	}
+
+	// Read the ConfigMap and extract OIDC configuration from documented keys
+	configMap := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      config.Name,
+		Namespace: m.Namespace,
+	}, configMap)
+	if err != nil {
+		logger.Errorf("Failed to get ConfigMap %s: %v", config.Name, err)
+		return args
+	}
+
+	// Extract OIDC configuration from well-known keys
+	if issuer, exists := configMap.Data["issuer"]; exists && issuer != "" {
+		args = append(args, fmt.Sprintf("--oidc-issuer=%s", issuer))
+	}
+	if audience, exists := configMap.Data["audience"]; exists && audience != "" {
+		args = append(args, fmt.Sprintf("--oidc-audience=%s", audience))
+	}
+	if jwksURL, exists := configMap.Data["jwksUrl"]; exists && jwksURL != "" {
+		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
+	}
+	if clientID, exists := configMap.Data["clientId"]; exists && clientID != "" {
+		args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
+	}
+
+	return args
+}
+
+// generateInlineOIDCArgs generates OIDC args for inline configuration
+func (*MCPServerReconciler) generateInlineOIDCArgs(m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+	config := m.Spec.OIDCConfig.Inline
+
+	if config == nil {
+		return args
+	}
+
+	// Issuer (required)
+	if config.Issuer != "" {
+		args = append(args, fmt.Sprintf("--oidc-issuer=%s", config.Issuer))
+	}
+
+	// Audience (optional)
+	if config.Audience != "" {
+		args = append(args, fmt.Sprintf("--oidc-audience=%s", config.Audience))
+	}
+
+	// JWKS URL (optional)
+	if config.JWKSURL != "" {
+		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", config.JWKSURL))
+	}
+
+	// Client ID (optional)
+	if config.ClientID != "" {
+		args = append(args, fmt.Sprintf("--oidc-client-id=%s", config.ClientID))
+	}
+
+	return args
 }
 
 // int32Ptr returns a pointer to an int32

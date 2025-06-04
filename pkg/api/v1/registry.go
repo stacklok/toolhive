@@ -29,29 +29,90 @@ func RegistryRouter() http.Handler {
 	return r
 }
 
+//	 listRegistries
+//
+//		@Summary		List registries
+//		@Description	Get a list of the current registries
+//		@Tags			registry
+//		@Produce		json
+//		@Success		200	{object}	registryListResponse
+//		@Router			/api/v1beta/registry [get]
 func (*RegistryRoutes) listRegistries(_ http.ResponseWriter, _ *http.Request) {
 	logger.Debug("Listing registries")
 }
 
+//	 addRegistry
+//
+//		@Summary		Add a registry
+//		@Description	Add a new registry
+//		@Tags			registry
+//		@Accept			json
+//		@Produce		json
+//		@Param			request	body		addRegistryRequest	true	"Add registry request"
+//		@Success		201		{object}	addRegistryResponse
+//		@Failure		400		{string}	string	"Bad Request"
+//		@Failure		409		{string}	string	"Conflict"
+//		@Router			/api/v1beta/registry [post]
 func (*RegistryRoutes) addRegistry(_ http.ResponseWriter, _ *http.Request) {
 	logger.Debug("Adding registry")
 }
 
+//	 getRegistry
+//
+//		@Summary		Get a registry
+//		@Description	Get details of a specific registry
+//		@Tags			registry
+//		@Produce		json
+//		@Param			name	path		string	true	"Registry name"
+//		@Success		200	{object}	getRegistryResponse
+//		@Failure		404	{string}	string	"Not Found"
+//		@Router			/api/v1beta/registry/{name} [get]
 func (*RegistryRoutes) getRegistry(_ http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	logger.Debugf("Getting registry: %s", name)
 }
 
+//	 removeRegistry
+//
+//		@Summary		Remove a registry
+//		@Description	Remove a specific registry
+//		@Tags			registry
+//		@Produce		json
+//		@Param			name	path		string	true	"Registry name"
+//		@Success		204	{string}	string	"No Content"
+//		@Failure		404	{string}	string	"Not Found"
+//		@Router			/api/v1beta/registry/{name} [delete]
 func (*RegistryRoutes) removeRegistry(_ http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	logger.Debugf("Removing registry: %s", name)
 }
 
+//	 listServers
+//
+//		@Summary		List servers in a registry
+//		@Description	Get a list of servers in a specific registry
+//		@Tags			registry
+//		@Produce		json
+//		@Param			name	path		string	true	"Registry name"
+//		@Success		200	{object}	listServersResponse
+//		@Failure		404	{string}	string	"Not Found"
+//		@Router			/api/v1beta/registry/{name}/servers [get]
 func (*RegistryRoutes) listServers(_ http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 	logger.Debugf("Listing servers for registry: %s", registryName)
 }
 
+//	 getServer
+//
+//		@Summary		Get a server from a registry
+//		@Description	Get details of a specific server in a registry
+//		@Tags			registry
+//		@Produce		json
+//		@Param			name		path		string	true	"Registry name"
+//		@Param			serverName	path		string	true	"Server name"
+//		@Success		200	{object}	getServerResponse
+//		@Failure		404	{string}	string	"Not Found"
+//		@Router			/api/v1beta/registry/{name}/servers/{serverName} [get]
 func (*RegistryRoutes) getServer(_ http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 	serverName := chi.URLParam(r, "serverName")

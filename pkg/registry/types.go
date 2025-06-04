@@ -80,6 +80,9 @@ type EnvVar struct {
 	// Default is the value to use if the environment variable is not explicitly provided
 	// Only used for non-required variables
 	Default string `json:"default,omitempty"`
+	// Secret indicates whether this environment variable contains sensitive information
+	// If true, the value will be stored as a secret rather than as a plain environment variable
+	Secret bool `json:"secret,omitempty"`
 }
 
 // Metadata represents metadata about an MCP server

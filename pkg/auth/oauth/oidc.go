@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -89,7 +90,7 @@ func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client 
 
 	// Limit response size to prevent DoS
 	const maxResponseSize = 1024 * 1024 // 1MB
-	limitedReader := http.MaxBytesReader(nil, resp.Body, maxResponseSize)
+	limitedReader := io.LimitReader(resp.Body, maxResponseSize)
 
 	// Parse the response
 	var doc OIDCDiscoveryDocument

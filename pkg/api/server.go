@@ -98,9 +98,10 @@ func Serve(ctx context.Context, address string, isUnixSocket bool, debugMode boo
 	}
 
 	routers := map[string]http.Handler{
-		"/health":             v1.HealthcheckRouter(),
-		"/api/v1beta/version": v1.VersionRouter(),
-		"/api/v1beta/servers": v1.ServerRouter(manager, rt, debugMode),
+		"/health":              v1.HealthcheckRouter(),
+		"/api/v1beta/version":  v1.VersionRouter(),
+		"/api/v1beta/servers":  v1.ServerRouter(manager, rt, debugMode),
+		"/api/v1beta/registry": v1.RegistryRouter(),
 	}
 
 	// Only mount docs router if enabled

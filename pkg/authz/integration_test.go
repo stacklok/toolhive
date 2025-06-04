@@ -15,6 +15,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
 // TestIntegrationListFiltering demonstrates the complete authorization flow
@@ -247,8 +248,8 @@ func TestIntegrationListFiltering(t *testing.T) {
 				require.NoError(t, err, "Failed to write mock handler response")
 			})
 
-			// Apply the authorization middleware
-			middleware := authorizer.Middleware(mockHandler)
+			// Apply the middleware chain: MCP parsing first, then authorization
+			middleware := mcpparser.ParsingMiddleware(authorizer.Middleware(mockHandler))
 
 			// Execute the request through the middleware
 			middleware.ServeHTTP(rr, req)
@@ -410,8 +411,8 @@ func TestIntegrationNonListOperations(t *testing.T) {
 				require.NoError(t, err, "Failed to write mock response")
 			})
 
-			// Apply the authorization middleware
-			middleware := authorizer.Middleware(mockHandler)
+			// Apply the middleware chain: MCP parsing first, then authorization
+			middleware := mcpparser.ParsingMiddleware(authorizer.Middleware(mockHandler))
 
 			// Execute the request through the middleware
 			middleware.ServeHTTP(rr, req)

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
 func TestMiddleware(t *testing.T) {
@@ -226,8 +227,8 @@ func TestMiddleware(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 
-			// Apply the middleware
-			middleware := authorizer.Middleware(handler)
+			// Apply the middleware chain: MCP parsing first, then authorization
+			middleware := mcpparser.ParsingMiddleware(authorizer.Middleware(handler))
 
 			// Serve the request
 			middleware.ServeHTTP(rr, req)
@@ -257,8 +258,8 @@ func TestMiddlewareWithGETRequest(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Apply the middleware
-	middleware := authorizer.Middleware(handler)
+	// Apply the middleware chain: MCP parsing first, then authorization
+	middleware := mcpparser.ParsingMiddleware(authorizer.Middleware(handler))
 
 	// Create a GET request
 	req, err := http.NewRequest(http.MethodGet, "/messages", nil)

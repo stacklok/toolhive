@@ -2,15 +2,14 @@
 package authz
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
@@ -56,39 +55,6 @@ func shouldSkipSubsequentAuthorization(method string) bool {
 	}
 
 	return false
-}
-
-// extractResourceAndArguments extracts the resource ID and arguments from the params.
-func extractResourceAndArguments(method string, params json.RawMessage) (string, map[string]interface{}) {
-	var resourceID string
-	var arguments map[string]interface{}
-
-	// Parse the params based on the method
-	if params != nil {
-		var paramsMap map[string]interface{}
-		if err := json.Unmarshal(params, &paramsMap); err == nil {
-			// Extract resource ID based on the method
-			switch method {
-			case "tools/call":
-				if name, ok := paramsMap["name"].(string); ok {
-					resourceID = name
-				}
-				if args, ok := paramsMap["arguments"].(map[string]interface{}); ok {
-					arguments = args
-				}
-			case "prompts/get":
-				if name, ok := paramsMap["name"].(string); ok {
-					resourceID = name
-				}
-			case "resources/read":
-				if uri, ok := paramsMap["uri"].(string); ok {
-					resourceID = uri
-				}
-			}
-		}
-	}
-
-	return resourceID, arguments
 }
 
 // convertToJSONRPC2ID converts an interface{} ID to jsonrpc2.ID
@@ -171,45 +137,29 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 //	proxy.Start(context.Background())
 func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if we should skip authorization before reading the request body
+		// Check if we should skip authorization before checking parsed data
 		if shouldSkipInitialAuthorization(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Read the request body
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Error reading request body: %v", err), http.StatusBadRequest)
-			return
-		}
-
-		// Replace the request body for downstream handlers
-		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-		// Parse the JSON-RPC message
-		msg, err := jsonrpc2.DecodeMessage(bodyBytes)
-		if err != nil {
-			// If we can't parse the message, let the next handler deal with it
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Skip authorization for non-request messages
-		req, ok := msg.(*jsonrpc2.Request)
-		if !ok {
-			next.ServeHTTP(w, r)
+		// Get parsed MCP request from context (set by parsing middleware)
+		parsedRequest := mcp.GetParsedMCPRequest(r.Context())
+		if parsedRequest == nil {
+			// No parsed MCP request available for a request that should have been parsed
+			// This indicates either a malformed request or missing parsing middleware
+			http.Error(w, "Invalid or malformed MCP request", http.StatusBadRequest)
 			return
 		}
 
 		// Check if we should skip authorization after parsing the message
-		if shouldSkipSubsequentAuthorization(req.Method) {
+		if shouldSkipSubsequentAuthorization(parsedRequest.Method) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// Get the feature and operation from the method
-		featureOp, ok := MCPMethodToFeatureOperation[req.Method]
+		featureOp, ok := MCPMethodToFeatureOperation[parsedRequest.Method]
 		if !ok {
 			// Unknown method, let the next handler deal with it
 			next.ServeHTTP(w, r)
@@ -219,7 +169,7 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		// Handle list operations differently - allow them through but filter the response
 		if featureOp.Operation == MCPOperationList {
 			// Create a response filtering writer to intercept and filter the response
-			filteringWriter := NewResponseFilteringWriter(w, a, r, req.Method)
+			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method)
 
 			// Call the next handler with the filtering writer
 			next.ServeHTTP(filteringWriter, r)
@@ -234,22 +184,19 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// For non-list operations, perform authorization as before
-		// Extract resource ID and arguments from the params
-		resourceID, arguments := extractResourceAndArguments(req.Method, req.Params)
-
+		// For non-list operations, perform authorization using parsed data
 		// Authorize the request
 		authorized, err := a.AuthorizeWithJWTClaims(
 			r.Context(),
 			featureOp.Feature,
 			featureOp.Operation,
-			resourceID,
-			arguments,
+			parsedRequest.ResourceID,
+			parsedRequest.Arguments,
 		)
 
 		// Handle unauthorized requests
 		if err != nil || !authorized {
-			handleUnauthorized(w, req.ID.Raw(), err)
+			handleUnauthorized(w, parsedRequest.ID, err)
 			return
 		}
 

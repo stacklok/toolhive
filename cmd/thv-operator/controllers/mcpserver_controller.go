@@ -531,9 +531,20 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 		}
 	} else if !errors.IsNotFound(err) {
 		// Unexpected error (not just "not found")
-		return fmt.Errorf("failed to check StatefulSet %s: %w", m.Name, err)
+		return fmt.Errorf("failed to get StatefulSet %s: %w", m.Name, err)
 	}
 
+	// Step 3: Attempt to delete associated service by name
+	svc := &corev1.Service{}
+	serviceName := fmt.Sprintf("mcp-%s-headless", m.Name)
+	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: m.Namespace}, svc)
+	if err == nil {
+		if err := r.Delete(ctx, svc); err != nil {
+			return fmt.Errorf("failed to delete Service %s: %w", serviceName, err)
+		}
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to check Service %s: %w", serviceName, err)
+	}
 	// The owner references will automatically delete the deployment and service
 	// when the MCPServer is deleted, so we don't need to do anything here.
 	return nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -90,6 +91,11 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid host: %s", proxyHost)
 	}
 	proxyHost = validatedHost
+
+	err = validateProxyTargetURI(proxyTargetURI)
+	if err != nil {
+		return fmt.Errorf("invalid target URI: %w", err)
+	}
 
 	// Select a port for the HTTP proxy (host port)
 	port, err := networking.FindOrUsePort(proxyPort)
@@ -339,4 +345,20 @@ func createTokenInjectionMiddleware(accessToken string) types.Middleware {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// validateProxyTargetURI validates that the target URI for the proxy is valid and does not contain a path
+func validateProxyTargetURI(targetURI string) error {
+	// Parse the target URI
+	targetURL, err := url.Parse(targetURI)
+	if err != nil {
+		return fmt.Errorf("invalid target URI: %w", err)
+	}
+
+	// Check if the path is empty or just "/"
+	if targetURL.Path != "" && targetURL.Path != "/" {
+		return fmt.Errorf("target URI should not contain a path, got: %s", proxyTargetURI)
+	}
+
+	return nil
 }

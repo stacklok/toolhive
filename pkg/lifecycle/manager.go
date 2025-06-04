@@ -166,7 +166,20 @@ func (d *defaultManager) StopContainer(ctx context.Context, name string) error {
 	proxy.StopProcess(containerBaseName)
 
 	// Stop the container
-	return d.stopContainer(ctx, containerID, name)
+	err = d.stopContainer(ctx, containerID, name)
+	if err != nil {
+		return err
+	}
+
+	if shouldRemoveClientConfig() {
+		if err := removeClientConfigurations(name); err != nil {
+			logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+		} else {
+			logger.Infof("Client configurations for %s removed", name)
+		}
+	}
+
+	return nil
 }
 
 func (*defaultManager) RunContainer(ctx context.Context, runConfig *runner.RunConfig) error {

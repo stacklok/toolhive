@@ -41,24 +41,54 @@ func (m *MockOnePasswordClient) EXPECT() *MockOnePasswordClientMockRecorder {
 	return m.recorder
 }
 
-// List mocks base method.
-func (m *MockOnePasswordClient) List(ctx context.Context, vaultID string, filters ...onepassword.ItemListFilter) ([]onepassword.ItemOverview, error) {
+// GetItem mocks base method.
+func (m *MockOnePasswordClient) GetItem(ctx context.Context, vaultID, itemID string) (onepassword.Item, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetItem", ctx, vaultID, itemID)
+	ret0, _ := ret[0].(onepassword.Item)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetItem indicates an expected call of GetItem.
+func (mr *MockOnePasswordClientMockRecorder) GetItem(ctx, vaultID, itemID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetItem", reflect.TypeOf((*MockOnePasswordClient)(nil).GetItem), ctx, vaultID, itemID)
+}
+
+// ListItems mocks base method.
+func (m *MockOnePasswordClient) ListItems(ctx context.Context, vaultID string, filters ...onepassword.ItemListFilter) ([]onepassword.ItemOverview, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{ctx, vaultID}
 	for _, a := range filters {
 		varargs = append(varargs, a)
 	}
-	ret := m.ctrl.Call(m, "List", varargs...)
+	ret := m.ctrl.Call(m, "ListItems", varargs...)
 	ret0, _ := ret[0].([]onepassword.ItemOverview)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// List indicates an expected call of List.
-func (mr *MockOnePasswordClientMockRecorder) List(ctx, vaultID any, filters ...any) *gomock.Call {
+// ListItems indicates an expected call of ListItems.
+func (mr *MockOnePasswordClientMockRecorder) ListItems(ctx, vaultID any, filters ...any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]any{ctx, vaultID}, filters...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockOnePasswordClient)(nil).List), varargs...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListItems", reflect.TypeOf((*MockOnePasswordClient)(nil).ListItems), varargs...)
+}
+
+// ListVaults mocks base method.
+func (m *MockOnePasswordClient) ListVaults(ctx context.Context) ([]onepassword.VaultOverview, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListVaults", ctx)
+	ret0, _ := ret[0].([]onepassword.VaultOverview)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListVaults indicates an expected call of ListVaults.
+func (mr *MockOnePasswordClientMockRecorder) ListVaults(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListVaults", reflect.TypeOf((*MockOnePasswordClient)(nil).ListVaults), ctx)
 }
 
 // Resolve mocks base method.

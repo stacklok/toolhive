@@ -13,7 +13,9 @@ import (
 // OnePasswordClient defines the subset of the 1Password SDK that we use.
 type OnePasswordClient interface {
 	Resolve(ctx context.Context, secretReference string) (string, error)
-	List(ctx context.Context, vaultID string, filters ...onepassword.ItemListFilter) ([]onepassword.ItemOverview, error)
+	ListItems(ctx context.Context, vaultID string, filters ...onepassword.ItemListFilter) ([]onepassword.ItemOverview, error)
+	ListVaults(ctx context.Context) ([]onepassword.VaultOverview, error)
+	GetItem(ctx context.Context, vaultID, itemID string) (onepassword.Item, error)
 }
 
 // NewOnePasswordClient creates a OnePasswordClient from the 1Password SDK
@@ -45,10 +47,18 @@ func (opc *onePasswordClient) Resolve(ctx context.Context, secretReference strin
 	return secret, nil
 }
 
-func (opc *onePasswordClient) List(
+func (opc *onePasswordClient) ListItems(
 	ctx context.Context,
 	vaultID string,
 	filters ...onepassword.ItemListFilter,
 ) ([]onepassword.ItemOverview, error) {
 	return opc.client.Items().List(ctx, vaultID, filters...)
+}
+
+func (opc *onePasswordClient) ListVaults(ctx context.Context) ([]onepassword.VaultOverview, error) {
+	return opc.client.Vaults().List(ctx)
+}
+
+func (opc *onePasswordClient) GetItem(ctx context.Context, vaultID, itemID string) (onepassword.Item, error) {
+	return opc.client.Items().Get(ctx, vaultID, itemID)
 }

@@ -25,7 +25,7 @@ require (
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0
 	github.com/swaggo/swag/v2 v2.0.0-rc4
-	github.com/tailscale/hujson v0.0.0-20250226034555-ec1d1c113d33
+	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
 	github.com/tidwall/gjson v1.18.0
 	github.com/zalando/go-keyring v0.2.6
 	go.uber.org/mock v0.5.2

@@ -21,28 +21,32 @@ func createMockClientConfigs() []mcpClientConfig {
 		{
 			ClientType:           VSCode,
 			Description:          "Visual Studio Code (Mock)",
-			RelPath:              []string{"mock_vscode", "settings.json"},
+			RelPath:              []string{"mock_vscode"},
+			SettingsFile:         "settings.json",
 			MCPServersPathPrefix: "/mcp/servers",
 			Extension:            JSON,
 		},
 		{
 			ClientType:           Cursor,
 			Description:          "Cursor editor (Mock)",
-			RelPath:              []string{"mock_cursor", "mcp.json"},
+			RelPath:              []string{"mock_cursor"},
+			SettingsFile:         "mcp.json",
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		},
 		{
 			ClientType:           RooCode,
 			Description:          "VS Code Roo Code extension (Mock)",
-			RelPath:              []string{"mock_roo", "mcp_settings.json"},
+			RelPath:              []string{"mock_roo"},
+			SettingsFile:         "mcp_settings.json",
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		},
 		{
 			ClientType:           ClaudeCode,
 			Description:          "Claude Code CLI (Mock)",
-			RelPath:              []string{"mock_claude", ".claude.json"},
+			RelPath:              []string{"mock_claude"},
+			SettingsFile:         ".claude.json",
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		},
@@ -208,7 +212,8 @@ func TestFindClientConfigs(t *testing.T) {
 		invalidClient := mcpClientConfig{
 			ClientType:           "invalid",
 			Description:          "Invalid client",
-			RelPath:              []string{".cursor", "invalid.json"},
+			RelPath:              []string{".cursor"},
+			SettingsFile:         "invalid.json",
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		}
@@ -404,10 +409,10 @@ func createTestConfigFiles(t *testing.T, homeDir string) {
 	// Create test config files for each mock client configuration
 	for _, cfg := range supportedClientIntegrations {
 		// Build the full path for the config file
-		configDir := filepath.Join(homeDir, filepath.Join(cfg.RelPath[:len(cfg.RelPath)-1]...))
+		configDir := filepath.Join(homeDir, filepath.Join(cfg.RelPath...))
 		err := os.MkdirAll(configDir, 0755)
 		if err == nil {
-			configPath := filepath.Join(configDir, cfg.RelPath[len(cfg.RelPath)-1])
+			configPath := filepath.Join(configDir, cfg.SettingsFile)
 			validJSON := `{"mcpServers": {}, "mcp": {"servers": {}}}`
 			err = os.WriteFile(configPath, []byte(validJSON), 0644)
 			require.NoError(t, err)

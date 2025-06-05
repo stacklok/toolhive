@@ -62,6 +62,10 @@ type MCPServerSpec struct {
 	// ResourceOverrides allows overriding annotations and labels for resources created by the operator
 	// +optional
 	ResourceOverrides *ResourceOverrides `json:"resourceOverrides,omitempty"`
+
+	// OIDCConfig defines OIDC authentication configuration for the MCP server
+	// +optional
+	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -164,6 +168,18 @@ const (
 	PermissionProfileTypeConfigMap = "configmap"
 )
 
+// OIDC configuration types
+const (
+	// OIDCConfigTypeKubernetes is the type for Kubernetes service account token validation
+	OIDCConfigTypeKubernetes = "kubernetes"
+
+	// OIDCConfigTypeConfigMap is the type for OIDC configuration stored in ConfigMaps
+	OIDCConfigTypeConfigMap = "configmap"
+
+	// OIDCConfigTypeInline is the type for inline OIDC configuration
+	OIDCConfigTypeInline = "inline"
+)
+
 // PermissionProfileRef defines a reference to a permission profile
 type PermissionProfileRef struct {
 	// Type is the type of permission profile reference
@@ -223,6 +239,88 @@ type OutboundNetworkPermissions struct {
 	// AllowPort is a list of ports to allow connections to
 	// +optional
 	AllowPort []int32 `json:"allowPort,omitempty"`
+}
+
+// OIDCConfigRef defines a reference to OIDC configuration
+type OIDCConfigRef struct {
+	// Type is the type of OIDC configuration
+	// +kubebuilder:validation:Enum=kubernetes;configmap;inline
+	// +kubebuilder:default=kubernetes
+	Type string `json:"type"`
+
+	// Kubernetes configures OIDC for Kubernetes service account token validation
+	// Only used when Type is "kubernetes"
+	// +optional
+	Kubernetes *KubernetesOIDCConfig `json:"kubernetes,omitempty"`
+
+	// ConfigMap references a ConfigMap containing OIDC configuration
+	// Only used when Type is "configmap"
+	// +optional
+	ConfigMap *ConfigMapOIDCRef `json:"configMap,omitempty"`
+
+	// Inline contains direct OIDC configuration
+	// Only used when Type is "inline"
+	// +optional
+	Inline *InlineOIDCConfig `json:"inline,omitempty"`
+}
+
+// KubernetesOIDCConfig configures OIDC for Kubernetes service account token validation
+type KubernetesOIDCConfig struct {
+	// ServiceAccount is the name of the service account to validate tokens for
+	// If empty, uses the pod's service account
+	// +optional
+	ServiceAccount string `json:"serviceAccount,omitempty"`
+
+	// Namespace is the namespace of the service account
+	// If empty, uses the MCPServer's namespace
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// Audience is the expected audience for the token
+	// +kubebuilder:default=toolhive
+	// +optional
+	Audience string `json:"audience,omitempty"`
+
+	// Issuer is the OIDC issuer URL
+	// +kubebuilder:default="https://kubernetes.default.svc"
+	// +optional
+	Issuer string `json:"issuer,omitempty"`
+
+	// JWKSURL is the URL to fetch the JWKS from
+	// +kubebuilder:default="https://kubernetes.default.svc/openid/v1/jwks"
+	// +optional
+	JWKSURL string `json:"jwksUrl,omitempty"`
+}
+
+// ConfigMapOIDCRef references a ConfigMap containing OIDC configuration
+type ConfigMapOIDCRef struct {
+	// Name is the name of the ConfigMap
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Key is the key in the ConfigMap that contains the OIDC configuration
+	// +kubebuilder:default=oidc.json
+	// +optional
+	Key string `json:"key,omitempty"`
+}
+
+// InlineOIDCConfig contains direct OIDC configuration
+type InlineOIDCConfig struct {
+	// Issuer is the OIDC issuer URL
+	// +kubebuilder:validation:Required
+	Issuer string `json:"issuer"`
+
+	// Audience is the expected audience for the token
+	// +optional
+	Audience string `json:"audience,omitempty"`
+
+	// JWKSURL is the URL to fetch the JWKS from
+	// +optional
+	JWKSURL string `json:"jwksUrl,omitempty"`
+
+	// ClientID is the OIDC client ID
+	// +optional
+	ClientID string `json:"clientId,omitempty"`
 }
 
 // MCPServerStatus defines the observed state of MCPServer

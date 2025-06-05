@@ -74,6 +74,85 @@ spec:
               image:
                 description: Image is the container image for the MCP server
                 type: string
+              oidcConfig:
+                description: OIDCConfig defines OIDC authentication configuration
+                  for the MCP server
+                properties:
+                  configMap:
+                    description: |-
+                      ConfigMap references a ConfigMap containing OIDC configuration
+                      Only used when Type is "configmap"
+                    properties:
+                      key:
+                        default: oidc.json
+                        description: Key is the key in the ConfigMap that contains
+                          the OIDC configuration
+                        type: string
+                      name:
+                        description: Name is the name of the ConfigMap
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  inline:
+                    description: |-
+                      Inline contains direct OIDC configuration
+                      Only used when Type is "inline"
+                    properties:
+                      audience:
+                        description: Audience is the expected audience for the token
+                        type: string
+                      clientId:
+                        description: ClientID is the OIDC client ID
+                        type: string
+                      issuer:
+                        description: Issuer is the OIDC issuer URL
+                        type: string
+                      jwksUrl:
+                        description: JWKSURL is the URL to fetch the JWKS from
+                        type: string
+                    required:
+                    - issuer
+                    type: object
+                  kubernetes:
+                    description: |-
+                      Kubernetes configures OIDC for Kubernetes service account token validation
+                      Only used when Type is "kubernetes"
+                    properties:
+                      audience:
+                        default: toolhive
+                        description: Audience is the expected audience for the token
+                        type: string
+                      issuer:
+                        default: https://kubernetes.default.svc
+                        description: Issuer is the OIDC issuer URL
+                        type: string
+                      jwksUrl:
+                        default: https://kubernetes.default.svc/openid/v1/jwks
+                        description: JWKSURL is the URL to fetch the JWKS from
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is the namespace of the service account
+                          If empty, uses the MCPServer's namespace
+                        type: string
+                      serviceAccount:
+                        description: |-
+                          ServiceAccount is the name of the service account to validate tokens for
+                          If empty, uses the pod's service account
+                        type: string
+                    type: object
+                  type:
+                    default: kubernetes
+                    description: Type is the type of OIDC configuration
+                    enum:
+                    - kubernetes
+                    - configmap
+                    - inline
+                    type: string
+                required:
+                - type
+                type: object
               permissionProfile:
                 description: PermissionProfile defines the permission profile to use
                 properties:

@@ -91,6 +91,7 @@ func (*mockRuntime) String() string {
 }
 
 func TestNewRunConfig(t *testing.T) {
+	t.Parallel()
 	config := NewRunConfig()
 	assert.NotNil(t, config, "NewRunConfig should return a non-nil config")
 	assert.NotNil(t, config.ContainerLabels, "ContainerLabels should be initialized")
@@ -98,6 +99,7 @@ func TestNewRunConfig(t *testing.T) {
 }
 
 func TestRunConfig_WithTransport(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name        string
 		transport   string
@@ -125,6 +127,7 @@ func TestRunConfig_WithTransport(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			config := NewRunConfig()
 
 			result, err := config.WithTransport(tc.transport)
@@ -144,6 +147,7 @@ func TestRunConfig_WithTransport(t *testing.T) {
 // TestRunConfig_WithPorts tests the WithPorts method
 // Note: This test uses actual port finding logic, so it may fail if ports are in use
 func TestRunConfig_WithPorts(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name        string
 		config      *RunConfig
@@ -178,6 +182,7 @@ func TestRunConfig_WithPorts(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			result, err := tc.config.WithPorts(tc.port, tc.targetPort)
 
 			if tc.expectError {
@@ -207,6 +212,7 @@ func TestRunConfig_WithPorts(t *testing.T) {
 }
 
 func TestRunConfig_ParsePermissionProfile(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name                   string
 		profileNameOrPath      string
@@ -270,6 +276,7 @@ func TestRunConfig_ParsePermissionProfile(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			config := NewRunConfig()
 
 			// Create a temporary profile file if needed
@@ -323,6 +330,7 @@ func TestRunConfig_ParsePermissionProfile(t *testing.T) {
 }
 
 func TestRunConfig_ProcessVolumeMounts(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name                string
 		config              *RunConfig
@@ -402,6 +410,7 @@ func TestRunConfig_ProcessVolumeMounts(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Save original read/write mounts count
 			var originalReadMounts, originalWriteMounts int
 			if tc.config.PermissionProfile != nil {
@@ -433,6 +442,7 @@ func TestRunConfig_ProcessVolumeMounts(t *testing.T) {
 }
 
 func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name        string
 		config      *RunConfig
@@ -516,6 +526,7 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			result, err := tc.config.WithEnvironmentVariables(tc.envVars)
 
 			if tc.expectError {
@@ -534,29 +545,30 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 	}
 }
 
+// TODO: Use mockgen for this
 // mockSecretManager is a mock implementation of a secret manager
 type mockSecretManager struct {
 	secrets map[string]string
 }
 
-func (m *mockSecretManager) GetSecret(name string) (string, error) {
+func (m *mockSecretManager) GetSecret(_ context.Context, name string) (string, error) {
 	if value, ok := m.secrets[name]; ok {
 		return value, nil
 	}
 	return "", fmt.Errorf("secret %s not found", name)
 }
 
-func (m *mockSecretManager) SetSecret(name, value string) error {
+func (m *mockSecretManager) SetSecret(_ context.Context, name, value string) error {
 	m.secrets[name] = value
 	return nil
 }
 
-func (m *mockSecretManager) DeleteSecret(name string) error {
+func (m *mockSecretManager) DeleteSecret(_ context.Context, name string) error {
 	delete(m.secrets, name)
 	return nil
 }
 
-func (m *mockSecretManager) ListSecrets() ([]string, error) {
+func (m *mockSecretManager) ListSecrets(_ context.Context) ([]string, error) {
 	keys := make([]string, 0, len(m.secrets))
 	for k := range m.secrets {
 		keys = append(keys, k)
@@ -569,6 +581,7 @@ func (*mockSecretManager) Cleanup() error {
 }
 
 func TestRunConfig_WithSecrets(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name        string
 		config      *RunConfig
@@ -657,6 +670,7 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Create a mock secret manager
 			secretManager := &mockSecretManager{
 				secrets: tc.mockSecrets,
@@ -666,7 +680,7 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 			tc.config.Secrets = tc.secrets
 
 			// Call the function
-			result, err := tc.config.WithSecrets(secretManager)
+			result, err := tc.config.WithSecrets(t.Context(), secretManager)
 
 			if tc.expectError {
 				assert.Error(t, err, "WithSecrets should return an error")

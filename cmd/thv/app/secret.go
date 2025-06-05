@@ -69,8 +69,9 @@ Input Methods:
 
 The secret will be stored securely using the configured secrets provider.`,
 		Args: cobra.ExactArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, args []string) {
 			name := args[0]
+			ctx := cmd.Context()
 
 			// Validate input
 			if name == "" {
@@ -121,7 +122,7 @@ The secret will be stored securely using the configured secrets provider.`,
 				return
 			}
 
-			err = manager.SetSecret(name, value)
+			err = manager.SetSecret(ctx, name, value)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to set secret %s: %v\n", name, err)
 				return
@@ -136,7 +137,8 @@ func newSecretGetCommand() *cobra.Command {
 		Use:   "get <name>",
 		Short: "Get a secret",
 		Args:  cobra.ExactArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, args []string) {
+			ctx := cmd.Context()
 			name := args[0]
 
 			// Validate input
@@ -151,7 +153,7 @@ func newSecretGetCommand() *cobra.Command {
 				return
 			}
 
-			value, err := manager.GetSecret(name)
+			value, err := manager.GetSecret(ctx, name)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to get secret %s: %v\n", name, err)
 				return
@@ -166,7 +168,8 @@ func newSecretDeleteCommand() *cobra.Command {
 		Use:   "delete <name>",
 		Short: "Delete a secret",
 		Args:  cobra.ExactArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, args []string) {
+			ctx := cmd.Context()
 			name := args[0]
 
 			// Validate input
@@ -181,7 +184,7 @@ func newSecretDeleteCommand() *cobra.Command {
 				return
 			}
 
-			err = manager.DeleteSecret(name)
+			err = manager.DeleteSecret(ctx, name)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to delete secret %s: %v\n", name, err)
 				return
@@ -196,14 +199,15 @@ func newSecretListCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List all available secrets",
 		Args:  cobra.NoArgs,
-		Run: func(_ *cobra.Command, _ []string) {
+		Run: func(cmd *cobra.Command, _ []string) {
+			ctx := cmd.Context()
 			manager, err := getSecretsManager()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
 			}
 
-			secretNames, err := manager.ListSecrets()
+			secretNames, err := manager.ListSecrets(ctx)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to list secrets: %v\n", err)
 				return

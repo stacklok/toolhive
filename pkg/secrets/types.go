@@ -2,6 +2,7 @@
 package secrets
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 )
@@ -11,10 +12,10 @@ var secretParamRegex = regexp.MustCompile(`^([^,]+),target=(.+)$`)
 
 // Provider describes a type which can manage secrets.
 type Provider interface {
-	GetSecret(name string) (string, error)
-	SetSecret(name, value string) error
-	DeleteSecret(name string) error
-	ListSecrets() ([]string, error)
+	GetSecret(ctx context.Context, name string) (string, error)
+	SetSecret(ctx context.Context, name, value string) error
+	DeleteSecret(ctx context.Context, name string) error
+	ListSecrets(ctx context.Context) ([]string, error)
 	Cleanup() error
 }
 

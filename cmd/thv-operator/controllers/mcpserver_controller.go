@@ -524,7 +524,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 					Labels: ls, // Keep original labels for pod template
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: m.Name,
+					ServiceAccountName: fmt.Sprintf("%s-proxy-runner", m.Name),
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",

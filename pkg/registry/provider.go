@@ -1,7 +1,7 @@
 package registry
 
-// RegistryProvider defines the interface for registry storage implementations
-type RegistryProvider interface {
+// Provider defines the interface for registry storage implementations
+type Provider interface {
 	// GetRegistry returns the complete registry data
 	GetRegistry() (*Registry, error)
 

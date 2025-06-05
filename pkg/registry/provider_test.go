@@ -110,7 +110,7 @@ func TestRemoteRegistryProvider(t *testing.T) {
 	}
 
 	// Test that it implements the interface
-	var _ RegistryProvider = provider
+	var _ Provider = provider
 }
 
 // getTypeName returns the type name of an interface value

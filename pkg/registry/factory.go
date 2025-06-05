@@ -7,13 +7,13 @@ import (
 )
 
 var (
-	defaultProvider     RegistryProvider
+	defaultProvider     Provider
 	defaultProviderOnce sync.Once
 	defaultProviderErr  error
 )
 
 // NewRegistryProvider creates a new registry provider based on the configuration
-func NewRegistryProvider(cfg *config.Config) RegistryProvider {
+func NewRegistryProvider(cfg *config.Config) Provider {
 	if cfg != nil && len(cfg.RegistryUrl) > 0 {
 		return NewRemoteRegistryProvider(cfg.RegistryUrl)
 	}
@@ -22,7 +22,7 @@ func NewRegistryProvider(cfg *config.Config) RegistryProvider {
 
 // GetDefaultProvider returns the default registry provider instance
 // This maintains backward compatibility with the existing singleton pattern
-func GetDefaultProvider() (RegistryProvider, error) {
+func GetDefaultProvider() (Provider, error) {
 	defaultProviderOnce.Do(func() {
 		cfg, err := config.LoadOrCreateConfig()
 		if err != nil {

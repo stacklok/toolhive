@@ -581,6 +581,16 @@ func (*mockSecretManager) Cleanup() error {
 	return nil
 }
 
+func (*mockSecretManager) Capabilities() secrets.ProviderCapabilities {
+	return secrets.ProviderCapabilities{
+		CanRead:    true,
+		CanWrite:   true,
+		CanDelete:  true,
+		CanList:    true,
+		CanCleanup: true,
+	}
+}
+
 func TestRunConfig_WithSecrets(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {

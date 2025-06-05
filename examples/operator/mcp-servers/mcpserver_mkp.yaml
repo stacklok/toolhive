@@ -12,7 +12,9 @@ spec:
     name: network
   podTemplateSpec:
     spec:
-      serviceAccountName: mkp
+      # this will not be needed once we have implemented separate 
+      # service accounts for each MCP server and its proxyrunner
+      serviceAccountName: mkp-proxy-runner
       containers:
       - name: mcp
   resources:

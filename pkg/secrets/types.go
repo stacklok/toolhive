@@ -15,7 +15,7 @@ type Provider interface {
 	GetSecret(ctx context.Context, name string) (string, error)
 	SetSecret(ctx context.Context, name, value string) error
 	DeleteSecret(ctx context.Context, name string) error
-	ListSecrets(ctx context.Context) ([]string, error)
+	ListSecrets(ctx context.Context) ([]SecretDescription, error)
 	Cleanup() error
 }
 
@@ -55,4 +55,14 @@ func SecretParametersToCLI(params []SecretParameter) []string {
 		result[i] = fmt.Sprintf("%s,target=%s", p.Name, p.Target)
 	}
 	return result
+}
+
+// SecretDescription is returned by `ListSecrets`.
+type SecretDescription struct {
+	// Key is the unique identifier for the secret, used when retrieving it.
+	Key string `json:"key"`
+	// Description provides a human-readable description of the secret
+	// Particularly useful for 1password.
+	// May be empty if no description is available.
+	Description string `json:"description"`
 }

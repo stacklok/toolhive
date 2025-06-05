@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/1password/onepassword-sdk-go"
-
 	"github.com/stacklok/toolhive/pkg/secrets/clients"
 )
 
@@ -20,7 +18,8 @@ var Err1PasswordReadOnly = fmt.Errorf("1Password secrets manager is read-only, w
 
 // OnePasswordManager manages secrets in 1Password.
 type OnePasswordManager struct {
-	client clients.OnePasswordClient
+	client    clients.OnePasswordClient
+	vaultName string
 }
 
 var timeout = 5 * time.Second
@@ -51,20 +50,23 @@ func (*OnePasswordManager) DeleteSecret(_ context.Context, _ string) error {
 	return Err1PasswordReadOnly
 }
 
-// ListSecrets is not supported for 1Password unless there is
-// demand for it.
-func (o *OnePasswordManager) ListSecrets(ctx context.Context) ([]string, error) {
-	items, err := o.client.List(ctx, "", onepassword.ItemListFilter{})
+// ListSecrets lists the secrets for the specified vault.
+func (o *OnePasswordManager) ListSecrets(ctx context.Context) ([]SecretDescription, error) {
+	items, err := o.client.List(ctx, o.vaultName)
 	if err != nil {
-		return nil, fmt.Errorf("error listing secrets: %v", err)
+		return nil, fmt.Errorf("error retrieving secrets from 1password API: %v", err)
 	}
 
-	secrets := make([]string, 0, len(items))
+	secrets := make([]SecretDescription, 0, len(items))
 	for _, item := range items {
 		if item.ID == "" || item.Title == "" {
 			continue // Skip items without ID or Title
 		}
-		secrets = append(secrets, fmt.Sprintf("op://%s/%s", item.VaultID, item.ID))
+		description := SecretDescription{
+			Key:         fmt.Sprintf("op://%s/%s", item.VaultID, item.ID),
+			Description: item.Title,
+		}
+		secrets = append(secrets, description)
 	}
 	return secrets, nil
 }
@@ -81,6 +83,11 @@ func NewOnePasswordManager() (Provider, error) {
 		return nil, fmt.Errorf("OP_SERVICE_ACCOUNT_TOKEN is not set")
 	}
 
+	vaultName := os.Getenv("OP_VAULT_ID")
+	if token == "" {
+		return nil, fmt.Errorf("OP_VAULT_ID is not set")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -90,7 +97,8 @@ func NewOnePasswordManager() (Provider, error) {
 	}
 
 	return &OnePasswordManager{
-		client: client,
+		client:    client,
+		vaultName: vaultName,
 	}, nil
 }
 

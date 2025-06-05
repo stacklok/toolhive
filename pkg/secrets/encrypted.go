@@ -68,11 +68,11 @@ func (e *EncryptedManager) DeleteSecret(_ context.Context, name string) error {
 }
 
 // ListSecrets returns a list of all secret names stored in the manager.
-func (e *EncryptedManager) ListSecrets(_ context.Context) ([]string, error) {
-	var secretNames []string
+func (e *EncryptedManager) ListSecrets(_ context.Context) ([]SecretDescription, error) {
+	var secretNames []SecretDescription
 
 	e.secrets.Range(func(key, _ interface{}) bool {
-		secretNames = append(secretNames, key.(string))
+		secretNames = append(secretNames, SecretDescription{Key: key.(string)})
 		return true
 	})
 

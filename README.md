@@ -372,8 +372,10 @@ Secrets provider type updated to: 1password
 
 To allow ToolHive to retrieve secrets from your 1Password make sure you setup a
 [Service Account](https://developer.1password.com/docs/sdks/#step-1-create-a-service-account)
-and set the `OP_SERVICE_ACCOUNT_TOKEN` variable before running any ToolHive
-commands that use it.
+and set the following environment variables:
+
+`OP_SERVICE_ACCOUNT_TOKEN`: The service account token value.
+`OP_VAULT_ID`: The ID of the 1Password vault to retrieve secrets from.
 
 When you are referencing a secret make sure to follow the
 [secret reference](https://developer.1password.com/docs/cli/secret-references/#step-3-resolve-secret-references)

@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -568,10 +569,10 @@ func (m *mockSecretManager) DeleteSecret(_ context.Context, name string) error {
 	return nil
 }
 
-func (m *mockSecretManager) ListSecrets(_ context.Context) ([]string, error) {
-	keys := make([]string, 0, len(m.secrets))
+func (m *mockSecretManager) ListSecrets(_ context.Context) ([]secrets.SecretDescription, error) {
+	keys := make([]secrets.SecretDescription, 0, len(m.secrets))
 	for k := range m.secrets {
-		keys = append(keys, k)
+		keys = append(keys, secrets.SecretDescription{Key: k})
 	}
 	return keys, nil
 }

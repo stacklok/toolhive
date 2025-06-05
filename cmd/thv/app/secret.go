@@ -207,20 +207,25 @@ func newSecretListCommand() *cobra.Command {
 				return
 			}
 
-			secretNames, err := manager.ListSecrets(ctx)
+			secrets, err := manager.ListSecrets(ctx)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to list secrets: %v\n", err)
 				return
 			}
 
-			if len(secretNames) == 0 {
+			if len(secrets) == 0 {
 				fmt.Println("No secrets found")
 				return
 			}
 
 			fmt.Println("Available secrets:")
-			for _, name := range secretNames {
-				fmt.Printf("  - %s\n", name)
+			for _, description := range secrets {
+				fmt.Printf("  - %s", description.Key)
+				// Add description if available.
+				if description.Description != "" {
+					fmt.Printf(" (%s)", description.Description)
+				}
+				fmt.Println()
 			}
 		},
 	}

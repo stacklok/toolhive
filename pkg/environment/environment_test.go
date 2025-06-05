@@ -36,7 +36,7 @@ func (*mockSecretsProvider) DeleteSecret(_ context.Context, _ string) error {
 	return nil
 }
 
-func (*mockSecretsProvider) ListSecrets(_ context.Context) ([]string, error) {
+func (*mockSecretsProvider) ListSecrets(_ context.Context) ([]secrets.SecretDescription, error) {
 	return nil, nil
 }
 

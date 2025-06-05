@@ -11,6 +11,17 @@ tasks:
     cmds:
       - go run cmd/help/main.go --dir docs/cli
 
+  swagger-install:
+    desc: Install the swag tool for OpenAPI/Swagger generation
+    cmds:
+      - go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc4
+
+  swagger-gen:
+    desc: Generate OpenAPI/Swagger documentation
+    deps: [swagger-install]
+    cmds:
+      - swag init -g pkg/api/server.go --v3.1 -o docs/server
+
   lint:
     desc: Run linting tools
     cmds:

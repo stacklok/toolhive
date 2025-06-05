@@ -10,9 +10,11 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,35 +36,44 @@ type MCPServerReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// Allow the operator to manage MCPServer resources
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/status,verbs=get;patch;update
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/finalizers,verbs=update
+// defaultRBACRules are the default RBAC rules that the
+// ToolHive ProxyRunner and/or MCP server needs to have in order to run.
+var defaultRBACRules = []rbacv1.PolicyRule{
+	{
+		APIGroups: []string{"apps"},
+		Resources: []string{"statefulsets"},
+		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete", "apply"},
+	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"services"},
+		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete", "apply"},
+	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"pods"},
+		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"pods/log"},
+		Verbs:     []string{"get"},
+	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"pods/attach"},
+		Verbs:     []string{"create", "get"},
+	},
+}
 
-// Allow the operator to manage Deployments
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
-
-// Allow the operator to manage Services
-// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
-
-// Allow the operator read manage Pods
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
-
-// Allow the operator to manage ConfigMaps (including telemetry data)
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
-
-// Allow the operator read manage Secrets
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
-
-// Allow the operator to manage events
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+var ctxLogger = log.FromContext(context.Background())
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
 //nolint:gocyclo
 func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	ctxLogger := log.FromContext(ctx)
+	ctxLogger = log.FromContext(ctx)
 
 	// Fetch the MCPServer instance
 	mcpServer := &mcpv1alpha1.MCPServer{}
@@ -111,6 +122,12 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Update the MCPServer status with the pod status
 	if err := r.updateMCPServerStatus(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to update MCPServer status")
+		return ctrl.Result{}, err
+	}
+
+	// check if the RBAC resources are in place for the MCP server
+	if err := r.ensureRBACResources(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to ensure RBAC resources")
 		return ctrl.Result{}, err
 	}
 
@@ -218,6 +235,131 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, nil
 }
 
+// ensureRBACResource is a generic helper function to ensure a Kubernetes resource exists and is up to date
+func (r *MCPServerReconciler) ensureRBACResource(
+	ctx context.Context,
+	mcpServer *mcpv1alpha1.MCPServer,
+	resourceType string,
+	createResource func() client.Object,
+) error {
+	current := createResource()
+	objectKey := types.NamespacedName{Name: current.GetName(), Namespace: current.GetNamespace()}
+	err := r.Get(ctx, objectKey, current)
+
+	if errors.IsNotFound(err) {
+		return r.createRBACResource(ctx, mcpServer, resourceType, createResource)
+	} else if err != nil {
+		return fmt.Errorf("failed to get %s: %w", resourceType, err)
+	}
+
+	return r.updateRBACResourceIfNeeded(ctx, mcpServer, resourceType, createResource, current)
+}
+
+// createRBACResource creates a new RBAC resource
+func (r *MCPServerReconciler) createRBACResource(
+	ctx context.Context,
+	mcpServer *mcpv1alpha1.MCPServer,
+	resourceType string,
+	createResource func() client.Object,
+) error {
+	desired := createResource()
+	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
+		logger.Error(fmt.Sprintf("Failed to set controller reference for %s", resourceType), err)
+		return nil
+	}
+
+	ctxLogger.Info(
+		fmt.Sprintf("%s does not exist, creating %s", resourceType, resourceType),
+		fmt.Sprintf("%s.Name", resourceType),
+		desired.GetName(),
+	)
+	if err := r.Create(ctx, desired); err != nil {
+		return fmt.Errorf("failed to create %s: %w", resourceType, err)
+	}
+	ctxLogger.Info(fmt.Sprintf("%s created", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
+	return nil
+}
+
+// updateRBACResourceIfNeeded updates an RBAC resource if changes are detected
+func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
+	ctx context.Context,
+	mcpServer *mcpv1alpha1.MCPServer,
+	resourceType string,
+	createResource func() client.Object,
+	current client.Object,
+) error {
+	desired := createResource()
+	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
+		logger.Error(fmt.Sprintf("Failed to set controller reference for %s", resourceType), err)
+		return nil
+	}
+
+	if !reflect.DeepEqual(current, desired) {
+		ctxLogger.Info(
+			fmt.Sprintf("%s exists, updating %s", resourceType, resourceType),
+			fmt.Sprintf("%s.Name", resourceType),
+			desired.GetName(),
+		)
+		if err := r.Update(ctx, desired); err != nil {
+			return fmt.Errorf("failed to update %s: %w", resourceType, err)
+		}
+		ctxLogger.Info(fmt.Sprintf("%s updated", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
+	}
+	return nil
+}
+
+// ensureRBACResources ensures that the RBAC resources are in place for the MCP server
+func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+	proxyRunnerNameForRBAC := fmt.Sprintf("%s-proxy-runner", mcpServer.Name)
+
+	// Ensure Role
+	if err := r.ensureRBACResource(ctx, mcpServer, "Role", func() client.Object {
+		return &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      proxyRunnerNameForRBAC,
+				Namespace: mcpServer.Namespace,
+			},
+			Rules: defaultRBACRules,
+		}
+	}); err != nil {
+		return err
+	}
+
+	// Ensure ServiceAccount
+	if err := r.ensureRBACResource(ctx, mcpServer, "ServiceAccount", func() client.Object {
+		return &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      proxyRunnerNameForRBAC,
+				Namespace: mcpServer.Namespace,
+			},
+		}
+	}); err != nil {
+		return err
+	}
+
+	// Ensure RoleBinding
+	return r.ensureRBACResource(ctx, mcpServer, "RoleBinding", func() client.Object {
+		return &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      proxyRunnerNameForRBAC,
+				Namespace: mcpServer.Namespace,
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     proxyRunnerNameForRBAC,
+			},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      proxyRunnerNameForRBAC,
+					Namespace: mcpServer.Namespace,
+				},
+			},
+		}
+	})
+}
+
 // deploymentForMCPServer returns a MCPServer Deployment object
 //
 //nolint:gocyclo
@@ -254,6 +396,16 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		case mcpv1alpha1.PermissionProfileTypeConfigMap:
 			args = append(args, fmt.Sprintf("--permission-profile-path=/etc/toolhive/profiles/%s", m.Spec.PermissionProfile.Key))
 		}
+	}
+
+	// Add OIDC configuration args
+	if m.Spec.OIDCConfig != nil {
+		// Create a context with timeout for OIDC configuration operations
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		oidcArgs := r.generateOIDCArgs(ctx, m)
+		args = append(args, oidcArgs...)
 	}
 
 	// Add secrets
@@ -372,7 +524,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 					Labels: ls, // Keep original labels for pod template
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "toolhive",
+					ServiceAccountName: fmt.Sprintf("%s-proxy-runner", m.Name),
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",
@@ -788,6 +940,143 @@ func formatSecretArg(secret mcpv1alpha1.SecretRef) string {
 		targetEnv = secret.TargetEnvName
 	}
 	return fmt.Sprintf("--secret=%s/%s,target=%s", secret.Name, secret.Key, targetEnv)
+}
+
+// generateOIDCArgs generates OIDC command-line arguments based on the OIDC configuration
+func (r *MCPServerReconciler) generateOIDCArgs(ctx context.Context, m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+
+	if m.Spec.OIDCConfig == nil {
+		return args
+	}
+
+	switch m.Spec.OIDCConfig.Type {
+	case mcpv1alpha1.OIDCConfigTypeKubernetes:
+		args = append(args, r.generateKubernetesOIDCArgs(m)...)
+	case mcpv1alpha1.OIDCConfigTypeConfigMap:
+		args = append(args, r.generateConfigMapOIDCArgs(ctx, m)...)
+	case mcpv1alpha1.OIDCConfigTypeInline:
+		args = append(args, r.generateInlineOIDCArgs(m)...)
+	}
+
+	return args
+}
+
+// generateKubernetesOIDCArgs generates OIDC args for Kubernetes service account token validation
+func (*MCPServerReconciler) generateKubernetesOIDCArgs(m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+	config := m.Spec.OIDCConfig.Kubernetes
+
+	// Set defaults if config is nil
+	if config == nil {
+		config = &mcpv1alpha1.KubernetesOIDCConfig{}
+	}
+
+	// Issuer (default: https://kubernetes.default.svc)
+	issuer := config.Issuer
+	if issuer == "" {
+		issuer = "https://kubernetes.default.svc"
+	}
+	args = append(args, fmt.Sprintf("--oidc-issuer=%s", issuer))
+
+	// Audience (default: toolhive)
+	audience := config.Audience
+	if audience == "" {
+		audience = "toolhive"
+	}
+	args = append(args, fmt.Sprintf("--oidc-audience=%s", audience))
+
+	// JWKS URL (default: https://kubernetes.default.svc/openid/v1/jwks)
+	jwksURL := config.JWKSURL
+	if jwksURL == "" {
+		jwksURL = "https://kubernetes.default.svc/openid/v1/jwks"
+	}
+	args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
+
+	// Client ID (format: {serviceAccount}.{namespace}.svc.cluster.local)
+	serviceAccount := config.ServiceAccount
+	if serviceAccount == "" {
+		serviceAccount = "default" // Use default service account if not specified
+	}
+
+	namespace := config.Namespace
+	if namespace == "" {
+		namespace = m.Namespace // Use MCPServer's namespace if not specified
+	}
+
+	clientID := fmt.Sprintf("%s.%s.svc.cluster.local", serviceAccount, namespace)
+	args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
+
+	return args
+}
+
+// generateConfigMapOIDCArgs generates OIDC args for ConfigMap-based configuration
+func (r *MCPServerReconciler) generateConfigMapOIDCArgs(ctx context.Context, m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+	config := m.Spec.OIDCConfig.ConfigMap
+
+	if config == nil {
+		return args
+	}
+
+	// Read the ConfigMap and extract OIDC configuration from documented keys
+	configMap := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      config.Name,
+		Namespace: m.Namespace,
+	}, configMap)
+	if err != nil {
+		logger.Errorf("Failed to get ConfigMap %s: %v", config.Name, err)
+		return args
+	}
+
+	// Extract OIDC configuration from well-known keys
+	if issuer, exists := configMap.Data["issuer"]; exists && issuer != "" {
+		args = append(args, fmt.Sprintf("--oidc-issuer=%s", issuer))
+	}
+	if audience, exists := configMap.Data["audience"]; exists && audience != "" {
+		args = append(args, fmt.Sprintf("--oidc-audience=%s", audience))
+	}
+	if jwksURL, exists := configMap.Data["jwksUrl"]; exists && jwksURL != "" {
+		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
+	}
+	if clientID, exists := configMap.Data["clientId"]; exists && clientID != "" {
+		args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
+	}
+
+	return args
+}
+
+// generateInlineOIDCArgs generates OIDC args for inline configuration
+func (*MCPServerReconciler) generateInlineOIDCArgs(m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+	config := m.Spec.OIDCConfig.Inline
+
+	if config == nil {
+		return args
+	}
+
+	// Issuer (required)
+	if config.Issuer != "" {
+		args = append(args, fmt.Sprintf("--oidc-issuer=%s", config.Issuer))
+	}
+
+	// Audience (optional)
+	if config.Audience != "" {
+		args = append(args, fmt.Sprintf("--oidc-audience=%s", config.Audience))
+	}
+
+	// JWKS URL (optional)
+	if config.JWKSURL != "" {
+		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", config.JWKSURL))
+	}
+
+	// Client ID (optional)
+	if config.ClientID != "" {
+		args = append(args, fmt.Sprintf("--oidc-client-id=%s", config.ClientID))
+	}
+
+	return args
 }
 
 // int32Ptr returns a pointer to an int32

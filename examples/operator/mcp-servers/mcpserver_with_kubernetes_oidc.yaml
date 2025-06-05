@@ -1,0 +1,25 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: secure-fetch-k8s
+  namespace: toolhive-system
+spec:
+  image: docker.io/mcp/fetch
+  transport: stdio
+  port: 8080
+  permissionProfile:
+    type: builtin
+    name: network
+  oidcConfig:
+    type: kubernetes
+    kubernetes:
+      serviceAccount: "mcp-client"
+      namespace: "mcp-clients"
+      audience: "toolhive"
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"

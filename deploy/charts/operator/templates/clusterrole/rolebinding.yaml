@@ -1,10 +1,11 @@
+{{- if eq .Values.operator.rbac.scope "cluster" }}
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: toolhive-operator-manager-rolebinding
   labels:
-    app.kubernetes.io/name: toolhive-operator
-    app.kubernetes.io/part-of: toolhive-operator
+    {{- include "toolhive.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -12,4 +13,26 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: toolhive-operator
-  namespace: toolhive-system
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+
+{{- if eq .Values.operator.rbac.scope "namespace" }}
+{{- range .Values.operator.rbac.allowedNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: toolhive-operator-manager-rolebinding
+  namespace: {{ . }}
+  labels:
+    {{- include "toolhive.labels" $ | nindent 4 }}
+subjects:
+- kind: ServiceAccount
+  name: toolhive-operator
+  namespace: {{ $.Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: toolhive-operator-manager-role
+{{- end }}
+{{- end }}

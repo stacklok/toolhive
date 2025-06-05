@@ -51,6 +51,7 @@ type mcpClientConfig struct {
 	ClientType           MCPClient
 	Description          string
 	RelPath              []string
+	SettingsFile         string
 	PlatformPrefix       map[string][]string
 	MCPServersPathPrefix string
 	Extension            Extension
@@ -58,10 +59,11 @@ type mcpClientConfig struct {
 
 var supportedClientIntegrations = []mcpClientConfig{
 	{
-		ClientType:  RooCode,
-		Description: "VS Code Roo Code extension",
+		ClientType:   RooCode,
+		Description:  "VS Code Roo Code extension",
+		SettingsFile: "mcp_settings.json",
 		RelPath: []string{
-			"Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json",
+			"Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings",
 		},
 		PlatformPrefix: map[string][]string{
 			"linux":   {".config"},
@@ -72,10 +74,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 		Extension:            JSON,
 	},
 	{
-		ClientType:  Cline,
-		Description: "VS Code Cline extension",
+		ClientType:   Cline,
+		Description:  "VS Code Cline extension",
+		SettingsFile: "cline_mcp_settings.json",
 		RelPath: []string{
-			"Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json",
+			"Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings",
 		},
 		PlatformPrefix: map[string][]string{
 			"linux":   {".config"},
@@ -86,10 +89,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 		Extension:            JSON,
 	},
 	{
-		ClientType:  VSCodeInsider,
-		Description: "Visual Studio Code Insiders",
+		ClientType:   VSCodeInsider,
+		Description:  "Visual Studio Code Insiders",
+		SettingsFile: "settings.json",
 		RelPath: []string{
-			"Code - Insiders", "User", "settings.json",
+			"Code - Insiders", "User",
 		},
 		PlatformPrefix: map[string][]string{
 			"linux":   {".config"},
@@ -100,10 +104,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 		Extension:            JSON,
 	},
 	{
-		ClientType:  VSCode,
-		Description: "Visual Studio Code",
+		ClientType:   VSCode,
+		Description:  "Visual Studio Code",
+		SettingsFile: "settings.json",
 		RelPath: []string{
-			"Code", "User", "settings.json",
+			"Code", "User",
 		},
 		MCPServersPathPrefix: "/mcp/servers",
 		PlatformPrefix: map[string][]string{
@@ -116,15 +121,17 @@ var supportedClientIntegrations = []mcpClientConfig{
 	{
 		ClientType:           Cursor,
 		Description:          "Cursor editor",
+		SettingsFile:         "mcp.json",
 		MCPServersPathPrefix: "/mcpServers",
-		RelPath:              []string{".cursor", "mcp.json"},
+		RelPath:              []string{".cursor"},
 		Extension:            JSON,
 	},
 	{
 		ClientType:           ClaudeCode,
 		Description:          "Claude Code CLI",
+		SettingsFile:         ".claude.json",
 		MCPServersPathPrefix: "/mcpServers",
-		RelPath:              []string{".claude.json"},
+		RelPath:              []string{},
 		Extension:            JSON,
 	},
 }
@@ -216,7 +223,7 @@ func retrieveConfigFilesMetadata(filters []MCPClient) ([]ConfigFile, error) {
 			continue
 		}
 
-		path := buildConfigFilePath(cfg.RelPath, cfg.PlatformPrefix, []string{home})
+		path := buildConfigFilePath(cfg.SettingsFile, cfg.RelPath, cfg.PlatformPrefix, []string{home})
 
 		err := validateConfigFileExists(path)
 		if err != nil {
@@ -239,11 +246,12 @@ func retrieveConfigFilesMetadata(filters []MCPClient) ([]ConfigFile, error) {
 	return configFiles, nil
 }
 
-func buildConfigFilePath(relPath []string, platformPrefix map[string][]string, path []string) string {
+func buildConfigFilePath(settingsFile string, relPath []string, platformPrefix map[string][]string, path []string) string {
 	if prefix, ok := platformPrefix[runtime.GOOS]; ok {
 		path = append(path, prefix...)
 	}
 	path = append(path, relPath...)
+	path = append(path, settingsFile)
 	return filepath.Clean(filepath.Join(path...))
 }
 

@@ -26,6 +26,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -78,13 +79,28 @@ func cleanupUnixSocket(address string) {
 // Serve starts the server on the given address and serves the API.
 // It is assumed that the caller sets up appropriate signal handling.
 // If isUnixSocket is true, address is treated as a UNIX socket path.
-func Serve(ctx context.Context, address string, isUnixSocket bool, debugMode bool, enableDocs bool) error {
+// If oidcConfig is provided, OIDC authentication will be enabled for all API endpoints.
+func Serve(
+	ctx context.Context,
+	address string,
+	isUnixSocket bool,
+	debugMode bool,
+	enableDocs bool,
+	oidcConfig *auth.JWTValidatorConfig,
+) error {
 	r := chi.NewRouter()
 	r.Use(
 		middleware.RequestID,
 		// TODO: Figure out logging middleware. We may want to use a different logger.
 		middleware.Timeout(middlewareTimeout),
 	)
+
+	// Add authentication middleware
+	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create authentication middleware: %v", err)
+	}
+	r.Use(authMiddleware)
 
 	manager, err := lifecycle.NewManager(ctx)
 	if err != nil {
@@ -98,10 +114,11 @@ func Serve(ctx context.Context, address string, isUnixSocket bool, debugMode boo
 	}
 
 	routers := map[string]http.Handler{
-		"/health":              v1.HealthcheckRouter(),
-		"/api/v1beta/version":  v1.VersionRouter(),
-		"/api/v1beta/servers":  v1.ServerRouter(manager, rt, debugMode),
-		"/api/v1beta/registry": v1.RegistryRouter(),
+		"/health":               v1.HealthcheckRouter(),
+		"/api/v1beta/version":   v1.VersionRouter(),
+		"/api/v1beta/servers":   v1.ServerRouter(manager, rt, debugMode),
+		"/api/v1beta/registry":  v1.RegistryRouter(),
+		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 	}
 
 	// Only mount docs router if enabled

@@ -5,6 +5,7 @@ package main
 import (
 	"flag"
 	"os"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -13,6 +14,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server" // Import for metricsserver
@@ -52,14 +54,21 @@ func main() {
 	// Set the controller-runtime logger to use our structured logger
 	ctrl.SetLogger(logger.NewLogr())
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	options := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		WebhookServer:          webhook.NewServer(webhook.Options{Port: 9443}),
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "toolhive-operator-leader-election",
-	})
+		Cache: cache.Options{
+			// if nil, defaults to all namespaces
+			DefaultNamespaces: getDefaultNamespaces(),
+		},
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
+
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -97,4 +106,24 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// getDefaultNamespaces returns a map of namespaces to cache.Config for the operator to watch.
+// if WATCH_NAMESPACE is not set, returns nil which is defaulted to a cluster scope.
+func getDefaultNamespaces() map[string]cache.Config {
+
+	// WATCH_NAMESPACE specifies the namespace(s) to watch.
+	// An empty value means the operator is running with cluster scope.
+	watchNamespace, found := os.LookupEnv("WATCH_NAMESPACE")
+	if !found {
+		return nil
+	}
+
+	namespaces := make(map[string]cache.Config)
+	if watchNamespace != "" {
+		for _, ns := range strings.Split(watchNamespace, ",") {
+			namespaces[ns] = cache.Config{}
+		}
+	}
+	return namespaces
 }

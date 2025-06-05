@@ -10,14 +10,9 @@ spec:
   permissionProfile:
     type: builtin
     name: network
-  # Example of using the PodTemplateSpec to customize the pod
   podTemplateSpec:
     spec:
-      containers:
-      - name: mcp
-      # this value has to be set to a serviceaccount that has the necessary permissions
-      # will use the default toolhive service account for an example
-      serviceAccountName: toolhive
+      serviceAccountName: mkp
       containers:
       - name: mcp
   resources:

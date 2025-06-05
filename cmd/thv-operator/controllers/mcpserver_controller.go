@@ -526,8 +526,8 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 	err := r.Get(ctx, types.NamespacedName{Name: m.Name, Namespace: m.Namespace}, sts)
 	if err == nil {
 		// StatefulSet found, delete it
-		if err := r.Delete(ctx, sts); err != nil {
-			return fmt.Errorf("failed to delete StatefulSet %s: %w", m.Name, err)
+		if delErr := r.Delete(ctx, sts); delErr != nil && !errors.IsNotFound(delErr) {
+			return fmt.Errorf("failed to delete StatefulSet %s: %w", m.Name, delErr)
 		}
 	} else if !errors.IsNotFound(err) {
 		// Unexpected error (not just "not found")
@@ -539,8 +539,8 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 	serviceName := fmt.Sprintf("mcp-%s-headless", m.Name)
 	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: m.Namespace}, svc)
 	if err == nil {
-		if err := r.Delete(ctx, svc); err != nil {
-			return fmt.Errorf("failed to delete Service %s: %w", serviceName, err)
+		if delErr := r.Delete(ctx, svc); delErr != nil && !errors.IsNotFound(delErr) {
+			return fmt.Errorf("failed to delete Service %s: %w", serviceName, delErr)
 		}
 	} else if !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to check Service %s: %w", serviceName, err)

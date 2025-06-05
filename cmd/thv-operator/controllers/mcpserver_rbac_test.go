@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,21 +20,25 @@ import (
 )
 
 type testContext struct {
-	mcpServer  *mcpv1alpha1.MCPServer
-	client     client.Client
-	reconciler *MCPServerReconciler
+	mcpServer              *mcpv1alpha1.MCPServer
+	client                 client.Client
+	reconciler             *MCPServerReconciler
+	proxyRunnerNameForRBAC string
 }
 
 func setupTest(name, namespace string) *testContext {
 	mcpServer := createTestMCPServer(name, namespace)
-	fakeClient := createFakeClient()
+	testScheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
+	proxyRunnerNameForRBAC := fmt.Sprintf("%s-proxy-runner", name)
 	return &testContext{
 		mcpServer: mcpServer,
 		client:    fakeClient,
 		reconciler: &MCPServerReconciler{
 			Client: fakeClient,
-			Scheme: createTestScheme(),
+			Scheme: testScheme,
 		},
+		proxyRunnerNameForRBAC: proxyRunnerNameForRBAC,
 	}
 }
 
@@ -45,11 +50,11 @@ func (tc *testContext) assertServiceAccountExists(t *testing.T) {
 	t.Helper()
 	sa := &corev1.ServiceAccount{}
 	err := tc.client.Get(context.TODO(), types.NamespacedName{
-		Name:      tc.mcpServer.Name,
+		Name:      tc.proxyRunnerNameForRBAC,
 		Namespace: tc.mcpServer.Namespace,
 	}, sa)
 	require.NoError(t, err)
-	assert.Equal(t, tc.mcpServer.Name, sa.Name)
+	assert.Equal(t, tc.proxyRunnerNameForRBAC, sa.Name)
 	assert.Equal(t, tc.mcpServer.Namespace, sa.Namespace)
 }
 
@@ -57,11 +62,11 @@ func (tc *testContext) assertRoleExists(t *testing.T) {
 	t.Helper()
 	role := &rbacv1.Role{}
 	err := tc.client.Get(context.TODO(), types.NamespacedName{
-		Name:      tc.mcpServer.Name,
+		Name:      tc.proxyRunnerNameForRBAC,
 		Namespace: tc.mcpServer.Namespace,
 	}, role)
 	require.NoError(t, err)
-	assert.Equal(t, tc.mcpServer.Name, role.Name)
+	assert.Equal(t, tc.proxyRunnerNameForRBAC, role.Name)
 	assert.Equal(t, tc.mcpServer.Namespace, role.Namespace)
 	assert.Equal(t, defaultRBACRules, role.Rules)
 }
@@ -70,24 +75,24 @@ func (tc *testContext) assertRoleBindingExists(t *testing.T) {
 	t.Helper()
 	rb := &rbacv1.RoleBinding{}
 	err := tc.client.Get(context.TODO(), types.NamespacedName{
-		Name:      tc.mcpServer.Name,
+		Name:      tc.proxyRunnerNameForRBAC,
 		Namespace: tc.mcpServer.Namespace,
 	}, rb)
 	require.NoError(t, err)
-	assert.Equal(t, tc.mcpServer.Name, rb.Name)
+	assert.Equal(t, tc.proxyRunnerNameForRBAC, rb.Name)
 	assert.Equal(t, tc.mcpServer.Namespace, rb.Namespace)
 
 	expectedRoleRef := rbacv1.RoleRef{
 		APIGroup: "rbac.authorization.k8s.io",
 		Kind:     "Role",
-		Name:     tc.mcpServer.Name,
+		Name:     tc.proxyRunnerNameForRBAC,
 	}
 	assert.Equal(t, expectedRoleRef, rb.RoleRef)
 
 	expectedSubjects := []rbacv1.Subject{
 		{
 			Kind:      "ServiceAccount",
-			Name:      tc.mcpServer.Name,
+			Name:      tc.proxyRunnerNameForRBAC,
 			Namespace: tc.mcpServer.Namespace,
 		},
 	}
@@ -111,11 +116,11 @@ func TestEnsureRBACResources_ServiceAccount_Creation(t *testing.T) {
 }
 
 func TestEnsureRBACResources_ServiceAccount_Update(t *testing.T) {
-	tc := setupTest("test-server", "default")
+	tc := setupTest("test-server-sa-update", "default")
 
 	existingSA := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      tc.mcpServer.Name,
+			Name:      tc.proxyRunnerNameForRBAC,
 			Namespace: tc.mcpServer.Namespace,
 			Labels:    map[string]string{"old": "label"},
 		},
@@ -139,11 +144,11 @@ func TestEnsureRBACResources_Role_Creation(t *testing.T) {
 }
 
 func TestEnsureRBACResources_Role_Update(t *testing.T) {
-	tc := setupTest("test-server", "default")
+	tc := setupTest("test-server-role-update", "default")
 
 	existingRole := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      tc.mcpServer.Name,
+			Name:      tc.proxyRunnerNameForRBAC,
 			Namespace: tc.mcpServer.Namespace,
 		},
 		Rules: []rbacv1.PolicyRule{
@@ -173,11 +178,11 @@ func TestEnsureRBACResources_RoleBinding_Creation(t *testing.T) {
 }
 
 func TestEnsureRBACResources_RoleBinding_Update(t *testing.T) {
-	tc := setupTest("test-server", "default")
+	tc := setupTest("test-server-rb-update", "default")
 
 	existingRB := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      tc.mcpServer.Name,
+			Name:      tc.proxyRunnerNameForRBAC,
 			Namespace: tc.mcpServer.Namespace,
 		},
 		RoleRef: rbacv1.RoleRef{
@@ -244,11 +249,11 @@ func TestEnsureRBACResources_ResourceNames(t *testing.T) {
 }
 
 func TestEnsureRBACResources_NoChangesNeeded(t *testing.T) {
-	tc := setupTest("test-server", "default")
+	tc := setupTest("test-server-no-changes", "default")
 
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      tc.mcpServer.Name,
+			Name:      tc.proxyRunnerNameForRBAC,
 			Namespace: tc.mcpServer.Namespace,
 		},
 	}
@@ -257,7 +262,7 @@ func TestEnsureRBACResources_NoChangesNeeded(t *testing.T) {
 
 	role := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      tc.mcpServer.Name,
+			Name:      tc.proxyRunnerNameForRBAC,
 			Namespace: tc.mcpServer.Namespace,
 		},
 		Rules: defaultRBACRules,
@@ -267,18 +272,18 @@ func TestEnsureRBACResources_NoChangesNeeded(t *testing.T) {
 
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      tc.mcpServer.Name,
+			Name:      tc.proxyRunnerNameForRBAC,
 			Namespace: tc.mcpServer.Namespace,
 		},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "Role",
-			Name:     tc.mcpServer.Name,
+			Name:     tc.proxyRunnerNameForRBAC,
 		},
 		Subjects: []rbacv1.Subject{
 			{
 				Kind:      "ServiceAccount",
-				Name:      tc.mcpServer.Name,
+				Name:      tc.proxyRunnerNameForRBAC,
 				Namespace: tc.mcpServer.Namespace,
 			},
 		},
@@ -293,7 +298,7 @@ func TestEnsureRBACResources_NoChangesNeeded(t *testing.T) {
 }
 
 func TestEnsureRBACResources_Idempotency(t *testing.T) {
-	tc := setupTest("test-server", "default")
+	tc := setupTest("test-server-idempotency", "default")
 
 	for i := 0; i < 3; i++ {
 		err := tc.ensureRBACResources()
@@ -317,14 +322,9 @@ func createTestMCPServer(name, namespace string) *mcpv1alpha1.MCPServer {
 	}
 }
 
-func createFakeClient() client.Client {
-	testScheme := createTestScheme()
-	return fake.NewClientBuilder().WithScheme(testScheme).Build()
-}
-
 func createTestScheme() *runtime.Scheme {
-	s := scheme.Scheme
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
-	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	_ = mcpv1alpha1.AddToScheme(s)
 	return s
 }

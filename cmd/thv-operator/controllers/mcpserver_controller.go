@@ -242,63 +242,81 @@ func (r *MCPServerReconciler) ensureRBACResource(
 	resourceType string,
 	createResource func() client.Object,
 ) error {
-	// Get current resource
 	current := createResource()
-	objectKey := types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}
+	objectKey := types.NamespacedName{Name: current.GetName(), Namespace: current.GetNamespace()}
 	err := r.Get(ctx, objectKey, current)
 
-	if err != nil {
-		if errors.IsNotFound(err) {
-			// Resource doesn't exist, create it
-			desired := createResource()
-			if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-				logger.Error(fmt.Sprintf("Failed to set controller reference for %s", resourceType), err)
-				return nil
-			}
-
-			ctxLogger.Info(
-				fmt.Sprintf("%s does not exist, creating %s", resourceType, resourceType),
-				fmt.Sprintf("%s.Name", resourceType),
-				desired.GetName(),
-			)
-			if err := r.Create(ctx, desired); err != nil {
-				return fmt.Errorf("failed to create %s: %w", resourceType, err)
-			}
-			ctxLogger.Info(fmt.Sprintf("%s created", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
-		} else {
-			return fmt.Errorf("failed to get %s: %w", resourceType, err)
-		}
-	} else {
-		// Resource exists, update it if needed
-		desired := createResource()
-		if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-			logger.Error(fmt.Sprintf("Failed to set controller reference for %s", resourceType), err)
-			return nil
-		}
-
-		if !reflect.DeepEqual(current, desired) {
-			ctxLogger.Info(
-				fmt.Sprintf("%s exists, updating %s", resourceType, resourceType),
-				fmt.Sprintf("%s.Name", resourceType),
-				desired.GetName(),
-			)
-			if err := r.Update(ctx, desired); err != nil {
-				return fmt.Errorf("failed to update %s: %w", resourceType, err)
-			}
-			ctxLogger.Info(fmt.Sprintf("%s updated", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
-		}
+	if errors.IsNotFound(err) {
+		return r.createRBACResource(ctx, mcpServer, resourceType, createResource)
+	} else if err != nil {
+		return fmt.Errorf("failed to get %s: %w", resourceType, err)
 	}
 
+	return r.updateRBACResourceIfNeeded(ctx, mcpServer, resourceType, createResource, current)
+}
+
+// createRBACResource creates a new RBAC resource
+func (r *MCPServerReconciler) createRBACResource(
+	ctx context.Context,
+	mcpServer *mcpv1alpha1.MCPServer,
+	resourceType string,
+	createResource func() client.Object,
+) error {
+	desired := createResource()
+	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
+		logger.Error(fmt.Sprintf("Failed to set controller reference for %s", resourceType), err)
+		return nil
+	}
+
+	ctxLogger.Info(
+		fmt.Sprintf("%s does not exist, creating %s", resourceType, resourceType),
+		fmt.Sprintf("%s.Name", resourceType),
+		desired.GetName(),
+	)
+	if err := r.Create(ctx, desired); err != nil {
+		return fmt.Errorf("failed to create %s: %w", resourceType, err)
+	}
+	ctxLogger.Info(fmt.Sprintf("%s created", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
+	return nil
+}
+
+// updateRBACResourceIfNeeded updates an RBAC resource if changes are detected
+func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
+	ctx context.Context,
+	mcpServer *mcpv1alpha1.MCPServer,
+	resourceType string,
+	createResource func() client.Object,
+	current client.Object,
+) error {
+	desired := createResource()
+	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
+		logger.Error(fmt.Sprintf("Failed to set controller reference for %s", resourceType), err)
+		return nil
+	}
+
+	if !reflect.DeepEqual(current, desired) {
+		ctxLogger.Info(
+			fmt.Sprintf("%s exists, updating %s", resourceType, resourceType),
+			fmt.Sprintf("%s.Name", resourceType),
+			desired.GetName(),
+		)
+		if err := r.Update(ctx, desired); err != nil {
+			return fmt.Errorf("failed to update %s: %w", resourceType, err)
+		}
+		ctxLogger.Info(fmt.Sprintf("%s updated", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
+	}
 	return nil
 }
 
 // ensureRBACResources ensures that the RBAC resources are in place for the MCP server
 func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+	proxyRunnerNameForRBAC := fmt.Sprintf("%s-proxy-runner", mcpServer.Name)
+
 	// Ensure Role
 	if err := r.ensureRBACResource(ctx, mcpServer, "Role", func() client.Object {
 		return &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      mcpServer.Name,
+				Name:      proxyRunnerNameForRBAC,
 				Namespace: mcpServer.Namespace,
 			},
 			Rules: defaultRBACRules,
@@ -311,7 +329,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	if err := r.ensureRBACResource(ctx, mcpServer, "ServiceAccount", func() client.Object {
 		return &corev1.ServiceAccount{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      mcpServer.Name,
+				Name:      proxyRunnerNameForRBAC,
 				Namespace: mcpServer.Namespace,
 			},
 		}
@@ -323,18 +341,18 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	return r.ensureRBACResource(ctx, mcpServer, "RoleBinding", func() client.Object {
 		return &rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      mcpServer.Name,
+				Name:      proxyRunnerNameForRBAC,
 				Namespace: mcpServer.Namespace,
 			},
 			RoleRef: rbacv1.RoleRef{
 				APIGroup: "rbac.authorization.k8s.io",
 				Kind:     "Role",
-				Name:     mcpServer.Name,
+				Name:     proxyRunnerNameForRBAC,
 			},
 			Subjects: []rbacv1.Subject{
 				{
 					Kind:      "ServiceAccount",
-					Name:      mcpServer.Name,
+					Name:      proxyRunnerNameForRBAC,
 					Namespace: mcpServer.Namespace,
 				},
 			},

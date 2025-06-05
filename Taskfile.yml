@@ -88,3 +88,12 @@ tasks:
       KO_DOCKER_REPO: ghcr.io/stacklok/toolhive
     cmds:
       - ko build --local --bare ./cmd/thv
+
+  build-egress-proxy:
+    desc: Build the egress proxy container image
+    cmds:
+      - docker build --load -t ghcr.io/stacklok/toolhive/egress-proxy:local containers/egress-proxy/
+
+  build-all-images:
+    desc: Build all container images (main app and egress proxy)
+    deps: [build-image, build-egress-proxy]

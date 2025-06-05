@@ -1,5 +1,28 @@
 components:
   schemas:
+    client.MCPClient:
+      description: ClientType is the type of MCP client
+      type: string
+      x-enum-varnames:
+      - RooCode
+      - Cline
+      - Cursor
+      - VSCodeInsider
+      - VSCode
+      - ClaudeCode
+    client.MCPClientStatus:
+      properties:
+        client_type:
+          $ref: '#/components/schemas/client.MCPClient'
+        installed:
+          description: Installed indicates whether the client is installed on the
+            system
+          type: boolean
+        registered:
+          description: Registered indicates whether the client is registered in the
+            ToolHive configuration
+          type: boolean
+      type: object
     permissions.NetworkPermissions:
       description: Network defines network permissions
       properties:
@@ -259,6 +282,14 @@ components:
         target:
           type: string
       type: object
+    v1.clientStatusResponse:
+      properties:
+        clients:
+          items:
+            $ref: '#/components/schemas/client.MCPClientStatus'
+          type: array
+          uniqueItems: false
+      type: object
     v1.createRequest:
       description: Request to create a new server
       properties:
@@ -433,6 +464,19 @@ paths:
       summary: Get OpenAPI specification
       tags:
       - system
+  /api/v1beta/discovery/clients:
+    get:
+      description: List all clients compatible with ToolHive and their status
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.clientStatusResponse'
+          description: OK
+      summary: List all clients status
+      tags:
+      - discovery
   /api/v1beta/registry:
     get:
       description: Get a list of the current registries

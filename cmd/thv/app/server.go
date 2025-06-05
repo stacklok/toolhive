@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	s "github.com/stacklok/toolhive/pkg/api"
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 var (
@@ -37,7 +38,24 @@ var serveCmd = &cobra.Command{
 			isUnixSocket = true
 		}
 
-		return s.Serve(ctx, address, isUnixSocket, debugMode, enableDocs)
+		// Get OIDC configuration if enabled
+		var oidcConfig *auth.JWTValidatorConfig
+		if IsOIDCEnabled(cmd) {
+			// Get OIDC flag values
+			issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
+			audience := GetStringFlagOrEmpty(cmd, "oidc-audience")
+			jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
+			clientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
+
+			oidcConfig = &auth.JWTValidatorConfig{
+				Issuer:   issuer,
+				Audience: audience,
+				JWKSURL:  jwksURL,
+				ClientID: clientID,
+			}
+		}
+
+		return s.Serve(ctx, address, isUnixSocket, debugMode, enableDocs, oidcConfig)
 	},
 }
 
@@ -48,4 +66,7 @@ func init() {
 		"Enable OpenAPI documentation endpoints (/api/openapi.json and /api/doc)")
 	serveCmd.Flags().StringVar(&socketPath, "socket", "", "UNIX socket path to bind the "+
 		"server to (overrides host and port if provided)")
+
+	// Add OIDC validation flags
+	AddOIDCFlags(serveCmd)
 }

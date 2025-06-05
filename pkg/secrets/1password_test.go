@@ -28,20 +28,10 @@ func TestNewOnePasswordManager(t *testing.T) {
 func TestOnePasswordManager_GetSecret(t *testing.T) {
 	t.Parallel()
 
-	// Create a mock controller
-	ctrl := gomock.NewController(t)
-	t.Cleanup(func() { ctrl.Finish() })
-
-	// Create mock client
-	mockClient := cm.NewMockOnePasswordClient(ctrl)
-
-	// Create manager with our mock client
-	manager := secrets.NewOnePasswordManagerWithClient(mockClient)
-
 	tests := []struct {
 		name        string
 		path        string
-		setupMock   func()
+		setupMock   func(mockClient *cm.MockOnePasswordClient)
 		wantSecret  string
 		wantErr     bool
 		errContains string
@@ -49,7 +39,7 @@ func TestOnePasswordManager_GetSecret(t *testing.T) {
 		{
 			name:        "invalid path format",
 			path:        "invalid-path",
-			setupMock:   func() {},
+			setupMock:   func(*cm.MockOnePasswordClient) {},
 			wantSecret:  "",
 			wantErr:     true,
 			errContains: "invalid secret path",
@@ -57,7 +47,7 @@ func TestOnePasswordManager_GetSecret(t *testing.T) {
 		{
 			name: "valid path format with success",
 			path: "op://vault/item/field",
-			setupMock: func() {
+			setupMock: func(mockClient *cm.MockOnePasswordClient) {
 				mockClient.EXPECT().
 					Resolve(gomock.Any(), "op://vault/item/field").
 					Return("test-secret-value", nil)
@@ -69,7 +59,7 @@ func TestOnePasswordManager_GetSecret(t *testing.T) {
 		{
 			name: "valid path format with error",
 			path: "op://vault/item/field",
-			setupMock: func() {
+			setupMock: func(mockClient *cm.MockOnePasswordClient) {
 				mockClient.EXPECT().
 					Resolve(gomock.Any(), "op://vault/item/field").
 					Return("", fmt.Errorf("secret not found"))
@@ -81,11 +71,23 @@ func TestOnePasswordManager_GetSecret(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // Capture range variable for parallel execution
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			t.Parallel() // Enable parallel execution
 			ctx := t.Context()
+
+			// Create a new mock controller for each test case
+			ctrl := gomock.NewController(t)
+			t.Cleanup(func() { ctrl.Finish() })
+
+			// Create a new mock client for each test case
+			mockClient := cm.NewMockOnePasswordClient(ctrl)
+
+			// Create a new manager with the mock client
+			manager := secrets.NewOnePasswordManagerWithClient(mockClient, "")
+
 			// Setup expectations
-			tt.setupMock()
+			tt.setupMock(mockClient)
 
 			// Execute test
 			secret, err := manager.GetSecret(ctx, tt.path)
@@ -107,10 +109,13 @@ func TestOnePasswordManager_GetSecret(t *testing.T) {
 func TestOnePasswordManager_ListSecrets(t *testing.T) {
 	t.Parallel()
 
+	// Define test vault name
+	const testVaultName = "test-vault"
+
 	tests := []struct {
 		name        string
 		setupMock   func(mockClient *cm.MockOnePasswordClient)
-		wantSecrets []string
+		wantSecrets []secrets.SecretDescription
 		wantErr     bool
 		errContains string
 	}{
@@ -118,17 +123,17 @@ func TestOnePasswordManager_ListSecrets(t *testing.T) {
 			name: "successful listing",
 			setupMock: func(mockClient *cm.MockOnePasswordClient) {
 				mockClient.EXPECT().
-					List(gomock.Any(), "", gomock.Any()).
+					List(gomock.Any(), testVaultName, gomock.Any()).
 					Return([]onepassword.ItemOverview{
 						{ID: "item1", Title: "Secret 1", VaultID: "vault1"},
 						{ID: "item2", Title: "Secret 2", VaultID: "vault1"},
 						{ID: "item3", Title: "Secret 3", VaultID: "vault2"},
 					}, nil)
 			},
-			wantSecrets: []string{
-				"op://vault1/item1",
-				"op://vault1/item2",
-				"op://vault2/item3",
+			wantSecrets: []secrets.SecretDescription{
+				{Key: "op://vault1/item1", Description: "Secret 1"},
+				{Key: "op://vault1/item2", Description: "Secret 2"},
+				{Key: "op://vault2/item3", Description: "Secret 3"},
 			},
 			wantErr:     false,
 			errContains: "",
@@ -137,10 +142,10 @@ func TestOnePasswordManager_ListSecrets(t *testing.T) {
 			name: "empty list",
 			setupMock: func(mockClient *cm.MockOnePasswordClient) {
 				mockClient.EXPECT().
-					List(gomock.Any(), "", gomock.Any()).
+					List(gomock.Any(), testVaultName, gomock.Any()).
 					Return([]onepassword.ItemOverview{}, nil)
 			},
-			wantSecrets: []string{},
+			wantSecrets: []secrets.SecretDescription{},
 			wantErr:     false,
 			errContains: "",
 		},
@@ -148,7 +153,7 @@ func TestOnePasswordManager_ListSecrets(t *testing.T) {
 			name: "list with some invalid items",
 			setupMock: func(mockClient *cm.MockOnePasswordClient) {
 				mockClient.EXPECT().
-					List(gomock.Any(), "", gomock.Any()).
+					List(gomock.Any(), testVaultName, gomock.Any()).
 					Return([]onepassword.ItemOverview{
 						{ID: "item1", Title: "Secret 1", VaultID: "vault1"},
 						{ID: "", Title: "Invalid Secret", VaultID: "vault1"}, // Missing ID
@@ -156,9 +161,9 @@ func TestOnePasswordManager_ListSecrets(t *testing.T) {
 						{ID: "item4", Title: "Secret 4", VaultID: "vault2"},
 					}, nil)
 			},
-			wantSecrets: []string{
-				"op://vault1/item1",
-				"op://vault2/item4",
+			wantSecrets: []secrets.SecretDescription{
+				{Key: "op://vault1/item1", Description: "Secret 1"},
+				{Key: "op://vault2/item4", Description: "Secret 4"},
 			},
 			wantErr:     false,
 			errContains: "",
@@ -167,12 +172,12 @@ func TestOnePasswordManager_ListSecrets(t *testing.T) {
 			name: "error from client",
 			setupMock: func(mockClient *cm.MockOnePasswordClient) {
 				mockClient.EXPECT().
-					List(gomock.Any(), "", gomock.Any()).
+					List(gomock.Any(), testVaultName, gomock.Any()).
 					Return(nil, fmt.Errorf("connection error"))
 			},
 			wantSecrets: nil,
 			wantErr:     true,
-			errContains: "error listing secrets",
+			errContains: "error retrieving secrets from 1password API",
 		},
 	}
 
@@ -189,8 +194,8 @@ func TestOnePasswordManager_ListSecrets(t *testing.T) {
 			// Create a new mock client for each test case
 			mockClient := cm.NewMockOnePasswordClient(ctrl)
 
-			// Create a new manager with the mock client
-			manager := secrets.NewOnePasswordManagerWithClient(mockClient)
+			// Create a new manager with the mock client and test vault name
+			manager := secrets.NewOnePasswordManagerWithClient(mockClient, testVaultName)
 
 			// Setup expectations
 			tt.setupMock(mockClient)
@@ -220,7 +225,7 @@ func TestOnePasswordManager_UnsupportedOperations(t *testing.T) {
 
 	// Create mock client
 	mockClient := cm.NewMockOnePasswordClient(ctrl)
-	manager := secrets.NewOnePasswordManagerWithClient(mockClient)
+	manager := secrets.NewOnePasswordManagerWithClient(mockClient, "")
 
 	t.Run("SetSecret", func(t *testing.T) {
 		t.Parallel()

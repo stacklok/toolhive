@@ -166,18 +166,40 @@ func TestEncryptedManager_ListSecrets(t *testing.T) {
 	secrets, err = manager.ListSecrets(ctx)
 	assert.NoError(t, err, "Listing secrets should not return an error")
 	assert.Len(t, secrets, 3, "There should be 3 secrets")
-	assert.Contains(t, secrets, "key1", "The list should contain key1")
-	assert.Contains(t, secrets, "key2", "The list should contain key2")
-	assert.Contains(t, secrets, "key3", "The list should contain key3")
+
+	// Helper function to check if a key exists in the secrets list
+	containsKey := func(key string) bool {
+		for _, secret := range secrets {
+			if secret.Key == key {
+				return true
+			}
+		}
+		return false
+	}
+
+	assert.True(t, containsKey("key1"), "The list should contain key1")
+	assert.True(t, containsKey("key2"), "The list should contain key2")
+	assert.True(t, containsKey("key3"), "The list should contain key3")
 
 	// Verify the file was updated by creating a new manager with the same key and file
 	newManager := createEncryptedManager(t, tempFile, key)
 	secrets, err = newManager.ListSecrets(ctx)
 	assert.NoError(t, err, "Listing secrets from a new manager should not return an error")
 	assert.Len(t, secrets, 3, "There should be 3 secrets")
-	assert.Contains(t, secrets, "key1", "The list should contain key1")
-	assert.Contains(t, secrets, "key2", "The list should contain key2")
-	assert.Contains(t, secrets, "key3", "The list should contain key3")
+
+	// Helper function to check if a key exists in the secrets list
+	containsKeyInNewManager := func(key string) bool {
+		for _, secret := range secrets {
+			if secret.Key == key {
+				return true
+			}
+		}
+		return false
+	}
+
+	assert.True(t, containsKeyInNewManager("key1"), "The list should contain key1")
+	assert.True(t, containsKeyInNewManager("key2"), "The list should contain key2")
+	assert.True(t, containsKeyInNewManager("key3"), "The list should contain key3")
 }
 
 func TestEncryptedManager_Cleanup(t *testing.T) {
@@ -312,9 +334,24 @@ func TestEncryptedManager_Concurrency(t *testing.T) {
 	secrets, err := manager.ListSecrets(ctx)
 	assert.NoError(t, err, "Listing secrets should not return an error")
 	assert.Len(t, secrets, numGoroutines+1, "There should be numGoroutines+1 secrets")
-	assert.Contains(t, secrets, "test-key", "The list should contain the original key")
+
+	// Helper function to check if a key exists in the secrets list
+	containsKey := func(key string) bool {
+		for _, secret := range secrets {
+			if secret.Key == key {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Check if the original key exists
+	assert.True(t, containsKey("test-key"), "The list should contain the original key")
+
+	// Check if all the keys created in the goroutines exist
 	for i := 0; i < numGoroutines; i++ {
-		assert.Contains(t, secrets, fmt.Sprintf("key-%d", i), "The list should contain key-%d", i)
+		keyName := fmt.Sprintf("key-%d", i)
+		assert.True(t, containsKey(keyName), "The list should contain %s", keyName)
 	}
 }
 

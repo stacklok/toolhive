@@ -104,8 +104,9 @@ func NewOnePasswordManager() (Provider, error) {
 
 // NewOnePasswordManagerWithClient creates an instance of OnePasswordManager with a provided 1password client.
 // This function is primarily intended for testing purposes.
-func NewOnePasswordManagerWithClient(client clients.OnePasswordClient) *OnePasswordManager {
+func NewOnePasswordManagerWithClient(client clients.OnePasswordClient, vaultName string) *OnePasswordManager {
 	return &OnePasswordManager{
-		client: client,
+		client:    client,
+		vaultName: vaultName,
 	}
 }

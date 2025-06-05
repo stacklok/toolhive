@@ -10,11 +10,6 @@ spec:
   permissionProfile:
     type: builtin
     name: network
-  podTemplateSpec:
-    spec:
-      serviceAccountName: mkp
-      containers:
-      - name: mcp
   resources:
     limits:
       cpu: "100m"

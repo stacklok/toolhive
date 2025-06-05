@@ -13,6 +13,7 @@ thv restart [container-name] [flags]
 ### Options
 
 ```
+  -a, --all    Restart all MCP servers
   -h, --help   help for restart
 ```
 

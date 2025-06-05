@@ -3,6 +3,9 @@ name: Swagger
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   swagger:
     name: Verify Swagger

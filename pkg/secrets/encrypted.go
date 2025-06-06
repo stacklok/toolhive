@@ -88,6 +88,17 @@ func (e *EncryptedManager) Cleanup() error {
 	return e.updateFile()
 }
 
+// Capabilities returns the capabilities of the encrypted provider.
+func (*EncryptedManager) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{
+		CanRead:    true,
+		CanWrite:   true,
+		CanDelete:  true,
+		CanList:    true,
+		CanCleanup: true,
+	}
+}
+
 func (e *EncryptedManager) updateFile() error {
 	// Convert syncmap.Map to map[string]string for JSON marshaling
 	secretsMap := make(map[string]string)

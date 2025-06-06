@@ -232,49 +232,6 @@ components:
         predicate_type:
           type: string
       type: object
-    runtime.ContainerInfo:
-      properties:
-        created:
-          description: Created is the container creation timestamp
-          type: string
-        id:
-          description: ID is the container ID
-          type: string
-        image:
-          description: Image is the container image
-          type: string
-        labels:
-          additionalProperties:
-            type: string
-          description: Labels is the container labels
-          type: object
-        name:
-          description: Name is the container name
-          type: string
-        ports:
-          description: Ports is the container port mappings
-          items:
-            $ref: '#/components/schemas/runtime.PortMapping'
-          type: array
-        state:
-          description: State is the container state
-          type: string
-        status:
-          description: Status is the container status
-          type: string
-      type: object
-    runtime.PortMapping:
-      properties:
-        containerPort:
-          description: ContainerPort is the port inside the container
-          type: integer
-        hostPort:
-          description: HostPort is the port on the host
-          type: integer
-        protocol:
-          description: Protocol is the protocol (tcp, udp)
-          type: string
-      type: object
     secrets.SecretParameter:
       properties:
         name:
@@ -438,10 +395,54 @@ components:
         workloads:
           description: List of container information for each workload
           items:
-            $ref: '#/components/schemas/runtime.ContainerInfo'
+            $ref: '#/components/schemas/workloads.Workload'
           type: array
           uniqueItems: false
       type: object
+    workloads.Workload:
+      properties:
+        created_at:
+          description: CreatedAt is the timestamp when the workload was created.
+          type: string
+        name:
+          description: |-
+            Name is the name of the workload.
+            It is used as a unique identifier.
+          type: string
+        package:
+          description: Package specifies the Workload Package used to create this
+            Workload.
+          type: string
+        port:
+          description: |-
+            Port is the port on which the workload is exposed.
+            This is embedded in the URL.
+          type: integer
+        status:
+          $ref: '#/components/schemas/workloads.WorkloadStatus'
+        status_context:
+          description: |-
+            StatusContext provides additional context about the workload's status.
+            The exact meaning is determined by the status and the underlying runtime.
+          type: string
+        tool_type:
+          description: |-
+            ToolType is the type of tool this workload represents.
+            For now, it will always be "mcp" - representing an MCP server.
+          type: string
+        url:
+          description: URL is the URL of the workload exposed by the ToolHive proxy.
+          type: string
+      type: object
+    workloads.WorkloadStatus:
+      description: Status is the current status of the workload.
+      type: string
+      x-enum-varnames:
+      - WorkloadStatusRunning
+      - WorkloadStatusStopped
+      - WorkloadStatusError
+      - WorkloadStatusStarting
+      - WorkloadStatusUnknown
 externalDocs:
   description: ""
   url: ""
@@ -713,7 +714,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/runtime.ContainerInfo'
+                $ref: '#/components/schemas/workloads.Workload'
           description: OK
         "404":
           content:

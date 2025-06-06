@@ -172,18 +172,11 @@ func getServerPort(ctx context.Context, serverName string) (int, error) {
 	}
 
 	for _, c := range containers {
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
+		name := c.Name
 
 		if name == serverName {
 			// Get port from labels
-			port, err := labels.GetPort(c.Labels)
-			if err != nil {
-				return 0, fmt.Errorf("failed to get port for server %s: %v", serverName, err)
-			}
-
+			port := c.Port
 			// Generate URL for the MCP server
 			if port > 0 {
 				return port, nil

@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -77,12 +76,7 @@ func restartAllContainers(ctx context.Context, manager workloads.Manager) error 
 	fmt.Printf("Restarting %d MCP server(s)...\n", len(containers))
 
 	for _, container := range containers {
-		// Get container name from labels
-		containerName := labels.GetContainerName(container.Labels)
-		if containerName == "" {
-			containerName = container.Name // Fallback to container name
-		}
-
+		containerName := container.Name
 		fmt.Printf("Restarting %s...", containerName)
 		err := manager.RestartWorkload(ctx, containerName)
 		if err != nil {

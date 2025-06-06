@@ -84,6 +84,7 @@ func configureRunConfig(
 		}
 		config.WithAudit(auditConfig)
 	}
+	// Note: AuditConfig is already set from --enable-audit flag if provided
 
 	return nil
 }

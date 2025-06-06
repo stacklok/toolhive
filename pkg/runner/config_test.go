@@ -845,6 +845,8 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		volumes,
 		secretsList,
 		authzConfigPath,
+		"",    // auditConfigPath
+		false, // enableAudit
 		permissionProfile,
 		targetHost,
 		oidcIssuer,

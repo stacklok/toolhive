@@ -78,6 +78,79 @@ jobs:
             cosign sign -y $BASE_REPO:latest
           fi
 
+  egress-proxy-image-build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+
+    env:
+      BASE_REPO: "ghcr.io/stacklok/toolhive/egress-proxy"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Compute version number
+        id: version-string
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            # For main branch, use semver with -dev suffix
+            echo "tag=0.0.1-dev.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # For tags, use the tag as is (assuming it's semver)
+            TAG="${{ github.ref_name }}"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          else
+            # For other branches, use branch name and run number
+            BRANCH="${{ github.ref_name }}"
+            echo "tag=0.0.1-$BRANCH.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@369eb591f429131d6889c46b94e711f089e6ca96 # v5.6.1
+        with:
+          images: ${{ env.BASE_REPO }}
+          tags: |
+            type=raw,value=${{ steps.version-string.outputs.tag }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
+        with:
+          context: containers/egress-proxy
+          platforms: linux/amd64,linux/arm64
+          push: ${{ startsWith(github.ref, 'refs/tags/') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/stacklok/toolhive
+            org.opencontainers.image.title=toolhive-egress-proxy
+            org.opencontainers.image.vendor=Stacklok
+
+      - name: Install Cosign
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
+
+      - name: Sign container image
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          cosign sign -y $BASE_REPO:$TAG
+          cosign sign -y $BASE_REPO:latest
+
   operator-image-build-and-publish:
     runs-on: ubuntu-latest
     permissions:

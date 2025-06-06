@@ -149,6 +149,22 @@ type MCPServerConfig struct {
 	URL string `json:"url,omitempty"`
 }
 
+// FindClientConfig returns the client configuration file for a given client type.
+func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
+	configFiles, err := FindClientConfigs()
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch client configurations: %w", err)
+	}
+
+	for _, cf := range configFiles {
+		if cf.ClientType == clientType {
+			return &cf, nil
+		}
+	}
+
+	return nil, fmt.Errorf("client configuration for %s not found", clientType)
+}
+
 // FindClientConfigs searches for client configuration files in standard locations
 func FindClientConfigs() ([]ConfigFile, error) {
 	// Start by assuming all clients are enabled

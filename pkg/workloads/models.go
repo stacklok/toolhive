@@ -81,7 +81,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 	switch container.State {
 	case "running":
 		workloadStatus = WorkloadStatusRunning
-	case "paused":
+	case "paused", "exited", "dead":
 		workloadStatus = WorkloadStatusStopped
 	case "restarting", "creating": // TODO: add handling new workload creation
 		workloadStatus = WorkloadStatusStarting

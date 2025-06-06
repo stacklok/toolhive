@@ -322,7 +322,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 					return stdout
 				}, 10*time.Second, 1*time.Second).Should(Or(
 					// Server should either be in exited state or completely removed
-					And(ContainSubstring(serverName), ContainSubstring("exited")),
+					And(ContainSubstring(serverName), ContainSubstring("stopped")),
 					Not(ContainSubstring(serverName)),
 				), "Server should be stopped (exited) or removed from list")
 			})

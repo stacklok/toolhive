@@ -26,8 +26,8 @@ type Workload struct {
 	// Name is the name of the workload.
 	// It is used as a unique identifier.
 	Name string `json:"name"`
-	// Image specifies the image used to create this workload.
-	Image string `json:"server_uri"`
+	// Package specifies the Workload Package used to create this Workload.
+	Package string `json:"server_uri"`
 	// URL is the URL of the workload exposed by the ToolHive proxy.
 	URL string `json:"url"`
 	// ToolType is the type of tool this workload represents.

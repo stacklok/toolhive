@@ -683,11 +683,6 @@ paths:
         required: true
         schema:
           type: string
-      - description: Force deletion
-        in: query
-        name: force
-        schema:
-          type: boolean
       responses:
         "204":
           content:

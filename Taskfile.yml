@@ -14,7 +14,7 @@ tasks:
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
     cmds:
-      - go install github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc4
+      - go install github.com/swaggo/swag/v2/cmd/swag@latest
 
   swagger-gen:
     desc: Generate OpenAPI/Swagger documentation

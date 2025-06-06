@@ -137,15 +137,13 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 //	@Description	Delete a workload
 //	@Tags			workloads
 //	@Param			name	path		string	true	"Workload name"
-//	@Param			force	query		boolean	false	"Force deletion"
 //	@Success		204		{string}	string	"No Content"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [delete]
 func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
-	forceDelete := r.URL.Query().Get("force") == "true"
-	err := s.manager.DeleteWorkload(ctx, name, forceDelete)
+	err := s.manager.DeleteWorkload(ctx, name)
 	if err != nil {
 		if errors.Is(err, workloads.ErrContainerNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)

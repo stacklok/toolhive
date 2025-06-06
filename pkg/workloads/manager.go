@@ -29,7 +29,8 @@ type Manager interface {
 	// ListWorkloads lists all ToolHive-managed containers.
 	ListWorkloads(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error)
 	// DeleteWorkload deletes a container and its associated proxy process.
-	DeleteWorkload(ctx context.Context, name string, forceDelete bool) error
+	// The container will be stopped if it is still running.
+	DeleteWorkload(ctx context.Context, name string) error
 	// StopWorkload stops a container and its associated proxy process.
 	StopWorkload(ctx context.Context, name string) error
 	// RunWorkload runs a container in the foreground.
@@ -85,7 +86,7 @@ func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool) ([]rt.
 	return toolHiveContainers, nil
 }
 
-func (d *defaultManager) DeleteWorkload(ctx context.Context, name string, forceDelete bool) error {
+func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) error {
 	// We need several fields from the container struct for deletion.
 	container, err := d.findContainerByName(ctx, name)
 	if err != nil {
@@ -98,12 +99,9 @@ func (d *defaultManager) DeleteWorkload(ctx context.Context, name string, forceD
 
 	// Check if the container is running
 	if isRunning {
-		if !forceDelete {
-			return fmt.Errorf("container %s is running. Stop the container or use -f to force remove", name)
-		}
 		// Stop the container if it's running
 		if err := d.stopContainer(ctx, containerID, name); err != nil {
-			logger.Warnf("Warning: Failed to stop container: %v", err)
+			return fmt.Errorf("failed to stop container: %v", err)
 		}
 	}
 

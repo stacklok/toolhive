@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/lifecycle"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var rmCmd = &cobra.Command{
@@ -31,13 +31,13 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 	containerName := args[0]
 
 	// Create container manager.
-	manager, err := lifecycle.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container manager: %v", err)
 	}
 
 	// Delete container.
-	if err := manager.DeleteContainer(ctx, containerName, rmForce); err != nil {
+	if err := manager.DeleteWorkload(ctx, containerName, rmForce); err != nil {
 		return fmt.Errorf("failed to delete container: %v", err)
 	}
 

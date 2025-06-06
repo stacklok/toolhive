@@ -16,13 +16,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/verifier"
-	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var runCmd = &cobra.Command{
@@ -394,7 +394,7 @@ func applyRegistrySettings(
 
 	// Create a temporary file for the permission profile if not explicitly provided
 	if !cmd.Flags().Changed("permission-profile") {
-		permProfilePath, err := lifecycle.CreatePermissionProfileFile(serverName, server.Permissions)
+		permProfilePath, err := workloads.CreatePermissionProfileFile(serverName, server.Permissions)
 		if err != nil {
 			// Just log the error and continue with the default permission profile
 			logger.Warnf("Warning: Failed to create permission profile file: %v", err)

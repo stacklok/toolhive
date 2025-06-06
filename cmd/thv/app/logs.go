@@ -13,8 +13,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var (
@@ -154,12 +154,12 @@ func getLogsDirectory() (string, error) {
 }
 
 func getManagedContainerNames(ctx context.Context) (map[string]bool, error) {
-	manager, err := lifecycle.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container manager: %v", err)
 	}
 
-	managedContainers, err := manager.ListContainers(ctx, true)
+	managedContainers, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %v", err)
 	}

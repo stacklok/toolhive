@@ -16,13 +16,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/verifier"
-	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var runCmd = &cobra.Command{
@@ -241,7 +241,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 			// Server found in registry
 			logger.Debugf("Found server '%s' in registry: %v", serverOrImage, server)
 			// Apply registry settings to runConfig
-			applyRegistrySettings(cmd, serverOrImage, server, runConfig, debugMode)
+			applyRegistrySettings(ctx, cmd, serverOrImage, server, runConfig, debugMode)
 		}
 	}
 
@@ -350,6 +350,7 @@ func verifyImage(ctx context.Context, image string, rt runtime.Runtime, server *
 
 // applyRegistrySettings applies settings from a registry server to the run config
 func applyRegistrySettings(
+	ctx context.Context,
 	cmd *cobra.Command,
 	serverName string,
 	server *registry.Server,
@@ -387,13 +388,13 @@ func applyRegistrySettings(
 
 	// Process environment variables from registry
 	// This will be merged with command-line env vars in configureRunConfig
-	envVarStrings, secretStrings := processEnvironmentVariables(server.EnvVars, runEnv, runConfig.Secrets, debugMode)
+	envVarStrings, secretStrings := processEnvironmentVariables(ctx, server.EnvVars, runEnv, runConfig.Secrets, debugMode)
 	runEnv = envVarStrings
 	runConfig.Secrets = secretStrings
 
 	// Create a temporary file for the permission profile if not explicitly provided
 	if !cmd.Flags().Changed("permission-profile") {
-		permProfilePath, err := lifecycle.CreatePermissionProfileFile(serverName, server.Permissions)
+		permProfilePath, err := workloads.CreatePermissionProfileFile(serverName, server.Permissions)
 		if err != nil {
 			// Just log the error and continue with the default permission profile
 			logger.Warnf("Warning: Failed to create permission profile file: %v", err)
@@ -407,6 +408,7 @@ func applyRegistrySettings(
 // processEnvironmentVariables processes environment variables from the registry
 // Returns two lists: regular environment variables and secrets
 func processEnvironmentVariables(
+	ctx context.Context,
 	registryEnvVars []*registry.EnvVar,
 	cmdEnvVars []string,
 	secretsConfig []string,
@@ -436,10 +438,10 @@ func processEnvironmentVariables(
 				continue
 			}
 			if value != "" {
-				addEnvironmentVariable(envVar, value, secretsManager, &envVars, &secretsList, debugMode)
+				addEnvironmentVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList, debugMode)
 			}
 		} else if envVar.Default != "" {
-			addEnvironmentVariable(envVar, envVar.Default, secretsManager, &envVars, &secretsList, debugMode)
+			addEnvironmentVariable(ctx, envVar, envVar.Default, secretsManager, &envVars, &secretsList, debugMode)
 		}
 	}
 
@@ -501,6 +503,7 @@ func promptForEnvironmentVariable(envVar *registry.EnvVar) (string, error) {
 
 // addEnvironmentVariable adds an environment variable or secret to the appropriate list
 func addEnvironmentVariable(
+	ctx context.Context,
 	envVar *registry.EnvVar,
 	value string,
 	secretsManager secrets.Provider,
@@ -509,7 +512,7 @@ func addEnvironmentVariable(
 	debugMode bool,
 ) {
 	if envVar.Secret && secretsManager != nil {
-		addAsSecret(envVar, value, secretsManager, secretsList, envVars, debugMode)
+		addAsSecret(ctx, envVar, value, secretsManager, secretsList, envVars, debugMode)
 	} else {
 		addAsEnvironmentVariable(envVar, value, envVars, debugMode)
 	}
@@ -517,6 +520,7 @@ func addEnvironmentVariable(
 
 // addAsSecret stores the value as a secret and adds a secret reference
 func addAsSecret(
+	ctx context.Context,
 	envVar *registry.EnvVar,
 	value string,
 	secretsManager secrets.Provider,
@@ -531,7 +535,7 @@ func addAsSecret(
 		secretName = fmt.Sprintf("registry-default-%s", strings.ToLower(envVar.Name))
 	}
 
-	if err := secretsManager.SetSecret(secretName, value); err != nil {
+	if err := secretsManager.SetSecret(ctx, secretName, value); err != nil {
 		logger.Warnf("Warning: Failed to store secret %s: %v", secretName, err)
 		logger.Warnf("Falling back to environment variable for %s", envVar.Name)
 		*envVars = append(*envVars, fmt.Sprintf("%s=%s", envVar.Name, value))

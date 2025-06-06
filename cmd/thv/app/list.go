@@ -11,9 +11,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/client"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var listCmd = &cobra.Command{
@@ -52,13 +52,13 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 
 	// Instantiate the container manager.
-	manager, err := lifecycle.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container manager: %v", err)
 	}
 
 	// Create container runtime
-	toolHiveContainers, err := manager.ListContainers(ctx, listAll)
+	toolHiveContainers, err := manager.ListWorkloads(ctx, listAll)
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %v", err)
 	}

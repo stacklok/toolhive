@@ -48,7 +48,7 @@ func (rfw *ResponseFilteringWriter) WriteHeader(statusCode int) {
 // Flush processes the captured response and applies filtering if needed
 func (rfw *ResponseFilteringWriter) Flush() error {
 	// If it's not a successful response, just pass it through
-	if rfw.statusCode != http.StatusOK {
+	if rfw.statusCode != http.StatusOK && rfw.statusCode != http.StatusAccepted {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes())
 		return err
@@ -61,12 +61,21 @@ func (rfw *ResponseFilteringWriter) Flush() error {
 		return err
 	}
 
+	rawResponse := rfw.buffer.Bytes()
+
+	// Skip filtering for empty responses (common in SSE scenarios where actual data comes via SSE stream)
+	if len(rawResponse) == 0 {
+		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+		_, err := rfw.ResponseWriter.Write(rawResponse)
+		return err
+	}
+
 	// Parse the JSON-RPC response
 	var response jsonrpc2.Response
-	if err := json.Unmarshal(rfw.buffer.Bytes(), &response); err != nil {
+	if err := json.Unmarshal(rawResponse, &response); err != nil {
 		// If we can't parse it, just pass it through
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rfw.buffer.Bytes())
+		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
 	}
 

@@ -117,7 +117,9 @@ func shouldParseMCPRequest(r *http.Request) bool {
 	}
 
 	// Parse requests to MCP message endpoints
-	return strings.Contains(r.URL.Path, "/messages") || strings.Contains(r.URL.Path, "/mcp")
+	return strings.Contains(r.URL.Path, "/messages") ||
+		strings.Contains(r.URL.Path, "/message") ||
+		strings.Contains(r.URL.Path, "/mcp")
 }
 
 // parseMCPRequest parses the JSON-RPC message and extracts MCP-specific information.

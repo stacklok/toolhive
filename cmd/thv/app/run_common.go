@@ -6,23 +6,23 @@ import (
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/authz"
-	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // RunMCPServer runs an MCP server with the specified configuration.
 func RunMCPServer(ctx context.Context, config *runner.RunConfig, foreground bool) error {
-	manager, err := lifecycle.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create lifecycle manager: %v", err)
 	}
 
-	// If we are running the container in the foreground - call the RunContainer method directly.
+	// If we are running the container in the foreground - call the RunWorkload method directly.
 	if foreground {
-		return manager.RunContainer(ctx, config)
+		return manager.RunWorkload(ctx, config)
 	}
 
-	return manager.RunContainerDetached(config)
+	return manager.RunWorkloadDetached(config)
 }
 
 // configureRunConfig configures a RunConfig with transport, ports, permissions, etc.

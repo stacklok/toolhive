@@ -2,6 +2,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -272,12 +273,12 @@ func (c *RunConfig) WithEnvironmentVariables(envVarStrings []string) (*RunConfig
 }
 
 // WithSecrets processes secrets and adds them to environment variables
-func (c *RunConfig) WithSecrets(secretManager secrets.Provider) (*RunConfig, error) {
+func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provider) (*RunConfig, error) {
 	if len(c.Secrets) == 0 {
 		return c, nil // No secrets to process
 	}
 
-	secretVariables, err := environment.ParseSecretParameters(c.Secrets, secretManager)
+	secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
 	if err != nil {
 		return c, fmt.Errorf("failed to get secrets: %v", err)
 	}

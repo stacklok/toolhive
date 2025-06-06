@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,7 +29,7 @@ type fileStructure struct {
 }
 
 // GetSecret retrieves a secret from the secret store.
-func (e *EncryptedManager) GetSecret(name string) (string, error) {
+func (e *EncryptedManager) GetSecret(_ context.Context, name string) (string, error) {
 	if name == "" {
 		return "", errors.New("secret name cannot be empty")
 	}
@@ -41,7 +42,7 @@ func (e *EncryptedManager) GetSecret(name string) (string, error) {
 }
 
 // SetSecret stores a secret in the secret store.
-func (e *EncryptedManager) SetSecret(name, value string) error {
+func (e *EncryptedManager) SetSecret(_ context.Context, name, value string) error {
 	if name == "" {
 		return errors.New("secret name cannot be empty")
 	}
@@ -51,7 +52,7 @@ func (e *EncryptedManager) SetSecret(name, value string) error {
 }
 
 // DeleteSecret removes a secret from the secret store.
-func (e *EncryptedManager) DeleteSecret(name string) error {
+func (e *EncryptedManager) DeleteSecret(_ context.Context, name string) error {
 	if name == "" {
 		return errors.New("secret name cannot be empty")
 	}
@@ -67,11 +68,11 @@ func (e *EncryptedManager) DeleteSecret(name string) error {
 }
 
 // ListSecrets returns a list of all secret names stored in the manager.
-func (e *EncryptedManager) ListSecrets() ([]string, error) {
-	var secretNames []string
+func (e *EncryptedManager) ListSecrets(_ context.Context) ([]SecretDescription, error) {
+	var secretNames []SecretDescription
 
 	e.secrets.Range(func(key, _ interface{}) bool {
-		secretNames = append(secretNames, key.(string))
+		secretNames = append(secretNames, SecretDescription{Key: key.(string)})
 		return true
 	})
 

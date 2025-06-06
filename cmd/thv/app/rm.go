@@ -16,14 +16,6 @@ var rmCmd = &cobra.Command{
 	RunE:  rmCmdFunc,
 }
 
-var (
-	rmForce bool
-)
-
-func init() {
-	rmCmd.Flags().BoolVarP(&rmForce, "force", "f", false, "Force removal of a running container")
-}
-
 //nolint:gocyclo // This function is complex but manageable
 func rmCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
@@ -37,7 +29,7 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Delete container.
-	if err := manager.DeleteWorkload(ctx, containerName, rmForce); err != nil {
+	if err := manager.DeleteWorkload(ctx, containerName); err != nil {
 		return fmt.Errorf("failed to delete container: %v", err)
 	}
 

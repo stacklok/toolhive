@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	backoff "github.com/cenkalti/backoff/v4"
+	backoff "github.com/cenkalti/backoff/v5"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -169,19 +169,20 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.Wr
 	go func() {
 		// wrap with retry so we can retry if the connection fails
 		// Create exponential backoff with max 5 retries
-		expBackoff := backoff.NewExponentialBackOff()
-		backoffWithRetries := backoff.WithMaxRetries(expBackoff, 5)
-
-		err := backoff.RetryNotify(func() error {
-			return exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		_, err := backoff.Retry(ctx, func() (interface{}, error) {
+			return nil, exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 				Stdin:  stdinReader,
 				Stdout: stdoutWriter,
 				Stderr: stdoutWriter,
 				Tty:    false,
 			})
-		}, backoffWithRetries, func(err error, duration time.Duration) {
-			logger.Errorf("Error attaching to workload %s: %v. Retrying in %s...", workloadID, err, duration)
-		})
+		},
+			backoff.WithBackOff(backoff.NewExponentialBackOff()),
+			backoff.WithMaxTries(5),
+			backoff.WithNotify(func(err error, duration time.Duration) {
+				logger.Errorf("Error attaching to workload %s: %v. Retrying in %s...", workloadID, err, duration)
+			}),
+		)
 		if err != nil {
 			if statusErr, ok := err.(*errors.StatusError); ok {
 				logger.Errorf("Kubernetes API error: Status=%s, Message=%s, Reason=%s, Code=%d",

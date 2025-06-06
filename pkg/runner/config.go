@@ -137,6 +137,8 @@ func NewRunConfigFromFlags(
 	volumes []string,
 	secretsList []string,
 	authzConfigPath string,
+	auditConfigPath string,
+	enableAudit bool,
 	permissionProfile string,
 	targetHost string,
 	oidcIssuer string,
@@ -159,11 +161,17 @@ func NewRunConfigFromFlags(
 		Volumes:                     volumes,
 		Secrets:                     secretsList,
 		AuthzConfigPath:             authzConfigPath,
+		AuditConfigPath:             auditConfigPath,
 		PermissionProfileNameOrPath: permissionProfile,
 		TargetHost:                  targetHost,
 		ContainerLabels:             make(map[string]string),
 		EnvVars:                     make(map[string]string),
 		Host:                        host,
+	}
+
+	// If enable audit is true and no audit config path is provided, use default config
+	if enableAudit && auditConfigPath == "" {
+		config.AuditConfig = audit.DefaultConfig()
 	}
 
 	// Set OIDC config if any values are provided

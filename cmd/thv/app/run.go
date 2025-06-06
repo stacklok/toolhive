@@ -81,6 +81,8 @@ var (
 	runVolumes           []string
 	runSecrets           []string
 	runAuthzConfig       string
+	runAuditConfig       string
+	runEnableAudit       bool
 	runK8sPodPatch       string
 	runCACertPath        string
 	runVerifyImage       string
@@ -129,6 +131,18 @@ func init() {
 		"authz-config",
 		"",
 		"Path to the authorization configuration file",
+	)
+	runCmd.Flags().StringVar(
+		&runAuditConfig,
+		"audit-config",
+		"",
+		"Path to the audit configuration file",
+	)
+	runCmd.Flags().BoolVar(
+		&runEnableAudit,
+		"enable-audit",
+		false,
+		"Enable audit logging with default configuration",
 	)
 	runCmd.Flags().StringVar(
 		&runK8sPodPatch,
@@ -202,6 +216,8 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runVolumes,
 		runSecrets,
 		runAuthzConfig,
+		runAuditConfig,
+		runEnableAudit,
 		runPermissionProfile,
 		runTargetHost,
 		oidcIssuer,

@@ -39,7 +39,6 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 
 			AfterEach(func() {
 				if config.CleanupAfter {
-					fmt.Println("i clean up")
 					// Clean up the server after each test in this context
 					_ = e2e.StopAndRemoveMCPServer(config, serverName)
 				}

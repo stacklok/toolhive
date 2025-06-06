@@ -54,11 +54,6 @@ func (rw *responseWriter) Write(data []byte) (int, error) {
 // Middleware creates an HTTP middleware that logs audit events.
 func (a *Auditor) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip audit logging if disabled
-		if !a.config.Enabled {
-			next.ServeHTTP(w, r)
-			return
-		}
 
 		startTime := time.Now()
 

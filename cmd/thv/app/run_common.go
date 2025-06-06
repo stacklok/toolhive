@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -73,6 +74,15 @@ func configureRunConfig(
 			return fmt.Errorf("failed to load authorization configuration: %v", err)
 		}
 		config.WithAuthz(authzConfig)
+	}
+
+	// Add audit configuration if provided
+	if config.AuditConfigPath != "" {
+		auditConfig, err := audit.LoadFromFile(config.AuditConfigPath)
+		if err != nil {
+			return fmt.Errorf("failed to load audit configuration: %v", err)
+		}
+		config.WithAudit(auditConfig)
 	}
 
 	return nil

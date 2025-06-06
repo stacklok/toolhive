@@ -296,6 +296,16 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 		detachedArgs = append(detachedArgs, "--authz-config", runConfig.AuthzConfigPath)
 	}
 
+	// Add audit config if it was provided
+	if runConfig.AuditConfigPath != "" {
+		detachedArgs = append(detachedArgs, "--audit-config", runConfig.AuditConfigPath)
+	}
+
+	// Add enable audit flag if audit config is set but no config path is provided
+	if runConfig.AuditConfig != nil && runConfig.AuditConfigPath == "" {
+		detachedArgs = append(detachedArgs, "--enable-audit")
+	}
+
 	// Add the image and any arguments
 	detachedArgs = append(detachedArgs, runConfig.Image)
 	if len(runConfig.CmdArgs) > 0 {

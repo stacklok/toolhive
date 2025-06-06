@@ -213,6 +213,8 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		req.Volumes,
 		runSecrets,
 		req.AuthzConfig,
+		"", // auditConfigPath - will be added in future PR
+		false, // enableAudit - will be added in future PR
 		req.PermissionProfile,
 		transport.LocalhostIPv4, // Seems like a reasonable default for now.
 		req.OIDC.Issuer,

@@ -12,8 +12,6 @@ import (
 
 // Config represents the audit logging configuration.
 type Config struct {
-	// Enabled determines whether audit logging is enabled
-	Enabled bool `json:"enabled" yaml:"enabled"`
 	// Component is the component name to use in audit events
 	Component string `json:"component,omitempty" yaml:"component,omitempty"`
 	// EventTypes specifies which event types to audit. If empty, all events are audited.
@@ -32,7 +30,6 @@ type Config struct {
 // DefaultConfig returns a default audit configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		Enabled:             false, // Disabled by default
 		IncludeRequestData:  false, // Disabled by default for privacy
 		IncludeResponseData: false, // Disabled by default for privacy
 		MaxDataSize:         1024,  // 1KB default limit
@@ -64,10 +61,6 @@ func LoadFromReader(r io.Reader) (*Config, error) {
 
 // ShouldAuditEvent determines whether an event should be audited based on the configuration.
 func (c *Config) ShouldAuditEvent(eventType string) bool {
-	if !c.Enabled {
-		return false
-	}
-
 	// Check if event type is excluded
 	for _, excludeType := range c.ExcludeEventTypes {
 		if excludeType == eventType {

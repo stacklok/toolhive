@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -24,17 +23,6 @@ var (
 	listAll    bool
 	listFormat string
 )
-
-// WorkloadOutput represents container information for JSON output
-type WorkloadOutput struct {
-	Name      string    `json:"name"`
-	Package   string    `json:"package"`
-	Status    string    `json:"status"`
-	ToolType  string    `json:"tool_type,omitempty"`
-	URL       string    `json:"url"`
-	Port      int       `json:"port"`
-	CreatedAt time.Time `json:"created_at"`
-}
 
 func init() {
 	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all containers (default shows just running)")
@@ -75,22 +63,8 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 
 // printJSONOutput prints container information in JSON format
 func printJSONOutput(containers []workloads.Workload) error {
-	var output []WorkloadOutput
-
-	for _, c := range containers {
-		output = append(output, WorkloadOutput{
-			Name:      c.Name,
-			Package:   c.Package,
-			Status:    string(c.Status),
-			ToolType:  c.ToolType,
-			URL:       c.URL,
-			Port:      port,
-			CreatedAt: c.CreatedAt,
-		})
-	}
-
 	// Marshal to JSON
-	jsonData, err := json.MarshalIndent(output, "", "  ")
+	jsonData, err := json.MarshalIndent(containers, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}

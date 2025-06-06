@@ -12,6 +12,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v2/jwk"
+
+	"github.com/stacklok/toolhive/pkg/versions"
 )
 
 // Common errors
@@ -67,7 +69,7 @@ type JWTValidatorConfig struct {
 // discoverOIDCConfiguration discovers OIDC configuration from the issuer's well-known endpoint
 func discoverOIDCConfiguration(ctx context.Context, issuer string) (*OIDCDiscoveryDocument, error) {
 	// Construct the well-known endpoint URL
-	wellKnownURL := strings.TrimSuffix(issuer, "/") + "/.well-known/openid_configuration"
+	wellKnownURL := strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration"
 
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnownURL, nil)
@@ -75,8 +77,18 @@ func discoverOIDCConfiguration(ctx context.Context, issuer string) (*OIDCDiscove
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
+	// Set User-Agent header
+	req.Header.Set("User-Agent", fmt.Sprintf("ToolHive/%s", versions.Version))
+	req.Header.Set("Accept", "application/json")
+
 	// Make the request
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch OIDC configuration: %w", err)

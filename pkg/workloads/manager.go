@@ -25,9 +25,9 @@ import (
 // Manager is responsible for managing the state of ToolHive-managed containers.
 type Manager interface {
 	// GetWorkload returns information about the named container.
-	GetWorkload(ctx context.Context, name string) (*rt.ContainerInfo, error)
+	GetWorkload(ctx context.Context, name string) (Workload, error)
 	// ListWorkloads lists all ToolHive-managed containers.
-	ListWorkloads(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error)
+	ListWorkloads(ctx context.Context, listAll bool) ([]Workload, error)
 	// DeleteWorkload deletes a container and its associated proxy process.
 	// The container will be stopped if it is still running.
 	DeleteWorkload(ctx context.Context, name string) error
@@ -63,11 +63,17 @@ func NewManager(ctx context.Context) (Manager, error) {
 	}, nil
 }
 
-func (d *defaultManager) GetWorkload(ctx context.Context, name string) (*rt.ContainerInfo, error) {
-	return d.findContainerByName(ctx, name)
+func (d *defaultManager) GetWorkload(ctx context.Context, name string) (Workload, error) {
+	container, err := d.findContainerByName(ctx, name)
+	if err != nil {
+		// Note that `findContainerByName` already wraps the error with a more specific message.
+		return Workload{}, err
+	}
+
+	return WorkloadFromContainerInfo(container)
 }
 
-func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error) {
+func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool) ([]Workload, error) {
 	// List containers
 	containers, err := d.runtime.ListWorkloads(ctx)
 	if err != nil {
@@ -75,15 +81,19 @@ func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool) ([]rt.
 	}
 
 	// Filter containers to only show those managed by ToolHive
-	var toolHiveContainers []rt.ContainerInfo
+	var workloads []Workload
 	for _, c := range containers {
 		// If the caller did not set `listAll` to true, only include running containers.
 		if labels.IsToolHiveContainer(c.Labels) && (isContainerRunning(&c) || listAll) {
-			toolHiveContainers = append(toolHiveContainers, c)
+			workload, err := WorkloadFromContainerInfo(&c)
+			if err != nil {
+				return nil, err
+			}
+			workloads = append(workloads, workload)
 		}
 	}
 
-	return toolHiveContainers, nil
+	return workloads, nil
 }
 
 func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) error {

@@ -166,10 +166,7 @@ func getManagedContainerNames(ctx context.Context) (map[string]bool, error) {
 
 	managedNames := make(map[string]bool)
 	for _, c := range managedContainers {
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
+		name := c.Name
 		if name != "" {
 			managedNames[name] = true
 		}

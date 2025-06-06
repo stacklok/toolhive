@@ -82,7 +82,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 //	@Tags			workloads
 //	@Produce		json
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		200		{object}	runtime.ContainerInfo
+//	@Success		200		{object}	workloads.Workload
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [get]
 func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
@@ -290,7 +290,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Description	Response containing a list of workloads
 type workloadListResponse struct {
 	// List of container information for each workload
-	Workloads []runtime.ContainerInfo `json:"workloads"`
+	Workloads []workloads.Workload `json:"workloads"`
 }
 
 // createRequest represents the request to create a new workload

@@ -291,6 +291,11 @@ func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig) error {
 		}
 	}
 
+	// Add authz config if it was provided
+	if runConfig.AuthzConfigPath != "" {
+		detachedArgs = append(detachedArgs, "--authz-config", runConfig.AuthzConfigPath)
+	}
+
 	// Add the image and any arguments
 	detachedArgs = append(detachedArgs, runConfig.Image)
 	if len(runConfig.CmdArgs) > 0 {

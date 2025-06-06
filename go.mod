@@ -25,11 +25,11 @@ require (
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0
 	github.com/swaggo/swag/v2 v2.0.0-rc4
-	github.com/tailscale/hujson v0.0.0-20250226034555-ec1d1c113d33
+	github.com/tailscale/hujson v0.0.0-20250605163823-992244df8c5a
 	github.com/tidwall/gjson v1.18.0
 	github.com/zalando/go-keyring v0.2.6
 	go.uber.org/mock v0.5.2
-	golang.org/x/exp/jsonrpc2 v0.0.0-20250531010427-b6e5de432a8b
+	golang.org/x/exp/jsonrpc2 v0.0.0-20250606033433-dcc06ee1d476
 	golang.org/x/mod v0.25.0
 	golang.org/x/oauth2 v0.30.0
 	golang.org/x/sync v0.15.0

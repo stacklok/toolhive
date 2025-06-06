@@ -4,6 +4,8 @@ kind: ClusterRole
 metadata:
   name: toolhive-operator-manager-role
 rules:
+# Below are permissions the operator needs to do it's job managing resources.
+# Allow the operator to manage ConfigMaps, Services
 - apiGroups:
   - ""
   resources:
@@ -17,6 +19,21 @@ rules:
   - patch
   - update
   - watch
+# Allow the operator to create, delete, get, list, patch, update, and watch Roles and RoleBindings.
+- apiGroups:
+  - "rbac.authorization.k8s.io"
+  resources:
+  - roles
+  - rolebindings
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+# Allow the operator to create and patch Events.
 - apiGroups:
   - ""
   resources:
@@ -24,6 +41,7 @@ rules:
   verbs:
   - create
   - patch
+# Allow the operator to get, list, and watch Pods.
 - apiGroups:
   - ""
   resources:
@@ -33,6 +51,7 @@ rules:
   - get
   - list
   - watch
+# Allow the operator to create, delete, get, list, patch, update, and watch Deployments.
 - apiGroups:
   - apps
   resources:
@@ -45,6 +64,7 @@ rules:
   - patch
   - update
   - watch
+# Allow the operator to create, delete, get, list, patch, update, and watch MCP Servers.
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
@@ -57,12 +77,14 @@ rules:
   - patch
   - update
   - watch
+# Allow the operator to update the finalizers of MCP Servers.
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
   - mcpservers/finalizers
   verbs:
   - update
+# Allow the operator to update and get the status of MCP Servers.
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
@@ -71,3 +93,76 @@ rules:
   - get
   - patch
   - update
+
+# The below are permissions the operator needs in order to give to create further RBAC resources
+# that are used by the ToolHive ProxyRunner and MCP server pods.
+# Allow the operator to give permissions to create, delete, get, list, patch, update, and watch ServiceAccounts.
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+
+# Allow the operator to give permissions to create, delete, get, list, patch, update, watch and apply StatefulSets.
+- apiGroups:
+  - "apps"
+  resources:
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+  - apply
+
+# Allow the operator to give permissions to create, delete, get, list, patch, update, watch and apply Services.
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+  - apply
+
+# Allow the operator to give permissions to get, list, and watch Pods.
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+
+# Allow the operator to give permissions to create and get attachments to Pods.
+- apiGroups:
+  - ""
+  resources:
+  - pods/attach
+  verbs:
+  - create
+  - get
+
+# Allow the operator to give permissions to get logs from Pods.
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get

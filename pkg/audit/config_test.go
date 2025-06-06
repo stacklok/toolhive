@@ -12,7 +12,6 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
 
-	assert.False(t, config.Enabled)
 	assert.False(t, config.IncludeRequestData)
 	assert.False(t, config.IncludeResponseData)
 	assert.Equal(t, 1024, config.MaxDataSize)
@@ -23,7 +22,6 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestLoadFromReader(t *testing.T) {
 	jsonConfig := `{
-		"enabled": true,
 		"component": "test-component",
 		"event_types": ["mcp_tool_call", "mcp_resource_read"],
 		"exclude_event_types": ["mcp_ping"],
@@ -35,7 +33,6 @@ func TestLoadFromReader(t *testing.T) {
 	config, err := LoadFromReader(strings.NewReader(jsonConfig))
 	require.NoError(t, err)
 
-	assert.True(t, config.Enabled)
 	assert.Equal(t, "test-component", config.Component)
 	assert.Equal(t, []string{"mcp_tool_call", "mcp_resource_read"}, config.EventTypes)
 	assert.Equal(t, []string{"mcp_ping"}, config.ExcludeEventTypes)
@@ -45,23 +42,22 @@ func TestLoadFromReader(t *testing.T) {
 }
 
 func TestLoadFromReaderInvalidJSON(t *testing.T) {
-	invalidJSON := `{"enabled": true, "invalid": }`
+	invalidJSON := `{"invalid": }`
 
 	_, err := LoadFromReader(strings.NewReader(invalidJSON))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to decode audit config")
 }
 
-func TestShouldAuditEventDisabled(t *testing.T) {
-	config := &Config{Enabled: false}
+func TestShouldAuditEventAllEventsAllowed(t *testing.T) {
+	config := &Config{}
 
 	result := config.ShouldAuditEvent("any_event")
-	assert.False(t, result)
+	assert.True(t, result)
 }
 
 func TestShouldAuditEventAllEventsEnabled(t *testing.T) {
 	config := &Config{
-		Enabled: true,
 		// No EventTypes specified, so all events should be audited
 	}
 
@@ -72,7 +68,6 @@ func TestShouldAuditEventAllEventsEnabled(t *testing.T) {
 
 func TestShouldAuditEventSpecificTypes(t *testing.T) {
 	config := &Config{
-		Enabled:    true,
 		EventTypes: []string{"mcp_tool_call", "mcp_resource_read"},
 	}
 
@@ -84,7 +79,6 @@ func TestShouldAuditEventSpecificTypes(t *testing.T) {
 
 func TestShouldAuditEventExcludeTypes(t *testing.T) {
 	config := &Config{
-		Enabled:           true,
 		ExcludeEventTypes: []string{"mcp_ping", "mcp_logging"},
 	}
 
@@ -96,7 +90,6 @@ func TestShouldAuditEventExcludeTypes(t *testing.T) {
 
 func TestShouldAuditEventExcludeTakesPrecedence(t *testing.T) {
 	config := &Config{
-		Enabled:           true,
 		EventTypes:        []string{"mcp_tool_call", "mcp_ping"},
 		ExcludeEventTypes: []string{"mcp_ping"},
 	}
@@ -107,7 +100,7 @@ func TestShouldAuditEventExcludeTakesPrecedence(t *testing.T) {
 }
 
 func TestCreateMiddleware(t *testing.T) {
-	config := &Config{Enabled: true}
+	config := &Config{}
 
 	middleware := config.CreateMiddleware()
 	assert.NotNil(t, middleware)
@@ -115,7 +108,6 @@ func TestCreateMiddleware(t *testing.T) {
 
 func TestValidateValidConfig(t *testing.T) {
 	config := &Config{
-		Enabled:             true,
 		EventTypes:          []string{EventTypeMCPToolCall, EventTypeMCPResourceRead},
 		ExcludeEventTypes:   []string{EventTypeMCPPing},
 		IncludeRequestData:  true,
@@ -129,7 +121,6 @@ func TestValidateValidConfig(t *testing.T) {
 
 func TestValidateNegativeMaxDataSize(t *testing.T) {
 	config := &Config{
-		Enabled:     true,
 		MaxDataSize: -1,
 	}
 
@@ -140,7 +131,6 @@ func TestValidateNegativeMaxDataSize(t *testing.T) {
 
 func TestValidateInvalidEventType(t *testing.T) {
 	config := &Config{
-		Enabled:    true,
 		EventTypes: []string{"invalid_event_type"},
 	}
 
@@ -151,7 +141,6 @@ func TestValidateInvalidEventType(t *testing.T) {
 
 func TestValidateInvalidExcludeEventType(t *testing.T) {
 	config := &Config{
-		Enabled:           true,
 		ExcludeEventTypes: []string{"invalid_exclude_type"},
 	}
 
@@ -177,7 +166,6 @@ func TestValidateAllValidEventTypes(t *testing.T) {
 	}
 
 	config := &Config{
-		Enabled:    true,
 		EventTypes: validEventTypes,
 	}
 
@@ -187,7 +175,6 @@ func TestValidateAllValidEventTypes(t *testing.T) {
 
 func TestConfigJSONSerialization(t *testing.T) {
 	originalConfig := &Config{
-		Enabled:             true,
 		Component:           "test-service",
 		EventTypes:          []string{EventTypeMCPToolCall, EventTypeMCPResourceRead},
 		ExcludeEventTypes:   []string{EventTypeMCPPing},
@@ -206,7 +193,6 @@ func TestConfigJSONSerialization(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify all fields are preserved
-	assert.Equal(t, originalConfig.Enabled, deserializedConfig.Enabled)
 	assert.Equal(t, originalConfig.Component, deserializedConfig.Component)
 	assert.Equal(t, originalConfig.EventTypes, deserializedConfig.EventTypes)
 	assert.Equal(t, originalConfig.ExcludeEventTypes, deserializedConfig.ExcludeEventTypes)
@@ -216,12 +202,11 @@ func TestConfigJSONSerialization(t *testing.T) {
 }
 
 func TestConfigMinimalJSON(t *testing.T) {
-	minimalJSON := `{"enabled": true}`
+	minimalJSON := `{}`
 
 	config, err := LoadFromReader(strings.NewReader(minimalJSON))
 	require.NoError(t, err)
 
-	assert.True(t, config.Enabled)
 	assert.Empty(t, config.Component)
 	assert.Empty(t, config.EventTypes)
 	assert.Empty(t, config.ExcludeEventTypes)
@@ -247,7 +232,6 @@ func TestLoadFromFilePathCleaning(t *testing.T) {
 
 func TestConfigWithEmptyEventTypes(t *testing.T) {
 	config := &Config{
-		Enabled:    true,
 		EventTypes: []string{}, // Explicitly empty
 	}
 
@@ -258,7 +242,6 @@ func TestConfigWithEmptyEventTypes(t *testing.T) {
 
 func TestConfigWithEmptyExcludeEventTypes(t *testing.T) {
 	config := &Config{
-		Enabled:           true,
 		ExcludeEventTypes: []string{}, // Explicitly empty
 	}
 

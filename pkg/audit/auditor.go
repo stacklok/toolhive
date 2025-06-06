@@ -54,8 +54,13 @@ func (rw *responseWriter) Write(data []byte) (int, error) {
 // Middleware creates an HTTP middleware that logs audit events.
 func (a *Auditor) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip audit logging if disabled
-		if !a.config.Enabled {
+		// Handle SSE endpoints specially - log the connection event immediately
+		// since SSE connections are long-lived and don't follow normal request/response pattern
+		if r.URL.Path == "/sse" {
+			// Log SSE connection event immediately
+			a.logSSEConnectionEvent(r)
+
+			// Pass through to SSE handler without waiting
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -391,6 +396,38 @@ func (a *Auditor) addEventData(event *AuditEvent, _ *http.Request, rw *responseW
 			event.WithData(&rawMsg)
 		}
 	}
+}
+
+// logSSEConnectionEvent logs an audit event for SSE connection initiation.
+func (a *Auditor) logSSEConnectionEvent(r *http.Request) {
+	// Extract source information
+	source := a.extractSource(r)
+
+	// Extract subject information
+	subjects := a.extractSubjects(r)
+
+	// Determine component name
+	component := a.determineComponent(r)
+
+	// Create the audit event for SSE connection
+	event := NewAuditEvent("sse_connection", source, OutcomeSuccess, subjects, component)
+
+	// Add target information
+	target := map[string]string{
+		"endpoint": r.URL.Path,
+		"method":   r.Method,
+		"type":     "sse_endpoint",
+	}
+	event.WithTarget(target)
+
+	// Add metadata
+	event.Metadata.Extra = map[string]any{
+		"transport":  "sse",
+		"user_agent": r.Header.Get("User-Agent"),
+	}
+
+	// Log the event
+	a.logEvent(event)
 }
 
 // logEvent logs the audit event as structured JSON.

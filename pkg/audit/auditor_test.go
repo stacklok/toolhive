@@ -24,7 +24,7 @@ func init() {
 }
 
 func TestNewAuditor(t *testing.T) {
-	config := &Config{Enabled: true}
+	config := &Config{}
 	auditor := NewAuditor(config)
 
 	assert.NotNil(t, auditor)
@@ -32,31 +32,7 @@ func TestNewAuditor(t *testing.T) {
 }
 
 func TestAuditorMiddlewareDisabled(t *testing.T) {
-	config := &Config{Enabled: false}
-	auditor := NewAuditor(config)
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test response"))
-	})
-
-	middleware := auditor.Middleware(handler)
-
-	req := httptest.NewRequest("GET", "/test", nil)
-	rr := httptest.NewRecorder()
-
-	middleware.ServeHTTP(rr, req)
-
-	assert.Equal(t, http.StatusOK, rr.Code)
-	assert.Equal(t, "test response", rr.Body.String())
-}
-
-func TestAuditorMiddlewareEnabled(t *testing.T) {
-	config := &Config{
-		Enabled:    true,
-		Component:  "test-component",
-		EventTypes: []string{"http_request"},
-	}
+	config := &Config{}
 	auditor := NewAuditor(config)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -77,7 +53,6 @@ func TestAuditorMiddlewareEnabled(t *testing.T) {
 
 func TestAuditorMiddlewareWithRequestData(t *testing.T) {
 	config := &Config{
-		Enabled:            true,
 		IncludeRequestData: true,
 		MaxDataSize:        1024,
 	}
@@ -106,7 +81,6 @@ func TestAuditorMiddlewareWithRequestData(t *testing.T) {
 
 func TestAuditorMiddlewareWithResponseData(t *testing.T) {
 	config := &Config{
-		Enabled:             true,
 		IncludeResponseData: true,
 		MaxDataSize:         1024,
 	}

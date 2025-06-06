@@ -370,7 +370,7 @@ func TestJWTValidatorMiddleware(t *testing.T) {
 // createTestOIDCServer creates a test OIDC discovery server that returns the given JWKS URL
 func createTestOIDCServer(_ *testing.T, jwksURL string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/.well-known/openid_configuration" {
+		if r.URL.Path != "/.well-known/openid-configuration" {
 			http.NotFound(w, r)
 			return
 		}

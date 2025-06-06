@@ -1,7 +1,7 @@
 //go:build !windows
 // +build !windows
 
-package lifecycle
+package workloads
 
 import (
 	"syscall"

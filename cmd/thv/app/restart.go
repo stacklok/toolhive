@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/lifecycle"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var (
@@ -38,7 +38,7 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create lifecycle manager.
-	manager, err := lifecycle.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create lifecycle manager: %v", err)
 	}
@@ -49,7 +49,7 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Restart single container
 	containerName := args[0]
-	err = manager.RestartContainer(ctx, containerName)
+	err = manager.RestartWorkload(ctx, containerName)
 	if err != nil {
 		return err
 	}
@@ -58,9 +58,9 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func restartAllContainers(ctx context.Context, manager lifecycle.Manager) error {
+func restartAllContainers(ctx context.Context, manager workloads.Manager) error {
 	// Get all containers (including stopped ones since restart can start stopped containers)
-	containers, err := manager.ListContainers(ctx, true)
+	containers, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %v", err)
 	}
@@ -84,7 +84,7 @@ func restartAllContainers(ctx context.Context, manager lifecycle.Manager) error 
 		}
 
 		fmt.Printf("Restarting %s...", containerName)
-		err := manager.RestartContainer(ctx, containerName)
+		err := manager.RestartWorkload(ctx, containerName)
 		if err != nil {
 			fmt.Printf(" failed: %v\n", err)
 			failedCount++

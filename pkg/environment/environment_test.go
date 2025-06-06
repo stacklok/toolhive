@@ -44,6 +44,16 @@ func (*mockSecretsProvider) Cleanup() error {
 	return nil
 }
 
+func (*mockSecretsProvider) Capabilities() secrets.ProviderCapabilities {
+	return secrets.ProviderCapabilities{
+		CanRead:    true,
+		CanWrite:   true,
+		CanDelete:  true,
+		CanList:    true,
+		CanCleanup: true,
+	}
+}
+
 func TestParseSecretParameters(t *testing.T) {
 	t.Parallel()
 

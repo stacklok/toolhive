@@ -94,6 +94,18 @@ func (*OnePasswordManager) Cleanup() error {
 	return nil
 }
 
+// Capabilities returns the capabilities of the 1Password provider.
+// Read-only provider with listing support.
+func (*OnePasswordManager) Capabilities() ProviderCapabilities {
+	return ProviderCapabilities{
+		CanRead:    true,
+		CanWrite:   false, // 1Password is read-only for now
+		CanDelete:  false, // 1Password is read-only for now
+		CanList:    true,  // Listing is now supported
+		CanCleanup: false, // Not applicable for 1Password
+	}
+}
+
 // NewOnePasswordManager creates an instance of OnePasswordManager.
 func NewOnePasswordManager() (Provider, error) {
 	token := os.Getenv("OP_SERVICE_ACCOUNT_TOKEN")

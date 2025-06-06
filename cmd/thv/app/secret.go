@@ -39,8 +39,8 @@ func newSecretProviderCommand() *cobra.Command {
 		Short: "Configure the secrets provider",
 		Long: `Configure the secrets provider.
 Valid secrets providers are:
-  - encrypted: Encrypted secrets provider
-  - 1password: 1Password secrets provider (currently only supports getting secrets)`,
+  - encrypted: Full read-write secrets provider
+  - 1password: Read-only secrets provider`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			provider := args[0]
@@ -122,6 +122,13 @@ The secret will be stored securely using the configured secrets provider.`,
 				return
 			}
 
+			// Check if the provider supports writing secrets
+			if !manager.Capabilities().CanWrite {
+				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support setting secrets (read-only)\n", providerType)
+				return
+			}
+
 			err = manager.SetSecret(ctx, name, value)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to set secret %s: %v\n", name, err)
@@ -184,6 +191,13 @@ func newSecretDeleteCommand() *cobra.Command {
 				return
 			}
 
+			// Check if the provider supports deleting secrets
+			if !manager.Capabilities().CanDelete {
+				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support deleting secrets\n", providerType)
+				return
+			}
+
 			err = manager.DeleteSecret(ctx, name)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to delete secret %s: %v\n", name, err)
@@ -204,6 +218,13 @@ func newSecretListCommand() *cobra.Command {
 			manager, err := getSecretsManager()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
+				return
+			}
+
+			// Check if the provider supports listing secrets
+			if !manager.Capabilities().CanList {
+				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support listing secrets\n", providerType)
 				return
 			}
 

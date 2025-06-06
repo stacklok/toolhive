@@ -114,7 +114,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Process secrets
-		if _, err = r.Config.WithSecrets(secretManager); err != nil {
+		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
 			return err
 		}
 	}

@@ -1,6 +1,7 @@
 package environment
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -17,7 +18,7 @@ type mockSecretsProvider struct {
 // Ensure mockSecretsProvider implements secrets.Provider
 var _ secrets.Provider = (*mockSecretsProvider)(nil)
 
-func (m *mockSecretsProvider) GetSecret(name string) (string, error) {
+func (m *mockSecretsProvider) GetSecret(_ context.Context, name string) (string, error) {
 	if m.getErr != nil {
 		return "", m.getErr
 	}
@@ -27,15 +28,15 @@ func (m *mockSecretsProvider) GetSecret(name string) (string, error) {
 	return "", errors.New("secret not found")
 }
 
-func (*mockSecretsProvider) SetSecret(_ string, _ string) error {
+func (*mockSecretsProvider) SetSecret(_ context.Context, _ string, _ string) error {
 	return nil
 }
 
-func (*mockSecretsProvider) DeleteSecret(_ string) error {
+func (*mockSecretsProvider) DeleteSecret(_ context.Context, _ string) error {
 	return nil
 }
 
-func (*mockSecretsProvider) ListSecrets() ([]string, error) {
+func (*mockSecretsProvider) ListSecrets(_ context.Context) ([]secrets.SecretDescription, error) {
 	return nil, nil
 }
 
@@ -44,6 +45,8 @@ func (*mockSecretsProvider) Cleanup() error {
 }
 
 func TestParseSecretParameters(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		parameters []string
@@ -93,7 +96,8 @@ func TestParseSecretParameters(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseSecretParameters(tt.parameters, tt.provider)
+			t.Parallel()
+			got, err := ParseSecretParameters(t.Context(), tt.parameters, tt.provider)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseSecretParameters() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -106,6 +110,8 @@ func TestParseSecretParameters(t *testing.T) {
 }
 
 func TestParseEnvironmentVariables(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		envVars []string
@@ -159,6 +165,8 @@ func TestParseEnvironmentVariables(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := ParseEnvironmentVariables(tt.envVars)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseEnvironmentVariables() error = %v, wantErr %v", err, tt.wantErr)
@@ -172,6 +180,8 @@ func TestParseEnvironmentVariables(t *testing.T) {
 }
 
 func TestSetTransportEnvironmentVariables(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name          string
 		transportType string
@@ -235,6 +245,8 @@ func TestSetTransportEnvironmentVariables(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			envVars := make(map[string]string)
 			for k, v := range tt.initialEnv {
 				envVars[k] = v

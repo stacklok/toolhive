@@ -3,6 +3,7 @@
 package environment
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -12,7 +13,7 @@ import (
 // ParseSecretParameters parses the secret parameters from the command line,
 // fetches them from the secrets manager, and returns a map of secrets and
 // their environment variable names.
-func ParseSecretParameters(parameters []string, secretsManager secrets.Provider) (map[string]string, error) {
+func ParseSecretParameters(ctx context.Context, parameters []string, secretsManager secrets.Provider) (map[string]string, error) {
 	secretVariables := make(map[string]string, len(parameters))
 	for _, param := range parameters {
 		parameter, err := secrets.ParseSecretParameter(param)
@@ -20,7 +21,7 @@ func ParseSecretParameters(parameters []string, secretsManager secrets.Provider)
 			return nil, err
 		}
 
-		secret, err := secretsManager.GetSecret(parameter.Name)
+		secret, err := secretsManager.GetSecret(ctx, parameter.Name)
 		if err != nil {
 			return nil, err
 		}

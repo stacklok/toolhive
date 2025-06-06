@@ -66,6 +66,20 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 			})
 
 			It("should be accessible via HTTP SSE endpoint [Serial]", func() {
+				defer func() {
+					containerNames := []string{
+						serverName,
+						serverName + ".toolhive.internal",
+						serverName + "-egress",
+					}
+					for _, name := range containerNames {
+						GinkgoWriter.Printf("=== DEBUG: Logs from container %s ===\n", name)
+						logs := e2e.GetContainerLogs(name)
+						GinkgoWriter.Println(logs)
+						GinkgoWriter.Printf("=== END LOGS: %s ===\n\n", name)
+					}
+				}()
+
 				By("Starting the OSV MCP server")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
@@ -82,16 +96,36 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				Expect(serverURL).To(ContainSubstring("http"), "URL should be HTTP-based")
 				Expect(serverURL).To(ContainSubstring("/sse"), "URL should contain SSE endpoint")
 
-				By("Making an HTTP request to the SSE endpoint")
+				By("Making an HTTP request to the SSE endpoint with retries")
+
+				var resp *http.Response
+				maxRetries := 5
+				retryDelay := 2 * time.Second
+
 				client := &http.Client{Timeout: 10 * time.Second}
-				resp, err := client.Get(serverURL)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to connect to SSE endpoint")
+
+				for i := 0; i < maxRetries; i++ {
+					resp, err = client.Get(serverURL)
+					if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 500 {
+						break // success
+					}
+
+					GinkgoWriter.Printf("[Attempt %d/%d] SSE request failed: %v\n", i+1, maxRetries, err)
+					if resp != nil {
+						GinkgoWriter.Printf("Status Code: %d\n", resp.StatusCode)
+						resp.Body.Close()
+					}
+					time.Sleep(retryDelay)
+				}
+
+				Expect(err).ToNot(HaveOccurred(), "Should be able to connect to SSE endpoint after retries")
+				Expect(resp).ToNot(BeNil(), "Response should not be nil")
 				defer resp.Body.Close()
 
 				// For SSE endpoints, we might get different status codes
 				// but the connection should be successful
 				Expect(resp.StatusCode).To(BeNumerically(">=", 200), "Should get a valid HTTP response")
-				Expect(resp.StatusCode).To(BeNumerically("<=", 502), "Should not get a server error")
+				Expect(resp.StatusCode).To(BeNumerically("<", 500), "Should not get a server error")
 			})
 
 			It("should respond to proper MCP protocol operations [Serial]", func() {

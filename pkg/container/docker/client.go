@@ -233,7 +233,9 @@ func writeOutboundACLs(sb *strings.Builder, outbound *permissions.OutboundNetwor
 		for _, method := range outbound.AllowTransport {
 			sb.WriteString(" " + strings.ToUpper(method))
 		}
-		sb.WriteString("\n")
+
+		// now add connect
+		sb.WriteString(" CONNECT GET POST\n")
 	}
 }
 

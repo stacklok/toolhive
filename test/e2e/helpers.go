@@ -256,3 +256,33 @@ func StartDockerCommand(args ...string) *exec.Cmd {
 	cmd.Env = os.Environ()
 	return cmd
 }
+
+func GetContainerLogs(containerName string) string {
+	cmd := exec.Command("docker", "logs", containerName)
+	cmd.Env = os.Environ()
+
+	var out strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Sprintf("failed to get logs for container %s: %v", containerName, err)
+	}
+	return out.String()
+}
+
+func ExecInContainer(containerName string, command ...string) (string, error) {
+	args := append([]string{"exec", containerName}, command...)
+	cmd := exec.Command("docker", args...)
+	cmd.Env = os.Environ()
+
+	var out strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("failed to exec in container %s: %w\nOutput: %s", containerName, err, out.String())
+	}
+	return out.String(), nil
+}

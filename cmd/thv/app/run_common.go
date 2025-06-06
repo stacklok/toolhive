@@ -5,24 +5,25 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/authz"
-	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // RunMCPServer runs an MCP server with the specified configuration.
 func RunMCPServer(ctx context.Context, config *runner.RunConfig, foreground bool) error {
-	manager, err := lifecycle.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create lifecycle manager: %v", err)
 	}
 
-	// If we are running the container in the foreground - call the RunContainer method directly.
+	// If we are running the container in the foreground - call the RunWorkload method directly.
 	if foreground {
-		return manager.RunContainer(ctx, config)
+		return manager.RunWorkload(ctx, config)
 	}
 
-	return manager.RunContainerDetached(config)
+	return manager.RunWorkloadDetached(config)
 }
 
 // configureRunConfig configures a RunConfig with transport, ports, permissions, etc.
@@ -74,6 +75,16 @@ func configureRunConfig(
 		}
 		config.WithAuthz(authzConfig)
 	}
+
+	// Add audit configuration if provided
+	if config.AuditConfigPath != "" {
+		auditConfig, err := audit.LoadFromFile(config.AuditConfigPath)
+		if err != nil {
+			return fmt.Errorf("failed to load audit configuration: %v", err)
+		}
+		config.WithAudit(auditConfig)
+	}
+	// Note: AuditConfig is already set from --enable-audit flag if provided
 
 	return nil
 }

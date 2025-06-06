@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/lifecycle"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var stopCmd = &cobra.Command{
@@ -30,15 +30,15 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get container name
 	containerName := args[0]
 
-	manager, err := lifecycle.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container manager: %v", err)
 	}
 
-	err = manager.StopContainer(ctx, containerName)
+	err = manager.StopWorkload(ctx, containerName)
 	if err != nil {
 		// If the container is not found, treat as a non-fatal error.
-		if errors.Is(err, lifecycle.ErrContainerNotFound) {
+		if errors.Is(err, workloads.ErrContainerNotFound) {
 			fmt.Printf("Container %s is not running\n", containerName)
 		} else {
 			return fmt.Errorf("failed to delete container: %v", err)

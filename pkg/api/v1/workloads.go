@@ -8,194 +8,192 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
-// ServerRoutes defines the routes for server management.
-type ServerRoutes struct {
-	manager          lifecycle.Manager
+// WorkloadRoutes defines the routes for workload management.
+type WorkloadRoutes struct {
+	manager          workloads.Manager
 	containerRuntime runtime.Runtime
 	debugMode        bool
 }
 
 //	@title			ToolHive API
 //	@version		1.0
-//	@description	This is the ToolHive API server.
-//	@servers		[ { "url": "http://localhost:8080/api/v1" } ]
+//	@description	This is the ToolHive API workload.
+//	@workloads		[ { "url": "http://localhost:8080/api/v1" } ]
 //	@basePath		/api/v1
 
-// ServerRouter creates a new ServerRoutes instance.
-func ServerRouter(
-	manager lifecycle.Manager,
+// WorkloadRouter creates a new WorkloadRoutes instance.
+func WorkloadRouter(
+	manager workloads.Manager,
 	containerRuntime runtime.Runtime,
 	debugMode bool,
 ) http.Handler {
-	routes := ServerRoutes{
+	routes := WorkloadRoutes{
 		manager:          manager,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 	}
 
 	r := chi.NewRouter()
-	r.Get("/", routes.listServers)
-	r.Post("/", routes.createServer)
-	r.Get("/{name}", routes.getServer)
-	r.Post("/{name}/stop", routes.stopServer)
-	r.Post("/{name}/restart", routes.restartServer)
-	r.Delete("/{name}", routes.deleteServer)
+	r.Get("/", routes.listWorkloads)
+	r.Post("/", routes.createWorkload)
+	r.Get("/{name}", routes.getWorkload)
+	r.Post("/{name}/stop", routes.stopWorkload)
+	r.Post("/{name}/restart", routes.restartWorkload)
+	r.Delete("/{name}", routes.deleteWorkload)
 	return r
 }
 
-//	 listServers
-//		@Summary		List all servers
-//		@Description	Get a list of all running servers
-//		@Tags			servers
+//	 listWorkloads
+//		@Summary		List all workloads
+//		@Description	Get a list of all running workloads
+//		@Tags			workloads
 //		@Produce		json
-//		@Success		200	{object}	serverListResponse
-//		@Router			/api/v1beta/servers [get]
-func (s *ServerRoutes) listServers(w http.ResponseWriter, r *http.Request) {
+//		@Success		200	{object}	workloadListResponse
+//		@Router			/api/v1beta/workloads [get]
+func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	listAll := r.URL.Query().Get("all") == "true"
-	servers, err := s.manager.ListContainers(ctx, listAll)
+	workloadList, err := s.manager.ListWorkloads(ctx, listAll)
 	if err != nil {
-		logger.Errorf("Failed to list servers: %v", err)
-		http.Error(w, "Failed to list servers", http.StatusInternalServerError)
+		logger.Errorf("Failed to list workloads: %v", err)
+		http.Error(w, "Failed to list workloads", http.StatusInternalServerError)
 		return
 	}
 
-	err = json.NewEncoder(w).Encode(serverListResponse{Servers: servers})
+	err = json.NewEncoder(w).Encode(workloadListResponse{Workloads: workloadList})
 	if err != nil {
-		http.Error(w, "Failed to marshal server list", http.StatusInternalServerError)
+		http.Error(w, "Failed to marshal workload list", http.StatusInternalServerError)
 		return
 	}
 }
 
-// getServer
+// getWorkload
 //
-//	@Summary		Get server details
-//	@Description	Get details of a specific server
-//	@Tags			servers
+//	@Summary		Get workload details
+//	@Description	Get details of a specific workload
+//	@Tags			workloads
 //	@Produce		json
-//	@Param			name	path		string	true	"Server name"
+//	@Param			name	path		string	true	"Workload name"
 //	@Success		200		{object}	runtime.ContainerInfo
 //	@Failure		404		{string}	string	"Not Found"
-//	@Router			/api/v1beta/servers/{name} [get]
-func (s *ServerRoutes) getServer(w http.ResponseWriter, r *http.Request) {
+//	@Router			/api/v1beta/workloads/{name} [get]
+func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
-	server, err := s.manager.GetContainer(ctx, name)
+	workload, err := s.manager.GetWorkload(ctx, name)
 	if err != nil {
-		if errors.Is(err, lifecycle.ErrContainerNotFound) {
-			http.Error(w, "Server not found", http.StatusNotFound)
+		if errors.Is(err, workloads.ErrContainerNotFound) {
+			http.Error(w, "Workload not found", http.StatusNotFound)
 			return
 		}
-		logger.Errorf("Failed to list servers: %v", err)
-		http.Error(w, "Failed to list servers", http.StatusInternalServerError)
+		logger.Errorf("Failed to list workloads: %v", err)
+		http.Error(w, "Failed to list workloads", http.StatusInternalServerError)
 		return
 	}
 
-	err = json.NewEncoder(w).Encode(server)
+	err = json.NewEncoder(w).Encode(workload)
 	if err != nil {
-		http.Error(w, "Failed to marshal server details", http.StatusInternalServerError)
+		http.Error(w, "Failed to marshal workload details", http.StatusInternalServerError)
 		return
 	}
 }
 
-// stopServer
+// stopWorkload
 //
-//	@Summary		Stop a server
-//	@Description	Stop a running server
-//	@Tags			servers
-//	@Param			name	path		string	true	"Server name"
+//	@Summary		Stop a workload
+//	@Description	Stop a running workload
+//	@Tags			workloads
+//	@Param			name	path		string	true	"Workload name"
 //	@Success		204		{string}	string	"No Content"
 //	@Failure		404		{string}	string	"Not Found"
-//	@Router			/api/v1beta/servers/{name}/stop [post]
-func (s *ServerRoutes) stopServer(w http.ResponseWriter, r *http.Request) {
+//	@Router			/api/v1beta/workloads/{name}/stop [post]
+func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
-	err := s.manager.StopContainer(ctx, name)
+	err := s.manager.StopWorkload(ctx, name)
 	if err != nil {
-		if errors.Is(err, lifecycle.ErrContainerNotFound) {
-			http.Error(w, "Server not found", http.StatusNotFound)
+		if errors.Is(err, workloads.ErrContainerNotFound) {
+			http.Error(w, "Workload not found", http.StatusNotFound)
 			return
 		}
-		logger.Errorf("Failed to stop server: %v", err)
-		http.Error(w, "Failed to stop server", http.StatusInternalServerError)
+		logger.Errorf("Failed to stop workload: %v", err)
+		http.Error(w, "Failed to stop workload", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// deleteServer
+// deleteWorkload
 //
-//	@Summary		Delete a server
-//	@Description	Delete a server
-//	@Tags			servers
-//	@Param			name	path		string	true	"Server name"
-//	@Param			force	query		boolean	false	"Force deletion"
+//	@Summary		Delete a workload
+//	@Description	Delete a workload
+//	@Tags			workloads
+//	@Param			name	path		string	true	"Workload name"
 //	@Success		204		{string}	string	"No Content"
 //	@Failure		404		{string}	string	"Not Found"
-//	@Router			/api/v1beta/servers/{name} [delete]
-func (s *ServerRoutes) deleteServer(w http.ResponseWriter, r *http.Request) {
+//	@Router			/api/v1beta/workloads/{name} [delete]
+func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
-	forceDelete := r.URL.Query().Get("force") == "true"
-	err := s.manager.DeleteContainer(ctx, name, forceDelete)
+	err := s.manager.DeleteWorkload(ctx, name)
 	if err != nil {
-		if errors.Is(err, lifecycle.ErrContainerNotFound) {
-			http.Error(w, "Server not found", http.StatusNotFound)
+		if errors.Is(err, workloads.ErrContainerNotFound) {
+			http.Error(w, "Workload not found", http.StatusNotFound)
 			return
 		}
-		logger.Errorf("Failed to delete server: %v", err)
-		http.Error(w, "Failed to delete server", http.StatusInternalServerError)
+		logger.Errorf("Failed to delete workload: %v", err)
+		http.Error(w, "Failed to delete workload", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// restartServer
+// restartWorkload
 //
-//	@Summary		Restart a server
-//	@Description	Restart a running server
-//	@Tags			servers
-//	@Param			name	path		string	true	"Server name"
+//	@Summary		Restart a workload
+//	@Description	Restart a running workload
+//	@Tags			workloads
+//	@Param			name	path		string	true	"Workload name"
 //	@Success		204		{string}	string	"No Content"
 //	@Failure		404		{string}	string	"Not Found"
-//	@Router			/api/v1beta/servers/{name}/restart [post]
-func (s *ServerRoutes) restartServer(w http.ResponseWriter, r *http.Request) {
+//	@Router			/api/v1beta/workloads/{name}/restart [post]
+func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
-	err := s.manager.RestartContainer(ctx, name)
+	err := s.manager.RestartWorkload(ctx, name)
 	if err != nil {
-		if errors.Is(err, lifecycle.ErrContainerNotFound) {
-			http.Error(w, "Server not found", http.StatusNotFound)
+		if errors.Is(err, workloads.ErrContainerNotFound) {
+			http.Error(w, "Workload not found", http.StatusNotFound)
 			return
 		}
-		logger.Errorf("Failed to restart server: %v", err)
-		http.Error(w, "Failed to restart server", http.StatusInternalServerError)
+		logger.Errorf("Failed to restart workload: %v", err)
+		http.Error(w, "Failed to restart workload", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// createServer
+// createWorkload
 //
-//	@Summary		Create a new server
-//	@Description	Create and start a new server
-//	@Tags			servers
+//	@Summary		Create a new workload
+//	@Description	Create and start a new workload
+//	@Tags			workloads
 //	@Accept			json
 //	@Produce		json
-//	@Param			request	body		createRequest	true	"Create server request"
-//	@Success		201		{object}	createServerResponse
+//	@Param			request	body		createRequest	true	"Create workload request"
+//	@Success		201		{object}	createWorkloadResponse
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		409		{string}	string	"Conflict"
-//	@Router			/api/v1beta/servers [post]
-func (s *ServerRoutes) createServer(w http.ResponseWriter, r *http.Request) {
+//	@Router			/api/v1beta/workloads [post]
+func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
@@ -213,6 +211,8 @@ func (s *ServerRoutes) createServer(w http.ResponseWriter, r *http.Request) {
 		req.Volumes,
 		runSecrets,
 		req.AuthzConfig,
+		"",    // auditConfigPath - will be added in future PR
+		false, // enableAudit - will be added in future PR
 		req.PermissionProfile,
 		transport.LocalhostIPv4, // Seems like a reasonable default for now.
 		req.OIDC.Issuer,
@@ -265,39 +265,39 @@ func (s *ServerRoutes) createServer(w http.ResponseWriter, r *http.Request) {
 	// testing with npx/uvx.
 	// TODO: Refactor the code out of the CLI.
 
-	err := s.manager.RunContainerDetached(runConfig)
+	err := s.manager.RunWorkloadDetached(runConfig)
 	if err != nil {
-		logger.Errorf("Failed to start server: %v", err)
-		http.Error(w, "Failed to start server", http.StatusInternalServerError)
+		logger.Errorf("Failed to start workload: %v", err)
+		http.Error(w, "Failed to start workload", http.StatusInternalServerError)
 		return
 	}
 
 	// Return name so that the client will get the auto-generated name.
-	resp := createServerResponse{
+	resp := createWorkloadResponse{
 		Name: runConfig.ContainerName,
 		Port: runConfig.Port,
 	}
 	if err = json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, "Failed to marshal server details", http.StatusInternalServerError)
+		http.Error(w, "Failed to marshal workload details", http.StatusInternalServerError)
 		return
 	}
 }
 
 // Response type definitions.
 
-// serverListResponse represents the response for listing servers
+// workloadListResponse represents the response for listing workloads
 //
-//	@Description	Response containing a list of servers
-type serverListResponse struct {
-	// List of container information for each server
-	Servers []runtime.ContainerInfo `json:"servers"`
+//	@Description	Response containing a list of workloads
+type workloadListResponse struct {
+	// List of container information for each workload
+	Workloads []runtime.ContainerInfo `json:"workloads"`
 }
 
-// createRequest represents the request to create a new server
+// createRequest represents the request to create a new workload
 //
-//	@Description	Request to create a new server
+//	@Description	Request to create a new workload
 type createRequest struct {
-	// Name of the server
+	// Name of the workload
 	Name string `json:"name"`
 	// Docker image to use
 	Image string `json:"image"`
@@ -325,7 +325,7 @@ type createRequest struct {
 
 // oidcOptions represents OIDC configuration options
 //
-//	@Description	OIDC configuration for server authentication
+//	@Description	OIDC configuration for workload authentication
 type oidcOptions struct {
 	// OIDC issuer URL
 	Issuer string `json:"issuer"`
@@ -337,12 +337,12 @@ type oidcOptions struct {
 	ClientID string `json:"client_id"`
 }
 
-// createServerResponse represents the response for server creation
+// createWorkloadResponse represents the response for workload creation
 //
-//	@Description	Response after successfully creating a server
-type createServerResponse struct {
-	// Name of the created server
+//	@Description	Response after successfully creating a workload
+type createWorkloadResponse struct {
+	// Name of the created workload
 	Name string `json:"name"`
-	// Port the server is listening on
+	// Port the workload is listening on
 	Port int `json:"port"`
 }

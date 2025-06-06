@@ -123,7 +123,7 @@ var _ = Describe("FetchMcpServer", func() {
 
 			It("should remove the server successfully", func() {
 				By("Removing the server")
-				stdout, _ := e2e.NewTHVCommand(config, "rm", "-f", serverName).ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "rm", serverName).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName))
 
 				By("Verifying the server is no longer listed")

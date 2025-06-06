@@ -39,8 +39,8 @@ func newSecretProviderCommand() *cobra.Command {
 		Short: "Configure the secrets provider",
 		Long: `Configure the secrets provider.
 Valid secrets providers are:
-  - encrypted: Encrypted secrets provider
-  - 1password: 1Password secrets provider (currently only supports getting secrets)`,
+  - encrypted: Full read-write secrets provider
+  - 1password: Read-only secrets provider`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			provider := args[0]
@@ -69,8 +69,9 @@ Input Methods:
 
 The secret will be stored securely using the configured secrets provider.`,
 		Args: cobra.ExactArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, args []string) {
 			name := args[0]
+			ctx := cmd.Context()
 
 			// Validate input
 			if name == "" {
@@ -121,7 +122,14 @@ The secret will be stored securely using the configured secrets provider.`,
 				return
 			}
 
-			err = manager.SetSecret(name, value)
+			// Check if the provider supports writing secrets
+			if !manager.Capabilities().CanWrite {
+				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support setting secrets (read-only)\n", providerType)
+				return
+			}
+
+			err = manager.SetSecret(ctx, name, value)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to set secret %s: %v\n", name, err)
 				return
@@ -136,7 +144,8 @@ func newSecretGetCommand() *cobra.Command {
 		Use:   "get <name>",
 		Short: "Get a secret",
 		Args:  cobra.ExactArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, args []string) {
+			ctx := cmd.Context()
 			name := args[0]
 
 			// Validate input
@@ -151,7 +160,7 @@ func newSecretGetCommand() *cobra.Command {
 				return
 			}
 
-			value, err := manager.GetSecret(name)
+			value, err := manager.GetSecret(ctx, name)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to get secret %s: %v\n", name, err)
 				return
@@ -166,7 +175,8 @@ func newSecretDeleteCommand() *cobra.Command {
 		Use:   "delete <name>",
 		Short: "Delete a secret",
 		Args:  cobra.ExactArgs(1),
-		Run: func(_ *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, args []string) {
+			ctx := cmd.Context()
 			name := args[0]
 
 			// Validate input
@@ -181,7 +191,14 @@ func newSecretDeleteCommand() *cobra.Command {
 				return
 			}
 
-			err = manager.DeleteSecret(name)
+			// Check if the provider supports deleting secrets
+			if !manager.Capabilities().CanDelete {
+				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support deleting secrets\n", providerType)
+				return
+			}
+
+			err = manager.DeleteSecret(ctx, name)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to delete secret %s: %v\n", name, err)
 				return
@@ -196,27 +213,40 @@ func newSecretListCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List all available secrets",
 		Args:  cobra.NoArgs,
-		Run: func(_ *cobra.Command, _ []string) {
+		Run: func(cmd *cobra.Command, _ []string) {
+			ctx := cmd.Context()
 			manager, err := getSecretsManager()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
 			}
 
-			secretNames, err := manager.ListSecrets()
+			// Check if the provider supports listing secrets
+			if !manager.Capabilities().CanList {
+				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support listing secrets\n", providerType)
+				return
+			}
+
+			secrets, err := manager.ListSecrets(ctx)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to list secrets: %v\n", err)
 				return
 			}
 
-			if len(secretNames) == 0 {
+			if len(secrets) == 0 {
 				fmt.Println("No secrets found")
 				return
 			}
 
 			fmt.Println("Available secrets:")
-			for _, name := range secretNames {
-				fmt.Printf("  - %s\n", name)
+			for _, description := range secrets {
+				fmt.Printf("  - %s", description.Key)
+				// Add description if available.
+				if description.Description != "" {
+					fmt.Printf(" (%s)", description.Description)
+				}
+				fmt.Println()
 			}
 		},
 	}

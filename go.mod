@@ -30,7 +30,7 @@ require (
 	github.com/tidwall/gjson v1.18.0
 	github.com/zalando/go-keyring v0.2.6
 	go.uber.org/mock v0.5.2
-	golang.org/x/exp/jsonrpc2 v0.0.0-20250531010427-b6e5de432a8b
+	golang.org/x/exp/jsonrpc2 v0.0.0-20250606033433-dcc06ee1d476
 	golang.org/x/mod v0.25.0
 	golang.org/x/oauth2 v0.30.0
 	golang.org/x/sync v0.15.0

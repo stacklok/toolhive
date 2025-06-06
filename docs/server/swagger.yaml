@@ -291,7 +291,7 @@ components:
           uniqueItems: false
       type: object
     v1.createRequest:
-      description: Request to create a new server
+      description: Request to create a new workload
       properties:
         authz_config:
           description: Authorization configuration
@@ -315,7 +315,7 @@ components:
           description: Docker image to use
           type: string
         name:
-          description: Name of the server
+          description: Name of the workload
           type: string
         oidc:
           $ref: '#/components/schemas/v1.oidcOptions'
@@ -341,14 +341,14 @@ components:
           type: array
           uniqueItems: false
       type: object
-    v1.createServerResponse:
-      description: Response after successfully creating a server
+    v1.createWorkloadResponse:
+      description: Response after successfully creating a workload
       properties:
         name:
-          description: Name of the created server
+          description: Name of the created workload
           type: string
         port:
-          description: Port the server is listening on
+          description: Port the workload is listening on
           type: integer
       type: object
     v1.getRegistryResponse:
@@ -427,20 +427,20 @@ components:
           type: array
           uniqueItems: false
       type: object
-    v1.serverListResponse:
-      description: Response containing a list of servers
-      properties:
-        servers:
-          description: List of container information for each server
-          items:
-            $ref: '#/components/schemas/runtime.ContainerInfo'
-          type: array
-          uniqueItems: false
-      type: object
     v1.versionResponse:
       properties:
         version:
           type: string
+      type: object
+    v1.workloadListResponse:
+      description: Response containing a list of workloads
+      properties:
+        workloads:
+          description: List of container information for each workload
+          items:
+            $ref: '#/components/schemas/runtime.ContainerInfo'
+          type: array
+          uniqueItems: false
       type: object
 externalDocs:
   description: ""
@@ -616,34 +616,47 @@ paths:
       summary: Get a server from a registry
       tags:
       - registry
-  /api/v1beta/servers:
+  /api/v1beta/version:
     get:
-      description: Get a list of all running servers
+      description: Returns the current version of the server
       responses:
         "200":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.serverListResponse'
+                $ref: '#/components/schemas/v1.versionResponse'
           description: OK
-      summary: List all servers
+      summary: Get server version
       tags:
-      - servers
+      - version
+  /api/v1beta/workloads:
+    get:
+      description: Get a list of all running workloads
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.workloadListResponse'
+          description: OK
+      summary: List all workloads
+      tags:
+      - workloads
     post:
-      description: Create and start a new server
+      description: Create and start a new workload
       requestBody:
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/v1.createRequest'
-        description: Create server request
+        description: Create workload request
         required: true
       responses:
         "201":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.createServerResponse'
+                $ref: '#/components/schemas/v1.createWorkloadResponse'
           description: Created
         "400":
           content:
@@ -657,24 +670,19 @@ paths:
               schema:
                 type: string
           description: Conflict
-      summary: Create a new server
+      summary: Create a new workload
       tags:
-      - servers
-  /api/v1beta/servers/{name}:
+      - workloads
+  /api/v1beta/workloads/{name}:
     delete:
-      description: Delete a server
+      description: Delete a workload
       parameters:
-      - description: Server name
+      - description: Workload name
         in: path
         name: name
         required: true
         schema:
           type: string
-      - description: Force deletion
-        in: query
-        name: force
-        schema:
-          type: boolean
       responses:
         "204":
           content:
@@ -688,13 +696,13 @@ paths:
               schema:
                 type: string
           description: Not Found
-      summary: Delete a server
+      summary: Delete a workload
       tags:
-      - servers
+      - workloads
     get:
-      description: Get details of a specific server
+      description: Get details of a specific workload
       parameters:
-      - description: Server name
+      - description: Workload name
         in: path
         name: name
         required: true
@@ -713,14 +721,14 @@ paths:
               schema:
                 type: string
           description: Not Found
-      summary: Get server details
+      summary: Get workload details
       tags:
-      - servers
-  /api/v1beta/servers/{name}/restart:
+      - workloads
+  /api/v1beta/workloads/{name}/restart:
     post:
-      description: Restart a running server
+      description: Restart a running workload
       parameters:
-      - description: Server name
+      - description: Workload name
         in: path
         name: name
         required: true
@@ -739,14 +747,14 @@ paths:
               schema:
                 type: string
           description: Not Found
-      summary: Restart a server
+      summary: Restart a workload
       tags:
-      - servers
-  /api/v1beta/servers/{name}/stop:
+      - workloads
+  /api/v1beta/workloads/{name}/stop:
     post:
-      description: Stop a running server
+      description: Stop a running workload
       parameters:
-      - description: Server name
+      - description: Workload name
         in: path
         name: name
         required: true
@@ -765,22 +773,9 @@ paths:
               schema:
                 type: string
           description: Not Found
-      summary: Stop a server
+      summary: Stop a workload
       tags:
-      - servers
-  /api/v1beta/version:
-    get:
-      description: Returns the current version of the server
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/v1.versionResponse'
-          description: OK
-      summary: Get server version
-      tags:
-      - version
+      - workloads
   /health:
     get:
       description: Check if the API is healthy

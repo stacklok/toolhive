@@ -1,6 +1,6 @@
-// Package lifecycle contains high-level logic for managing the lifecycle of
+// Package workloads contains high-level logic for managing the lifecycle of
 // ToolHive-managed containers.
-package lifecycle
+package workloads
 
 import (
 	"context"
@@ -24,20 +24,21 @@ import (
 
 // Manager is responsible for managing the state of ToolHive-managed containers.
 type Manager interface {
-	// GetContainer returns information about the named container.
-	GetContainer(ctx context.Context, name string) (*rt.ContainerInfo, error)
-	// ListContainers lists all ToolHive-managed containers.
-	ListContainers(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error)
-	// DeleteContainer deletes a container and its associated proxy process.
-	DeleteContainer(ctx context.Context, name string, forceDelete bool) error
-	// StopContainer stops a container and its associated proxy process.
-	StopContainer(ctx context.Context, name string) error
-	// RunContainer runs a container in the foreground.
-	RunContainer(ctx context.Context, runConfig *runner.RunConfig) error
-	// RunContainerDetached runs a container in the background.
-	RunContainerDetached(runConfig *runner.RunConfig) error
-	// RestartContainer restarts a previously stopped container.
-	RestartContainer(ctx context.Context, name string) error
+	// GetWorkload returns information about the named container.
+	GetWorkload(ctx context.Context, name string) (*rt.ContainerInfo, error)
+	// ListWorkloads lists all ToolHive-managed containers.
+	ListWorkloads(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error)
+	// DeleteWorkload deletes a container and its associated proxy process.
+	// The container will be stopped if it is still running.
+	DeleteWorkload(ctx context.Context, name string) error
+	// StopWorkload stops a container and its associated proxy process.
+	StopWorkload(ctx context.Context, name string) error
+	// RunWorkload runs a container in the foreground.
+	RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error
+	// RunWorkloadDetached runs a container in the background.
+	RunWorkloadDetached(runConfig *runner.RunConfig) error
+	// RestartWorkload restarts a previously stopped container.
+	RestartWorkload(ctx context.Context, name string) error
 }
 
 type defaultManager struct {
@@ -62,11 +63,11 @@ func NewManager(ctx context.Context) (Manager, error) {
 	}, nil
 }
 
-func (d *defaultManager) GetContainer(ctx context.Context, name string) (*rt.ContainerInfo, error) {
+func (d *defaultManager) GetWorkload(ctx context.Context, name string) (*rt.ContainerInfo, error) {
 	return d.findContainerByName(ctx, name)
 }
 
-func (d *defaultManager) ListContainers(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error) {
+func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool) ([]rt.ContainerInfo, error) {
 	// List containers
 	containers, err := d.runtime.ListWorkloads(ctx)
 	if err != nil {
@@ -85,7 +86,7 @@ func (d *defaultManager) ListContainers(ctx context.Context, listAll bool) ([]rt
 	return toolHiveContainers, nil
 }
 
-func (d *defaultManager) DeleteContainer(ctx context.Context, name string, forceDelete bool) error {
+func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) error {
 	// We need several fields from the container struct for deletion.
 	container, err := d.findContainerByName(ctx, name)
 	if err != nil {
@@ -98,12 +99,9 @@ func (d *defaultManager) DeleteContainer(ctx context.Context, name string, force
 
 	// Check if the container is running
 	if isRunning {
-		if !forceDelete {
-			return fmt.Errorf("container %s is running. Stop the container or use -f to force remove", name)
-		}
 		// Stop the container if it's running
 		if err := d.stopContainer(ctx, containerID, name); err != nil {
-			logger.Warnf("Warning: Failed to stop container: %v", err)
+			return fmt.Errorf("failed to stop container: %v", err)
 		}
 	}
 
@@ -142,7 +140,7 @@ func (d *defaultManager) DeleteContainer(ctx context.Context, name string, force
 	return nil
 }
 
-func (d *defaultManager) StopContainer(ctx context.Context, name string) error {
+func (d *defaultManager) StopWorkload(ctx context.Context, name string) error {
 	// Find the container ID
 	containerID, err := d.findContainerID(ctx, name)
 	if err != nil {
@@ -182,13 +180,13 @@ func (d *defaultManager) StopContainer(ctx context.Context, name string) error {
 	return nil
 }
 
-func (*defaultManager) RunContainer(ctx context.Context, runConfig *runner.RunConfig) error {
+func (*defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
 	mcpRunner := runner.NewRunner(runConfig)
 	return mcpRunner.Run(ctx)
 }
 
 //nolint:gocyclo // This function is complex but manageable
-func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig) error {
+func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 	// Get the current executable path
 	execPath, err := os.Executable()
 	if err != nil {
@@ -291,6 +289,21 @@ func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig) error {
 		}
 	}
 
+	// Add authz config if it was provided
+	if runConfig.AuthzConfigPath != "" {
+		detachedArgs = append(detachedArgs, "--authz-config", runConfig.AuthzConfigPath)
+	}
+
+	// Add audit config if it was provided
+	if runConfig.AuditConfigPath != "" {
+		detachedArgs = append(detachedArgs, "--audit-config", runConfig.AuditConfigPath)
+	}
+
+	// Add enable audit flag if audit config is set but no config path is provided
+	if runConfig.AuditConfig != nil && runConfig.AuditConfigPath == "" {
+		detachedArgs = append(detachedArgs, "--enable-audit")
+	}
+
 	// Add the image and any arguments
 	detachedArgs = append(detachedArgs, runConfig.Image)
 	if len(runConfig.CmdArgs) > 0 {
@@ -347,7 +360,7 @@ func (*defaultManager) RunContainerDetached(runConfig *runner.RunConfig) error {
 	return nil
 }
 
-func (d *defaultManager) RestartContainer(ctx context.Context, name string) error {
+func (d *defaultManager) RestartWorkload(ctx context.Context, name string) error {
 	var containerBaseName string
 	var running bool
 	// Try to find the container.
@@ -393,7 +406,7 @@ func (d *defaultManager) RestartContainer(ctx context.Context, name string) erro
 
 	// Run the tooling server inside a detached process.
 	logger.Infof("Starting tooling server %s...", name)
-	return d.RunContainerDetached(mcpRunner.Config)
+	return d.RunWorkloadDetached(mcpRunner.Config)
 }
 
 func (d *defaultManager) findContainerID(ctx context.Context, name string) (string, error) {

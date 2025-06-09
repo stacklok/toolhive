@@ -84,6 +84,7 @@ var (
 	remoteAuthScopes           []string
 	remoteAuthSkipBrowser      bool
 	remoteAuthTimeout          time.Duration
+	remoteAuthCallbackPort     int
 	enableRemoteAuth           bool
 )
 
@@ -131,6 +132,8 @@ func init() {
 		"Skip opening browser for remote server OAuth flow")
 	proxyCmd.Flags().DurationVar(&remoteAuthTimeout, "remote-auth-timeout", 30*time.Second,
 		"Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s)")
+	proxyCmd.Flags().IntVar(&remoteAuthCallbackPort, "remote-auth-callback-port", 8666,
+		"Port for OAuth callback server during remote authentication (default: 8666)")
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
@@ -360,6 +363,7 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 		clientSecret,
 		scopes,
 		true, // Enable PKCE by default for security
+		remoteAuthCallbackPort,
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to create OAuth config: %w", err)

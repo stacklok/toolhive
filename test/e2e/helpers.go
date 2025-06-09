@@ -137,13 +137,21 @@ func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Durati
 }
 
 // StopAndRemoveMCPServer stops and removes an MCP server
+// This function is designed for cleanup and tolerates servers that don't exist
 func StopAndRemoveMCPServer(config *TestConfig, serverName string) error {
-	// Try to stop the server first
+	// Try to stop the server first (ignore errors as server might not exist)
 	_, _, _ = NewTHVCommand(config, "stop", serverName).Run()
 
 	// Then remove it
-	_, _, err := NewTHVCommand(config, "rm", "-f", serverName).Run()
-	return err
+	_, stderr, err := NewTHVCommand(config, "rm", serverName).Run()
+	if err != nil {
+		// In cleanup scenarios, it's okay if the container doesn't exist
+		if strings.Contains(stderr, "not found") {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // GetMCPServerURL gets the URL for an MCP server

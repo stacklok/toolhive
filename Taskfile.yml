@@ -64,7 +64,7 @@ tasks:
     desc: Build the binary
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty || echo "dev"
+        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE:
@@ -77,7 +77,7 @@ tasks:
     desc: Install the thv binary to GOPATH/bin
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty || echo "dev"
+        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE:

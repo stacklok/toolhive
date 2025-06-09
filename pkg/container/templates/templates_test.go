@@ -6,6 +6,7 @@ import (
 )
 
 func TestGetDockerfileTemplate(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		transportType   TransportType
@@ -177,6 +178,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := GetDockerfileTemplate(tt.transportType, tt.data)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("GetDockerfileTemplate() error = %v, wantErr %v", err, tt.wantErr)
@@ -203,6 +205,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 }
 
 func TestParseTransportType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		s       string
@@ -237,6 +240,7 @@ func TestParseTransportType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := ParseTransportType(tt.s)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseTransportType() error = %v, wantErr %v", err, tt.wantErr)

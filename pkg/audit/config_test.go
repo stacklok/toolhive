@@ -10,6 +10,7 @@ import (
 )
 
 func TestDefaultConfig(t *testing.T) {
+	t.Parallel()
 	config := DefaultConfig()
 
 	assert.False(t, config.IncludeRequestData)
@@ -21,6 +22,7 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestLoadFromReader(t *testing.T) {
+	t.Parallel()
 	jsonConfig := `{
 		"component": "test-component",
 		"event_types": ["mcp_tool_call", "mcp_resource_read"],
@@ -42,6 +44,7 @@ func TestLoadFromReader(t *testing.T) {
 }
 
 func TestLoadFromReaderInvalidJSON(t *testing.T) {
+	t.Parallel()
 	invalidJSON := `{"invalid": }`
 
 	_, err := LoadFromReader(strings.NewReader(invalidJSON))
@@ -50,6 +53,7 @@ func TestLoadFromReaderInvalidJSON(t *testing.T) {
 }
 
 func TestShouldAuditEventAllEventsAllowed(t *testing.T) {
+	t.Parallel()
 	config := &Config{}
 
 	result := config.ShouldAuditEvent("any_event")
@@ -57,6 +61,7 @@ func TestShouldAuditEventAllEventsAllowed(t *testing.T) {
 }
 
 func TestShouldAuditEventAllEventsEnabled(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		// No EventTypes specified, so all events should be audited
 	}
@@ -67,6 +72,7 @@ func TestShouldAuditEventAllEventsEnabled(t *testing.T) {
 }
 
 func TestShouldAuditEventSpecificTypes(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		EventTypes: []string{"mcp_tool_call", "mcp_resource_read"},
 	}
@@ -78,6 +84,7 @@ func TestShouldAuditEventSpecificTypes(t *testing.T) {
 }
 
 func TestShouldAuditEventExcludeTypes(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		ExcludeEventTypes: []string{"mcp_ping", "mcp_logging"},
 	}
@@ -89,6 +96,7 @@ func TestShouldAuditEventExcludeTypes(t *testing.T) {
 }
 
 func TestShouldAuditEventExcludeTakesPrecedence(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		EventTypes:        []string{"mcp_tool_call", "mcp_ping"},
 		ExcludeEventTypes: []string{"mcp_ping"},
@@ -100,6 +108,7 @@ func TestShouldAuditEventExcludeTakesPrecedence(t *testing.T) {
 }
 
 func TestCreateMiddleware(t *testing.T) {
+	t.Parallel()
 	config := &Config{}
 
 	middleware := config.CreateMiddleware()
@@ -107,6 +116,7 @@ func TestCreateMiddleware(t *testing.T) {
 }
 
 func TestValidateValidConfig(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		EventTypes:          []string{EventTypeMCPToolCall, EventTypeMCPResourceRead},
 		ExcludeEventTypes:   []string{EventTypeMCPPing},
@@ -120,6 +130,7 @@ func TestValidateValidConfig(t *testing.T) {
 }
 
 func TestValidateNegativeMaxDataSize(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		MaxDataSize: -1,
 	}
@@ -130,6 +141,7 @@ func TestValidateNegativeMaxDataSize(t *testing.T) {
 }
 
 func TestValidateInvalidEventType(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		EventTypes: []string{"invalid_event_type"},
 	}
@@ -140,6 +152,7 @@ func TestValidateInvalidEventType(t *testing.T) {
 }
 
 func TestValidateInvalidExcludeEventType(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		ExcludeEventTypes: []string{"invalid_exclude_type"},
 	}
@@ -150,6 +163,7 @@ func TestValidateInvalidExcludeEventType(t *testing.T) {
 }
 
 func TestValidateAllValidEventTypes(t *testing.T) {
+	t.Parallel()
 	validEventTypes := []string{
 		EventTypeMCPInitialize,
 		EventTypeMCPToolCall,
@@ -174,6 +188,7 @@ func TestValidateAllValidEventTypes(t *testing.T) {
 }
 
 func TestConfigJSONSerialization(t *testing.T) {
+	t.Parallel()
 	originalConfig := &Config{
 		Component:           "test-service",
 		EventTypes:          []string{EventTypeMCPToolCall, EventTypeMCPResourceRead},
@@ -202,6 +217,7 @@ func TestConfigJSONSerialization(t *testing.T) {
 }
 
 func TestConfigMinimalJSON(t *testing.T) {
+	t.Parallel()
 	minimalJSON := `{}`
 
 	config, err := LoadFromReader(strings.NewReader(minimalJSON))
@@ -216,6 +232,7 @@ func TestConfigMinimalJSON(t *testing.T) {
 }
 
 func TestGetMiddlewareFromFileError(t *testing.T) {
+	t.Parallel()
 	// Test with non-existent file
 	_, err := GetMiddlewareFromFile("/non/existent/file.json")
 	assert.Error(t, err)
@@ -223,6 +240,7 @@ func TestGetMiddlewareFromFileError(t *testing.T) {
 }
 
 func TestLoadFromFilePathCleaning(t *testing.T) {
+	t.Parallel()
 	// Test that filepath.Clean is used (this is more of a smoke test)
 	// We can't easily test the actual cleaning without creating files
 	_, err := LoadFromFile("./non-existent-file.json")
@@ -231,6 +249,7 @@ func TestLoadFromFilePathCleaning(t *testing.T) {
 }
 
 func TestConfigWithEmptyEventTypes(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		EventTypes: []string{}, // Explicitly empty
 	}
@@ -241,6 +260,7 @@ func TestConfigWithEmptyEventTypes(t *testing.T) {
 }
 
 func TestConfigWithEmptyExcludeEventTypes(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		ExcludeEventTypes: []string{}, // Explicitly empty
 	}

@@ -60,7 +60,9 @@ func createUpdateFile(t *testing.T, dir string, contents updateFile) string {
 
 // TestCheckLatestVersion tests the CheckLatestVersion method
 func TestCheckLatestVersion(t *testing.T) {
+	t.Parallel()
 	t.Run("file doesn't exist - creates new file", func(t *testing.T) {
+		t.Parallel()
 		// Setup
 		mockClient := setupMockVersionClient(t)
 		tempDir := createTempDir(t)
@@ -103,6 +105,7 @@ func TestCheckLatestVersion(t *testing.T) {
 	})
 
 	t.Run("file exists but is stale - makes API call", func(t *testing.T) {
+		t.Parallel()
 		// Setup
 		mockClient := setupMockVersionClient(t)
 		tempDir := createTempDir(t)
@@ -152,6 +155,7 @@ func TestCheckLatestVersion(t *testing.T) {
 	})
 
 	t.Run("file exists and is fresh - skips API call", func(t *testing.T) {
+		t.Parallel()
 		// Setup
 		mockClient := setupMockVersionClient(t)
 		tempDir := createTempDir(t)
@@ -195,6 +199,7 @@ func TestCheckLatestVersion(t *testing.T) {
 	})
 
 	t.Run("error when stat fails", func(t *testing.T) {
+		t.Parallel()
 		// Setup
 		mockClient := setupMockVersionClient(t)
 		tempDir := createTempDir(t)
@@ -227,6 +232,7 @@ func TestCheckLatestVersion(t *testing.T) {
 	})
 
 	t.Run("error when GetLatestVersion fails", func(t *testing.T) {
+		t.Parallel()
 		// Setup
 		mockClient := setupMockVersionClient(t)
 		tempDir := createTempDir(t)
@@ -258,7 +264,9 @@ func TestCheckLatestVersion(t *testing.T) {
 
 // TestNotifyIfUpdateAvailable tests the notifyIfUpdateAvailable function
 func TestNotifyIfUpdateAvailable(t *testing.T) {
-	t.Run("no update available", func(_ *testing.T) {
+	t.Parallel()
+	t.Run("no update available", func(t *testing.T) {
+		t.Parallel()
 		// This test is a bit tricky since the function prints to stdout
 		// For simplicity, we'll just call it and make sure it doesn't panic
 		currentVersion := testCurrentVersion
@@ -268,7 +276,8 @@ func TestNotifyIfUpdateAvailable(t *testing.T) {
 		notifyIfUpdateAvailable(currentVersion, latestVersion)
 	})
 
-	t.Run("update available", func(_ *testing.T) {
+	t.Run("update available", func(t *testing.T) {
+		t.Parallel()
 		// This test is a bit tricky since the function prints to stdout
 		// For simplicity, we'll just call it and make sure it doesn't panic
 		currentVersion := testCurrentVersion

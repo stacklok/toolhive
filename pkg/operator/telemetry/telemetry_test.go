@@ -30,6 +30,7 @@ func (m *mockVersionClient) GetLatestVersion(_ string, _ string) (string, error)
 }
 
 func TestService_CheckForUpdates(t *testing.T) {
+	t.Parallel()
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 
@@ -78,6 +79,7 @@ func TestService_CheckForUpdates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Create fake client
 			objects := []client.Object{}
 			if tt.existingConfigMap != nil {
@@ -123,6 +125,7 @@ func TestService_CheckForUpdates(t *testing.T) {
 }
 
 func TestService_GetTelemetryData(t *testing.T) {
+	t.Parallel()
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 
@@ -167,6 +170,7 @@ func TestService_GetTelemetryData(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Create fake client
 			objects := []client.Object{}
 			if tt.existingConfigMap != nil {

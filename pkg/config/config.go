@@ -78,11 +78,21 @@ var getConfigPath = defaultPathGenerator
 // LoadOrCreateConfig fetches the application configuration.
 // If it does not already exist - it will create a new config file with default values.
 func LoadOrCreateConfig() (*Config, error) {
-	var config Config
+	return LoadOrCreateConfigWithPath("")
+}
 
-	configPath, err := getConfigPath()
-	if err != nil {
-		return nil, fmt.Errorf("unable to fetch config path: %w", err)
+// LoadOrCreateConfigWithPath fetches the application configuration from a specific path.
+// If configPath is empty, it uses the default path.
+// If it does not already exist - it will create a new config file with default values.
+func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
+	var config Config
+	var err error
+
+	if configPath == "" {
+		configPath, err = getConfigPath()
+		if err != nil {
+			return nil, fmt.Errorf("unable to fetch config path: %w", err)
+		}
 	}
 
 	// Check to see if the config file already exists.
@@ -163,9 +173,18 @@ func LoadOrCreateConfig() (*Config, error) {
 
 // Save serializes the config struct and writes it to disk.
 func (c *Config) save() error {
-	configPath, err := getConfigPath()
-	if err != nil {
-		return fmt.Errorf("unable to fetch config path: %w", err)
+	return c.saveToPath("")
+}
+
+// saveToPath serializes the config struct and writes it to a specific path.
+// If configPath is empty, it uses the default path.
+func (c *Config) saveToPath(configPath string) error {
+	if configPath == "" {
+		var err error
+		configPath, err = getConfigPath()
+		if err != nil {
+			return fmt.Errorf("unable to fetch config path: %w", err)
+		}
 	}
 
 	configBytes, err := yaml.Marshal(c)
@@ -183,9 +202,19 @@ func (c *Config) save() error {
 // UpdateConfig locks a separate lock file, reads from disk, applies the changes
 // from the anonymous function, writes to disk and unlocks the file.
 func UpdateConfig(updateFn func(*Config)) error {
-	configPath, err := getConfigPath()
-	if err != nil {
-		return fmt.Errorf("unable to fetch config path: %w", err)
+	return UpdateConfigAtPath("", updateFn)
+}
+
+// UpdateConfigAtPath locks a separate lock file, reads from disk, applies the changes
+// from the anonymous function, writes to disk and unlocks the file.
+// If configPath is empty, it uses the default path.
+func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
+	if configPath == "" {
+		var err error
+		configPath, err = getConfigPath()
+		if err != nil {
+			return fmt.Errorf("unable to fetch config path: %w", err)
+		}
 	}
 
 	// Use a separate lock file for cross-platform compatibility
@@ -205,7 +234,7 @@ func UpdateConfig(updateFn func(*Config)) error {
 	defer fileLock.Unlock()
 
 	// Load the config after acquiring the lock to avoid race conditions
-	c, err := LoadOrCreateConfig()
+	c, err := LoadOrCreateConfigWithPath(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to load config from disk: %w", err)
 	}
@@ -214,7 +243,7 @@ func UpdateConfig(updateFn func(*Config)) error {
 	updateFn(c)
 
 	// Write the updated config to disk.
-	err = c.save()
+	err = c.saveToPath(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}

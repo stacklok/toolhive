@@ -7,6 +7,7 @@ import (
 )
 
 func TestNewRegistryProvider(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		config       *config.Config
@@ -35,6 +36,7 @@ func TestNewRegistryProvider(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			provider := NewRegistryProvider(tt.config)
 
 			// Check the type of the provider
@@ -47,6 +49,7 @@ func TestNewRegistryProvider(t *testing.T) {
 }
 
 func TestEmbeddedRegistryProvider(t *testing.T) {
+	t.Parallel()
 	provider := NewEmbeddedRegistryProvider()
 
 	// Test GetRegistry
@@ -101,6 +104,7 @@ func TestEmbeddedRegistryProvider(t *testing.T) {
 }
 
 func TestRemoteRegistryProvider(t *testing.T) {
+	t.Parallel()
 	// Note: This test would require a mock HTTP server for full testing
 	// For now, we just test the creation
 	provider := NewRemoteRegistryProvider("https://example.com/registry.json")

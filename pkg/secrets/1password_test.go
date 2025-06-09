@@ -14,7 +14,9 @@ import (
 )
 
 func TestNewOnePasswordManager(t *testing.T) {
+	t.Parallel()
 	t.Run("missing token", func(t *testing.T) {
+		t.Parallel()
 		// Make sure token is not set
 		os.Unsetenv("OP_SERVICE_ACCOUNT_TOKEN")
 

@@ -9,6 +9,7 @@ import (
 )
 
 func TestMountDeclaration_Parse(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		declaration    MountDeclaration
@@ -84,6 +85,7 @@ func TestMountDeclaration_Parse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			source, target, err := tt.declaration.Parse()
 
 			if tt.expectError {
@@ -99,6 +101,7 @@ func TestMountDeclaration_Parse(t *testing.T) {
 }
 
 func TestMountDeclaration_IsValid(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		declaration MountDeclaration
@@ -139,12 +142,14 @@ func TestMountDeclaration_IsValid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.expected, tt.declaration.IsValid())
 		})
 	}
 }
 
 func TestMountDeclaration_IsResourceURI(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		declaration MountDeclaration
@@ -185,12 +190,14 @@ func TestMountDeclaration_IsResourceURI(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.expected, tt.declaration.IsResourceURI())
 		})
 	}
 }
 
 func TestMountDeclaration_GetResourceType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		declaration  MountDeclaration
@@ -238,6 +245,7 @@ func TestMountDeclaration_GetResourceType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			resourceType, err := tt.declaration.GetResourceType()
 
 			if tt.expectError {
@@ -252,6 +260,7 @@ func TestMountDeclaration_GetResourceType(t *testing.T) {
 }
 
 func TestParseMountDeclarations(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		declarations []string
@@ -285,6 +294,7 @@ func TestParseMountDeclarations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			mounts, err := ParseMountDeclarations(tt.declarations)
 
 			if tt.expectError {
@@ -301,6 +311,7 @@ func TestParseMountDeclarations(t *testing.T) {
 // Additional security-focused tests
 
 func TestMountDeclaration_SecurityValidation(t *testing.T) {
+	t.Parallel()
 	// These tests check that our parsing is robust against various security issues
 
 	// Test for path traversal - this should be cleaned but allowed
@@ -324,6 +335,7 @@ func TestMountDeclaration_SecurityValidation(t *testing.T) {
 }
 
 func TestMountDeclaration_EdgeCases(t *testing.T) {
+	t.Parallel()
 	// Test with multiple colons - should fail with a clear error message
 	multipleColons := MountDeclaration("/path:with:multiple:colons:/container/path")
 	_, _, err := multipleColons.Parse()

@@ -82,7 +82,7 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 	}
 }
 
-func TestFindClientConfigs(t *testing.T) {
+func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environment variables
 	logger.Initialize()
 
 	// Setup a temporary home directory for testing
@@ -105,7 +105,7 @@ func TestFindClientConfigs(t *testing.T) {
 	// Create test config files for different clients
 	createTestConfigFiles(t, tempHome)
 
-	t.Run("AutoDiscoveryEnabled", func(t *testing.T) {
+	t.Run("AutoDiscoveryEnabled", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		// Set up config with auto-discovery enabled
 		testConfig := &config.Config{
 			Secrets: config.Secrets{
@@ -138,7 +138,7 @@ func TestFindClientConfigs(t *testing.T) {
 		assert.True(t, len(foundClients) > 0, "Should find at least one client config")
 	})
 
-	t.Run("AutoDiscoveryDisabledWithRegisteredClients", func(t *testing.T) {
+	t.Run("AutoDiscoveryDisabledWithRegisteredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		// Set up config with auto-discovery disabled but with registered clients
 		testConfig := &config.Config{
 			Secrets: config.Secrets{
@@ -176,7 +176,7 @@ func TestFindClientConfigs(t *testing.T) {
 		t.Log("None of the registered clients were found, but this may be expected in the test environment")
 	})
 
-	t.Run("AutoDiscoveryDisabledWithNoRegisteredClients", func(t *testing.T) {
+	t.Run("AutoDiscoveryDisabledWithNoRegisteredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		// Set up config with auto-discovery disabled and no registered clients
 		testConfig := &config.Config{
 			Secrets: config.Secrets{
@@ -199,7 +199,7 @@ func TestFindClientConfigs(t *testing.T) {
 		assert.Empty(t, configs)
 	})
 
-	t.Run("InvalidConfigFileFormat", func(t *testing.T) {
+	t.Run("InvalidConfigFileFormat", func(t *testing.T) { //nolint:paralleltest // Modifies global state
 		// Create an invalid JSON file
 		invalidPath := filepath.Join(tempHome, ".cursor", "invalid.json")
 		err := os.MkdirAll(filepath.Dir(invalidPath), 0755)
@@ -310,7 +310,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	// Create test config files
 	createTestConfigFiles(t, tempHome)
 
-	t.Run("FindAllConfiguredClients", func(t *testing.T) {
+	t.Run("FindAllConfiguredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		// Set up config with auto-discovery enabled
 		testConfig := &config.Config{
 			Secrets: config.Secrets{
@@ -341,7 +341,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 		}
 	})
 
-	t.Run("VerifyConfigFileContents", func(t *testing.T) {
+	t.Run("VerifyConfigFileContents", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		configs, err := FindClientConfigs()
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
@@ -374,7 +374,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 		}
 	})
 
-	t.Run("AddAndVerifyMCPServer", func(t *testing.T) {
+	t.Run("AddAndVerifyMCPServer", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		configs, err := FindClientConfigs()
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)

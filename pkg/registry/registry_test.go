@@ -5,6 +5,7 @@ import (
 )
 
 func TestGetRegistry(t *testing.T) {
+	t.Parallel()
 	reg, err := GetRegistry()
 	if err != nil {
 		t.Fatalf("Failed to get registry: %v", err)
@@ -29,6 +30,7 @@ func TestGetRegistry(t *testing.T) {
 }
 
 func TestGetServer(t *testing.T) {
+	t.Parallel()
 	// Test getting an existing server
 	server, err := GetServer("brave-search")
 	if err != nil {
@@ -56,6 +58,7 @@ func TestGetServer(t *testing.T) {
 }
 
 func TestSearchServers(t *testing.T) {
+	t.Parallel()
 	// Test searching for servers
 	servers, err := SearchServers("search")
 	if err != nil {
@@ -78,6 +81,7 @@ func TestSearchServers(t *testing.T) {
 }
 
 func TestListServers(t *testing.T) {
+	t.Parallel()
 	servers, err := ListServers()
 	if err != nil {
 		t.Fatalf("Failed to list servers: %v", err)

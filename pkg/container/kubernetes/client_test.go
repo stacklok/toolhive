@@ -30,6 +30,7 @@ var mockWaitForStatefulSetReady = func(_ context.Context, _ kubernetes.Interface
 
 // TestCreateContainerWithPodTemplatePatch tests that the pod template patch is correctly applied
 func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
+	t.Parallel()
 	// Test cases will create their own clientset
 
 	// Test cases
@@ -132,6 +133,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Create a fake Kubernetes clientset with a mock statefulset
 			mockStatefulSet := &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
@@ -232,6 +234,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 
 // TestCreatePodTemplateFromPatch tests the createPodTemplateFromPatch function
 func TestCreatePodTemplateFromPatch(t *testing.T) {
+	t.Parallel()
 	// Test cases
 	testCases := []struct {
 		name      string
@@ -271,6 +274,7 @@ func TestCreatePodTemplateFromPatch(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Call the function
 			podTemplateSpec, err := createPodTemplateFromPatch(tc.patchJSON)
 
@@ -314,6 +318,7 @@ func TestCreatePodTemplateFromPatch(t *testing.T) {
 
 // TestEnsurePodTemplateConfig tests the ensurePodTemplateConfig function
 func TestEnsurePodTemplateConfig(t *testing.T) {
+	t.Parallel()
 	// Test cases
 	testCases := []struct {
 		name            string
@@ -339,6 +344,7 @@ func TestEnsurePodTemplateConfig(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Call the function
 			result := ensurePodTemplateConfig(tc.podTemplateSpec, tc.containerLabels)
 
@@ -361,6 +367,7 @@ func TestEnsurePodTemplateConfig(t *testing.T) {
 
 // TestGetMCPContainer tests the getMCPContainer function
 func TestGetMCPContainer(t *testing.T) {
+	t.Parallel()
 	// Test cases
 	testCases := []struct {
 		name            string
@@ -410,6 +417,7 @@ func TestGetMCPContainer(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Call the function
 			result := getMCPContainer(tc.podTemplateSpec)
 
@@ -428,6 +436,7 @@ func TestGetMCPContainer(t *testing.T) {
 
 // TestConfigureMCPContainer tests the configureMCPContainer function
 func TestConfigureMCPContainer(t *testing.T) {
+	t.Parallel()
 	// Test cases
 	testCases := []struct {
 		name                string
@@ -502,6 +511,7 @@ func TestConfigureMCPContainer(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Call the function
 			err := configureMCPContainer(
 				tc.podTemplateSpec,
@@ -555,6 +565,7 @@ func TestConfigureMCPContainer(t *testing.T) {
 
 // TestCreateContainerWithMCP tests the CreateContainer function with MCP container configuration
 func TestCreateContainerWithMCP(t *testing.T) {
+	t.Parallel()
 	// Test cases
 	testCases := []struct {
 		name                string
@@ -626,6 +637,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Create a fake Kubernetes clientset with a mock statefulset
 			mockStatefulSet := &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{

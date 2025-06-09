@@ -5,6 +5,7 @@ import (
 )
 
 func TestAddStandardLabels(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name              string
 		containerName     string
@@ -47,6 +48,7 @@ func TestAddStandardLabels(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			labels := make(map[string]string)
 			AddStandardLabels(labels, tc.containerName, tc.containerBaseName, tc.transportType, tc.port)
 
@@ -70,6 +72,7 @@ func TestAddStandardLabels(t *testing.T) {
 }
 
 func TestFormatToolHiveFilter(t *testing.T) {
+	t.Parallel()
 	expected := "toolhive=true"
 	result := FormatToolHiveFilter()
 	if result != expected {
@@ -78,6 +81,7 @@ func TestFormatToolHiveFilter(t *testing.T) {
 }
 
 func TestIsToolHiveContainer(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		labels   map[string]string
@@ -134,6 +138,7 @@ func TestIsToolHiveContainer(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			result := IsToolHiveContainer(tc.labels)
 			if result != tc.expected {
 				t.Errorf("Expected IsToolHiveContainer to return %v, but got %v", tc.expected, result)
@@ -143,6 +148,7 @@ func TestIsToolHiveContainer(t *testing.T) {
 }
 
 func TestGetContainerName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		labels   map[string]string
@@ -164,6 +170,7 @@ func TestGetContainerName(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			result := GetContainerName(tc.labels)
 			if result != tc.expected {
 				t.Errorf("Expected container name to be %s, but got %s", tc.expected, result)
@@ -173,6 +180,7 @@ func TestGetContainerName(t *testing.T) {
 }
 
 func TestGetContainerBaseName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		labels   map[string]string
@@ -194,6 +202,7 @@ func TestGetContainerBaseName(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			result := GetContainerBaseName(tc.labels)
 			if result != tc.expected {
 				t.Errorf("Expected container base name to be %s, but got %s", tc.expected, result)
@@ -203,6 +212,7 @@ func TestGetContainerBaseName(t *testing.T) {
 }
 
 func TestGetTransportType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		labels   map[string]string
@@ -224,6 +234,7 @@ func TestGetTransportType(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			result := GetTransportType(tc.labels)
 			if result != tc.expected {
 				t.Errorf("Expected transport type to be %s, but got %s", tc.expected, result)
@@ -233,6 +244,7 @@ func TestGetTransportType(t *testing.T) {
 }
 
 func TestGetPort(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		labels      map[string]string
@@ -268,6 +280,7 @@ func TestGetPort(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			result, err := GetPort(tc.labels)
 
 			// Check error
@@ -292,6 +305,7 @@ func TestGetPort(t *testing.T) {
 }
 
 func TestGetToolType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		labels   map[string]string
@@ -313,6 +327,7 @@ func TestGetToolType(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			result := GetToolType(tc.labels)
 			if result != tc.expected {
 				t.Errorf("Expected tool type to be %s, but got %s", tc.expected, result)

@@ -10,6 +10,7 @@ import (
 )
 
 func TestNewAuditEvent(t *testing.T) {
+	t.Parallel()
 	source := EventSource{
 		Type:  SourceTypeNetwork,
 		Value: "192.168.1.100",
@@ -32,6 +33,7 @@ func TestNewAuditEvent(t *testing.T) {
 }
 
 func TestNewAuditEventWithID(t *testing.T) {
+	t.Parallel()
 	auditID := "custom-audit-id"
 	source := EventSource{Type: SourceTypeLocal, Value: "localhost"}
 	subjects := map[string]string{SubjectKeyUser: "admin"}
@@ -47,6 +49,7 @@ func TestNewAuditEventWithID(t *testing.T) {
 }
 
 func TestAuditEventWithTarget(t *testing.T) {
+	t.Parallel()
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 	target := map[string]string{
 		TargetKeyType:     TargetTypeTool,
@@ -61,6 +64,7 @@ func TestAuditEventWithTarget(t *testing.T) {
 }
 
 func TestAuditEventWithData(t *testing.T) {
+	t.Parallel()
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 	testData := map[string]any{"key": "value", "number": 42}
 	dataBytes, err := json.Marshal(testData)
@@ -74,6 +78,7 @@ func TestAuditEventWithData(t *testing.T) {
 }
 
 func TestAuditEventWithDataFromString(t *testing.T) {
+	t.Parallel()
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 	jsonString := `{"message": "test data", "count": 5}`
 
@@ -91,6 +96,7 @@ func TestAuditEventWithDataFromString(t *testing.T) {
 }
 
 func TestAuditEventJSONSerialization(t *testing.T) {
+	t.Parallel()
 	source := EventSource{
 		Type:  SourceTypeNetwork,
 		Value: "10.0.0.1",
@@ -147,12 +153,14 @@ func TestAuditEventJSONSerialization(t *testing.T) {
 }
 
 func TestEventSourceConstants(t *testing.T) {
+	t.Parallel()
 	// Test that constants are defined
 	assert.Equal(t, "network", SourceTypeNetwork)
 	assert.Equal(t, "local", SourceTypeLocal)
 }
 
 func TestOutcomeConstants(t *testing.T) {
+	t.Parallel()
 	// Test that outcome constants are defined
 	assert.Equal(t, "success", OutcomeSuccess)
 	assert.Equal(t, "failure", OutcomeFailure)
@@ -161,11 +169,13 @@ func TestOutcomeConstants(t *testing.T) {
 }
 
 func TestComponentConstants(t *testing.T) {
+	t.Parallel()
 	// Test that component constants are defined
 	assert.Equal(t, "toolhive-api", ComponentToolHive)
 }
 
 func TestEventMetadataExtra(t *testing.T) {
+	t.Parallel()
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 
 	// Initially should be nil
@@ -182,6 +192,7 @@ func TestEventMetadataExtra(t *testing.T) {
 }
 
 func TestEventSourceExtra(t *testing.T) {
+	t.Parallel()
 	source := EventSource{
 		Type:  SourceTypeNetwork,
 		Value: "192.168.1.1",

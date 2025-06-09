@@ -406,6 +406,11 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 		}
 	}
 
+	// Always return the ID token (JWT) for Authorization header
+	if tokenResult.IDToken != "" {
+		return tokenResult.IDToken, nil
+	}
+	// Fallback: if no ID token, return access token (may be JWT for some IdPs)
 	return tokenResult.AccessToken, nil
 }
 

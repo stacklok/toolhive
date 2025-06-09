@@ -33,6 +33,9 @@ const (
 
 	// OnePasswordType represents the 1Password secret provider.
 	OnePasswordType ProviderType = "1password"
+
+	// NoneType represents the none secret provider.
+	NoneType ProviderType = "none"
 )
 
 // ErrUnknownManagerType is returned when an invalid value for ProviderType is specified.
@@ -55,6 +58,8 @@ func CreateSecretProvider(managerType ProviderType) (Provider, error) {
 		return NewEncryptedManager(secretsPath, key[:])
 	case OnePasswordType:
 		return NewOnePasswordManager()
+	case NoneType:
+		return NewNoneManager()
 	default:
 		return nil, ErrUnknownManagerType
 	}

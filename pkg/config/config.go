@@ -42,8 +42,10 @@ func validateProviderType(provider string) (secrets.ProviderType, error) {
 		return secrets.EncryptedType, nil
 	case string(secrets.OnePasswordType):
 		return secrets.OnePasswordType, nil
+	case string(secrets.NoneType):
+		return secrets.NoneType, nil
 	default:
-		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted, 1password)", provider)
+		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted, 1password, none)", provider)
 	}
 }
 

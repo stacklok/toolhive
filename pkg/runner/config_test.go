@@ -159,8 +159,8 @@ func TestRunConfig_WithPorts(t *testing.T) {
 		{
 			name:        "SSE transport with specific ports",
 			config:      &RunConfig{Transport: types.TransportTypeSSE},
-			port:        8000,
-			targetPort:  9000,
+			port:        8001,
+			targetPort:  9001,
 			expectError: false,
 		},
 		{
@@ -173,8 +173,8 @@ func TestRunConfig_WithPorts(t *testing.T) {
 		{
 			name:        "Stdio transport with specific port",
 			config:      &RunConfig{Transport: types.TransportTypeStdio},
-			port:        8000,
-			targetPort:  9000, // This should be ignored for stdio
+			port:        8002,
+			targetPort:  9002, // This should be ignored for stdio
 			expectError: false,
 		},
 	}

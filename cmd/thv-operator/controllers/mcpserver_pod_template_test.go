@@ -173,6 +173,84 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 	assert.True(t, secretsProviderEnvFound, "TOOLHIVE_SECRETS_PROVIDER environment variable should be present")
 }
 
+func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
+	t.Parallel()
+	// Create a test MCPServer with environment variables
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-mcp-server-env",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "stdio",
+			Port:      8080,
+			Env: []mcpv1alpha1.EnvVar{
+				{
+					Name:  "API_KEY",
+					Value: "secret-key-123",
+				},
+				{
+					Name:  "DEBUG_MODE",
+					Value: "true",
+				},
+			},
+		},
+	}
+
+	// Register the scheme
+	s := scheme.Scheme
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+
+	// Create a reconciler with the scheme
+	r := &MCPServerReconciler{
+		Scheme: s,
+	}
+
+	// Generate the deployment
+	deployment := r.deploymentForMCPServer(mcpServer)
+	require.NotNil(t, deployment, "Deployment should not be nil")
+
+	// Check that environment variables are passed as --env flags in the container args
+	container := deployment.Spec.Template.Spec.Containers[0]
+
+	// Verify that the environment variables are NOT set as container environment variables
+	// (except for TOOLHIVE_SECRETS_PROVIDER which should still be there)
+	for _, env := range container.Env {
+		assert.NotEqual(t, "API_KEY", env.Name, "API_KEY should not be set as container environment variable")
+		assert.NotEqual(t, "DEBUG_MODE", env.Name, "DEBUG_MODE should not be set as container environment variable")
+	}
+
+	// Verify that the environment variables are passed as --env flags
+	expectedEnvArgs := []string{
+		"--env=API_KEY=secret-key-123",
+		"--env=DEBUG_MODE=true",
+	}
+
+	for _, expectedArg := range expectedEnvArgs {
+		found := false
+		for _, arg := range container.Args {
+			if arg == expectedArg {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "Expected --env flag '%s' should be present in container args", expectedArg)
+	}
+
+	// Verify that TOOLHIVE_SECRETS_PROVIDER is still set as a container environment variable
+	secretsProviderEnvFound := false
+	for _, env := range container.Env {
+		if env.Name == "TOOLHIVE_SECRETS_PROVIDER" {
+			secretsProviderEnvFound = true
+			assert.Equal(t, "none", env.Value, "TOOLHIVE_SECRETS_PROVIDER should be set to 'none'")
+			break
+		}
+	}
+	assert.True(t, secretsProviderEnvFound, "TOOLHIVE_SECRETS_PROVIDER environment variable should be present")
+}
+
 // Helper functions
 func boolPtr(b bool) *bool {
 	return &b

@@ -25,6 +25,23 @@ type Config struct {
 	IncludeResponseData bool `json:"include_response_data,omitempty" yaml:"include_response_data,omitempty"`
 	// MaxDataSize limits the size of request/response data included in audit logs (in bytes)
 	MaxDataSize int `json:"max_data_size,omitempty" yaml:"max_data_size,omitempty"`
+	// LogFile specifies the file path for audit logs. If empty, logs to stdout.
+	LogFile string `json:"log_file,omitempty" yaml:"log_file,omitempty"`
+}
+
+// GetLogWriter creates and returns the appropriate io.Writer based on the configuration.
+func (c *Config) GetLogWriter() (io.Writer, error) {
+	if c == nil || c.LogFile == "" {
+		return os.Stdout, nil
+	}
+
+	// Clean the path to prevent directory traversal
+	file, err := os.OpenFile(filepath.Clean(c.LogFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open audit log file %s: %w", c.LogFile, err)
+	}
+
+	return file, nil
 }
 
 // DefaultConfig returns a default audit configuration.
@@ -86,9 +103,12 @@ func (c *Config) ShouldAuditEvent(eventType string) bool {
 }
 
 // CreateMiddleware creates an HTTP middleware from the audit configuration.
-func (c *Config) CreateMiddleware() func(http.Handler) http.Handler {
-	auditor := NewAuditor(c)
-	return auditor.Middleware
+func (c *Config) CreateMiddleware() (func(http.Handler) http.Handler, error) {
+	auditor, err := NewAuditor(c)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create auditor: %w", err)
+	}
+	return auditor.Middleware, nil
 }
 
 // GetMiddlewareFromFile loads the audit configuration from a file and creates an HTTP middleware.
@@ -100,7 +120,7 @@ func GetMiddlewareFromFile(path string) (func(http.Handler) http.Handler, error)
 	}
 
 	// Create the middleware
-	return config.CreateMiddleware(), nil
+	return config.CreateMiddleware()
 }
 
 // Validate validates the audit configuration.

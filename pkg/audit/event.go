@@ -5,7 +5,9 @@
 package audit
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -160,6 +162,42 @@ func (e *AuditEvent) WithData(data *json.RawMessage) *AuditEvent {
 func (e *AuditEvent) WithDataFromString(data string) *AuditEvent {
 	rawMsg := json.RawMessage(data)
 	return e.WithData(&rawMsg)
+}
+
+// LogTo logs the audit event to the provided slog.Logger using the custom audit level.
+func (e *AuditEvent) LogTo(ctx context.Context, logger *slog.Logger, level slog.Level) {
+	// Create slog attributes for the audit event
+	attrs := []slog.Attr{
+		slog.String("audit_id", e.Metadata.AuditID),
+		slog.String("type", e.Type),
+		slog.Time("logged_at", e.LoggedAt),
+		slog.String("outcome", e.Outcome),
+		slog.String("component", e.Component),
+		slog.Group("source",
+			slog.String("type", e.Source.Type),
+			slog.String("value", e.Source.Value),
+			slog.Any("extra", e.Source.Extra),
+		),
+		slog.Any("subjects", e.Subjects),
+	}
+
+	// Add target if present
+	if e.Target != nil {
+		attrs = append(attrs, slog.Any("target", e.Target))
+	}
+
+	// Add metadata extra if present
+	if e.Metadata.Extra != nil {
+		attrs = append(attrs, slog.Group("metadata", slog.Any("extra", e.Metadata.Extra)))
+	}
+
+	// Add data if present
+	if e.Data != nil {
+		attrs = append(attrs, slog.Any("data", e.Data))
+	}
+
+	// Log with the specified level
+	logger.LogAttrs(ctx, level, "audit_event", attrs...)
 }
 
 // Common event outcomes

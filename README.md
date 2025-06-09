@@ -125,7 +125,7 @@ If you're on Windows, you can install ToolHive using the Windows Package Manager
 > Note: Make sure you have [Winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/) installed.
 
 ```bash
-winget install stacklok.toolhive
+winget install stacklok.thv
 ```
 
 #### Build from source <!-- omit in toc -->

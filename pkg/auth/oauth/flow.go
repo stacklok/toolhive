@@ -432,13 +432,22 @@ func (f *Flow) processToken(token *oauth2.Token) *TokenResult {
 		Expiry:       token.Expiry,
 	}
 
-	// Try to extract claims from the access token if it's a JWT
-	// Note: This is optional - access tokens may be opaque tokens rather than JWTs
-	if claims, err := f.extractJWTClaims(token.AccessToken); err == nil {
-		result.Claims = claims
-		logger.Debugf("Successfully extracted JWT claims from access token")
+	// Prefer extracting claims from the ID token if present (OIDC, e.g., Google)
+	if idToken, ok := token.Extra("id_token").(string); ok && idToken != "" {
+		if claims, err := f.extractJWTClaims(idToken); err == nil {
+			result.Claims = claims
+			logger.Debugf("Successfully extracted JWT claims from ID token")
+		} else {
+			logger.Debugf("Could not extract JWT claims from ID token: %v", err)
+		}
 	} else {
-		logger.Debugf("Could not extract JWT claims from access token (may be opaque token): %v", err)
+		// Fallback: try to extract claims from the access token (e.g., Keycloak)
+		if claims, err := f.extractJWTClaims(token.AccessToken); err == nil {
+			result.Claims = claims
+			logger.Debugf("Successfully extracted JWT claims from access token")
+		} else {
+			logger.Debugf("Could not extract JWT claims from access token (may be opaque token): %v", err)
+		}
 	}
 
 	return result

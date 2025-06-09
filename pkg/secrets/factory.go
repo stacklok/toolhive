@@ -18,6 +18,9 @@ const (
 	// PasswordEnvVar is the environment variable used to specify the password for encrypting and decrypting secrets.
 	PasswordEnvVar = "TOOLHIVE_SECRETS_PASSWORD"
 
+	// ProviderEnvVar is the environment variable used to specify the secrets provider type.
+	ProviderEnvVar = "TOOLHIVE_SECRETS_PROVIDER"
+
 	keyringService = "toolhive"
 )
 

@@ -35,18 +35,28 @@ type Secrets struct {
 	ProviderType string `yaml:"provider_type"`
 }
 
-// GetProviderType returns the secrets provider type from the application config.
-func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
-	provider := s.ProviderType
+// validateProviderType validates and returns the secrets provider type.
+func validateProviderType(provider string) (secrets.ProviderType, error) {
 	switch provider {
 	case string(secrets.EncryptedType):
 		return secrets.EncryptedType, nil
 	case string(secrets.OnePasswordType):
 		return secrets.OnePasswordType, nil
 	default:
-		// TODO: auto-generate the set of valid values.
 		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted, 1password)", provider)
 	}
+}
+
+// GetProviderType returns the secrets provider type from the environment variable or application config.
+// It first checks the TOOLHIVE_SECRETS_PROVIDER environment variable, and falls back to the config file.
+func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
+	// First check the environment variable
+	if envProvider := os.Getenv(secrets.ProviderEnvVar); envProvider != "" {
+		return validateProviderType(envProvider)
+	}
+
+	// Fall back to config file
+	return validateProviderType(s.ProviderType)
 }
 
 // Clients contains settings for client configuration.

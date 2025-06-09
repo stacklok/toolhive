@@ -26,8 +26,9 @@ func init() {
 func TestNewAuditor(t *testing.T) {
 	t.Parallel()
 	config := &Config{}
-	auditor := NewAuditor(config)
+	auditor, err := NewAuditor(config)
 
+	assert.NoError(t, err)
 	assert.NotNil(t, auditor)
 	assert.Equal(t, config, auditor.config)
 }
@@ -35,7 +36,8 @@ func TestNewAuditor(t *testing.T) {
 func TestAuditorMiddlewareDisabled(t *testing.T) {
 	t.Parallel()
 	config := &Config{}
-	auditor := NewAuditor(config)
+	auditor, err := NewAuditor(config)
+	require.NoError(t, err)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -59,7 +61,8 @@ func TestAuditorMiddlewareWithRequestData(t *testing.T) {
 		IncludeRequestData: true,
 		MaxDataSize:        1024,
 	}
-	auditor := NewAuditor(config)
+	auditor, err := NewAuditor(config)
+	require.NoError(t, err)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Read the body to ensure it's still available
@@ -88,7 +91,8 @@ func TestAuditorMiddlewareWithResponseData(t *testing.T) {
 		IncludeResponseData: true,
 		MaxDataSize:         1024,
 	}
-	auditor := NewAuditor(config)
+	auditor, err := NewAuditor(config)
+	require.NoError(t, err)
 
 	responseData := `{"result": "success"}`
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -110,7 +114,8 @@ func TestAuditorMiddlewareWithResponseData(t *testing.T) {
 
 func TestDetermineEventType(t *testing.T) {
 	t.Parallel()
-	auditor := NewAuditor(&Config{})
+	auditor, err := NewAuditor(&Config{})
+	require.NoError(t, err)
 
 	tests := []struct {
 		name     string
@@ -169,7 +174,8 @@ func TestMapMCPMethodToEventType(t *testing.T) {
 		{"unknown_method", "mcp_request"},
 	}
 
-	auditor := NewAuditor(&Config{})
+	auditor, err := NewAuditor(&Config{})
+	require.NoError(t, err)
 	for _, tt := range tests {
 		t.Run(tt.mcpMethod, func(t *testing.T) {
 			t.Parallel()
@@ -181,7 +187,8 @@ func TestMapMCPMethodToEventType(t *testing.T) {
 
 func TestDetermineOutcome(t *testing.T) {
 	t.Parallel()
-	auditor := NewAuditor(&Config{})
+	auditor, err := NewAuditor(&Config{})
+	require.NoError(t, err)
 
 	tests := []struct {
 		statusCode int
@@ -211,7 +218,8 @@ func TestDetermineOutcome(t *testing.T) {
 
 func TestGetClientIP(t *testing.T) {
 	t.Parallel()
-	auditor := NewAuditor(&Config{})
+	auditor, err := NewAuditor(&Config{})
+	require.NoError(t, err)
 
 	tests := []struct {
 		name       string
@@ -260,7 +268,8 @@ func TestGetClientIP(t *testing.T) {
 
 func TestExtractSubjects(t *testing.T) {
 	t.Parallel()
-	auditor := NewAuditor(&Config{})
+	auditor, err := NewAuditor(&Config{})
+	require.NoError(t, err)
 
 	t.Run("with JWT claims", func(t *testing.T) {
 		t.Parallel()
@@ -333,7 +342,8 @@ func TestDetermineComponent(t *testing.T) {
 	t.Run("with configured component", func(t *testing.T) {
 		t.Parallel()
 		config := &Config{Component: "custom-component"}
-		auditor := NewAuditor(config)
+		auditor, err := NewAuditor(config)
+		require.NoError(t, err)
 
 		req := httptest.NewRequest("GET", "/test", nil)
 		result := auditor.determineComponent(req)
@@ -344,7 +354,8 @@ func TestDetermineComponent(t *testing.T) {
 	t.Run("without configured component", func(t *testing.T) {
 		t.Parallel()
 		config := &Config{}
-		auditor := NewAuditor(config)
+		auditor, err := NewAuditor(config)
+		require.NoError(t, err)
 
 		req := httptest.NewRequest("GET", "/test", nil)
 		result := auditor.determineComponent(req)
@@ -355,7 +366,8 @@ func TestDetermineComponent(t *testing.T) {
 
 func TestExtractTarget(t *testing.T) {
 	t.Parallel()
-	auditor := NewAuditor(&Config{})
+	auditor, err := NewAuditor(&Config{})
+	require.NoError(t, err)
 
 	tests := []struct {
 		name      string
@@ -411,7 +423,8 @@ func TestExtractTarget(t *testing.T) {
 
 func TestAddMetadata(t *testing.T) {
 	t.Parallel()
-	auditor := NewAuditor(&Config{})
+	auditor, err := NewAuditor(&Config{})
+	require.NoError(t, err)
 
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 	req := httptest.NewRequest("GET", "/sse/test", nil)
@@ -437,7 +450,8 @@ func TestAddEventData(t *testing.T) {
 			IncludeRequestData:  true,
 			IncludeResponseData: true,
 		}
-		auditor := NewAuditor(config)
+		auditor, err := NewAuditor(config)
+		require.NoError(t, err)
 
 		event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 		req := httptest.NewRequest("POST", "/test", nil)
@@ -451,7 +465,7 @@ func TestAddEventData(t *testing.T) {
 		require.NotNil(t, event.Data)
 
 		var data map[string]any
-		err := json.Unmarshal(*event.Data, &data)
+		err = json.Unmarshal(*event.Data, &data)
 		require.NoError(t, err)
 
 		requestObj, ok := data["request"].(map[string]any)
@@ -469,7 +483,8 @@ func TestAddEventData(t *testing.T) {
 			IncludeRequestData:  true,
 			IncludeResponseData: true,
 		}
-		auditor := NewAuditor(config)
+		auditor, err := NewAuditor(config)
+		require.NoError(t, err)
 
 		event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 		req := httptest.NewRequest("POST", "/test", nil)
@@ -483,7 +498,7 @@ func TestAddEventData(t *testing.T) {
 		require.NotNil(t, event.Data)
 
 		var data map[string]any
-		err := json.Unmarshal(*event.Data, &data)
+		err = json.Unmarshal(*event.Data, &data)
 		require.NoError(t, err)
 
 		assert.Equal(t, "plain text request", data["request"])
@@ -496,7 +511,8 @@ func TestAddEventData(t *testing.T) {
 			IncludeRequestData:  false,
 			IncludeResponseData: false,
 		}
-		auditor := NewAuditor(config)
+		auditor, err := NewAuditor(config)
+		require.NoError(t, err)
 
 		event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 		req := httptest.NewRequest("POST", "/test", nil)
@@ -515,7 +531,8 @@ func TestResponseWriterCapture(t *testing.T) {
 		IncludeResponseData: true,
 		MaxDataSize:         10, // Small limit for testing
 	}
-	auditor := NewAuditor(config)
+	auditor, err := NewAuditor(config)
+	require.NoError(t, err)
 
 	rw := &responseWriter{
 		ResponseWriter: httptest.NewRecorder(),
@@ -551,7 +568,8 @@ func TestResponseWriterStatusCode(t *testing.T) {
 
 func TestExtractSourceWithHeaders(t *testing.T) {
 	t.Parallel()
-	auditor := NewAuditor(&Config{})
+	auditor, err := NewAuditor(&Config{})
+	require.NoError(t, err)
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	req.Header.Set("User-Agent", "TestAgent/1.0")

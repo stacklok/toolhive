@@ -2,6 +2,7 @@ package audit
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -111,7 +112,8 @@ func TestCreateMiddleware(t *testing.T) {
 	t.Parallel()
 	config := &Config{}
 
-	middleware := config.CreateMiddleware()
+	middleware, err := config.CreateMiddleware()
+	assert.NoError(t, err)
 	assert.NotNil(t, middleware)
 }
 
@@ -268,4 +270,60 @@ func TestConfigWithEmptyExcludeEventTypes(t *testing.T) {
 	// Should audit all events when ExcludeEventTypes is empty
 	assert.True(t, config.ShouldAuditEvent("any_event"))
 	assert.True(t, config.ShouldAuditEvent("mcp_tool_call"))
+}
+
+func TestGetLogWriter(t *testing.T) {
+	t.Parallel()
+
+	t.Run("default to stdout", func(t *testing.T) {
+		t.Parallel()
+		config := &Config{}
+
+		writer, err := config.GetLogWriter()
+		assert.NoError(t, err)
+		assert.Equal(t, os.Stdout, writer)
+	})
+
+	t.Run("nil config defaults to stdout", func(t *testing.T) {
+		t.Parallel()
+		var config *Config
+
+		writer, err := config.GetLogWriter()
+		assert.NoError(t, err)
+		assert.Equal(t, os.Stdout, writer)
+	})
+
+	t.Run("empty log file defaults to stdout", func(t *testing.T) {
+		t.Parallel()
+		config := &Config{LogFile: ""}
+
+		writer, err := config.GetLogWriter()
+		assert.NoError(t, err)
+		assert.Equal(t, os.Stdout, writer)
+	})
+
+	t.Run("invalid log file path returns error", func(t *testing.T) {
+		t.Parallel()
+		config := &Config{LogFile: "/invalid/path/that/does/not/exist/audit.log"}
+
+		_, err := config.GetLogWriter()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to open audit log file")
+	})
+}
+
+func TestConfigWithLogFile(t *testing.T) {
+	t.Parallel()
+	jsonConfig := `{
+		"component": "test-component",
+		"log_file": "/tmp/audit.log",
+		"include_request_data": true
+	}`
+
+	config, err := LoadFromReader(strings.NewReader(jsonConfig))
+	require.NoError(t, err)
+
+	assert.Equal(t, "test-component", config.Component)
+	assert.Equal(t, "/tmp/audit.log", config.LogFile)
+	assert.True(t, config.IncludeRequestData)
 }

@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // MockConfigPath replaces the getConfigPath function with a mock that returns a specified path
@@ -230,4 +231,40 @@ func TestRegistryURLConfig(t *testing.T) {
 			}
 		})
 	})
+}
+
+func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
+	logger.Initialize()
+
+	// Save original env value and restore at the end
+	originalEnv := os.Getenv(secrets.ProviderEnvVar)
+	defer func() {
+		if originalEnv != "" {
+			os.Setenv(secrets.ProviderEnvVar, originalEnv)
+		} else {
+			os.Unsetenv(secrets.ProviderEnvVar)
+		}
+	}()
+
+	s := &Secrets{
+		ProviderType: "1password", // Config says 1password
+	}
+
+	// Test 1: Environment variable takes precedence
+	os.Setenv(secrets.ProviderEnvVar, "encrypted")
+	got, err := s.GetProviderType()
+	require.NoError(t, err)
+	assert.Equal(t, secrets.EncryptedType, got, "Environment variable should take precedence over config")
+
+	// Test 2: Falls back to config when env var is unset
+	os.Unsetenv(secrets.ProviderEnvVar)
+	got, err = s.GetProviderType()
+	require.NoError(t, err)
+	assert.Equal(t, secrets.OnePasswordType, got, "Should fallback to config value when env var is unset")
+
+	// Test 3: Invalid environment variable returns error
+	os.Setenv(secrets.ProviderEnvVar, "invalid")
+	_, err = s.GetProviderType()
+	assert.Error(t, err, "Should return error for invalid environment variable")
+	assert.Contains(t, err.Error(), "invalid secrets provider type", "Error should mention invalid provider type")
 }

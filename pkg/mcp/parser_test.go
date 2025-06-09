@@ -14,6 +14,7 @@ import (
 )
 
 func TestParsingMiddleware(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		method         string
@@ -138,6 +139,7 @@ func TestParsingMiddleware(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Create a test handler that captures the context
 			var capturedCtx context.Context
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +175,7 @@ func TestParsingMiddleware(t *testing.T) {
 }
 
 func TestExtractResourceAndArguments(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name               string
 		method             string
@@ -252,6 +255,7 @@ func TestExtractResourceAndArguments(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var params json.RawMessage
 			if tt.params != "" {
 				params = json.RawMessage(tt.params)
@@ -270,6 +274,7 @@ func TestExtractResourceAndArguments(t *testing.T) {
 }
 
 func TestConvenienceFunctions(t *testing.T) {
+	t.Parallel()
 	// Create a context with parsed MCP request
 	parsed := &ParsedMCPRequest{
 		Method:     "tools/call",
@@ -304,6 +309,7 @@ func TestConvenienceFunctions(t *testing.T) {
 }
 
 func TestShouldParseMCPRequest(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		method      string
@@ -357,6 +363,7 @@ func TestShouldParseMCPRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			req.Header.Set("Content-Type", tt.contentType)
 
@@ -367,6 +374,7 @@ func TestShouldParseMCPRequest(t *testing.T) {
 }
 
 func TestParseMCPRequestWithInvalidJSON(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		body string
@@ -391,6 +399,7 @@ func TestParseMCPRequestWithInvalidJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := parseMCPRequest([]byte(tt.body))
 			assert.Nil(t, result)
 		})
@@ -398,6 +407,7 @@ func TestParseMCPRequestWithInvalidJSON(t *testing.T) {
 }
 
 func TestMiddlewarePreservesRequestBody(t *testing.T) {
+	t.Parallel()
 	originalBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`
 
 	// Create a test handler that reads the request body

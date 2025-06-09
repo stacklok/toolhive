@@ -11,6 +11,7 @@ import (
 )
 
 func TestAnonymousMiddleware(t *testing.T) {
+	t.Parallel()
 	// Create a test handler that checks for claims in the context
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaimsFromContext(r.Context())

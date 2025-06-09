@@ -15,6 +15,7 @@ import (
 )
 
 func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
+	t.Parallel()
 	// Create a test MCPServer with a PodTemplateSpec
 	mcpServer := &mcpv1alpha1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{

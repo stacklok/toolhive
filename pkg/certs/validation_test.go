@@ -10,6 +10,7 @@ import (
 )
 
 func TestValidateCACertificate(t *testing.T) {
+	t.Parallel()
 	// Initialize logger for testing
 	logger.Initialize()
 
@@ -106,6 +107,7 @@ aW52YWxpZCBjZXJ0aWZpY2F0ZSBkYXRh
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := ValidateCACertificate(tt.certData)
 
 			if tt.wantErr {

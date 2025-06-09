@@ -107,6 +107,7 @@ func (tc *testContext) assertAllRBACResourcesExist(t *testing.T) {
 }
 
 func TestEnsureRBACResources_ServiceAccount_Creation(t *testing.T) {
+	t.Parallel()
 	tc := setupTest("test-server", "default")
 
 	err := tc.ensureRBACResources()
@@ -116,6 +117,7 @@ func TestEnsureRBACResources_ServiceAccount_Creation(t *testing.T) {
 }
 
 func TestEnsureRBACResources_ServiceAccount_Update(t *testing.T) {
+	t.Parallel()
 	tc := setupTest("test-server-sa-update", "default")
 
 	existingSA := &corev1.ServiceAccount{
@@ -135,6 +137,7 @@ func TestEnsureRBACResources_ServiceAccount_Update(t *testing.T) {
 }
 
 func TestEnsureRBACResources_Role_Creation(t *testing.T) {
+	t.Parallel()
 	tc := setupTest("test-server", "default")
 
 	err := tc.ensureRBACResources()
@@ -144,6 +147,7 @@ func TestEnsureRBACResources_Role_Creation(t *testing.T) {
 }
 
 func TestEnsureRBACResources_Role_Update(t *testing.T) {
+	t.Parallel()
 	tc := setupTest("test-server-role-update", "default")
 
 	existingRole := &rbacv1.Role{
@@ -169,6 +173,7 @@ func TestEnsureRBACResources_Role_Update(t *testing.T) {
 }
 
 func TestEnsureRBACResources_RoleBinding_Creation(t *testing.T) {
+	t.Parallel()
 	tc := setupTest("test-server", "default")
 
 	err := tc.ensureRBACResources()
@@ -178,6 +183,7 @@ func TestEnsureRBACResources_RoleBinding_Creation(t *testing.T) {
 }
 
 func TestEnsureRBACResources_RoleBinding_Update(t *testing.T) {
+	t.Parallel()
 	tc := setupTest("test-server-rb-update", "default")
 
 	existingRB := &rbacv1.RoleBinding{
@@ -208,6 +214,7 @@ func TestEnsureRBACResources_RoleBinding_Update(t *testing.T) {
 }
 
 func TestEnsureRBACResources_MultipleNamespaces(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name      string
 		namespace string
@@ -219,6 +226,7 @@ func TestEnsureRBACResources_MultipleNamespaces(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name+"-"+testCase.namespace, func(t *testing.T) {
+			t.Parallel()
 			tc := setupTest(testCase.name, testCase.namespace)
 
 			err := tc.ensureRBACResources()
@@ -230,6 +238,7 @@ func TestEnsureRBACResources_MultipleNamespaces(t *testing.T) {
 }
 
 func TestEnsureRBACResources_ResourceNames(t *testing.T) {
+	t.Parallel()
 	testCases := []string{
 		"simple-server",
 		"mcp-server-test",
@@ -238,6 +247,7 @@ func TestEnsureRBACResources_ResourceNames(t *testing.T) {
 
 	for _, serverName := range testCases {
 		t.Run(serverName, func(t *testing.T) {
+			t.Parallel()
 			tc := setupTest(serverName, "default")
 
 			err := tc.ensureRBACResources()
@@ -249,6 +259,7 @@ func TestEnsureRBACResources_ResourceNames(t *testing.T) {
 }
 
 func TestEnsureRBACResources_NoChangesNeeded(t *testing.T) {
+	t.Parallel()
 	tc := setupTest("test-server-no-changes", "default")
 
 	sa := &corev1.ServiceAccount{
@@ -298,6 +309,7 @@ func TestEnsureRBACResources_NoChangesNeeded(t *testing.T) {
 }
 
 func TestEnsureRBACResources_Idempotency(t *testing.T) {
+	t.Parallel()
 	tc := setupTest("test-server-idempotency", "default")
 
 	for i := 0; i < 3; i++ {

@@ -43,6 +43,7 @@ func (m *MockHTTPProxy) SendMessageToDestination(msg jsonrpc2.Message) error {
 }
 
 func TestSanitizeJSONString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    []byte
@@ -89,6 +90,7 @@ func TestSanitizeJSONString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			fmt.Println(string(tt.input))
 			result := sanitizeJSONString(string(tt.input))
 			assert.Equal(t, tt.expected, result)
@@ -97,6 +99,7 @@ func TestSanitizeJSONString(t *testing.T) {
 }
 
 func TestParseAndForwardJSONRPC(t *testing.T) {
+	t.Parallel()
 	// Initialize logger for testing
 	logger.Initialize()
 
@@ -138,6 +141,7 @@ func TestParseAndForwardJSONRPC(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Create mock HTTP proxy
 			mockProxy := new(MockHTTPProxy)
 
@@ -161,6 +165,7 @@ func TestParseAndForwardJSONRPC(t *testing.T) {
 }
 
 func TestIsSpace(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    rune
@@ -205,6 +210,7 @@ func TestIsSpace(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := isSpace(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})

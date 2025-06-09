@@ -11,6 +11,7 @@ import (
 )
 
 func TestLocalUserMiddleware(t *testing.T) {
+	t.Parallel()
 	username := "testuser"
 
 	// Create a test handler that checks for claims in the context
@@ -55,10 +56,12 @@ func TestLocalUserMiddleware(t *testing.T) {
 }
 
 func TestLocalUserMiddlewareWithDifferentUsernames(t *testing.T) {
+	t.Parallel()
 	testCases := []string{"alice", "bob", "admin", "user123"}
 
 	for _, username := range testCases {
 		t.Run("username_"+username, func(t *testing.T) {
+			t.Parallel()
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				claims, ok := GetClaimsFromContext(r.Context())
 				require.True(t, ok, "Expected claims to be present in context")

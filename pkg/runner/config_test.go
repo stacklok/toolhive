@@ -332,6 +332,10 @@ func TestRunConfig_ParsePermissionProfile(t *testing.T) {
 
 func TestRunConfig_ProcessVolumeMounts(t *testing.T) {
 	t.Parallel()
+
+	// Initialize logger to prevent nil pointer dereference when ProcessVolumeMounts logs
+	logger.Initialize()
+
 	testCases := []struct {
 		name                string
 		config              *RunConfig
@@ -709,6 +713,7 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 }
 
 func TestRunConfig_WithContainerName(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name           string
 		config         *RunConfig
@@ -743,6 +748,7 @@ func TestRunConfig_WithContainerName(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			originalContainerName := tc.config.ContainerName
 
 			result := tc.config.WithContainerName()
@@ -761,6 +767,7 @@ func TestRunConfig_WithContainerName(t *testing.T) {
 }
 
 func TestRunConfig_WithStandardLabels(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name     string
 		config   *RunConfig
@@ -805,6 +812,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			result := tc.config.WithStandardLabels()
 
 			assert.Equal(t, tc.config, result, "WithStandardLabels should return the same config instance")
@@ -818,6 +826,7 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 }
 
 func TestRunConfig_WithAuthz(t *testing.T) {
+	t.Parallel()
 	config := NewRunConfig()
 	authzConfig := &authz.Config{
 		Version: "1.0",
@@ -831,6 +840,7 @@ func TestRunConfig_WithAuthz(t *testing.T) {
 }
 
 func TestNewRunConfigFromFlags(t *testing.T) {
+	t.Parallel()
 	runtime := &mockRuntime{}
 	cmdArgs := []string{"arg1", "arg2"}
 	name := "test-server"
@@ -887,6 +897,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 }
 
 func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
+	t.Parallel()
 	// Create a config with some values
 	originalConfig := &RunConfig{
 		Image:         "test-image",

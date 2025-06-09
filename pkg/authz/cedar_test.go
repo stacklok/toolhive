@@ -13,6 +13,7 @@ import (
 
 // TestNewCedarAuthorizer tests the creation of a new Cedar authorizer with different configurations.
 func TestNewCedarAuthorizer(t *testing.T) {
+	t.Parallel()
 	// Test cases
 	testCases := []struct {
 		name         string
@@ -63,6 +64,7 @@ func TestNewCedarAuthorizer(t *testing.T) {
 	// Run test cases
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Create a Cedar authorizer
 			authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 				Policies:     tc.policies,
@@ -88,6 +90,7 @@ func TestNewCedarAuthorizer(t *testing.T) {
 
 // TestAuthorizeWithJWTClaims tests the AuthorizeWithJWTClaims function with different roles in claims.
 func TestAuthorizeWithJWTClaims(t *testing.T) {
+	t.Parallel()
 	// Test cases
 	testCases := []struct {
 		name             string
@@ -302,6 +305,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 	// Run test cases
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Create a context
 			ctx := context.Background()
 
@@ -325,6 +329,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 
 // TestAuthorizeWithJWTClaimsErrors tests error cases for AuthorizeWithJWTClaims.
 func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
+	t.Parallel()
 	// Create a context
 	ctx := context.Background()
 
@@ -416,6 +421,7 @@ func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 	// Run test cases
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Setup context
 			testCtx := tc.setupCtx(ctx)
 

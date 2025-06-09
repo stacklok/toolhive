@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestUnstructuredLogsCheck(t *testing.T) {
+func TestUnstructuredLogsCheck(t *testing.T) { //nolint:paralleltest // Uses environment variables
 	tests := []struct {
 		name     string
 		envValue string
@@ -24,8 +24,8 @@ func TestUnstructuredLogsCheck(t *testing.T) {
 		{"Invalid Value", "not-a-bool", true},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, tt := range tests { //nolint:paralleltest // Uses environment variables
+		t.Run(tt.name, func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 			// Set environment variable
 			if tt.envValue != "" {
 				os.Setenv("UNSTRUCTURED_LOGS", tt.envValue)
@@ -41,7 +41,7 @@ func TestUnstructuredLogsCheck(t *testing.T) {
 	}
 }
 
-func TestStructuredLogger(t *testing.T) {
+func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environment variables
 	unformattedLogTestCases := []struct {
 		level    string // The log level to test
 		message  string // The message to log
@@ -128,7 +128,7 @@ func TestStructuredLogger(t *testing.T) {
 		{"ERROR", "error message %s and %s", "key", "value", "error message key and value", true},
 	}
 
-	for _, tc := range formattedLogTestCases {
+	for _, tc := range formattedLogTestCases { //nolint:paralleltest // Uses environment variables
 		t.Run("FormattedLogs", func(t *testing.T) {
 			// we create a pipe to capture the output of the log
 			// so we can test that the logger logs the right message
@@ -184,7 +184,7 @@ func TestStructuredLogger(t *testing.T) {
 	}
 }
 
-func TestUnstructuredLogger(t *testing.T) {
+func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environment variables
 	// we only test for the formatted logs here because the unstructured logs
 	// do not contain the key/value pair format that the structured logs do
 	formattedLogTestCases := []struct {
@@ -200,7 +200,7 @@ func TestUnstructuredLogger(t *testing.T) {
 		{"ERR", "error message %s and %s", "key", "value", "error message key and value"},
 	}
 
-	for _, tc := range formattedLogTestCases {
+	for _, tc := range formattedLogTestCases { //nolint:paralleltest // Uses environment variables
 		t.Run("FormattedLogs", func(t *testing.T) {
 
 			// we create a pipe to capture the output of the log
@@ -240,9 +240,9 @@ func TestUnstructuredLogger(t *testing.T) {
 }
 
 // TestInitialize tests the Initialize function
-func TestInitialize(t *testing.T) {
+func TestInitialize(t *testing.T) { //nolint:paralleltest // Uses environment variables
 	// Test structured logs (JSON)
-	t.Run("Structured Logs", func(t *testing.T) {
+	t.Run("Structured Logs", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		// Set environment to use structured logs
 		os.Setenv("UNSTRUCTURED_LOGS", "false")
 		defer os.Unsetenv("UNSTRUCTURED_LOGS")
@@ -279,7 +279,7 @@ func TestInitialize(t *testing.T) {
 	})
 
 	// Test unstructured logs
-	t.Run("Unstructured Logs", func(t *testing.T) {
+	t.Run("Unstructured Logs", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		// Set environment to use unstructured logs
 		os.Setenv("UNSTRUCTURED_LOGS", "true")
 		defer os.Unsetenv("UNSTRUCTURED_LOGS")
@@ -316,7 +316,7 @@ func TestInitialize(t *testing.T) {
 }
 
 // TestGetLogger tests the GetLogger function
-func TestGetLogger(t *testing.T) {
+func TestGetLogger(t *testing.T) { //nolint:paralleltest // Uses environment variables
 	// Set up structured logger for testing
 	os.Setenv("UNSTRUCTURED_LOGS", "false")
 	defer os.Unsetenv("UNSTRUCTURED_LOGS")

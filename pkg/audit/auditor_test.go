@@ -24,6 +24,7 @@ func init() {
 }
 
 func TestNewAuditor(t *testing.T) {
+	t.Parallel()
 	config := &Config{}
 	auditor := NewAuditor(config)
 
@@ -32,6 +33,7 @@ func TestNewAuditor(t *testing.T) {
 }
 
 func TestAuditorMiddlewareDisabled(t *testing.T) {
+	t.Parallel()
 	config := &Config{}
 	auditor := NewAuditor(config)
 
@@ -52,6 +54,7 @@ func TestAuditorMiddlewareDisabled(t *testing.T) {
 }
 
 func TestAuditorMiddlewareWithRequestData(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		IncludeRequestData: true,
 		MaxDataSize:        1024,
@@ -80,6 +83,7 @@ func TestAuditorMiddlewareWithRequestData(t *testing.T) {
 }
 
 func TestAuditorMiddlewareWithResponseData(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		IncludeResponseData: true,
 		MaxDataSize:         1024,
@@ -105,6 +109,7 @@ func TestAuditorMiddlewareWithResponseData(t *testing.T) {
 }
 
 func TestDetermineEventType(t *testing.T) {
+	t.Parallel()
 	auditor := NewAuditor(&Config{})
 
 	tests := []struct {
@@ -135,6 +140,7 @@ func TestDetermineEventType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			result := auditor.determineEventType(req)
 			assert.Equal(t, tt.expected, result)
@@ -143,6 +149,7 @@ func TestDetermineEventType(t *testing.T) {
 }
 
 func TestMapMCPMethodToEventType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		mcpMethod string
 		expected  string
@@ -165,6 +172,7 @@ func TestMapMCPMethodToEventType(t *testing.T) {
 	auditor := NewAuditor(&Config{})
 	for _, tt := range tests {
 		t.Run(tt.mcpMethod, func(t *testing.T) {
+			t.Parallel()
 			result := auditor.mapMCPMethodToEventType(tt.mcpMethod)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -172,6 +180,7 @@ func TestMapMCPMethodToEventType(t *testing.T) {
 }
 
 func TestDetermineOutcome(t *testing.T) {
+	t.Parallel()
 	auditor := NewAuditor(&Config{})
 
 	tests := []struct {
@@ -193,6 +202,7 @@ func TestDetermineOutcome(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(rune(tt.statusCode)), func(t *testing.T) {
+			t.Parallel()
 			result := auditor.determineOutcome(tt.statusCode)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -200,6 +210,7 @@ func TestDetermineOutcome(t *testing.T) {
 }
 
 func TestGetClientIP(t *testing.T) {
+	t.Parallel()
 	auditor := NewAuditor(&Config{})
 
 	tests := []struct {
@@ -232,6 +243,7 @@ func TestGetClientIP(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest("GET", "/test", nil)
 			for key, value := range tt.headers {
 				req.Header.Set(key, value)
@@ -247,9 +259,11 @@ func TestGetClientIP(t *testing.T) {
 }
 
 func TestExtractSubjects(t *testing.T) {
+	t.Parallel()
 	auditor := NewAuditor(&Config{})
 
 	t.Run("with JWT claims", func(t *testing.T) {
+		t.Parallel()
 		claims := jwt.MapClaims{
 			"sub":            "user123",
 			"name":           "John Doe",
@@ -271,6 +285,7 @@ func TestExtractSubjects(t *testing.T) {
 	})
 
 	t.Run("with preferred_username", func(t *testing.T) {
+		t.Parallel()
 		claims := jwt.MapClaims{
 			"sub":                "user456",
 			"preferred_username": "johndoe",
@@ -287,6 +302,7 @@ func TestExtractSubjects(t *testing.T) {
 	})
 
 	t.Run("with email fallback", func(t *testing.T) {
+		t.Parallel()
 		claims := jwt.MapClaims{
 			"sub":   "user789",
 			"email": "jane@example.com",
@@ -303,6 +319,7 @@ func TestExtractSubjects(t *testing.T) {
 	})
 
 	t.Run("without claims", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest("GET", "/test", nil)
 
 		subjects := auditor.extractSubjects(req)
@@ -312,7 +329,9 @@ func TestExtractSubjects(t *testing.T) {
 }
 
 func TestDetermineComponent(t *testing.T) {
+	t.Parallel()
 	t.Run("with configured component", func(t *testing.T) {
+		t.Parallel()
 		config := &Config{Component: "custom-component"}
 		auditor := NewAuditor(config)
 
@@ -323,6 +342,7 @@ func TestDetermineComponent(t *testing.T) {
 	})
 
 	t.Run("without configured component", func(t *testing.T) {
+		t.Parallel()
 		config := &Config{}
 		auditor := NewAuditor(config)
 
@@ -334,6 +354,7 @@ func TestDetermineComponent(t *testing.T) {
 }
 
 func TestExtractTarget(t *testing.T) {
+	t.Parallel()
 	auditor := NewAuditor(&Config{})
 
 	tests := []struct {
@@ -380,6 +401,7 @@ func TestExtractTarget(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			result := auditor.extractTarget(req, tt.eventType)
 			assert.Equal(t, tt.expected, result)
@@ -388,6 +410,7 @@ func TestExtractTarget(t *testing.T) {
 }
 
 func TestAddMetadata(t *testing.T) {
+	t.Parallel()
 	auditor := NewAuditor(&Config{})
 
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
@@ -407,7 +430,9 @@ func TestAddMetadata(t *testing.T) {
 }
 
 func TestAddEventData(t *testing.T) {
+	t.Parallel()
 	t.Run("with request and response data", func(t *testing.T) {
+		t.Parallel()
 		config := &Config{
 			IncludeRequestData:  true,
 			IncludeResponseData: true,
@@ -439,6 +464,7 @@ func TestAddEventData(t *testing.T) {
 	})
 
 	t.Run("with non-JSON data", func(t *testing.T) {
+		t.Parallel()
 		config := &Config{
 			IncludeRequestData:  true,
 			IncludeResponseData: true,
@@ -465,6 +491,7 @@ func TestAddEventData(t *testing.T) {
 	})
 
 	t.Run("disabled data inclusion", func(t *testing.T) {
+		t.Parallel()
 		config := &Config{
 			IncludeRequestData:  false,
 			IncludeResponseData: false,
@@ -483,6 +510,7 @@ func TestAddEventData(t *testing.T) {
 }
 
 func TestResponseWriterCapture(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		IncludeResponseData: true,
 		MaxDataSize:         10, // Small limit for testing
@@ -510,6 +538,7 @@ func TestResponseWriterCapture(t *testing.T) {
 }
 
 func TestResponseWriterStatusCode(t *testing.T) {
+	t.Parallel()
 	rw := &responseWriter{
 		ResponseWriter: httptest.NewRecorder(),
 		statusCode:     http.StatusOK, // Default
@@ -521,6 +550,7 @@ func TestResponseWriterStatusCode(t *testing.T) {
 }
 
 func TestExtractSourceWithHeaders(t *testing.T) {
+	t.Parallel()
 	auditor := NewAuditor(&Config{})
 
 	req := httptest.NewRequest("GET", "/test", nil)

@@ -9,6 +9,7 @@ import (
 )
 
 func TestIsTempPermissionProfile(t *testing.T) {
+	t.Parallel()
 	logger.Initialize()
 	tests := []struct {
 		name     string
@@ -54,6 +55,7 @@ func TestIsTempPermissionProfile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := isTempPermissionProfile(tt.filePath)
 			if result != tt.expected {
 				t.Errorf("isTempPermissionProfile(%q) = %v, expected %v", tt.filePath, result, tt.expected)
@@ -63,6 +65,7 @@ func TestIsTempPermissionProfile(t *testing.T) {
 }
 
 func TestCleanupTempPermissionProfile(t *testing.T) {
+	t.Parallel()
 	logger.Initialize()
 	// Create a temporary file that matches our pattern
 	tempFile, err := os.CreateTemp("", "toolhive-test-permissions-*.json")
@@ -90,6 +93,7 @@ func TestCleanupTempPermissionProfile(t *testing.T) {
 }
 
 func TestCleanupTempPermissionProfile_NonTempFile(t *testing.T) {
+	t.Parallel()
 	logger.Initialize()
 	// Test with a non-temp file path
 	nonTempPath := "/home/user/my-permissions.json"
@@ -102,6 +106,7 @@ func TestCleanupTempPermissionProfile_NonTempFile(t *testing.T) {
 }
 
 func TestCleanupTempPermissionProfile_NonExistentFile(t *testing.T) {
+	t.Parallel()
 	logger.Initialize()
 	// Test with a temp file pattern that doesn't exist
 	nonExistentPath := filepath.Join(os.TempDir(), "toolhive-nonexistent-permissions-999.json")

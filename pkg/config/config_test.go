@@ -13,23 +13,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
-// MockConfigPath replaces the getConfigPath function with a mock that returns a specified path
-func MockConfigPath(configPath string) func() {
-	original := getConfigPath
-
-	// Replace the function with our mock
-	getConfigPath = func() (string, error) {
-		return configPath, nil
-	}
-
-	// Return a cleanup function to restore the original
-	return func() {
-		getConfigPath = original
-	}
-}
-
-// SetupTestConfig creates a temporary config file and mocks the config path
-func SetupTestConfig(t *testing.T, configContent *Config) (string, func()) {
+// SetupTestConfig creates a temporary config file and returns the config path
+func SetupTestConfig(t *testing.T, configContent *Config) (string, string) {
 	t.Helper()
 	// Create a temporary directory
 	tempDir := t.TempDir()
@@ -51,17 +36,16 @@ func SetupTestConfig(t *testing.T, configContent *Config) (string, func()) {
 		require.NoError(t, err)
 	}
 
-	// Mock the config path function
-	cleanup := MockConfigPath(configPath)
-
-	return tempDir, cleanup
+	return tempDir, configPath
 }
 
 func TestLoadOrCreateConfig(t *testing.T) {
+	t.Parallel()
 	logger.Initialize()
 
 	t.Run("TestLoadOrCreateConfigWithMockConfig", func(t *testing.T) {
-		tempDir, cleanup := SetupTestConfig(t, &Config{
+		t.Parallel()
+		tempDir, configPath := SetupTestConfig(t, &Config{
 			Secrets: Secrets{
 				ProviderType: "encrypted",
 			},
@@ -70,10 +54,9 @@ func TestLoadOrCreateConfig(t *testing.T) {
 				RegisteredClients: []string{"vscode", "cursor"},
 			},
 		})
-		defer cleanup()
 
 		// Load the config
-		config, err := LoadOrCreateConfig()
+		config, err := LoadOrCreateConfigWithPath(configPath)
 		require.NoError(t, err)
 
 		// Verify the loaded config matches our mock
@@ -89,12 +72,12 @@ func TestLoadOrCreateConfig(t *testing.T) {
 	})
 
 	t.Run("TestLoadOrCreateConfigWithNewConfig", func(t *testing.T) {
+		t.Parallel()
 		// Create a temporary directory for the test
-		tempDir, cleanup := SetupTestConfig(t, nil)
-		defer cleanup()
+		tempDir, configPath := SetupTestConfig(t, nil)
 
 		// Load the config - this should create a new one since none exists
-		config, err := LoadOrCreateConfig()
+		config, err := LoadOrCreateConfigWithPath(configPath)
 		require.NoError(t, err)
 
 		// Verify the default values
@@ -111,12 +94,13 @@ func TestLoadOrCreateConfig(t *testing.T) {
 }
 
 func TestSave(t *testing.T) {
+	t.Parallel()
 	logger.Initialize()
 
 	t.Run("TestSave", func(t *testing.T) {
+		t.Parallel()
 		// Use the same pattern as other tests with proper mocking
-		tempDir, cleanup := SetupTestConfig(t, nil)
-		defer cleanup()
+		tempDir, configPath := SetupTestConfig(t, nil)
 
 		// Create a config instance
 		config := &Config{
@@ -130,13 +114,10 @@ func TestSave(t *testing.T) {
 		}
 
 		// Write the config
-		err := config.save()
+		err := config.saveToPath(configPath)
 		require.NoError(t, err)
 
 		// Verify the file was created
-		configPath, err := getConfigPath()
-		require.NoError(t, err)
-
 		_, err = os.Stat(configPath)
 		require.NoError(t, err)
 
@@ -163,10 +144,12 @@ func TestSave(t *testing.T) {
 }
 
 func TestRegistryURLConfig(t *testing.T) {
+	t.Parallel()
 	logger.Initialize()
 
 	t.Run("TestSetAndGetRegistryURL", func(t *testing.T) {
-		tempDir, cleanup := SetupTestConfig(t, &Config{
+		t.Parallel()
+		tempDir, configPath := SetupTestConfig(t, &Config{
 			Secrets: Secrets{
 				ProviderType: "encrypted",
 			},
@@ -176,28 +159,27 @@ func TestRegistryURLConfig(t *testing.T) {
 			},
 			RegistryUrl: "",
 		})
-		defer cleanup()
 
 		// Test setting a registry URL
 		testURL := "https://example.com/registry.json"
-		err := UpdateConfig(func(c *Config) {
+		err := UpdateConfigAtPath(configPath, func(c *Config) {
 			c.RegistryUrl = testURL
 		})
 		require.NoError(t, err)
 
 		// Load the config and verify the URL was set
-		config, err := LoadOrCreateConfig()
+		config, err := LoadOrCreateConfigWithPath(configPath)
 		require.NoError(t, err)
 		assert.Equal(t, testURL, config.RegistryUrl)
 
 		// Test unsetting the registry URL
-		err = UpdateConfig(func(c *Config) {
+		err = UpdateConfigAtPath(configPath, func(c *Config) {
 			c.RegistryUrl = ""
 		})
 		require.NoError(t, err)
 
 		// Load the config and verify the URL was unset
-		config, err = LoadOrCreateConfig()
+		config, err = LoadOrCreateConfigWithPath(configPath)
 		require.NoError(t, err)
 		assert.Equal(t, "", config.RegistryUrl)
 
@@ -209,19 +191,19 @@ func TestRegistryURLConfig(t *testing.T) {
 	})
 
 	t.Run("TestRegistryURLPersistence", func(t *testing.T) {
-		tempDir, cleanup := SetupTestConfig(t, nil)
-		defer cleanup()
+		t.Parallel()
+		tempDir, configPath := SetupTestConfig(t, nil)
 
 		testURL := "https://custom-registry.example.com/registry.json"
 
 		// Set the registry URL
-		err := UpdateConfig(func(c *Config) {
+		err := UpdateConfigAtPath(configPath, func(c *Config) {
 			c.RegistryUrl = testURL
 		})
 		require.NoError(t, err)
 
 		// Load config again to verify persistence
-		config, err := LoadOrCreateConfig()
+		config, err := LoadOrCreateConfigWithPath(configPath)
 		require.NoError(t, err)
 		assert.Equal(t, testURL, config.RegistryUrl)
 
@@ -234,6 +216,7 @@ func TestRegistryURLConfig(t *testing.T) {
 }
 
 func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
+	t.Parallel()
 	logger.Initialize()
 
 	// Save original env value and restore at the end

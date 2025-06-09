@@ -33,6 +33,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestNewFlow(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		config      *Config
@@ -97,6 +98,7 @@ func TestNewFlow(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			flow, err := NewFlow(tt.config)
 
 			if tt.expectError {
@@ -142,6 +144,7 @@ func TestNewFlow(t *testing.T) {
 }
 
 func TestGeneratePKCEParams(t *testing.T) {
+	t.Parallel()
 	flow := &Flow{}
 
 	err := flow.generatePKCEParams()
@@ -175,6 +178,7 @@ func TestGeneratePKCEParams(t *testing.T) {
 }
 
 func TestGenerateState(t *testing.T) {
+	t.Parallel()
 	flow := &Flow{}
 
 	err := flow.generateState()
@@ -196,6 +200,7 @@ func TestGenerateState(t *testing.T) {
 }
 
 func TestBuildAuthURL(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		config   *Config
@@ -256,6 +261,7 @@ func TestBuildAuthURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			flow, err := NewFlow(tt.config)
 			require.NoError(t, err)
 
@@ -268,6 +274,7 @@ func TestBuildAuthURL(t *testing.T) {
 }
 
 func TestHandleCallback_SecurityValidation(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		ClientID: "test-client",
 		AuthURL:  "https://example.com/auth",
@@ -328,6 +335,7 @@ func TestHandleCallback_SecurityValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Build query string
 			values := url.Values{}
 			for k, v := range tt.queryParams {
@@ -352,6 +360,7 @@ func TestHandleCallback_SecurityValidation(t *testing.T) {
 }
 
 func TestSecurityHeaders(t *testing.T) {
+	t.Parallel()
 	flow := &Flow{}
 	w := httptest.NewRecorder()
 
@@ -373,6 +382,7 @@ func TestSecurityHeaders(t *testing.T) {
 }
 
 func TestHandleRoot_SecurityValidation(t *testing.T) {
+	t.Parallel()
 	flow := &Flow{}
 	handler := flow.handleRoot()
 
@@ -405,6 +415,7 @@ func TestHandleRoot_SecurityValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(tt.method, "/", nil)
 			w := httptest.NewRecorder()
 
@@ -427,6 +438,7 @@ func TestHandleRoot_SecurityValidation(t *testing.T) {
 }
 
 func TestWriteErrorPage_XSSPrevention(t *testing.T) {
+	t.Parallel()
 	flow := &Flow{}
 	w := httptest.NewRecorder()
 
@@ -453,6 +465,7 @@ func TestWriteErrorPage_XSSPrevention(t *testing.T) {
 }
 
 func TestProcessToken(t *testing.T) {
+	t.Parallel()
 	// Create a proper flow with config to avoid nil pointer issues
 	config := &Config{
 		ClientID: "test-client",
@@ -481,6 +494,7 @@ func TestProcessToken(t *testing.T) {
 }
 
 func TestExtractJWTClaims(t *testing.T) {
+	t.Parallel()
 	flow := &Flow{}
 
 	tests := []struct {
@@ -507,6 +521,7 @@ func TestExtractJWTClaims(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			claims, err := flow.extractJWTClaims(tt.token)
 
 			if tt.expectError {
@@ -521,6 +536,7 @@ func TestExtractJWTClaims(t *testing.T) {
 
 	// Test with a valid JWT (unsigned for testing)
 	t.Run("valid JWT", func(t *testing.T) {
+		t.Parallel()
 		// Create a test JWT
 		claims := jwt.MapClaims{
 			"sub":   "1234567890",
@@ -543,6 +559,7 @@ func TestExtractJWTClaims(t *testing.T) {
 }
 
 func TestPKCESecurityProperties(t *testing.T) {
+	t.Parallel()
 	// Test that PKCE parameters have sufficient entropy
 	flow := &Flow{}
 
@@ -568,6 +585,7 @@ func TestPKCESecurityProperties(t *testing.T) {
 }
 
 func TestStateSecurityProperties(t *testing.T) {
+	t.Parallel()
 	// Test that state parameters have sufficient entropy
 	flow := &Flow{}
 
@@ -589,6 +607,7 @@ func TestStateSecurityProperties(t *testing.T) {
 }
 
 func TestStart(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		config      *Config
@@ -620,6 +639,7 @@ func TestStart(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			flow, err := NewFlow(tt.config)
 			require.NoError(t, err)
 
@@ -680,6 +700,7 @@ func TestStart(t *testing.T) {
 }
 
 func TestWriteSuccessPage(t *testing.T) {
+	t.Parallel()
 	flow := &Flow{}
 	w := httptest.NewRecorder()
 
@@ -708,6 +729,7 @@ func TestWriteSuccessPage(t *testing.T) {
 }
 
 func TestHandleCallback_SuccessfulFlow(t *testing.T) {
+	t.Parallel()
 	// Create a mock token server
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
@@ -788,6 +810,7 @@ func TestHandleCallback_SuccessfulFlow(t *testing.T) {
 }
 
 func TestProcessToken_WithJWTClaims(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		ClientID: "test-client",
 		AuthURL:  "https://example.com/auth",
@@ -835,6 +858,7 @@ func TestProcessToken_WithJWTClaims(t *testing.T) {
 }
 
 func TestProcessToken_WithOpaqueToken(t *testing.T) {
+	t.Parallel()
 	config := &Config{
 		ClientID: "test-client",
 		AuthURL:  "https://example.com/auth",
@@ -862,6 +886,7 @@ func TestProcessToken_WithOpaqueToken(t *testing.T) {
 }
 
 func TestExtractJWTClaims_ErrorCases(t *testing.T) {
+	t.Parallel()
 	flow := &Flow{}
 
 	tests := []struct {
@@ -892,6 +917,7 @@ func TestExtractJWTClaims_ErrorCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			claims, err := flow.extractJWTClaims(tt.token)
 
 			if tt.expectError {

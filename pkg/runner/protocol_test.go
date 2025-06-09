@@ -7,6 +7,7 @@ import (
 )
 
 func TestIsLocalGoPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		path     string
@@ -51,6 +52,7 @@ func TestIsLocalGoPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := isLocalGoPath(tt.path)
 			if result != tt.expected {
 				t.Errorf("isLocalGoPath(%q) = %v, want %v", tt.path, result, tt.expected)
@@ -60,6 +62,7 @@ func TestIsLocalGoPath(t *testing.T) {
 }
 
 func TestPackageNameToImageName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -109,6 +112,7 @@ func TestPackageNameToImageName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := packageNameToImageName(tt.input)
 			if result != tt.expected {
 				t.Errorf("packageNameToImageName(%q) = %q, want %q", tt.input, result, tt.expected)
@@ -118,6 +122,7 @@ func TestPackageNameToImageName(t *testing.T) {
 }
 
 func TestIsImageProtocolScheme(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -162,6 +167,7 @@ func TestIsImageProtocolScheme(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := IsImageProtocolScheme(tt.input)
 			if result != tt.expected {
 				t.Errorf("IsImageProtocolScheme(%q) = %v, want %v", tt.input, result, tt.expected)
@@ -171,6 +177,7 @@ func TestIsImageProtocolScheme(t *testing.T) {
 }
 
 func TestTemplateDataWithLocalPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		packageName string
@@ -207,6 +214,7 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Test the logic that would be used in HandleProtocolScheme
 			isLocalPath := isLocalGoPath(tt.packageName)
 

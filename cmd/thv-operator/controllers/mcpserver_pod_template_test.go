@@ -131,6 +131,48 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 	assert.True(t, podTemplatePatchFound, "Pod template patch should be included in the args")
 }
 
+func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
+	t.Parallel()
+	// Create a test MCPServer
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-mcp-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "stdio",
+			Port:      8080,
+		},
+	}
+
+	// Register the scheme
+	s := scheme.Scheme
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+
+	// Create a reconciler with the scheme
+	r := &MCPServerReconciler{
+		Scheme: s,
+	}
+
+	// Call deploymentForMCPServer
+	deployment := r.deploymentForMCPServer(mcpServer)
+	require.NotNil(t, deployment, "Deployment should not be nil")
+
+	// Check that the TOOLHIVE_SECRETS_PROVIDER environment variable is set to "none"
+	container := deployment.Spec.Template.Spec.Containers[0]
+	secretsProviderEnvFound := false
+	for _, env := range container.Env {
+		if env.Name == "TOOLHIVE_SECRETS_PROVIDER" {
+			secretsProviderEnvFound = true
+			assert.Equal(t, "none", env.Value, "TOOLHIVE_SECRETS_PROVIDER should be set to 'none'")
+			break
+		}
+	}
+	assert.True(t, secretsProviderEnvFound, "TOOLHIVE_SECRETS_PROVIDER environment variable should be present")
+}
+
 // Helper functions
 func boolPtr(b bool) *bool {
 	return &b

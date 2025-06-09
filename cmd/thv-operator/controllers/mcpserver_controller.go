@@ -413,6 +413,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		args = append(args, formatSecretArg(secret))
 	}
 
+	// Add environment variables as --env flags for the MCP server
+	for _, e := range m.Spec.Env {
+		args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))
+	}
+
 	// Add the image
 	args = append(args, m.Spec.Image)
 
@@ -422,14 +427,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		args = append(args, m.Spec.Args...)
 	}
 
-	// Prepare container env vars
+	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}
-	for _, e := range m.Spec.Env {
-		env = append(env, corev1.EnvVar{
-			Name:  e.Name,
-			Value: e.Value,
-		})
-	}
 
 	// Add TOOLHIVE_SECRETS_PROVIDER=none for Kubernetes deployments
 	env = append(env, corev1.EnvVar{
@@ -791,12 +790,17 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 			return true
 		}
 
-		// Check if the environment variables have changed
-		if len(container.Env) != len(mcpServer.Spec.Env) {
-			return true
-		}
-		for i, env := range container.Env {
-			if i >= len(mcpServer.Spec.Env) || env.Name != mcpServer.Spec.Env[i].Name || env.Value != mcpServer.Spec.Env[i].Value {
+		// Check if the environment variables have changed (now passed as --env flags)
+		for _, envVar := range mcpServer.Spec.Env {
+			envArg := fmt.Sprintf("--env=%s=%s", envVar.Name, envVar.Value)
+			found := false
+			for _, arg := range container.Args {
+				if arg == envArg {
+					found = true
+					break
+				}
+			}
+			if !found {
 				return true
 			}
 		}

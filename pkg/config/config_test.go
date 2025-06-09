@@ -262,7 +262,20 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, secrets.OnePasswordType, got, "Should fallback to config value when env var is unset")
 
-	// Test 3: Invalid environment variable returns error
+	// Test 3: None provider via environment variable
+	os.Setenv(secrets.ProviderEnvVar, "none")
+	got, err = s.GetProviderType()
+	require.NoError(t, err)
+	assert.Equal(t, secrets.NoneType, got, "Environment variable should support none provider")
+
+	// Test 4: None provider via config
+	os.Unsetenv(secrets.ProviderEnvVar)
+	s.ProviderType = "none"
+	got, err = s.GetProviderType()
+	require.NoError(t, err)
+	assert.Equal(t, secrets.NoneType, got, "Config should support none provider")
+
+	// Test 5: Invalid environment variable returns error
 	os.Setenv(secrets.ProviderEnvVar, "invalid")
 	_, err = s.GetProviderType()
 	assert.Error(t, err, "Should return error for invalid environment variable")

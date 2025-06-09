@@ -21,7 +21,7 @@ require (
 	github.com/onsi/gomega v1.37.0
 	github.com/ory/fosite v0.49.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
-	github.com/sigstore/protobuf-specs v0.4.2
+	github.com/sigstore/protobuf-specs v0.4.3
 	github.com/sigstore/sigstore-go v1.0.0
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0

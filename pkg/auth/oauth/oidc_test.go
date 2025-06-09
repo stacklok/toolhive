@@ -534,6 +534,7 @@ func testCreateOAuthConfigFromOIDC(
 	issuer, clientID, clientSecret string,
 	scopes []string,
 	usePKCE bool,
+	callbackPort int,
 ) (*Config, error) {
 	t.Helper()
 
@@ -569,6 +570,7 @@ func testCreateOAuthConfigFromOIDC(
 		TokenURL:     doc.TokenEndpoint,
 		Scopes:       scopes,
 		UsePKCE:      usePKCE,
+		CallbackPort: callbackPort,
 	}, nil
 }
 
@@ -671,6 +673,7 @@ func TestCreateOAuthConfigFromOIDC(t *testing.T) {
 				tt.clientSecret,
 				tt.scopes,
 				tt.usePKCE,
+				0, // Use auto-select port for tests
 			)
 
 			if tt.expectError {
@@ -1178,6 +1181,7 @@ func TestCreateOAuthConfigFromOIDC_Production(t *testing.T) {
 				tt.clientSecret,
 				tt.scopes,
 				tt.usePKCE,
+				0, // Use auto-select port for tests
 				client,
 			)
 

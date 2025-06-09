@@ -45,6 +45,9 @@ type Config struct {
 
 	// UsePKCE enables PKCE (Proof Key for Code Exchange) for enhanced security
 	UsePKCE bool
+
+	// CallbackPort is the port for the OAuth callback server (optional, 0 means auto-select)
+	CallbackPort int
 }
 
 // Flow handles the OAuth authentication flow
@@ -87,8 +90,8 @@ func NewFlow(config *Config) (*Flow, error) {
 		return nil, errors.New("token URL is required")
 	}
 
-	// Find an available port for the local server
-	port, err := networking.FindOrUsePort(0)
+	// Use specified callback port or find an available port for the local server
+	port, err := networking.FindOrUsePort(config.CallbackPort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find available port: %w", err)
 	}

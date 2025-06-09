@@ -31,7 +31,8 @@ var _ = Describe("FetchMcpServer", func() {
 	AfterEach(func() {
 		if config.CleanupAfter {
 			// Clean up the server if it exists
-			_ = e2e.StopAndRemoveMCPServer(config, serverName)
+			err := e2e.StopAndRemoveMCPServer(config, serverName)
+			Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 		}
 	})
 

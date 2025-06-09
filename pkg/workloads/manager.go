@@ -109,6 +109,14 @@ func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) error 
 
 	// Check if the container is running
 	if isRunning {
+		// Get the base container name for proxy stopping
+		containerBaseName := labels.GetContainerBaseName(containerLabels)
+
+		// Stop the proxy process first (like StopWorkload does)
+		if containerBaseName != "" {
+			proxy.StopProcess(containerBaseName)
+		}
+
 		// Stop the container if it's running
 		if err := d.stopContainer(ctx, containerID, name); err != nil {
 			return fmt.Errorf("failed to stop container: %v", err)

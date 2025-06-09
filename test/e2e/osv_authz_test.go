@@ -98,7 +98,8 @@ var _ = Describe("OSV MCP Server with Authorization", Serial, func() {
 			AfterAll(func() {
 				if config.CleanupAfter {
 					// Clean up the shared server after all tests
-					_ = e2e.StopAndRemoveMCPServer(config, serverName)
+					err := e2e.StopAndRemoveMCPServer(config, serverName)
+					Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 
 					// Clean up the temporary config file
 					if authzConfigPath != "" {

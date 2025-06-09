@@ -70,6 +70,7 @@ type TokenResult struct {
 	TokenType    string
 	Expiry       time.Time
 	Claims       jwt.MapClaims
+	IDToken      string // The OIDC ID token (JWT), if present
 }
 
 // NewFlow creates a new OAuth flow
@@ -434,6 +435,7 @@ func (f *Flow) processToken(token *oauth2.Token) *TokenResult {
 
 	// Prefer extracting claims from the ID token if present (OIDC, e.g., Google)
 	if idToken, ok := token.Extra("id_token").(string); ok && idToken != "" {
+		result.IDToken = idToken
 		if claims, err := f.extractJWTClaims(idToken); err == nil {
 			result.Claims = claims
 			logger.Debugf("Successfully extracted JWT claims from ID token")

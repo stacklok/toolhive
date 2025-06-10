@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -67,11 +68,14 @@ type HTTPSSEProxy struct {
 
 	// Message channel
 	messageCh chan jsonrpc2.Message
+
+	// Health checker
+	healthChecker *healthcheck.HealthChecker
 }
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
 func NewHTTPSSEProxy(host string, port int, containerName string, middlewares ...types.Middleware) *HTTPSSEProxy {
-	return &HTTPSSEProxy{
+	proxy := &HTTPSSEProxy{
 		middlewares:     middlewares,
 		host:            host,
 		port:            port,
@@ -81,6 +85,12 @@ func NewHTTPSSEProxy(host string, port int, containerName string, middlewares ..
 		sseClients:      make(map[string]*ssecommon.SSEClient),
 		pendingMessages: []*ssecommon.PendingSSEMessage{},
 	}
+
+	// Create MCP pinger and health checker
+	mcpPinger := NewMCPPinger(proxy)
+	proxy.healthChecker = healthcheck.NewHealthChecker("stdio", mcpPinger)
+
+	return proxy
 }
 
 // applyMiddlewares applies a chain of middlewares to a handler
@@ -113,13 +123,8 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 
 	mux.Handle(ssecommon.HTTPMessagesEndpoint, applyMiddlewares(http.HandlerFunc(p.handlePostRequest), p.middlewares...))
 
-	// Add a simple health check endpoint (no middlewares)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("OK")); err != nil {
-			logger.Warnf("Warning: Failed to write health check response: %v", err)
-		}
-	})
+	// Add health check endpoint with MCP status (no middlewares)
+	mux.Handle("/health", p.healthChecker)
 
 	// Create the server
 	p.server = &http.Server{

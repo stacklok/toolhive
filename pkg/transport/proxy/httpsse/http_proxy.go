@@ -58,6 +58,9 @@ type HTTPSSEProxy struct {
 	server     *http.Server
 	shutdownCh chan struct{}
 
+	// Optional Prometheus metrics handler
+	prometheusHandler http.Handler
+
 	// SSE clients
 	sseClients      map[string]*ssecommon.SSEClient
 	sseClientsMutex sync.Mutex
@@ -74,16 +77,19 @@ type HTTPSSEProxy struct {
 }
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
-func NewHTTPSSEProxy(host string, port int, containerName string, middlewares ...types.Middleware) *HTTPSSEProxy {
+func NewHTTPSSEProxy(
+	host string, port int, containerName string, prometheusHandler http.Handler, middlewares ...types.Middleware,
+) *HTTPSSEProxy {
 	proxy := &HTTPSSEProxy{
-		middlewares:     middlewares,
-		host:            host,
-		port:            port,
-		containerName:   containerName,
-		shutdownCh:      make(chan struct{}),
-		messageCh:       make(chan jsonrpc2.Message, 100),
-		sseClients:      make(map[string]*ssecommon.SSEClient),
-		pendingMessages: []*ssecommon.PendingSSEMessage{},
+		middlewares:       middlewares,
+		host:              host,
+		port:              port,
+		containerName:     containerName,
+		shutdownCh:        make(chan struct{}),
+		messageCh:         make(chan jsonrpc2.Message, 100),
+		sseClients:        make(map[string]*ssecommon.SSEClient),
+		pendingMessages:   []*ssecommon.PendingSSEMessage{},
+		prometheusHandler: prometheusHandler,
 	}
 
 	// Create MCP pinger and health checker
@@ -125,6 +131,12 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 
 	// Add health check endpoint with MCP status (no middlewares)
 	mux.Handle("/health", p.healthChecker)
+
+	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
+	if p.prometheusHandler != nil {
+		mux.Handle("/metrics", p.prometheusHandler)
+		logger.Info("Prometheus metrics endpoint enabled at /metrics")
+	}
 
 	// Create the server
 	p.server = &http.Server{

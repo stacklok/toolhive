@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -90,6 +91,9 @@ type RunConfig struct {
 	// AuditConfigPath is the path to the audit configuration file
 	AuditConfigPath string `json:"audit_config_path,omitempty" yaml:"audit_config_path,omitempty"`
 
+	// TelemetryConfig contains the OpenTelemetry configuration
+	TelemetryConfig *telemetry.Config `json:"telemetry_config,omitempty" yaml:"telemetry_config,omitempty"`
+
 	// Secrets are the secret parameters to pass to the container
 	// Format: "<secret name>,target=<target environment variable>"
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
@@ -145,6 +149,12 @@ func NewRunConfigFromFlags(
 	oidcAudience string,
 	oidcJwksURL string,
 	oidcClientID string,
+	otelEndpoint string,
+	otelServiceName string,
+	otelSamplingRate float64,
+	otelHeaders []string,
+	otelInsecure bool,
+	otelEnablePrometheusMetricsPath bool,
 ) *RunConfig {
 	// Ensure default values for host and targetHost
 	if host == "" {
@@ -181,6 +191,34 @@ func NewRunConfigFromFlags(
 			Audience: oidcAudience,
 			JWKSURL:  oidcJwksURL,
 			ClientID: oidcClientID,
+		}
+	}
+
+	// Set telemetry config if endpoint or metrics port is provided
+	if otelEndpoint != "" || otelEnablePrometheusMetricsPath {
+		// Parse headers from key=value format
+		headers := make(map[string]string)
+		for _, header := range otelHeaders {
+			parts := strings.SplitN(header, "=", 2)
+			if len(parts) == 2 {
+				headers[parts[0]] = parts[1]
+			}
+		}
+
+		// Use provided service name or default
+		serviceName := otelServiceName
+		if serviceName == "" {
+			serviceName = telemetry.DefaultConfig().ServiceName
+		}
+
+		config.TelemetryConfig = &telemetry.Config{
+			Endpoint:                    otelEndpoint,
+			ServiceName:                 serviceName,
+			ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+			SamplingRate:                otelSamplingRate,
+			Headers:                     headers,
+			Insecure:                    otelInsecure,
+			EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		}
 	}
 

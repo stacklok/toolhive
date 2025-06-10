@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 
 	"github.com/stacklok/toolhive/pkg/container"
@@ -23,15 +24,16 @@ const (
 
 // SSETransport implements the Transport interface using Server-Sent Events.
 type SSETransport struct {
-	host          string
-	port          int
-	targetPort    int
-	targetHost    string
-	containerID   string
-	containerName string
-	runtime       rt.Runtime
-	debug         bool
-	middlewares   []types.Middleware
+	host              string
+	port              int
+	targetPort        int
+	targetHost        string
+	containerID       string
+	containerName     string
+	runtime           rt.Runtime
+	debug             bool
+	middlewares       []types.Middleware
+	prometheusHandler http.Handler
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -55,6 +57,7 @@ func NewSSETransport(
 	runtime rt.Runtime,
 	debug bool,
 	targetHost string,
+	prometheusHandler http.Handler,
 	middlewares ...types.Middleware,
 ) *SSETransport {
 	if host == "" {
@@ -67,14 +70,15 @@ func NewSSETransport(
 	}
 
 	return &SSETransport{
-		host:        host,
-		port:        port,
-		middlewares: middlewares,
-		targetPort:  targetPort,
-		targetHost:  targetHost,
-		runtime:     runtime,
-		debug:       debug,
-		shutdownCh:  make(chan struct{}),
+		host:              host,
+		port:              port,
+		middlewares:       middlewares,
+		targetPort:        targetPort,
+		targetHost:        targetHost,
+		runtime:           runtime,
+		debug:             debug,
+		prometheusHandler: prometheusHandler,
+		shutdownCh:        make(chan struct{}),
 	}
 }
 
@@ -203,7 +207,7 @@ func (t *SSETransport) Start(ctx context.Context) error {
 		t.port, targetURI)
 
 	// Create the transparent proxy with middlewares
-	t.proxy = transparent.NewTransparentProxy(t.host, t.port, t.containerName, targetURI, t.middlewares...)
+	t.proxy = transparent.NewTransparentProxy(t.host, t.port, t.containerName, targetURI, t.prometheusHandler, t.middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}

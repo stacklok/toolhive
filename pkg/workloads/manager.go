@@ -317,6 +317,28 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 		detachedArgs = append(detachedArgs, "--audit-config", runConfig.AuditConfigPath)
 	}
 
+	// Add telemetry flags if telemetry config is provided
+	if runConfig.TelemetryConfig != nil {
+		if runConfig.TelemetryConfig.Endpoint != "" {
+			detachedArgs = append(detachedArgs, "--otel-endpoint", runConfig.TelemetryConfig.Endpoint)
+		}
+		if runConfig.TelemetryConfig.ServiceName != "" {
+			detachedArgs = append(detachedArgs, "--otel-service-name", runConfig.TelemetryConfig.ServiceName)
+		}
+		if runConfig.TelemetryConfig.SamplingRate != 0.1 { // Only add if not default
+			detachedArgs = append(detachedArgs, "--otel-sampling-rate", fmt.Sprintf("%f", runConfig.TelemetryConfig.SamplingRate))
+		}
+		for key, value := range runConfig.TelemetryConfig.Headers {
+			detachedArgs = append(detachedArgs, "--otel-headers", fmt.Sprintf("%s=%s", key, value))
+		}
+		if runConfig.TelemetryConfig.Insecure {
+			detachedArgs = append(detachedArgs, "--otel-insecure")
+		}
+		if runConfig.TelemetryConfig.EnablePrometheusMetricsPath {
+			detachedArgs = append(detachedArgs, "--otel-enable-prometheus-metrics-path")
+		}
+	}
+
 	// Add enable audit flag if audit config is set but no config path is provided
 	if runConfig.AuditConfig != nil && runConfig.AuditConfigPath == "" {
 		detachedArgs = append(detachedArgs, "--enable-audit")

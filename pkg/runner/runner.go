@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -24,6 +25,9 @@ import (
 type Runner struct {
 	// Config is the configuration for the runner
 	Config *RunConfig
+
+	// telemetryProvider is the OpenTelemetry provider for cleanup
+	telemetryProvider *telemetry.Provider
 }
 
 // NewRunner creates a new Runner with the provided configuration
@@ -58,6 +62,30 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Add MCP parsing middleware after authentication
 	logger.Info("MCP parsing middleware enabled for transport")
 	transportConfig.Middlewares = append(transportConfig.Middlewares, mcp.ParsingMiddleware)
+
+	// Add telemetry middleware if telemetry configuration is provided
+	if r.Config.TelemetryConfig != nil {
+		logger.Info("OpenTelemetry instrumentation enabled for transport")
+
+		// Create telemetry provider
+		telemetryProvider, err := telemetry.NewProvider(ctx, *r.Config.TelemetryConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create telemetry provider: %w", err)
+		}
+
+		// Create telemetry middleware with server name and transport type
+		telemetryMiddleware := telemetryProvider.Middleware(r.Config.Name, r.Config.Transport.String())
+		transportConfig.Middlewares = append(transportConfig.Middlewares, telemetryMiddleware)
+
+		// Add Prometheus handler to transport config if metrics port is configured
+		if r.Config.TelemetryConfig.EnablePrometheusMetricsPath {
+			transportConfig.PrometheusHandler = telemetryProvider.PrometheusHandler()
+			logger.Infof("Prometheus metrics will be exposed on port %d at /metrics", r.Config.Port)
+		}
+
+		// Store provider for cleanup
+		r.telemetryProvider = telemetryProvider
+	}
 
 	// Add authorization middleware if authorization configuration is provided
 	if r.Config.AuthzConfig != nil {
@@ -156,6 +184,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			logger.Warnf("Warning: Failed to stop transport: %v", err)
 		}
 
+		// Cleanup telemetry provider
+		if err := r.Cleanup(ctx); err != nil {
+			logger.Warnf("Warning: Failed to cleanup telemetry: %v", err)
+		}
+
 		// Remove the PID file if it exists
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to remove PID file: %v", err)
@@ -227,6 +260,18 @@ func (r *Runner) Run(ctx context.Context) error {
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
+	return nil
+}
+
+// Cleanup performs cleanup operations for the runner, including shutting down telemetry.
+func (r *Runner) Cleanup(ctx context.Context) error {
+	if r.telemetryProvider != nil {
+		logger.Debug("Shutting down telemetry provider")
+		if err := r.telemetryProvider.Shutdown(ctx); err != nil {
+			logger.Warnf("Warning: Failed to shutdown telemetry provider: %v", err)
+			return err
+		}
+	}
 	return nil
 }
 

@@ -126,4 +126,8 @@ type Config struct {
 	// Middlewares is a list of middleware functions to apply to the transport.
 	// These are applied in order, with the first middleware being the outermost wrapper.
 	Middlewares []Middleware
+
+	// PrometheusHandler is an optional HTTP handler for Prometheus metrics endpoint.
+	// If provided, it will be exposed at /metrics on the transport's HTTP server.
+	PrometheusHandler http.Handler
 }

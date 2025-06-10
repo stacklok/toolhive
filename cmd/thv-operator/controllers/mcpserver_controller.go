@@ -14,6 +14,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,35 +36,44 @@ type MCPServerReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// Allow the operator to manage MCPServer resources
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/status,verbs=get;patch;update
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/finalizers,verbs=update
+// defaultRBACRules are the default RBAC rules that the
+// ToolHive ProxyRunner and/or MCP server needs to have in order to run.
+var defaultRBACRules = []rbacv1.PolicyRule{
+	{
+		APIGroups: []string{"apps"},
+		Resources: []string{"statefulsets"},
+		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete", "apply"},
+	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"services"},
+		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete", "apply"},
+	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"pods"},
+		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"pods/log"},
+		Verbs:     []string{"get"},
+	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"pods/attach"},
+		Verbs:     []string{"create", "get"},
+	},
+}
 
-// Allow the operator to manage Deployments
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
-
-// Allow the operator to manage Services
-// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
-
-// Allow the operator read manage Pods
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
-
-// Allow the operator to manage ConfigMaps (including telemetry data)
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
-
-// Allow the operator read manage Secrets
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
-
-// Allow the operator to manage events
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+var ctxLogger = log.FromContext(context.Background())
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
 //nolint:gocyclo
 func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	ctxLogger := log.FromContext(ctx)
+	ctxLogger = log.FromContext(ctx)
 
 	// Fetch the MCPServer instance
 	mcpServer := &mcpv1alpha1.MCPServer{}
@@ -112,6 +122,12 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Update the MCPServer status with the pod status
 	if err := r.updateMCPServerStatus(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to update MCPServer status")
+		return ctrl.Result{}, err
+	}
+
+	// check if the RBAC resources are in place for the MCP server
+	if err := r.ensureRBACResources(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to ensure RBAC resources")
 		return ctrl.Result{}, err
 	}
 
@@ -219,6 +235,131 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, nil
 }
 
+// ensureRBACResource is a generic helper function to ensure a Kubernetes resource exists and is up to date
+func (r *MCPServerReconciler) ensureRBACResource(
+	ctx context.Context,
+	mcpServer *mcpv1alpha1.MCPServer,
+	resourceType string,
+	createResource func() client.Object,
+) error {
+	current := createResource()
+	objectKey := types.NamespacedName{Name: current.GetName(), Namespace: current.GetNamespace()}
+	err := r.Get(ctx, objectKey, current)
+
+	if errors.IsNotFound(err) {
+		return r.createRBACResource(ctx, mcpServer, resourceType, createResource)
+	} else if err != nil {
+		return fmt.Errorf("failed to get %s: %w", resourceType, err)
+	}
+
+	return r.updateRBACResourceIfNeeded(ctx, mcpServer, resourceType, createResource, current)
+}
+
+// createRBACResource creates a new RBAC resource
+func (r *MCPServerReconciler) createRBACResource(
+	ctx context.Context,
+	mcpServer *mcpv1alpha1.MCPServer,
+	resourceType string,
+	createResource func() client.Object,
+) error {
+	desired := createResource()
+	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
+		logger.Error(fmt.Sprintf("Failed to set controller reference for %s", resourceType), err)
+		return nil
+	}
+
+	ctxLogger.Info(
+		fmt.Sprintf("%s does not exist, creating %s", resourceType, resourceType),
+		fmt.Sprintf("%s.Name", resourceType),
+		desired.GetName(),
+	)
+	if err := r.Create(ctx, desired); err != nil {
+		return fmt.Errorf("failed to create %s: %w", resourceType, err)
+	}
+	ctxLogger.Info(fmt.Sprintf("%s created", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
+	return nil
+}
+
+// updateRBACResourceIfNeeded updates an RBAC resource if changes are detected
+func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
+	ctx context.Context,
+	mcpServer *mcpv1alpha1.MCPServer,
+	resourceType string,
+	createResource func() client.Object,
+	current client.Object,
+) error {
+	desired := createResource()
+	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
+		logger.Error(fmt.Sprintf("Failed to set controller reference for %s", resourceType), err)
+		return nil
+	}
+
+	if !reflect.DeepEqual(current, desired) {
+		ctxLogger.Info(
+			fmt.Sprintf("%s exists, updating %s", resourceType, resourceType),
+			fmt.Sprintf("%s.Name", resourceType),
+			desired.GetName(),
+		)
+		if err := r.Update(ctx, desired); err != nil {
+			return fmt.Errorf("failed to update %s: %w", resourceType, err)
+		}
+		ctxLogger.Info(fmt.Sprintf("%s updated", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
+	}
+	return nil
+}
+
+// ensureRBACResources ensures that the RBAC resources are in place for the MCP server
+func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+	proxyRunnerNameForRBAC := fmt.Sprintf("%s-proxy-runner", mcpServer.Name)
+
+	// Ensure Role
+	if err := r.ensureRBACResource(ctx, mcpServer, "Role", func() client.Object {
+		return &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      proxyRunnerNameForRBAC,
+				Namespace: mcpServer.Namespace,
+			},
+			Rules: defaultRBACRules,
+		}
+	}); err != nil {
+		return err
+	}
+
+	// Ensure ServiceAccount
+	if err := r.ensureRBACResource(ctx, mcpServer, "ServiceAccount", func() client.Object {
+		return &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      proxyRunnerNameForRBAC,
+				Namespace: mcpServer.Namespace,
+			},
+		}
+	}); err != nil {
+		return err
+	}
+
+	// Ensure RoleBinding
+	return r.ensureRBACResource(ctx, mcpServer, "RoleBinding", func() client.Object {
+		return &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      proxyRunnerNameForRBAC,
+				Namespace: mcpServer.Namespace,
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     proxyRunnerNameForRBAC,
+			},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      proxyRunnerNameForRBAC,
+					Namespace: mcpServer.Namespace,
+				},
+			},
+		}
+	})
+}
+
 // deploymentForMCPServer returns a MCPServer Deployment object
 //
 //nolint:gocyclo
@@ -272,6 +413,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		args = append(args, formatSecretArg(secret))
 	}
 
+	// Add environment variables as --env flags for the MCP server
+	for _, e := range m.Spec.Env {
+		args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))
+	}
+
 	// Add the image
 	args = append(args, m.Spec.Image)
 
@@ -281,14 +427,14 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		args = append(args, m.Spec.Args...)
 	}
 
-	// Prepare container env vars
+	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}
-	for _, e := range m.Spec.Env {
-		env = append(env, corev1.EnvVar{
-			Name:  e.Name,
-			Value: e.Value,
-		})
-	}
+
+	// Add TOOLHIVE_SECRETS_PROVIDER=none for Kubernetes deployments
+	env = append(env, corev1.EnvVar{
+		Name:  "TOOLHIVE_SECRETS_PROVIDER",
+		Value: "none",
+	})
 
 	// Prepare container volume mounts
 	volumeMounts := []corev1.VolumeMount{}
@@ -383,7 +529,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 					Labels: ls, // Keep original labels for pod template
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "toolhive",
+					ServiceAccountName: fmt.Sprintf("%s-proxy-runner", m.Name),
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",
@@ -521,6 +667,30 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 		return err
 	}
 
+	// Step 2: Attempt to delete associated StatefulSet by name
+	sts := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{Name: m.Name, Namespace: m.Namespace}, sts)
+	if err == nil {
+		// StatefulSet found, delete it
+		if delErr := r.Delete(ctx, sts); delErr != nil && !errors.IsNotFound(delErr) {
+			return fmt.Errorf("failed to delete StatefulSet %s: %w", m.Name, delErr)
+		}
+	} else if !errors.IsNotFound(err) {
+		// Unexpected error (not just "not found")
+		return fmt.Errorf("failed to get StatefulSet %s: %w", m.Name, err)
+	}
+
+	// Step 3: Attempt to delete associated service by name
+	svc := &corev1.Service{}
+	serviceName := fmt.Sprintf("mcp-%s-headless", m.Name)
+	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: m.Namespace}, svc)
+	if err == nil {
+		if delErr := r.Delete(ctx, svc); delErr != nil && !errors.IsNotFound(delErr) {
+			return fmt.Errorf("failed to delete Service %s: %w", serviceName, delErr)
+		}
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to check Service %s: %w", serviceName, err)
+	}
 	// The owner references will automatically delete the deployment and service
 	// when the MCPServer is deleted, so we don't need to do anything here.
 	return nil
@@ -620,12 +790,17 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 			return true
 		}
 
-		// Check if the environment variables have changed
-		if len(container.Env) != len(mcpServer.Spec.Env) {
-			return true
-		}
-		for i, env := range container.Env {
-			if i >= len(mcpServer.Spec.Env) || env.Name != mcpServer.Spec.Env[i].Name || env.Value != mcpServer.Spec.Env[i].Value {
+		// Check if the environment variables have changed (now passed as --env flags)
+		for _, envVar := range mcpServer.Spec.Env {
+			envArg := fmt.Sprintf("--env=%s=%s", envVar.Name, envVar.Value)
+			found := false
+			for _, arg := range container.Args {
+				if arg == envArg {
+					found = true
+					break
+				}
+			}
+			if !found {
 				return true
 			}
 		}

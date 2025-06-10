@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -15,16 +17,46 @@ import (
 	"github.com/stacklok/toolhive/pkg/mcp"
 )
 
+// LevelAudit is a custom audit log level - between Info and Warn
+const LevelAudit = slog.Level(2)
+
+// NewAuditLogger creates a new structured audit logger that writes to the specified writer.
+func NewAuditLogger(w io.Writer) *slog.Logger {
+	if w == nil {
+		w = os.Stdout
+	}
+
+	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
+		Level: LevelAudit,
+	})
+
+	return slog.New(handler)
+}
+
 // Auditor handles audit logging for HTTP requests.
 type Auditor struct {
-	config *Config
+	config      *Config
+	auditLogger *slog.Logger
 }
 
 // NewAuditor creates a new Auditor with the given configuration.
-func NewAuditor(config *Config) *Auditor {
-	return &Auditor{
-		config: config,
+func NewAuditor(config *Config) (*Auditor, error) {
+	var logWriter io.Writer = os.Stdout // default to stdout
+
+	if config != nil {
+		w, err := config.GetLogWriter()
+		if err != nil {
+			// Log error and fall back to stdout
+			logger.Errorf("Failed to open audit log file, falling back to stdout: %v", err)
+			return nil, err
+		}
+		logWriter = w
 	}
+
+	return &Auditor{
+		config:      config,
+		auditLogger: NewAuditLogger(logWriter),
+	}, nil
 }
 
 // responseWriter wraps http.ResponseWriter to capture response data and status.
@@ -54,8 +86,13 @@ func (rw *responseWriter) Write(data []byte) (int, error) {
 // Middleware creates an HTTP middleware that logs audit events.
 func (a *Auditor) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip audit logging if disabled
-		if !a.config.Enabled {
+		// Handle SSE endpoints specially - log the connection event immediately
+		// since SSE connections are long-lived and don't follow normal request/response pattern
+		if r.URL.Path == "/sse" {
+			// Log SSE connection event immediately
+			a.logSSEConnectionEvent(r)
+
+			// Pass through to SSE handler without waiting
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -133,7 +170,7 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	a.addEventData(event, r, rw, requestData)
 
 	// Log the audit event
-	a.logEvent(event)
+	event.LogTo(r.Context(), a.auditLogger, LevelAudit)
 }
 
 // determineEventType determines the event type based on the HTTP request.
@@ -393,14 +430,34 @@ func (a *Auditor) addEventData(event *AuditEvent, _ *http.Request, rw *responseW
 	}
 }
 
-// logEvent logs the audit event as structured JSON.
-func (*Auditor) logEvent(event *AuditEvent) {
-	// Convert the event to JSON and log it as a structured log entry
-	if eventJSON, err := json.Marshal(event); err == nil {
-		// TODO: Should we have a dedicated logger for audit events?
-		// For now, we use the standard logger
-		logger.Info(string(eventJSON))
-	} else {
-		logger.Errorf("Failed to marshal audit event: %v", err)
+// logSSEConnectionEvent logs an audit event for SSE connection initiation.
+func (a *Auditor) logSSEConnectionEvent(r *http.Request) {
+	// Extract source information
+	source := a.extractSource(r)
+
+	// Extract subject information
+	subjects := a.extractSubjects(r)
+
+	// Determine component name
+	component := a.determineComponent(r)
+
+	// Create the audit event for SSE connection
+	event := NewAuditEvent("sse_connection", source, OutcomeSuccess, subjects, component)
+
+	// Add target information
+	target := map[string]string{
+		"endpoint": r.URL.Path,
+		"method":   r.Method,
+		"type":     "sse_endpoint",
 	}
+	event.WithTarget(target)
+
+	// Add metadata
+	event.Metadata.Extra = map[string]any{
+		"transport":  "sse",
+		"user_agent": r.Header.Get("User-Agent"),
+	}
+
+	// Log the event
+	event.LogTo(r.Context(), a.auditLogger, LevelAudit)
 }

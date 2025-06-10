@@ -1,5 +1,5 @@
 {
-  "last_updated": "2025-06-05 00:21:21",
+  "last_updated": "2025-06-10 00:21:43",
   "servers": {
     "atlassian": {
       "args": [],
@@ -82,9 +82,9 @@
       ],
       "image": "mcp/atlassian:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:16Z",
-        "pulls": 5479,
-        "stars": 1769
+        "last_updated": "2025-06-10T00:21:39Z",
+        "pulls": 6029,
+        "stars": 1833
       },
       "permissions": {
         "network": {
@@ -173,9 +173,9 @@
       ],
       "image": "mcp/aws-kb-retrieval-server:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:20Z",
-        "pulls": 3179,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:43Z",
+        "pulls": 3469,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -224,9 +224,9 @@
       ],
       "image": "mcp/brave-search:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:17Z",
-        "pulls": 6870,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:39Z",
+        "pulls": 7135,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -279,9 +279,9 @@
       ],
       "image": "mcp/everart:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:20Z",
-        "pulls": 5713,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:42Z",
+        "pulls": 6268,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -321,9 +321,9 @@
       "env_vars": [],
       "image": "mcp/everything:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:16Z",
-        "pulls": 7438,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:41Z",
+        "pulls": 8153,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -371,9 +371,9 @@
       "env_vars": [],
       "image": "mcp/fetch:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:21Z",
-        "pulls": 7566,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:42Z",
+        "pulls": 7926,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -417,9 +417,9 @@
       "env_vars": [],
       "image": "mcp/filesystem:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:16Z",
-        "pulls": 11038,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:39Z",
+        "pulls": 11753,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -516,9 +516,9 @@
       ],
       "image": "mcp/firecrawl:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:18Z",
-        "pulls": 5341,
-        "stars": 3312
+        "last_updated": "2025-06-10T00:21:40Z",
+        "pulls": 5886,
+        "stars": 3376
       },
       "permissions": {
         "network": {
@@ -580,9 +580,9 @@
       ],
       "image": "mcp/gdrive:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:19Z",
-        "pulls": 5106,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:42Z",
+        "pulls": 5561,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -625,9 +625,9 @@
       "env_vars": [],
       "image": "mcp/git:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:21Z",
-        "pulls": 5446,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:42Z",
+        "pulls": 5816,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -687,9 +687,9 @@
       ],
       "image": "ghcr.io/github/github-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:19Z",
+        "last_updated": "2025-06-10T00:21:41Z",
         "pulls": 5000,
-        "stars": 14951
+        "stars": 15227
       },
       "permissions": {
         "network": {
@@ -782,9 +782,9 @@
       ],
       "image": "mcp/gitlab:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:17Z",
-        "pulls": 4617,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:39Z",
+        "pulls": 5002,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -845,9 +845,9 @@
       ],
       "image": "mcp/google-maps:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:19Z",
-        "pulls": 3736,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:41Z",
+        "pulls": 4061,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -909,9 +909,9 @@
       ],
       "image": "mcp/grafana:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:20Z",
-        "pulls": 3430,
-        "stars": 881
+        "last_updated": "2025-06-10T00:21:42Z",
+        "pulls": 3780,
+        "stars": 903
       },
       "permissions": {
         "network": {
@@ -1004,9 +1004,9 @@
       ],
       "image": "voska/hass-mcp:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:15Z",
-        "pulls": 7154,
-        "stars": 91
+        "last_updated": "2025-06-10T00:21:38Z",
+        "pulls": 7884,
+        "stars": 99
       },
       "permissions": {
         "network": {
@@ -1062,8 +1062,8 @@
       ],
       "image": "ghcr.io/stackloklabs/mkp/server:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:19Z",
-        "pulls": 5376,
+        "last_updated": "2025-06-10T00:21:41Z",
+        "pulls": 6016,
         "stars": 28
       },
       "permissions": {
@@ -1120,9 +1120,9 @@
       ],
       "image": "mcp/memory:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:16Z",
-        "pulls": 8149,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:40Z",
+        "pulls": 8724,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -1186,8 +1186,8 @@
       ],
       "image": "aantti/mcp-netbird:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:16Z",
-        "pulls": 4606,
+        "last_updated": "2025-06-10T00:21:39Z",
+        "pulls": 5076,
         "stars": 33
       },
       "permissions": {
@@ -1253,8 +1253,8 @@
       ],
       "image": "ghcr.io/stackloklabs/ocireg-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:14Z",
-        "pulls": 1396,
+        "last_updated": "2025-06-10T00:21:39Z",
+        "pulls": 1891,
         "stars": 2
       },
       "permissions": {
@@ -1308,8 +1308,8 @@
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/osv-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:15Z",
-        "pulls": 4020,
+        "last_updated": "2025-06-10T00:21:40Z",
+        "pulls": 4490,
         "stars": 4
       },
       "permissions": {
@@ -1370,9 +1370,9 @@
       ],
       "image": "mcp/perplexity-ask:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:15Z",
-        "pulls": 6632,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:39Z",
+        "pulls": 7252,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -1409,9 +1409,9 @@
       "env_vars": [],
       "image": "mcp/postgres:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:18Z",
-        "pulls": 10054,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:41Z",
+        "pulls": 10739,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -1461,9 +1461,9 @@
       ],
       "image": "mcp/puppeteer:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:19Z",
-        "pulls": 13659,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:42Z",
+        "pulls": 14339,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -1511,9 +1511,9 @@
       "env_vars": [],
       "image": "mcp/redis:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:18Z",
-        "pulls": 4586,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:41Z",
+        "pulls": 5011,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -1562,9 +1562,9 @@
       ],
       "image": "ghcr.io/semgrep/mcp:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:15Z",
-        "pulls": 5145,
-        "stars": 178
+        "last_updated": "2025-06-10T00:21:40Z",
+        "pulls": 5670,
+        "stars": 184
       },
       "permissions": {
         "network": {
@@ -1622,9 +1622,9 @@
       ],
       "image": "mcp/sentry:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:18Z",
-        "pulls": 6605,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:40Z",
+        "pulls": 7240,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -1661,9 +1661,9 @@
       "env_vars": [],
       "image": "mcp/sequentialthinking:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:17Z",
-        "pulls": 8588,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:40Z",
+        "pulls": 9053,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -1719,9 +1719,9 @@
       ],
       "image": "mcp/slack:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:21Z",
-        "pulls": 4351,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:41Z",
+        "pulls": 4731,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -1773,9 +1773,9 @@
       "env_vars": [],
       "image": "mcp/sqlite:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:18Z",
-        "pulls": 7386,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:40Z",
+        "pulls": 7926,
+        "stars": 52424
       },
       "permissions": {
         "network": {
@@ -1822,9 +1822,9 @@
       "env_vars": [],
       "image": "hashicorp/terraform-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:17Z",
-        "pulls": 1024,
-        "stars": 555
+        "last_updated": "2025-06-10T00:21:39Z",
+        "pulls": 1664,
+        "stars": 575
       },
       "permissions": {
         "network": {
@@ -1872,9 +1872,9 @@
       "env_vars": [],
       "image": "mcp/time:latest",
       "metadata": {
-        "last_updated": "2025-06-05T00:21:20Z",
-        "pulls": 5559,
-        "stars": 51341
+        "last_updated": "2025-06-10T00:21:42Z",
+        "pulls": 5964,
+        "stars": 52424
       },
       "permissions": {
         "network": {

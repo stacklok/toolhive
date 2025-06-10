@@ -38,7 +38,7 @@ func IsOIDCEnabled(cmd *cobra.Command) bool {
 
 // SetSecretsProvider sets the secrets provider type in the configuration.
 // It validates the input and updates the configuration.
-// Choices are `encrypted` and `1password`.
+// Choices are `encrypted`, `1password`, and `none`.
 func SetSecretsProvider(provider secrets.ProviderType) error {
 
 	// Validate input
@@ -51,9 +51,10 @@ func SetSecretsProvider(provider secrets.ProviderType) error {
 	switch provider {
 	case secrets.EncryptedType:
 	case secrets.OnePasswordType:
+	case secrets.NoneType:
 		// Valid provider type
 	default:
-		return fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted, 1password)", provider)
+		return fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted, 1password, none)", provider)
 	}
 
 	// Update the secrets provider type

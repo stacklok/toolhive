@@ -17,6 +17,7 @@ import (
 )
 
 func TestResponseFilteringWriter(t *testing.T) {
+	t.Parallel()
 	// Create a Cedar authorizer with specific tool permissions
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 		Policies: []string{
@@ -114,6 +115,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Create a JSON-RPC response with the test data
 			responseData, err := json.Marshal(tc.responseData)
 			require.NoError(t, err, "Failed to marshal response data")
@@ -203,6 +205,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 }
 
 func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
+	t.Parallel()
 	// Create a Cedar authorizer
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 		Policies: []string{
@@ -251,6 +254,7 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 }
 
 func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
+	t.Parallel()
 	// Create a Cedar authorizer
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 		Policies: []string{

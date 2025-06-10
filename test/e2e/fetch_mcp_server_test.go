@@ -31,7 +31,8 @@ var _ = Describe("FetchMcpServer", func() {
 	AfterEach(func() {
 		if config.CleanupAfter {
 			// Clean up the server if it exists
-			_ = e2e.StopAndRemoveMCPServer(config, serverName)
+			err := e2e.StopAndRemoveMCPServer(config, serverName)
+			Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 		}
 	})
 
@@ -123,7 +124,7 @@ var _ = Describe("FetchMcpServer", func() {
 
 			It("should remove the server successfully", func() {
 				By("Removing the server")
-				stdout, _ := e2e.NewTHVCommand(config, "rm", "-f", serverName).ExpectSuccess()
+				stdout, _ := e2e.NewTHVCommand(config, "rm", serverName).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName))
 
 				By("Verifying the server is no longer listed")

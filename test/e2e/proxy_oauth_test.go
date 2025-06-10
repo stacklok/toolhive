@@ -98,7 +98,8 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 
 		// Stop and remove OSV server
 		if config.CleanupAfter {
-			_ = e2e.StopAndRemoveMCPServer(config, osvServerName)
+			err := e2e.StopAndRemoveMCPServer(config, osvServerName)
+			Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 		}
 
 		// Stop mock OIDC server

@@ -12,12 +12,12 @@ operator:
   # -- List of image pull secrets to use
   imagePullSecrets: []
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.0.39
+  image: ghcr.io/stacklok/toolhive/operator:v0.0.45
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive:v0.0.39
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive:v0.0.45
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0
@@ -89,6 +89,17 @@ operator:
     requests:
       cpu: 10m
       memory: 64Mi
+
+  # -- RBAC configuration for the operator
+  rbac:
+    # -- Scope of the RBAC configuration.
+    # - cluster: The operator will have cluster-wide permissions via ClusterRole and ClusterRoleBinding.
+    # - namespace: The operator will have permissions to manage resources in the namespaces specified in `allowedNamespaces`.
+    #   The operator will have a ClusterRole and RoleBinding for each namespace in `allowedNamespaces`.
+    scope: cluster
+    # -- List of namespaces that the operator is allowed to have permissions to manage.
+    # Only used if scope is set to "namespace".
+    allowedNamespaces: []
 
   # -- Service account configuration for the operator
   serviceAccount:
@@ -165,46 +176,3 @@ operator:
 
   # -- Affinity settings for the operator pod
   affinity: {}
-
-# -- Configuration for resources related to toolhive pods (not related to the operator)
-toolhive:
-  # -- RBAC configuration for toolhive
-  rbac:
-    # -- Enable RBAC for toolhive
-    enabled: true
-    # -- Service account configuration for toolhive
-    serviceAccount:
-      # -- Name of the service account for toolhive
-      name: toolhive
-    # -- Role configuration for toolhive
-    role:
-      # -- Name of the role for toolhive
-      name: toolhive
-      # -- Name of the role binding for toolhive
-      bindingName: toolhive-binding
-      # -- Rules for the toolhive role
-      rules:
-        # StatefulSet management
-        - apiGroups: ["apps"]
-          resources: ["statefulsets"]
-          verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "apply"]
-
-        # Service management
-        - apiGroups: [""]
-          resources: ["services"]
-          verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "apply"]
-
-        # Pod management
-        - apiGroups: [""]
-          resources: ["pods"]
-          verbs: ["get", "list", "watch"]
-
-        # Pod logs
-        - apiGroups: [""]
-          resources: ["pods/log"]
-          verbs: ["get"]
-
-        # Pod attach (for attaching to containers)
-        - apiGroups: [""]
-          resources: ["pods/attach"]
-          verbs: ["create", "get"]

@@ -37,8 +37,10 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
 ### Options
 
 ```
+      --audit-config string         Path to the audit configuration file
       --authz-config string         Path to the authorization configuration file
       --ca-cert string              Path to a custom CA certificate file to use for container builds
+      --enable-audit                Enable audit logging with default configuration
   -e, --env stringArray             Environment variables to pass to the MCP server (format: KEY=VALUE)
   -f, --foreground                  Run in foreground mode (block until container exits)
   -h, --help                        help for run

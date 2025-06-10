@@ -2,6 +2,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -136,6 +137,8 @@ func NewRunConfigFromFlags(
 	volumes []string,
 	secretsList []string,
 	authzConfigPath string,
+	auditConfigPath string,
+	enableAudit bool,
 	permissionProfile string,
 	targetHost string,
 	oidcIssuer string,
@@ -158,11 +161,17 @@ func NewRunConfigFromFlags(
 		Volumes:                     volumes,
 		Secrets:                     secretsList,
 		AuthzConfigPath:             authzConfigPath,
+		AuditConfigPath:             auditConfigPath,
 		PermissionProfileNameOrPath: permissionProfile,
 		TargetHost:                  targetHost,
 		ContainerLabels:             make(map[string]string),
 		EnvVars:                     make(map[string]string),
 		Host:                        host,
+	}
+
+	// If enable audit is true and no audit config path is provided, use default config
+	if enableAudit && auditConfigPath == "" {
+		config.AuditConfig = audit.DefaultConfig()
 	}
 
 	// Set OIDC config if any values are provided
@@ -272,12 +281,12 @@ func (c *RunConfig) WithEnvironmentVariables(envVarStrings []string) (*RunConfig
 }
 
 // WithSecrets processes secrets and adds them to environment variables
-func (c *RunConfig) WithSecrets(secretManager secrets.Provider) (*RunConfig, error) {
+func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provider) (*RunConfig, error) {
 	if len(c.Secrets) == 0 {
 		return c, nil // No secrets to process
 	}
 
-	secretVariables, err := environment.ParseSecretParameters(c.Secrets, secretManager)
+	secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
 	if err != nil {
 		return c, fmt.Errorf("failed to get secrets: %v", err)
 	}

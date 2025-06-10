@@ -19,6 +19,7 @@ import (
 )
 
 func TestMiddleware(t *testing.T) {
+	t.Parallel()
 
 	// Create a Cedar authorizer
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
@@ -198,6 +199,7 @@ func TestMiddleware(t *testing.T) {
 	// Run test cases
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Create a JSON-RPC request
 			paramsJSON, err := json.Marshal(tc.params)
 			require.NoError(t, err, "Failed to marshal params")
@@ -242,6 +244,7 @@ func TestMiddleware(t *testing.T) {
 
 // TestMiddlewareWithGETRequest tests that the middleware doesn't panic with GET requests.
 func TestMiddlewareWithGETRequest(t *testing.T) {
+	t.Parallel()
 	// Create a Cedar authorizer
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 		Policies: []string{

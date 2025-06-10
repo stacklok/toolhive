@@ -27,9 +27,10 @@ import (
 
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // Not sure if these values need to be configurable.
@@ -102,7 +103,7 @@ func Serve(
 	}
 	r.Use(authMiddleware)
 
-	manager, err := lifecycle.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		logger.Panicf("failed to create lifecycle manager: %v", err)
 	}
@@ -113,11 +114,17 @@ func Serve(
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
+	clientManager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %v", err)
+	}
 	routers := map[string]http.Handler{
-		"/health":              v1.HealthcheckRouter(),
-		"/api/v1beta/version":  v1.VersionRouter(),
-		"/api/v1beta/servers":  v1.ServerRouter(manager, rt, debugMode),
-		"/api/v1beta/registry": v1.RegistryRouter(),
+		"/health":               v1.HealthcheckRouter(),
+		"/api/v1beta/version":   v1.VersionRouter(),
+		"/api/v1beta/workloads": v1.WorkloadRouter(manager, rt, debugMode),
+		"/api/v1beta/registry":  v1.RegistryRouter(),
+		"/api/v1beta/discovery": v1.DiscoveryRouter(),
+		"/api/v1beta/clients":   v1.ClientRouter(clientManager),
 	}
 
 	// Only mount docs router if enabled

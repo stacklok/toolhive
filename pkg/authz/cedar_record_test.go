@@ -10,6 +10,7 @@ import (
 
 // TestConvertMapToCedarRecord tests the convertMapToCedarRecord function.
 func TestConvertMapToCedarRecord(t *testing.T) {
+	t.Parallel()
 	// Test cases
 	testCases := []struct {
 		name     string
@@ -194,6 +195,7 @@ func TestConvertMapToCedarRecord(t *testing.T) {
 	// Run test cases
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Create a Cedar record
 			record := convertMapToCedarRecord(tc.input)
 

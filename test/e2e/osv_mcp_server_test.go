@@ -40,7 +40,8 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 			AfterEach(func() {
 				if config.CleanupAfter {
 					// Clean up the server after each test in this context
-					_ = e2e.StopAndRemoveMCPServer(config, serverName)
+					err := e2e.StopAndRemoveMCPServer(config, serverName)
+					Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 				}
 			})
 
@@ -191,7 +192,8 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 			AfterAll(func() {
 				if config.CleanupAfter {
 					// Clean up the shared server after all tests
-					_ = e2e.StopAndRemoveMCPServer(config, serverName)
+					err := e2e.StopAndRemoveMCPServer(config, serverName)
+					Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 				}
 			})
 
@@ -307,7 +309,8 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 			AfterEach(func() {
 				if config.CleanupAfter {
 					// Clean up the server after each lifecycle test
-					_ = e2e.StopAndRemoveMCPServer(config, serverName)
+					err := e2e.StopAndRemoveMCPServer(config, serverName)
+					Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 				}
 			})
 
@@ -322,7 +325,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 					return stdout
 				}, 10*time.Second, 1*time.Second).Should(Or(
 					// Server should either be in exited state or completely removed
-					And(ContainSubstring(serverName), ContainSubstring("exited")),
+					And(ContainSubstring(serverName), ContainSubstring("stopped")),
 					Not(ContainSubstring(serverName)),
 				), "Server should be stopped (exited) or removed from list")
 			})
@@ -361,7 +364,8 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 			AfterEach(func() {
 				if config.CleanupAfter {
 					// Clean up any server that might have been created
-					_ = e2e.StopAndRemoveMCPServer(config, serverName)
+					err := e2e.StopAndRemoveMCPServer(config, serverName)
+					Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 				}
 			})
 

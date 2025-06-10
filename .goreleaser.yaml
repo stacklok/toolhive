@@ -31,38 +31,43 @@ archives:
       - goos: windows
         format: zip
 # This section defines how to release to winget.
-# winget:
-#   - name: toolhive
-#     publisher: stacklok
-#     license: Apache-2.0
-#     license_url: "https://github.com/stacklok/toolhive/blob/main/LICENSE"
-#     copyright: Stacklok, Inc.
-#     homepage: https://stacklok.com
-#     short_description: 'ToolHive is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
-#     publisher_support_url: "https://github.com/stacklok/toolhive/issues/new/choose"
-#     package_identifier: "stacklok.toolhive"
-#     url_template: "https://github.com/stacklok/toolhive/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
-#     skip_upload: auto
-#     release_notes: "{{.Changelog}}"
-#     tags:
-#       - golang
-#       - cli
-#     commit_author:
-#       name: stacklokbot
-#       email: info@stacklok.com
-#     goamd64: v1
-#     repository:
-#       owner: stacklok
-#       name: winget-pkgs
-#       branch: "toolhive-{{.Version}}"
-#       token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
-#       pull_request:
-#         enabled: true
-#         draft: false
-#         base:
-#           owner: microsoft
-#           name: winget-pkgs
-#           branch: master
+winget:
+ - name: thv
+   publisher: stacklok
+   license: Apache-2.0
+   license_url: "https://github.com/stacklok/toolhive/blob/main/LICENSE"
+   copyright: Stacklok, Inc.
+   homepage: https://stacklok.com
+   short_description: 'ToolHive is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
+   publisher_support_url: "https://github.com/stacklok/toolhive/issues/new/choose"
+   package_identifier: "stacklok.thv"
+   url_template: "https://github.com/stacklok/toolhive/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+   skip_upload: auto
+   release_notes: "{{.Changelog}}"
+   tags:
+     - golang
+     - cli
+     - mcp
+     - toolhive
+     - stacklok
+     - model-context-protocol
+     - mcp-server
+   commit_author:
+     name: stacklokbot
+     email: info@stacklok.com
+   goamd64: v1
+   repository:
+     owner: stacklok
+     name: winget-pkgs
+     branch: "thv-{{.Version}}"
+     token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
+     pull_request:
+       enabled: true
+       draft: false
+       base:
+         owner: microsoft
+         name: winget-pkgs
+         branch: master
 # This section defines how to release to homebrew.
 brews:
   - name: thv

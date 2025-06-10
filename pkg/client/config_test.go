@@ -21,28 +21,32 @@ func createMockClientConfigs() []mcpClientConfig {
 		{
 			ClientType:           VSCode,
 			Description:          "Visual Studio Code (Mock)",
-			RelPath:              []string{"mock_vscode", "settings.json"},
+			RelPath:              []string{"mock_vscode"},
+			SettingsFile:         "settings.json",
 			MCPServersPathPrefix: "/mcp/servers",
 			Extension:            JSON,
 		},
 		{
 			ClientType:           Cursor,
 			Description:          "Cursor editor (Mock)",
-			RelPath:              []string{"mock_cursor", "mcp.json"},
+			RelPath:              []string{"mock_cursor"},
+			SettingsFile:         "mcp.json",
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		},
 		{
 			ClientType:           RooCode,
 			Description:          "VS Code Roo Code extension (Mock)",
-			RelPath:              []string{"mock_roo", "mcp_settings.json"},
+			RelPath:              []string{"mock_roo"},
+			SettingsFile:         "mcp_settings.json",
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		},
 		{
 			ClientType:           ClaudeCode,
 			Description:          "Claude Code CLI (Mock)",
-			RelPath:              []string{"mock_claude", ".claude.json"},
+			RelPath:              []string{"mock_claude"},
+			SettingsFile:         ".claude.json",
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		},
@@ -78,7 +82,7 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 	}
 }
 
-func TestFindClientConfigs(t *testing.T) {
+func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environment variables
 	logger.Initialize()
 
 	// Setup a temporary home directory for testing
@@ -101,7 +105,7 @@ func TestFindClientConfigs(t *testing.T) {
 	// Create test config files for different clients
 	createTestConfigFiles(t, tempHome)
 
-	t.Run("AutoDiscoveryEnabled", func(t *testing.T) {
+	t.Run("AutoDiscoveryEnabled", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		// Set up config with auto-discovery enabled
 		testConfig := &config.Config{
 			Secrets: config.Secrets{
@@ -134,7 +138,7 @@ func TestFindClientConfigs(t *testing.T) {
 		assert.True(t, len(foundClients) > 0, "Should find at least one client config")
 	})
 
-	t.Run("AutoDiscoveryDisabledWithRegisteredClients", func(t *testing.T) {
+	t.Run("AutoDiscoveryDisabledWithRegisteredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		// Set up config with auto-discovery disabled but with registered clients
 		testConfig := &config.Config{
 			Secrets: config.Secrets{
@@ -172,7 +176,7 @@ func TestFindClientConfigs(t *testing.T) {
 		t.Log("None of the registered clients were found, but this may be expected in the test environment")
 	})
 
-	t.Run("AutoDiscoveryDisabledWithNoRegisteredClients", func(t *testing.T) {
+	t.Run("AutoDiscoveryDisabledWithNoRegisteredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		// Set up config with auto-discovery disabled and no registered clients
 		testConfig := &config.Config{
 			Secrets: config.Secrets{
@@ -195,7 +199,7 @@ func TestFindClientConfigs(t *testing.T) {
 		assert.Empty(t, configs)
 	})
 
-	t.Run("InvalidConfigFileFormat", func(t *testing.T) {
+	t.Run("InvalidConfigFileFormat", func(t *testing.T) { //nolint:paralleltest // Modifies global state
 		// Create an invalid JSON file
 		invalidPath := filepath.Join(tempHome, ".cursor", "invalid.json")
 		err := os.MkdirAll(filepath.Dir(invalidPath), 0755)
@@ -208,7 +212,8 @@ func TestFindClientConfigs(t *testing.T) {
 		invalidClient := mcpClientConfig{
 			ClientType:           "invalid",
 			Description:          "Invalid client",
-			RelPath:              []string{".cursor", "invalid.json"},
+			RelPath:              []string{".cursor"},
+			SettingsFile:         "invalid.json",
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		}
@@ -305,7 +310,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	// Create test config files
 	createTestConfigFiles(t, tempHome)
 
-	t.Run("FindAllConfiguredClients", func(t *testing.T) {
+	t.Run("FindAllConfiguredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		// Set up config with auto-discovery enabled
 		testConfig := &config.Config{
 			Secrets: config.Secrets{
@@ -336,7 +341,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 		}
 	})
 
-	t.Run("VerifyConfigFileContents", func(t *testing.T) {
+	t.Run("VerifyConfigFileContents", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		configs, err := FindClientConfigs()
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
@@ -369,7 +374,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 		}
 	})
 
-	t.Run("AddAndVerifyMCPServer", func(t *testing.T) {
+	t.Run("AddAndVerifyMCPServer", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
 		configs, err := FindClientConfigs()
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
@@ -404,10 +409,10 @@ func createTestConfigFiles(t *testing.T, homeDir string) {
 	// Create test config files for each mock client configuration
 	for _, cfg := range supportedClientIntegrations {
 		// Build the full path for the config file
-		configDir := filepath.Join(homeDir, filepath.Join(cfg.RelPath[:len(cfg.RelPath)-1]...))
+		configDir := filepath.Join(homeDir, filepath.Join(cfg.RelPath...))
 		err := os.MkdirAll(configDir, 0755)
 		if err == nil {
-			configPath := filepath.Join(configDir, cfg.RelPath[len(cfg.RelPath)-1])
+			configPath := filepath.Join(configDir, cfg.SettingsFile)
 			validJSON := `{"mcpServers": {}, "mcp": {"servers": {}}}`
 			err = os.WriteFile(configPath, []byte(validJSON), 0644)
 			require.NoError(t, err)

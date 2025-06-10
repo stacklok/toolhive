@@ -21,6 +21,7 @@ import (
 // TestIntegrationListFiltering demonstrates the complete authorization flow
 // with realistic policies and shows how list responses are filtered
 func TestIntegrationListFiltering(t *testing.T) {
+	t.Parallel()
 	// Create a realistic Cedar authorizer with role-based policies
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 		Policies: []string{
@@ -196,6 +197,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Create JWT claims for the test user
 			claims := jwt.MapClaims{
 				"sub":  "testuser123",
@@ -316,6 +318,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 
 // TestIntegrationNonListOperations verifies that non-list operations still work correctly
 func TestIntegrationNonListOperations(t *testing.T) {
+	t.Parallel()
 	// Create a Cedar authorizer with specific permissions
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 		Policies: []string{
@@ -370,6 +373,7 @@ func TestIntegrationNonListOperations(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			// Create JWT claims for the test user
 			claims := jwt.MapClaims{
 				"sub":  "testuser123",

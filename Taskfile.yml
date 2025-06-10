@@ -11,6 +11,17 @@ tasks:
     cmds:
       - go run cmd/help/main.go --dir docs/cli
 
+  swagger-install:
+    desc: Install the swag tool for OpenAPI/Swagger generation
+    cmds:
+      - go install github.com/swaggo/swag/v2/cmd/swag@latest
+
+  swagger-gen:
+    desc: Generate OpenAPI/Swagger documentation
+    deps: [swagger-install]
+    cmds:
+      - swag init -g pkg/api/server.go --v3.1 -o docs/server
+
   lint:
     desc: Run linting tools
     cmds:
@@ -53,7 +64,7 @@ tasks:
     desc: Build the binary
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty || echo "dev"
+        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE:
@@ -66,7 +77,7 @@ tasks:
     desc: Install the thv binary to GOPATH/bin
     vars:
       VERSION:
-        sh: git describe --tags --always --dirty || echo "dev"
+        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE:

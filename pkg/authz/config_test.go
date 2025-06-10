@@ -17,6 +17,7 @@ import (
 )
 
 func TestLoadConfig(t *testing.T) {
+	t.Parallel()
 	// Create a temporary file with a valid configuration
 	tempFile, err := os.CreateTemp("", "authz-config-*.json")
 	require.NoError(t, err, "Failed to create temporary file")
@@ -55,6 +56,7 @@ func TestLoadConfig(t *testing.T) {
 }
 
 func TestValidateConfig(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name        string
 		config      *Config
@@ -138,6 +140,7 @@ func TestValidateConfig(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			err := tc.config.Validate()
 			if tc.expectError {
 				assert.Error(t, err, "Expected an error but got none")
@@ -149,6 +152,7 @@ func TestValidateConfig(t *testing.T) {
 }
 
 func TestCreateMiddleware(t *testing.T) {
+	t.Parallel()
 	// Create a valid configuration
 	config := &Config{
 		Version: "1.0",

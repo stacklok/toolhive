@@ -83,7 +83,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Get the middleware from the configuration
-		middleware := r.Config.AuditConfig.CreateMiddleware()
+		middleware, err := r.Config.AuditConfig.CreateMiddleware()
+		if err != nil {
+			return fmt.Errorf("failed to create audit middleware: %w", err)
+		}
 
 		// Add audit middleware to transport config
 		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
@@ -114,7 +117,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Process secrets
-		if _, err = r.Config.WithSecrets(secretManager); err != nil {
+		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
 			return err
 		}
 	}

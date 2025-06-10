@@ -43,6 +43,10 @@ spec:
           ports:
             {{- toYaml .Values.operator.ports | nindent 12 }}
           env:
+          {{- if eq .Values.operator.rbac.scope "namespace" }}
+          - name: WATCH_NAMESPACE
+            value: "{{ .Values.operator.rbac.allowedNamespaces | join "," }}"
+          {{- end }}
           - name: TOOLHIVE_RUNNER_IMAGE
             value: "{{ .Values.operator.toolhiveRunnerImage }}"
           - name: TOOLHIVE_PROXY_HOST

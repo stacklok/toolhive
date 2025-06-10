@@ -41,8 +41,10 @@ var _ = Describe("Inspector", func() {
 	AfterEach(func() {
 		if config.CleanupAfter {
 			// Clean up both servers
-			_ = e2e.StopAndRemoveMCPServer(config, inspectorName)
-			_ = e2e.StopAndRemoveMCPServer(config, mcpServerName)
+			err := e2e.StopAndRemoveMCPServer(config, inspectorName)
+			Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove inspector")
+			err = e2e.StopAndRemoveMCPServer(config, mcpServerName)
+			Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove MCP server")
 		}
 	})
 
@@ -102,8 +104,10 @@ var _ = Describe("Inspector", func() {
 		AfterEach(func() {
 			if config.CleanupAfter {
 				// Clean up both servers
-				_ = e2e.StopAndRemoveMCPServer(config, inspectorName)
-				_ = e2e.StopAndRemoveMCPServer(config, mcpServerName)
+				err := e2e.StopAndRemoveMCPServer(config, inspectorName)
+				Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove inspector")
+				err = e2e.StopAndRemoveMCPServer(config, mcpServerName)
+				Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove MCP server")
 			}
 		})
 

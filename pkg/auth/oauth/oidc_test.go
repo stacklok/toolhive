@@ -101,6 +101,7 @@ func testDiscoverOIDCEndpoints(
 }
 
 func TestDiscoverOIDCEndpoints(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		issuer         string
@@ -270,6 +271,7 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var server *httptest.Server
 			issuer := tt.issuer
 
@@ -312,6 +314,7 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 }
 
 func TestValidateOIDCDocument(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		doc            *OIDCDiscoveryDocument
@@ -426,6 +429,7 @@ func TestValidateOIDCDocument(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateOIDCDocument(tt.doc, tt.expectedIssuer)
 
 			if tt.expectError {
@@ -439,6 +443,7 @@ func TestValidateOIDCDocument(t *testing.T) {
 }
 
 func TestValidateEndpointURL(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		endpoint    string
@@ -481,6 +486,7 @@ func TestValidateEndpointURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateEndpointURL(tt.endpoint)
 
 			if tt.expectError {
@@ -494,6 +500,7 @@ func TestValidateEndpointURL(t *testing.T) {
 }
 
 func TestIsLocalhost(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		host     string
@@ -513,6 +520,7 @@ func TestIsLocalhost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := isLocalhost(tt.host)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -526,6 +534,7 @@ func testCreateOAuthConfigFromOIDC(
 	issuer, clientID, clientSecret string,
 	scopes []string,
 	usePKCE bool,
+	callbackPort int,
 ) (*Config, error) {
 	t.Helper()
 
@@ -561,10 +570,12 @@ func testCreateOAuthConfigFromOIDC(
 		TokenURL:     doc.TokenEndpoint,
 		Scopes:       scopes,
 		UsePKCE:      usePKCE,
+		CallbackPort: callbackPort,
 	}, nil
 }
 
 func TestCreateOAuthConfigFromOIDC(t *testing.T) {
+	t.Parallel()
 	// Create a test server that serves OIDC discovery
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -580,7 +591,7 @@ func TestCreateOAuthConfigFromOIDC(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(doc)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	tests := []struct {
 		name         string
@@ -650,6 +661,7 @@ func TestCreateOAuthConfigFromOIDC(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
@@ -661,6 +673,7 @@ func TestCreateOAuthConfigFromOIDC(t *testing.T) {
 				tt.clientSecret,
 				tt.scopes,
 				tt.usePKCE,
+				0, // Use auto-select port for tests
 			)
 
 			if tt.expectError {
@@ -681,7 +694,9 @@ func TestCreateOAuthConfigFromOIDC(t *testing.T) {
 }
 
 func TestOIDCDiscovery_SecurityProperties(t *testing.T) {
+	t.Parallel()
 	t.Run("request timeout protection", func(t *testing.T) {
+		t.Parallel()
 		// Create a server that never responds
 		server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 			time.Sleep(5 * time.Second) // Simulate hanging server (shorter for tests)
@@ -697,6 +712,7 @@ func TestOIDCDiscovery_SecurityProperties(t *testing.T) {
 	})
 
 	t.Run("response size limit protection", func(t *testing.T) {
+		t.Parallel()
 		// Create a server that returns a very large response
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -718,6 +734,7 @@ func TestOIDCDiscovery_SecurityProperties(t *testing.T) {
 	})
 
 	t.Run("strict JSON parsing", func(t *testing.T) {
+		t.Parallel()
 		// Create a server that returns JSON with unknown fields
 		var server *httptest.Server
 		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -743,6 +760,7 @@ func TestOIDCDiscovery_SecurityProperties(t *testing.T) {
 	})
 
 	t.Run("user agent header set", func(t *testing.T) {
+		t.Parallel()
 		userAgentReceived := ""
 		var server *httptest.Server
 		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -770,7 +788,9 @@ func TestOIDCDiscovery_SecurityProperties(t *testing.T) {
 }
 
 func TestOIDCDiscovery_EdgeCases(t *testing.T) {
+	t.Parallel()
 	t.Run("issuer with trailing slash", func(t *testing.T) {
+		t.Parallel()
 		var server *httptest.Server
 		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Verify the path is correct even with trailing slash in issuer
@@ -797,6 +817,7 @@ func TestOIDCDiscovery_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("empty optional fields", func(t *testing.T) {
+		t.Parallel()
 		var server *httptest.Server
 		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			doc := OIDCDiscoveryDocument{
@@ -825,6 +846,7 @@ func TestOIDCDiscovery_EdgeCases(t *testing.T) {
 
 // Test the production DiscoverOIDCEndpoints function with mock client
 func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		issuer         string
@@ -994,6 +1016,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var server *httptest.Server
 			issuer := tt.issuer
 
@@ -1049,6 +1072,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 
 // Test the production CreateOAuthConfigFromOIDC function
 func TestCreateOAuthConfigFromOIDC_Production(t *testing.T) {
+	t.Parallel()
 	// Create a test server that serves OIDC discovery
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1064,7 +1088,7 @@ func TestCreateOAuthConfigFromOIDC_Production(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(doc)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	tests := []struct {
 		name         string
@@ -1134,6 +1158,7 @@ func TestCreateOAuthConfigFromOIDC_Production(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
@@ -1156,6 +1181,7 @@ func TestCreateOAuthConfigFromOIDC_Production(t *testing.T) {
 				tt.clientSecret,
 				tt.scopes,
 				tt.usePKCE,
+				0, // Use auto-select port for tests
 				client,
 			)
 
@@ -1177,6 +1203,7 @@ func TestCreateOAuthConfigFromOIDC_Production(t *testing.T) {
 }
 
 func TestValidateEndpointURL_AdditionalCases(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		endpoint    string
@@ -1223,6 +1250,7 @@ func TestValidateEndpointURL_AdditionalCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := validateEndpointURL(tt.endpoint)
 
 			if tt.expectError {

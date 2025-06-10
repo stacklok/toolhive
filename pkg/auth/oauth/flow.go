@@ -45,6 +45,9 @@ type Config struct {
 
 	// UsePKCE enables PKCE (Proof Key for Code Exchange) for enhanced security
 	UsePKCE bool
+
+	// CallbackPort is the port for the OAuth callback server (optional, 0 means auto-select)
+	CallbackPort int
 }
 
 // Flow handles the OAuth authentication flow
@@ -67,6 +70,7 @@ type TokenResult struct {
 	TokenType    string
 	Expiry       time.Time
 	Claims       jwt.MapClaims
+	IDToken      string // The OIDC ID token (JWT), if present
 }
 
 // NewFlow creates a new OAuth flow
@@ -87,8 +91,8 @@ func NewFlow(config *Config) (*Flow, error) {
 		return nil, errors.New("token URL is required")
 	}
 
-	// Find an available port for the local server
-	port, err := networking.FindOrUsePort(0)
+	// Use specified callback port or find an available port for the local server
+	port, err := networking.FindOrUsePort(config.CallbackPort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find available port: %w", err)
 	}
@@ -429,13 +433,23 @@ func (f *Flow) processToken(token *oauth2.Token) *TokenResult {
 		Expiry:       token.Expiry,
 	}
 
-	// Try to extract claims from the access token if it's a JWT
-	// Note: This is optional - access tokens may be opaque tokens rather than JWTs
-	if claims, err := f.extractJWTClaims(token.AccessToken); err == nil {
-		result.Claims = claims
-		logger.Debugf("Successfully extracted JWT claims from access token")
+	// Prefer extracting claims from the ID token if present (OIDC, e.g., Google)
+	if idToken, ok := token.Extra("id_token").(string); ok && idToken != "" {
+		result.IDToken = idToken
+		if claims, err := f.extractJWTClaims(idToken); err == nil {
+			result.Claims = claims
+			logger.Debugf("Successfully extracted JWT claims from ID token")
+		} else {
+			logger.Debugf("Could not extract JWT claims from ID token: %v", err)
+		}
 	} else {
-		logger.Debugf("Could not extract JWT claims from access token (may be opaque token): %v", err)
+		// Fallback: try to extract claims from the access token (e.g., Keycloak)
+		if claims, err := f.extractJWTClaims(token.AccessToken); err == nil {
+			result.Claims = claims
+			logger.Debugf("Successfully extracted JWT claims from access token")
+		} else {
+			logger.Debugf("Could not extract JWT claims from access token (may be opaque token): %v", err)
+		}
 	}
 
 	return result

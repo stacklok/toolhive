@@ -2,6 +2,7 @@ package audit
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -10,9 +11,9 @@ import (
 )
 
 func TestDefaultConfig(t *testing.T) {
+	t.Parallel()
 	config := DefaultConfig()
 
-	assert.False(t, config.Enabled)
 	assert.False(t, config.IncludeRequestData)
 	assert.False(t, config.IncludeResponseData)
 	assert.Equal(t, 1024, config.MaxDataSize)
@@ -22,8 +23,8 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestLoadFromReader(t *testing.T) {
+	t.Parallel()
 	jsonConfig := `{
-		"enabled": true,
 		"component": "test-component",
 		"event_types": ["mcp_tool_call", "mcp_resource_read"],
 		"exclude_event_types": ["mcp_ping"],
@@ -35,7 +36,6 @@ func TestLoadFromReader(t *testing.T) {
 	config, err := LoadFromReader(strings.NewReader(jsonConfig))
 	require.NoError(t, err)
 
-	assert.True(t, config.Enabled)
 	assert.Equal(t, "test-component", config.Component)
 	assert.Equal(t, []string{"mcp_tool_call", "mcp_resource_read"}, config.EventTypes)
 	assert.Equal(t, []string{"mcp_ping"}, config.ExcludeEventTypes)
@@ -45,23 +45,25 @@ func TestLoadFromReader(t *testing.T) {
 }
 
 func TestLoadFromReaderInvalidJSON(t *testing.T) {
-	invalidJSON := `{"enabled": true, "invalid": }`
+	t.Parallel()
+	invalidJSON := `{"invalid": }`
 
 	_, err := LoadFromReader(strings.NewReader(invalidJSON))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to decode audit config")
 }
 
-func TestShouldAuditEventDisabled(t *testing.T) {
-	config := &Config{Enabled: false}
+func TestShouldAuditEventAllEventsAllowed(t *testing.T) {
+	t.Parallel()
+	config := &Config{}
 
 	result := config.ShouldAuditEvent("any_event")
-	assert.False(t, result)
+	assert.True(t, result)
 }
 
 func TestShouldAuditEventAllEventsEnabled(t *testing.T) {
+	t.Parallel()
 	config := &Config{
-		Enabled: true,
 		// No EventTypes specified, so all events should be audited
 	}
 
@@ -71,8 +73,8 @@ func TestShouldAuditEventAllEventsEnabled(t *testing.T) {
 }
 
 func TestShouldAuditEventSpecificTypes(t *testing.T) {
+	t.Parallel()
 	config := &Config{
-		Enabled:    true,
 		EventTypes: []string{"mcp_tool_call", "mcp_resource_read"},
 	}
 
@@ -83,8 +85,8 @@ func TestShouldAuditEventSpecificTypes(t *testing.T) {
 }
 
 func TestShouldAuditEventExcludeTypes(t *testing.T) {
+	t.Parallel()
 	config := &Config{
-		Enabled:           true,
 		ExcludeEventTypes: []string{"mcp_ping", "mcp_logging"},
 	}
 
@@ -95,8 +97,8 @@ func TestShouldAuditEventExcludeTypes(t *testing.T) {
 }
 
 func TestShouldAuditEventExcludeTakesPrecedence(t *testing.T) {
+	t.Parallel()
 	config := &Config{
-		Enabled:           true,
 		EventTypes:        []string{"mcp_tool_call", "mcp_ping"},
 		ExcludeEventTypes: []string{"mcp_ping"},
 	}
@@ -107,15 +109,17 @@ func TestShouldAuditEventExcludeTakesPrecedence(t *testing.T) {
 }
 
 func TestCreateMiddleware(t *testing.T) {
-	config := &Config{Enabled: true}
+	t.Parallel()
+	config := &Config{}
 
-	middleware := config.CreateMiddleware()
+	middleware, err := config.CreateMiddleware()
+	assert.NoError(t, err)
 	assert.NotNil(t, middleware)
 }
 
 func TestValidateValidConfig(t *testing.T) {
+	t.Parallel()
 	config := &Config{
-		Enabled:             true,
 		EventTypes:          []string{EventTypeMCPToolCall, EventTypeMCPResourceRead},
 		ExcludeEventTypes:   []string{EventTypeMCPPing},
 		IncludeRequestData:  true,
@@ -128,8 +132,8 @@ func TestValidateValidConfig(t *testing.T) {
 }
 
 func TestValidateNegativeMaxDataSize(t *testing.T) {
+	t.Parallel()
 	config := &Config{
-		Enabled:     true,
 		MaxDataSize: -1,
 	}
 
@@ -139,8 +143,8 @@ func TestValidateNegativeMaxDataSize(t *testing.T) {
 }
 
 func TestValidateInvalidEventType(t *testing.T) {
+	t.Parallel()
 	config := &Config{
-		Enabled:    true,
 		EventTypes: []string{"invalid_event_type"},
 	}
 
@@ -150,8 +154,8 @@ func TestValidateInvalidEventType(t *testing.T) {
 }
 
 func TestValidateInvalidExcludeEventType(t *testing.T) {
+	t.Parallel()
 	config := &Config{
-		Enabled:           true,
 		ExcludeEventTypes: []string{"invalid_exclude_type"},
 	}
 
@@ -161,6 +165,7 @@ func TestValidateInvalidExcludeEventType(t *testing.T) {
 }
 
 func TestValidateAllValidEventTypes(t *testing.T) {
+	t.Parallel()
 	validEventTypes := []string{
 		EventTypeMCPInitialize,
 		EventTypeMCPToolCall,
@@ -177,7 +182,6 @@ func TestValidateAllValidEventTypes(t *testing.T) {
 	}
 
 	config := &Config{
-		Enabled:    true,
 		EventTypes: validEventTypes,
 	}
 
@@ -186,8 +190,8 @@ func TestValidateAllValidEventTypes(t *testing.T) {
 }
 
 func TestConfigJSONSerialization(t *testing.T) {
+	t.Parallel()
 	originalConfig := &Config{
-		Enabled:             true,
 		Component:           "test-service",
 		EventTypes:          []string{EventTypeMCPToolCall, EventTypeMCPResourceRead},
 		ExcludeEventTypes:   []string{EventTypeMCPPing},
@@ -206,7 +210,6 @@ func TestConfigJSONSerialization(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify all fields are preserved
-	assert.Equal(t, originalConfig.Enabled, deserializedConfig.Enabled)
 	assert.Equal(t, originalConfig.Component, deserializedConfig.Component)
 	assert.Equal(t, originalConfig.EventTypes, deserializedConfig.EventTypes)
 	assert.Equal(t, originalConfig.ExcludeEventTypes, deserializedConfig.ExcludeEventTypes)
@@ -216,12 +219,12 @@ func TestConfigJSONSerialization(t *testing.T) {
 }
 
 func TestConfigMinimalJSON(t *testing.T) {
-	minimalJSON := `{"enabled": true}`
+	t.Parallel()
+	minimalJSON := `{}`
 
 	config, err := LoadFromReader(strings.NewReader(minimalJSON))
 	require.NoError(t, err)
 
-	assert.True(t, config.Enabled)
 	assert.Empty(t, config.Component)
 	assert.Empty(t, config.EventTypes)
 	assert.Empty(t, config.ExcludeEventTypes)
@@ -231,6 +234,7 @@ func TestConfigMinimalJSON(t *testing.T) {
 }
 
 func TestGetMiddlewareFromFileError(t *testing.T) {
+	t.Parallel()
 	// Test with non-existent file
 	_, err := GetMiddlewareFromFile("/non/existent/file.json")
 	assert.Error(t, err)
@@ -238,6 +242,7 @@ func TestGetMiddlewareFromFileError(t *testing.T) {
 }
 
 func TestLoadFromFilePathCleaning(t *testing.T) {
+	t.Parallel()
 	// Test that filepath.Clean is used (this is more of a smoke test)
 	// We can't easily test the actual cleaning without creating files
 	_, err := LoadFromFile("./non-existent-file.json")
@@ -246,8 +251,8 @@ func TestLoadFromFilePathCleaning(t *testing.T) {
 }
 
 func TestConfigWithEmptyEventTypes(t *testing.T) {
+	t.Parallel()
 	config := &Config{
-		Enabled:    true,
 		EventTypes: []string{}, // Explicitly empty
 	}
 
@@ -257,12 +262,68 @@ func TestConfigWithEmptyEventTypes(t *testing.T) {
 }
 
 func TestConfigWithEmptyExcludeEventTypes(t *testing.T) {
+	t.Parallel()
 	config := &Config{
-		Enabled:           true,
 		ExcludeEventTypes: []string{}, // Explicitly empty
 	}
 
 	// Should audit all events when ExcludeEventTypes is empty
 	assert.True(t, config.ShouldAuditEvent("any_event"))
 	assert.True(t, config.ShouldAuditEvent("mcp_tool_call"))
+}
+
+func TestGetLogWriter(t *testing.T) {
+	t.Parallel()
+
+	t.Run("default to stdout", func(t *testing.T) {
+		t.Parallel()
+		config := &Config{}
+
+		writer, err := config.GetLogWriter()
+		assert.NoError(t, err)
+		assert.Equal(t, os.Stdout, writer)
+	})
+
+	t.Run("nil config defaults to stdout", func(t *testing.T) {
+		t.Parallel()
+		var config *Config
+
+		writer, err := config.GetLogWriter()
+		assert.NoError(t, err)
+		assert.Equal(t, os.Stdout, writer)
+	})
+
+	t.Run("empty log file defaults to stdout", func(t *testing.T) {
+		t.Parallel()
+		config := &Config{LogFile: ""}
+
+		writer, err := config.GetLogWriter()
+		assert.NoError(t, err)
+		assert.Equal(t, os.Stdout, writer)
+	})
+
+	t.Run("invalid log file path returns error", func(t *testing.T) {
+		t.Parallel()
+		config := &Config{LogFile: "/invalid/path/that/does/not/exist/audit.log"}
+
+		_, err := config.GetLogWriter()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to open audit log file")
+	})
+}
+
+func TestConfigWithLogFile(t *testing.T) {
+	t.Parallel()
+	jsonConfig := `{
+		"component": "test-component",
+		"log_file": "/tmp/audit.log",
+		"include_request_data": true
+	}`
+
+	config, err := LoadFromReader(strings.NewReader(jsonConfig))
+	require.NoError(t, err)
+
+	assert.Equal(t, "test-component", config.Component)
+	assert.Equal(t, "/tmp/audit.log", config.LogFile)
+	assert.True(t, config.IncludeRequestData)
 }

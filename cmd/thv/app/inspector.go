@@ -12,11 +12,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/lifecycle"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var (
@@ -160,30 +160,23 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 
 func getServerPort(ctx context.Context, serverName string) (int, error) {
 	// Instantiate the container manager
-	manager, err := lifecycle.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create container manager: %v", err)
 	}
 
 	// Get list of all containers
-	containers, err := manager.ListContainers(ctx, true)
+	containers, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
 		return 0, fmt.Errorf("failed to list containers: %v", err)
 	}
 
 	for _, c := range containers {
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
+		name := c.Name
 
 		if name == serverName {
 			// Get port from labels
-			port, err := labels.GetPort(c.Labels)
-			if err != nil {
-				return 0, fmt.Errorf("failed to get port for server %s: %v", serverName, err)
-			}
-
+			port := c.Port
 			// Generate URL for the MCP server
 			if port > 0 {
 				return port, nil

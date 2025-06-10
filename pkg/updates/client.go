@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 )
 
 // VersionClient is an interface for calling the update service API.
@@ -35,6 +36,7 @@ const (
 	instanceIDHeader  = "X-Instance-ID"
 	userAgentHeader   = "User-Agent"
 	defaultVersionAPI = "https://updates.codegate.ai/api/v1/version"
+	defaultTimeout    = 3 * time.Second
 )
 
 // GetLatestVersion sends a GET request to the update API endpoint and returns the version from the response.
@@ -58,8 +60,10 @@ func (d *defaultVersionClient) GetLatestVersion(instanceID string, currentVersio
 	req.Header.Set(instanceIDHeader, instanceID)
 	req.Header.Set(userAgentHeader, userAgent)
 
-	// Send the request
-	client := &http.Client{}
+	// Send the request with a reasonable timeout
+	client := &http.Client{
+		Timeout: defaultTimeout,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to send request to update API: %w", err)

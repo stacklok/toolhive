@@ -14,6 +14,7 @@ import (
 )
 
 func TestGetClaimsFromContext(t *testing.T) {
+	t.Parallel()
 	// Test with claims in context
 	claims := jwt.MapClaims{
 		"sub": "testuser",
@@ -44,6 +45,7 @@ func TestGetClaimsFromContext(t *testing.T) {
 }
 
 func TestGetClaimsFromContextWithDifferentClaimTypes(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name     string
 		claims   jwt.MapClaims
@@ -86,6 +88,7 @@ func TestGetClaimsFromContextWithDifferentClaimTypes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := context.WithValue(context.Background(), ClaimsContextKey{}, tc.claims)
 			retrievedClaims, ok := GetClaimsFromContext(ctx)
 
@@ -99,6 +102,7 @@ func TestGetClaimsFromContextWithDifferentClaimTypes(t *testing.T) {
 }
 
 func TestGetAuthenticationMiddleware(t *testing.T) {
+	t.Parallel()
 	// Initialize logger for testing
 	logger.Initialize()
 

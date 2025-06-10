@@ -13,8 +13,7 @@ thv rm [container-name] [flags]
 ### Options
 
 ```
-  -f, --force   Force removal of a running container
-  -h, --help    help for rm
+  -h, --help   help for rm
 ```
 
 ### Options inherited from parent commands

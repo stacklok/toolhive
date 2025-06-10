@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -40,6 +41,9 @@ type TransparentProxy struct {
 
 	// Shutdown channel
 	shutdownCh chan struct{}
+
+	// Health checker
+	healthChecker *healthcheck.HealthChecker
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -50,7 +54,7 @@ func NewTransparentProxy(
 	targetURI string,
 	middlewares ...types.Middleware,
 ) *TransparentProxy {
-	return &TransparentProxy{
+	proxy := &TransparentProxy{
 		host:          host,
 		port:          port,
 		containerName: containerName,
@@ -58,6 +62,12 @@ func NewTransparentProxy(
 		middlewares:   middlewares,
 		shutdownCh:    make(chan struct{}),
 	}
+
+	// Create MCP pinger and health checker
+	mcpPinger := NewMCPPinger(targetURI)
+	proxy.healthChecker = healthcheck.NewHealthChecker("sse", mcpPinger)
+
+	return proxy
 }
 
 // Start starts the transparent proxy.
@@ -80,6 +90,9 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 		proxy.ServeHTTP(w, r)
 	})
 
+	// Create a mux to handle both proxy and health endpoints
+	mux := http.NewServeMux()
+
 	// Apply middleware chain in reverse order (last middleware is applied first)
 	var finalHandler http.Handler = handler
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
@@ -87,10 +100,23 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 		logger.Infof("Applied middleware %d\n", i+1)
 	}
 
+	// Add the proxy handler for all paths except /health
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			// Health endpoint should not go through proxy
+			http.NotFound(w, r)
+			return
+		}
+		finalHandler.ServeHTTP(w, r)
+	})
+
+	// Add health check endpoint (no middlewares)
+	mux.Handle("/health", p.healthChecker)
+
 	// Create the server
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
-		Handler:           finalHandler,
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 

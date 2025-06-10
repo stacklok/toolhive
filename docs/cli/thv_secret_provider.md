@@ -6,8 +6,8 @@ Configure the secrets provider
 
 Configure the secrets provider.
 Valid secrets providers are:
-  - encrypted: Encrypted secrets provider
-  - 1password: 1Password secrets provider (currently only supports getting secrets)
+  - encrypted: Full read-write secrets provider
+  - 1password: Read-only secrets provider
 
 ```
 thv secret provider <name> [flags]

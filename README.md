@@ -118,6 +118,16 @@ brew tap stacklok/tap
 brew install thv
 ```
 
+#### Winget (Windows) <!-- omit in toc -->
+
+If you're on Windows, you can install ToolHive using the Windows Package Manager (Winget).
+
+> Note: Make sure you have [Winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/) installed.
+
+```bash
+winget install stacklok.thv
+```
+
 #### Build from source <!-- omit in toc -->
 
 To build ToolHive from source, clone this repository and build the CLI using Go:

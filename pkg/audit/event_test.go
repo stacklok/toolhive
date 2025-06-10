@@ -1,7 +1,10 @@
 package audit
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -10,6 +13,7 @@ import (
 )
 
 func TestNewAuditEvent(t *testing.T) {
+	t.Parallel()
 	source := EventSource{
 		Type:  SourceTypeNetwork,
 		Value: "192.168.1.100",
@@ -32,6 +36,7 @@ func TestNewAuditEvent(t *testing.T) {
 }
 
 func TestNewAuditEventWithID(t *testing.T) {
+	t.Parallel()
 	auditID := "custom-audit-id"
 	source := EventSource{Type: SourceTypeLocal, Value: "localhost"}
 	subjects := map[string]string{SubjectKeyUser: "admin"}
@@ -47,6 +52,7 @@ func TestNewAuditEventWithID(t *testing.T) {
 }
 
 func TestAuditEventWithTarget(t *testing.T) {
+	t.Parallel()
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 	target := map[string]string{
 		TargetKeyType:     TargetTypeTool,
@@ -61,6 +67,7 @@ func TestAuditEventWithTarget(t *testing.T) {
 }
 
 func TestAuditEventWithData(t *testing.T) {
+	t.Parallel()
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 	testData := map[string]any{"key": "value", "number": 42}
 	dataBytes, err := json.Marshal(testData)
@@ -74,6 +81,7 @@ func TestAuditEventWithData(t *testing.T) {
 }
 
 func TestAuditEventWithDataFromString(t *testing.T) {
+	t.Parallel()
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 	jsonString := `{"message": "test data", "count": 5}`
 
@@ -91,6 +99,7 @@ func TestAuditEventWithDataFromString(t *testing.T) {
 }
 
 func TestAuditEventJSONSerialization(t *testing.T) {
+	t.Parallel()
 	source := EventSource{
 		Type:  SourceTypeNetwork,
 		Value: "10.0.0.1",
@@ -147,12 +156,14 @@ func TestAuditEventJSONSerialization(t *testing.T) {
 }
 
 func TestEventSourceConstants(t *testing.T) {
+	t.Parallel()
 	// Test that constants are defined
 	assert.Equal(t, "network", SourceTypeNetwork)
 	assert.Equal(t, "local", SourceTypeLocal)
 }
 
 func TestOutcomeConstants(t *testing.T) {
+	t.Parallel()
 	// Test that outcome constants are defined
 	assert.Equal(t, "success", OutcomeSuccess)
 	assert.Equal(t, "failure", OutcomeFailure)
@@ -161,11 +172,13 @@ func TestOutcomeConstants(t *testing.T) {
 }
 
 func TestComponentConstants(t *testing.T) {
+	t.Parallel()
 	// Test that component constants are defined
 	assert.Equal(t, "toolhive-api", ComponentToolHive)
 }
 
 func TestEventMetadataExtra(t *testing.T) {
+	t.Parallel()
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
 
 	// Initially should be nil
@@ -182,6 +195,7 @@ func TestEventMetadataExtra(t *testing.T) {
 }
 
 func TestEventSourceExtra(t *testing.T) {
+	t.Parallel()
 	source := EventSource{
 		Type:  SourceTypeNetwork,
 		Value: "192.168.1.1",
@@ -195,4 +209,78 @@ func TestEventSourceExtra(t *testing.T) {
 
 	assert.Equal(t, 8080, event.Source.Extra["port"])
 	assert.Equal(t, "https", event.Source.Extra["protocol"])
+}
+
+func TestAuditEventLogTo(t *testing.T) {
+	t.Parallel()
+
+	// Create a buffer to capture log output
+	var buf bytes.Buffer
+
+	// Create a test logger that writes to our buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+		Level: slog.LevelDebug, // Allow all levels
+	})
+	logger := slog.New(handler)
+
+	// Create a test audit event
+	source := EventSource{
+		Type:  SourceTypeNetwork,
+		Value: "192.168.1.100",
+		Extra: map[string]any{"user_agent": "test-agent"},
+	}
+	subjects := map[string]string{
+		SubjectKeyUser:   "testuser",
+		SubjectKeyUserID: "user123",
+	}
+	target := map[string]string{
+		TargetKeyType:     TargetTypeTool,
+		TargetKeyName:     "calculator",
+		TargetKeyEndpoint: "/api/tools/calculator",
+	}
+
+	event := NewAuditEvent(EventTypeMCPToolCall, source, OutcomeSuccess, subjects, "test-component")
+	event.WithTarget(target)
+	event.Metadata.Extra = map[string]any{
+		MetadataExtraKeyDuration:  150,
+		MetadataExtraKeyTransport: "sse",
+	}
+
+	// Log the event with a custom level
+	customLevel := slog.Level(2) // Audit level
+	event.LogTo(context.Background(), logger, customLevel)
+
+	// Parse the logged output
+	logOutput := buf.String()
+	require.NotEmpty(t, logOutput)
+
+	var logEntry map[string]any
+	err := json.Unmarshal([]byte(logOutput), &logEntry)
+	require.NoError(t, err)
+
+	// Verify the log entry contains expected fields
+	assert.Equal(t, "audit_event", logEntry["msg"])
+	assert.Equal(t, event.Metadata.AuditID, logEntry["audit_id"])
+	assert.Equal(t, EventTypeMCPToolCall, logEntry["type"])
+	assert.Equal(t, OutcomeSuccess, logEntry["outcome"])
+	assert.Equal(t, "test-component", logEntry["component"])
+
+	// Verify source information
+	sourceData, ok := logEntry["source"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, SourceTypeNetwork, sourceData["type"])
+	assert.Equal(t, "192.168.1.100", sourceData["value"])
+
+	// Verify subjects
+	subjectsData, ok := logEntry["subjects"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "testuser", subjectsData[SubjectKeyUser])
+	assert.Equal(t, "user123", subjectsData[SubjectKeyUserID])
+
+	// Verify target
+	targetData, ok := logEntry["target"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, TargetTypeTool, targetData[TargetKeyType])
+	assert.Equal(t, "calculator", targetData[TargetKeyName])
+	assert.Equal(t, "/api/tools/calculator", targetData[TargetKeyEndpoint])
 }

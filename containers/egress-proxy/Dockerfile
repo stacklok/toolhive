@@ -4,14 +4,14 @@ FROM alpine:3.22.0
 # Install squid and create necessary directories
 RUN apk add --no-cache squid \
     && mkdir -p /var/cache/squid /var/log/squid \
-    && chown -R squid:squid /var/cache/squid /var/log/squid \
+    && chown -R squid:squid /var/cache/squid /var/log/squid /var/run/squid \
     && chmod 750 /var/cache/squid /var/log/squid
 
 # Remove default squid config to allow runtime configuration
 RUN rm -f /etc/squid/squid.conf
 
 # Set proper ownership for squid directories
-RUN chown -R squid:squid /etc/squid
+RUN chown -R squid:squid /etc/squid /var/run/squid
 
 # Expose squid port
 EXPOSE 3128

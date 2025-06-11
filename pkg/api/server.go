@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -77,6 +78,15 @@ func cleanupUnixSocket(address string) {
 	}
 }
 
+func headersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Content-Type", "application/json")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Serve starts the server on the given address and serves the API.
 // It is assumed that the caller sets up appropriate signal handling.
 // If isUnixSocket is true, address is treated as a UNIX socket path.
@@ -94,6 +104,7 @@ func Serve(
 		middleware.RequestID,
 		// TODO: Figure out logging middleware. We may want to use a different logger.
 		middleware.Timeout(middlewareTimeout),
+		headersMiddleware,
 	)
 
 	// Add authentication middleware

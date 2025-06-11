@@ -68,6 +68,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(workloadListResponse{Workloads: workloadList})
 	if err != nil {
 		http.Error(w, "Failed to marshal workload list", http.StatusInternalServerError)
@@ -99,6 +100,7 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(workload)
 	if err != nil {
 		http.Error(w, "Failed to marshal workload details", http.StatusInternalServerError)
@@ -279,6 +281,8 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Return name so that the client will get the auto-generated name.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
 	resp := createWorkloadResponse{
 		Name: runConfig.ContainerName,
 		Port: runConfig.Port,

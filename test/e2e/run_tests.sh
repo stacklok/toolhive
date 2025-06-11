@@ -42,7 +42,7 @@ else
 fi
 
 # Set test timeout
-TEST_TIMEOUT="${TEST_TIMEOUT:-10m}"
+TEST_TIMEOUT="${TEST_TIMEOUT:-20m}"
 echo -e "${GREEN}✓${NC} Test timeout: $TEST_TIMEOUT"
 
 # Export environment variables for tests

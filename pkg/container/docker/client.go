@@ -372,8 +372,10 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 	logger.Infof("Setting up egress container for %s with image %s...", egressContainerName, getEgressImage())
 	egressLabels := map[string]string{}
 	lb.AddStandardLabels(egressLabels, egressContainerName, egressContainerName, "stdio", 80)
+	egressLabels["toolhive-auxiliary-workload"] = "true"
 	dnsLabels := map[string]string{}
 	lb.AddStandardLabels(dnsLabels, dnsContainerName, dnsContainerName, "stdio", 80)
+	dnsLabels["toolhive-auxiliary-workload"] = "true"
 
 	// pull the egress image if it is not already pulled
 	egressImage := getEgressImage()
@@ -576,9 +578,6 @@ func (c *Client) DeployWorkload(
 		envVars["no_proxy"] = "localhost,127.0.0.1,::1"
 	}
 
-	// add extra label
-	labels["toolhive-main-workload"] = "true"
-
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,
@@ -641,7 +640,6 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 	// Create filter for toolhive containers
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("label", "toolhive=true")
-	filterArgs.Add("label", "toolhive-main-workload=true")
 
 	// List containers
 	containers, err := c.client.ContainerList(ctx, container.ListOptions{
@@ -655,6 +653,11 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 	// Convert to our ContainerInfo format
 	result := make([]runtime.ContainerInfo, 0, len(containers))
 	for _, c := range containers {
+		// Skip containers that have the auxiliary workload label set to "true"
+		if val, ok := c.Labels["toolhive-auxiliary-workload"]; ok && val == "true" {
+			continue
+		}
+
 		// Extract container name (remove leading slash)
 		name := ""
 		if len(c.Names) > 0 {

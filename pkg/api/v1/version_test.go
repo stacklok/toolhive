@@ -18,3 +18,11 @@ func TestGetVersion(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&version))
 	require.Contains(t, version.Version, "build-")
 }
+
+func TestGetVersionContentType(t *testing.T) {
+	t.Parallel()
+	resp := httptest.NewRecorder()
+	getVersion(resp, nil)
+	require.Equal(t, http.StatusOK, resp.Code)
+	require.Equal(t, "application/json", resp.Header().Get("Content-Type"))
+}

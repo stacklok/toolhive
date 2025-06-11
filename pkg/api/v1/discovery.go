@@ -32,9 +32,12 @@ func DiscoveryRouter() http.Handler {
 func (*DiscoveryRoutes) discoverClients(w http.ResponseWriter, _ *http.Request) {
 	clients, err := client.GetClientStatus()
 	if err != nil {
+		// TODO: Error should be JSON marshaled
 		http.Error(w, "Failed to get client status", http.StatusInternalServerError)
+		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(clientStatusResponse{Clients: clients})
 	if err != nil {
 		http.Error(w, "Failed to encode client status", http.StatusInternalServerError)

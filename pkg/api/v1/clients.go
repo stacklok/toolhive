@@ -45,6 +45,7 @@ func (c *ClientRoutes) listClients(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(clients)
 	if err != nil {
 		http.Error(w, "Failed to encode client list", http.StatusInternalServerError)
@@ -81,6 +82,7 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	resp := createClientResponse(newClient)
 	if err = json.NewEncoder(w).Encode(resp); err != nil {
 		http.Error(w, "Failed to marshal server details", http.StatusInternalServerError)

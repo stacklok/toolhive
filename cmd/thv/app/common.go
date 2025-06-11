@@ -57,9 +57,10 @@ func SetSecretsProvider(provider secrets.ProviderType) error {
 		return fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted, 1password, none)", provider)
 	}
 
-	// Update the secrets provider type
+	// Update the secrets provider type and mark setup as completed
 	err := config.UpdateConfig(func(c *config.Config) {
 		c.Secrets.ProviderType = string(provider)
+		c.Secrets.SetupCompleted = true
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)

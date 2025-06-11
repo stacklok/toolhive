@@ -41,6 +41,9 @@ const (
 // ErrUnknownManagerType is returned when an invalid value for ProviderType is specified.
 var ErrUnknownManagerType = errors.New("unknown secret manager type")
 
+// ErrSecretsNotSetup is returned when secrets functionality is used before running setup.
+var ErrSecretsNotSetup = errors.New("secrets provider not configured. Please run 'thv secrets setup' to configure a secrets provider first")
+
 // CreateSecretProvider creates the specified type of secrets provider.
 func CreateSecretProvider(managerType ProviderType) (Provider, error) {
 	switch managerType {

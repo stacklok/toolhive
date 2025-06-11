@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -22,30 +24,33 @@ func newSecretCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(
+		newSecretSetupCommand(),
 		newSecretSetCommand(),
 		newSecretGetCommand(),
 		newSecretDeleteCommand(),
 		newSecretListCommand(),
 		newSecretResetKeyringCommand(),
-		newSecretProviderCommand(),
 	)
 
 	return cmd
 }
 
-func newSecretProviderCommand() *cobra.Command {
+func newSecretSetupCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "provider <name>",
-		Short: "Configure the secrets provider",
-		Long: `Configure the secrets provider.
-Valid secrets providers are:
-  - encrypted: Full read-write secrets provider
-  - 1password: Read-only secrets provider`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			provider := args[0]
-			return SetSecretsProvider(secrets.ProviderType(provider))
-		},
+		Use:   "setup",
+		Short: "Set up secrets provider",
+		Long: `Interactive setup for configuring a secrets provider.
+This command will guide you through selecting and configuring
+a secrets provider for storing and retrieving secrets.
+
+Available providers:
+  - encrypted: Stores secrets in an encrypted file using AES-256-GCM using the OS Keyring
+  - 1password: Read-only access to 1Password secrets (requires OP_SERVICE_ACCOUNT_TOKEN)
+  - none: Disables secrets functionality
+
+You must run this command before using any other secrets functionality.`,
+		Args: cobra.NoArgs,
+		RunE: runSecretsSetup,
 	}
 }
 
@@ -268,7 +273,14 @@ func newSecretResetKeyringCommand() *cobra.Command {
 }
 
 func getSecretsManager() (secrets.Provider, error) {
-	providerType, err := config.GetConfig().Secrets.GetProviderType()
+	cfg := config.GetConfig()
+
+	// Check if secrets setup has been completed
+	if !cfg.Secrets.SetupCompleted {
+		return nil, secrets.ErrSecretsNotSetup
+	}
+
+	providerType, err := cfg.Secrets.GetProviderType()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
@@ -279,4 +291,133 @@ func getSecretsManager() (secrets.Provider, error) {
 	}
 
 	return manager, nil
+}
+
+func runSecretsSetup(cmd *cobra.Command, _ []string) error {
+	ctx := cmd.Context()
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Println("ToolHive Secrets Setup")
+	fmt.Println("=====================")
+	fmt.Println()
+	fmt.Println("Please select a secrets provider:")
+	fmt.Println("  encrypted - Store secrets in an encrypted file (full read/write)")
+	fmt.Println("  1password - Use 1Password for secrets (read-only, requires service account)")
+	fmt.Println("  none - Disable secrets functionality")
+	fmt.Println()
+
+	var providerType secrets.ProviderType
+	for {
+		fmt.Print("Enter provider (encrypted/1password/none): ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("failed to read input: %w", err)
+		}
+
+		input = strings.TrimSpace(input)
+		switch input {
+		case "encrypted":
+			providerType = secrets.EncryptedType
+		case "1password":
+			providerType = secrets.OnePasswordType
+		case "none":
+			providerType = secrets.NoneType
+		default:
+			fmt.Println("Invalid provider. Please enter 'encrypted', '1password', or 'none'.")
+			continue
+		}
+		break
+	}
+
+	fmt.Printf("\nYou selected: %s\n", providerType)
+
+	// Provider-specific setup
+	switch providerType {
+	case secrets.EncryptedType:
+		if err := setupEncryptedProvider(ctx); err != nil {
+			return fmt.Errorf("failed to set up encrypted provider: %w", err)
+		}
+	case secrets.OnePasswordType:
+		if err := setupOnePasswordProvider(ctx); err != nil {
+			return fmt.Errorf("failed to set up 1Password provider: %w", err)
+		}
+	case secrets.NoneType:
+		fmt.Println("\nSecrets functionality will be disabled.")
+	}
+
+	if err := SetSecretsProvider(providerType); err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	fmt.Printf("\n✓ Secrets provider '%s' has been successfully configured!\n", providerType)
+	return nil
+}
+
+func setupEncryptedProvider(ctx context.Context) error {
+	fmt.Println("\nSetting up encrypted secrets provider...")
+	fmt.Println("You will need to provide a password to encrypt your secrets.")
+	fmt.Println("This password will be stored in your OS keyring if available.")
+
+	// Test that we can create the provider (this will prompt for password)
+	fmt.Println("\nTesting encrypted provider setup...")
+	provider, err := secrets.CreateSecretProvider(secrets.EncryptedType)
+	if err != nil {
+		return fmt.Errorf("failed to initialize encrypted provider: %w", err)
+	}
+
+	// Test basic functionality
+	testKey := "setup-test"
+	testValue := "test-value"
+
+	if err := provider.SetSecret(ctx, testKey, testValue); err != nil {
+		return fmt.Errorf("failed to test secret storage: %w", err)
+	}
+
+	retrievedValue, err := provider.GetSecret(ctx, testKey)
+	if err != nil {
+		return fmt.Errorf("failed to test secret retrieval: %w", err)
+	}
+
+	if retrievedValue != testValue {
+		return fmt.Errorf("secret test failed: expected %s, got %s", testValue, retrievedValue)
+	}
+
+	// Clean up test secret
+	_ = provider.DeleteSecret(ctx, testKey)
+
+	fmt.Println("✓ Encrypted provider setup successful!")
+	return nil
+}
+
+func setupOnePasswordProvider(ctx context.Context) error {
+	fmt.Println("\nSetting up 1Password secrets provider...")
+
+	// Check for service account token
+	token := os.Getenv("OP_SERVICE_ACCOUNT_TOKEN")
+	if token == "" {
+		fmt.Println("\nERROR: OP_SERVICE_ACCOUNT_TOKEN environment variable is not set.")
+		fmt.Println("To use 1Password as your secrets provider, you need to:")
+		fmt.Println("1. Create a service account in your 1Password account")
+		fmt.Println("2. Generate a service account token")
+		fmt.Println("3. Set the OP_SERVICE_ACCOUNT_TOKEN environment variable")
+		fmt.Println("\nFor more information, visit: https://developer.1password.com/docs/service-accounts/")
+		return fmt.Errorf("OP_SERVICE_ACCOUNT_TOKEN is required for 1Password provider")
+	}
+
+	// Test that we can create the provider
+	fmt.Println("Testing 1Password connection...")
+	provider, err := secrets.CreateSecretProvider(secrets.OnePasswordType)
+	if err != nil {
+		return fmt.Errorf("failed to initialize 1Password provider: %w", err)
+	}
+
+	// Test basic functionality by listing secrets
+	_, err = provider.ListSecrets(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to connect to 1Password: %w", err)
+	}
+
+	fmt.Println("✓ 1Password provider setup successful!")
+	fmt.Println("Note: 1Password provider is read-only. You can retrieve secrets but not set new ones.")
+	return nil
 }

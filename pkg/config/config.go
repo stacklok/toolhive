@@ -32,7 +32,8 @@ type Config struct {
 
 // Secrets contains the settings for secrets management.
 type Secrets struct {
-	ProviderType string `yaml:"provider_type"`
+	ProviderType   string `yaml:"provider_type"`
+	SetupCompleted bool   `yaml:"setup_completed"`
 }
 
 // validateProviderType validates and returns the secrets provider type.
@@ -112,7 +113,8 @@ func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
 		// Create a new config with default values.
 		config = Config{
 			Secrets: Secrets{
-				ProviderType: string(secrets.EncryptedType),
+				ProviderType:   "", // No default provider - user must run setup
+				SetupCompleted: false,
 			},
 			Clients: Clients{
 				AutoDiscovery: true,
@@ -164,6 +166,16 @@ func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
 			err = config.save()
 			if err != nil {
 				fmt.Printf("error updating config: %v", err)
+			}
+		}
+		
+		// Handle backward compatibility: if provider is set but setup_completed is false,
+		// consider it as setup completed (for existing users)
+		if config.Secrets.ProviderType != "" && !config.Secrets.SetupCompleted {
+			config.Secrets.SetupCompleted = true
+			err = config.save()
+			if err != nil {
+				fmt.Printf("error updating config for backward compatibility: %v", err)
 			}
 		}
 	}

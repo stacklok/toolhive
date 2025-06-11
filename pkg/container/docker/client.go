@@ -52,8 +52,7 @@ const (
 	PodmanSocketEnv = "TOOLHIVE_PODMAN_SOCKET"
 )
 
-// EgressImage is the default egress image used for network permissions
-const EgressImage = "ubuntu/squid:latest"
+const defaultEgressImage = "ubuntu/squid:latest"
 
 // DnsImage is the default DNS image used for network permissions
 const DnsImage = "dockurr/dnsmasq:latest"
@@ -365,14 +364,14 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 	dnsContainerName string, attachStdio bool, perm *permissions.NetworkPermissions,
 	portBindings map[string][]runtime.PortBinding, exposedPorts map[string]struct{}) (string, string, string, error) {
 	// first spin up the egress container
-	logger.Infof("Setting up egress container for %s with image %s...", egressContainerName, EgressImage)
+	logger.Infof("Setting up egress container for %s with image %s...", egressContainerName, getEgressImage())
 	egressLabels := map[string]string{}
 	lb.AddStandardLabels(egressLabels, egressContainerName, egressContainerName, "stdio", 80)
 	dnsLabels := map[string]string{}
 	lb.AddStandardLabels(dnsLabels, dnsContainerName, dnsContainerName, "stdio", 80)
 
 	// pull the egress image if it is not already pulled
-	err := c.PullImage(ctx, EgressImage)
+	err := c.PullImage(ctx, getEgressImage())
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to pull egress image: %v", err)
 	}
@@ -385,7 +384,7 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 
 	// Create container options
 	config := &container.Config{
-		Image:        EgressImage,
+		Image:        getEgressImage(),
 		Cmd:          nil,
 		Env:          nil,
 		Labels:       egressLabels,
@@ -1684,4 +1683,11 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to remove network %s: %w", name, err)
 	}
 	return nil
+}
+
+func getEgressImage() string {
+	if egressImage := os.Getenv("TOOLHIVE_EGRESS_IMAGE"); egressImage != "" {
+		return egressImage
+	}
+	return defaultEgressImage
 }

@@ -219,6 +219,12 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		req.OIDC.Audience,
 		req.OIDC.JwksURL,
 		req.OIDC.ClientID,
+		"",    // otelEndpoint - not exposed through API yet
+		"",    // otelServiceName - not exposed through API yet
+		0.1,   // otelSamplingRate - default value
+		nil,   // otelHeaders - not exposed through API yet
+		false, // otelInsecure - not exposed through API yet
+		false, // otelEnablePrometheusMetricsPath - not exposed through API yet
 	)
 
 	// TODO: De-dupe from `configureRunConfig` in `cmd/thv/app/run_common.go`.

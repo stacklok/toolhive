@@ -86,6 +86,14 @@ var (
 	runK8sPodPatch       string
 	runCACertPath        string
 	runVerifyImage       string
+
+	// OpenTelemetry flags
+	runOtelEndpoint                    string
+	runOtelServiceName                 string
+	runOtelSamplingRate                float64
+	runOtelHeaders                     []string
+	runOtelInsecure                    bool
+	runOtelEnablePrometheusMetricsPath bool
 )
 
 func init() {
@@ -170,6 +178,20 @@ func init() {
 
 	// Add OIDC validation flags
 	AddOIDCFlags(runCmd)
+
+	// Add OpenTelemetry flags
+	runCmd.Flags().StringVar(&runOtelEndpoint, "otel-endpoint", "",
+		"OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)")
+	runCmd.Flags().StringVar(&runOtelServiceName, "otel-service-name", "",
+		"OpenTelemetry service name (defaults to toolhive-mcp-proxy)")
+	runCmd.Flags().Float64Var(&runOtelSamplingRate, "otel-sampling-rate", 0.1,
+		"OpenTelemetry trace sampling rate (0.0-1.0)")
+	runCmd.Flags().StringArrayVar(&runOtelHeaders, "otel-headers", nil,
+		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
+	runCmd.Flags().BoolVar(&runOtelInsecure, "otel-insecure", false,
+		"Disable TLS verification for OpenTelemetry endpoint")
+	runCmd.Flags().BoolVar(&runOtelEnablePrometheusMetricsPath, "otel-enable-prometheus-metrics-path", false,
+		"Enable Prometheus-style /metrics endpoint on the main transport port")
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
@@ -224,6 +246,12 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		oidcAudience,
 		oidcJwksURL,
 		oidcClientID,
+		runOtelEndpoint,
+		runOtelServiceName,
+		runOtelSamplingRate,
+		runOtelHeaders,
+		runOtelInsecure,
+		runOtelEnablePrometheusMetricsPath,
 	)
 
 	// Set the Kubernetes pod template patch if provided

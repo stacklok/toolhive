@@ -19,7 +19,8 @@ func NewFactory() *Factory {
 func (*Factory) Create(config types.Config) (types.Transport, error) {
 	switch config.Type {
 	case types.TransportTypeStdio:
-		return NewStdioTransport(config.Host, config.Port, config.Runtime, config.Debug, config.Middlewares...), nil
+		return NewStdioTransport(
+			config.Host, config.Port, config.Runtime, config.Debug, config.PrometheusHandler, config.Middlewares...), nil
 	case types.TransportTypeSSE:
 		return NewSSETransport(
 			config.Host,
@@ -28,6 +29,7 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 			config.Runtime,
 			config.Debug,
 			config.TargetHost,
+			config.PrometheusHandler,
 			config.Middlewares...,
 		), nil
 	case types.TransportTypeInspector:

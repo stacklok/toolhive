@@ -873,6 +873,12 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		oidcAudience,
 		oidcJwksURL,
 		oidcClientID,
+		"",    // otelEndpoint
+		"",    // otelServiceName
+		0.1,   // otelSamplingRate
+		nil,   // otelHeaders
+		false, // otelInsecure
+		false, // otelEnablePrometheusMetricsPath
 	)
 
 	assert.NotNil(t, config, "NewRunConfigFromFlags should return a non-nil config")

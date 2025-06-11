@@ -44,6 +44,9 @@ type TransparentProxy struct {
 
 	// Health checker
 	healthChecker *healthcheck.HealthChecker
+
+	// Optional Prometheus metrics handler
+	prometheusHandler http.Handler
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -52,15 +55,17 @@ func NewTransparentProxy(
 	port int,
 	containerName string,
 	targetURI string,
+	prometheusHandler http.Handler,
 	middlewares ...types.Middleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
-		host:          host,
-		port:          port,
-		containerName: containerName,
-		targetURI:     targetURI,
-		middlewares:   middlewares,
-		shutdownCh:    make(chan struct{}),
+		host:              host,
+		port:              port,
+		containerName:     containerName,
+		targetURI:         targetURI,
+		middlewares:       middlewares,
+		shutdownCh:        make(chan struct{}),
+		prometheusHandler: prometheusHandler,
 	}
 
 	// Create MCP pinger and health checker
@@ -112,6 +117,12 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 
 	// Add health check endpoint (no middlewares)
 	mux.Handle("/health", p.healthChecker)
+
+	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
+	if p.prometheusHandler != nil {
+		mux.Handle("/metrics", p.prometheusHandler)
+		logger.Info("Prometheus metrics endpoint enabled at /metrics")
+	}
 
 	// Create the server
 	p.server = &http.Server{

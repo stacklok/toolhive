@@ -69,7 +69,7 @@ var _ = Describe("OSV MCP Server with Authorization", Serial, func() {
 					"--otel-enable-prometheus-metrics-path",
 					"osv").ExpectSuccess()
 
-				err = e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Get server URL

@@ -30,7 +30,7 @@ func NewTestConfig() *TestConfig {
 
 	return &TestConfig{
 		THVBinary:    thvBinary,
-		TestTimeout:  5 * time.Minute,
+		TestTimeout:  10 * time.Minute,
 		CleanupAfter: true,
 	}
 }

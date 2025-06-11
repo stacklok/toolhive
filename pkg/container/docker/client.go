@@ -278,7 +278,7 @@ func createTempSquidConf(
 		"http_port 3128\n" +
 			"visible_hostname " + serverHostname + "-egress\n" +
 			"access_log stdio:/var/log/squid/access.log squid\n" +
-			"pid_filename /var/run/squid/squid.pid\n" +
+			"pid_filename /tmp/squid.pid\n" +
 			"# Disable memory and disk caching\n" +
 			"cache deny all\n" +
 			"cache_mem 0 MB\n" +
@@ -307,6 +307,11 @@ func createTempSquidConf(
 
 	if _, err := tmpFile.WriteString(sb.String()); err != nil {
 		return "", fmt.Errorf("failed to write to temporary file: %v", err)
+	}
+
+	// Set file permissions to be readable by all users (including squid user in container)
+	if err := tmpFile.Chmod(0644); err != nil {
+		return "", fmt.Errorf("failed to set file permissions: %v", err)
 	}
 
 	return tmpFile.Name(), nil
@@ -371,15 +376,28 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 	lb.AddStandardLabels(dnsLabels, dnsContainerName, dnsContainerName, "stdio", 80)
 
 	// pull the egress image if it is not already pulled
-	err := c.PullImage(ctx, getEgressImage())
+	egressImage := getEgressImage()
+	err := c.PullImage(ctx, egressImage)
 	if err != nil {
-		return "", "", "", fmt.Errorf("failed to pull egress image: %v", err)
+		// Check if the egress image exists locally before failing
+		_, inspectErr := c.client.ImageInspect(ctx, egressImage)
+		if inspectErr == nil {
+			logger.Infof("Egress image %s exists locally, continuing despite pull failure", egressImage)
+		} else {
+			return "", "", "", fmt.Errorf("failed to pull egress image: %v", err)
+		}
 	}
 
 	// pull the dns image if it is not already pulled
 	err = c.PullImage(ctx, DnsImage)
 	if err != nil {
-		return "", "", "", fmt.Errorf("failed to pull DNS image: %v", err)
+		// Check if the DNS image exists locally before failing
+		_, inspectErr := c.client.ImageInspect(ctx, DnsImage)
+		if inspectErr == nil {
+			logger.Infof("DNS image %s exists locally, continuing despite pull failure", DnsImage)
+		} else {
+			return "", "", "", fmt.Errorf("failed to pull DNS image: %v", err)
+		}
 	}
 
 	// Create container options

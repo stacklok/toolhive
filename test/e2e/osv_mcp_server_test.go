@@ -89,14 +89,25 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				By("Making an HTTP request to the SSE endpoint")
 
 				client := &http.Client{Timeout: 10 * time.Second}
-				resp, err := client.Get(serverURL)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to connect to SSE endpoint")
+				var resp *http.Response
+				var httpErr error
 
+				maxRetries := 5
+				for i := 0; i < maxRetries; i++ {
+					resp, httpErr = client.Get(serverURL)
+					if httpErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 500 {
+						break
+					}
+					if resp != nil {
+						resp.Body.Close()
+					}
+					time.Sleep(2 * time.Second)
+				}
+
+				Expect(httpErr).ToNot(HaveOccurred(), "Should be able to connect to SSE endpoint")
 				Expect(resp).ToNot(BeNil(), "Response should not be nil")
 				defer resp.Body.Close()
 
-				// For SSE endpoints, we might get different status codes
-				// but the connection should be successful
 				Expect(resp.StatusCode).To(BeNumerically(">=", 200), "Should get a valid HTTP response")
 				Expect(resp.StatusCode).To(BeNumerically("<", 500), "Should not get a server error")
 			})

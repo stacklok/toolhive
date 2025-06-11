@@ -52,11 +52,16 @@ const (
 	PodmanSocketEnv = "TOOLHIVE_PODMAN_SOCKET"
 )
 
-// EgressImage is the default egress image used for network permissions
-const EgressImage = "ubuntu/squid:latest"
+const defaultEgressImage = "ubuntu/squid:latest"
 
 // DnsImage is the default DNS image used for network permissions
 const DnsImage = "dockurr/dnsmasq:latest"
+
+// Workloads
+const (
+	ToolhiveAuxiliaryWorkloadLabel = "toolhive-auxiliary-workload"
+	LabelValueTrue                 = "true"
+)
 
 var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
 
@@ -262,7 +267,8 @@ func writeIngressProxyConfig(sb *strings.Builder, ingressPorts map[string]struct
 		sb.WriteString(
 			"\n# Reverse proxy setup for port " + portNum + "\n" +
 				"http_port " + portNum + " accel defaultsite=" + serverHostname + "\n" +
-				"cache_peer " + serverHostname + " parent " + portNum + " 0 no-query originserver name=origin_" + portNum + "\n" +
+				"cache_peer " + serverHostname + " parent " + portNum + " 0 no-query originserver name=origin_" + portNum + " connect-timeout=5 connect-fail-limit=5\n" +
+				"dead_peer_timeout 10 seconds\n" +
 				"acl site_" + portNum + " dstdomain " + serverHostname + " 127.0.0.1\n" +
 				"http_access allow site_" + portNum + "\n")
 	}
@@ -279,7 +285,7 @@ func createTempSquidConf(
 		"http_port 3128\n" +
 			"visible_hostname " + serverHostname + "-egress\n" +
 			"access_log stdio:/var/log/squid/access.log squid\n" +
-			"pid_filename /var/run/squid/squid.pid\n" +
+			"pid_filename /tmp/squid.pid\n" +
 			"# Disable memory and disk caching\n" +
 			"cache deny all\n" +
 			"cache_mem 0 MB\n" +
@@ -308,6 +314,11 @@ func createTempSquidConf(
 
 	if _, err := tmpFile.WriteString(sb.String()); err != nil {
 		return "", fmt.Errorf("failed to write to temporary file: %v", err)
+	}
+
+	// Set file permissions to be readable by all users (including squid user in container)
+	if err := tmpFile.Chmod(0644); err != nil {
+		return "", fmt.Errorf("failed to set file permissions: %v", err)
 	}
 
 	return tmpFile.Name(), nil
@@ -365,29 +376,42 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 	dnsContainerName string, attachStdio bool, perm *permissions.NetworkPermissions,
 	portBindings map[string][]runtime.PortBinding, exposedPorts map[string]struct{}) (string, string, string, error) {
 	// first spin up the egress container
-	logger.Infof("Setting up egress container for %s with image %s...", egressContainerName, EgressImage)
+	logger.Infof("Setting up egress container for %s with image %s...", egressContainerName, getEgressImage())
 	egressLabels := map[string]string{}
 	lb.AddStandardLabels(egressLabels, egressContainerName, egressContainerName, "stdio", 80)
-	egressLabels["toolhive-auxiliary-workload"] = "true"
+	egressLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
 	dnsLabels := map[string]string{}
 	lb.AddStandardLabels(dnsLabels, dnsContainerName, dnsContainerName, "stdio", 80)
-	dnsLabels["toolhive-auxiliary-workload"] = "true"
+	dnsLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
 
 	// pull the egress image if it is not already pulled
-	err := c.PullImage(ctx, EgressImage)
+	egressImage := getEgressImage()
+	err := c.PullImage(ctx, egressImage)
 	if err != nil {
-		return "", "", "", fmt.Errorf("failed to pull egress image: %v", err)
+		// Check if the egress image exists locally before failing
+		_, inspectErr := c.client.ImageInspect(ctx, egressImage)
+		if inspectErr == nil {
+			logger.Infof("Egress image %s exists locally, continuing despite pull failure", egressImage)
+		} else {
+			return "", "", "", fmt.Errorf("failed to pull egress image: %v", err)
+		}
 	}
 
 	// pull the dns image if it is not already pulled
 	err = c.PullImage(ctx, DnsImage)
 	if err != nil {
-		return "", "", "", fmt.Errorf("failed to pull DNS image: %v", err)
+		// Check if the DNS image exists locally before failing
+		_, inspectErr := c.client.ImageInspect(ctx, DnsImage)
+		if inspectErr == nil {
+			logger.Infof("DNS image %s exists locally, continuing despite pull failure", DnsImage)
+		} else {
+			return "", "", "", fmt.Errorf("failed to pull DNS image: %v", err)
+		}
 	}
 
 	// Create container options
 	config := &container.Config{
-		Image:        EgressImage,
+		Image:        getEgressImage(),
 		Cmd:          nil,
 		Env:          nil,
 		Labels:       egressLabels,
@@ -736,6 +760,33 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 	return nil
 }
 
+func (c *Client) deleteNetworks(ctx context.Context, containerName string) error {
+	// Delete networks if there are no containers using them.
+	toolHiveContainers, err := c.client.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("label", "toolhive=true")),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %v", err)
+	}
+
+	// Delete associated internal network
+	networkName := fmt.Sprintf("toolhive-%s-internal", containerName)
+	if err := c.deleteNetwork(ctx, networkName); err != nil {
+		// just log the error and continue
+		logger.Warnf("failed to delete network %q: %v", networkName, err)
+	}
+
+	if len(toolHiveContainers) == 0 {
+		// remove external network
+		if err := c.deleteNetwork(ctx, "toolhive-external"); err != nil {
+			// just log the error and continue
+			logger.Warnf("failed to delete network %q: %v", "toolhive-external", err)
+		}
+	}
+	return nil
+}
+
 // RemoveWorkload removes a workload
 // If the workload doesn't exist, it returns success
 func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
@@ -768,7 +819,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 	egressContainerId, err := c.findExistingContainer(ctx, egressContainerName)
 	if err != nil {
 		logger.Warnf("Failed to find egress container %s: %v", egressContainerName, err)
-	} else {
+	} else if egressContainerId != "" {
 		err = c.client.ContainerRemove(ctx, egressContainerId, container.RemoveOptions{
 			Force: true,
 		})
@@ -784,7 +835,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 	dnsContainerId, err := c.findExistingContainer(ctx, dnsContainerName)
 	if err != nil {
 		logger.Warnf("Failed to find dns container %s: %v", dnsContainerName, err)
-	} else {
+	} else if dnsContainerId != "" {
 		err = c.client.ContainerRemove(ctx, dnsContainerId, container.RemoveOptions{
 			Force: true,
 		})
@@ -798,30 +849,10 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 
 	}
 
-	// Delete networks if there are no containers using them.
-	toolHiveContainers, err := c.client.ContainerList(ctx, container.ListOptions{
-		All:     true,
-		Filters: filters.NewArgs(filters.Arg("label", "toolhive=true")),
-	})
+	err = c.deleteNetworks(ctx, containerName)
 	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
+		logger.Warnf("Failed to delete networks for container %s: %v", containerName, err)
 	}
-
-	// Delete associated internal network
-	networkName := fmt.Sprintf("toolhive-%s-internal", containerName)
-	if err := c.deleteNetwork(ctx, networkName); err != nil {
-		// just log the error and continue
-		logger.Warnf("failed to delete network %q: %v", networkName, err)
-	}
-
-	if len(toolHiveContainers) == 0 {
-		// remove external network
-		if err := c.deleteNetwork(ctx, "toolhive-external"); err != nil {
-			// just log the error and continue
-			logger.Warnf("failed to delete network %q: %v", "toolhive-external", err)
-		}
-	}
-
 	return nil
 }
 
@@ -1687,4 +1718,11 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to remove network %s: %w", name, err)
 	}
 	return nil
+}
+
+func getEgressImage() string {
+	if egressImage := os.Getenv("TOOLHIVE_EGRESS_IMAGE"); egressImage != "" {
+		return egressImage
+	}
+	return defaultEgressImage
 }

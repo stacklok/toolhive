@@ -41,7 +41,7 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		if errors.Is(err, workloads.ErrContainerNotFound) {
 			fmt.Printf("Container %s is not running\n", containerName)
 		} else {
-			return fmt.Errorf("failed to delete container: %v", err)
+			return fmt.Errorf("failed to stop container: %v", err)
 		}
 	} else {
 		fmt.Printf("Container %s stopped successfully\n", containerName)

@@ -1,7 +1,6 @@
 name: Trigger Docs Update
 
-permissions:
-  contents: read
+permissions: {}
 
 on:
   release:

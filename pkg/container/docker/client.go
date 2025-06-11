@@ -279,7 +279,15 @@ func createTempSquidConf(
 		"http_port 3128\n" +
 			"visible_hostname " + serverHostname + "-egress\n" +
 			"access_log stdio:/var/log/squid/access.log squid\n" +
-			"pid_filename /var/run/squid/squid.pid\n\n")
+			"pid_filename /var/run/squid/squid.pid\n" +
+			"# Disable memory and disk caching\n" +
+			"cache deny all\n" +
+			"cache_mem 0 MB\n" +
+			"maximum_object_size 0 KB\n" +
+			"maximum_object_size_in_memory 0 KB\n" +
+			"# Don't use cache directories\n" +
+			"cache_dir null /tmp\n" +
+			"cache_store_log none\n\n")
 
 	if networkPermissions == nil || (networkPermissions.Outbound != nil && networkPermissions.Outbound.InsecureAllowAll) {
 		sb.WriteString("# Allow all traffic\nhttp_access allow all\n")
@@ -364,13 +372,13 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 	lb.AddStandardLabels(dnsLabels, dnsContainerName, dnsContainerName, "stdio", 80)
 
 	// pull the egress image if it is not already pulled
-	/*err := c.PullImage(ctx, EgressImage)
+	err := c.PullImage(ctx, EgressImage)
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to pull egress image: %v", err)
-	}*/
+	}
 
 	// pull the dns image if it is not already pulled
-	err := c.PullImage(ctx, DnsImage)
+	err = c.PullImage(ctx, DnsImage)
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to pull DNS image: %v", err)
 	}
@@ -442,20 +450,6 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 		"toolhive-external": {},
 	}
 
-	// Setup port bindings
-	if err := setupExposedPorts(config, exposedPorts); err != nil {
-		return "", "", "", NewContainerError(err, "", err.Error())
-	}
-	if err := setupPortBindings(egressHostConfig, portBindings); err != nil {
-		return "", "", "", NewContainerError(err, "", err.Error())
-	}
-
-	// Create egress container itself
-	egressContainerId, err := c.createContainer(ctx, egressContainerName, config, egressHostConfig, endpointsConfig)
-	if err != nil {
-		return "", "", "", fmt.Errorf("failed to create egress container: %v", err)
-	}
-
 	// now create the dns container
 	dnsContainerId, err := c.createContainer(ctx, dnsContainerName, configDns, dnsHostConfig, endpointsConfig)
 	if err != nil {
@@ -472,6 +466,19 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 		return "", "", "", fmt.Errorf("network %s not found in container's network settings", networkName)
 	}
 	dnsContainerIP := dnsNetworkSettings.IPAddress
+	// Setup port bindings
+	if err := setupExposedPorts(config, exposedPorts); err != nil {
+		return "", "", "", NewContainerError(err, "", err.Error())
+	}
+	if err := setupPortBindings(egressHostConfig, portBindings); err != nil {
+		return "", "", "", NewContainerError(err, "", err.Error())
+	}
+
+	// Create egress container itself
+	egressContainerId, err := c.createContainer(ctx, egressContainerName, config, egressHostConfig, endpointsConfig)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to create egress container: %v", err)
+	}
 
 	return egressContainerId, dnsContainerId, dnsContainerIP, nil
 }

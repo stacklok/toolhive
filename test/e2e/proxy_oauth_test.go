@@ -84,7 +84,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 			"osv").ExpectSuccess()
 
 		// Wait for OSV server to be ready
-		err = e2e.WaitForMCPServer(config, osvServerName, 30*time.Second)
+		err = e2e.WaitForMCPServer(config, osvServerName, 60*time.Second)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -368,7 +368,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 			proxyURL := fmt.Sprintf("http://localhost:%d/sse", proxyPort)
 
 			// Wait for proxy to be ready for MCP connections
-			err = e2e.WaitForMCPServerReady(config, proxyURL, 30*time.Second)
+			err = e2e.WaitForMCPServerReady(config, proxyURL, 60*time.Second)
 			if err != nil {
 				GinkgoWriter.Printf("MCP connection through proxy failed: %v\n", err)
 				Skip("Skipping MCP test due to proxy not being ready")

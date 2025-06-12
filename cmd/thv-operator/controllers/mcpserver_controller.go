@@ -68,6 +68,9 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 
 var ctxLogger = log.FromContext(context.Background())
 
+// mcpContainerName is the name of the mcp container used in pod templates
+const mcpContainerName = "mcp"
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
@@ -1151,7 +1154,7 @@ func generateSecretsPodTemplatePatch(secrets []mcpv1alpha1.SecretRef) *corev1.Po
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
-					Name: "mcp",
+					Name: mcpContainerName,
 					Env:  envVars,
 				},
 			},
@@ -1177,7 +1180,7 @@ func mergePodTemplateSpecs(secretsPatch, userPatch *corev1.PodTemplateSpec) *cor
 	// Find or create mcp container in result
 	mcpIndex := -1
 	for i, container := range result.Spec.Containers {
-		if container.Name == "mcp" {
+		if container.Name == mcpContainerName {
 			mcpIndex = i
 			break
 		}
@@ -1186,7 +1189,7 @@ func mergePodTemplateSpecs(secretsPatch, userPatch *corev1.PodTemplateSpec) *cor
 	// Get secret env vars from secrets patch
 	var secretEnvVars []corev1.EnvVar
 	for _, container := range secretsPatch.Spec.Containers {
-		if container.Name == "mcp" {
+		if container.Name == mcpContainerName {
 			secretEnvVars = container.Env
 			break
 		}
@@ -1201,7 +1204,7 @@ func mergePodTemplateSpecs(secretsPatch, userPatch *corev1.PodTemplateSpec) *cor
 	} else {
 		// Add new mcp container with just env vars
 		result.Spec.Containers = append(result.Spec.Containers, corev1.Container{
-			Name: "mcp",
+			Name: mcpContainerName,
 			Env:  secretEnvVars,
 		})
 	}
@@ -1210,7 +1213,10 @@ func mergePodTemplateSpecs(secretsPatch, userPatch *corev1.PodTemplateSpec) *cor
 }
 
 // generateAndMergePodTemplateSpecs generates secrets patch and merges with user patch
-func generateAndMergePodTemplateSpecs(secrets []mcpv1alpha1.SecretRef, userPatch *corev1.PodTemplateSpec) *corev1.PodTemplateSpec {
+func generateAndMergePodTemplateSpecs(
+	secrets []mcpv1alpha1.SecretRef,
+	userPatch *corev1.PodTemplateSpec,
+) *corev1.PodTemplateSpec {
 	secretsPatch := generateSecretsPodTemplatePatch(secrets)
 	return mergePodTemplateSpecs(secretsPatch, userPatch)
 }

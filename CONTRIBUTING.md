@@ -51,7 +51,10 @@ PRs to resolve existing issues are greatly appreciated, and issues labeled as
 are a great place to start!
 
 ### Pull request process
-- -All commits must include a Signed-off-by trailer at the end of each commit message to indicate that the contributor agrees to the Developer Certificate of Origin. For additional details, check out the [DCO instructions](dco.md).
+
+- -All commits must include a Signed-off-by trailer at the end of each commit
+  message to indicate that the contributor agrees to the Developer Certificate
+  of Origin. For additional details, check out the [DCO instructions](dco.md).
 - Create an issue outlining the fix or feature.
 - Fork the ToolHive repository to your own GitHub account and clone it locally.
 - Hack on your changes.
@@ -67,7 +70,14 @@ are a great place to start!
 
 ### Contributing to docs
 
-TBD
+The ToolHive user documentation website is maintained in the
+[docs-website](https://github.com/stacklok/docs-website) repository. If you want
+to contribute to the documentation, please open a PR in that repo.
+
+Please review the README and
+[STYLE-GUIDE](https://github.com/stacklok/docs-website/blob/add-release-update-workflow/STYLE-GUIDE.md)
+in the docs-website repository for more information on how to contribute to the
+documentation.
 
 ### Commit message guidelines
 

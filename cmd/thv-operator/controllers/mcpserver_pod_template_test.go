@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -100,30 +101,45 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 			require.NoError(t, err, "Should be able to unmarshal pod template patch")
 
 			// Check tolerations
-			require.Len(t, podTemplateSpec.Spec.Tolerations, 1, "Should have 1 toleration")
-			assert.Equal(t, "dedicated", podTemplateSpec.Spec.Tolerations[0].Key)
-			assert.Equal(t, "Equal", string(podTemplateSpec.Spec.Tolerations[0].Operator))
-			assert.Equal(t, "mcp-servers", podTemplateSpec.Spec.Tolerations[0].Value)
-			assert.Equal(t, "NoSchedule", string(podTemplateSpec.Spec.Tolerations[0].Effect))
+			require.Len(t, podTemplateSpec.Spec.Tolerations, 1, "Should have one toleration")
+			assert.Equal(t, "dedicated", podTemplateSpec.Spec.Tolerations[0].Key, "Toleration key should match")
+			assert.Equal(t, "Equal", string(podTemplateSpec.Spec.Tolerations[0].Operator), "Toleration operator should match")
+			assert.Equal(t, "mcp-servers", podTemplateSpec.Spec.Tolerations[0].Value, "Toleration value should match")
+			assert.Equal(t, "NoSchedule", string(podTemplateSpec.Spec.Tolerations[0].Effect), "Toleration effect should match")
 
 			// Check node selector
-			assert.Equal(t, "linux", podTemplateSpec.Spec.NodeSelector["kubernetes.io/os"])
-			assert.Equal(t, "mcp-server", podTemplateSpec.Spec.NodeSelector["node-type"])
+			require.NotNil(t, podTemplateSpec.Spec.NodeSelector, "NodeSelector should not be nil")
+			assert.Equal(t, "linux", podTemplateSpec.Spec.NodeSelector["kubernetes.io/os"], "NodeSelector OS should match")
+			assert.Equal(t, "mcp-server", podTemplateSpec.Spec.NodeSelector["node-type"], "NodeSelector node-type should match")
 
 			// Check security context
-			require.NotNil(t, podTemplateSpec.Spec.SecurityContext, "Pod security context should not be nil")
-			assert.True(t, *podTemplateSpec.Spec.SecurityContext.RunAsNonRoot)
-			assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, podTemplateSpec.Spec.SecurityContext.SeccompProfile.Type)
+			require.NotNil(t, podTemplateSpec.Spec.SecurityContext, "SecurityContext should not be nil")
+			assert.True(t, *podTemplateSpec.Spec.SecurityContext.RunAsNonRoot, "RunAsNonRoot should be true")
+			assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, podTemplateSpec.Spec.SecurityContext.SeccompProfile.Type, "SeccompProfile type should match")
+
+			// Check containers
+			require.Len(t, podTemplateSpec.Spec.Containers, 1, "Should have one container")
+			mcpContainer := podTemplateSpec.Spec.Containers[0]
+			assert.Equal(t, "mcp", mcpContainer.Name, "Container name should be mcp")
 
 			// Check container security context
-			require.Len(t, podTemplateSpec.Spec.Containers, 1, "Should have 1 container")
-			container := podTemplateSpec.Spec.Containers[0]
-			assert.Equal(t, "mcp", container.Name)
-			require.NotNil(t, container.SecurityContext, "Container security context should not be nil")
-			assert.False(t, *container.SecurityContext.AllowPrivilegeEscalation)
-			assert.Equal(t, int64(1000), *container.SecurityContext.RunAsUser)
-			require.NotNil(t, container.SecurityContext.Capabilities, "Container capabilities should not be nil")
-			assert.Contains(t, container.SecurityContext.Capabilities.Drop, corev1.Capability("ALL"))
+			require.NotNil(t, mcpContainer.SecurityContext, "Container SecurityContext should not be nil")
+			assert.False(t, *mcpContainer.SecurityContext.AllowPrivilegeEscalation, "AllowPrivilegeEscalation should be false")
+			assert.Equal(t, int64(1000), *mcpContainer.SecurityContext.RunAsUser, "RunAsUser should be 1000")
+			require.NotNil(t, mcpContainer.SecurityContext.Capabilities, "Capabilities should not be nil")
+			require.Len(t, mcpContainer.SecurityContext.Capabilities.Drop, 1, "Should drop one capability")
+			assert.Equal(t, corev1.Capability("ALL"), mcpContainer.SecurityContext.Capabilities.Drop[0], "Should drop ALL capabilities")
+
+			// Check container resources
+			cpuLimit := mcpContainer.Resources.Limits[corev1.ResourceCPU]
+			memoryLimit := mcpContainer.Resources.Limits[corev1.ResourceMemory]
+			cpuRequest := mcpContainer.Resources.Requests[corev1.ResourceCPU]
+			memoryRequest := mcpContainer.Resources.Requests[corev1.ResourceMemory]
+
+			assert.Equal(t, "500m", cpuLimit.String(), "CPU limit should match")
+			assert.Equal(t, "512Mi", memoryLimit.String(), "Memory limit should match")
+			assert.Equal(t, "100m", cpuRequest.String(), "CPU request should match")
+			assert.Equal(t, "128Mi", memoryRequest.String(), "Memory request should match")
 
 			break
 		}
@@ -173,6 +189,110 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 	assert.True(t, secretsProviderEnvFound, "TOOLHIVE_SECRETS_PROVIDER environment variable should be present")
 }
 
+func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
+	t.Parallel()
+	// Create a test MCPServer with secrets
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-mcp-server-secrets",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "stdio",
+			Port:      8080,
+			Secrets: []mcpv1alpha1.SecretRef{
+				{
+					Name:          "github-token",
+					Key:           "token",
+					TargetEnvName: "GITHUB_PERSONAL_ACCESS_TOKEN",
+				},
+				{
+					Name: "api-key",
+					Key:  "key",
+					// No TargetEnvName, should default to Key
+				},
+			},
+		},
+	}
+
+	// Register the scheme
+	s := scheme.Scheme
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+
+	// Create a reconciler with the scheme
+	r := &MCPServerReconciler{
+		Scheme: s,
+	}
+
+	// Call deploymentForMCPServer
+	deployment := r.deploymentForMCPServer(mcpServer)
+	require.NotNil(t, deployment, "Deployment should not be nil")
+
+	// Check that secrets are injected via pod template patch
+	container := deployment.Spec.Template.Spec.Containers[0]
+
+	// Find the pod template patch in the container args
+	var podTemplatePatch string
+	podTemplatePatchFound := false
+	for _, arg := range container.Args {
+		if strings.HasPrefix(arg, "--k8s-pod-patch=") {
+			podTemplatePatchFound = true
+			podTemplatePatch = arg[16:] // Remove "--k8s-pod-patch=" prefix
+			break
+		}
+	}
+
+	assert.True(t, podTemplatePatchFound, "Pod template patch should be present in args")
+
+	// Parse and verify the pod template patch contains secret environment variables
+	var podTemplateSpec corev1.PodTemplateSpec
+	err := json.Unmarshal([]byte(podTemplatePatch), &podTemplateSpec)
+	require.NoError(t, err, "Should be able to unmarshal pod template patch")
+
+	// Find the mcp container in the patch
+	var mcpContainer *corev1.Container
+	for i, container := range podTemplateSpec.Spec.Containers {
+		if container.Name == "mcp" {
+			mcpContainer = &podTemplateSpec.Spec.Containers[i]
+			break
+		}
+	}
+
+	require.NotNil(t, mcpContainer, "mcp container should be present in pod template patch")
+	require.Len(t, mcpContainer.Env, 2, "mcp container should have 2 environment variables")
+
+	// Check for GITHUB_PERSONAL_ACCESS_TOKEN
+	githubTokenEnvFound := false
+	apiKeyEnvFound := false
+
+	for _, env := range mcpContainer.Env {
+		if env.Name == "GITHUB_PERSONAL_ACCESS_TOKEN" {
+			githubTokenEnvFound = true
+			require.NotNil(t, env.ValueFrom, "ValueFrom should not be nil for secret env var")
+			require.NotNil(t, env.ValueFrom.SecretKeyRef, "SecretKeyRef should not be nil")
+			assert.Equal(t, "github-token", env.ValueFrom.SecretKeyRef.Name, "Secret name should match")
+			assert.Equal(t, "token", env.ValueFrom.SecretKeyRef.Key, "Secret key should match")
+		}
+		if env.Name == "key" {
+			apiKeyEnvFound = true
+			require.NotNil(t, env.ValueFrom, "ValueFrom should not be nil for secret env var")
+			require.NotNil(t, env.ValueFrom.SecretKeyRef, "SecretKeyRef should not be nil")
+			assert.Equal(t, "api-key", env.ValueFrom.SecretKeyRef.Name, "Secret name should match")
+			assert.Equal(t, "key", env.ValueFrom.SecretKeyRef.Key, "Secret key should match")
+		}
+	}
+
+	assert.True(t, githubTokenEnvFound, "GITHUB_PERSONAL_ACCESS_TOKEN environment variable should be present in pod template patch")
+	assert.True(t, apiKeyEnvFound, "key environment variable should be present in pod template patch")
+
+	// Verify that no secret CLI arguments are present in the container args
+	for _, arg := range container.Args {
+		assert.NotContains(t, arg, "--secret=", "No secret CLI arguments should be present")
+	}
+}
+
 func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 	t.Parallel()
 	// Create a test MCPServer with environment variables
@@ -218,37 +338,23 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 	// Verify that the environment variables are NOT set as container environment variables
 	// (except for TOOLHIVE_SECRETS_PROVIDER which should still be there)
 	for _, env := range container.Env {
-		assert.NotEqual(t, "API_KEY", env.Name, "API_KEY should not be set as container environment variable")
-		assert.NotEqual(t, "DEBUG_MODE", env.Name, "DEBUG_MODE should not be set as container environment variable")
+		assert.NotEqual(t, "API_KEY", env.Name, "API_KEY should not be set as container env var")
+		assert.NotEqual(t, "DEBUG_MODE", env.Name, "DEBUG_MODE should not be set as container env var")
 	}
 
-	// Verify that the environment variables are passed as --env flags
-	expectedEnvArgs := []string{
-		"--env=API_KEY=secret-key-123",
-		"--env=DEBUG_MODE=true",
-	}
-
-	for _, expectedArg := range expectedEnvArgs {
-		found := false
-		for _, arg := range container.Args {
-			if arg == expectedArg {
-				found = true
-				break
-			}
+	// Verify that the environment variables are passed as --env flags in the args
+	apiKeyArgFound := false
+	debugModeArgFound := false
+	for _, arg := range container.Args {
+		if arg == "--env=API_KEY=secret-key-123" {
+			apiKeyArgFound = true
 		}
-		assert.True(t, found, "Expected --env flag '%s' should be present in container args", expectedArg)
-	}
-
-	// Verify that TOOLHIVE_SECRETS_PROVIDER is still set as a container environment variable
-	secretsProviderEnvFound := false
-	for _, env := range container.Env {
-		if env.Name == "TOOLHIVE_SECRETS_PROVIDER" {
-			secretsProviderEnvFound = true
-			assert.Equal(t, "none", env.Value, "TOOLHIVE_SECRETS_PROVIDER should be set to 'none'")
-			break
+		if arg == "--env=DEBUG_MODE=true" {
+			debugModeArgFound = true
 		}
 	}
-	assert.True(t, secretsProviderEnvFound, "TOOLHIVE_SECRETS_PROVIDER environment variable should be present")
+	assert.True(t, apiKeyArgFound, "API_KEY should be passed as --env flag")
+	assert.True(t, debugModeArgFound, "DEBUG_MODE should be passed as --env flag")
 }
 
 // Helper functions

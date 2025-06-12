@@ -378,9 +378,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		args = append(args, fmt.Sprintf("--target-port=%d", m.Spec.TargetPort))
 	}
 
-	// Add pod template patch if provided
-	if m.Spec.PodTemplateSpec != nil {
-		podTemplatePatch, err := json.Marshal(m.Spec.PodTemplateSpec)
+	// Generate pod template patch for secrets and merge with user-provided patch
+	finalPodTemplateSpec := generateAndMergePodTemplateSpecs(m.Spec.Secrets, m.Spec.PodTemplateSpec)
+
+	// Add pod template patch if we have one
+	if finalPodTemplateSpec != nil {
+		podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
 		if err != nil {
 			logger.Errorf("Failed to marshal pod template spec: %v", err)
 		} else {
@@ -406,11 +409,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 		oidcArgs := r.generateOIDCArgs(ctx, m)
 		args = append(args, oidcArgs...)
-	}
-
-	// Add secrets
-	for _, secret := range m.Spec.Secrets {
-		args = append(args, formatSecretArg(secret))
 	}
 
 	// Add environment variables as --env flags for the MCP server
@@ -770,21 +768,6 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 			}
 		}
 
-		// Check if the secrets have changed
-		for _, secret := range mcpServer.Spec.Secrets {
-			secretArg := formatSecretArg(secret)
-			found := false
-			for _, arg := range container.Args {
-				if arg == secretArg {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return true
-			}
-		}
-
 		// Check if the container port has changed
 		if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.Spec.Port {
 			return true
@@ -803,6 +786,35 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 			if !found {
 				return true
 			}
+		}
+
+		// Check if the pod template spec has changed (including secrets)
+		expectedPodTemplateSpec := generateAndMergePodTemplateSpecs(mcpServer.Spec.Secrets, mcpServer.Spec.PodTemplateSpec)
+
+		// Find the current pod template patch in the container args
+		var currentPodTemplatePatch string
+		for _, arg := range container.Args {
+			if strings.HasPrefix(arg, "--k8s-pod-patch=") {
+				currentPodTemplatePatch = arg[16:] // Remove "--k8s-pod-patch=" prefix
+				break
+			}
+		}
+
+		// Compare expected vs current pod template spec
+		if expectedPodTemplateSpec != nil {
+			expectedPatch, err := json.Marshal(expectedPodTemplateSpec)
+			if err != nil {
+				logger.Errorf("Failed to marshal expected pod template spec: %v", err)
+				return true // Assume change if we can't marshal
+			}
+			expectedPatchString := string(expectedPatch)
+
+			if currentPodTemplatePatch != expectedPatchString {
+				return true
+			}
+		} else if currentPodTemplatePatch != "" {
+			// Expected no patch but current has one
+			return true
 		}
 
 		// Check if the resource requirements have changed
@@ -967,15 +979,6 @@ func getToolhiveRunnerImage() string {
 	return image
 }
 
-// formatSecretArg formats a secret reference into a command-line argument
-func formatSecretArg(secret mcpv1alpha1.SecretRef) string {
-	targetEnv := secret.Key
-	if secret.TargetEnvName != "" {
-		targetEnv = secret.TargetEnvName
-	}
-	return fmt.Sprintf("--secret=%s/%s,target=%s", secret.Name, secret.Key, targetEnv)
-}
-
 // generateOIDCArgs generates OIDC command-line arguments based on the OIDC configuration
 func (r *MCPServerReconciler) generateOIDCArgs(ctx context.Context, m *mcpv1alpha1.MCPServer) []string {
 	var args []string
@@ -1116,6 +1119,100 @@ func (*MCPServerReconciler) generateInlineOIDCArgs(m *mcpv1alpha1.MCPServer) []s
 // int32Ptr returns a pointer to an int32
 func int32Ptr(i int32) *int32 {
 	return &i
+}
+
+// generateSecretsPodTemplatePatch generates a podTemplateSpec patch for secrets
+func generateSecretsPodTemplatePatch(secrets []mcpv1alpha1.SecretRef) *corev1.PodTemplateSpec {
+	if len(secrets) == 0 {
+		return nil
+	}
+
+	envVars := make([]corev1.EnvVar, 0, len(secrets))
+	for _, secret := range secrets {
+		targetEnv := secret.Key
+		if secret.TargetEnvName != "" {
+			targetEnv = secret.TargetEnvName
+		}
+
+		envVars = append(envVars, corev1.EnvVar{
+			Name: targetEnv,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: secret.Name,
+					},
+					Key: secret.Key,
+				},
+			},
+		})
+	}
+
+	return &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "mcp",
+					Env:  envVars,
+				},
+			},
+		},
+	}
+}
+
+// mergePodTemplateSpecs merges a secrets patch with a user-provided podTemplateSpec
+func mergePodTemplateSpecs(secretsPatch, userPatch *corev1.PodTemplateSpec) *corev1.PodTemplateSpec {
+	// If no secrets, return user patch as-is
+	if secretsPatch == nil {
+		return userPatch
+	}
+
+	// If no user patch, return secrets patch
+	if userPatch == nil {
+		return secretsPatch
+	}
+
+	// Start with user patch as base (preserves all user customizations)
+	result := userPatch.DeepCopy()
+
+	// Find or create mcp container in result
+	mcpIndex := -1
+	for i, container := range result.Spec.Containers {
+		if container.Name == "mcp" {
+			mcpIndex = i
+			break
+		}
+	}
+
+	// Get secret env vars from secrets patch
+	var secretEnvVars []corev1.EnvVar
+	for _, container := range secretsPatch.Spec.Containers {
+		if container.Name == "mcp" {
+			secretEnvVars = container.Env
+			break
+		}
+	}
+
+	if mcpIndex >= 0 {
+		// Merge env vars into existing mcp container
+		result.Spec.Containers[mcpIndex].Env = append(
+			result.Spec.Containers[mcpIndex].Env,
+			secretEnvVars...,
+		)
+	} else {
+		// Add new mcp container with just env vars
+		result.Spec.Containers = append(result.Spec.Containers, corev1.Container{
+			Name: "mcp",
+			Env:  secretEnvVars,
+		})
+	}
+
+	return result
+}
+
+// generateAndMergePodTemplateSpecs generates secrets patch and merges with user patch
+func generateAndMergePodTemplateSpecs(secrets []mcpv1alpha1.SecretRef, userPatch *corev1.PodTemplateSpec) *corev1.PodTemplateSpec {
+	secretsPatch := generateSecretsPodTemplatePatch(secrets)
+	return mergePodTemplateSpecs(secretsPatch, userPatch)
 }
 
 // SetupWithManager sets up the controller with the Manager.

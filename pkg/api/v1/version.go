@@ -29,11 +29,11 @@ type versionResponse struct {
 //		@Success		200	{object}	versionResponse
 //		@Router			/api/v1beta/version [get]
 func getVersion(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	versionInfo := versions.GetVersionInfo()
 	err := json.NewEncoder(w).Encode(versionResponse{Version: versionInfo.Version})
 	if err != nil {
 		http.Error(w, "Failed to marshal version info", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
 }

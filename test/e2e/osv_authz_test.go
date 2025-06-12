@@ -64,7 +64,6 @@ var _ = Describe("OSV MCP Server with Authorization", Serial, func() {
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "sse",
-					"--debug",
 					"--authz-config", authzConfigPath,
 					"--otel-enable-prometheus-metrics-path",
 					"osv").ExpectSuccess()

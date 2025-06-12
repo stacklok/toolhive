@@ -267,17 +267,20 @@ func writeIngressProxyConfig(sb *strings.Builder, ingressPorts map[string]struct
 		sb.WriteString(
 			"\n# Reverse proxy setup for port " + portNum + "\n" +
 				"http_port " + portNum + " accel defaultsite=" + serverHostname + "\n" +
-				"cache_peer " + serverHostname + " parent " + portNum + " 0 no-query originserver name=origin_" + portNum + " connect-timeout=5 connect-fail-limit=5\n" +
-				"dead_peer_timeout 10 seconds\n" +
-				"acl site_" + portNum + " dstdomain " + serverHostname + " 127.0.0.1\n" +
-				"http_access allow site_" + portNum + "\n")
+				"cache_peer " + serverHostname + " parent " + portNum + " 0 no-query originserver name=origin_" +
+				portNum + " connect-timeout=5 connect-fail-limit=5\n" +
+				"acl site_" + portNum + " dstdomain " + serverHostname + "\n" +
+				"acl local_dst dst 127.0.0.1\n" +
+				"acl local_domain dstdomain localhost\n" +
+				"http_access allow site_" + portNum + "\n" +
+				"http_access allow local_dst\n" +
+				"http_access allow local_domain\n")
 	}
 }
 
 func createTempSquidConf(
 	networkPermissions *permissions.NetworkPermissions,
 	serverHostname string,
-	ingressPorts map[string]struct{},
 ) (string, error) {
 	var sb strings.Builder
 
@@ -302,8 +305,47 @@ func createTempSquidConf(
 		writeHttpAccessRules(&sb, networkPermissions.Outbound)
 	}
 
-	writeIngressProxyConfig(&sb, ingressPorts, serverHostname)
+	sb.WriteString("http_access deny all\n")
 
+	tmpFile, err := os.CreateTemp("", "squid-*.conf")
+	if err != nil {
+		return "", err
+	}
+	defer tmpFile.Close()
+
+	if _, err := tmpFile.WriteString(sb.String()); err != nil {
+		return "", fmt.Errorf("failed to write to temporary file: %v", err)
+	}
+
+	// Set file permissions to be readable by all users (including squid user in container)
+	if err := tmpFile.Chmod(0644); err != nil {
+		return "", fmt.Errorf("failed to set file permissions: %v", err)
+	}
+
+	return tmpFile.Name(), nil
+}
+
+func createTempIngressSquidConf(
+	serverHostname string,
+	ingressPorts map[string]struct{},
+) (string, error) {
+	var sb strings.Builder
+
+	sb.WriteString(
+		"http_port 3128\n" +
+			"visible_hostname " + serverHostname + "-ingress\n" +
+			"access_log stdio:/var/log/squid/access.log squid\n" +
+			"pid_filename /tmp/squid.pid\n" +
+			"# Disable memory and disk caching\n" +
+			"cache deny all\n" +
+			"cache_mem 0 MB\n" +
+			"maximum_object_size 0 KB\n" +
+			"maximum_object_size_in_memory 0 KB\n" +
+			"# Don't use cache directories\n" +
+			"cache_dir null /tmp\n" +
+			"cache_store_log none\n\n")
+
+	writeIngressProxyConfig(&sb, ingressPorts, serverHostname)
 	sb.WriteString("http_access deny all\n")
 
 	tmpFile, err := os.CreateTemp("", "squid-*.conf")
@@ -372,17 +414,75 @@ func (c *Client) createContainer(ctx context.Context, containerName string, conf
 	return resp.ID, nil
 }
 
-func (c *Client) createEgressContainers(ctx context.Context, containerName string, egressContainerName string,
-	dnsContainerName string, attachStdio bool, perm *permissions.NetworkPermissions,
-	portBindings map[string][]runtime.PortBinding, exposedPorts map[string]struct{}) (string, string, string, error) {
-	// first spin up the egress container
+func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string,
+	attachStdio bool, networkName string, endpointsConfig map[string]*network.EndpointSettings) (string, string, error) {
+	logger.Infof("Setting up DNS container for %s with image %s...", dnsContainerName, DnsImage)
+	dnsLabels := map[string]string{}
+	lb.AddStandardLabels(dnsLabels, dnsContainerName, dnsContainerName, "stdio", 80)
+	dnsLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
+
+	// pull the dns image if it is not already pulled
+	err := c.PullImage(ctx, DnsImage)
+	if err != nil {
+		// Check if the DNS image exists locally before failing
+		_, inspectErr := c.client.ImageInspect(ctx, DnsImage)
+		if inspectErr == nil {
+			logger.Infof("DNS image %s exists locally, continuing despite pull failure", DnsImage)
+		} else {
+			return "", "", fmt.Errorf("failed to pull DNS image: %v", err)
+		}
+	}
+
+	configDns := &container.Config{
+		Image:        DnsImage,
+		Cmd:          nil,
+		Env:          nil,
+		Labels:       dnsLabels,
+		AttachStdin:  attachStdio,
+		AttachStdout: attachStdio,
+		AttachStderr: attachStdio,
+		OpenStdin:    attachStdio,
+		Tty:          false,
+	}
+
+	dnsHostConfig := &container.HostConfig{
+		Mounts:      nil,
+		NetworkMode: container.NetworkMode("bridge"),
+		CapAdd:      nil,
+		CapDrop:     nil,
+		SecurityOpt: nil,
+		RestartPolicy: container.RestartPolicy{
+			Name: "unless-stopped",
+		},
+	}
+
+	// now create the dns container
+	dnsContainerId, err := c.createContainer(ctx, dnsContainerName, configDns, dnsHostConfig, endpointsConfig)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create dns container: %v", err)
+	}
+
+	dnsContainerResponse, err := c.client.ContainerInspect(ctx, dnsContainerId)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to inspect DNS container: %v", err)
+	}
+
+	dnsNetworkSettings, ok := dnsContainerResponse.NetworkSettings.Networks[networkName]
+	if !ok {
+		return "", "", fmt.Errorf("network %s not found in container's network settings", networkName)
+	}
+	dnsContainerIP := dnsNetworkSettings.IPAddress
+
+	return dnsContainerId, dnsContainerIP, nil
+}
+
+func (c *Client) createEgressContainer(ctx context.Context, containerName string, egressContainerName string,
+	attachStdio bool, perm *permissions.NetworkPermissions, exposedPorts map[string]struct{},
+	endpointsConfig map[string]*network.EndpointSettings) (string, error) {
 	logger.Infof("Setting up egress container for %s with image %s...", egressContainerName, getEgressImage())
 	egressLabels := map[string]string{}
 	lb.AddStandardLabels(egressLabels, egressContainerName, egressContainerName, "stdio", 80)
 	egressLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
-	dnsLabels := map[string]string{}
-	lb.AddStandardLabels(dnsLabels, dnsContainerName, dnsContainerName, "stdio", 80)
-	dnsLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
 
 	// pull the egress image if it is not already pulled
 	egressImage := getEgressImage()
@@ -393,19 +493,7 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 		if inspectErr == nil {
 			logger.Infof("Egress image %s exists locally, continuing despite pull failure", egressImage)
 		} else {
-			return "", "", "", fmt.Errorf("failed to pull egress image: %v", err)
-		}
-	}
-
-	// pull the dns image if it is not already pulled
-	err = c.PullImage(ctx, DnsImage)
-	if err != nil {
-		// Check if the DNS image exists locally before failing
-		_, inspectErr := c.client.ImageInspect(ctx, DnsImage)
-		if inspectErr == nil {
-			logger.Infof("DNS image %s exists locally, continuing despite pull failure", DnsImage)
-		} else {
-			return "", "", "", fmt.Errorf("failed to pull DNS image: %v", err)
+			return "", fmt.Errorf("failed to pull egress image: %v", err)
 		}
 	}
 
@@ -422,22 +510,10 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 		Tty:          false,
 	}
 
-	configDns := &container.Config{
-		Image:        DnsImage,
-		Cmd:          nil,
-		Env:          nil,
-		Labels:       dnsLabels,
-		AttachStdin:  attachStdio,
-		AttachStdout: attachStdio,
-		AttachStderr: attachStdio,
-		OpenStdin:    attachStdio,
-		Tty:          false,
-	}
-
 	// generate the squid configuration and mount it
-	squidConfPath, err := createTempSquidConf(perm, containerName, exposedPorts)
+	squidConfPath, err := createTempSquidConf(perm, containerName)
 	if err != nil {
-		return "", "", "", fmt.Errorf("failed to create temporary squid.conf: %v", err)
+		return "", fmt.Errorf("failed to create temporary squid.conf: %v", err)
 	}
 
 	mounts := []runtime.Mount{}
@@ -458,10 +534,73 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 			Name: "unless-stopped",
 		},
 	}
-	dnsHostConfig := &container.HostConfig{
+
+	// Setup port bindings
+	if err := setupExposedPorts(config, exposedPorts); err != nil {
+		return "", NewContainerError(err, "", err.Error())
+	}
+
+	// Create egress container itself
+	egressContainerId, err := c.createContainer(ctx, egressContainerName, config, egressHostConfig, endpointsConfig)
+	if err != nil {
+		return "", fmt.Errorf("failed to create egress container: %v", err)
+	}
+
+	return egressContainerId, nil
+}
+
+func (c *Client) createIngressContainer(ctx context.Context, containerName string, ingressContainerName string,
+	attachStdio bool, portBindings map[string][]runtime.PortBinding,
+	exposedPorts map[string]struct{}, endpointsConfig map[string]*network.EndpointSettings) (string, error) {
+	logger.Infof("Setting up ingress container for %s with image %s...", ingressContainerName, getEgressImage())
+	ingressLabels := map[string]string{}
+	lb.AddStandardLabels(ingressLabels, ingressContainerName, ingressContainerName, "stdio", 80)
+	ingressLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
+
+	// pull the ingress image if it is not already pulled (same as egress)
+	ingressImage := getEgressImage()
+	err := c.PullImage(ctx, ingressImage)
+	if err != nil {
+		// Check if the ingresss image exists locally before failing
+		_, inspectErr := c.client.ImageInspect(ctx, ingressImage)
+		if inspectErr == nil {
+			logger.Infof("Ingress image %s exists locally, continuing despite pull failure", ingressImage)
+		} else {
+			return "", fmt.Errorf("failed to pull ingress image: %v", err)
+		}
+	}
+
+	// Create container options
+	config := &container.Config{
+		Image:        getEgressImage(),
+		Cmd:          nil,
+		Env:          nil,
+		Labels:       ingressLabels,
+		AttachStdin:  attachStdio,
+		AttachStdout: attachStdio,
+		AttachStderr: attachStdio,
+		OpenStdin:    attachStdio,
+		Tty:          false,
+	}
+
+	// generate the squid configuration and mount it
+	squidConfPath, err := createTempIngressSquidConf(containerName, exposedPorts)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temporary squid.conf: %v", err)
+	}
+
+	mounts := []runtime.Mount{}
+	mounts = append(mounts, runtime.Mount{
+		Source:   squidConfPath,
+		Target:   "/etc/squid/squid.conf",
+		ReadOnly: true,
+	})
+
+	// Create ingress host configuration
+	ingressHostConfig := &container.HostConfig{
 		Mounts:      convertMounts(mounts),
 		NetworkMode: container.NetworkMode("bridge"),
-		CapAdd:      nil,
+		CapAdd:      []string{"CAP_SETUID", "CAP_SETGID"},
 		CapDrop:     nil,
 		SecurityOpt: nil,
 		RestartPolicy: container.RestartPolicy{
@@ -469,44 +608,22 @@ func (c *Client) createEgressContainers(ctx context.Context, containerName strin
 		},
 	}
 
-	// create networks
-	networkName := fmt.Sprintf("toolhive-%s-internal", containerName)
-	endpointsConfig := map[string]*network.EndpointSettings{
-		networkName:         {},
-		"toolhive-external": {},
-	}
-
-	// now create the dns container
-	dnsContainerId, err := c.createContainer(ctx, dnsContainerName, configDns, dnsHostConfig, endpointsConfig)
-	if err != nil {
-		return "", "", "", fmt.Errorf("failed to create dns container: %v", err)
-	}
-
-	dnsContainerResponse, err := c.client.ContainerInspect(ctx, dnsContainerId)
-	if err != nil {
-		return "", "", "", fmt.Errorf("failed to inspect DNS container: %v", err)
-	}
-
-	dnsNetworkSettings, ok := dnsContainerResponse.NetworkSettings.Networks[networkName]
-	if !ok {
-		return "", "", "", fmt.Errorf("network %s not found in container's network settings", networkName)
-	}
-	dnsContainerIP := dnsNetworkSettings.IPAddress
 	// Setup port bindings
-	if err := setupExposedPorts(config, exposedPorts); err != nil {
-		return "", "", "", NewContainerError(err, "", err.Error())
+	if err := setupPortBindings(ingressHostConfig, portBindings); err != nil {
+		return "", NewContainerError(err, "", err.Error())
 	}
-	if err := setupPortBindings(egressHostConfig, portBindings); err != nil {
-		return "", "", "", NewContainerError(err, "", err.Error())
+
+	if err := setupExposedPorts(config, exposedPorts); err != nil {
+		return "", NewContainerError(err, "", err.Error())
 	}
 
 	// Create egress container itself
-	egressContainerId, err := c.createContainer(ctx, egressContainerName, config, egressHostConfig, endpointsConfig)
+	egressContainerId, err := c.createContainer(ctx, ingressContainerName, config, ingressHostConfig, endpointsConfig)
 	if err != nil {
-		return "", "", "", fmt.Errorf("failed to create egress container: %v", err)
+		return "", fmt.Errorf("failed to create egress container: %v", err)
 	}
 
-	return egressContainerId, dnsContainerId, dnsContainerIP, nil
+	return egressContainerId, nil
 }
 
 func (c *Client) createContainerNetworks(ctx context.Context, internalNetworkName string, externalNetworkName string) error {
@@ -525,6 +642,82 @@ func (c *Client) createContainerNetworks(ctx context.Context, internalNetworkNam
 		logger.Warnf("failed to create external network %q: %v", externalNetworkName, err)
 	}
 	return nil
+}
+
+func (c *Client) createMcpContainer(ctx context.Context, name string, networkName string, image string, command []string,
+	envVars map[string]string, labels map[string]string, attachStdio bool, permissionConfig *runtime.PermissionConfig,
+	additionalDNS string, exposedPorts map[string]struct{}, portBindings map[string][]runtime.PortBinding,
+	isMcpWorkload bool) (string, error) {
+	// Create container configuration
+	config := &container.Config{
+		Image:        image,
+		Cmd:          command,
+		Env:          convertEnvVars(envVars),
+		Labels:       labels,
+		AttachStdin:  attachStdio,
+		AttachStdout: attachStdio,
+		AttachStderr: attachStdio,
+		OpenStdin:    attachStdio,
+		Tty:          false,
+	}
+
+	// Create host configuration
+	hostConfig := &container.HostConfig{
+		Mounts:      convertMounts(permissionConfig.Mounts),
+		NetworkMode: container.NetworkMode(permissionConfig.NetworkMode),
+		CapAdd:      permissionConfig.CapAdd,
+		CapDrop:     permissionConfig.CapDrop,
+		SecurityOpt: permissionConfig.SecurityOpt,
+		RestartPolicy: container.RestartPolicy{
+			Name: "unless-stopped",
+		},
+	}
+	if additionalDNS != "" {
+		hostConfig.DNS = []string{additionalDNS}
+	}
+
+	// Configure ports if options are provided
+	// Setup exposed ports
+	if err := setupExposedPorts(config, exposedPorts); err != nil {
+		return "", NewContainerError(err, "", err.Error())
+	}
+
+	// Setup port bindings
+	if err := setupPortBindings(hostConfig, portBindings); err != nil {
+		return "", NewContainerError(err, "", err.Error())
+	}
+
+	// create mcp container
+	internalEndpointsConfig := map[string]*network.EndpointSettings{
+		networkName: {},
+	}
+
+	if !isMcpWorkload {
+		// for other workloads such as inspector, add to external network
+		internalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{}
+	}
+	containerId, err := c.createContainer(ctx, name, config, hostConfig, internalEndpointsConfig)
+	if err != nil {
+		return "", fmt.Errorf("failed to create container: %v", err)
+	}
+
+	return containerId, nil
+
+}
+
+func addExtraEnvVars(envVars map[string]string, egressContainerName string) map[string]string {
+	// add extra env vars
+	egressHost := fmt.Sprintf("http://%s:3128", egressContainerName)
+	if envVars == nil {
+		envVars = make(map[string]string)
+	}
+	envVars["HTTP_PROXY"] = egressHost
+	envVars["HTTPS_PROXY"] = egressHost
+	envVars["http_proxy"] = egressHost
+	envVars["https_proxy"] = egressHost
+	envVars["NO_PROXY"] = "localhost,127.0.0.1,::1"
+	envVars["no_proxy"] = "localhost,127.0.0.1,::1"
+	return envVars
 }
 
 // DeployWorkload creates and starts a workload.
@@ -559,84 +752,49 @@ func (c *Client) DeployWorkload(
 		return "", fmt.Errorf("failed to create container networks: %v", err)
 	}
 	var additionalDNS string
+	externalEndpointsConfig := map[string]*network.EndpointSettings{
+		networkName:         {},
+		"toolhive-external": {},
+	}
 	if isMcpWorkload {
-		// create egress container
-		egressContainerName := fmt.Sprintf("%s-egress", name)
+		// create dns container
 		dnsContainerName := fmt.Sprintf("%s-dns", name)
-		_, _, dnsContainerIP, err := c.createEgressContainers(ctx, name, egressContainerName, dnsContainerName,
-			attachStdio, permissionProfile.Network, options.PortBindings, options.ExposedPorts)
-		if err != nil {
-			return "", fmt.Errorf("failed to create egress container: %v", err)
-		}
+		_, dnsContainerIP, err := c.createDnsContainer(ctx, dnsContainerName, attachStdio, networkName, externalEndpointsConfig)
 		if dnsContainerIP != "" {
 			additionalDNS = dnsContainerIP
 		}
-
-		// add extra env vars
-		egressHost := fmt.Sprintf("http://%s:3128", egressContainerName)
-		if envVars == nil {
-			envVars = make(map[string]string)
-		}
-		envVars["HTTP_PROXY"] = egressHost
-		envVars["HTTPS_PROXY"] = egressHost
-		envVars["http_proxy"] = egressHost
-		envVars["https_proxy"] = egressHost
-		envVars["NO_PROXY"] = "localhost,127.0.0.1,::1"
-		envVars["no_proxy"] = "localhost,127.0.0.1,::1"
-	}
-
-	// Create container configuration
-	config := &container.Config{
-		Image:        image,
-		Cmd:          command,
-		Env:          convertEnvVars(envVars),
-		Labels:       labels,
-		AttachStdin:  attachStdio,
-		AttachStdout: attachStdio,
-		AttachStderr: attachStdio,
-		OpenStdin:    attachStdio,
-		Tty:          false,
-	}
-
-	// Create host configuration
-	hostConfig := &container.HostConfig{
-		Mounts:      convertMounts(permissionConfig.Mounts),
-		NetworkMode: container.NetworkMode(permissionConfig.NetworkMode),
-		CapAdd:      permissionConfig.CapAdd,
-		CapDrop:     permissionConfig.CapDrop,
-		SecurityOpt: permissionConfig.SecurityOpt,
-		RestartPolicy: container.RestartPolicy{
-			Name: "unless-stopped",
-		},
-	}
-	if additionalDNS != "" {
-		hostConfig.DNS = []string{additionalDNS}
-	}
-
-	// Configure ports if options are provided
-	if options != nil {
-		// Setup exposed ports
-		if err := setupExposedPorts(config, options.ExposedPorts); err != nil {
-			return "", NewContainerError(err, "", err.Error())
+		if err != nil {
+			return "", fmt.Errorf("failed to create dns container: %v", err)
 		}
 
-		// Setup port bindings
-		if err := setupPortBindings(hostConfig, options.PortBindings); err != nil {
-			return "", NewContainerError(err, "", err.Error())
+		// create egress container
+		egressContainerName := fmt.Sprintf("%s-egress", name)
+		egressExposedPorts := map[string]struct{}{
+			"3128/tcp": {},
 		}
+		_, err = c.createEgressContainer(ctx, name, egressContainerName, attachStdio, permissionProfile.Network,
+			egressExposedPorts, externalEndpointsConfig)
+		if err != nil {
+			return "", fmt.Errorf("failed to create egress container: %v", err)
+		}
+
+		envVars = addExtraEnvVars(envVars, egressContainerName)
 	}
 
-	// create mcp container
-	endpointsConfig := map[string]*network.EndpointSettings{
-		networkName: {},
-	}
-	if !isMcpWorkload {
-		// for other workloads such as inspector, add to external network
-		endpointsConfig["toolhive-external"] = &network.EndpointSettings{}
-	}
-	containerId, err := c.createContainer(ctx, name, config, hostConfig, endpointsConfig)
+	containerId, err := c.createMcpContainer(ctx, name, networkName, image, command, envVars, labels, attachStdio,
+		permissionConfig, additionalDNS, options.ExposedPorts, options.PortBindings, isMcpWorkload)
 	if err != nil {
-		return "", fmt.Errorf("failed to create container: %v", err)
+		return "", fmt.Errorf("failed to create mcp container: %v", err)
+	}
+
+	// now create ingress container
+	if isMcpWorkload {
+		ingressContainerName := fmt.Sprintf("%s-ingress", name)
+		_, err = c.createIngressContainer(ctx, name, ingressContainerName, attachStdio, options.PortBindings,
+			options.ExposedPorts, externalEndpointsConfig)
+		if err != nil {
+			return "", fmt.Errorf("failed to create ingress container: %v", err)
+		}
 	}
 
 	return containerId, nil
@@ -733,6 +891,7 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 		// remove / from container name
 		containerName := strings.TrimPrefix(containerResponse.Name, "/")
 		egressContainerName := fmt.Sprintf("%s-egress", containerName)
+		ingressContainerName := fmt.Sprintf("%s-ingress", containerName)
 		dnsContainerName := fmt.Sprintf("%s-dns", containerName)
 
 		// find the egress container by name
@@ -743,6 +902,16 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 			err = c.client.ContainerStop(ctx, egressContainerId, container.StopOptions{Timeout: &timeoutSeconds})
 			if err != nil {
 				logger.Warnf("Failed to stop egress container %s: %v", egressContainerName, err)
+			}
+		}
+
+		ingressContainerId, err := c.findExistingContainer(ctx, ingressContainerName)
+		if err != nil {
+			logger.Warnf("Failed to find ingress container %s: %v", ingressContainerName, err)
+		} else {
+			err = c.client.ContainerStop(ctx, ingressContainerId, container.StopOptions{Timeout: &timeoutSeconds})
+			if err != nil {
+				logger.Warnf("Failed to stop ingress container %s: %v", ingressContainerName, err)
 			}
 		}
 
@@ -811,42 +980,29 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 		return NewContainerError(err, workloadID, fmt.Sprintf("failed to remove workload: %v", err))
 	}
 
-	// remove egress and dns containers
-	egressContainerName := fmt.Sprintf("%s-egress", containerName)
-	dnsContainerName := fmt.Sprintf("%s-dns", containerName)
+	// remove egress, ingress, and dns containers
+	suffixes := []string{"egress", "ingress", "dns"}
 
-	// find the egress container by name
-	egressContainerId, err := c.findExistingContainer(ctx, egressContainerName)
-	if err != nil {
-		logger.Warnf("Failed to find egress container %s: %v", egressContainerName, err)
-	} else if egressContainerId != "" {
-		err = c.client.ContainerRemove(ctx, egressContainerId, container.RemoveOptions{
+	for _, suffix := range suffixes {
+		containerName := fmt.Sprintf("%s-%s", containerName, suffix)
+		containerId, err := c.findExistingContainer(ctx, containerName)
+		if err != nil {
+			logger.Warnf("Failed to find %s container %s: %v", suffix, containerName, err)
+			continue
+		}
+		if containerId == "" {
+			continue
+		}
+
+		err = c.client.ContainerRemove(ctx, containerId, container.RemoveOptions{
 			Force: true,
 		})
 		if err != nil {
-			// If the workload doesn't exist, that's fine - it's already removed
 			if errdefs.IsNotFound(err) {
-				return nil
+				continue
 			}
-			return NewContainerError(err, egressContainerId, fmt.Sprintf("failed to remove egress container: %v", err))
+			return NewContainerError(err, containerId, fmt.Sprintf("failed to remove %s container: %v", suffix, err))
 		}
-	}
-
-	dnsContainerId, err := c.findExistingContainer(ctx, dnsContainerName)
-	if err != nil {
-		logger.Warnf("Failed to find dns container %s: %v", dnsContainerName, err)
-	} else if dnsContainerId != "" {
-		err = c.client.ContainerRemove(ctx, dnsContainerId, container.RemoveOptions{
-			Force: true,
-		})
-		if err != nil {
-			// If the workload doesn't exist, that's fine - it's already removed
-			if errdefs.IsNotFound(err) {
-				return nil
-			}
-			return NewContainerError(err, dnsContainerId, fmt.Sprintf("failed to remove dns container: %v", err))
-		}
-
 	}
 
 	err = c.deleteNetworks(ctx, containerName)

@@ -101,7 +101,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 					if resp != nil {
 						resp.Body.Close()
 					}
-					time.Sleep(2 * time.Second)
+					time.Sleep(10 * time.Second)
 				}
 
 				Expect(httpErr).ToNot(HaveOccurred(), "Should be able to connect to SSE endpoint")

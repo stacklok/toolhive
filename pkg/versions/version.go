@@ -23,6 +23,9 @@ var (
 	// BuildDate is the date when the binary was built
 	// nolint:goconst // This is a placeholder for the build date
 	BuildDate = unknownStr
+	// BuildType indicates if this is a release build.
+	// Set to "release" only in official release builds, everything else is considered "development".
+	BuildType = "development"
 )
 
 // VersionInfo represents the version information

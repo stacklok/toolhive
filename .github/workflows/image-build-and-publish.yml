@@ -53,6 +53,8 @@ jobs:
         uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
 
       - name: Build and Push Image to GHCR
+        env:
+          GOFLAGS: "-ldflags=-s -w -X github.com/stacklok/toolhive/pkg/versions.Version=${{ steps.version-string.outputs.tag }} -X github.com/stacklok/toolhive/pkg/versions.Commit=${{ github.sha }} -X github.com/stacklok/toolhive/pkg/versions.BuildDate=${{ github.event.head_commit.timestamp }} -X github.com/stacklok/toolhive/pkg/versions.BuildType=release"
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           TAGS="-t $TAG"
@@ -209,6 +211,8 @@ jobs:
         uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
 
       - name: Build and Push Image to GHCR
+        env:
+          GOFLAGS: "-ldflags=-s -w -X github.com/stacklok/toolhive/pkg/versions.Version=${{ steps.version-string.outputs.tag }} -X github.com/stacklok/toolhive/pkg/versions.Commit=${{ github.sha }} -X github.com/stacklok/toolhive/pkg/versions.BuildDate=${{ github.event.head_commit.timestamp }} -X github.com/stacklok/toolhive/pkg/versions.BuildType=release"
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           TAGS="-t $TAG"

@@ -385,6 +385,7 @@ func (*OIDCMockServer) CompleteAuthRequest(authReq *AuthRequest) error {
 	return nil
 }
 
+// WithAccessTokenLifespan sets the lifespan of access tokens for the OIDC mock server.
 func WithAccessTokenLifespan(d time.Duration) func(*fosite.Config) {
 	return func(c *fosite.Config) {
 		c.AccessTokenLifespan = d

@@ -463,6 +463,7 @@ func (f *Flow) processToken(token *oauth2.Token) *TokenResult {
 	return result
 }
 
+// TokenSource returns the OAuth2 token source for refreshing tokens
 func (f *Flow) TokenSource() oauth2.TokenSource {
 	return f.tokenSource
 }

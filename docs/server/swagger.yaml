@@ -349,6 +349,19 @@ components:
           description: Port the workload is listening on
           type: integer
       type: object
+    v1.deleteClientRequest:
+      properties:
+        name:
+          description: Name is the type of the client to unregister.
+          type: string
+          x-enum-varnames:
+          - RooCode
+          - Cline
+          - Cursor
+          - VSCodeInsider
+          - VSCode
+          - ClaudeCode
+      type: object
     v1.getRegistryResponse:
       description: Response containing registry details
       properties:
@@ -507,6 +520,27 @@ paths:
       tags:
       - system
   /api/v1beta/clients:
+    delete:
+      description: Unregister a client from ToolHive
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.deleteClientRequest'
+        description: Client to unregister
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid request
+      summary: Unregister a client
+      tags:
+      - clients
     get:
       description: List all registered clients in ToolHive
       responses:

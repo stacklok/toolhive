@@ -76,7 +76,7 @@ func ValidateProvider(ctx context.Context, providerType ProviderType) *SetupResu
 	case OnePasswordType:
 		return validateOnePasswordProvider(ctx, provider, result)
 	case NoneType:
-		return validateNoneProvider(ctx, provider, result)
+		return validateNoneProvider(result)
 	default:
 		result.Error = fmt.Errorf("unknown provider type: %s", providerType)
 		result.Message = "Unknown provider type"
@@ -136,7 +136,7 @@ func validateOnePasswordProvider(ctx context.Context, provider Provider, result 
 }
 
 // validateNoneProvider validates the none provider (always succeeds)
-func validateNoneProvider(ctx context.Context, provider Provider, result *SetupResult) *SetupResult {
+func validateNoneProvider(result *SetupResult) *SetupResult {
 	// None provider doesn't need validation, it always works
 	result.Success = true
 	result.Message = "None provider validation successful"

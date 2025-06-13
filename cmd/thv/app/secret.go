@@ -293,7 +293,7 @@ func getSecretsManager() (secrets.Provider, error) {
 	return manager, nil
 }
 
-func runSecretsSetup(cmd *cobra.Command, _ []string) error {
+func runSecretsSetup(_ *cobra.Command, _ []string) error {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Printf(`

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 
 	"github.com/adrg/xdg"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
@@ -31,8 +32,12 @@ type Manager interface {
 	// DeleteWorkload deletes a container and its associated proxy process.
 	// The container will be stopped if it is still running.
 	DeleteWorkload(ctx context.Context, name string) error
-	// StopWorkload stops a container and its associated proxy process.
-	StopWorkload(ctx context.Context, name string) error
+	// StopWorkload stops the named workload.
+	// It is implemented as an asynchronous operation which returns a errgroup.Group
+	StopWorkload(ctx context.Context, name string) (*errgroup.Group, error)
+	// StopAllWorkloads stops all running workloads.
+	// It is implemented as an asynchronous operation which returns an errgroup.Group
+	StopAllWorkloads(ctx context.Context) (*errgroup.Group, error)
 	// RunWorkload runs a container in the foreground.
 	RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error
 	// RunWorkloadDetached runs a container in the background.
@@ -158,44 +163,45 @@ func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) error 
 	return nil
 }
 
-func (d *defaultManager) StopWorkload(ctx context.Context, name string) error {
-	// Find the container ID
-	containerID, err := d.findContainerID(ctx, name)
+func (d *defaultManager) StopWorkload(ctx context.Context, name string) (*errgroup.Group, error) {
+	// Find the container
+	container, err := d.findContainerByName(ctx, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Check if the container is running
-	running, err := d.runtime.IsWorkloadRunning(ctx, containerID)
-	if err != nil {
-		return fmt.Errorf("failed to check if container is running: %v", err)
-	}
+	containerID := container.ID
+	containerBaseName := labels.GetContainerBaseName(container.Labels)
+	running := isContainerRunning(container)
 
 	if !running {
-		return fmt.Errorf("%w: %s", ErrContainerNotRunning, name)
+		return nil, fmt.Errorf("%w: %s", ErrContainerNotRunning, name)
 	}
 
-	// Get the base container name
-	containerBaseName, _ := d.getContainerBaseName(ctx, containerID)
+	workload := stopWorkloadRequest{Name: containerBaseName, ID: containerID}
+	// Do the actual stop operation in the background, and return an error group.
+	return d.stopWorkloads(ctx, []stopWorkloadRequest{workload}), nil
+}
 
-	// Stop the proxy process
-	proxy.StopProcess(containerBaseName)
-
-	// Stop the container
-	err = d.stopContainer(ctx, containerID, name)
+func (d *defaultManager) StopAllWorkloads(ctx context.Context) (*errgroup.Group, error) {
+	// Get list of all running workloads.
+	containers, err := d.runtime.ListWorkloads(ctx)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("failed to list containers: %v", err)
 	}
 
-	if shouldRemoveClientConfig() {
-		if err := removeClientConfigurations(name); err != nil {
-			logger.Warnf("Warning: Failed to remove client configurations: %v", err)
-		} else {
-			logger.Infof("Client configurations for %s removed", name)
+	// Duplicates the logic of GetWorkloads, but is simple enough that it's not
+	// worth duplicating.
+	stopRequests := make([]stopWorkloadRequest, 0, len(containers))
+	for _, c := range containers {
+		// If the caller did not set `listAll` to true, only include running containers.
+		if labels.IsToolHiveContainer(c.Labels) && isContainerRunning(&c) {
+			req := stopWorkloadRequest{Name: labels.GetContainerBaseName(c.Labels), ID: c.ID}
+			stopRequests = append(stopRequests, req)
 		}
 	}
 
-	return nil
+	return d.stopWorkloads(ctx, stopRequests), nil
 }
 
 func (*defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
@@ -449,14 +455,6 @@ func (d *defaultManager) RestartWorkload(ctx context.Context, name string) error
 	return d.RunWorkloadDetached(mcpRunner.Config)
 }
 
-func (d *defaultManager) findContainerID(ctx context.Context, name string) (string, error) {
-	c, err := d.findContainerByName(ctx, name)
-	if err != nil {
-		return "", err
-	}
-	return c.ID, nil
-}
-
 func (d *defaultManager) findContainerByName(ctx context.Context, name string) (*rt.ContainerInfo, error) {
 	// List containers to find the one with the given name
 	containers, err := d.runtime.ListWorkloads(ctx)
@@ -484,22 +482,6 @@ func (d *defaultManager) findContainerByName(ctx context.Context, name string) (
 	}
 
 	return nil, fmt.Errorf("%w: %s", ErrContainerNotFound, name)
-}
-
-// getContainerBaseName gets the base container name from the container labels
-func (d *defaultManager) getContainerBaseName(ctx context.Context, containerID string) (string, error) {
-	containers, err := d.runtime.ListWorkloads(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	for _, c := range containers {
-		if c.ID == containerID {
-			return labels.GetContainerBaseName(c.Labels), nil
-		}
-	}
-
-	return "", fmt.Errorf("container %s not found", containerID)
 }
 
 // stopContainer stops the container
@@ -593,4 +575,42 @@ func (*defaultManager) cleanupTempPermissionProfile(ctx context.Context, baseNam
 	}
 
 	return nil
+}
+
+// Internal type used when stopping workloads.
+type stopWorkloadRequest struct {
+	Name string
+	ID   string
+}
+
+// stopWorkloads stops the named workloads concurrently.
+// It assumes that the workloads exist in the running state.
+func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []stopWorkloadRequest) *errgroup.Group {
+	group := errgroup.Group{}
+	for _, workload := range workloads {
+		group.Go(func() error {
+			logger.Infof("Stopping workload %s...", workload.Name)
+			// Stop the proxy process
+			proxy.StopProcess(workload.Name)
+
+			// Stop the container
+			err := d.stopContainer(ctx, workload.ID, workload.Name)
+			if err != nil {
+				return err
+			}
+
+			if shouldRemoveClientConfig() {
+				if err := removeClientConfigurations(workload.Name); err != nil {
+					logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+				} else {
+					logger.Infof("Client configurations for %s removed", workload.Name)
+				}
+			}
+
+			logger.Infof("Successfully stopped %s...", workload.Name)
+			return nil
+		})
+	}
+
+	return &group
 }

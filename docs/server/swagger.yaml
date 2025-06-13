@@ -871,6 +871,12 @@ paths:
         schema:
           type: string
       responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Accepted
         "204":
           content:
             application/json:
@@ -884,6 +890,15 @@ paths:
                 type: string
           description: Not Found
       summary: Stop a workload
+      tags:
+      - workloads
+  /api/v1beta/workloads/stop:
+    post:
+      description: Stop all running workload
+      responses:
+        "202":
+          description: Accepted
+      summary: Stop all workloads
       tags:
       - workloads
   /health:

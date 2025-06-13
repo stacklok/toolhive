@@ -53,7 +53,13 @@ func validateProviderType(provider string) (secrets.ProviderType, error) {
 
 // GetProviderType returns the secrets provider type from the environment variable or application config.
 // It first checks the TOOLHIVE_SECRETS_PROVIDER environment variable, and falls back to the config file.
+// Returns ErrSecretsNotSetup if secrets have not been configured yet.
 func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
+	// Check if secrets setup has been completed
+	if !s.SetupCompleted {
+		return "", secrets.ErrSecretsNotSetup
+	}
+
 	// First check the environment variable
 	if envProvider := os.Getenv(secrets.ProviderEnvVar); envProvider != "" {
 		return validateProviderType(envProvider)

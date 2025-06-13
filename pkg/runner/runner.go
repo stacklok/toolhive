@@ -135,9 +135,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	// the secrets in the state store.
 	if len(r.Config.Secrets) > 0 {
 		cfg := config.GetConfig()
-		if !cfg.Secrets.SetupCompleted {
-			return fmt.Errorf("secrets provider not configured. Please run 'thv secrets setup' to configure a secrets provider first")
-		}
 
 		providerType, err := cfg.Secrets.GetProviderType()
 		if err != nil {

@@ -507,13 +507,6 @@ func initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secret
 		return nil
 	}
 
-	// Check if secrets setup has been completed
-	cfg := config.GetConfig()
-	if !cfg.Secrets.SetupCompleted {
-		logger.Warnf("Warning: Secrets provider not configured. Run 'thv secrets setup' to configure a secrets provider")
-		return nil
-	}
-
 	secretsManager, err := getSecretsManager()
 	if err != nil {
 		logger.Warnf("Warning: Failed to initialize secrets manager: %v", err)

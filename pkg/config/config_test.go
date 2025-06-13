@@ -231,7 +231,8 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 	}()
 
 	s := &Secrets{
-		ProviderType: string(secrets.OnePasswordType), // Config says 1password
+		ProviderType:   string(secrets.OnePasswordType), // Config says 1password
+		SetupCompleted: true,                            // Setup completed for testing
 	}
 
 	// Test 1: Environment variable takes precedence
@@ -264,4 +265,11 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 	_, err = s.GetProviderType()
 	assert.Error(t, err, "Should return error for invalid environment variable")
 	assert.Contains(t, err.Error(), "invalid secrets provider type", "Error should mention invalid provider type")
+
+	// Test 6: Setup not completed returns error
+	os.Unsetenv(secrets.ProviderEnvVar)
+	s.SetupCompleted = false
+	_, err = s.GetProviderType()
+	assert.Error(t, err, "Should return error when setup not completed")
+	assert.ErrorIs(t, err, secrets.ErrSecretsNotSetup, "Should return ErrSecretsNotSetup when setup not completed")
 }

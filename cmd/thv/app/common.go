@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -37,10 +38,9 @@ func IsOIDCEnabled(cmd *cobra.Command) bool {
 }
 
 // SetSecretsProvider sets the secrets provider type in the configuration.
-// It validates the input and updates the configuration.
+// It validates the input, tests the provider functionality, and updates the configuration.
 // Choices are `encrypted`, `1password`, and `none`.
 func SetSecretsProvider(provider secrets.ProviderType) error {
-
 	// Validate input
 	if provider == "" {
 		fmt.Println("validation error: provider cannot be empty")
@@ -56,6 +56,13 @@ func SetSecretsProvider(provider secrets.ProviderType) error {
 	default:
 		return fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s)",
 			provider, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+	}
+
+	// Validate that the provider can be created and works correctly
+	ctx := context.Background()
+	result := secrets.ValidateProvider(ctx, provider)
+	if !result.Success {
+		return fmt.Errorf("provider validation failed: %w", result.Error)
 	}
 
 	// Update the secrets provider type and mark setup as completed

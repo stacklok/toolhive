@@ -47,7 +47,7 @@ func TestLoadOrCreateConfig(t *testing.T) {
 		t.Parallel()
 		tempDir, configPath := SetupTestConfig(t, &Config{
 			Secrets: Secrets{
-				ProviderType: "encrypted",
+				ProviderType: string(secrets.EncryptedType),
 			},
 			Clients: Clients{
 				AutoDiscovery:     true,
@@ -60,7 +60,7 @@ func TestLoadOrCreateConfig(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify the loaded config matches our mock
-		assert.Equal(t, "encrypted", config.Secrets.ProviderType)
+		assert.Equal(t, string(secrets.EncryptedType), config.Secrets.ProviderType)
 		assert.True(t, config.Clients.AutoDiscovery)
 		assert.Equal(t, []string{"vscode", "cursor"}, config.Clients.RegisteredClients)
 
@@ -81,8 +81,9 @@ func TestLoadOrCreateConfig(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify the default values
-		assert.Equal(t, "encrypted", config.Secrets.ProviderType)
-		assert.False(t, config.Clients.AutoDiscovery) // Default is false when no input is provided
+		assert.Equal(t, "", config.Secrets.ProviderType) // Default is empty - requires explicit setup
+		assert.False(t, config.Secrets.SetupCompleted)   // Setup not completed by default
+		assert.False(t, config.Clients.AutoDiscovery)    // Default is false when no input is provided
 		assert.Empty(t, config.Clients.RegisteredClients)
 
 		t.Cleanup(func() {
@@ -105,7 +106,7 @@ func TestSave(t *testing.T) {
 		// Create a config instance
 		config := &Config{
 			Secrets: Secrets{
-				ProviderType: "encrypted",
+				ProviderType: string(secrets.EncryptedType),
 			},
 			Clients: Clients{
 				AutoDiscovery:     true,
@@ -151,7 +152,7 @@ func TestRegistryURLConfig(t *testing.T) {
 		t.Parallel()
 		tempDir, configPath := SetupTestConfig(t, &Config{
 			Secrets: Secrets{
-				ProviderType: "encrypted",
+				ProviderType: string(secrets.EncryptedType),
 			},
 			Clients: Clients{
 				AutoDiscovery:     false,
@@ -230,11 +231,11 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 	}()
 
 	s := &Secrets{
-		ProviderType: "1password", // Config says 1password
+		ProviderType: string(secrets.OnePasswordType), // Config says 1password
 	}
 
 	// Test 1: Environment variable takes precedence
-	os.Setenv(secrets.ProviderEnvVar, "encrypted")
+	os.Setenv(secrets.ProviderEnvVar, string(secrets.EncryptedType))
 	got, err := s.GetProviderType()
 	require.NoError(t, err)
 	assert.Equal(t, secrets.EncryptedType, got, "Environment variable should take precedence over config")
@@ -246,14 +247,14 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 	assert.Equal(t, secrets.OnePasswordType, got, "Should fallback to config value when env var is unset")
 
 	// Test 3: None provider via environment variable
-	os.Setenv(secrets.ProviderEnvVar, "none")
+	os.Setenv(secrets.ProviderEnvVar, string(secrets.NoneType))
 	got, err = s.GetProviderType()
 	require.NoError(t, err)
 	assert.Equal(t, secrets.NoneType, got, "Environment variable should support none provider")
 
 	// Test 4: None provider via config
 	os.Unsetenv(secrets.ProviderEnvVar)
-	s.ProviderType = "none"
+	s.ProviderType = string(secrets.NoneType)
 	got, err = s.GetProviderType()
 	require.NoError(t, err)
 	assert.Equal(t, secrets.NoneType, got, "Config should support none provider")

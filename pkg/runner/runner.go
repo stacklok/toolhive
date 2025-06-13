@@ -138,7 +138,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		if !cfg.Secrets.SetupCompleted {
 			return fmt.Errorf("secrets provider not configured. Please run 'thv secrets setup' to configure a secrets provider first")
 		}
-		
+
 		providerType, err := cfg.Secrets.GetProviderType()
 		if err != nil {
 			return fmt.Errorf("error determining secrets provider type: %w", err)

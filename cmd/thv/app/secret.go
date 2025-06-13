@@ -39,16 +39,16 @@ func newSecretSetupCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "setup",
 		Short: "Set up secrets provider",
-		Long: `Interactive setup for configuring a secrets provider.
+		Long: fmt.Sprintf(`Interactive setup for configuring a secrets provider.
 This command will guide you through selecting and configuring
 a secrets provider for storing and retrieving secrets.
 
 Available providers:
-  - encrypted: Stores secrets in an encrypted file using AES-256-GCM using the OS Keyring
-  - 1password: Read-only access to 1Password secrets (requires OP_SERVICE_ACCOUNT_TOKEN)
-  - none: Disables secrets functionality
+  - %s: Stores secrets in an encrypted file using AES-256-GCM using the OS Keyring
+  - %s: Read-only access to 1Password secrets (requires OP_SERVICE_ACCOUNT_TOKEN)
+  - %s: Disables secrets functionality
 
-You must run this command before using any other secrets functionality.`,
+You must run this command before using any other secrets functionality.`, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType)),
 		Args: cobra.NoArgs,
 		RunE: runSecretsSetup,
 	}
@@ -297,18 +297,19 @@ func runSecretsSetup(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 	reader := bufio.NewReader(os.Stdin)
 
-	fmt.Println("ToolHive Secrets Setup")
-	fmt.Println("=====================")
-	fmt.Println()
-	fmt.Println("Please select a secrets provider:")
-	fmt.Println("  encrypted - Store secrets in an encrypted file (full read/write)")
-	fmt.Println("  1password - Use 1Password for secrets (read-only, requires service account)")
-	fmt.Println("  none - Disable secrets functionality")
-	fmt.Println()
+	fmt.Printf(`
+ToolHive Secrets Setup
+=====================
+
+Please select a secrets provider:
+  %s - Store secrets in an encrypted file (full read/write)
+  %s - Use 1Password for secrets (read-only, requires service account)
+  %s - Disable secrets functionality
+`, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
 
 	var providerType secrets.ProviderType
 	for {
-		fmt.Print("Enter provider (encrypted/1password/none): ")
+		fmt.Printf("\nEnter provider (%s/%s/%s): ", string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("failed to read input: %w", err)
@@ -316,14 +317,14 @@ func runSecretsSetup(cmd *cobra.Command, _ []string) error {
 
 		input = strings.TrimSpace(input)
 		switch input {
-		case "encrypted":
+		case string(secrets.EncryptedType):
 			providerType = secrets.EncryptedType
-		case "1password":
+		case string(secrets.OnePasswordType):
 			providerType = secrets.OnePasswordType
-		case "none":
+		case string(secrets.NoneType):
 			providerType = secrets.NoneType
 		default:
-			fmt.Println("Invalid provider. Please enter 'encrypted', '1password', or 'none'.")
+			fmt.Printf("Invalid provider. Please enter '%s', '%s', or '%s'.\n", string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
 			continue
 		}
 		break
@@ -342,7 +343,8 @@ func runSecretsSetup(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("failed to set up 1Password provider: %w", err)
 		}
 	case secrets.NoneType:
-		fmt.Println("\nSecrets functionality will be disabled.")
+		fmt.Println(`\nSecrets functionality will be disabled.
+No secrets will be stored or retrieved.`)
 	}
 
 	if err := SetSecretsProvider(providerType); err != nil {
@@ -354,9 +356,9 @@ func runSecretsSetup(cmd *cobra.Command, _ []string) error {
 }
 
 func setupEncryptedProvider(ctx context.Context) error {
-	fmt.Println("\nSetting up encrypted secrets provider...")
-	fmt.Println("You will need to provide a password to encrypt your secrets.")
-	fmt.Println("This password will be stored in your OS keyring if available.")
+	fmt.Println(`\nSetting up encrypted secrets provider...
+You will need to provide a password to encrypt your secrets.
+This password will be stored in your OS keyring if available.`)
 
 	// Test that we can create the provider (this will prompt for password)
 	fmt.Println("\nTesting encrypted provider setup...")
@@ -390,19 +392,15 @@ func setupEncryptedProvider(ctx context.Context) error {
 }
 
 func setupOnePasswordProvider(ctx context.Context) error {
-	fmt.Println("\nSetting up 1Password secrets provider...")
+	fmt.Println(`Setting up 1Password secrets provider...
 
-	// Check for service account token
-	token := os.Getenv("OP_SERVICE_ACCOUNT_TOKEN")
-	if token == "" {
-		fmt.Println("\nERROR: OP_SERVICE_ACCOUNT_TOKEN environment variable is not set.")
-		fmt.Println("To use 1Password as your secrets provider, you need to:")
-		fmt.Println("1. Create a service account in your 1Password account")
-		fmt.Println("2. Generate a service account token")
-		fmt.Println("3. Set the OP_SERVICE_ACCOUNT_TOKEN environment variable")
-		fmt.Println("\nFor more information, visit: https://developer.1password.com/docs/service-accounts/")
-		return fmt.Errorf("OP_SERVICE_ACCOUNT_TOKEN is required for 1Password provider")
-	}
+ERROR: OP_SERVICE_ACCOUNT_TOKEN environment variable is not set.
+To use 1Password as your secrets provider, you need to:
+1. Create a service account in your 1Password account
+2. Generate a service account token
+3. Set the OP_SERVICE_ACCOUNT_TOKEN environment variable
+
+For more information, visit: https://developer.1password.com/docs/service-accounts/`)
 
 	// Test that we can create the provider
 	fmt.Println("Testing 1Password connection...")

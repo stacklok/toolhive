@@ -46,7 +46,8 @@ func validateProviderType(provider string) (secrets.ProviderType, error) {
 	case string(secrets.NoneType):
 		return secrets.NoneType, nil
 	default:
-		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s)", provider, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s)",
+			provider, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
 	}
 }
 
@@ -104,7 +105,7 @@ func applyBackwardCompatibility(config *Config) error {
 		config.Secrets.ProviderType = string(secrets.EncryptedType)
 		err = config.save()
 		if err != nil {
-			fmt.Printf("error updating config: %v", err)
+			return fmt.Errorf("error updating config: %v", err)
 		}
 	}
 
@@ -114,7 +115,7 @@ func applyBackwardCompatibility(config *Config) error {
 		config.Secrets.SetupCompleted = true
 		err := config.save()
 		if err != nil {
-			fmt.Printf("error updating config for backward compatibility: %v", err)
+			return fmt.Errorf("error updating config for backward compatibility: %v", err)
 		}
 	}
 

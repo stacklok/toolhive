@@ -48,7 +48,8 @@ Available providers:
   - %s: Read-only access to 1Password secrets (requires OP_SERVICE_ACCOUNT_TOKEN)
   - %s: Disables secrets functionality
 
-You must run this command before using any other secrets functionality.`, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType)),
+You must run this command before using any other secrets functionality.`,
+string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType),), //nolint:gofmt,gci
 		Args: cobra.NoArgs,
 		RunE: runSecretsSetup,
 	}
@@ -309,7 +310,8 @@ Please select a secrets provider:
 
 	var providerType secrets.ProviderType
 	for {
-		fmt.Printf("\nEnter provider (%s/%s/%s): ", string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+		fmt.Printf("\nEnter provider (%s/%s/%s): ",
+			string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("failed to read input: %w", err)
@@ -324,7 +326,8 @@ Please select a secrets provider:
 		case string(secrets.NoneType):
 			providerType = secrets.NoneType
 		default:
-			fmt.Printf("Invalid provider. Please enter '%s', '%s', or '%s'.\n", string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+			fmt.Printf("Invalid provider. Please enter '%s', '%s', or '%s'.\n",
+				string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
 			continue
 		}
 		break

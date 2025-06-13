@@ -32,7 +32,8 @@ type Config struct {
 
 // Secrets contains the settings for secrets management.
 type Secrets struct {
-	ProviderType string `yaml:"provider_type"`
+	ProviderType   string `yaml:"provider_type"`
+	SetupCompleted bool   `yaml:"setup_completed"`
 }
 
 // validateProviderType validates and returns the secrets provider type.
@@ -45,13 +46,20 @@ func validateProviderType(provider string) (secrets.ProviderType, error) {
 	case string(secrets.NoneType):
 		return secrets.NoneType, nil
 	default:
-		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: encrypted, 1password, none)", provider)
+		return "", fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s)",
+			provider, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
 	}
 }
 
 // GetProviderType returns the secrets provider type from the environment variable or application config.
 // It first checks the TOOLHIVE_SECRETS_PROVIDER environment variable, and falls back to the config file.
+// Returns ErrSecretsNotSetup if secrets have not been configured yet.
 func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
+	// Check if secrets setup has been completed
+	if !s.SetupCompleted {
+		return "", secrets.ErrSecretsNotSetup
+	}
+
 	// First check the environment variable
 	if envProvider := os.Getenv(secrets.ProviderEnvVar); envProvider != "" {
 		return validateProviderType(envProvider)
@@ -74,6 +82,51 @@ var defaultPathGenerator = func() (string, error) {
 
 // getConfigPath is the current path generator, can be replaced in tests
 var getConfigPath = defaultPathGenerator
+
+// createNewConfigWithDefaults creates a new config with default values
+func createNewConfigWithDefaults() Config {
+	return Config{
+		Secrets: Secrets{
+			ProviderType:   "", // No default provider - user must run setup
+			SetupCompleted: false,
+		},
+		Clients: Clients{
+			AutoDiscovery: true,
+		},
+		RegistryUrl: "",
+	}
+}
+
+// applyBackwardCompatibility applies backward compatibility fixes to existing configs
+func applyBackwardCompatibility(config *Config) error {
+	// Hack - if the secrets provider type is set to the old `basic` type,
+	// just change it to `encrypted`.
+	if config.Secrets.ProviderType == "basic" {
+		fmt.Println("cleaning up basic secrets provider")
+		// Attempt to cleanup path, treat errors as non fatal.
+		oldPath, err := xdg.DataFile("toolhive/secrets")
+		if err == nil {
+			_ = os.Remove(oldPath)
+		}
+		config.Secrets.ProviderType = string(secrets.EncryptedType)
+		err = config.save()
+		if err != nil {
+			return fmt.Errorf("error updating config: %v", err)
+		}
+	}
+
+	// Handle backward compatibility: if provider is set but setup_completed is false,
+	// consider it as setup completed (for existing users)
+	if config.Secrets.ProviderType != "" && !config.Secrets.SetupCompleted {
+		config.Secrets.SetupCompleted = true
+		err := config.save()
+		if err != nil {
+			return fmt.Errorf("error updating config for backward compatibility: %v", err)
+		}
+	}
+
+	return nil
+}
 
 // LoadOrCreateConfig fetches the application configuration.
 // If it does not already exist - it will create a new config file with default values.
@@ -110,15 +163,7 @@ func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
 
 	if newConfig {
 		// Create a new config with default values.
-		config = Config{
-			Secrets: Secrets{
-				ProviderType: string(secrets.EncryptedType),
-			},
-			Clients: Clients{
-				AutoDiscovery: true,
-			},
-			RegistryUrl: "",
-		}
+		config = createNewConfigWithDefaults()
 
 		// Prompt user explicitly for auto discovery behaviour.
 		logger.Info("Would you like to enable auto discovery and configuration of MCP clients? (y/n) [n]: ")
@@ -151,20 +196,11 @@ func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse config file yaml: %w", err)
 		}
-		// Hack - if the secrets provider type is set to the old `basic` type,
-		// just change it to `encrypted`.
-		if config.Secrets.ProviderType == "basic" {
-			fmt.Println("cleaning up basic secrets provider")
-			// Attempt to cleanup path, treat errors as non fatal.
-			oldPath, err := xdg.DataFile("toolhive/secrets")
-			if err == nil {
-				_ = os.Remove(oldPath)
-			}
-			config.Secrets.ProviderType = string(secrets.EncryptedType)
-			err = config.save()
-			if err != nil {
-				fmt.Printf("error updating config: %v", err)
-			}
+
+		// Apply backward compatibility fixes
+		err = applyBackwardCompatibility(&config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to apply backward compatibility fixes: %w", err)
 		}
 	}
 

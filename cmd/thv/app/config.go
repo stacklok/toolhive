@@ -16,7 +16,6 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
 )
 
@@ -31,16 +30,6 @@ var listRegisteredClientsCmd = &cobra.Command{
 	Short: "List all registered MCP clients",
 	Long:  "List all clients that are registered for MCP server configuration.",
 	RunE:  listRegisteredClientsCmdFunc,
-}
-
-var secretsProviderCmd = &cobra.Command{
-	Use:   "secrets-provider [provider]",
-	Short: "Set the secrets provider type",
-	Long: `Set the secrets provider type for storing and retrieving secrets.
-Valid providers are:
-  - encrypted: Stores secrets in an encrypted file using AES-256-GCM`,
-	Args: cobra.ExactArgs(1),
-	RunE: secretsProviderCmdFunc,
 }
 
 var autoDiscoveryCmd = &cobra.Command{
@@ -140,7 +129,6 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 
 	// Add subcommands to config command
-	configCmd.AddCommand(secretsProviderCmd)
 	configCmd.AddCommand(autoDiscoveryCmd)
 	configCmd.AddCommand(registerClientCmd)
 	configCmd.AddCommand(removeClientCmd)
@@ -151,11 +139,6 @@ func init() {
 	configCmd.AddCommand(setRegistryURLCmd)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
-}
-
-func secretsProviderCmdFunc(_ *cobra.Command, args []string) error {
-	provider := args[0]
-	return SetSecretsProvider(secrets.ProviderType(provider))
 }
 
 func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {

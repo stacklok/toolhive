@@ -175,18 +175,6 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 	// Call deploymentForMCPServer
 	deployment := r.deploymentForMCPServer(mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
-
-	// Check that the TOOLHIVE_SECRETS_PROVIDER environment variable is set to "none"
-	container := deployment.Spec.Template.Spec.Containers[0]
-	secretsProviderEnvFound := false
-	for _, env := range container.Env {
-		if env.Name == "TOOLHIVE_SECRETS_PROVIDER" {
-			secretsProviderEnvFound = true
-			assert.Equal(t, "none", env.Value, "TOOLHIVE_SECRETS_PROVIDER should be set to 'none'")
-			break
-		}
-	}
-	assert.True(t, secretsProviderEnvFound, "TOOLHIVE_SECRETS_PROVIDER environment variable should be present")
 }
 
 func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
@@ -336,7 +324,6 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 	container := deployment.Spec.Template.Spec.Containers[0]
 
 	// Verify that the environment variables are NOT set as container environment variables
-	// (except for TOOLHIVE_SECRETS_PROVIDER which should still be there)
 	for _, env := range container.Env {
 		assert.NotEqual(t, "API_KEY", env.Name, "API_KEY should not be set as container env var")
 		assert.NotEqual(t, "DEBUG_MODE", env.Name, "DEBUG_MODE should not be set as container env var")

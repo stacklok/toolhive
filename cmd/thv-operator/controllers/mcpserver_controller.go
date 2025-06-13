@@ -431,12 +431,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}
 
-	// Add TOOLHIVE_SECRETS_PROVIDER=none for Kubernetes deployments
-	env = append(env, corev1.EnvVar{
-		Name:  "TOOLHIVE_SECRETS_PROVIDER",
-		Value: "none",
-	})
-
 	// Prepare container volume mounts
 	volumeMounts := []corev1.VolumeMount{}
 	volumes := []corev1.Volume{}

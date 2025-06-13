@@ -54,7 +54,7 @@ tasks:
         sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
     cmds:
       - mkdir -p bin
-      - go build -ldflags "-s -w -X github.com/stacklok/toolhive/cmd/thv-operator/app.Version={{.VERSION}} -X github.com/stacklok/toolhive/cmd/thv-operator/app.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/cmd/thv-operator/app.BuildDate={{.BUILD_DATE}}" -o bin/thv-operator ./cmd/thv-operator
+      - go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/thv-operator ./cmd/thv-operator
 
   install-operator:
     desc: Install the thv-operator binary to GOPATH/bin
@@ -66,7 +66,7 @@ tasks:
       BUILD_DATE:
         sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
     cmds:
-      - go install -ldflags "-s -w -X github.com/stacklok/toolhive/cmd/thv-operator/app.Version={{.VERSION}} -X github.com/stacklok/toolhive/cmd/thv-operator/app.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/cmd/thv-operator/app.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv-operator
+      - go install -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv-operator
 
   build-operator-image:
     desc: Build the operator image with ko

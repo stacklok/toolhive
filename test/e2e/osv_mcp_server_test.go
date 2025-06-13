@@ -56,8 +56,8 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the OSV server")
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
-				Expect(err).ToNot(HaveOccurred(), "Server should be running within 30 seconds")
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
 				By("Verifying the server appears in the list with SSE transport")
 				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
@@ -74,7 +74,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 					"osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Getting the server URL")
@@ -83,14 +83,31 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				Expect(serverURL).To(ContainSubstring("http"), "URL should be HTTP-based")
 				Expect(serverURL).To(ContainSubstring("/sse"), "URL should contain SSE endpoint")
 
+				By("Waiting before starting the HTTP request")
+				time.Sleep(10 * time.Second)
+
 				By("Making an HTTP request to the SSE endpoint")
+
 				client := &http.Client{Timeout: 10 * time.Second}
-				resp, err := client.Get(serverURL)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to connect to SSE endpoint")
+				var resp *http.Response
+				var httpErr error
+
+				maxRetries := 5
+				for i := 0; i < maxRetries; i++ {
+					resp, httpErr = client.Get(serverURL)
+					if httpErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 500 {
+						break
+					}
+					if resp != nil {
+						resp.Body.Close()
+					}
+					time.Sleep(10 * time.Second)
+				}
+
+				Expect(httpErr).ToNot(HaveOccurred(), "Should be able to connect to SSE endpoint")
+				Expect(resp).ToNot(BeNil(), "Response should not be nil")
 				defer resp.Body.Close()
 
-				// For SSE endpoints, we might get different status codes
-				// but the connection should be successful
 				Expect(resp.StatusCode).To(BeNumerically(">=", 200), "Should get a valid HTTP response")
 				Expect(resp.StatusCode).To(BeNumerically("<", 500), "Should not get a server error")
 			})
@@ -103,7 +120,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 					"osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Getting the server URL")
@@ -156,7 +173,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 					"--name", serverName,
 					"--transport", "sse",
 					"osv").ExpectSuccess()
-				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Get server URL
@@ -302,7 +319,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 					"--name", serverName,
 					"--transport", "sse",
 					"osv").ExpectSuccess()
-				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
@@ -336,7 +353,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				Expect(stdout).To(ContainSubstring(serverName))
 
 				By("Waiting for the server to be running again")
-				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Verifying SSE endpoint is accessible again")

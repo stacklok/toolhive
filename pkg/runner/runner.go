@@ -160,7 +160,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Start the transport (which also starts the container and monitoring)
-	logger.Infof("Starting %s transport...", r.Config.Transport)
+	logger.Infof("Starting %s transport for %s...", r.Config.Transport, r.Config.ContainerName)
 	if err := transportHandler.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start transport: %v", err)
 	}

@@ -45,6 +45,7 @@ jobs:
       - name: Run E2E tests
         env:
           THV_BINARY: ${{ github.workspace }}/bin/thv
+          TOOLHIVE_EGRESS_IMAGE: ghcr.io/stacklok/toolhive/egress-proxy:latest
           TEST_TIMEOUT: 15m
         run: ./test/e2e/run_tests.sh
 

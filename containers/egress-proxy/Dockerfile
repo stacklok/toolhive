@@ -10,8 +10,9 @@ RUN apk add --no-cache squid \
 # Remove default squid config to allow runtime configuration
 RUN rm -f /etc/squid/squid.conf
 
-# Set proper ownership for squid directories
-RUN chown -R squid:squid /etc/squid /var/run/squid
+# Set proper ownership for squid directories and ensure write permissions
+RUN chown -R squid:squid /etc/squid /var/run/squid \
+    && chmod 755 /var/run/squid
 
 # Expose squid port
 EXPOSE 3128

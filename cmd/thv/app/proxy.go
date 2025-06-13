@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
@@ -166,13 +167,13 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	logger.Infof("Using host port: %d", port)
 
 	// Handle OAuth authentication to the remote server if needed
-	var accessToken string
+	var tokenSource *oauth2.TokenSource
+
 	if enableRemoteAuth || shouldDetectAuth() {
-		token, err := handleOutgoingAuthentication(ctx)
+		tokenSource, err = handleOutgoingAuthentication(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to authenticate to remote server: %w", err)
 		}
-		accessToken = token
 	}
 
 	// Create middlewares slice for incoming request authentication
@@ -203,8 +204,8 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	middlewares = append(middlewares, authMiddleware)
 
 	// Add OAuth token injection middleware for outgoing requests if we have an access token
-	if accessToken != "" {
-		tokenMiddleware := createTokenInjectionMiddleware(accessToken)
+	if tokenSource != nil {
+		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)
 		middlewares = append(middlewares, tokenMiddleware)
 	}
 
@@ -352,7 +353,7 @@ func extractParameter(params, paramName string) string {
 }
 
 // performOAuthFlow performs the OAuth authentication flow
-func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string, scopes []string) (string, error) {
+func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string, scopes []string) (*oauth2.TokenSource, error) {
 	logger.Info("Starting OAuth authentication flow...")
 
 	// Create OAuth config from OIDC discovery
@@ -366,13 +367,13 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 		remoteAuthCallbackPort,
 	)
 	if err != nil {
-		return "", fmt.Errorf("failed to create OAuth config: %w", err)
+		return nil, fmt.Errorf("failed to create OAuth config: %w", err)
 	}
 
 	// Create OAuth flow
 	flow, err := oauth.NewFlow(oauthConfig)
 	if err != nil {
-		return "", fmt.Errorf("failed to create OAuth flow: %w", err)
+		return nil, fmt.Errorf("failed to create OAuth flow: %w", err)
 	}
 
 	// Create a context with timeout for the OAuth flow
@@ -389,9 +390,9 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 	tokenResult, err := flow.Start(oauthCtx, remoteAuthSkipBrowser)
 	if err != nil {
 		if oauthCtx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("OAuth flow timed out after %v - user did not complete authentication", oauthTimeout)
+			return nil, fmt.Errorf("OAuth flow timed out after %v - user did not complete authentication", oauthTimeout)
 		}
-		return "", fmt.Errorf("OAuth flow failed: %w", err)
+		return nil, fmt.Errorf("OAuth flow failed: %w", err)
 	}
 
 	logger.Info("OAuth authentication successful")
@@ -406,12 +407,8 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 		}
 	}
 
-	// Always return the ID token (JWT) for Authorization header
-	if tokenResult.IDToken != "" {
-		return tokenResult.IDToken, nil
-	}
-	// Fallback: if no ID token, return access token (may be JWT for some IdPs)
-	return tokenResult.AccessToken, nil
+	source := flow.TokenSource()
+	return &source, nil
 }
 
 // shouldDetectAuth determines if we should try to detect authentication requirements
@@ -422,20 +419,20 @@ func shouldDetectAuth() bool {
 }
 
 // handleOutgoingAuthentication handles authentication to the remote MCP server
-func handleOutgoingAuthentication(ctx context.Context) (string, error) {
+func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, error) {
 	// Resolve client secret from multiple sources
 	clientSecret, err := resolveClientSecret()
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve client secret: %w", err)
+		return nil, fmt.Errorf("failed to resolve client secret: %w", err)
 	}
 
 	if enableRemoteAuth {
 		// If OAuth is explicitly enabled, use provided configuration
 		if remoteAuthIssuer == "" {
-			return "", fmt.Errorf("remote-auth-issuer is required when remote authentication is enabled")
+			return nil, fmt.Errorf("remote-auth-issuer is required when remote authentication is enabled")
 		}
 		if remoteAuthClientID == "" {
-			return "", fmt.Errorf("remote-auth-client-id is required when remote authentication is enabled")
+			return nil, fmt.Errorf("remote-auth-client-id is required when remote authentication is enabled")
 		}
 
 		return performOAuthFlow(ctx, remoteAuthIssuer, remoteAuthClientID, clientSecret, remoteAuthScopes)
@@ -445,21 +442,21 @@ func handleOutgoingAuthentication(ctx context.Context) (string, error) {
 	authInfo, err := detectAuthenticationFromServer(ctx, proxyTargetURI)
 	if err != nil {
 		logger.Debugf("Could not detect authentication from server: %v", err)
-		return "", nil // Not an error, just no auth detected
+		return nil, nil // Not an error, just no auth detected
 	}
 
 	if authInfo != nil {
 		logger.Infof("Detected authentication requirement from server: %s", authInfo.Realm)
 
 		if remoteAuthClientID == "" {
-			return "", fmt.Errorf("detected OAuth requirement but no remote-auth-client-id provided")
+			return nil, fmt.Errorf("detected OAuth requirement but no remote-auth-client-id provided")
 		}
 
 		// Perform OAuth flow with discovered configuration
 		return performOAuthFlow(ctx, authInfo.Realm, remoteAuthClientID, clientSecret, remoteAuthScopes)
 	}
 
-	return "", nil // No authentication required
+	return nil, nil // No authentication required
 }
 
 // resolveClientSecret resolves the OAuth client secret from multiple sources
@@ -500,11 +497,16 @@ func resolveClientSecret() (string, error) {
 }
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
-func createTokenInjectionMiddleware(accessToken string) types.Middleware {
+func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Add the Authorization header with the Bearer token
-			r.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
+			token, err := (*tokenSource).Token()
+			if err != nil {
+				http.Error(w, "Unable to retrieve OAuth token", http.StatusUnauthorized)
+				return
+			}
+
+			r.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken))
 			next.ServeHTTP(w, r)
 		})
 	}

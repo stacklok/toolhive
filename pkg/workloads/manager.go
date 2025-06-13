@@ -143,15 +143,15 @@ func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) error 
 		} else {
 			logger.Infof("Saved state for %s removed", baseName)
 		}
-	}
 
-	logger.Infof("Container %s removed", name)
+		logger.Infof("Container %s removed", name)
 
-	if shouldRemoveClientConfig() {
-		if err := removeClientConfigurations(name); err != nil {
-			logger.Warnf("Warning: Failed to remove client configurations: %v", err)
-		} else {
-			logger.Infof("Client configurations for %s removed", name)
+		if shouldRemoveClientConfig() {
+			if err := removeClientConfigurations(name); err != nil {
+				logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+			} else {
+				logger.Infof("Client configurations for %s removed", name)
+			}
 		}
 	}
 

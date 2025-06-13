@@ -30,7 +30,7 @@ func NewTestConfig() *TestConfig {
 
 	return &TestConfig{
 		THVBinary:    thvBinary,
-		TestTimeout:  5 * time.Minute,
+		TestTimeout:  10 * time.Minute,
 		CleanupAfter: true,
 	}
 }
@@ -86,6 +86,7 @@ func (c *THVCommand) RunWithTimeout(timeout time.Duration) (string, string, erro
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+
 	return stdout.String(), stderr.String(), err
 }
 

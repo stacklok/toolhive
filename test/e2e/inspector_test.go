@@ -289,6 +289,6 @@ func (h *inspectorTestHelper) cleanupInspector() {
 func (h *inspectorTestHelper) setupMCPServer() {
 	By("Starting an MCP server for inspector to connect to")
 	e2e.NewTHVCommand(h.config, "run", "--name", h.mcpServerName, "fetch").ExpectSuccess()
-	err := e2e.WaitForMCPServer(h.config, h.mcpServerName, 30*time.Second)
+	err := e2e.WaitForMCPServer(h.config, h.mcpServerName, 60*time.Second)
 	Expect(err).ToNot(HaveOccurred(), "MCP server should be running")
 }

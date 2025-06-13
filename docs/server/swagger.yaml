@@ -71,6 +71,9 @@ components:
       description: Permissions defines the security profile and access permissions
         for the server
       properties:
+        name:
+          description: Name is the name of the profile
+          type: string
         network:
           $ref: '#/components/schemas/permissions.NetworkPermissions'
         read:

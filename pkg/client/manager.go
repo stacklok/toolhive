@@ -23,6 +23,8 @@ type Manager interface {
 	ListClients() ([]Client, error)
 	// RegisterClient registers a new client with ToolHive.
 	RegisterClient(ctx context.Context, client Client) error
+	// UnregisterClient unregisters a client from ToolHive.
+	UnregisterClient(ctx context.Context, client Client) error
 }
 
 type defaultManager struct {
@@ -138,6 +140,86 @@ func (m *defaultManager) addRunningMCPsToClient(ctx context.Context, clientType 
 		}
 
 		logger.Infof("Added MCP server %s to client %s\n", name, clientType)
+	}
+
+	return nil
+}
+
+func (m *defaultManager) UnregisterClient(ctx context.Context, client Client) error {
+	err := config.UpdateConfig(func(c *config.Config) {
+		// Find and remove the client from registered clients list
+		for i, registeredClient := range c.Clients.RegisteredClients {
+			if registeredClient == string(client.Name) {
+				// Remove client from slice
+				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
+				logger.Infof("Successfully unregistered client: %s\n", client.Name)
+				return
+			}
+		}
+		logger.Warnf("Client %s was not found in registered clients list", client.Name)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	// Remove MCPs from client configuration
+	if err := m.removeMCPsFromClient(ctx, client.Name); err != nil {
+		fmt.Printf("Warning: Failed to remove MCPs from client: %v\n", err)
+	}
+
+	return nil
+}
+
+// removeMCPsFromClient removes currently running MCP servers from the specified client's configuration
+func (m *defaultManager) removeMCPsFromClient(ctx context.Context, clientType MCPClient) error {
+	// List workloads
+	containers, err := m.runtime.ListWorkloads(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %v", err)
+	}
+
+	// Filter containers to only show those managed by ToolHive and running
+	var runningContainers []rt.ContainerInfo
+	for _, c := range containers {
+		if labels.IsToolHiveContainer(c.Labels) && c.State == "running" {
+			runningContainers = append(runningContainers, c)
+		}
+	}
+
+	if len(runningContainers) == 0 {
+		// No running servers, nothing to do
+		return nil
+	}
+
+	// Find the client configuration for the specified client
+	clientConfig, err := FindClientConfig(clientType)
+	if err != nil {
+		return fmt.Errorf("failed to find client configurations: %w", err)
+	}
+
+	// For each running container, remove it from the client configuration
+	for _, c := range runningContainers {
+		// Get container name from labels
+		name := labels.GetContainerName(c.Labels)
+		if name == "" {
+			name = c.Name // Fallback to container name
+		}
+
+		// Get tool type from labels
+		toolType := labels.GetToolType(c.Labels)
+
+		// Only include containers with tool type "mcp"
+		if toolType != "mcp" {
+			continue
+		}
+
+		// Remove the MCP server configuration with locking
+		if err := clientConfig.ConfigUpdater.Remove(name); err != nil {
+			logger.Warnf("Warning: Failed to remove MCP server configuration from %s: %v", clientConfig.Path, err)
+			continue
+		}
+
+		logger.Infof("Removed MCP server %s from client %s\n", name, clientType)
 	}
 
 	return nil

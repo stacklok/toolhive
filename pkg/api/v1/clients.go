@@ -26,7 +26,7 @@ func ClientRouter(
 	r := chi.NewRouter()
 	r.Get("/", routes.listClients)
 	r.Post("/", routes.registerClient)
-	r.Delete("/", routes.unregisterClient)
+	r.Delete("/{name}", routes.unregisterClient)
 	return r
 }
 
@@ -96,22 +96,19 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
 //	@Summary		Unregister a client
 //	@Description	Unregister a client from ToolHive
 //	@Tags			clients
-//	@Accept			json
-//	@Param			client	body	deleteClientRequest	true	"Client to unregister"
+//	@Param			name	path	string	true	"Client name to unregister"
 //	@Success		204
 //	@Failure		400	{string}	string	"Invalid request"
-//	@Router			/api/v1beta/clients [delete]
+//	@Router			/api/v1beta/clients/{name} [delete]
 func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) {
-	var clientToDelete deleteClientRequest
-	err := json.NewDecoder(r.Body).Decode(&clientToDelete)
-	if err != nil {
-		logger.Errorf("Failed to decode request body: %v", err)
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	clientName := chi.URLParam(r, "name")
+	if clientName == "" {
+		http.Error(w, "Client name is required", http.StatusBadRequest)
 		return
 	}
 
-	err = c.manager.UnregisterClient(r.Context(), client.Client{
-		Name: clientToDelete.Name,
+	err := c.manager.UnregisterClient(r.Context(), client.Client{
+		Name: client.MCPClient(clientName),
 	})
 	if err != nil {
 		logger.Errorf("Failed to unregister client: %v", err)
@@ -129,10 +126,5 @@ type createClientRequest struct {
 
 type createClientResponse struct {
 	// Name is the type of the client that was registered.
-	Name client.MCPClient `json:"name"`
-}
-
-type deleteClientRequest struct {
-	// Name is the type of the client to unregister.
 	Name client.MCPClient `json:"name"`
 }

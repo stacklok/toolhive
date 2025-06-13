@@ -13,6 +13,7 @@ thv stop [container-name] [flags]
 ### Options
 
 ```
+      --all           Stop all running MCP servers
   -h, --help          help for stop
       --timeout int   Timeout in seconds before forcibly stopping the container (default 30)
 ```

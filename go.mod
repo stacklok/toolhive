@@ -3,7 +3,7 @@ module github.com/stacklok/toolhive
 go 1.24.1
 
 require (
-	github.com/1password/onepassword-sdk-go v0.3.0
+	github.com/1password/onepassword-sdk-go v0.3.1
 	github.com/cedar-policy/cedar-go v1.2.1
 	github.com/cenkalti/backoff/v5 v5.0.2
 	github.com/containerd/errdefs v1.0.0
@@ -15,7 +15,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/jwx/v2 v2.1.6
 	github.com/lmittmann/tint v1.1.2
-	github.com/mark3labs/mcp-go v0.31.0
+	github.com/mark3labs/mcp-go v0.32.0
 	github.com/onsi/ginkgo/v2 v2.23.4
 	github.com/onsi/gomega v1.37.0
 	github.com/ory/fosite v0.49.0

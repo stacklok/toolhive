@@ -60,6 +60,7 @@ func (*RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
 		},
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	response := registryListResponse{Registries: registries}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
@@ -115,6 +116,7 @@ func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 		Registry:    reg,
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logger.Errorf("Failed to encode response: %v", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
@@ -171,6 +173,7 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	response := listServersResponse{Servers: servers}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logger.Errorf("Failed to encode response: %v", err)
@@ -207,6 +210,7 @@ func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	response := getServerResponse{Server: server}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logger.Errorf("Failed to encode response: %v", err)

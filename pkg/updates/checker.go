@@ -94,8 +94,6 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 		return nil
 	}
 
-	fmt.Fprintln(os.Stderr, "checking for updates...")
-
 	// If the update file is stale or does not exist - get the latest version
 	// from the API.
 	latestVersion, err := d.versionClient.GetLatestVersion(d.instanceID, d.currentVersion)
@@ -142,5 +140,7 @@ func notifyIfUpdateAvailable(current, latest string) {
 	// Compare the versions ensuring their canonical forms
 	if semver.Compare(semver.Canonical(current), semver.Canonical(latest)) < 0 {
 		fmt.Fprintf(os.Stderr, "A new version of ToolHive is available: %s\nCurrently running: %s\n", latest, current)
+	} else if semver.Compare(semver.Canonical(current), semver.Canonical(latest)) == 0 {
+		fmt.Fprintf(os.Stderr, "You are running the latest version of ToolHive: %s\n", current)
 	}
 }

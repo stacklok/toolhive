@@ -54,7 +54,10 @@ jobs:
 
       - name: Build and Push Image to GHCR
         env:
-          GOFLAGS: "-ldflags=-s -w -X github.com/stacklok/toolhive/pkg/versions.Version=${{ steps.version-string.outputs.tag }} -X github.com/stacklok/toolhive/pkg/versions.Commit=${{ github.sha }} -X github.com/stacklok/toolhive/pkg/versions.BuildDate=${{ github.event.head_commit.timestamp }} -X github.com/stacklok/toolhive/pkg/versions.BuildType=release"
+          VERSION: ${{ steps.version-string.outputs.tag }}
+          COMMIT: ${{ github.sha }}
+          BUILD_DATE: ${{ github.event.head_commit.timestamp }}
+          KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           TAGS="-t $TAG"
@@ -212,7 +215,10 @@ jobs:
 
       - name: Build and Push Image to GHCR
         env:
-          GOFLAGS: "-ldflags=-s -w -X github.com/stacklok/toolhive/pkg/versions.Version=${{ steps.version-string.outputs.tag }} -X github.com/stacklok/toolhive/pkg/versions.Commit=${{ github.sha }} -X github.com/stacklok/toolhive/pkg/versions.BuildDate=${{ github.event.head_commit.timestamp }} -X github.com/stacklok/toolhive/pkg/versions.BuildType=release"
+          VERSION: ${{ steps.version-string.outputs.tag }}
+          COMMIT: ${{ github.sha }}
+          BUILD_DATE: ${{ github.event.head_commit.timestamp }}
+          KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           TAGS="-t $TAG"

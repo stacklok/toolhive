@@ -44,6 +44,7 @@ func WorkloadRouter(
 	r := chi.NewRouter()
 	r.Get("/", routes.listWorkloads)
 	r.Post("/", routes.createWorkload)
+	r.Post("/stop", routes.stopAllWorkloads)
 	r.Get("/{name}", routes.getWorkload)
 	r.Post("/{name}/stop", routes.stopWorkload)
 	r.Post("/{name}/restart", routes.restartWorkload)
@@ -115,23 +116,50 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 //	@Description	Stop a running workload
 //	@Tags			workloads
 //	@Param			name	path		string	true	"Workload name"
+//	@Success		202		{string}	string	"Accepted"
 //	@Success		204		{string}	string	"No Content"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/stop [post]
 func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
-	err := s.manager.StopWorkload(ctx, name)
+	// Note that this is an asynchronous operation.
+	// In the API, we do not wait for the operation to complete.
+	_, err := s.manager.StopWorkload(ctx, name)
 	if err != nil {
 		if errors.Is(err, workloads.ErrContainerNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)
+			return
+		} else if errors.Is(err, workloads.ErrContainerNotRunning) {
+			// Treat this as a non-fatal error.
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		logger.Errorf("Failed to stop workload: %v", err)
 		http.Error(w, "Failed to stop workload", http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// stopAllWorkloads
+//
+//	@Summary		Stop all workloads
+//	@Description	Stop all running workload
+//	@Tags			workloads
+//	@Success		202		"Accepted"
+//	@Router			/api/v1beta/workloads/stop [post]
+func (s *WorkloadRoutes) stopAllWorkloads(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	// Note that this is an asynchronous operation.
+	// In the API, we do not wait for the operation to complete.
+	_, err := s.manager.StopAllWorkloads(ctx)
+	if err != nil {
+		logger.Errorf("Failed to stop workloads: %v", err)
+		http.Error(w, "Failed to stop workloads", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // deleteWorkload

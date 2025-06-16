@@ -124,6 +124,20 @@ var unsetRegistryURLCmd = &cobra.Command{
 	RunE:  unsetRegistryURLCmdFunc,
 }
 
+var enableRegistryUrlPrivateIp = &cobra.Command{
+	Use:   "enable-registry-private-ip",
+	Short: "Enable private IP access to the registry",
+	Long:  "Enable private IP access to the registry, allowing access to private IP addresses.",
+	RunE:  enableRegistryUrlPrivateIpFunc,
+}
+
+var disableRegistryUrlPrivateIp = &cobra.Command{
+	Use:   "disable-registry-private-ip",
+	Short: "Disable private IP access to the registry",
+	Long:  "Disable private IP access to the registry, blocking access to private IP addresses.",
+	RunE:  disableRegistryUrlPrivateIpFunc,
+}
+
 func init() {
 	// Add config command to root command
 	rootCmd.AddCommand(configCmd)
@@ -139,6 +153,9 @@ func init() {
 	configCmd.AddCommand(setRegistryURLCmd)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
+	configCmd.AddCommand(enableRegistryUrlPrivateIp)
+	configCmd.AddCommand(disableRegistryUrlPrivateIp)
+
 }
 
 func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {
@@ -449,6 +466,33 @@ func unsetRegistryURLCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	fmt.Println("Successfully removed registry URL configuration. Will use built-in registry.")
+	return nil
+}
+
+func enableRegistryUrlPrivateIpFunc(_ *cobra.Command, args []string) error {
+	// Update the configuration
+	err := config.UpdateConfig(func(c *config.Config) {
+		c.AllowPrivateRegistryIp = true
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	fmt.Printf("Successfully enabled use of private IP addresses for the remote registry")
+	fmt.Print("Caution: allowing registry URLs containing private IP addresses may increase your vulnerability to security threats. Make sure you trust any remote registries you confifugere with ToolHive.")
+	return nil
+}
+
+func disableRegistryUrlPrivateIpFunc(_ *cobra.Command, args []string) error {
+	// Update the configuration
+	err := config.UpdateConfig(func(c *config.Config) {
+		c.AllowPrivateRegistryIp = false
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	fmt.Printf("Successfully disabled use of private IP addresses for the remote registry")
 	return nil
 }
 

@@ -85,18 +85,23 @@ func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return t.Transport.RoundTrip(req)
 }
 
-// GetProtectedHttpClient returns a new http client with a protected dialer and URL validation
-func GetProtectedHttpClient() *http.Client {
+// GetHttpClient returns a new http client which uses a protected dialer and URL validation by default
+func GetHttpClient(allowPrivateIp bool) *http.Client {
 
-	protectedTransport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Control: protectedDialerControl,
-		}).DialContext,
+	var transport *http.Transport
+	if !allowPrivateIp {
+		transport = &http.Transport{
+			DialContext: (&net.Dialer{
+				Control: protectedDialerControl,
+			}).DialContext,
+		}
+	} else {
+		transport = &http.Transport{}
 	}
 
 	client := &http.Client{
 		Transport: &ValidatingTransport{
-			Transport: protectedTransport,
+			Transport: transport,
 		},
 		Timeout: HttpTimeout,
 	}

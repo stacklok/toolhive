@@ -736,6 +736,12 @@ paths:
   /api/v1beta/workloads:
     get:
       description: Get a list of all running workloads
+      parameters:
+      - description: List all workloads, including stopped ones
+        in: query
+        name: all
+        schema:
+          type: boolean
       responses:
         "200":
           content:

@@ -39,7 +39,7 @@ type AuthRequest struct {
 }
 
 // NewOIDCMockServer creates a new OIDC mock server using Ory Fosite
-func NewOIDCMockServer(port int, clientID, clientSecret string) (*OIDCMockServer, error) {
+func NewOIDCMockServer(port int, clientID, clientSecret string, opts ...func(*fosite.Config)) (*OIDCMockServer, error) {
 	// Generate RSA key for JWT signing
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -68,6 +68,11 @@ func NewOIDCMockServer(port int, clientID, clientSecret string) (*OIDCMockServer
 		IDTokenLifespan:       time.Hour,
 		IDTokenIssuer:         fmt.Sprintf("http://localhost:%d", port),
 		HashCost:              12,
+	}
+
+	// Apply any overrides provided via opts
+	for _, opt := range opts {
+		opt(config)
 	}
 
 	// Create JWT strategy
@@ -378,4 +383,11 @@ func (*OIDCMockServer) CompleteAuthRequest(authReq *AuthRequest) error {
 	}
 
 	return nil
+}
+
+// WithAccessTokenLifespan sets the lifespan of access tokens for the OIDC mock server.
+func WithAccessTokenLifespan(d time.Duration) func(*fosite.Config) {
+	return func(c *fosite.Config) {
+		c.AccessTokenLifespan = d
+	}
 }

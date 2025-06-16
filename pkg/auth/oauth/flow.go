@@ -61,6 +61,8 @@ type Flow struct {
 	codeVerifier  string
 	codeChallenge string
 	state         string
+
+	tokenSource oauth2.TokenSource
 }
 
 // TokenResult contains the result of the OAuth flow
@@ -433,6 +435,12 @@ func (f *Flow) processToken(token *oauth2.Token) *TokenResult {
 		Expiry:       token.Expiry,
 	}
 
+	// Create a base token source using the original token
+	base := f.oauth2Config.TokenSource(context.Background(), token)
+
+	// ReuseTokenSource ensures that refresh happens only when needed
+	f.tokenSource = oauth2.ReuseTokenSource(token, base)
+
 	// Prefer extracting claims from the ID token if present (OIDC, e.g., Google)
 	if idToken, ok := token.Extra("id_token").(string); ok && idToken != "" {
 		result.IDToken = idToken
@@ -453,6 +461,11 @@ func (f *Flow) processToken(token *oauth2.Token) *TokenResult {
 	}
 
 	return result
+}
+
+// TokenSource returns the OAuth2 token source for refreshing tokens
+func (f *Flow) TokenSource() oauth2.TokenSource {
+	return f.tokenSource
 }
 
 // extractJWTClaims attempts to extract claims from a JWT token without validation

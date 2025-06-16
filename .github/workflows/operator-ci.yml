@@ -6,7 +6,6 @@ on:
   pull_request:
     paths:
       - 'cmd/thv-operator/**'
-      - 'deploy/charts/operator/**'
       - 'deploy/charts/operator-crds/**'
       - 'go.mod'
       - 'go.sum'
@@ -112,4 +111,37 @@ jobs:
         if: steps.git-check.outputs.crd-changes == 'true' || steps.git-check.outputs.operator-changes == 'true'
         run: |
           echo "CRDs are not up to date. Please run 'task operator-manifests' and commit the changes."
+          exit 1
+
+  generate-crd-docs:
+    name: Generate CRD Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate CR Docs
+        run: task crdref-gen
+        working-directory: cmd/thv-operator
+
+      - name: Check for changes
+        id: git-docs-check
+        run: |
+          git diff --exit-code -- docs/operator/crd-api.md || echo "crd-changes=true" >> $GITHUB_OUTPUT
+
+      - name: Fail if CRDs are not up to date
+        if: steps.git-docs-check.outputs.crd-changes == 'true'
+        run: |
+          echo "Docs for CRDs are not up to date. Please run 'task crdref-gen' and commit the changes."
           exit 1

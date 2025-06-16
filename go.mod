@@ -4,7 +4,7 @@ go 1.24.1
 
 require (
 	github.com/1password/onepassword-sdk-go v0.3.1
-	github.com/cedar-policy/cedar-go v1.2.1
+	github.com/cedar-policy/cedar-go v1.2.2
 	github.com/cenkalti/backoff/v5 v5.0.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/docker/docker v28.2.2+incompatible

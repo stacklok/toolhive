@@ -29,11 +29,11 @@ type Manager interface {
 	GetWorkload(ctx context.Context, name string) (Workload, error)
 	// ListWorkloads lists all ToolHive-managed containers.
 	ListWorkloads(ctx context.Context, listAll bool) ([]Workload, error)
-	// DeleteWorkload deletes a container and its associated proxy process.
-	// The container will be stopped if it is still running.
-	DeleteWorkload(ctx context.Context, name string) error
+	// DeleteWorkload deletes a container and all associated processes/containers.
+	// It is implemented as an asynchronous operation which returns an errgroup.Group
+	DeleteWorkload(ctx context.Context, name string) (*errgroup.Group, error)
 	// StopWorkload stops the named workload.
-	// It is implemented as an asynchronous operation which returns a errgroup.Group
+	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	StopWorkload(ctx context.Context, name string) (*errgroup.Group, error)
 	// StopAllWorkloads stops all running workloads.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
@@ -101,66 +101,69 @@ func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool) ([]Wor
 	return workloads, nil
 }
 
-func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) error {
+func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) (*errgroup.Group, error) {
 	// We need several fields from the container struct for deletion.
 	container, err := d.findContainerByName(ctx, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	containerID := container.ID
 	isRunning := isContainerRunning(container)
 	containerLabels := container.Labels
-
-	// Check if the container is running
-	if isRunning {
-		// Get the base container name for proxy stopping
-		containerBaseName := labels.GetContainerBaseName(containerLabels)
-
-		// Stop the proxy process first (like StopWorkload does)
-		if containerBaseName != "" {
-			proxy.StopProcess(containerBaseName)
-		}
-
-		// Stop the container if it's running
-		if err := d.stopContainer(ctx, containerID, name); err != nil {
-			return fmt.Errorf("failed to stop container: %v", err)
-		}
-	}
-
-	// Remove the container
-	logger.Infof("Removing container %s...", name)
-	if err := d.runtime.RemoveWorkload(ctx, containerID); err != nil {
-		return fmt.Errorf("failed to remove container: %v", err)
-	}
-
-	// Get the base name from the container labels
 	baseName := labels.GetContainerBaseName(containerLabels)
-	if baseName != "" {
-		// Clean up temporary permission profile before deleting saved state
-		if err := d.cleanupTempPermissionProfile(ctx, baseName); err != nil {
-			logger.Warnf("Warning: Failed to cleanup temporary permission profile: %v", err)
+
+	// If the container is running, stop before deletion.
+	// TODO: Consider moving this into the runtime layer.
+	stopGroup := &errgroup.Group{}
+	if isRunning {
+		req := stopWorkloadRequest{Name: baseName, ID: containerID}
+		stopGroup = d.stopWorkloads(ctx, []stopWorkloadRequest{req})
+	}
+
+	// Create second errorgroup for deletion.
+	deleteGroup := &errgroup.Group{}
+	deleteGroup.Go(func() error {
+		// If a stop operation was initiated, wait for it to complete.
+		if err := stopGroup.Wait(); err != nil {
+			return fmt.Errorf("failed to stop container %s: %v", name, err)
 		}
 
-		// Delete the saved state if it exists
-		if err := runner.DeleteSavedConfig(ctx, baseName); err != nil {
-			logger.Warnf("Warning: Failed to delete saved state: %v", err)
-		} else {
-			logger.Infof("Saved state for %s removed", baseName)
+		// Remove the container
+		logger.Infof("Removing container %s...", name)
+		if err := d.runtime.RemoveWorkload(ctx, containerID); err != nil {
+			return fmt.Errorf("failed to remove container: %v", err)
 		}
 
-		logger.Infof("Container %s removed", name)
+		// Get the base name from the container labels
+		if baseName != "" {
+			// Clean up temporary permission profile before deleting saved state
+			if err := d.cleanupTempPermissionProfile(ctx, baseName); err != nil {
+				logger.Warnf("Warning: Failed to cleanup temporary permission profile: %v", err)
+			}
 
-		if shouldRemoveClientConfig() {
-			if err := removeClientConfigurations(name); err != nil {
-				logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+			// Delete the saved state if it exists
+			if err := runner.DeleteSavedConfig(ctx, baseName); err != nil {
+				logger.Warnf("Warning: Failed to delete saved state: %v", err)
 			} else {
-				logger.Infof("Client configurations for %s removed", name)
+				logger.Infof("Saved state for %s removed", baseName)
+			}
+
+			logger.Infof("Container %s removed", name)
+
+			if shouldRemoveClientConfig() {
+				if err := removeClientConfigurations(name); err != nil {
+					logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+				} else {
+					logger.Infof("Client configurations for %s removed", name)
+				}
 			}
 		}
-	}
 
-	return nil
+		return nil
+	})
+
+	return deleteGroup, nil
 }
 
 func (d *defaultManager) StopWorkload(ctx context.Context, name string) (*errgroup.Group, error) {
@@ -484,17 +487,6 @@ func (d *defaultManager) findContainerByName(ctx context.Context, name string) (
 	return nil, fmt.Errorf("%w: %s", ErrContainerNotFound, name)
 }
 
-// stopContainer stops the container
-func (d *defaultManager) stopContainer(ctx context.Context, containerID, containerName string) error {
-	logger.Infof("Stopping container %s...", containerName)
-	if err := d.runtime.StopWorkload(ctx, containerID); err != nil {
-		return fmt.Errorf("failed to stop container: %w", err)
-	}
-
-	logger.Infof("Container %s stopped", containerName)
-	return nil
-}
-
 func shouldRemoveClientConfig() bool {
 	c := config.GetConfig()
 	return len(c.Clients.RegisteredClients) > 0 || c.Clients.AutoDiscovery
@@ -589,14 +581,13 @@ func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []stopWork
 	group := errgroup.Group{}
 	for _, workload := range workloads {
 		group.Go(func() error {
-			logger.Infof("Stopping workload %s...", workload.Name)
 			// Stop the proxy process
 			proxy.StopProcess(workload.Name)
 
+			logger.Infof("Stopping containers for %s...", workload.Name)
 			// Stop the container
-			err := d.stopContainer(ctx, workload.ID, workload.Name)
-			if err != nil {
-				return err
+			if err := d.runtime.StopWorkload(ctx, workload.ID); err != nil {
+				return fmt.Errorf("failed to stop container: %w", err)
 			}
 
 			if shouldRemoveClientConfig() {

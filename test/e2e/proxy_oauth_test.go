@@ -62,7 +62,15 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 
 		// Start mock OIDC server using Ory Fosite
 		By("Starting mock OIDC server")
-		mockOIDCServer, err = e2e.NewOIDCMockServer(mockOIDCPort, clientID, clientSecret)
+		specReport := CurrentSpecReport()
+		if strings.Contains(specReport.FullText(), "Proxy OAuth Authentication E2E") {
+			mockOIDCServer, err = e2e.NewOIDCMockServer(
+				mockOIDCPort, clientID, clientSecret,
+				e2e.WithAccessTokenLifespan(2*time.Second),
+			)
+		} else {
+			mockOIDCServer, err = e2e.NewOIDCMockServer(mockOIDCPort, clientID, clientSecret)
+		}
 		Expect(err).ToNot(HaveOccurred())
 
 		// Enable auto-complete for MCP tests
@@ -394,6 +402,66 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 			Expect(tools.Tools).ToNot(BeEmpty(), "Should have OSV tools available through proxy")
 		})
 	})
+
+	Context("when testing proxy functionality with MCP protocol and token refresh", func() {
+		It("should refresh token after expiry and continue MCP operations", func() {
+			By("Getting OSV server URL")
+			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("Extracting base URL for transparent proxy")
+			baseURL := strings.TrimSuffix(strings.Split(osvServerURL, "#")[0], "/sse")
+			GinkgoWriter.Printf("Base URL for proxy: %s\n", baseURL)
+
+			By("Starting the proxy with OAuth-enabled MCP support")
+			var outputBuffer *bytes.Buffer
+			proxyCmd, outputBuffer = startProxyWithOAuthForMCP(
+				config,
+				proxyServerName,
+				baseURL,
+				proxyPort,
+				mockOIDCBaseURL,
+				clientID,
+				clientSecret,
+			)
+
+			By("Completing the initial OAuth flow")
+			Eventually(outputBuffer.String, 5*time.Second, 500*time.Millisecond).
+				Should(ContainSubstring("Please open this URL"))
+
+			matches := regexp.MustCompile(`Please open this URL in your browser: (https?://[^\s]+)`).
+				FindStringSubmatch(outputBuffer.String())
+			Expect(matches).To(HaveLen(2))
+			authURL := matches[1]
+			Expect(completeOAuthFlow(authURL)).To(Succeed())
+
+			By("Giving proxy time to finish OAuth exchange")
+			time.Sleep(2 * time.Second)
+
+			By("Waiting for access token to expire")
+			time.Sleep(3 * time.Second) // longer than the 2s lifespan
+
+			By("Reconnecting via MCP to trigger token refresh")
+			proxyURL := fmt.Sprintf("http://localhost:%d/sse", proxyPort)
+			err = e2e.WaitForMCPServerReady(config, proxyURL, 10*time.Second)
+			Expect(err).ToNot(HaveOccurred(), "MCP server not ready after token expiry")
+
+			mcpClient, err := e2e.NewMCPClientForSSE(config, proxyURL)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			Expect(mcpClient.Initialize(ctx)).To(Succeed())
+			Expect(mcpClient.Ping(ctx)).To(Succeed())
+
+			tools, err := mcpClient.ListTools(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tools.Tools).ToNot(BeEmpty(), "Should list tools after refresh")
+		})
+	})
+
 })
 
 // Helper functions

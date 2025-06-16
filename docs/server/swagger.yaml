@@ -546,6 +546,28 @@ paths:
       summary: Register a new client
       tags:
       - clients
+  /api/v1beta/clients/{name}:
+    delete:
+      description: Unregister a client from ToolHive
+      parameters:
+      - description: Client name to unregister
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid request
+      summary: Unregister a client
+      tags:
+      - clients
   /api/v1beta/discovery/clients:
     get:
       description: List all clients compatible with ToolHive and their status
@@ -714,6 +736,12 @@ paths:
   /api/v1beta/workloads:
     get:
       description: Get a list of all running workloads
+      parameters:
+      - description: List all workloads, including stopped ones
+        in: query
+        name: all
+        schema:
+          type: boolean
       responses:
         "200":
           content:

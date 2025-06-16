@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -40,6 +41,107 @@ const (
 
 // ErrUnknownManagerType is returned when an invalid value for ProviderType is specified.
 var ErrUnknownManagerType = errors.New("unknown secret manager type")
+
+// ErrSecretsNotSetup is returned when secrets functionality is used before running setup.
+var ErrSecretsNotSetup = errors.New("secrets provider not configured. " +
+	"Please run 'thv secret setup' to configure a secrets provider first")
+
+// SetupResult contains the result of a provider setup operation
+type SetupResult struct {
+	ProviderType ProviderType
+	Success      bool
+	Message      string
+	Error        error
+}
+
+// ValidateProvider validates that a provider can be created and performs basic functionality tests
+func ValidateProvider(ctx context.Context, providerType ProviderType) *SetupResult {
+	result := &SetupResult{
+		ProviderType: providerType,
+		Success:      false,
+	}
+
+	// Test that we can create the provider
+	provider, err := CreateSecretProvider(providerType)
+	if err != nil {
+		result.Error = fmt.Errorf("failed to create provider: %w", err)
+		result.Message = fmt.Sprintf("Failed to initialize %s provider", providerType)
+		return result
+	}
+
+	// Perform provider-specific validation
+	switch providerType {
+	case EncryptedType:
+		return validateEncryptedProvider(ctx, provider, result)
+	case OnePasswordType:
+		return validateOnePasswordProvider(ctx, provider, result)
+	case NoneType:
+		return validateNoneProvider(result)
+	default:
+		result.Error = fmt.Errorf("unknown provider type: %s", providerType)
+		result.Message = "Unknown provider type"
+		return result
+	}
+}
+
+// validateEncryptedProvider tests basic encrypted provider functionality
+func validateEncryptedProvider(ctx context.Context, provider Provider, result *SetupResult) *SetupResult {
+	// Test basic functionality with a temporary secret
+	testKey := "setup-validation-test"
+	testValue := "test-value"
+
+	// Test setting a secret
+	if err := provider.SetSecret(ctx, testKey, testValue); err != nil {
+		result.Error = fmt.Errorf("failed to test secret storage: %w", err)
+		result.Message = "Failed to store test secret"
+		return result
+	}
+
+	// Test retrieving the secret
+	retrievedValue, err := provider.GetSecret(ctx, testKey)
+	if err != nil {
+		result.Error = fmt.Errorf("failed to test secret retrieval: %w", err)
+		result.Message = "Failed to retrieve test secret"
+		return result
+	}
+
+	// Verify the value matches
+	if retrievedValue != testValue {
+		result.Error = fmt.Errorf("secret test failed: expected %s, got %s", testValue, retrievedValue)
+		result.Message = "Secret value mismatch during validation"
+		return result
+	}
+
+	// Clean up test secret
+	_ = provider.DeleteSecret(ctx, testKey)
+
+	result.Success = true
+	result.Message = "Encrypted provider validation successful"
+	return result
+}
+
+// validateOnePasswordProvider tests 1Password provider connectivity
+func validateOnePasswordProvider(ctx context.Context, provider Provider, result *SetupResult) *SetupResult {
+	// Test basic functionality by attempting to list secrets
+	_, err := provider.ListSecrets(ctx)
+	if err != nil {
+		result.Error = fmt.Errorf("failed to connect to 1Password: %w", err)
+		result.Message = "Failed to connect to 1Password service"
+		return result
+	}
+
+	result.Success = true
+	result.Message = "1Password provider validation successful"
+	return result
+}
+
+// validateNoneProvider validates the none provider (always succeeds)
+func validateNoneProvider(result *SetupResult) *SetupResult {
+	// None provider doesn't need validation, it always works
+	result.Success = true
+	result.Message = "None provider validation successful"
+	return result
+}
 
 // CreateSecretProvider creates the specified type of secrets provider.
 func CreateSecretProvider(managerType ProviderType) (Provider, error) {

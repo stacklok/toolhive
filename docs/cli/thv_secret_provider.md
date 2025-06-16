@@ -1,9 +1,10 @@
 ## thv secret provider
 
-Configure the secrets provider
+Configure the secrets provider directly
 
 ### Synopsis
 
+For most users, it is recommended to use "thv secret setup" instead.
 Configure the secrets provider.
 Valid secrets providers are:
   - encrypted: Full read-write secrets provider

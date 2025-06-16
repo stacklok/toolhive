@@ -134,7 +134,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	// NOTE: This MUST happen after we save the run config to avoid storing
 	// the secrets in the state store.
 	if len(r.Config.Secrets) > 0 {
-		providerType, err := config.GetConfig().Secrets.GetProviderType()
+		cfg := config.GetConfig()
+
+		providerType, err := cfg.Secrets.GetProviderType()
 		if err != nil {
 			return fmt.Errorf("error determining secrets provider type: %w", err)
 		}

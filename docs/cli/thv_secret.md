@@ -24,7 +24,8 @@ The secret command provides subcommands to set, get, delete, and list secrets.
 * [thv secret delete](thv_secret_delete.md)	 - Delete a secret
 * [thv secret get](thv_secret_get.md)	 - Get a secret
 * [thv secret list](thv_secret_list.md)	 - List all available secrets
-* [thv secret provider](thv_secret_provider.md)	 - Configure the secrets provider
+* [thv secret provider](thv_secret_provider.md)	 - Configure the secrets provider directly
 * [thv secret reset-keyring](thv_secret_reset-keyring.md)	 - Reset the keyring secret
 * [thv secret set](thv_secret_set.md)	 - Set a secret
+* [thv secret setup](thv_secret_setup.md)	 - Set up secrets provider
 

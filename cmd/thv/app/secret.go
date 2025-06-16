@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,7 @@ func newSecretCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(
+		newSecretSetupCommand(),
 		newSecretSetCommand(),
 		newSecretGetCommand(),
 		newSecretDeleteCommand(),
@@ -36,8 +38,9 @@ func newSecretCommand() *cobra.Command {
 func newSecretProviderCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "provider <name>",
-		Short: "Configure the secrets provider",
-		Long: `Configure the secrets provider.
+		Short: "Configure the secrets provider directly",
+		Long: `For most users, it is recommended to use "thv secret setup" instead.
+Configure the secrets provider.
 Valid secrets providers are:
   - encrypted: Full read-write secrets provider
   - 1password: Read-only secrets provider`,
@@ -46,6 +49,26 @@ Valid secrets providers are:
 			provider := args[0]
 			return SetSecretsProvider(secrets.ProviderType(provider))
 		},
+	}
+}
+
+func newSecretSetupCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "setup",
+		Short: "Set up secrets provider",
+		Long: fmt.Sprintf(`Interactive setup for configuring a secrets provider.
+This command will guide you through selecting and configuring
+a secrets provider for storing and retrieving secrets.
+
+Available providers:
+  - %s: Stores secrets in an encrypted file using AES-256-GCM using the OS Keyring
+  - %s: Read-only access to 1Password secrets (requires OP_SERVICE_ACCOUNT_TOKEN)
+  - %s: Disables secrets functionality
+
+You must run this command before using any other secrets functionality.`,
+			string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType)), //nolint:gofmt,gci
+		Args: cobra.NoArgs,
+		RunE: runSecretsSetup,
 	}
 }
 
@@ -268,7 +291,14 @@ func newSecretResetKeyringCommand() *cobra.Command {
 }
 
 func getSecretsManager() (secrets.Provider, error) {
-	providerType, err := config.GetConfig().Secrets.GetProviderType()
+	cfg := config.GetConfig()
+
+	// Check if secrets setup has been completed
+	if !cfg.Secrets.SetupCompleted {
+		return nil, secrets.ErrSecretsNotSetup
+	}
+
+	providerType, err := cfg.Secrets.GetProviderType()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
@@ -279,4 +309,81 @@ func getSecretsManager() (secrets.Provider, error) {
 	}
 
 	return manager, nil
+}
+
+func runSecretsSetup(_ *cobra.Command, _ []string) error {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Printf(`
+ToolHive Secrets Setup
+=====================
+
+Please select a secrets provider:
+  %s - Store secrets in an encrypted file (full read/write)
+  %s - Use 1Password for secrets (read-only, requires service account)
+  %s - Disable secrets functionality
+`, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+
+	var providerType secrets.ProviderType
+	for {
+		fmt.Printf("\nEnter provider (%s/%s/%s): ",
+			string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("failed to read input: %w", err)
+		}
+
+		input = strings.TrimSpace(input)
+		switch input {
+		case string(secrets.EncryptedType):
+			providerType = secrets.EncryptedType
+		case string(secrets.OnePasswordType):
+			providerType = secrets.OnePasswordType
+		case string(secrets.NoneType):
+			providerType = secrets.NoneType
+		default:
+			fmt.Printf("Invalid provider. Please enter '%s', '%s', or '%s'.\n",
+				string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+			continue
+		}
+		break
+	}
+
+	fmt.Printf("\nYou selected: %s\n", providerType)
+
+	// Show provider-specific setup instructions
+	switch providerType {
+	case secrets.EncryptedType:
+		fmt.Println(`Setting up encrypted secrets provider...
+You will need to provide a password to encrypt your secrets.
+This password will be stored in your OS keyring if available.`)
+	case secrets.OnePasswordType:
+		fmt.Println(`Setting up 1Password secrets provider...
+
+To use 1Password as your secrets provider, you need to:
+1. Create a service account in your 1Password account
+2. Generate a service account token
+3. Set the OP_SERVICE_ACCOUNT_TOKEN environment variable
+
+For more information, visit: https://developer.1password.com/docs/service-accounts/`)
+	case secrets.NoneType:
+		fmt.Println(`Setting up none secrets provider...
+Secrets functionality will be disabled.
+No secrets will be stored or retrieved.`)
+	}
+
+	// SetSecretsProvider will handle validation and configuration
+	fmt.Println("Validating provider setup...")
+	if err := SetSecretsProvider(providerType); err != nil {
+		return fmt.Errorf("failed to configure secrets provider: %w", err)
+	}
+
+	fmt.Printf("\n✓ Secrets provider '%s' has been successfully configured!\n", providerType)
+
+	// Show additional notes for specific providers
+	if providerType == secrets.OnePasswordType {
+		fmt.Println("Note: 1Password provider is read-only. You can retrieve secrets but not set new ones.")
+	}
+
+	return nil
 }

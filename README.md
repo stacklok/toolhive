@@ -119,7 +119,7 @@ restart your client for changes to take effect.
 ToolHive can run any MCP server from the built-in registry, custom container
 images, or even build images on the fly from source packages.
 
-FWant to explore more? Run:
+Want to explore more? Run:
 
 ```sh
 thv registry list

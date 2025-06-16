@@ -1,9 +1,0 @@
-operator:
-  podSecurityContext:
-    runAsNonRoot: true
-
-  containerSecurityContext:
-    runAsUser: 2000
-    capabilities:
-      drop:
-      - ALL

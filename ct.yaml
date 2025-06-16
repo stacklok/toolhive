@@ -1,5 +1,0 @@
-chart-dirs:
-  - deploy/charts
-validate-maintainers: false
-remote: origin
-target-branch: main

@@ -1,0 +1,5 @@
+processor:
+  ignoreTypes: []
+  ignoreFields: []
+render:
+  kubernetesVersion: 1.27

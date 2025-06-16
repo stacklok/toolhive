@@ -1,5 +1,0 @@
-env:
-  - name: TEST_ENV_VAR
-    value: "my-test-env-var"
-  - name: ANOTHER_TEST_ENV_VAR
-    value: "another-test-env-var"

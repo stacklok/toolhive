@@ -29,9 +29,27 @@ func newSecretCommand() *cobra.Command {
 		newSecretDeleteCommand(),
 		newSecretListCommand(),
 		newSecretResetKeyringCommand(),
+		newSecretProviderCommand(),
 	)
 
 	return cmd
+}
+
+func newSecretProviderCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "provider <name>",
+		Short: "Configure the secrets provider directly",
+		Long: `For most users, it is recommended to use "thv secret setup" instead.
+Configure the secrets provider.
+Valid secrets providers are:
+  - encrypted: Full read-write secrets provider
+  - 1password: Read-only secrets provider`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			provider := args[0]
+			return SetSecretsProvider(secrets.ProviderType(provider))
+		},
+	}
 }
 
 func newSecretSetupCommand() *cobra.Command {

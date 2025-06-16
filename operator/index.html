@@ -1,0 +1,1107 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>CRD API Reference</title>
+  <style>
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      background-color: #1a1a1a;
+      border: none;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">CRD API Reference</h1>
+</header>
+<h1 id="api-reference">API Reference</h1>
+<h2 id="packages">Packages</h2>
+<ul>
+<li><a
+href="#toolhivestacklokdevv1alpha1">toolhive.stacklok.dev/v1alpha1</a></li>
+</ul>
+<h2
+id="toolhive.stacklok.devv1alpha1">toolhive.stacklok.dev/v1alpha1</h2>
+<p>Package v1alpha1 contains API Schema definitions for the toolhive
+v1alpha1 API group</p>
+<h3 id="resource-types">Resource Types</h3>
+<ul>
+<li><a href="#mcpserver">MCPServer</a></li>
+<li><a href="#mcpserverlist">MCPServerList</a></li>
+</ul>
+<h4 id="configmapoidcref">ConfigMapOIDCRef</h4>
+<p>ConfigMapOIDCRef references a ConfigMap containing OIDC
+configuration</p>
+<p><em>Appears in:</em> - <a href="#oidcconfigref">OIDCConfigRef</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code> <em>string</em></td>
+<td>Name is the name of the ConfigMap</td>
+<td></td>
+<td>Required: {} <br /></td>
+</tr>
+<tr>
+<td><code>key</code> <em>string</em></td>
+<td>Key is the key in the ConfigMap that contains the OIDC
+configuration</td>
+<td>oidc.json</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="envvar">EnvVar</h4>
+<p>EnvVar represents an environment variable in a container</p>
+<p><em>Appears in:</em> - <a href="#mcpserverspec">MCPServerSpec</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code> <em>string</em></td>
+<td>Name of the environment variable</td>
+<td></td>
+<td>Required: {} <br /></td>
+</tr>
+<tr>
+<td><code>value</code> <em>string</em></td>
+<td>Value of the environment variable</td>
+<td></td>
+<td>Required: {} <br /></td>
+</tr>
+</tbody>
+</table>
+<h4 id="inlineoidcconfig">InlineOIDCConfig</h4>
+<p>InlineOIDCConfig contains direct OIDC configuration</p>
+<p><em>Appears in:</em> - <a href="#oidcconfigref">OIDCConfigRef</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>issuer</code> <em>string</em></td>
+<td>Issuer is the OIDC issuer URL</td>
+<td></td>
+<td>Required: {} <br /></td>
+</tr>
+<tr>
+<td><code>audience</code> <em>string</em></td>
+<td>Audience is the expected audience for the token</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>jwksUrl</code> <em>string</em></td>
+<td>JWKSURL is the URL to fetch the JWKS from</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>clientId</code> <em>string</em></td>
+<td>ClientID is the OIDC client ID</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="kubernetesoidcconfig">KubernetesOIDCConfig</h4>
+<p>KubernetesOIDCConfig configures OIDC for Kubernetes service account
+token validation</p>
+<p><em>Appears in:</em> - <a href="#oidcconfigref">OIDCConfigRef</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>serviceAccount</code> <em>string</em></td>
+<td>ServiceAccount is the name of the service account to validate tokens
+for<br />If empty, uses the pod’s service account</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>namespace</code> <em>string</em></td>
+<td>Namespace is the namespace of the service account<br />If empty,
+uses the MCPServer’s namespace</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>audience</code> <em>string</em></td>
+<td>Audience is the expected audience for the token</td>
+<td>toolhive</td>
+<td></td>
+</tr>
+<tr>
+<td><code>issuer</code> <em>string</em></td>
+<td>Issuer is the OIDC issuer URL</td>
+<td>https://kubernetes.default.svc</td>
+<td></td>
+</tr>
+<tr>
+<td><code>jwksUrl</code> <em>string</em></td>
+<td>JWKSURL is the URL to fetch the JWKS from</td>
+<td>https://kubernetes.default.svc/openid/v1/jwks</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="mcpserver">MCPServer</h4>
+<p>MCPServer is the Schema for the mcpservers API</p>
+<p><em>Appears in:</em> - <a href="#mcpserverlist">MCPServerList</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>apiVersion</code> <em>string</em></td>
+<td><code>toolhive.stacklok.dev/v1alpha1</code></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>kind</code> <em>string</em></td>
+<td><code>MCPServer</code></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>kind</code> <em>string</em></td>
+<td>Kind is a string value representing the REST resource this object
+represents.<br />Servers may infer this from the endpoint the client
+submits requests to.<br />Cannot be updated.<br />In
+CamelCase.<br />More info:
+https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>apiVersion</code> <em>string</em></td>
+<td>APIVersion defines the versioned schema of this representation of an
+object.<br />Servers should convert recognized schemas to the latest
+internal value, and<br />may reject unrecognized values.<br />More info:
+https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>metadata</code> <em><a
+href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">ObjectMeta</a></em></td>
+<td>Refer to Kubernetes API documentation for fields of
+<code>metadata</code>.</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>spec</code> <em><a
+href="#mcpserverspec">MCPServerSpec</a></em></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>status</code> <em><a
+href="#mcpserverstatus">MCPServerStatus</a></em></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="mcpserverlist">MCPServerList</h4>
+<p>MCPServerList contains a list of MCPServer</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>apiVersion</code> <em>string</em></td>
+<td><code>toolhive.stacklok.dev/v1alpha1</code></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>kind</code> <em>string</em></td>
+<td><code>MCPServerList</code></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>kind</code> <em>string</em></td>
+<td>Kind is a string value representing the REST resource this object
+represents.<br />Servers may infer this from the endpoint the client
+submits requests to.<br />Cannot be updated.<br />In
+CamelCase.<br />More info:
+https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>apiVersion</code> <em>string</em></td>
+<td>APIVersion defines the versioned schema of this representation of an
+object.<br />Servers should convert recognized schemas to the latest
+internal value, and<br />may reject unrecognized values.<br />More info:
+https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>metadata</code> <em><a
+href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta">ListMeta</a></em></td>
+<td>Refer to Kubernetes API documentation for fields of
+<code>metadata</code>.</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>items</code> <em><a href="#mcpserver">MCPServer</a>
+array</em></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="mcpserverphase">MCPServerPhase</h4>
+<p><em>Underlying type:</em> <em>string</em></p>
+<p>MCPServerPhase is the phase of the MCPServer</p>
+<p><em>Validation:</em> - Enum: [Pending Running Failed Terminating]</p>
+<p><em>Appears in:</em> - <a
+href="#mcpserverstatus">MCPServerStatus</a></p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Pending</code></td>
+<td>MCPServerPhasePending means the MCPServer is being
+created<br /></td>
+</tr>
+<tr>
+<td><code>Running</code></td>
+<td>MCPServerPhaseRunning means the MCPServer is running<br /></td>
+</tr>
+<tr>
+<td><code>Failed</code></td>
+<td>MCPServerPhaseFailed means the MCPServer failed to start<br /></td>
+</tr>
+<tr>
+<td><code>Terminating</code></td>
+<td>MCPServerPhaseTerminating means the MCPServer is being
+deleted<br /></td>
+</tr>
+</tbody>
+</table>
+<h4 id="mcpserverspec">MCPServerSpec</h4>
+<p>MCPServerSpec defines the desired state of MCPServer</p>
+<p><em>Appears in:</em> - <a href="#mcpserver">MCPServer</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>image</code> <em>string</em></td>
+<td>Image is the container image for the MCP server</td>
+<td></td>
+<td>Required: {} <br /></td>
+</tr>
+<tr>
+<td><code>transport</code> <em>string</em></td>
+<td>Transport is the transport method for the MCP server (stdio or
+sse)</td>
+<td>stdio</td>
+<td>Enum: [stdio sse] <br /></td>
+</tr>
+<tr>
+<td><code>port</code> <em>integer</em></td>
+<td>Port is the port to expose the MCP server on</td>
+<td>8080</td>
+<td>Maximum: 65535 <br />Minimum: 1 <br /></td>
+</tr>
+<tr>
+<td><code>targetPort</code> <em>integer</em></td>
+<td>TargetPort is the port that MCP server listens to</td>
+<td></td>
+<td>Maximum: 65535 <br />Minimum: 1 <br /></td>
+</tr>
+<tr>
+<td><code>args</code> <em>string array</em></td>
+<td>Args are additional arguments to pass to the MCP server</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>env</code> <em><a href="#envvar">EnvVar</a> array</em></td>
+<td>Env are environment variables to set in the MCP server
+container</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>volumes</code> <em><a href="#volume">Volume</a>
+array</em></td>
+<td>Volumes are volumes to mount in the MCP server container</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>resources</code> <em><a
+href="#resourcerequirements">ResourceRequirements</a></em></td>
+<td>Resources defines the resource requirements for the MCP server
+container</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>secrets</code> <em><a href="#secretref">SecretRef</a>
+array</em></td>
+<td>Secrets are references to secrets to mount in the MCP server
+container</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>permissionProfile</code> <em><a
+href="#permissionprofileref">PermissionProfileRef</a></em></td>
+<td>PermissionProfile defines the permission profile to use</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>podTemplateSpec</code> <em><a
+href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#podtemplatespec-v1-core">PodTemplateSpec</a></em></td>
+<td>PodTemplateSpec defines the pod template to use for the MCP
+server<br />This allows for customizing the pod configuration beyond
+what is provided by the other fields.<br />Note that to modify the
+specific container the MCP server runs in, you must specify<br />the
+<code>mcp</code> container name in the PodTemplateSpec.</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>resourceOverrides</code> <em><a
+href="#resourceoverrides">ResourceOverrides</a></em></td>
+<td>ResourceOverrides allows overriding annotations and labels for
+resources created by the operator</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>oidcConfig</code> <em><a
+href="#oidcconfigref">OIDCConfigRef</a></em></td>
+<td>OIDCConfig defines OIDC authentication configuration for the MCP
+server</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="mcpserverstatus">MCPServerStatus</h4>
+<p>MCPServerStatus defines the observed state of MCPServer</p>
+<p><em>Appears in:</em> - <a href="#mcpserver">MCPServer</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>conditions</code> <em><a
+href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta">Condition</a>
+array</em></td>
+<td>Conditions represent the latest available observations of the
+MCPServer’s state</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>url</code> <em>string</em></td>
+<td>URL is the URL where the MCP server can be accessed</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>phase</code> <em><a
+href="#mcpserverphase">MCPServerPhase</a></em></td>
+<td>Phase is the current phase of the MCPServer</td>
+<td></td>
+<td>Enum: [Pending Running Failed Terminating] <br /></td>
+</tr>
+<tr>
+<td><code>message</code> <em>string</em></td>
+<td>Message provides additional information about the current phase</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="networkpermissions">NetworkPermissions</h4>
+<p>NetworkPermissions defines the network permissions for an MCP
+server</p>
+<p><em>Appears in:</em> - <a
+href="#permissionprofilespec">PermissionProfileSpec</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>outbound</code> <em><a
+href="#outboundnetworkpermissions">OutboundNetworkPermissions</a></em></td>
+<td>Outbound defines the outbound network permissions</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="oidcconfigref">OIDCConfigRef</h4>
+<p>OIDCConfigRef defines a reference to OIDC configuration</p>
+<p><em>Appears in:</em> - <a href="#mcpserverspec">MCPServerSpec</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>type</code> <em>string</em></td>
+<td>Type is the type of OIDC configuration</td>
+<td>kubernetes</td>
+<td>Enum: [kubernetes configmap inline] <br /></td>
+</tr>
+<tr>
+<td><code>kubernetes</code> <em><a
+href="#kubernetesoidcconfig">KubernetesOIDCConfig</a></em></td>
+<td>Kubernetes configures OIDC for Kubernetes service account token
+validation<br />Only used when Type is “kubernetes”</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>configMap</code> <em><a
+href="#configmapoidcref">ConfigMapOIDCRef</a></em></td>
+<td>ConfigMap references a ConfigMap containing OIDC
+configuration<br />Only used when Type is “configmap”</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>inline</code> <em><a
+href="#inlineoidcconfig">InlineOIDCConfig</a></em></td>
+<td>Inline contains direct OIDC configuration<br />Only used when Type
+is “inline”</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="outboundnetworkpermissions">OutboundNetworkPermissions</h4>
+<p>OutboundNetworkPermissions defines the outbound network
+permissions</p>
+<p><em>Appears in:</em> - <a
+href="#networkpermissions">NetworkPermissions</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>insecureAllowAll</code> <em>boolean</em></td>
+<td>InsecureAllowAll allows all outbound network connections (not
+recommended)</td>
+<td>false</td>
+<td></td>
+</tr>
+<tr>
+<td><code>allowTransport</code> <em>string array</em></td>
+<td>AllowTransport is a list of transport protocols to allow (e.g.,
+“tcp”, “udp”)</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>allowHost</code> <em>string array</em></td>
+<td>AllowHost is a list of hosts to allow connections to</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>allowPort</code> <em>integer array</em></td>
+<td>AllowPort is a list of ports to allow connections to</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="permissionprofileref">PermissionProfileRef</h4>
+<p>PermissionProfileRef defines a reference to a permission profile</p>
+<p><em>Appears in:</em> - <a href="#mcpserverspec">MCPServerSpec</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>type</code> <em>string</em></td>
+<td>Type is the type of permission profile reference</td>
+<td>builtin</td>
+<td>Enum: [builtin configmap] <br /></td>
+</tr>
+<tr>
+<td><code>name</code> <em>string</em></td>
+<td>Name is the name of the permission profile<br />If Type is
+“builtin”, Name must be one of: “none”, “network”<br />If Type is
+“configmap”, Name is the name of the ConfigMap</td>
+<td></td>
+<td>Required: {} <br /></td>
+</tr>
+<tr>
+<td><code>key</code> <em>string</em></td>
+<td>Key is the key in the ConfigMap that contains the permission
+profile<br />Only used when Type is “configmap”</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="resourcelist">ResourceList</h4>
+<p>ResourceList is a set of (resource name, quantity) pairs</p>
+<p><em>Appears in:</em> - <a
+href="#resourcerequirements">ResourceRequirements</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cpu</code> <em>string</em></td>
+<td>CPU is the CPU limit in cores (e.g., “500m” for 0.5 cores)</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>memory</code> <em>string</em></td>
+<td>Memory is the memory limit in bytes (e.g., “64Mi” for 64
+megabytes)</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="resourcemetadataoverrides">ResourceMetadataOverrides</h4>
+<p>ResourceMetadataOverrides defines metadata overrides for a
+resource</p>
+<p><em>Appears in:</em> - <a
+href="#resourceoverrides">ResourceOverrides</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>annotations</code> <em>object (keys:string,
+values:string)</em></td>
+<td>Annotations to add or override on the resource</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>labels</code> <em>object (keys:string,
+values:string)</em></td>
+<td>Labels to add or override on the resource</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="resourceoverrides">ResourceOverrides</h4>
+<p>ResourceOverrides defines overrides for annotations and labels on
+created resources</p>
+<p><em>Appears in:</em> - <a href="#mcpserverspec">MCPServerSpec</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>proxyDeployment</code> <em><a
+href="#resourcemetadataoverrides">ResourceMetadataOverrides</a></em></td>
+<td>ProxyDeployment defines overrides for the Proxy Deployment resource
+(toolhive proxy)</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>proxyService</code> <em><a
+href="#resourcemetadataoverrides">ResourceMetadataOverrides</a></em></td>
+<td>ProxyService defines overrides for the Proxy Service resource
+(points to the proxy deployment)</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="resourcerequirements">ResourceRequirements</h4>
+<p>ResourceRequirements describes the compute resource requirements</p>
+<p><em>Appears in:</em> - <a href="#mcpserverspec">MCPServerSpec</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>limits</code> <em><a
+href="#resourcelist">ResourceList</a></em></td>
+<td>Limits describes the maximum amount of compute resources
+allowed</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td><code>requests</code> <em><a
+href="#resourcelist">ResourceList</a></em></td>
+<td>Requests describes the minimum amount of compute resources
+required</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="secretref">SecretRef</h4>
+<p>SecretRef is a reference to a secret</p>
+<p><em>Appears in:</em> - <a href="#mcpserverspec">MCPServerSpec</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code> <em>string</em></td>
+<td>Name is the name of the secret</td>
+<td></td>
+<td>Required: {} <br /></td>
+</tr>
+<tr>
+<td><code>key</code> <em>string</em></td>
+<td>Key is the key in the secret itself</td>
+<td></td>
+<td>Required: {} <br /></td>
+</tr>
+<tr>
+<td><code>targetEnvName</code> <em>string</em></td>
+<td>TargetEnvName is the environment variable to be used when setting up
+the secret in the MCP server<br />If left unspecified, it defaults to
+the key</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="volume">Volume</h4>
+<p>Volume represents a volume to mount in a container</p>
+<p><em>Appears in:</em> - <a href="#mcpserverspec">MCPServerSpec</a></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+<th>Default</th>
+<th>Validation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code> <em>string</em></td>
+<td>Name is the name of the volume</td>
+<td></td>
+<td>Required: {} <br /></td>
+</tr>
+<tr>
+<td><code>hostPath</code> <em>string</em></td>
+<td>HostPath is the path on the host to mount</td>
+<td></td>
+<td>Required: {} <br /></td>
+</tr>
+<tr>
+<td><code>mountPath</code> <em>string</em></td>
+<td>MountPath is the path in the container to mount to</td>
+<td></td>
+<td>Required: {} <br /></td>
+</tr>
+<tr>
+<td><code>readOnly</code> <em>boolean</em></td>
+<td>ReadOnly specifies whether the volume should be mounted
+read-only</td>
+<td>false</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

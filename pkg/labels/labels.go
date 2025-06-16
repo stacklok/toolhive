@@ -28,12 +28,15 @@ const (
 
 	// LabelToolType is the label that indicates the type of tool
 	LabelToolType = "toolhive-tool-type"
+
+	// LabelEnabledValue is the value for the LabelEnabled label
+	LabelEnabledValue = "true"
 )
 
 // AddStandardLabels adds standard labels to a container
 func AddStandardLabels(labels map[string]string, containerName, containerBaseName, transportType string, port int) {
 	// Add standard labels
-	labels[LabelEnabled] = "true"
+	labels[LabelEnabled] = LabelEnabledValue
 	labels[LabelName] = containerName
 	labels[LabelBaseName] = containerBaseName
 	labels[LabelTransport] = transportType
@@ -43,15 +46,21 @@ func AddStandardLabels(labels map[string]string, containerName, containerBaseNam
 	labels[LabelToolType] = "mcp"
 }
 
+// AddNetworkLabels adds network-related labels to a network
+func AddNetworkLabels(labels map[string]string, networkName string) {
+	labels[LabelEnabled] = LabelEnabledValue
+	labels[LabelName] = networkName
+}
+
 // FormatToolHiveFilter formats a filter for ToolHive containers
 func FormatToolHiveFilter() string {
-	return fmt.Sprintf("%s=true", LabelEnabled)
+	return fmt.Sprintf("%s=%s", LabelEnabled, LabelEnabledValue)
 }
 
 // IsToolHiveContainer checks if a container is managed by ToolHive
 func IsToolHiveContainer(labels map[string]string) bool {
 	value, ok := labels[LabelEnabled]
-	return ok && strings.ToLower(value) == "true"
+	return ok && strings.ToLower(value) == LabelEnabledValue
 }
 
 // GetContainerName gets the container name from labels

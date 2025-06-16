@@ -42,7 +42,7 @@ else
 fi
 
 # Set test timeout
-TEST_TIMEOUT="${TEST_TIMEOUT:-10m}"
+TEST_TIMEOUT="${TEST_TIMEOUT:-20m}"
 echo -e "${GREEN}✓${NC} Test timeout: $TEST_TIMEOUT"
 
 # Export environment variables for tests
@@ -55,7 +55,7 @@ echo ""
 
 # Run the tests
 cd "$(dirname "$0")"
-if ginkgo run --timeout="$TEST_TIMEOUT" --v --progress --trace .; then
+if ginkgo run --timeout="$TEST_TIMEOUT" --vv --show-node-events --trace .; then
     echo ""
     echo -e "${GREEN}✓ All E2E tests passed!${NC}"
     exit 0

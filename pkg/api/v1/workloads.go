@@ -56,6 +56,7 @@ func WorkloadRouter(
 //		@Description	Get a list of all running workloads
 //		@Tags			workloads
 //		@Produce		json
+//		@Param			all	query		bool	false	"List all workloads, including stopped ones"
 //		@Success		200	{object}	workloadListResponse
 //		@Router			/api/v1beta/workloads [get]
 func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {

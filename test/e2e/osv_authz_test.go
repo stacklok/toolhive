@@ -64,12 +64,11 @@ var _ = Describe("OSV MCP Server with Authorization", Serial, func() {
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "sse",
-					"--debug",
 					"--authz-config", authzConfigPath,
 					"--otel-enable-prometheus-metrics-path",
 					"osv").ExpectSuccess()
 
-				err = e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Get server URL

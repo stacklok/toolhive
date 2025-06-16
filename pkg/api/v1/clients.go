@@ -26,6 +26,7 @@ func ClientRouter(
 	r := chi.NewRouter()
 	r.Get("/", routes.listClients)
 	r.Post("/", routes.registerClient)
+	r.Delete("/{name}", routes.unregisterClient)
 	return r
 }
 
@@ -88,6 +89,34 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to marshal server details", http.StatusInternalServerError)
 		return
 	}
+}
+
+// unregisterClient
+//
+//	@Summary		Unregister a client
+//	@Description	Unregister a client from ToolHive
+//	@Tags			clients
+//	@Param			name	path	string	true	"Client name to unregister"
+//	@Success		204
+//	@Failure		400	{string}	string	"Invalid request"
+//	@Router			/api/v1beta/clients/{name} [delete]
+func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) {
+	clientName := chi.URLParam(r, "name")
+	if clientName == "" {
+		http.Error(w, "Client name is required", http.StatusBadRequest)
+		return
+	}
+
+	err := c.manager.UnregisterClient(r.Context(), client.Client{
+		Name: client.MCPClient(clientName),
+	})
+	if err != nil {
+		logger.Errorf("Failed to unregister client: %v", err)
+		http.Error(w, "Failed to unregister client", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type createClientRequest struct {

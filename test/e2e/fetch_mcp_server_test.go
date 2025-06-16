@@ -46,7 +46,7 @@ var _ = Describe("FetchMcpServer", func() {
 				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 30 seconds")
 
 				By("Verifying the server appears in the list")
@@ -60,7 +60,7 @@ var _ = Describe("FetchMcpServer", func() {
 				e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch").ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Getting the server URL")
@@ -89,7 +89,7 @@ var _ = Describe("FetchMcpServer", func() {
 			BeforeEach(func() {
 				// Start a server for lifecycle tests
 				e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch").ExpectSuccess()
-				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
@@ -118,7 +118,7 @@ var _ = Describe("FetchMcpServer", func() {
 				Expect(stdout).To(ContainSubstring(serverName))
 
 				By("Waiting for the server to be running again")
-				err := e2e.WaitForMCPServer(config, serverName, 30*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 			})
 

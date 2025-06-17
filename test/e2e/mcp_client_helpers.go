@@ -31,6 +31,18 @@ func NewMCPClientForSSE(config *TestConfig, serverURL string) (*MCPClientHelper,
 	}, nil
 }
 
+// NewMCPClientForStreamableHTTP creates a new MCP client for streamable HTTP transport
+func NewMCPClientForStreamableHTTP(config *TestConfig, serverURL string) (*MCPClientHelper, error) {
+	mcpClient, err := client.NewStreamableHttpClient(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Streamable HTTP MCP client: %w", err)
+	}
+	return &MCPClientHelper{
+		client: mcpClient,
+		config: config,
+	}, nil
+}
+
 // Initialize initializes the MCP connection
 func (h *MCPClientHelper) Initialize(ctx context.Context) error {
 	// Start the transport first
@@ -137,7 +149,7 @@ func (h *MCPClientHelper) ExpectResourceExists(ctx context.Context, uri string) 
 }
 
 // WaitForMCPServerReady waits for an MCP server to be ready and responsive
-func WaitForMCPServerReady(config *TestConfig, serverURL string, timeout time.Duration) error {
+func WaitForMCPServerReady(config *TestConfig, serverURL string, mode string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -156,11 +168,21 @@ func WaitForMCPServerReady(config *TestConfig, serverURL string, timeout time.Du
 
 			return fmt.Errorf("timeout waiting for MCP server to be ready at %s", serverURL)
 		case <-ticker.C:
-			// Try to create a client and initialize
-			mcpClient, err := NewMCPClientForSSE(config, serverURL)
-			if err != nil {
-				GinkgoWriter.Printf("Failed to create MCP client for %s: %v\n", serverURL, err)
-				continue
+			var mcpClient *MCPClientHelper
+			var err error
+			if mode == "streamable-http" {
+				mcpClient, err = NewMCPClientForStreamableHTTP(config, serverURL)
+				if err != nil {
+					GinkgoWriter.Printf("Failed to create MCP client in streamable-http mode for %s: %v\n", serverURL, err)
+					continue
+				}
+			} else {
+				// Try to create a client and initialize
+				mcpClient, err = NewMCPClientForSSE(config, serverURL)
+				if err != nil {
+					GinkgoWriter.Printf("Failed to create MCP client in SSE mode for %s: %v\n", serverURL, err)
+					continue
+				}
 			}
 
 			initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)

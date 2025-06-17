@@ -130,8 +130,10 @@ func (m *defaultManager) addRunningMCPsToClient(ctx context.Context, clientType 
 			continue // Skip if we can't get the port
 		}
 
+		transportType := labels.GetTransportType(c.Labels)
+
 		// Generate URL for the MCP server
-		url := GenerateMCPServerURL(transport.LocalhostIPv4, port, name)
+		url := GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
 
 		// Update the MCP server configuration with locking
 		if err := Upsert(*clientConfig, name, url); err != nil {

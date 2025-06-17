@@ -11,8 +11,8 @@ type MCPServerSpec struct {
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
 
-	// Transport is the transport method for the MCP server (stdio or sse)
-	// +kubebuilder:validation:Enum=stdio;sse
+	// Transport is the transport method for the MCP server (stdio, streamable-http or sse)
+	// +kubebuilder:validation:Enum=stdio;streamable-http;sse
 	// +kubebuilder:default=stdio
 	Transport string `json:"transport,omitempty"`
 

@@ -376,7 +376,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 			proxyURL := fmt.Sprintf("http://localhost:%d/sse", proxyPort)
 
 			// Wait for proxy to be ready for MCP connections
-			err = e2e.WaitForMCPServerReady(config, proxyURL, 60*time.Second)
+			err = e2e.WaitForMCPServerReady(config, proxyURL, "sse", 60*time.Second)
 			if err != nil {
 				GinkgoWriter.Printf("MCP connection through proxy failed: %v\n", err)
 				Skip("Skipping MCP test due to proxy not being ready")
@@ -443,7 +443,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 
 			By("Reconnecting via MCP to trigger token refresh")
 			proxyURL := fmt.Sprintf("http://localhost:%d/sse", proxyPort)
-			err = e2e.WaitForMCPServerReady(config, proxyURL, 10*time.Second)
+			err = e2e.WaitForMCPServerReady(config, proxyURL, "sse", 10*time.Second)
 			Expect(err).ToNot(HaveOccurred(), "MCP server not ready after token expiry")
 
 			mcpClient, err := e2e.NewMCPClientForSSE(config, proxyURL)

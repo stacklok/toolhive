@@ -2,9 +2,7 @@ package e2e_test
 
 import (
 	"context"
-	"fmt"
 	"net/http"
-	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -13,12 +11,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-// generateUniqueServerName creates a unique server name for OSV tests
-func generateUniqueServerName(prefix string) string {
-	return fmt.Sprintf("%s-%d-%d-%d", prefix, os.Getpid(), time.Now().UnixNano(), GinkgoRandomSeed())
-}
-
-var _ = Describe("OsvMcpServer", Serial, func() {
+var _ = Describe("OsvStreamableHttpMcpServer", Serial, func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {
@@ -29,7 +22,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
 	})
 
-	Describe("Running OSV MCP server with SSE transport", func() {
+	Describe("Running OSV MCP server with Streamable HTTP transport", func() {
 		Context("when starting the server from registry", func() {
 			var serverName string
 
@@ -45,11 +38,11 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				}
 			})
 
-			It("should successfully start and be accessible via SSE [Serial]", func() {
-				By("Starting the OSV MCP server with SSE transport")
+			It("should successfully start and be accessible via Streamable HTTP [Serial]", func() {
+				By("Starting the OSV MCP server with Streamable HTTP transport")
 				stdout, stderr := e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"--transport", "sse",
+					"--transport", "streamable-http",
 					"osv").ExpectSuccess()
 
 				// The command should indicate success
@@ -59,18 +52,18 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
-				By("Verifying the server appears in the list with SSE transport")
+				By("Verifying the server appears in the list with Streamable HTTP transport")
 				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
-				Expect(stdout).To(ContainSubstring("sse"), "Server should show SSE transport")
+				Expect(stdout).To(ContainSubstring("mcp"), "Server should show mcp endpoint")
 			})
 
-			It("should be accessible via HTTP SSE endpoint [Serial]", func() {
+			It("should be accessible via HTTP Streamable HTTP endpoint [Serial]", func() {
 				By("Starting the OSV MCP server")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"--transport", "sse",
+					"--transport", "streamable-http",
 					"osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
@@ -81,12 +74,12 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				serverURL, err := e2e.GetMCPServerURL(config, serverName)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to get server URL")
 				Expect(serverURL).To(ContainSubstring("http"), "URL should be HTTP-based")
-				Expect(serverURL).To(ContainSubstring("/sse"), "URL should contain SSE endpoint")
+				Expect(serverURL).To(ContainSubstring("/mcp"), "URL should contain MCP endpoint")
 
 				By("Waiting before starting the HTTP request")
 				time.Sleep(10 * time.Second)
 
-				By("Making an HTTP request to the SSE endpoint")
+				By("Making an HTTP request to the MCP endpoint")
 
 				client := &http.Client{Timeout: 10 * time.Second}
 				var resp *http.Response
@@ -104,7 +97,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 					time.Sleep(10 * time.Second)
 				}
 
-				Expect(httpErr).ToNot(HaveOccurred(), "Should be able to connect to SSE endpoint")
+				Expect(httpErr).ToNot(HaveOccurred(), "Should be able to connect to streamable HTTP endpoint")
 				Expect(resp).ToNot(BeNil(), "Response should not be nil")
 				defer resp.Body.Close()
 
@@ -116,7 +109,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				By("Starting the OSV MCP server")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"--transport", "sse",
+					"--transport", "streamable-http",
 					"osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
@@ -128,11 +121,11 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Waiting for MCP server to be ready")
-				err = e2e.WaitForMCPServerReady(config, serverURL, "sse", 60*time.Second)
+				err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "MCP server should be ready for protocol operations")
 
 				By("Creating MCP client and initializing connection")
-				mcpClient, err := e2e.NewMCPClientForSSE(config, serverURL)
+				mcpClient, err := e2e.NewMCPClientForStreamableHTTP(config, serverURL)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to create MCP client")
 				defer mcpClient.Close()
 
@@ -171,7 +164,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				// Start ONE server for ALL OSV-specific tests
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"--transport", "sse",
+					"--transport", "streamable-http",
 					"osv").ExpectSuccess()
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
@@ -180,14 +173,14 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				serverURL, err = e2e.GetMCPServerURL(config, serverName)
 				Expect(err).ToNot(HaveOccurred())
 
-				err = e2e.WaitForMCPServerReady(config, serverURL, "sse", 60*time.Second)
+				err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
 			BeforeEach(func() {
 				// Create fresh MCP client for each test
 				var err error
-				mcpClient, err = e2e.NewMCPClientForSSE(config, serverURL)
+				mcpClient, err = e2e.NewMCPClientForStreamableHTTP(config, serverURL)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Create context that will be cancelled in AfterEach
@@ -317,7 +310,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				// Start a server for lifecycle tests
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"--transport", "sse",
+					"--transport", "streamable-http",
 					"osv").ExpectSuccess()
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
@@ -331,7 +324,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				}
 			})
 
-			It("should stop the SSE server successfully [Serial]", func() {
+			It("should stop the Streamable HTTP server successfully [Serial]", func() {
 				By("Stopping the server")
 				stdout, _ := e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Output should mention the server name")
@@ -347,7 +340,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				), "Server should be stopped (exited) or removed from list")
 			})
 
-			It("should restart the SSE server successfully [Serial]", func() {
+			It("should restart the Streamable HTTP server successfully [Serial]", func() {
 				By("Restarting the server")
 				stdout, _ := e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName))
@@ -356,7 +349,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
-				By("Verifying SSE endpoint is accessible again")
+				By("Verifying Streamable HTTP endpoint is accessible again")
 				serverURL, err := e2e.GetMCPServerURL(config, serverName)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -370,7 +363,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 		})
 	})
 
-	Describe("Error handling for SSE transport", func() {
+	Describe("Error handling for Streamable HTTP transport", func() {
 		Context("when providing invalid configuration", func() {
 			var serverName string
 
@@ -397,7 +390,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 
 				// Check if the command succeeded or failed
 				if err != nil {
-					// If it failed, that's expected for SSE-only servers
+					// If it failed, that's expected for Streamable HTTP-only servers
 					Expect(stderr).To(ContainSubstring("transport"), "Error should mention transport issue")
 				} else {
 					// If it succeeded, OSV supports both transports

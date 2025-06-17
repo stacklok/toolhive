@@ -951,7 +951,10 @@ func (c *Client) getPermissionConfigFromProfile(
 	c.addReadWriteMounts(config, profile.Write)
 
 	// Validate transport type
-	if transportType != "sse" && transportType != "stdio" && transportType != "inspector" {
+	switch transportType {
+	case "sse", "stdio", "inspector", "streamable-http":
+		// valid, do nothing
+	default:
 		return nil, fmt.Errorf("unsupported transport type: %s", transportType)
 	}
 

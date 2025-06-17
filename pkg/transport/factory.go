@@ -32,6 +32,17 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 			config.PrometheusHandler,
 			config.Middlewares...,
 		), nil
+	case types.TransportTypeStreamableHTTP:
+		return NewStreamableHTTPTransport(
+			config.Host,
+			config.Port,
+			config.TargetPort,
+			config.Runtime,
+			config.Debug,
+			config.TargetHost,
+			config.PrometheusHandler,
+			config.Middlewares...,
+		), nil
 	case types.TransportTypeInspector:
 		// HTTP transport is not implemented yet
 		return nil, errors.ErrUnsupportedTransport

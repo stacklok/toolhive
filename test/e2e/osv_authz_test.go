@@ -75,7 +75,7 @@ var _ = Describe("OSV MCP Server with Authorization", Serial, func() {
 				serverURL, err = e2e.GetMCPServerURL(config, serverName)
 				Expect(err).ToNot(HaveOccurred())
 
-				err = e2e.WaitForMCPServerReady(config, serverURL, 60*time.Second)
+				err = e2e.WaitForMCPServerReady(config, serverURL, "sse", 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 			})
 

@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // createMockClientConfigs creates a set of mock client configurations for testing
@@ -279,7 +280,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			url := GenerateMCPServerURL(tt.host, tt.port, tt.containerName)
+			url := GenerateMCPServerURL(types.TransportTypeSSE.String(), tt.host, tt.port, tt.containerName)
 			if url != tt.expected {
 				t.Errorf("GenerateMCPServerURL() = %v, want %v", url, tt.expected)
 			}

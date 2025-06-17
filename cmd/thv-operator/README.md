@@ -29,6 +29,7 @@ flowchart LR
  subgraph namespace[namespace: toolhive-system]
     operator["POD: Operator"]
     sse
+    http-stream
     stdio
  end
 
@@ -163,7 +164,7 @@ kubectl describe mcpserver <name>
 | Field               | Description                                     | Required | Default |
 |---------------------|-------------------------------------------------|----------|---------|
 | `image`             | Container image for the MCP server              | Yes      | -       |
-| `transport`         | Transport method (stdio or sse)                 | No       | stdio   |
+| `transport`         | Transport method (stdio, http-stream or sse)    | No       | stdio   |
 | `port`              | Port to expose the MCP server on                | No       | 8080    |
 | `targetPort`        | Port that MCP server listens to                 | No       | -       |
 | `args`              | Additional arguments to pass to the MCP server  | No       | -       |

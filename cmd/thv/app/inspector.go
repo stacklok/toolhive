@@ -61,7 +61,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	serverName := args[0]
 
 	// find the port of the server if it is running / exists
-	serverPort, err := getServerPort(ctx, serverName)
+	serverPort, transportType, err := getServerPortAndTransport(ctx, serverName)
 	if err != nil {
 		return fmt.Errorf("failed to find server: %v", err)
 	}
@@ -151,9 +151,19 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	select {
 	case <-statusChan:
 		logger.Infof("Connected to MCP server: %s", serverName)
+
+		var suffix string
+		var transportTypeStr string
+		if transportType == types.TransportTypeSSE || transportType == types.TransportTypeStdio {
+			suffix = "sse"
+			transportTypeStr = transportType.String()
+		} else {
+			suffix = "mcp"
+			transportTypeStr = "streamable-http"
+		}
 		inspectorURL := fmt.Sprintf(
-			"http://localhost:%d?transport=sse&serverUrl=http://host.docker.internal:%d/sse",
-			inspectorUIPort, serverPort)
+			"http://localhost:%d?transport=%s&serverUrl=http://host.docker.internal:%d/%s",
+			inspectorUIPort, transportTypeStr, serverPort, suffix)
 		logger.Infof("Inspector UI is now available at %s", inspectorURL)
 		return nil
 	case <-ctx.Done():
@@ -161,17 +171,17 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func getServerPort(ctx context.Context, serverName string) (int, error) {
+func getServerPortAndTransport(ctx context.Context, serverName string) (int, types.TransportType, error) {
 	// Instantiate the container manager
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create container manager: %v", err)
+		return 0, types.TransportTypeSSE, fmt.Errorf("failed to create container manager: %v", err)
 	}
 
 	// Get list of all containers
 	containers, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
-		return 0, fmt.Errorf("failed to list containers: %v", err)
+		return 0, types.TransportTypeSSE, fmt.Errorf("failed to list containers: %v", err)
 	}
 
 	for _, c := range containers {
@@ -180,12 +190,15 @@ func getServerPort(ctx context.Context, serverName string) (int, error) {
 		if name == serverName {
 			// Get port from labels
 			port := c.Port
-			// Generate URL for the MCP server
-			if port > 0 {
-				return port, nil
+			if port <= 0 {
+				return 0, types.TransportTypeSSE, fmt.Errorf("server %s does not have a valid port", serverName)
 			}
+
+			// now get the transport type from labels
+			transportType := c.TransportType
+			return port, transportType, nil
 		}
 	}
 
-	return 0, fmt.Errorf("server with name %s not found", serverName)
+	return 0, types.TransportTypeSSE, fmt.Errorf("server with name %s not found", serverName)
 }

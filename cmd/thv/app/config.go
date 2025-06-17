@@ -313,8 +313,10 @@ func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 			continue // Skip if we can't get the port
 		}
 
+		transportType := labels.GetTransportType(c.Labels)
+
 		// Generate URL for the MCP server
-		url := client.GenerateMCPServerURL(transport.LocalhostIPv4, port, name)
+		url := client.GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
 
 		// Update each configuration file
 		for _, clientConfig := range clientConfigs {

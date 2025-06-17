@@ -142,10 +142,15 @@ func isOlder(serverI, serverJ *registry.Server) bool {
 	timeI, errI := time.Parse(time.RFC3339, lastUpdatedI)
 	timeJ, errJ := time.Parse(time.RFC3339, lastUpdatedJ)
 
-	// If we can't parse either time, put it at the beginning to ensure it gets updated
+	// If both times are invalid or missing, fall back to name comparison for stability
+	if errI != nil && errJ != nil {
+		return serverI.Name < serverJ.Name
+	}
+	// If only I is invalid, treat I as older
 	if errI != nil {
 		return true
 	}
+	// If only J is invalid, treat J as older
 	if errJ != nil {
 		return false
 	}

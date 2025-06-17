@@ -24,6 +24,11 @@ var (
 	serverName  string
 )
 
+type serverWithName struct {
+	name   string
+	server *registry.Server
+}
+
 var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Update registry entries with latest information",
@@ -53,83 +58,106 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 		githubToken = os.Getenv("GITHUB_TOKEN")
 	}
 
-	// Read the registry file directly
+	// Load registry
+	reg, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+
+	// Select servers to update
+	servers, err := selectServersToUpdate(reg)
+	if err != nil {
+		return err
+	}
+
+	// Update servers
+	updatedServers := updateServers(servers)
+
+	// Save results
+	return saveResults(reg, updatedServers)
+}
+
+func loadRegistry() (*registry.Registry, error) {
 	registryPath := filepath.Join("pkg", "registry", "data", "registry.json")
 	// #nosec G304 -- This is a known file path
 	data, err := os.ReadFile(registryPath)
 	if err != nil {
-		return fmt.Errorf("failed to read registry file: %w", err)
+		return nil, fmt.Errorf("failed to read registry file: %w", err)
 	}
 
-	// Parse the registry
 	var reg registry.Registry
 	if err := json.Unmarshal(data, &reg); err != nil {
-		return fmt.Errorf("failed to parse registry: %w", err)
+		return nil, fmt.Errorf("failed to parse registry: %w", err)
 	}
 
-	// Create a slice of servers with their names
-	type serverWithName struct {
-		name   string
-		server *registry.Server
-	}
+	return &reg, nil
+}
 
-	var servers []serverWithName
-
+func selectServersToUpdate(reg *registry.Registry) ([]serverWithName, error) {
 	if serverName != "" {
-		// Update specific server
-		server, exists := reg.Servers[serverName]
-		if !exists {
-			return fmt.Errorf("server '%s' not found in registry", serverName)
-		}
-		server.Name = serverName
-		servers = []serverWithName{{name: serverName, server: server}}
-	} else {
-		// Existing logic for oldest servers
-		servers = make([]serverWithName, 0, len(reg.Servers))
-		for name, server := range reg.Servers {
-			// Set the name field on each server
-			server.Name = name
-			servers = append(servers, serverWithName{name: name, server: server})
-		}
-
-		// Sort servers by last updated time (oldest first)
-		sort.Slice(servers, func(i, j int) bool {
-			var lastUpdatedI, lastUpdatedJ string
-
-			// Handle nil metadata
-			if servers[i].server.Metadata != nil {
-				lastUpdatedI = servers[i].server.Metadata.LastUpdated
-			}
-			if servers[j].server.Metadata != nil {
-				lastUpdatedJ = servers[j].server.Metadata.LastUpdated
-			}
-
-			timeI, errI := time.Parse(time.RFC3339, lastUpdatedI)
-			timeJ, errJ := time.Parse(time.RFC3339, lastUpdatedJ)
-
-			// If we can't parse either time, put it at the beginning to ensure it gets updated
-			if errI != nil {
-				return true
-			}
-			if errJ != nil {
-				return false
-			}
-
-			return timeI.Before(timeJ)
-		})
-
-		// Limit to the requested count
-		if count > len(servers) {
-			count = len(servers)
-			logger.Warnf("Requested count %d exceeds available servers, limiting to %d", count, len(servers))
-		}
-		servers = servers[:count]
+		return selectSpecificServer(reg, serverName)
 	}
 
-	// Keep track of updated servers
-	updatedServers := make([]string, 0, count)
+	return selectOldestServers(reg)
+}
 
-	// Update each server
+func selectSpecificServer(reg *registry.Registry, name string) ([]serverWithName, error) {
+	server, exists := reg.Servers[name]
+	if !exists {
+		return nil, fmt.Errorf("server '%s' not found in registry", name)
+	}
+	server.Name = name
+	return []serverWithName{{name: name, server: server}}, nil
+}
+
+func selectOldestServers(reg *registry.Registry) ([]serverWithName, error) {
+	servers := make([]serverWithName, 0, len(reg.Servers))
+	for name, server := range reg.Servers {
+		server.Name = name
+		servers = append(servers, serverWithName{name: name, server: server})
+	}
+
+	// Sort servers by last updated time (oldest first)
+	sort.Slice(servers, func(i, j int) bool {
+		return isOlder(servers[i].server, servers[j].server)
+	})
+
+	// Limit to the requested count
+	if count > len(servers) {
+		count = len(servers)
+		logger.Warnf("Requested count %d exceeds available servers, limiting to %d", count, len(servers))
+	}
+
+	return servers[:count], nil
+}
+
+func isOlder(serverI, serverJ *registry.Server) bool {
+	var lastUpdatedI, lastUpdatedJ string
+
+	if serverI.Metadata != nil {
+		lastUpdatedI = serverI.Metadata.LastUpdated
+	}
+	if serverJ.Metadata != nil {
+		lastUpdatedJ = serverJ.Metadata.LastUpdated
+	}
+
+	timeI, errI := time.Parse(time.RFC3339, lastUpdatedI)
+	timeJ, errJ := time.Parse(time.RFC3339, lastUpdatedJ)
+
+	// If we can't parse either time, put it at the beginning to ensure it gets updated
+	if errI != nil {
+		return true
+	}
+	if errJ != nil {
+		return false
+	}
+
+	return timeI.Before(timeJ)
+}
+
+func updateServers(servers []serverWithName) []string {
+	updatedServers := make([]string, 0, len(servers))
+
 	for _, s := range servers {
 		logger.Infof("Updating server: %s", s.name)
 
@@ -141,6 +169,10 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 		updatedServers = append(updatedServers, s.name)
 	}
 
+	return updatedServers
+}
+
+func saveResults(reg *registry.Registry, updatedServers []string) error {
 	// If we're in dry run mode, don't save changes
 	if dryRun {
 		logger.Info("Dry run completed, no changes made")
@@ -153,7 +185,7 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 		reg.LastUpdated = time.Now().Format("2006-01-02 15:04:05")
 
 		// Save the updated registry
-		if err := saveRegistry(&reg, updatedServers); err != nil {
+		if err := saveRegistry(reg, updatedServers); err != nil {
 			return fmt.Errorf("failed to save registry: %w", err)
 		}
 

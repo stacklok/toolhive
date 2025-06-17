@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
+//nolint:paralleltest // This test manages temporary directories and cannot run in parallel
 func TestUpdateCmdFunc(t *testing.T) {
 	// Initialize logger for tests
 	logger.Initialize()
@@ -129,6 +131,7 @@ func TestUpdateCmdFunc(t *testing.T) {
 }
 
 func TestServerSelection(t *testing.T) {
+	t.Parallel()
 	// Test that server selection works correctly
 	testDir, cleanup := setupTestRegistryWithMultipleServers(t)
 	defer cleanup()
@@ -164,6 +167,7 @@ func TestServerSelection(t *testing.T) {
 }
 
 func TestMutualExclusionValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		count      int
@@ -178,6 +182,7 @@ func TestMutualExclusionValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Set test variables
 			originalCount := count
 			originalServerName := serverName
@@ -208,6 +213,7 @@ func TestMutualExclusionValidation(t *testing.T) {
 // Helper functions
 
 func setupTestRegistryWithMultipleServers(t *testing.T) (string, func()) {
+	t.Helper()
 	// Create temporary directory
 	tempDir, err := os.MkdirTemp("", "regup-test-*")
 	require.NoError(t, err)
@@ -272,6 +278,7 @@ func setupTestRegistryWithMultipleServers(t *testing.T) (string, func()) {
 }
 
 func setupEmptyTestRegistry(t *testing.T) (string, func()) {
+	t.Helper()
 	// Create temporary directory
 	tempDir, err := os.MkdirTemp("", "regup-test-empty-*")
 	require.NoError(t, err)
@@ -302,6 +309,7 @@ func setupEmptyTestRegistry(t *testing.T) (string, func()) {
 }
 
 func TestExtractOwnerRepo(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		url           string
@@ -332,6 +340,7 @@ func TestExtractOwnerRepo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			owner, repo, err := extractOwnerRepo(tt.url)
 
 			if tt.expectError {

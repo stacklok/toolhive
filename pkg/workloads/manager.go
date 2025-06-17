@@ -109,26 +109,12 @@ func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) (*errg
 	}
 
 	containerID := container.ID
-	isRunning := isContainerRunning(container)
 	containerLabels := container.Labels
 	baseName := labels.GetContainerBaseName(containerLabels)
-
-	// If the container is running, stop before deletion.
-	// TODO: Consider moving this into the runtime layer.
-	stopGroup := &errgroup.Group{}
-	if isRunning {
-		req := stopWorkloadRequest{Name: baseName, ID: containerID}
-		stopGroup = d.stopWorkloads(ctx, []stopWorkloadRequest{req})
-	}
 
 	// Create second errorgroup for deletion.
 	deleteGroup := &errgroup.Group{}
 	deleteGroup.Go(func() error {
-		// If a stop operation was initiated, wait for it to complete.
-		if err := stopGroup.Wait(); err != nil {
-			return fmt.Errorf("failed to stop container %s: %v", name, err)
-		}
-
 		// Remove the container
 		logger.Infof("Removing container %s...", name)
 		if err := d.runtime.RemoveWorkload(ctx, containerID); err != nil {

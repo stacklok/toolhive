@@ -1359,7 +1359,7 @@
     },
     "perplexity-ask": {
       "args": [],
-      "description": "",
+      "description": "An MCP server implementation that integrates Perplexity AI's Sonar API for live web searches, in-depth research, and reasoning tasks.",
       "env_vars": [
         {
           "description": "Perplexity API key",
@@ -1370,9 +1370,9 @@
       ],
       "image": "mcp/perplexity-ask:latest",
       "metadata": {
-        "last_updated": "2025-06-17T00:21:50Z",
-        "pulls": 8120,
-        "stars": 54102
+        "last_updated": "2025-06-17T12:03:17-04:00",
+        "pulls": 8368,
+        "stars": 1249
       },
       "permissions": {
         "network": {
@@ -1392,13 +1392,17 @@
         "read": [],
         "write": []
       },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "repository_url": "https://github.com/ppl-ai/modelcontextprotocol",
       "tags": [
         "ask",
         "perplexity",
         "perplexity-ask"
       ],
-      "tools": [],
+      "tools": [
+        "perplexity_ask",
+        "perplexity_research",
+        "perplexity_reason"
+      ],
       "transport": "stdio"
     },
     "postgres": {
@@ -1508,12 +1512,79 @@
     "redis": {
       "args": [],
       "description": "A Model Context Protocol server that provides access to Redis databases. This server enables LLMs to interact with Redis key-value stores through a set of standardized tools.",
-      "env_vars": [],
+      "env_vars": [
+        {
+          "description": "Redis IP or hostname (default \"127.0.0.1\")",
+          "name": "REDIS_HOST",
+          "required": true
+        },
+        {
+          "description": "Redis port (default 6379)",
+          "name": "REDIS_PORT",
+          "required": false
+        },
+        {
+          "description": "Redis database number (default 0)",
+          "name": "REDIS_DB",
+          "required": false
+        },
+        {
+          "description": "Redis username (default \"default\")",
+          "name": "REDIS_USERNAME",
+          "required": false
+        },
+        {
+          "description": "Redis password (default empty)",
+          "name": "REDIS_PWD",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "Redis TLS connection (True|False, default False)",
+          "name": "REDIS_SSL",
+          "required": false
+        },
+        {
+          "description": "CA certificate for verifying server",
+          "name": "REDIS_CA_PATH",
+          "required": false
+        },
+        {
+          "description": "Client's private key file for client authentication",
+          "name": "REDIS_SSL_KEYFILE",
+          "required": false
+        },
+        {
+          "description": "Client's certificate file for client authentication",
+          "name": "REDIS_SSL_CERTFILE",
+          "required": false
+        },
+        {
+          "description": "Whether the client should verify the server's certificate (default \"required\")",
+          "name": "REDIS_CERT_REQS",
+          "required": false
+        },
+        {
+          "description": "Path to the trusted CA certificates file",
+          "name": "REDIS_CA_CERTS",
+          "required": false
+        },
+        {
+          "description": "Enable Redis Cluster mode (True|False, default False)",
+          "name": "REDIS_CLUSTER_MODE",
+          "required": false
+        },
+        {
+          "description": "Use the stdio or sse transport (default stdio)",
+          "name": "MCP_TRANSPORT",
+          "required": false
+        }
+      ],
       "image": "mcp/redis:latest",
       "metadata": {
-        "last_updated": "2025-06-17T00:21:53Z",
-        "pulls": 5606,
-        "stars": 54102
+        "last_updated": "2025-06-17T12:03:55-04:00",
+        "pulls": 5691,
+        "stars": 93
       },
       "permissions": {
         "network": {
@@ -1532,7 +1603,7 @@
         "read": [],
         "write": []
       },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "repository_url": "https://github.com/redis/mcp-redis",
       "tags": [
         "redis",
         "database",
@@ -1542,10 +1613,50 @@
         "data"
       ],
       "tools": [
+        "dbsize",
+        "info",
+        "client_list",
+        "delete",
+        "type",
+        "expire",
+        "rename",
+        "scan_keys",
+        "scan_all_keys",
+        "get_indexes",
+        "get_index_info",
+        "get_indexed_keys_number",
+        "create_vector_index_hash",
+        "vector_search_hash",
+        "hset",
+        "hget",
+        "hdel",
+        "hgetall",
+        "hexists",
+        "set_vector_in_hash",
+        "get_vector_from_hash",
+        "lpush",
+        "rpush",
+        "lpop",
+        "rpop",
+        "lrange",
+        "llen",
         "set",
         "get",
-        "delete",
-        "list"
+        "json_set",
+        "json_get",
+        "json_del",
+        "zadd",
+        "zrange",
+        "zrem",
+        "sadd",
+        "srem",
+        "smembers",
+        "xadd",
+        "xrange",
+        "xdel",
+        "publish",
+        "subscribe",
+        "unsubscribe"
       ],
       "transport": "stdio"
     },

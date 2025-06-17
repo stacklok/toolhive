@@ -2,7 +2,6 @@ package app
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,15 +49,6 @@ func TestUpdateCmdFunc(t *testing.T) {
 			serverName:  "github",
 			dryRun:      true,
 			expectError: false,
-			setup:       setupTestRegistryWithMultipleServers,
-		},
-		{
-			name:        "mutual exclusion - server and count both specified",
-			count:       2,
-			serverName:  "github",
-			dryRun:      true,
-			expectError: true,
-			errorMsg:    "--server and --count flags are mutually exclusive",
 			setup:       setupTestRegistryWithMultipleServers,
 		},
 		{
@@ -164,50 +154,6 @@ func TestServerSelection(t *testing.T) {
 
 	_, exists = reg.Servers["nonexistent"]
 	assert.False(t, exists, "nonexistent server should not exist in test registry")
-}
-
-func TestMutualExclusionValidation(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name       string
-		count      int
-		serverName string
-		expectErr  bool
-	}{
-		{"default values", 1, "", false},
-		{"count only", 3, "", false},
-		{"server only", 1, "github", false},
-		{"both specified", 2, "github", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			// Set test variables
-			originalCount := count
-			originalServerName := serverName
-
-			count = tt.count
-			serverName = tt.serverName
-
-			defer func() {
-				count = originalCount
-				serverName = originalServerName
-			}()
-
-			// Test validation logic directly
-			var err error
-			if serverName != "" && count != 1 {
-				err = fmt.Errorf("--server and --count flags are mutually exclusive")
-			}
-
-			if tt.expectErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
 }
 
 // Helper functions

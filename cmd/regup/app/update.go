@@ -44,15 +44,13 @@ func init() {
 	updateCmd.Flags().StringVarP(&githubToken, "github-token", "t", "",
 		"GitHub token for API authentication (can also be set via GITHUB_TOKEN env var)")
 	updateCmd.Flags().StringVarP(&serverName, "server", "s", "",
-		"Specific server name to update (mutually exclusive with --count)")
+		"Specific server name to update")
+
+	// Mark count and server flags as mutually exclusive
+	updateCmd.MarkFlagsMutuallyExclusive("count", "server")
 }
 
 func updateCmdFunc(_ *cobra.Command, _ []string) error {
-	// Validate mutually exclusive flags
-	if serverName != "" && count != 1 {
-		return fmt.Errorf("--server and --count flags are mutually exclusive")
-	}
-
 	// If token not provided via flag, check environment variable
 	if githubToken == "" {
 		githubToken = os.Getenv("GITHUB_TOKEN")

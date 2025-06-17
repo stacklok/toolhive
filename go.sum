@@ -85,6 +85,8 @@ github.com/blang/semver/v4 v4.0.0 h1:1PFHFE6yCCTv8C1TeyNNarDzntLi7wMI5i/pzqYIsAM
 github.com/blang/semver/v4 v4.0.0/go.mod h1:IbckMUScFkM3pff0VJDNKRiT6TG/YpiHIM2yvyW5YoQ=
 github.com/cedar-policy/cedar-go v1.2.1 h1:f4Ie1j6OT2TqtmnbVcR7OyJWfyPEUvYrFYaurQZhTAo=
 github.com/cedar-policy/cedar-go v1.2.1/go.mod h1:Ahhlu3DxDzvGTR88v/+j/EeiMEyvta11hlkdDgj4AZU=
+github.com/cedar-policy/cedar-go v1.2.2 h1:skwvx8MAfep7dFKfatOJcIEkDBOrktW5vpb3RIIZ1Po=
+github.com/cedar-policy/cedar-go v1.2.2/go.mod h1:Ahhlu3DxDzvGTR88v/+j/EeiMEyvta11hlkdDgj4AZU=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
 github.com/cenkalti/backoff/v4 v4.3.0/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
 github.com/cenkalti/backoff/v5 v5.0.2 h1:rIfFVxEf1QsI7E1ZHfp/B4DF/6QBAUhmgkxc0H7Zss8=

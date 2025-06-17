@@ -4,6 +4,7 @@ package docker
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -1029,7 +1031,7 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadID string, follow 
 	defer logs.Close()
 
 	if follow {
-		_, err = io.Copy(os.Stdout, logs)
+		_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, logs)
 		if err != nil && err != io.EOF {
 			logger.Errorf("Error reading container logs: %v", err)
 			return "", NewContainerError(err, workloadID, fmt.Sprintf("failed to follow workload logs: %v", err))
@@ -1037,12 +1039,13 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadID string, follow 
 	}
 
 	// Read logs
-	logBytes, err := io.ReadAll(logs)
+	var buf bytes.Buffer
+	_, err = stdcopy.StdCopy(&buf, &buf, logs)
 	if err != nil {
 		return "", NewContainerError(err, workloadID, fmt.Sprintf("failed to read workload logs: %v", err))
 	}
 
-	return string(logBytes), nil
+	return buf.String(), nil
 }
 
 // IsWorkloadRunning checks if a workload is running

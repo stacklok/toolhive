@@ -984,7 +984,8 @@
         "find_error_pattern_logs",
         "find_slow_requests"
       ],
-      "transport": "stdio"
+      "transport": "sse",
+      "target_port": 8000
     },
     "hass-mcp": {
       "args": [],

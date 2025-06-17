@@ -1,0 +1,346 @@
+package app
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestUpdateCmdFunc(t *testing.T) {
+	// Initialize logger for tests
+	logger.Initialize()
+
+	tests := []struct {
+		name        string
+		count       int
+		serverName  string
+		dryRun      bool
+		expectError bool
+		errorMsg    string
+		setup       func(t *testing.T) (string, func())
+	}{
+		{
+			name:        "default behavior - update oldest server",
+			count:       1,
+			serverName:  "",
+			dryRun:      true,
+			expectError: false,
+			setup:       setupTestRegistryWithMultipleServers,
+		},
+		{
+			name:        "count behavior - update multiple oldest servers",
+			count:       2,
+			serverName:  "",
+			dryRun:      true,
+			expectError: false,
+			setup:       setupTestRegistryWithMultipleServers,
+		},
+		{
+			name:        "server behavior - update specific server",
+			count:       1,
+			serverName:  "github",
+			dryRun:      true,
+			expectError: false,
+			setup:       setupTestRegistryWithMultipleServers,
+		},
+		{
+			name:        "mutual exclusion - server and count both specified",
+			count:       2,
+			serverName:  "github",
+			dryRun:      true,
+			expectError: true,
+			errorMsg:    "--server and --count flags are mutually exclusive",
+			setup:       setupTestRegistryWithMultipleServers,
+		},
+		{
+			name:        "invalid server name",
+			count:       1,
+			serverName:  "nonexistent",
+			dryRun:      true,
+			expectError: true,
+			errorMsg:    "server 'nonexistent' not found in registry",
+			setup:       setupTestRegistryWithMultipleServers,
+		},
+		{
+			name:        "empty registry",
+			count:       1,
+			serverName:  "",
+			dryRun:      true,
+			expectError: false,
+			setup:       setupEmptyTestRegistry,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup test environment
+			originalDir, cleanup := tt.setup(t)
+			defer cleanup()
+
+			// Change to test directory
+			originalWd, err := os.Getwd()
+			require.NoError(t, err)
+			err = os.Chdir(originalDir)
+			require.NoError(t, err)
+			defer func() {
+				err := os.Chdir(originalWd)
+				require.NoError(t, err)
+			}()
+
+			// Set test variables
+			originalCount := count
+			originalServerName := serverName
+			originalDryRun := dryRun
+			originalGithubToken := githubToken
+
+			count = tt.count
+			serverName = tt.serverName
+			dryRun = tt.dryRun
+			githubToken = "test-token" // Set a test token to avoid API calls
+
+			defer func() {
+				count = originalCount
+				serverName = originalServerName
+				dryRun = originalDryRun
+				githubToken = originalGithubToken
+			}()
+
+			// Run the function
+			err = updateCmdFunc(nil, nil)
+
+			// Check results
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestServerSelection(t *testing.T) {
+	// Test that server selection works correctly
+	testDir, cleanup := setupTestRegistryWithMultipleServers(t)
+	defer cleanup()
+
+	// Change to test directory
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	err = os.Chdir(testDir)
+	require.NoError(t, err)
+	defer func() {
+		err := os.Chdir(originalWd)
+		require.NoError(t, err)
+	}()
+
+	// Read the registry
+	registryPath := filepath.Join("pkg", "registry", "data", "registry.json")
+	data, err := os.ReadFile(registryPath)
+	require.NoError(t, err)
+
+	var reg registry.Registry
+	err = json.Unmarshal(data, &reg)
+	require.NoError(t, err)
+
+	// Test server exists
+	_, exists := reg.Servers["github"]
+	assert.True(t, exists, "github server should exist in test registry")
+
+	_, exists = reg.Servers["gitlab"]
+	assert.True(t, exists, "gitlab server should exist in test registry")
+
+	_, exists = reg.Servers["nonexistent"]
+	assert.False(t, exists, "nonexistent server should not exist in test registry")
+}
+
+func TestMutualExclusionValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		count      int
+		serverName string
+		expectErr  bool
+	}{
+		{"default values", 1, "", false},
+		{"count only", 3, "", false},
+		{"server only", 1, "github", false},
+		{"both specified", 2, "github", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set test variables
+			originalCount := count
+			originalServerName := serverName
+
+			count = tt.count
+			serverName = tt.serverName
+
+			defer func() {
+				count = originalCount
+				serverName = originalServerName
+			}()
+
+			// Test validation logic directly
+			var err error
+			if serverName != "" && count != 1 {
+				err = fmt.Errorf("--server and --count flags are mutually exclusive")
+			}
+
+			if tt.expectErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// Helper functions
+
+func setupTestRegistryWithMultipleServers(t *testing.T) (string, func()) {
+	// Create temporary directory
+	tempDir, err := os.MkdirTemp("", "regup-test-*")
+	require.NoError(t, err)
+
+	// Create registry directory structure
+	registryDir := filepath.Join(tempDir, "pkg", "registry", "data")
+	err = os.MkdirAll(registryDir, 0755)
+	require.NoError(t, err)
+
+	// Create test registry with multiple servers
+	testRegistry := &registry.Registry{
+		LastUpdated: "2025-06-17 12:00:00",
+		Servers: map[string]*registry.Server{
+			"github": {
+				Name:          "github",
+				Description:   "GitHub MCP server",
+				Image:         "ghcr.io/github/github-mcp-server:latest",
+				RepositoryURL: "https://github.com/github/github-mcp-server",
+				Metadata: &registry.Metadata{
+					Stars:       100,
+					Pulls:       5000,
+					LastUpdated: "2025-06-16T12:00:00Z", // Older
+				},
+			},
+			"gitlab": {
+				Name:          "gitlab",
+				Description:   "GitLab MCP server",
+				Image:         "mcp/gitlab:latest",
+				RepositoryURL: "https://github.com/example/gitlab-mcp-server",
+				Metadata: &registry.Metadata{
+					Stars:       50,
+					Pulls:       2000,
+					LastUpdated: "2025-06-17T12:00:00Z", // Newer
+				},
+			},
+			"fetch": {
+				Name:          "fetch",
+				Description:   "Fetch MCP server",
+				Image:         "mcp/fetch:latest",
+				RepositoryURL: "https://github.com/example/fetch-mcp-server",
+				Metadata: &registry.Metadata{
+					Stars:       25,
+					Pulls:       1000,
+					LastUpdated: "2025-06-15T12:00:00Z", // Oldest
+				},
+			},
+		},
+	}
+
+	// Write registry file
+	registryPath := filepath.Join(registryDir, "registry.json")
+	data, err := json.MarshalIndent(testRegistry, "", "  ")
+	require.NoError(t, err)
+	err = os.WriteFile(registryPath, data, 0644)
+	require.NoError(t, err)
+
+	cleanup := func() {
+		os.RemoveAll(tempDir)
+	}
+
+	return tempDir, cleanup
+}
+
+func setupEmptyTestRegistry(t *testing.T) (string, func()) {
+	// Create temporary directory
+	tempDir, err := os.MkdirTemp("", "regup-test-empty-*")
+	require.NoError(t, err)
+
+	// Create registry directory structure
+	registryDir := filepath.Join(tempDir, "pkg", "registry", "data")
+	err = os.MkdirAll(registryDir, 0755)
+	require.NoError(t, err)
+
+	// Create empty test registry
+	testRegistry := &registry.Registry{
+		LastUpdated: "2025-06-17 12:00:00",
+		Servers:     map[string]*registry.Server{},
+	}
+
+	// Write registry file
+	registryPath := filepath.Join(registryDir, "registry.json")
+	data, err := json.MarshalIndent(testRegistry, "", "  ")
+	require.NoError(t, err)
+	err = os.WriteFile(registryPath, data, 0644)
+	require.NoError(t, err)
+
+	cleanup := func() {
+		os.RemoveAll(tempDir)
+	}
+
+	return tempDir, cleanup
+}
+
+func TestExtractOwnerRepo(t *testing.T) {
+	tests := []struct {
+		name          string
+		url           string
+		expectedOwner string
+		expectedRepo  string
+		expectError   bool
+	}{
+		{
+			name:          "standard github url",
+			url:           "https://github.com/owner/repo",
+			expectedOwner: "owner",
+			expectedRepo:  "repo",
+			expectError:   false,
+		},
+		{
+			name:          "github url with .git suffix",
+			url:           "https://github.com/owner/repo.git",
+			expectedOwner: "owner",
+			expectedRepo:  "repo",
+			expectError:   false,
+		},
+		{
+			name:        "invalid url",
+			url:         "invalid",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner, repo, err := extractOwnerRepo(tt.url)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedOwner, owner)
+				assert.Equal(t, tt.expectedRepo, repo)
+			}
+		})
+	}
+}

@@ -21,13 +21,16 @@ var (
 	count       int
 	dryRun      bool
 	githubToken string
+	serverName  string
 )
 
 var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Update registry entries with latest information",
-	Long:  `Update the oldest entries in the registry with the latest GitHub stars and pulls information.`,
-	RunE:  updateCmdFunc,
+	Long: `Update entries in the registry with the latest GitHub stars and pulls information.
+By default, updates the oldest entry. Use --count to update multiple oldest entries,
+or --server to update a specific server by name.`,
+	RunE: updateCmdFunc,
 }
 
 func init() {
@@ -35,9 +38,16 @@ func init() {
 	updateCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", false, "Perform a dry run without making changes")
 	updateCmd.Flags().StringVarP(&githubToken, "github-token", "t", "",
 		"GitHub token for API authentication (can also be set via GITHUB_TOKEN env var)")
+	updateCmd.Flags().StringVarP(&serverName, "server", "s", "",
+		"Specific server name to update (mutually exclusive with --count)")
 }
 
 func updateCmdFunc(_ *cobra.Command, _ []string) error {
+	// Validate mutually exclusive flags
+	if serverName != "" && count != 1 {
+		return fmt.Errorf("--server and --count flags are mutually exclusive")
+	}
+
 	// If token not provided via flag, check environment variable
 	if githubToken == "" {
 		githubToken = os.Getenv("GITHUB_TOKEN")
@@ -62,45 +72,59 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 		name   string
 		server *registry.Server
 	}
-	servers := make([]serverWithName, 0, len(reg.Servers))
-	for name, server := range reg.Servers {
-		// Set the name field on each server
-		server.Name = name
-		servers = append(servers, serverWithName{name: name, server: server})
+
+	var servers []serverWithName
+
+	if serverName != "" {
+		// Update specific server
+		server, exists := reg.Servers[serverName]
+		if !exists {
+			return fmt.Errorf("server '%s' not found in registry", serverName)
+		}
+		server.Name = serverName
+		servers = []serverWithName{{name: serverName, server: server}}
+	} else {
+		// Existing logic for oldest servers
+		servers = make([]serverWithName, 0, len(reg.Servers))
+		for name, server := range reg.Servers {
+			// Set the name field on each server
+			server.Name = name
+			servers = append(servers, serverWithName{name: name, server: server})
+		}
+
+		// Sort servers by last updated time (oldest first)
+		sort.Slice(servers, func(i, j int) bool {
+			var lastUpdatedI, lastUpdatedJ string
+
+			// Handle nil metadata
+			if servers[i].server.Metadata != nil {
+				lastUpdatedI = servers[i].server.Metadata.LastUpdated
+			}
+			if servers[j].server.Metadata != nil {
+				lastUpdatedJ = servers[j].server.Metadata.LastUpdated
+			}
+
+			timeI, errI := time.Parse(time.RFC3339, lastUpdatedI)
+			timeJ, errJ := time.Parse(time.RFC3339, lastUpdatedJ)
+
+			// If we can't parse either time, put it at the beginning to ensure it gets updated
+			if errI != nil {
+				return true
+			}
+			if errJ != nil {
+				return false
+			}
+
+			return timeI.Before(timeJ)
+		})
+
+		// Limit to the requested count
+		if count > len(servers) {
+			count = len(servers)
+			logger.Warnf("Requested count %d exceeds available servers, limiting to %d", count, len(servers))
+		}
+		servers = servers[:count]
 	}
-
-	// Sort servers by last updated time (oldest first)
-	sort.Slice(servers, func(i, j int) bool {
-		var lastUpdatedI, lastUpdatedJ string
-
-		// Handle nil metadata
-		if servers[i].server.Metadata != nil {
-			lastUpdatedI = servers[i].server.Metadata.LastUpdated
-		}
-		if servers[j].server.Metadata != nil {
-			lastUpdatedJ = servers[j].server.Metadata.LastUpdated
-		}
-
-		timeI, errI := time.Parse(time.RFC3339, lastUpdatedI)
-		timeJ, errJ := time.Parse(time.RFC3339, lastUpdatedJ)
-
-		// If we can't parse either time, put it at the beginning to ensure it gets updated
-		if errI != nil {
-			return true
-		}
-		if errJ != nil {
-			return false
-		}
-
-		return timeI.Before(timeJ)
-	})
-
-	// Limit to the requested count
-	if count > len(servers) {
-		count = len(servers)
-		logger.Warnf("Requested count %d exceeds available servers, limiting to %d", count, len(servers))
-	}
-	servers = servers[:count]
 
 	// Keep track of updated servers
 	updatedServers := make([]string, 0, count)

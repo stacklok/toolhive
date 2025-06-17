@@ -982,9 +982,14 @@
         "get_analysis",
         "list_investigations",
         "find_error_pattern_logs",
-        "find_slow_requests"
+        "find_slow_requests",
+        "list_pyroscope_label_names",
+        "list_pyroscope_label_values",
+        "list_pyroscope_profile_types",
+        "fetch_pyroscope_profile"
       ],
-      "transport": "stdio"
+      "transport": "sse",
+      "target_port": 8000
     },
     "hass-mcp": {
       "args": [],

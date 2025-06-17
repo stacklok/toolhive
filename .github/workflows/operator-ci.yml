@@ -131,7 +131,7 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate CR Docs
+      - name: Generate CRD Docs
         run: task crdref-gen
         working-directory: cmd/thv-operator
 

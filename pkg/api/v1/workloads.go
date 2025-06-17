@@ -124,7 +124,7 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 	// Note that this is an asynchronous operation.
-	// In the API, we do not wait for the operation to complete.
+	// The request is not blocked on completion.
 	_, err := s.manager.StopWorkload(ctx, name)
 	if err != nil {
 		if errors.Is(err, workloads.ErrContainerNotFound) {
@@ -174,7 +174,9 @@ func (s *WorkloadRoutes) stopAllWorkloads(w http.ResponseWriter, r *http.Request
 func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
-	err := s.manager.DeleteWorkload(ctx, name)
+	// Note that this is an asynchronous operation.
+	// The request is not blocked on completion.
+	_, err := s.manager.DeleteWorkload(ctx, name)
 	if err != nil {
 		if errors.Is(err, workloads.ErrContainerNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)

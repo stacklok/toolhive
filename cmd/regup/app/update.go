@@ -121,12 +121,13 @@ func selectOldestServers(reg *registry.Registry) ([]serverWithName, error) {
 	})
 
 	// Limit to the requested count
-	if count > len(servers) {
-		count = len(servers)
+	limit := count
+	if limit > len(servers) {
+		limit = len(servers)
 		logger.Warnf("Requested count %d exceeds available servers, limiting to %d", count, len(servers))
 	}
 
-	return servers[:count], nil
+	return servers[:limit], nil
 }
 
 func isOlder(serverI, serverJ *registry.Server) bool {

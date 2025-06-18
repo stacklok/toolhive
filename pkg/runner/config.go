@@ -104,6 +104,9 @@ type RunConfig struct {
 
 	// Runtime is the container runtime to use (not serialized)
 	Runtime rt.Runtime `json:"-" yaml:"-"`
+
+	// IsolateNetwork indicates whether to isolate the network for the container
+	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -155,6 +158,7 @@ func NewRunConfigFromFlags(
 	otelHeaders []string,
 	otelInsecure bool,
 	otelEnablePrometheusMetricsPath bool,
+	isolateNetwork bool,
 ) *RunConfig {
 	// Ensure default values for host and targetHost
 	if host == "" {
@@ -177,6 +181,7 @@ func NewRunConfigFromFlags(
 		ContainerLabels:             make(map[string]string),
 		EnvVars:                     make(map[string]string),
 		Host:                        host,
+		IsolateNetwork:              isolateNetwork,
 	}
 
 	// If enable audit is true and no audit config path is provided, use default config

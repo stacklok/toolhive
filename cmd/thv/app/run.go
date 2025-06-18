@@ -377,18 +377,18 @@ func verifyImage(image string, server *registry.Server, verifySetting string) er
 		// Create a new verifier
 		v, err := verifier.New(server)
 		if err != nil {
-			return err
-		}
-
-		// Verify the image passing the server info
-		isSafe, err := v.VerifyServer(image, server)
-		if err != nil {
 			// This happens if we have no provenance entry in the registry for this server.
 			// Not finding provenance info in the registry is not a fatal error if the setting is "warn".
 			if errors.Is(err, verifier.ErrProvenanceServerInformationNotSet) && verifySetting == verifyImageWarn {
 				logger.Warnf("⚠️  MCP server %s has no provenance information set, skipping image verification", image)
 				return nil
 			}
+			return err
+		}
+
+		// Verify the image passing the server info
+		isSafe, err := v.VerifyServer(image, server)
+		if err != nil {
 			return fmt.Errorf("❌ image verification failed: %v", err)
 		}
 		if !isSafe {

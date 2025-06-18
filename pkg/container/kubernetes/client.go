@@ -258,7 +258,8 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	_ *permissions.Profile, // TODO: Implement permission profile support for Kubernetes
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
-	_ bool) (string, error) {
+	_ bool,
+) (string, error) {
 	namespace := getCurrentNamespace()
 	containerLabels["app"] = containerName
 	containerLabels["toolhive"] = "true"

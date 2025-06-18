@@ -59,7 +59,7 @@ func SecretsRouter() http.Handler {
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets [post]
-func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Request) {
+func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Request) {
 	var req setupSecretsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Errorf("Failed to decode request body: %v", err)
@@ -128,7 +128,6 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 			logger.Infof("Generated secure random password for encrypted provider setup")
 		}
 	}
-
 
 	// TODO Validation, creation, config updates etc should all happen in a common cli/api place, needs refactor
 	// Validate that the provider can be created and works correctly
@@ -501,7 +500,7 @@ func (s *SecretsRoutes) deleteSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 // getSecretsManager is a helper function to get the secrets manager
-func (_ *SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
+func (*SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
 	cfg := config.GetConfig()
 
 	// Check if secrets setup has been completed

@@ -3,10 +3,8 @@
 package docker
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -15,40 +13,20 @@ import (
 	"time"
 
 	"github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 
+	"github.com/stacklok/toolhive/pkg/container/docker/sdk"
+	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	lb "github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
-)
-
-// Common socket paths
-const (
-	// PodmanSocketPath is the default Podman socket path
-	PodmanSocketPath = "/var/run/podman/podman.sock"
-	// PodmanXDGRuntimeSocketPath is the XDG runtime Podman socket path
-	PodmanXDGRuntimeSocketPath = "podman/podman.sock"
-	// DockerSocketPath is the default Docker socket path
-	DockerSocketPath = "/var/run/docker.sock"
-	// DockerDesktopMacSocketPath is the Docker Desktop socket path on macOS
-	DockerDesktopMacSocketPath = ".docker/run/docker.sock"
-)
-
-// Environment variable names
-const (
-	// DockerSocketEnv is the environment variable for custom Docker socket path
-	DockerSocketEnv = "TOOLHIVE_DOCKER_SOCKET"
-	// PodmanSocketEnv is the environment variable for custom Podman socket path
-	PodmanSocketEnv = "TOOLHIVE_PODMAN_SOCKET"
 )
 
 // DnsImage is the default DNS image used for network permissions
@@ -60,88 +38,31 @@ const (
 	LabelValueTrue                 = "true"
 )
 
-var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
-
 // Client implements the Runtime interface for container operations
 type Client struct {
-	runtimeType runtime.Type
-	socketPath  string
-	client      *client.Client
+	runtimeType  runtime.Type
+	socketPath   string
+	client       *client.Client
+	imageManager images.ImageManager
 }
 
 // NewClient creates a new container client
 func NewClient(ctx context.Context) (*Client, error) {
-	var lastErr error
-
-	// We try to find a container socket for the given runtime
-	// We try Podman first, then Docker as fallback
-	// Once a socket is found, we create a client and ping the runtime
-	// If the ping fails, we try the next runtime
-	// If all runtimes fail, we return an error
-	for _, sp := range supportedSocketPaths {
-		// Try to find a container socket for the given runtime
-		socketPath, runtimeType, err := findContainerSocket(sp)
-		if err != nil {
-			logger.Debugf("Failed to find socket for %s: %v", sp, err)
-			lastErr = err
-			continue
-		}
-
-		c, err := NewClientWithSocketPath(ctx, socketPath, runtimeType)
-		if err != nil {
-			lastErr = err
-			logger.Debugf("Failed to create client for %s: %v", sp, err)
-			continue
-		}
-
-		return c, nil
-	}
-
-	if lastErr != nil {
-		return nil, fmt.Errorf("no supported container runtime available: %w", lastErr)
-	}
-	return nil, fmt.Errorf("no supported container runtime found/running")
-}
-
-// NewClientWithSocketPath creates a new container client with a specific socket path
-func NewClientWithSocketPath(ctx context.Context, socketPath string, runtimeType runtime.Type) (*Client, error) {
-	// Create platform-specific client
-	_, opts := newPlatformClient(socketPath)
-
-	// Create Docker client with the custom HTTP client
-	dockerClient, err := client.NewClientWithOpts(opts...)
+	dockerClient, socketPath, runtimeType, err := sdk.NewDockerClient(ctx)
 	if err != nil {
-		return nil, NewContainerError(err, "", fmt.Sprintf("failed to create client: %v", err))
+		return nil, err // there is already enough context in the error.
 	}
+
+	imageManager := images.NewDockerImageManager(dockerClient)
 
 	c := &Client{
-		runtimeType: runtimeType,
-		socketPath:  socketPath,
-		client:      dockerClient,
+		runtimeType:  runtimeType,
+		socketPath:   socketPath,
+		client:       dockerClient,
+		imageManager: imageManager,
 	}
-
-	// Verify that the container runtime is available
-	if err := c.ping(ctx); err != nil {
-		return nil, err
-	}
-	logger.Debugf("Successfully connected to %s runtime", c.runtimeType)
 
 	return c, nil
-}
-
-// ping checks if the container runtime is available
-func (c *Client) ping(ctx context.Context) error {
-	_, err := c.client.Ping(ctx)
-	if err != nil {
-		return NewContainerError(ErrRuntimeNotFound, "", fmt.Sprintf("failed to ping %s: %v", c.runtimeType, err))
-	}
-	return nil
-}
-
-// findContainerSocket finds a container socket path, preferring Podman over Docker
-func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
-	// Use platform-specific implementation
-	return findPlatformContainerSocket(rt)
 }
 
 // CreateContainer creates a container without starting it
@@ -269,7 +190,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 	dnsLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
 
 	// pull the dns image if it is not already pulled
-	err := c.PullImage(ctx, DnsImage)
+	err := c.imageManager.PullImage(ctx, DnsImage)
 	if err != nil {
 		// Check if the DNS image exists locally before failing
 		_, inspectErr := c.client.ImageInspect(ctx, DnsImage)
@@ -872,203 +793,6 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.Wr
 	return resp.Conn, readCloser, nil
 }
 
-// ImageExists checks if an image exists locally
-func (c *Client) ImageExists(ctx context.Context, imageName string) (bool, error) {
-	// List images with the specified name
-	filterArgs := filters.NewArgs()
-	filterArgs.Add("reference", imageName)
-
-	images, err := c.client.ImageList(ctx, dockerimage.ListOptions{
-		Filters: filterArgs,
-	})
-	if err != nil {
-		return false, NewContainerError(err, "", fmt.Sprintf("failed to list images: %v", err))
-	}
-
-	return len(images) > 0, nil
-}
-
-// parsePullOutput parses the Docker image pull output and formats it in a more readable way
-func parsePullOutput(reader io.Reader, writer io.Writer) error {
-	decoder := json.NewDecoder(reader)
-	for {
-		var pullStatus struct {
-			Status         string          `json:"status"`
-			ID             string          `json:"id,omitempty"`
-			ProgressDetail json.RawMessage `json:"progressDetail,omitempty"`
-			Progress       string          `json:"progress,omitempty"`
-		}
-
-		if err := decoder.Decode(&pullStatus); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("failed to decode pull output: %w", err)
-		}
-
-		// Format the output based on the type of message
-		if pullStatus.Progress != "" {
-			// This is a progress update
-			fmt.Fprintf(writer, "%s: %s %s\n", pullStatus.Status, pullStatus.ID, pullStatus.Progress)
-		} else if pullStatus.ID != "" {
-			// This is a layer-specific status update
-			fmt.Fprintf(writer, "%s: %s\n", pullStatus.Status, pullStatus.ID)
-		} else {
-			// This is a general status update
-			fmt.Fprintf(writer, "%s\n", pullStatus.Status)
-		}
-	}
-
-	return nil
-}
-
-// PullImage pulls an image from a registry
-func (c *Client) PullImage(ctx context.Context, imageName string) error {
-	logger.Infof("Pulling image: %s", imageName)
-
-	// Pull the image
-	reader, err := c.client.ImagePull(ctx, imageName, dockerimage.PullOptions{})
-	if err != nil {
-		return NewContainerError(err, "", fmt.Sprintf("failed to pull image: %v", err))
-	}
-	defer reader.Close()
-
-	// Parse and filter the pull output
-	if err := parsePullOutput(reader, os.Stdout); err != nil {
-		return NewContainerError(err, "", fmt.Sprintf("failed to process pull output: %v", err))
-	}
-
-	return nil
-}
-
-// BuildImage builds a Docker image from a Dockerfile in the specified context directory
-func (c *Client) BuildImage(ctx context.Context, contextDir, imageName string) error {
-	logger.Infof("Building image %s from context directory %s", imageName, contextDir)
-
-	// Create a tar archive of the context directory
-	tarFile, err := os.CreateTemp("", "docker-build-context-*.tar")
-	if err != nil {
-		return NewContainerError(err, "", fmt.Sprintf("failed to create temporary tar file: %v", err))
-	}
-	defer os.Remove(tarFile.Name())
-	defer tarFile.Close()
-
-	// Create a tar archive of the context directory
-	if err := createTarFromDir(contextDir, tarFile); err != nil {
-		return NewContainerError(err, "", fmt.Sprintf("failed to create tar archive: %v", err))
-	}
-
-	// Reset the file pointer to the beginning of the file
-	if _, err := tarFile.Seek(0, 0); err != nil {
-		return NewContainerError(err, "", fmt.Sprintf("failed to reset tar file pointer: %v", err))
-	}
-
-	// Build the image
-	buildOptions := build.ImageBuildOptions{
-		Tags:       []string{imageName},
-		Dockerfile: "Dockerfile",
-		Remove:     true,
-	}
-
-	response, err := c.client.ImageBuild(ctx, tarFile, buildOptions)
-	if err != nil {
-		return NewContainerError(err, "", fmt.Sprintf("failed to build image: %v", err))
-	}
-	defer response.Body.Close()
-
-	// Parse and log the build output
-	if err := parseBuildOutput(response.Body, os.Stdout); err != nil {
-		return NewContainerError(err, "", fmt.Sprintf("failed to process build output: %v", err))
-	}
-
-	return nil
-}
-
-// createTarFromDir creates a tar archive from a directory
-func createTarFromDir(srcDir string, writer io.Writer) error {
-	// Create a new tar writer
-	tw := tar.NewWriter(writer)
-	defer tw.Close()
-
-	// Walk through the directory and add files to the tar archive
-	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		// Get the relative path
-		relPath, err := filepath.Rel(srcDir, path)
-		if err != nil {
-			return fmt.Errorf("failed to get relative path: %w", err)
-		}
-
-		// Skip the root directory
-		if relPath == "." {
-			return nil
-		}
-
-		// Create a tar header
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return fmt.Errorf("failed to create tar header: %w", err)
-		}
-
-		// Set the name to the relative path
-		header.Name = relPath
-
-		// Write the header
-		if err := tw.WriteHeader(header); err != nil {
-			return fmt.Errorf("failed to write tar header: %w", err)
-		}
-
-		// If it's a regular file, write the contents
-		if !info.IsDir() {
-			// #nosec G304 - This is safe because we're only opening files within the specified context directory
-			file, err := os.Open(path)
-			if err != nil {
-				return fmt.Errorf("failed to open file: %w", err)
-			}
-			defer file.Close()
-
-			if _, err := io.Copy(tw, file); err != nil {
-				return fmt.Errorf("failed to copy file contents: %w", err)
-			}
-		}
-
-		return nil
-	})
-}
-
-// parseBuildOutput parses the Docker image build output and formats it in a more readable way
-func parseBuildOutput(reader io.Reader, writer io.Writer) error {
-	decoder := json.NewDecoder(reader)
-	for {
-		var buildOutput struct {
-			Stream string `json:"stream,omitempty"`
-			Error  string `json:"error,omitempty"`
-		}
-
-		if err := decoder.Decode(&buildOutput); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("failed to decode build output: %w", err)
-		}
-
-		// Check for errors
-		if buildOutput.Error != "" {
-			return fmt.Errorf("build error: %s", buildOutput.Error)
-		}
-
-		// Print the stream output
-		if buildOutput.Stream != "" {
-			fmt.Fprint(writer, buildOutput.Stream)
-		}
-	}
-
-	return nil
-}
-
 // getPermissionConfigFromProfile converts a permission profile to a container permission config
 // with transport-specific settings (internal function)
 // addReadOnlyMounts adds read-only mounts to the permission config
@@ -1197,20 +921,8 @@ var (
 	// ErrContainerNotFound is returned when a container is not found
 	ErrContainerNotFound = fmt.Errorf("container not found")
 
-	// ErrContainerAlreadyExists is returned when a container already exists
-	ErrContainerAlreadyExists = fmt.Errorf("container already exists")
-
 	// ErrContainerNotRunning is returned when a container is not running
 	ErrContainerNotRunning = fmt.Errorf("container not running")
-
-	// ErrContainerAlreadyRunning is returned when a container is already running
-	ErrContainerAlreadyRunning = fmt.Errorf("container already running")
-
-	// ErrRuntimeNotFound is returned when a container runtime is not found
-	ErrRuntimeNotFound = fmt.Errorf("container runtime not found")
-
-	// ErrInvalidRuntimeType is returned when an invalid runtime type is specified
-	ErrInvalidRuntimeType = fmt.Errorf("invalid runtime type")
 
 	// ErrAttachFailed is returned when attaching to a container fails
 	ErrAttachFailed = fmt.Errorf("failed to attach to container")

@@ -413,26 +413,6 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtim
 	}, nil
 }
 
-// ImageExists implements runtime.Runtime.
-func (*Client) ImageExists(_ context.Context, imageName string) (bool, error) {
-	// In Kubernetes, we can't directly check if an image exists in the cluster
-	// without trying to use it. For simplicity, we'll assume the image exists
-	// if it's a valid image name.
-	//
-	// In a more complete implementation, we could:
-	// 1. Create a temporary pod with the image to see if it can be pulled
-	// 2. Use the Kubernetes API to check node status for the image
-	// 3. Use an external registry API to check if the image exists
-
-	// For now, just return true if the image name is not empty
-	if imageName == "" {
-		return false, fmt.Errorf("image name cannot be empty")
-	}
-
-	// We could add more validation here if needed
-	return true, nil
-}
-
 // IsWorkloadRunning implements runtime.Runtime.
 func (c *Client) IsWorkloadRunning(ctx context.Context, workloadID string) (bool, error) {
 	// In Kubernetes, workloadID is the statefulset name

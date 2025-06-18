@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -65,13 +66,8 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to find server: %v", err)
 	}
 
-	// Create container runtime
-	rt, err := container.NewFactory().Create(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
-	}
-
-	processedImage, err := runner.HandleProtocolScheme(ctx, rt, inspectorImage, "")
+	imageManager := images.NewImageManager(ctx)
+	processedImage, err := runner.HandleProtocolScheme(ctx, imageManager, inspectorImage, "")
 	if err != nil {
 		return fmt.Errorf("failed to handle protocol scheme: %v", err)
 	}
@@ -100,6 +96,12 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 			},
 		},
 		AttachStdio: false,
+	}
+
+	// Create container runtime
+	rt, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
 	labelsMap := map[string]string{}

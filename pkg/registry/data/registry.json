@@ -2,12 +2,7 @@
   "last_updated": "2025-06-18 00:21:33",
   "servers": {
     "atlassian": {
-      "args": [
-        "--transport",
-        "sse",
-        "--port",
-        "8000"
-      ],
+      "args": [],
       "description": "Model Context Protocol (MCP) server for Atlassian products (Confluence and Jira). This integration supports both Confluence \u0026 Jira Cloud and Server/Data Center deployments.",
       "env_vars": [
         {
@@ -128,7 +123,6 @@
         "server",
         "data-center"
       ],
-      "target_port": 8000,
       "tools": [
         "confluence_search",
         "confluence_get_page",
@@ -172,7 +166,7 @@
         "jira_create_version",
         "jira_batch_create_versions"
       ],
-      "transport": "sse"
+      "transport": "stdio"
     },
     "aws-kb-retrieval-server": {
       "args": [],

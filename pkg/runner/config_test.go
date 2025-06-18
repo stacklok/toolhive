@@ -31,6 +31,7 @@ func (*mockRuntime) DeployWorkload(
 	_ *permissions.Profile,
 	_ string,
 	_ *rt.DeployWorkloadOptions,
+	_ bool,
 ) (string, error) {
 	return "container-id", nil
 }
@@ -879,6 +880,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		nil,   // otelHeaders
 		false, // otelInsecure
 		false, // otelEnablePrometheusMetricsPath
+		false, // isolatedNetwork
 	)
 
 	assert.NotNil(t, config, "NewRunConfigFromFlags should return a non-nil config")

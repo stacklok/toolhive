@@ -1368,7 +1368,7 @@
       "description": "Official Notion MCP server.",
       "env_vars": [
         {
-          "description": "HTTP headers for Notion API requests in JSON format. Example: '{\"Authorization\":\"Bearer ntn_****\",\"Notion-Version\":\"2022-06-28\"}'",
+          "description": "HTTP headers for Notion API requests in JSON format. Example: {\"Authorization\":\"Bearer ntn_****\",\"Notion-Version\":\"2022-06-28\"}",
           "name": "OPENAPI_MCP_HEADERS",
           "required": true,
           "secret": true

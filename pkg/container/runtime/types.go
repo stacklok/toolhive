@@ -81,6 +81,7 @@ type Runtime interface {
 		permissionProfile *permissions.Profile,
 		transportType string,
 		options *DeployWorkloadOptions,
+		isolateNetwork bool,
 	) (string, error)
 
 	// ListWorkloads lists all deployed workloads managed by this runtime.

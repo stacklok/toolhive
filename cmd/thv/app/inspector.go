@@ -114,6 +114,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		&permissions.Profile{}, // Empty profile as we don't need special permissions
 		string(types.TransportTypeInspector),
 		options,
+		false, // Do not isolate network
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create inspector container: %v", err)

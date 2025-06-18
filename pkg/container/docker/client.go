@@ -628,28 +628,10 @@ func (c *Client) createIngressContainer(ctx context.Context, containerName strin
 	return egressContainerId, nil
 }
 
-func (c *Client) createContainerNetworks(ctx context.Context, internalNetworkName string, externalNetworkName string) error {
-	internalNetworkLabels := map[string]string{}
-	lb.AddNetworkLabels(internalNetworkLabels, internalNetworkName)
-	err := c.createNetwork(ctx, internalNetworkName, internalNetworkLabels, true)
-	if err != nil {
-		return fmt.Errorf("failed to create internal network: %v", err)
-	}
-
-	externalNetworkLabels := map[string]string{}
-	lb.AddNetworkLabels(externalNetworkLabels, externalNetworkName)
-	err = c.createNetwork(ctx, externalNetworkName, externalNetworkLabels, false)
-	if err != nil {
-		// just log the error and continue
-		logger.Warnf("failed to create external network %q: %v", externalNetworkName, err)
-	}
-	return nil
-}
-
 func (c *Client) createMcpContainer(ctx context.Context, name string, networkName string, image string, command []string,
 	envVars map[string]string, labels map[string]string, attachStdio bool, permissionConfig *runtime.PermissionConfig,
 	additionalDNS string, exposedPorts map[string]struct{}, portBindings map[string][]runtime.PortBinding,
-	isMcpWorkload bool) (string, error) {
+	isolateNetwork bool) (string, error) {
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,
@@ -690,11 +672,10 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 	}
 
 	// create mcp container
-	internalEndpointsConfig := map[string]*network.EndpointSettings{
-		networkName: {},
-	}
-
-	if !isMcpWorkload {
+	internalEndpointsConfig := map[string]*network.EndpointSettings{}
+	if isolateNetwork {
+		internalEndpointsConfig[networkName] = &network.EndpointSettings{}
+	} else {
 		// for other workloads such as inspector, add to external network
 		internalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{}
 	}
@@ -735,9 +716,8 @@ func (c *Client) DeployWorkload(
 	permissionProfile *permissions.Profile,
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
+	isolateNetwork bool,
 ) (string, error) {
-	// check if we are an mcp workload
-	isMcpWorkload := name != "inspector"
 	// Get permission config from profile
 	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType)
 	if err != nil {
@@ -748,17 +728,29 @@ func (c *Client) DeployWorkload(
 	attachStdio := options == nil || options.AttachStdio
 
 	// create networks
-	networkName := fmt.Sprintf("toolhive-%s-internal", name)
-	err = c.createContainerNetworks(ctx, networkName, "toolhive-external")
-	if err != nil {
-		return "", fmt.Errorf("failed to create container networks: %v", err)
-	}
 	var additionalDNS string
+	networkName := fmt.Sprintf("toolhive-%s-internal", name)
+
 	externalEndpointsConfig := map[string]*network.EndpointSettings{
 		networkName:         {},
 		"toolhive-external": {},
 	}
-	if isMcpWorkload {
+	externalNetworkLabels := map[string]string{}
+	lb.AddNetworkLabels(externalNetworkLabels, "toolhive-external")
+	err = c.createNetwork(ctx, "toolhive-external", externalNetworkLabels, false)
+	if err != nil {
+		// just log the error and continue
+		logger.Warnf("failed to create external network %q: %v", "toolhive-external", err)
+	}
+
+	if isolateNetwork {
+		internalNetworkLabels := map[string]string{}
+		lb.AddNetworkLabels(internalNetworkLabels, networkName)
+		err := c.createNetwork(ctx, networkName, internalNetworkLabels, true)
+		if err != nil {
+			return "", fmt.Errorf("failed to create internal network: %v", err)
+		}
+
 		// create dns container
 		dnsContainerName := fmt.Sprintf("%s-dns", name)
 		_, dnsContainerIP, err := c.createDnsContainer(ctx, dnsContainerName, attachStdio, networkName, externalEndpointsConfig)
@@ -781,16 +773,18 @@ func (c *Client) DeployWorkload(
 		}
 
 		envVars = addExtraEnvVars(envVars, egressContainerName)
+	} else {
+		networkName = ""
 	}
 
 	containerId, err := c.createMcpContainer(ctx, name, networkName, image, command, envVars, labels, attachStdio,
-		permissionConfig, additionalDNS, options.ExposedPorts, options.PortBindings, isMcpWorkload)
+		permissionConfig, additionalDNS, options.ExposedPorts, options.PortBindings, isolateNetwork)
 	if err != nil {
 		return "", fmt.Errorf("failed to create mcp container: %v", err)
 	}
 
 	// now create ingress container
-	if isMcpWorkload {
+	if isolateNetwork {
 		ingressContainerName := fmt.Sprintf("%s-ingress", name)
 		_, err = c.createIngressContainer(ctx, name, ingressContainerName, attachStdio, options.PortBindings,
 			options.ExposedPorts, externalEndpointsConfig)

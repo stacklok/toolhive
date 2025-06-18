@@ -358,7 +358,7 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 	// are checks inside `GetSecretsPassword` to ensure this does not get called in a detached process.
 	// This will be addressed in a future re-think of the secrets manager interface.
 	if needSecretsPassword(runConfig.Secrets) {
-		password, err := secrets.GetSecretsPassword()
+		password, err := secrets.GetSecretsPassword("")
 		if err != nil {
 			return fmt.Errorf("failed to get secrets password: %v", err)
 		}

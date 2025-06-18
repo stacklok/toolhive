@@ -1,8 +1,10 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -46,7 +48,8 @@ func SecretsRouter() http.Handler {
 // setupSecretsProvider
 //
 //	@Summary		Setup or reconfigure secrets provider
-//	@Description	Setup the secrets provider with the specified type and configuration. Can be used to initially configure or reconfigure an existing provider.
+//	@Description	Setup the secrets provider with the specified type and configuration.
+//	Can be used to initially configure or reconfigure an existing provider.
 //	@Tags			secrets
 //	@Accept			json
 //	@Produce		json
@@ -72,15 +75,21 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		providerType = secrets.OnePasswordType
 	case string(secrets.NoneType):
 		providerType = secrets.NoneType
+	case "":
+		http.Error(w, "Provider type cannot be empty", http.StatusBadRequest)
+		return
 	default:
-		http.Error(w, "Invalid provider type. Must be 'encrypted', '1password', or 'none'", http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Invalid secrets provider type: %s (valid types: %s, %s, %s)",
+			req.ProviderType, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType)),
+			http.StatusBadRequest)
 		return
 	}
 
-	// Check current secrets provider configuration
+	// Check current secrets provider configuration for appropriate messaging
 	cfg := config.GetConfig()
+	isReconfiguration := false
+	isInitialSetup := !cfg.Secrets.SetupCompleted
 	if cfg.Secrets.SetupCompleted {
-		// If already setup, check if user is trying to change to a different provider
 		currentProviderType, err := cfg.Secrets.GetProviderType()
 		if err != nil {
 			logger.Errorf("Failed to get current provider type: %v", err)
@@ -88,35 +97,73 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 			return
 		}
 
+		// TODO Handle provider reconfiguration in a better way
 		if currentProviderType == providerType {
-			// Same provider type - this is a reconfiguration/update
+			isReconfiguration = true
 			logger.Infof("Reconfiguring existing %s secrets provider", providerType)
 		} else {
-			// Different provider type - warn about potential data loss
+			isReconfiguration = true // Changing provider type is also considered reconfiguration
 			logger.Warnf("Changing secrets provider from %s to %s", currentProviderType, providerType)
 		}
 	}
 
-	// Test that we can create the provider
-	_, err := secrets.CreateSecretProvider(providerType)
-	if err != nil {
-		logger.Errorf("Failed to create secrets provider: %v", err)
-		if errors.Is(err, secrets.ErrKeyringNotAvailable) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+	// Determine password to use - only for encrypted provider during initial setup or reconfiguration
+	// TODO Temporary hack to allow API users to not have to use a password
+	var passwordToUse string
+	if providerType == secrets.EncryptedType && (isInitialSetup || isReconfiguration) {
+		if req.Password != "" {
+			// Use provided password
+			passwordToUse = req.Password
+			logger.Infof("Using provided password for encrypted provider setup")
+		} else {
+			// Generate a secure random password
+			generatedPassword, err := secrets.GenerateSecurePassword()
+			if err != nil {
+				logger.Errorf("Failed to generate secure password: %v", err)
+				http.Error(w, "Failed to generate secure password", http.StatusInternalServerError)
+				return
+			}
+			passwordToUse = generatedPassword
+			logger.Infof("Generated secure random password for encrypted provider setup")
+		}
+	}
+
+
+	// TODO Validation, creation, config updates etc should all happen in a common cli/api place, needs refactor
+	// Validate that the provider can be created and works correctly
+	// Use the password from the request for encrypted provider validation and setup
+	ctx := context.Background()
+	result := secrets.ValidateProviderWithPassword(ctx, providerType, passwordToUse)
+	if !result.Success {
+		logger.Errorf("Provider validation failed: %v", result.Error)
+		if errors.Is(result.Error, secrets.ErrKeyringNotAvailable) {
+			http.Error(w, result.Error.Error(), http.StatusBadRequest)
 			return
 		}
-		http.Error(w, "Failed to setup secrets provider", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Provider validation failed: %v", result.Error), http.StatusInternalServerError)
 		return
 	}
 
-	// Update configuration
-	err = config.UpdateConfig(func(c *config.Config) {
+	// For encrypted provider during initial setup or reconfiguration, ensure we create the provider
+	// at least once to save password in keyring
+	if providerType == secrets.EncryptedType && (isInitialSetup || isReconfiguration) {
+		_, err := secrets.CreateSecretProviderWithPassword(providerType, passwordToUse)
+		if err != nil {
+			logger.Errorf("Failed to initialize encrypted provider: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to initialize encrypted provider: %v", err), http.StatusInternalServerError)
+			return
+		}
+		logger.Info("Encrypted provider initialized and password saved to keyring")
+	}
+
+	// Update the secrets provider type and mark setup as completed
+	err := config.UpdateConfig(func(c *config.Config) {
 		c.Secrets.ProviderType = string(providerType)
 		c.Secrets.SetupCompleted = true
 	})
 	if err != nil {
 		logger.Errorf("Failed to update configuration: %v", err)
-		http.Error(w, "Failed to save configuration", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to update configuration: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -124,7 +171,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(http.StatusCreated)
 
 	var message string
-	if cfg.Secrets.SetupCompleted {
+	if isReconfiguration {
 		message = "Secrets provider reconfigured successfully"
 	} else {
 		message = "Secrets provider setup successfully"

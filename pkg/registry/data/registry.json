@@ -1363,6 +1363,69 @@
       ],
       "transport": "sse"
     },
+    "notion": {
+      "args": [],
+      "description": "Official Notion MCP server.",
+      "env_vars": [
+        {
+          "description": "HTTP headers for Notion API requests in JSON format. Example: '{\"Authorization\":\"Bearer ntn_****\",\"Notion-Version\":\"2022-06-28\"}'",
+          "name": "OPENAPI_MCP_HEADERS",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "image": "mcp/notion:latest",
+      "metadata": {
+        "last_updated": "2025-06-18T09:30:54-04:00",
+        "pulls": 205,
+        "stars": 2187
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              "api.notion.com"
+            ],
+            "allow_port": [
+              443
+            ],
+            "allow_transport": [
+              "tcp"
+            ],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/makenotion/notion-mcp-server",
+      "tags": [
+        "notion",
+        "notes"
+      ],
+      "tools": [
+        "API-get-user",
+        "API-get-users",
+        "API-get-self",
+        "API-post-database-query",
+        "API-post-search",
+        "API-get-block-children",
+        "API-patch-block-children",
+        "API-retrieve-a-block",
+        "API-update-a-block",
+        "API-delete-a-block",
+        "API-retrieve-a-page",
+        "API-patch-page",
+        "API-post-page",
+        "API-create-a-database",
+        "API-update-a-database",
+        "API-retrieve-a-database",
+        "API-retrieve-a-page-property",
+        "API-retrieve-a-comment",
+        "API-create-a-comment"
+      ],
+      "transport": "stdio"
+    },
     "oci-registry": {
       "args": [],
       "description": "The OCI Registry MCP Server enables secure and seamless querying of OCI container registries, providing tools for image introspection, tag discovery, and manifest/config retrieval.",

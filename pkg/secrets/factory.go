@@ -174,6 +174,7 @@ func IsKeyringAvailable() bool {
 }
 
 // CreateSecretProvider creates the specified type of secrets provider.
+// TODO CREATE function does not actually create anything, refactor or rename
 func CreateSecretProvider(managerType ProviderType) (Provider, error) {
 	return CreateSecretProviderWithPassword(managerType, "")
 }
@@ -247,6 +248,7 @@ func GetSecretsPassword(optionalPassword string) ([]byte, error) {
 			}
 		}
 
+		// TODO GET function should not be saving anything into keyring
 		// Store the password in the keyring for future use
 		logger.Info("writing password to os keyring")
 		err = keyring.Set(keyringService, keyringService, string(password))

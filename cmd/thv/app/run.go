@@ -297,7 +297,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Verify the image against the expected provenance info (if applicable)
-	if err := verifyImage(ctx, runConfig.Image, rt, server, runVerifyImage); err != nil {
+	if err := verifyImage(runConfig.Image, server, runVerifyImage); err != nil {
 		return err
 	}
 
@@ -369,12 +369,19 @@ func pullImage(ctx context.Context, image string, rt runtime.Runtime) error {
 }
 
 // verifyImage verifies the image using the specified verification setting (warn, enabled, or disabled)
-func verifyImage(ctx context.Context, image string, rt runtime.Runtime, server *registry.Server, verifySetting string) error {
+func verifyImage(image string, server *registry.Server, verifySetting string) error {
 	switch verifySetting {
 	case verifyImageDisabled:
 		logger.Warn("Image verification is disabled")
 	case verifyImageWarn, verifyImageEnabled:
-		isSafe, err := rt.VerifyImage(ctx, server, image)
+		// Create a new verifier
+		v, err := verifier.New(server)
+		if err != nil {
+			return err
+		}
+
+		// Verify the image passing the server info
+		isSafe, err := v.VerifyServer(image, server)
 		if err != nil {
 			// This happens if we have no provenance entry in the registry for this server.
 			// Not finding provenance info in the registry is not a fatal error if the setting is "warn".

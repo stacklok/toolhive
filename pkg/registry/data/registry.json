@@ -1168,6 +1168,135 @@
       ],
       "transport": "stdio"
     },
+    "mongodb": {
+      "args": [],
+      "description": "A Model Context Protocol server for interacting with MongoDB Databases and MongoDB Atlas.",
+      "env_vars": [
+        {
+          "description": "MongoDB connection string for direct database connections (optional, if not set, you'll need to call the connect tool before interacting with MongoDB data)",
+          "name": "MDB_MCP_CONNECTION_STRING",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "Atlas API client ID for authentication (required for running Atlas tools)",
+          "name": "MDB_MCP_API_CLIENT_ID",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "Atlas API client secret for authentication (required for running Atlas tools)",
+          "name": "MDB_MCP_API_CLIENT_SECRET",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "Atlas API base URL (default is https://cloud.mongodb.com/)",
+          "name": "MDB_MCP_API_BASE_URL",
+          "required": false
+        },
+        {
+          "description": "MongoDB server address for direct connections (optional, used for connect tool)",
+          "name": "MDB_MCP_SERVER_ADDRESS",
+          "required": false
+        },
+        {
+          "description": "MongoDB server port for direct connections (optional, used for connect tool)",
+          "name": "MDB_MCP_SERVER_PORT",
+          "required": false
+        },
+        {
+          "description": "Folder to store logs (inside the container)",
+          "name": "MDB_MCP_LOG_PATH",
+          "required": false
+        },
+        {
+          "description": "Comma-separated list of tool names, operation types, and/or categories of tools to disable",
+          "name": "MDB_MCP_DISABLED_TOOLS",
+          "required": false
+        },
+        {
+          "description": "When set to true, only allows read and metadata operation types",
+          "name": "MDB_MCP_READ_ONLY",
+          "required": false
+        },
+        {
+          "description": "When set to disabled, disables telemetry collection",
+          "name": "MDB_MCP_TELEMETRY",
+          "required": false
+        }
+      ],
+      "image": "mongodb/mongodb-mcp-server:latest",
+      "metadata": {
+        "last_updated": "2025-06-17T14:57:32-04:00",
+        "pulls": 92,
+        "stars": 239
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [
+              443,
+              27017,
+              27018,
+              27019,
+              27020
+            ],
+            "allow_transport": [
+              "tcp"
+            ],
+            "insecure_allow_all": true
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/mongodb-js/mongodb-mcp-server",
+      "tags": [
+        "mongodb",
+        "mongo",
+        "atlas",
+        "database",
+        "data",
+        "query"
+      ],
+      "tools": [
+        "atlas-list-orgs",
+        "atlas-list-projects",
+        "atlas-create-project",
+        "atlas-list-clusters",
+        "atlas-inspect-cluster",
+        "atlas-create-free-cluster",
+        "atlas-connect-cluster",
+        "atlas-inspect-access-list",
+        "atlas-create-access-list",
+        "atlas-list-db-users",
+        "atlas-create-db-user",
+        "atlas-list-alerts",
+        "connect",
+        "find",
+        "aggregate",
+        "count",
+        "insert-one",
+        "insert-many",
+        "create-index",
+        "update-one",
+        "update-many",
+        "rename-collection",
+        "delete-one",
+        "delete-many",
+        "drop-collection",
+        "drop-database",
+        "list-databases",
+        "list-collections",
+        "collection-indexes",
+        "collection-schema",
+        "collection-storage-size",
+        "db-stats"
+      ],
+      "transport": "stdio"
+    },
     "netbird": {
       "args": [
         "--transport",

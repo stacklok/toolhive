@@ -418,8 +418,6 @@ func (c *Client) createContainer(ctx context.Context, containerName string, conf
 
 func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string,
 	attachStdio bool, networkName string, endpointsConfig map[string]*network.EndpointSettings) (string, string, error) {
-	fmt.Println("endpoints config are")
-	fmt.Println(endpointsConfig)
 	logger.Infof("Setting up DNS container for %s with image %s...", dnsContainerName, DnsImage)
 	dnsLabels := map[string]string{}
 	lb.AddStandardLabels(dnsLabels, dnsContainerName, dnsContainerName, "stdio", 80)
@@ -739,7 +737,6 @@ func (c *Client) DeployWorkload(
 	}
 	externalNetworkLabels := map[string]string{}
 	lb.AddNetworkLabels(externalNetworkLabels, "toolhive-external")
-	fmt.Println("i create external network")
 	err = c.createNetwork(ctx, "toolhive-external", externalNetworkLabels, false)
 	if err != nil {
 		// just log the error and continue

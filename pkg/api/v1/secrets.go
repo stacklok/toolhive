@@ -45,6 +45,7 @@ func SecretsRouter() http.Handler {
 	return r
 }
 
+// nolint:gocyclo //TODO refactor this method to use common Secrets management functions
 // setupSecretsProvider
 //
 //	@Summary		Setup or reconfigure secrets provider
@@ -198,7 +199,7 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 //	@Failure		404	{string}	string	"Not Found - Provider not setup"
 //	@Failure		500	{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets/default [get]
-func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, r *http.Request) {
+func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, _ *http.Request) {
 	cfg := config.GetConfig()
 
 	// Check if secrets provider is setup
@@ -500,7 +501,7 @@ func (s *SecretsRoutes) deleteSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 // getSecretsManager is a helper function to get the secrets manager
-func (s *SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
+func (_ *SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
 	cfg := config.GetConfig()
 
 	// Check if secrets setup has been completed

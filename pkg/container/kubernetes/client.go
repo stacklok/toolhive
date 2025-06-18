@@ -490,28 +490,6 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 	return result, nil
 }
 
-// PullImage implements runtime.Runtime.
-func (*Client) PullImage(_ context.Context, imageName string) error {
-	// In Kubernetes, we don't need to explicitly pull images as they are pulled
-	// automatically when creating pods. The kubelet on each node will pull the
-	// image when needed.
-
-	// Log that we're skipping the pull operation
-	logger.Infof("Skipping explicit image pull for %s in Kubernetes - "+
-		"images are pulled automatically when pods are created", imageName)
-
-	return nil
-}
-
-// BuildImage implements runtime.Runtime.
-func (*Client) BuildImage(_ context.Context, _, _ string) error {
-	// In Kubernetes, we don't build images directly within the cluster.
-	// Images should be built externally and pushed to a registry.
-	logger.Warnf("BuildImage is not supported in Kubernetes runtime. " +
-		"Images should be built externally and pushed to a registry.")
-	return fmt.Errorf("building images directly is not supported in Kubernetes runtime")
-}
-
 // RemoveWorkload implements runtime.Runtime.
 func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 	// In Kubernetes, we remove a workload by deleting the statefulset

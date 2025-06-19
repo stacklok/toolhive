@@ -419,7 +419,8 @@ func (d *defaultManager) RestartWorkload(ctx context.Context, name string) (*err
 
 	if running && proxyRunning {
 		logger.Infof("Container %s and proxy are already running", name)
-		return nil, nil
+		// Return empty error group so that client does not need to check for nil.
+		return &errgroup.Group{}, nil
 	}
 
 	containerID := container.ID

@@ -14,7 +14,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -268,12 +268,13 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	var server *registry.Server
 
+	imageManager := images.NewImageManager(ctx)
 	// Check if the serverOrImage is a protocol scheme, e.g., uvx://, npx://, or go://
 	if runner.IsImageProtocolScheme(serverOrImage) {
 		logger.Debugf("Detected protocol scheme: %s", serverOrImage)
 		// Process the protocol scheme and build the image
 		caCertPath := resolveCACertPath(runCACertPath)
-		generatedImage, err := runner.HandleProtocolScheme(ctx, rt, serverOrImage, caCertPath)
+		generatedImage, err := runner.HandleProtocolScheme(ctx, imageManager, serverOrImage, caCertPath)
 		if err != nil {
 			return fmt.Errorf("failed to process protocol scheme: %v", err)
 		}
@@ -302,7 +303,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Pull the image if necessary
-	if err := pullImage(ctx, runConfig.Image, rt); err != nil {
+	if err := pullImage(ctx, runConfig.Image, imageManager); err != nil {
 		return fmt.Errorf("failed to retrieve or pull image: %v", err)
 	}
 
@@ -320,18 +321,18 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 // If the image has the latest tag, it will be pulled to ensure we have the most recent version.
 // however, if there is a failure in pulling the "latest" tag, it will check if the image exists locally
 // as it is possible that the image was locally built.
-func pullImage(ctx context.Context, image string, rt runtime.Runtime) error {
+func pullImage(ctx context.Context, image string, imageManager images.ImageManager) error {
 	// Check if the image has the "latest" tag
 	isLatestTag := hasLatestTag(image)
 
 	if isLatestTag {
 		// For "latest" tag, try to pull first
 		logger.Infof("Image %s has 'latest' tag, pulling to ensure we have the most recent version...", image)
-		err := rt.PullImage(ctx, image)
+		err := imageManager.PullImage(ctx, image)
 		if err != nil {
 			// Pull failed, check if it exists locally
 			logger.Infof("Pull failed, checking if image exists locally: %s", image)
-			imageExists, checkErr := rt.ImageExists(ctx, image)
+			imageExists, checkErr := imageManager.ImageExists(ctx, image)
 			if checkErr != nil {
 				return fmt.Errorf("failed to check if image exists: %v", checkErr)
 			}
@@ -347,7 +348,7 @@ func pullImage(ctx context.Context, image string, rt runtime.Runtime) error {
 	} else {
 		// For non-latest tags, check locally first
 		logger.Debugf("Checking if image exists locally: %s", image)
-		imageExists, err := rt.ImageExists(ctx, image)
+		imageExists, err := imageManager.ImageExists(ctx, image)
 		logger.Debugf("ImageExists locally: %t", imageExists)
 		if err != nil {
 			return fmt.Errorf("failed to check if image exists locally: %v", err)
@@ -358,7 +359,7 @@ func pullImage(ctx context.Context, image string, rt runtime.Runtime) error {
 		} else {
 			// Image doesn't exist locally, try to pull
 			logger.Infof("Image %s not found locally, pulling...", image)
-			if err := rt.PullImage(ctx, image); err != nil {
+			if err := imageManager.PullImage(ctx, image); err != nil {
 				return fmt.Errorf("failed to pull image: %v", err)
 			}
 			logger.Infof("Successfully pulled image: %s", image)

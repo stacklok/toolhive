@@ -94,7 +94,7 @@ func createSquidContainer(
 	// pull the squid image if it is not already pulled
 	squidImage := getSquidImage()
 	// TODO: Move these down into an image operations layer.
-	err := c.PullImage(ctx, squidImage)
+	err := c.imageManager.PullImage(ctx, squidImage)
 	if err != nil {
 		// Check if the squid image exists locally before failing
 		_, inspectErr := c.client.ImageInspect(ctx, squidImage)

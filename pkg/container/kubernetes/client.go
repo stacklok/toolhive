@@ -413,26 +413,6 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtim
 	}, nil
 }
 
-// ImageExists implements runtime.Runtime.
-func (*Client) ImageExists(_ context.Context, imageName string) (bool, error) {
-	// In Kubernetes, we can't directly check if an image exists in the cluster
-	// without trying to use it. For simplicity, we'll assume the image exists
-	// if it's a valid image name.
-	//
-	// In a more complete implementation, we could:
-	// 1. Create a temporary pod with the image to see if it can be pulled
-	// 2. Use the Kubernetes API to check node status for the image
-	// 3. Use an external registry API to check if the image exists
-
-	// For now, just return true if the image name is not empty
-	if imageName == "" {
-		return false, fmt.Errorf("image name cannot be empty")
-	}
-
-	// We could add more validation here if needed
-	return true, nil
-}
-
 // IsWorkloadRunning implements runtime.Runtime.
 func (c *Client) IsWorkloadRunning(ctx context.Context, workloadID string) (bool, error) {
 	// In Kubernetes, workloadID is the statefulset name
@@ -508,28 +488,6 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 	}
 
 	return result, nil
-}
-
-// PullImage implements runtime.Runtime.
-func (*Client) PullImage(_ context.Context, imageName string) error {
-	// In Kubernetes, we don't need to explicitly pull images as they are pulled
-	// automatically when creating pods. The kubelet on each node will pull the
-	// image when needed.
-
-	// Log that we're skipping the pull operation
-	logger.Infof("Skipping explicit image pull for %s in Kubernetes - "+
-		"images are pulled automatically when pods are created", imageName)
-
-	return nil
-}
-
-// BuildImage implements runtime.Runtime.
-func (*Client) BuildImage(_ context.Context, _, _ string) error {
-	// In Kubernetes, we don't build images directly within the cluster.
-	// Images should be built externally and pushed to a registry.
-	logger.Warnf("BuildImage is not supported in Kubernetes runtime. " +
-		"Images should be built externally and pushed to a registry.")
-	return fmt.Errorf("building images directly is not supported in Kubernetes runtime")
 }
 
 // RemoveWorkload implements runtime.Runtime.

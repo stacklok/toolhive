@@ -119,15 +119,6 @@ type Runtime interface {
 	// of the workload for interactive communication. This is typically used
 	// for stdio transport where direct input/output streaming is required.
 	AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error)
-
-	// ImageExists checks if an image exists locally
-	ImageExists(ctx context.Context, image string) (bool, error)
-
-	// PullImage pulls an image from a registry
-	PullImage(ctx context.Context, image string) error
-
-	// BuildImage builds a Docker image from a Dockerfile in the specified context directory
-	BuildImage(ctx context.Context, contextDir, imageName string) error
 }
 
 // Monitor defines the interface for container monitoring

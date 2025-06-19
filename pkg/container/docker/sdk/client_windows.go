@@ -1,7 +1,7 @@
 //go:build windows
 // +build windows
 
-package docker
+package sdk
 
 import (
 	"context"

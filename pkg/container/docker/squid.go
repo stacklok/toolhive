@@ -25,11 +25,13 @@ func createIngressSquidContainer(
 	containerName string,
 	squidContainerName string,
 	attachStdio bool,
+	upstreamPort int,
+	squidPort int,
 	exposedPorts map[string]struct{},
 	endpointsConfig map[string]*network.EndpointSettings,
 	portBindings map[string][]runtime.PortBinding,
 ) (string, error) {
-	squidConfPath, err := createTempIngressSquidConf(containerName, exposedPorts)
+	squidConfPath, err := createTempIngressSquidConf(containerName, upstreamPort, squidPort)
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary squid.conf: %v", err)
 	}
@@ -259,13 +261,13 @@ func getSquidImage() string {
 
 func createTempIngressSquidConf(
 	serverHostname string,
-	ingressPorts map[string]struct{},
+	upstreamPort int,
+	squidPort int,
 ) (string, error) {
 	var sb strings.Builder
 
 	sb.WriteString(
-		"http_port 3128\n" +
-			"visible_hostname " + serverHostname + "-ingress\n" +
+		"visible_hostname " + serverHostname + "-ingress\n" +
 			"access_log stdio:/var/log/squid/access.log squid\n" +
 			"pid_filename /tmp/squid.pid\n" +
 			"# Disable memory and disk caching\n" +
@@ -277,7 +279,7 @@ func createTempIngressSquidConf(
 			"cache_dir null /tmp\n" +
 			"cache_store_log none\n\n")
 
-	writeIngressProxyConfig(&sb, ingressPorts, serverHostname)
+	writeIngressProxyConfig(&sb, serverHostname, upstreamPort, squidPort)
 	sb.WriteString("http_access deny all\n")
 
 	tmpFile, err := os.CreateTemp("", "squid-*.conf")
@@ -298,19 +300,18 @@ func createTempIngressSquidConf(
 	return tmpFile.Name(), nil
 }
 
-func writeIngressProxyConfig(sb *strings.Builder, ingressPorts map[string]struct{}, serverHostname string) {
-	for port := range ingressPorts {
-		portNum := strings.Split(port, "/")[0]
-		sb.WriteString(
-			"\n# Reverse proxy setup for port " + portNum + "\n" +
-				"http_port " + portNum + " accel defaultsite=" + serverHostname + "\n" +
-				"cache_peer " + serverHostname + " parent " + portNum + " 0 no-query originserver name=origin_" +
-				portNum + " connect-timeout=5 connect-fail-limit=5\n" +
-				"acl site_" + portNum + " dstdomain " + serverHostname + "\n" +
-				"acl local_dst dst 127.0.0.1\n" +
-				"acl local_domain dstdomain localhost\n" +
-				"http_access allow site_" + portNum + "\n" +
-				"http_access allow local_dst\n" +
-				"http_access allow local_domain\n")
-	}
+func writeIngressProxyConfig(sb *strings.Builder, serverHostname string, upstreamPort int, squidPort int) {
+	portNum := strconv.Itoa(upstreamPort)
+	squidPortNum := strconv.Itoa(squidPort)
+	sb.WriteString(
+		"\n# Reverse proxy setup for port " + portNum + "\n" +
+			"http_port 0.0.0.0:" + squidPortNum + " accel defaultsite=" + serverHostname + "\n" +
+			"cache_peer " + serverHostname + " parent " + portNum + " 0 no-query originserver name=origin_" +
+			portNum + " connect-timeout=5 connect-fail-limit=5\n" +
+			"acl site_" + portNum + " dstdomain " + serverHostname + "\n" +
+			"acl local_dst dst 127.0.0.1\n" +
+			"acl local_domain dstdomain localhost\n" +
+			"http_access allow site_" + portNum + "\n" +
+			"http_access allow local_dst\n" +
+			"http_access allow local_domain\n")
 }

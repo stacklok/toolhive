@@ -32,8 +32,8 @@ func (*mockRuntime) DeployWorkload(
 	_ string,
 	_ *rt.DeployWorkloadOptions,
 	_ bool,
-) (string, error) {
-	return "container-id", nil
+) (string, int, error) {
+	return "container-id", 8080, nil
 }
 
 func (*mockRuntime) StartContainer(_ context.Context, _ string) error {

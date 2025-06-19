@@ -160,17 +160,12 @@ func (d *defaultManager) StopWorkload(ctx context.Context, name string) (*errgro
 		return nil, err
 	}
 
-	containerID := container.ID
-	containerBaseName := labels.GetContainerBaseName(container.Labels)
 	running := isContainerRunning(container)
-
 	if !running {
 		return nil, fmt.Errorf("%w: %s", ErrContainerNotRunning, name)
 	}
 
-	workload := stopWorkloadRequest{Name: containerBaseName, ID: containerID}
-	// Do the actual stop operation in the background, and return an error group.
-	return d.stopWorkloads(ctx, []stopWorkloadRequest{workload}), nil
+	return d.stopWorkloads(ctx, []*rt.ContainerInfo{container}), nil
 }
 
 func (d *defaultManager) StopAllWorkloads(ctx context.Context) (*errgroup.Group, error) {
@@ -182,16 +177,15 @@ func (d *defaultManager) StopAllWorkloads(ctx context.Context) (*errgroup.Group,
 
 	// Duplicates the logic of GetWorkloads, but is simple enough that it's not
 	// worth duplicating.
-	stopRequests := make([]stopWorkloadRequest, 0, len(containers))
+	var containersToStop []*rt.ContainerInfo
 	for _, c := range containers {
 		// If the caller did not set `listAll` to true, only include running containers.
 		if labels.IsToolHiveContainer(c.Labels) && isContainerRunning(&c) {
-			req := stopWorkloadRequest{Name: labels.GetContainerBaseName(c.Labels), ID: c.ID}
-			stopRequests = append(stopRequests, req)
+			containersToStop = append(containersToStop, &c)
 		}
 	}
 
-	return d.stopWorkloads(ctx, stopRequests), nil
+	return d.stopWorkloads(ctx, containersToStop), nil
 }
 
 func (*defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
@@ -574,36 +568,31 @@ func (*defaultManager) cleanupTempPermissionProfile(ctx context.Context, baseNam
 	return nil
 }
 
-// Internal type used when stopping workloads.
-type stopWorkloadRequest struct {
-	Name string
-	ID   string
-}
-
 // stopWorkloads stops the named workloads concurrently.
 // It assumes that the workloads exist in the running state.
-func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []stopWorkloadRequest) *errgroup.Group {
+func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.ContainerInfo) *errgroup.Group {
 	group := errgroup.Group{}
 	for _, workload := range workloads {
 		group.Go(func() error {
+			name := labels.GetContainerBaseName(workload.Labels)
 			// Stop the proxy process
-			proxy.StopProcess(workload.Name)
+			proxy.StopProcess(name)
 
-			logger.Infof("Stopping containers for %s...", workload.Name)
+			logger.Infof("Stopping containers for %s...", name)
 			// Stop the container
 			if err := d.runtime.StopWorkload(ctx, workload.ID); err != nil {
 				return fmt.Errorf("failed to stop container: %w", err)
 			}
 
 			if shouldRemoveClientConfig() {
-				if err := removeClientConfigurations(workload.Name); err != nil {
+				if err := removeClientConfigurations(name); err != nil {
 					logger.Warnf("Warning: Failed to remove client configurations: %v", err)
 				} else {
-					logger.Infof("Client configurations for %s removed", workload.Name)
+					logger.Infof("Client configurations for %s removed", name)
 				}
 			}
 
-			logger.Infof("Successfully stopped %s...", workload.Name)
+			logger.Infof("Successfully stopped %s...", name)
 			return nil
 		})
 	}

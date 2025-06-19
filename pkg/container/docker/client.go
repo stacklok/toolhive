@@ -322,6 +322,43 @@ func addEgressEnvVars(envVars map[string]string, egressContainerName string) map
 	return envVars
 }
 
+func (c *Client) createIngressContainer(ctx context.Context, containerName string, upstreamPort int, attachStdio bool,
+	externalEndpointsConfig map[string]*network.EndpointSettings) (int, error) {
+	squidPort, err := networking.FindOrUsePort(upstreamPort + 1)
+	if err != nil {
+		return 0, fmt.Errorf("failed to find or use port %d: %v", squidPort, err)
+	}
+	squidExposedPorts := map[string]struct{}{
+		fmt.Sprintf("%d/tcp", squidPort): {},
+	}
+	squidPortBindings := map[string][]runtime.PortBinding{
+		fmt.Sprintf("%d/tcp", squidPort): {
+			{
+				HostIP:   "127.0.0.1",
+				HostPort: fmt.Sprintf("%d", squidPort),
+			},
+		},
+	}
+	ingressContainerName := fmt.Sprintf("%s-ingress", containerName)
+	_, err = createIngressSquidContainer(
+		ctx,
+		c,
+		containerName,
+		ingressContainerName,
+		attachStdio,
+		upstreamPort,
+		squidPort,
+		squidExposedPorts,
+		externalEndpointsConfig,
+		squidPortBindings,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create ingress container: %v", err)
+	}
+	return squidPort, nil
+
+}
+
 // DeployWorkload creates and starts a workload.
 // It configures the workload based on the provided permission profile and transport type.
 // If options is nil, default options will be used.
@@ -438,38 +475,10 @@ func (c *Client) DeployWorkload(
 	}
 
 	if isolateNetwork {
-		squidPort, err := networking.FindOrUsePort(firstPortInt + 1)
-		if err != nil {
-			return "", 0, fmt.Errorf("failed to find or use port %s: %v", firstPort, err)
-		}
-		squidExposedPorts := map[string]struct{}{
-			fmt.Sprintf("%d/tcp", squidPort): {},
-		}
-		squidPortBindings := map[string][]runtime.PortBinding{
-			fmt.Sprintf("%d/tcp", squidPort): {
-				{
-					HostIP:   "127.0.0.1",
-					HostPort: fmt.Sprintf("%d", squidPort),
-				},
-			},
-		}
-		ingressContainerName := fmt.Sprintf("%s-ingress", name)
-		_, err = createIngressSquidContainer(
-			ctx,
-			c,
-			name,
-			ingressContainerName,
-			attachStdio,
-			firstPortInt,
-			squidPort,
-			squidExposedPorts,
-			externalEndpointsConfig,
-			squidPortBindings,
-		)
+		firstPortInt, err = c.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
 		if err != nil {
 			return "", 0, fmt.Errorf("failed to create ingress container: %v", err)
 		}
-		firstPortInt = squidPort // return the exposed port
 	}
 
 	return containerId, firstPortInt, nil

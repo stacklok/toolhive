@@ -168,7 +168,7 @@ func (s *WorkloadRoutes) stopAllWorkloads(w http.ResponseWriter, r *http.Request
 //	@Description	Delete a workload
 //	@Tags			workloads
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		204		{string}	string	"No Content"
+//	@Success		202		{string}	string	"Accepted"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [delete]
 func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +186,7 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Failed to delete workload", http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // restartWorkload
@@ -195,13 +195,15 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Description	Restart a running workload
 //	@Tags			workloads
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		204		{string}	string	"No Content"
+//	@Success		202		{string}	string	"Accepted"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/restart [post]
 func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
-	err := s.manager.RestartWorkload(ctx, name)
+	// Note that this is an asynchronous operation.
+	// In the API, we do not wait for the operation to complete.
+	_, err := s.manager.RestartWorkload(ctx, name)
 	if err != nil {
 		if errors.Is(err, workloads.ErrContainerNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)
@@ -211,7 +213,7 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "Failed to restart workload", http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // createWorkload

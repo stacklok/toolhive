@@ -43,7 +43,8 @@ type Manager interface {
 	// RunWorkloadDetached runs a container in the background.
 	RunWorkloadDetached(runConfig *runner.RunConfig) error
 	// RestartWorkload restarts a previously stopped container.
-	RestartWorkload(ctx context.Context, name string) error
+	// It is implemented as an asynchronous operation which returns an errgroup.Group
+	RestartWorkload(ctx context.Context, name string) (*errgroup.Group, error)
 }
 
 type defaultManager struct {
@@ -395,7 +396,7 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 	return nil
 }
 
-func (d *defaultManager) RestartWorkload(ctx context.Context, name string) error {
+func (d *defaultManager) RestartWorkload(ctx context.Context, name string) (*errgroup.Group, error) {
 	var containerBaseName string
 	var running bool
 	// Try to find the container.
@@ -418,30 +419,47 @@ func (d *defaultManager) RestartWorkload(ctx context.Context, name string) error
 
 	if running && proxyRunning {
 		logger.Infof("Container %s and proxy are already running", name)
-		return nil
+		return nil, nil
 	}
 
 	containerID := container.ID
 	// If the container is running but the proxy is not, stop the container first
+	stopGroup := &errgroup.Group{}
 	if container.ID != "" && running { // && !proxyRunning was previously here but is implied by previous if statement.
 		logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
-		if err := d.runtime.StopWorkload(ctx, containerID); err != nil {
-			return fmt.Errorf("failed to stop container: %v", err)
-		}
+		// n.b. - we do not reuse the `StopWorkload` method here because it
+		// does some extra things which are not appropriate for resuming a workload.
+		stopGroup.Go(func() error {
+			return d.runtime.StopWorkload(ctx, containerID)
+		})
 		logger.Infof("Container %s stopped", name)
 	}
 
 	// Load the configuration from the state store
+	// This is done synchronously since it is relevant inexpensive operation
+	// and it allows for better error handling.
 	mcpRunner, err := d.loadRunnerFromState(ctx, containerBaseName)
 	if err != nil {
-		return fmt.Errorf("failed to load state for %s: %v", containerBaseName, err)
+		return nil, fmt.Errorf("failed to load state for %s: %v", containerBaseName, err)
 	}
-
 	logger.Infof("Loaded configuration from state for %s", containerBaseName)
 
 	// Run the tooling server inside a detached process.
+	// TODO: This will need to be changed when RunWorkloadDetached is converted
+	// to be async.
 	logger.Infof("Starting tooling server %s...", name)
-	return d.RunWorkloadDetached(mcpRunner.Config)
+	runGroup := &errgroup.Group{}
+	runGroup.Go(func() error {
+		// If we had to wait for the container to stop, we need to ensure it
+		// completes before starting the new one.
+		if err := stopGroup.Wait(); err != nil {
+			return fmt.Errorf("failed to stop container %s: %v", name, err)
+		}
+
+		return d.RunWorkloadDetached(mcpRunner.Config)
+	})
+
+	return runGroup, nil
 }
 
 func (d *defaultManager) findContainerByName(ctx context.Context, name string) (*rt.ContainerInfo, error) {

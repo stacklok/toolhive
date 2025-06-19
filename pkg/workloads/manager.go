@@ -43,7 +43,8 @@ type Manager interface {
 	// RunWorkloadDetached runs a container in the background.
 	RunWorkloadDetached(runConfig *runner.RunConfig) error
 	// RestartWorkload restarts a previously stopped container.
-	RestartWorkload(ctx context.Context, name string) error
+	// It is implemented as an asynchronous operation which returns an errgroup.Group
+	RestartWorkload(ctx context.Context, name string) (*errgroup.Group, error)
 }
 
 type defaultManager struct {
@@ -159,17 +160,12 @@ func (d *defaultManager) StopWorkload(ctx context.Context, name string) (*errgro
 		return nil, err
 	}
 
-	containerID := container.ID
-	containerBaseName := labels.GetContainerBaseName(container.Labels)
 	running := isContainerRunning(container)
-
 	if !running {
 		return nil, fmt.Errorf("%w: %s", ErrContainerNotRunning, name)
 	}
 
-	workload := stopWorkloadRequest{Name: containerBaseName, ID: containerID}
-	// Do the actual stop operation in the background, and return an error group.
-	return d.stopWorkloads(ctx, []stopWorkloadRequest{workload}), nil
+	return d.stopWorkloads(ctx, []*rt.ContainerInfo{container}), nil
 }
 
 func (d *defaultManager) StopAllWorkloads(ctx context.Context) (*errgroup.Group, error) {
@@ -181,16 +177,15 @@ func (d *defaultManager) StopAllWorkloads(ctx context.Context) (*errgroup.Group,
 
 	// Duplicates the logic of GetWorkloads, but is simple enough that it's not
 	// worth duplicating.
-	stopRequests := make([]stopWorkloadRequest, 0, len(containers))
+	var containersToStop []*rt.ContainerInfo
 	for _, c := range containers {
 		// If the caller did not set `listAll` to true, only include running containers.
 		if labels.IsToolHiveContainer(c.Labels) && isContainerRunning(&c) {
-			req := stopWorkloadRequest{Name: labels.GetContainerBaseName(c.Labels), ID: c.ID}
-			stopRequests = append(stopRequests, req)
+			containersToStop = append(containersToStop, &c)
 		}
 	}
 
-	return d.stopWorkloads(ctx, stopRequests), nil
+	return d.stopWorkloads(ctx, containersToStop), nil
 }
 
 func (*defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
@@ -395,7 +390,7 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 	return nil
 }
 
-func (d *defaultManager) RestartWorkload(ctx context.Context, name string) error {
+func (d *defaultManager) RestartWorkload(ctx context.Context, name string) (*errgroup.Group, error) {
 	var containerBaseName string
 	var running bool
 	// Try to find the container.
@@ -418,30 +413,41 @@ func (d *defaultManager) RestartWorkload(ctx context.Context, name string) error
 
 	if running && proxyRunning {
 		logger.Infof("Container %s and proxy are already running", name)
-		return nil
-	}
-
-	containerID := container.ID
-	// If the container is running but the proxy is not, stop the container first
-	if container.ID != "" && running { // && !proxyRunning was previously here but is implied by previous if statement.
-		logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
-		if err := d.runtime.StopWorkload(ctx, containerID); err != nil {
-			return fmt.Errorf("failed to stop container: %v", err)
-		}
-		logger.Infof("Container %s stopped", name)
+		// Return empty error group so that client does not need to check for nil.
+		return &errgroup.Group{}, nil
 	}
 
 	// Load the configuration from the state store
+	// This is done synchronously since it is relatively inexpensive operation
+	// and it allows for better error handling.
 	mcpRunner, err := d.loadRunnerFromState(ctx, containerBaseName)
 	if err != nil {
-		return fmt.Errorf("failed to load state for %s: %v", containerBaseName, err)
+		return nil, fmt.Errorf("failed to load state for %s: %v", containerBaseName, err)
 	}
-
 	logger.Infof("Loaded configuration from state for %s", containerBaseName)
 
 	// Run the tooling server inside a detached process.
+	// TODO: This will need to be changed when RunWorkloadDetached is converted
+	// to be async.
 	logger.Infof("Starting tooling server %s...", name)
-	return d.RunWorkloadDetached(mcpRunner.Config)
+	runGroup := &errgroup.Group{}
+	runGroup.Go(func() error {
+		containerID := container.ID
+		// If the container is running but the proxy is not, stop the container first
+		if container.ID != "" && running { // && !proxyRunning was previously here but is implied by previous if statement.
+			logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
+			// n.b. - we do not reuse the `StopWorkload` method here because it
+			// does some extra things which are not appropriate for resuming a workload.
+			if err = d.runtime.StopWorkload(ctx, containerID); err != nil {
+				return fmt.Errorf("failed to stop container %s: %v", name, err)
+			}
+			logger.Infof("Container %s stopped", name)
+		}
+
+		return d.RunWorkloadDetached(mcpRunner.Config)
+	})
+
+	return runGroup, nil
 }
 
 func (d *defaultManager) findContainerByName(ctx context.Context, name string) (*rt.ContainerInfo, error) {
@@ -555,36 +561,31 @@ func (*defaultManager) cleanupTempPermissionProfile(ctx context.Context, baseNam
 	return nil
 }
 
-// Internal type used when stopping workloads.
-type stopWorkloadRequest struct {
-	Name string
-	ID   string
-}
-
 // stopWorkloads stops the named workloads concurrently.
 // It assumes that the workloads exist in the running state.
-func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []stopWorkloadRequest) *errgroup.Group {
+func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.ContainerInfo) *errgroup.Group {
 	group := errgroup.Group{}
 	for _, workload := range workloads {
 		group.Go(func() error {
+			name := labels.GetContainerBaseName(workload.Labels)
 			// Stop the proxy process
-			proxy.StopProcess(workload.Name)
+			proxy.StopProcess(name)
 
-			logger.Infof("Stopping containers for %s...", workload.Name)
+			logger.Infof("Stopping containers for %s...", name)
 			// Stop the container
 			if err := d.runtime.StopWorkload(ctx, workload.ID); err != nil {
 				return fmt.Errorf("failed to stop container: %w", err)
 			}
 
 			if shouldRemoveClientConfig() {
-				if err := removeClientConfigurations(workload.Name); err != nil {
+				if err := removeClientConfigurations(name); err != nil {
 					logger.Warnf("Warning: Failed to remove client configurations: %v", err)
 				} else {
-					logger.Infof("Client configurations for %s removed", workload.Name)
+					logger.Infof("Client configurations for %s removed", name)
 				}
 			}
 
-			logger.Infof("Successfully stopped %s...", workload.Name)
+			logger.Infof("Successfully stopped %s...", name)
 			return nil
 		})
 	}

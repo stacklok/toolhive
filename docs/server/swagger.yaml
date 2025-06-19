@@ -1131,12 +1131,12 @@ paths:
         schema:
           type: string
       responses:
-        "204":
+        "202":
           content:
             application/json:
               schema:
                 type: string
-          description: No Content
+          description: Accepted
         "404":
           content:
             application/json:
@@ -1182,12 +1182,12 @@ paths:
         schema:
           type: string
       responses:
-        "204":
+        "202":
           content:
             application/json:
               schema:
                 type: string
-          description: No Content
+          description: Accepted
         "404":
           content:
             application/json:

@@ -417,19 +417,6 @@ func (d *defaultManager) RestartWorkload(ctx context.Context, name string) (*err
 		return &errgroup.Group{}, nil
 	}
 
-	containerID := container.ID
-	// If the container is running but the proxy is not, stop the container first
-	stopGroup := &errgroup.Group{}
-	if container.ID != "" && running { // && !proxyRunning was previously here but is implied by previous if statement.
-		logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
-		// n.b. - we do not reuse the `StopWorkload` method here because it
-		// does some extra things which are not appropriate for resuming a workload.
-		stopGroup.Go(func() error {
-			return d.runtime.StopWorkload(ctx, containerID)
-		})
-		logger.Infof("Container %s stopped", name)
-	}
-
 	// Load the configuration from the state store
 	// This is done synchronously since it is relatively inexpensive operation
 	// and it allows for better error handling.
@@ -445,10 +432,16 @@ func (d *defaultManager) RestartWorkload(ctx context.Context, name string) (*err
 	logger.Infof("Starting tooling server %s...", name)
 	runGroup := &errgroup.Group{}
 	runGroup.Go(func() error {
-		// If we had to wait for the container to stop, we need to ensure it
-		// completes before starting the new one.
-		if err := stopGroup.Wait(); err != nil {
-			return fmt.Errorf("failed to stop container %s: %v", name, err)
+		containerID := container.ID
+		// If the container is running but the proxy is not, stop the container first
+		if container.ID != "" && running { // && !proxyRunning was previously here but is implied by previous if statement.
+			logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
+			// n.b. - we do not reuse the `StopWorkload` method here because it
+			// does some extra things which are not appropriate for resuming a workload.
+			if err = d.runtime.StopWorkload(ctx, containerID); err != nil {
+				return fmt.Errorf("failed to stop container %s: %v", name, err)
+			}
+			logger.Infof("Container %s stopped", name)
 		}
 
 		return d.RunWorkloadDetached(mcpRunner.Config)

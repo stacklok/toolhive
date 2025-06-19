@@ -228,6 +228,10 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 		detachedArgs = append(detachedArgs, "--debug")
 	}
 
+	if runConfig.IsolateNetwork {
+		detachedArgs = append(detachedArgs, "--isolate-network")
+	}
+
 	// Use Name if available
 	if runConfig.Name != "" {
 		detachedArgs = append(detachedArgs, "--name", runConfig.Name)

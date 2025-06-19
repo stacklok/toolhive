@@ -259,7 +259,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
 	_ bool,
-) (string, error) {
+) (string, int, error) {
 	namespace := getCurrentNamespace()
 	containerLabels["app"] = containerName
 	containerLabels["toolhive"] = "true"
@@ -280,7 +280,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		var err error
 		podTemplateSpec, err = applyPodTemplatePatch(podTemplateSpec, options.K8sPodTemplatePatch)
 		if err != nil {
-			return "", fmt.Errorf("failed to apply pod template patch: %w", err)
+			return "", 0, fmt.Errorf("failed to apply pod template patch: %w", err)
 		}
 	}
 
@@ -298,7 +298,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		options,
 	)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 
 	// Create an apply configuration for the statefulset
@@ -321,7 +321,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 			Force:        true,
 		})
 	if err != nil {
-		return "", fmt.Errorf("failed to apply statefulset: %v", err)
+		return "", 0, fmt.Errorf("failed to apply statefulset: %v", err)
 	}
 
 	logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
@@ -330,7 +330,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		// Create a headless service for SSE transport
 		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
 		if err != nil {
-			return "", fmt.Errorf("failed to create headless service: %v", err)
+			return "", 0, fmt.Errorf("failed to create headless service: %v", err)
 		}
 	}
 
@@ -341,10 +341,10 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 	err = waitFunc(ctx, c.client, namespace, createdStatefulSet.Name)
 	if err != nil {
-		return createdStatefulSet.Name, fmt.Errorf("statefulset applied but failed to become ready: %w", err)
+		return createdStatefulSet.Name, 0, fmt.Errorf("statefulset applied but failed to become ready: %w", err)
 	}
 
-	return createdStatefulSet.Name, nil
+	return createdStatefulSet.Name, 0, nil
 }
 
 // GetWorkloadInfo implements runtime.Runtime.

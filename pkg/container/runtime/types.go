@@ -81,7 +81,7 @@ type Runtime interface {
 		transportType string,
 		options *DeployWorkloadOptions,
 		isolateNetwork bool,
-	) (string, error)
+	) (string, int, error)
 
 	// ListWorkloads lists all deployed workloads managed by this runtime.
 	// Returns information about each workload including its components,

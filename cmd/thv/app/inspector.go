@@ -106,7 +106,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 
 	labelsMap := map[string]string{}
 	labels.AddStandardLabels(labelsMap, "inspector", "inspector", string(types.TransportTypeInspector), inspectorUIPort)
-	_, err = rt.DeployWorkload(
+	_, _, err = rt.DeployWorkload(
 		ctx,
 		processedImage,
 		"inspector",

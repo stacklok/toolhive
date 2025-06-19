@@ -144,7 +144,7 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, err := t.runtime.DeployWorkload(
+	containerID, exposedPort, err := t.runtime.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -168,6 +168,9 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	if containerOptions.SSEHeadlessServiceName != "" {
 		t.targetHost = containerOptions.SSEHeadlessServiceName
 	}
+
+	// also override the exposed port, in case we need it via ingress
+	t.targetPort = exposedPort
 
 	return nil
 }

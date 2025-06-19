@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	lb "github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
@@ -320,6 +322,43 @@ func addEgressEnvVars(envVars map[string]string, egressContainerName string) map
 	return envVars
 }
 
+func (c *Client) createIngressContainer(ctx context.Context, containerName string, upstreamPort int, attachStdio bool,
+	externalEndpointsConfig map[string]*network.EndpointSettings) (int, error) {
+	squidPort, err := networking.FindOrUsePort(upstreamPort + 1)
+	if err != nil {
+		return 0, fmt.Errorf("failed to find or use port %d: %v", squidPort, err)
+	}
+	squidExposedPorts := map[string]struct{}{
+		fmt.Sprintf("%d/tcp", squidPort): {},
+	}
+	squidPortBindings := map[string][]runtime.PortBinding{
+		fmt.Sprintf("%d/tcp", squidPort): {
+			{
+				HostIP:   "127.0.0.1",
+				HostPort: fmt.Sprintf("%d", squidPort),
+			},
+		},
+	}
+	ingressContainerName := fmt.Sprintf("%s-ingress", containerName)
+	_, err = createIngressSquidContainer(
+		ctx,
+		c,
+		containerName,
+		ingressContainerName,
+		attachStdio,
+		upstreamPort,
+		squidPort,
+		squidExposedPorts,
+		externalEndpointsConfig,
+		squidPortBindings,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create ingress container: %v", err)
+	}
+	return squidPort, nil
+
+}
+
 // DeployWorkload creates and starts a workload.
 // It configures the workload based on the provided permission profile and transport type.
 // If options is nil, default options will be used.
@@ -334,11 +373,11 @@ func (c *Client) DeployWorkload(
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
 	isolateNetwork bool,
-) (string, error) {
+) (string, int, error) {
 	// Get permission config from profile
 	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType)
 	if err != nil {
-		return "", fmt.Errorf("failed to get permission config: %w", err)
+		return "", 0, fmt.Errorf("failed to get permission config: %w", err)
 	}
 
 	// Determine if we should attach stdio
@@ -365,7 +404,7 @@ func (c *Client) DeployWorkload(
 		lb.AddNetworkLabels(internalNetworkLabels, networkName)
 		err := c.createNetwork(ctx, networkName, internalNetworkLabels, true)
 		if err != nil {
-			return "", fmt.Errorf("failed to create internal network: %v", err)
+			return "", 0, fmt.Errorf("failed to create internal network: %v", err)
 		}
 
 		// create dns container
@@ -375,26 +414,23 @@ func (c *Client) DeployWorkload(
 			additionalDNS = dnsContainerIP
 		}
 		if err != nil {
-			return "", fmt.Errorf("failed to create dns container: %v", err)
+			return "", 0, fmt.Errorf("failed to create dns container: %v", err)
 		}
 
 		// create egress container
 		egressContainerName := fmt.Sprintf("%s-egress", name)
-		egressExposedPorts := map[string]struct{}{
-			"3128/tcp": {},
-		}
 		_, err = createEgressSquidContainer(
 			ctx,
 			c,
 			name,
 			egressContainerName,
 			attachStdio,
-			egressExposedPorts,
+			nil,
 			externalEndpointsConfig,
 			permissionProfile.Network,
 		)
 		if err != nil {
-			return "", fmt.Errorf("failed to create egress container: %v", err)
+			return "", 0, fmt.Errorf("failed to create egress container: %v", err)
 		}
 
 		envVars = addEgressEnvVars(envVars, egressContainerName)
@@ -418,28 +454,34 @@ func (c *Client) DeployWorkload(
 		isolateNetwork,
 	)
 	if err != nil {
-		return "", fmt.Errorf("failed to create mcp container: %v", err)
+		return "", 0, fmt.Errorf("failed to create mcp container: %v", err)
 	}
 
 	// now create ingress container
+	var firstPort string
+	if len(options.ExposedPorts) == 0 {
+		return "", 0, fmt.Errorf("no exposed ports specified in options.ExposedPorts")
+	}
+	for port := range options.ExposedPorts {
+		firstPort = port
+
+		// need to strip the protocol
+		firstPort = strings.Split(firstPort, "/")[0]
+		break // take only the first one
+	}
+	firstPortInt, err := strconv.Atoi(firstPort)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to convert port %s to int: %v", firstPort, err)
+	}
+
 	if isolateNetwork {
-		ingressContainerName := fmt.Sprintf("%s-ingress", name)
-		_, err = createIngressSquidContainer(
-			ctx,
-			c,
-			name,
-			ingressContainerName,
-			attachStdio,
-			options.ExposedPorts,
-			externalEndpointsConfig,
-			options.PortBindings,
-		)
+		firstPortInt, err = c.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
 		if err != nil {
-			return "", fmt.Errorf("failed to create ingress container: %v", err)
+			return "", 0, fmt.Errorf("failed to create ingress container: %v", err)
 		}
 	}
 
-	return containerId, nil
+	return containerId, firstPortInt, nil
 }
 
 // ListWorkloads lists workloads

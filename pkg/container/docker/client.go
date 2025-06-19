@@ -422,6 +422,9 @@ func (c *Client) DeployWorkload(
 
 	// now create ingress container
 	var firstPort string
+	if len(options.ExposedPorts) == 0 {
+		return "", 0, fmt.Errorf("no exposed ports specified in options.ExposedPorts")
+	}
 	for port := range options.ExposedPorts {
 		firstPort = port
 

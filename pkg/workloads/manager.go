@@ -437,7 +437,7 @@ func (d *defaultManager) RestartWorkload(ctx context.Context, name string) (*err
 	}
 
 	// Load the configuration from the state store
-	// This is done synchronously since it is relevant inexpensive operation
+	// This is done synchronously since it is relatively inexpensive operation
 	// and it allows for better error handling.
 	mcpRunner, err := d.loadRunnerFromState(ctx, containerBaseName)
 	if err != nil {

@@ -532,14 +532,16 @@
       "permissions": {
         "network": {
           "outbound": {
-            "allow_host": [],
+            "allow_host": [
+              "api.firecrawl.dev"
+            ],
             "allow_port": [
               443
             ],
             "allow_transport": [
               "tcp"
             ],
-            "insecure_allow_all": true
+            "insecure_allow_all": false
           }
         },
         "read": [],

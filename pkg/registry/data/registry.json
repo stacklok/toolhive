@@ -95,8 +95,8 @@
         "network": {
           "outbound": {
             "allow_host": [
-              "atlassian.net",
-              "atlassian.com"
+              ".atlassian.net",
+              ".atlassian.com"
             ],
             "allow_port": [
               443
@@ -348,12 +348,8 @@
         "network": {
           "outbound": {
             "allow_host": [],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
+            "allow_port": [],
+            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -397,9 +393,7 @@
       "permissions": {
         "network": {
           "outbound": {
-            "allow_host": [
-              "github.com"
-            ],
+            "allow_host": [],
             "allow_port": [
               443
             ],
@@ -444,12 +438,8 @@
         "network": {
           "outbound": {
             "allow_host": [],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
+            "allow_port": [],
+            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -714,8 +704,8 @@
         "network": {
           "outbound": {
             "allow_host": [
-              "docs.github.com",
-              "github.com"
+              ".github.com",
+              ".githubusercontent.com"
             ],
             "allow_port": [
               443
@@ -1346,14 +1336,16 @@
       "permissions": {
         "network": {
           "outbound": {
-            "allow_host": [],
+            "allow_host": [
+              "api.netbird.io"
+            ],
             "allow_port": [
               443
             ],
             "allow_transport": [
               "tcp"
             ],
-            "insecure_allow_all": true
+            "insecure_allow_all": false
           }
         },
         "read": [],
@@ -1476,16 +1468,14 @@
       "permissions": {
         "network": {
           "outbound": {
-            "allow_host": [
-              "*"
-            ],
+            "allow_host": [],
             "allow_port": [
               443
             ],
             "allow_transport": [
               "tcp"
             ],
-            "insecure_allow_all": false
+            "insecure_allow_all": true
           }
         },
         "read": [],
@@ -1879,7 +1869,7 @@
             "allow_transport": [
               "tcp"
             ],
-            "insecure_allow_all": false
+            "insecure_allow_all": true
           }
         },
         "read": [],
@@ -1943,7 +1933,10 @@
       "transport": "stdio"
     },
     "semgrep": {
-      "args": [],
+      "args": [
+        "--transport",
+        "sse"
+      ],
       "description": "An MCP server for using Semgrep to scan code for security vulnerabilities. Semgrep is a fast, deterministic static analysis tool that semantically understands many languages and comes with over 5,000 rules.",
       "env_vars": [
         {
@@ -1963,8 +1956,7 @@
         "network": {
           "outbound": {
             "allow_host": [
-              "semgrep.dev",
-              "semgrep.com"
+              "semgrep.dev"
             ],
             "allow_port": [
               443
@@ -2062,12 +2054,8 @@
         "network": {
           "outbound": {
             "allow_host": [],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
+            "allow_port": [],
+            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -2120,8 +2108,7 @@
         "network": {
           "outbound": {
             "allow_host": [
-              "api.slack.com",
-              "slack.com"
+              ".slack.com"
             ],
             "allow_port": [
               443
@@ -2222,14 +2209,16 @@
       "permissions": {
         "network": {
           "outbound": {
-            "allow_host": [],
+            "allow_host": [
+              "registry.terraform.io"
+            ],
             "allow_port": [
               443
             ],
             "allow_transport": [
               "tcp"
             ],
-            "insecure_allow_all": true
+            "insecure_allow_all": false
           }
         },
         "read": [],
@@ -2273,12 +2262,8 @@
         "network": {
           "outbound": {
             "allow_host": [],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
+            "allow_port": [],
+            "allow_transport": [],
             "insecure_allow_all": false
           }
         },

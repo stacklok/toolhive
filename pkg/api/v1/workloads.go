@@ -229,6 +229,7 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 //	@Failure		409		{string}	string	"Conflict"
 //	@Router			/api/v1beta/workloads [post]
 func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
@@ -237,31 +238,45 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 
 	// NOTE: None of the k8s-related config logic is included here.
 	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
-	runConfig := runner.NewRunConfigFromFlags(
+	runConfig, err := runner.NewRunConfigFromFlags(
+		ctx,
 		s.containerRuntime,
 		req.CmdArguments,
 		req.Name,
+		"",  // URL
+		nil, // Metadata
 		req.Host,
 		s.debugMode,
 		req.Volumes,
 		runSecrets,
 		req.AuthzConfig,
-		"",    // auditConfigPath - will be added in future PR
-		false, // enableAudit - will be added in future PR
+		"",    // req.AuditConfig not set - auditing not exposed through API yet.
+		false, // req.EnableAudit not set - auditing not exposed through API yet.
 		req.PermissionProfile,
 		transport.LocalhostIPv4, // Seems like a reasonable default for now.
+		req.Transport,
+		0, // Let the manager figure out which port to use.
+		req.TargetPort,
+		req.EnvVars,
 		req.OIDC.Issuer,
 		req.OIDC.Audience,
 		req.OIDC.JwksURL,
 		req.OIDC.ClientID,
 		"",    // otelEndpoint - not exposed through API yet
 		"",    // otelServiceName - not exposed through API yet
-		0.1,   // otelSamplingRate - default value
+		0.0,   // otelSamplingRate - default value
 		nil,   // otelHeaders - not exposed through API yet
 		false, // otelInsecure - not exposed through API yet
 		false, // otelEnablePrometheusMetricsPath - not exposed through API yet
 		false, // isolateNetwork - not exposed through API yet
+		"",    // k8s patch - not relevant here.
+		&runner.DetachedEnvVarValidator{},
 	)
+	if err != nil {
+		logger.Errorf("Failed to create run config: %v", err)
+		http.Error(w, "Failed to create run config", http.StatusBadRequest)
+		return
+	}
 
 	// TODO: De-dupe from `configureRunConfig` in `cmd/thv/app/run_common.go`.
 	if req.Transport == "" {
@@ -282,32 +297,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		runConfig.PermissionProfileNameOrPath = permissions.ProfileNetwork
 	}
 
-	// Set permission profile (mandatory)
-	if _, err := runConfig.ParsePermissionProfile(); err != nil {
-		http.Error(w, "Unable to configure permission profile", http.StatusBadRequest)
-	}
-
-	// Process volume mounts
-	if err := runConfig.ProcessVolumeMounts(); err != nil {
-		http.Error(w, "Unable to configure volume mounts", http.StatusBadRequest)
-	}
-
-	// Parse and set environment variables
-	if _, err := runConfig.WithEnvironmentVariables(req.EnvVars); err != nil {
-		http.Error(w, "Unable to configure ports", http.StatusBadRequest)
-	}
-
-	runConfig.Image = req.Image
-	runConfig.WithContainerName()
-	runConfig.WithStandardLabels()
-
-	// ASSUMPTION MADE: The CLI parses the image and pulls it, but since the
-	// same code is called when the process is detached, I do not call it here.
-	// Some basic testing has confirmed this, but it may need some further
-	// testing with npx/uvx.
-	// TODO: Refactor the code out of the CLI.
-
-	err := s.manager.RunWorkloadDetached(runConfig)
+	err = s.manager.RunWorkloadDetached(runConfig)
 	if err != nil {
 		logger.Errorf("Failed to start workload: %v", err)
 		http.Error(w, "Failed to start workload", http.StatusInternalServerError)

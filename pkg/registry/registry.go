@@ -12,7 +12,7 @@ func GetRegistry() (*Registry, error) {
 
 // GetServer returns a server from the registry by name
 // Deprecated: Use GetDefaultProvider().GetServer() for new code
-func GetServer(name string) (*Server, error) {
+func GetServer(name string) (*ImageMetadata, error) {
 	provider, err := GetDefaultProvider()
 	if err != nil {
 		return nil, err
@@ -23,7 +23,7 @@ func GetServer(name string) (*Server, error) {
 // SearchServers searches for servers in the registry
 // It searches in server names, descriptions, and tags
 // Deprecated: Use GetDefaultProvider().SearchServers() for new code
-func SearchServers(query string) ([]*Server, error) {
+func SearchServers(query string) ([]*ImageMetadata, error) {
 	provider, err := GetDefaultProvider()
 	if err != nil {
 		return nil, err
@@ -33,7 +33,7 @@ func SearchServers(query string) ([]*Server, error) {
 
 // ListServers returns all servers in the registry
 // Deprecated: Use GetDefaultProvider().ListServers() for new code
-func ListServers() ([]*Server, error) {
+func ListServers() ([]*ImageMetadata, error) {
 	provider, err := GetDefaultProvider()
 	if err != nil {
 		return nil, err

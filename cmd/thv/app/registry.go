@@ -93,7 +93,7 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 // printJSONServers prints servers in JSON format
-func printJSONServers(servers []*registry.Server) error {
+func printJSONServers(servers []*registry.ImageMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
@@ -106,7 +106,7 @@ func printJSONServers(servers []*registry.Server) error {
 }
 
 // printJSONServer prints a single server in JSON format
-func printJSONServer(server *registry.Server) error {
+func printJSONServer(server *registry.ImageMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(server, "", "  ")
 	if err != nil {
@@ -119,7 +119,7 @@ func printJSONServer(server *registry.Server) error {
 }
 
 // printTextServers prints servers in text format
-func printTextServers(servers []*registry.Server) {
+func printTextServers(servers []*registry.ImageMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS")
@@ -150,7 +150,7 @@ func printTextServers(servers []*registry.Server) {
 
 // printTextServerInfo prints detailed information about a server in text format
 // nolint:gocyclo
-func printTextServerInfo(name string, server *registry.Server) {
+func printTextServerInfo(name string, server *registry.ImageMetadata) {
 	fmt.Printf("Name: %s\n", server.Name)
 	fmt.Printf("Image: %s\n", server.Image)
 	fmt.Printf("Description: %s\n", server.Description)

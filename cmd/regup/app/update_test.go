@@ -172,7 +172,7 @@ func setupTestRegistryWithMultipleServers(t *testing.T) (string, func()) {
 	// Create test registry with multiple servers
 	testRegistry := &registry.Registry{
 		LastUpdated: "2025-06-17 12:00:00",
-		Servers: map[string]*registry.Server{
+		Servers: map[string]*registry.ImageMetadata{
 			"github": {
 				Name:          "github",
 				Description:   "GitHub MCP server",
@@ -237,7 +237,7 @@ func setupEmptyTestRegistry(t *testing.T) (string, func()) {
 	// Create empty test registry
 	testRegistry := &registry.Registry{
 		LastUpdated: "2025-06-17 12:00:00",
-		Servers:     map[string]*registry.Server{},
+		Servers:     map[string]*registry.ImageMetadata{},
 	}
 
 	// Write registry file

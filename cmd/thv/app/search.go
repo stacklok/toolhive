@@ -62,7 +62,7 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 // printJSONSearchResults prints servers in JSON format
-func printJSONSearchResults(servers []*registry.Server) error {
+func printJSONSearchResults(servers []*registry.ImageMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
@@ -75,7 +75,7 @@ func printJSONSearchResults(servers []*registry.Server) error {
 }
 
 // printTextSearchResults prints servers in text format
-func printTextSearchResults(servers []*registry.Server) {
+func printTextSearchResults(servers []*registry.ImageMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS")

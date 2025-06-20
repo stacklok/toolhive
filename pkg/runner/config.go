@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"io"
 	"strings"
 
@@ -135,10 +136,14 @@ func NewRunConfig() *RunConfig {
 }
 
 // NewRunConfigFromFlags creates a new RunConfig with values from command-line flags
+// TODO: We may want to use some sort of builder pattern here to make it more readable.
 func NewRunConfigFromFlags(
+	ctx context.Context,
 	runtime rt.Runtime,
 	cmdArgs []string,
 	name string,
+	imageURL string,
+	imageMetadata *registry.ImageMetadata,
 	host string,
 	debug bool,
 	volumes []string,
@@ -148,6 +153,10 @@ func NewRunConfigFromFlags(
 	enableAudit bool,
 	permissionProfile string,
 	targetHost string,
+	mcpTransport string,
+	port int,
+	targetPort int,
+	envVars []string,
 	oidcIssuer string,
 	oidcAudience string,
 	oidcJwksURL string,
@@ -159,7 +168,9 @@ func NewRunConfigFromFlags(
 	otelInsecure bool,
 	otelEnablePrometheusMetricsPath bool,
 	isolateNetwork bool,
-) *RunConfig {
+	k8sPodPatch string,
+	envVarValidator EnvVarValidator,
+) (*RunConfig, error) {
 	// Ensure default values for host and targetHost
 	if host == "" {
 		host = transport.LocalhostIPv4
@@ -171,6 +182,7 @@ func NewRunConfigFromFlags(
 		Runtime:                     runtime,
 		CmdArgs:                     cmdArgs,
 		Name:                        name,
+		Image:                       imageURL,
 		Debug:                       debug,
 		Volumes:                     volumes,
 		Secrets:                     secretsList,
@@ -182,6 +194,7 @@ func NewRunConfigFromFlags(
 		EnvVars:                     make(map[string]string),
 		Host:                        host,
 		IsolateNetwork:              isolateNetwork,
+		K8sPodTemplatePatch:         k8sPodPatch,
 	}
 
 	// If enable audit is true and no audit config path is provided, use default config
@@ -227,7 +240,34 @@ func NewRunConfigFromFlags(
 		}
 	}
 
-	return config
+	// If imageMetadata is not nil, it means we found a server definition in the registry.
+	// Apply the registry settings to the runConfig.
+	if imageMetadata != nil {
+		config.applyMetadataSettings(
+			imageURL,
+			imageMetadata,
+			config,
+			mcpTransport,
+			port,
+			permissionProfile,
+		)
+	}
+
+	// Validate and parse environment variables.
+	// When using the CLI validation strategy, this is where the prompting for
+	// missing environment variables will happen.
+	if err := envVarValidator.Validate(ctx, imageMetadata, config, envVars); err != nil {
+		return nil, fmt.Errorf("failed to validate environment variables: %v", err)
+	}
+
+	// TODO: SET TRANSPORT IF EMPTY.
+
+	// Do some final validation which can only be done after everything else is set.
+	if err := config.validateConfig(mcpTransport, port, targetPort); err != nil {
+		return nil, fmt.Errorf("failed to validate run config: %v", err)
+	}
+
+	return config, nil
 }
 
 // WithAuthz adds authorization configuration to the RunConfig
@@ -443,6 +483,113 @@ func (c *RunConfig) ProcessVolumeMounts() error {
 			source, target,
 			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
 	}
+
+	return nil
+}
+
+// applyMetadataSettings applies settings from a registry server to the run config.
+func (c *RunConfig) applyMetadataSettings(
+	imageURL string,
+	metadata *registry.ImageMetadata,
+	runConfig *RunConfig,
+	transport string,
+	port int,
+	permissionProfile string,
+) {
+	// If name is not provided, use the metadata name from registry
+	if runConfig.Name == "" {
+		runConfig.Name = imageURL
+	}
+
+	// Use registry transport if not overridden
+	if transport == "" {
+		logger.Debugf("Using registry transport: %s", metadata.Transport)
+		// Note that this cast is validated later.
+		// TODO: VALIDATE ASSUMPTION.
+		runConfig.Transport = types.TransportType(metadata.Transport)
+	} else {
+		logger.Debugf("Using provided transport: %s (overriding registry default: %s)",
+			transport, metadata.Transport)
+	}
+
+	// Use registry target port if not overridden and transport is SSE
+	if port == 0 && metadata.Transport == "sse" && metadata.TargetPort > 0 {
+		logger.Debugf("Using registry target port: %d", metadata.TargetPort)
+		runConfig.TargetPort = metadata.TargetPort
+	}
+
+	// Prepend registry args to command-line args if available
+	if len(metadata.Args) > 0 {
+		logger.Debugf("Prepending registry args: %v", metadata.Args)
+		runConfig.CmdArgs = append(metadata.Args, runConfig.CmdArgs...)
+	}
+
+	// Create a temporary file for the permission profile if not explicitly provided
+	if permissionProfile == "" {
+		permProfilePath, err := CreatePermissionProfileFile(imageURL, metadata.Permissions)
+		if err != nil {
+			// Just log the error and continue with the default permission profile
+			logger.Warnf("Warning: Failed to create permission profile file: %v", err)
+		} else {
+			// Update the permission profile path
+			runConfig.PermissionProfileNameOrPath = permProfilePath
+		}
+	}
+}
+
+// validateConfig ensures the RunConfig is valid and sets up some of the final
+// configuration details which can only be applied after all other flags are added.
+func (c *RunConfig) validateConfig(
+	transport string,
+	port int,
+	targetPort int,
+) error {
+	var err error
+
+	// Set transport
+	if _, err = c.WithTransport(transport); err != nil {
+		return err
+	}
+
+	// Configure ports and target host
+	if _, err = c.WithPorts(port, targetPort); err != nil {
+		return err
+	}
+
+	// Set permission profile (mandatory)
+	if _, err = c.ParsePermissionProfile(); err != nil {
+		return err
+	}
+
+	// Process volume mounts
+	if err = c.ProcessVolumeMounts(); err != nil {
+		return err
+	}
+
+	// Generate container name if not already set
+	c.WithContainerName()
+
+	// Add standard labels
+	c.WithStandardLabels()
+
+	// Add authorization configuration if provided
+	if c.AuthzConfigPath != "" {
+		authzConfig, err := authz.LoadConfig(c.AuthzConfigPath)
+		if err != nil {
+			return fmt.Errorf("failed to load authorization configuration: %v", err)
+		}
+		c.WithAuthz(authzConfig)
+	}
+
+	// Add audit configuration if provided
+	if c.AuditConfigPath != "" {
+		auditConfig, err := audit.LoadFromFile(c.AuditConfigPath)
+		if err != nil {
+			return fmt.Errorf("failed to load audit configuration: %v", err)
+		}
+		c.WithAudit(auditConfig)
+	}
+	// Note: AuditConfig is already set from --enable-audit flag if provided
 
 	return nil
 }

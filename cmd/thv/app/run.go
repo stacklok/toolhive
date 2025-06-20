@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
@@ -12,11 +11,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/process"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/transport"
-	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -208,7 +205,8 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	runHost = validatedHost
 
-	// Get the server name or image
+	// Get the name of the MCP server to run.
+	// This may be a server name from the registry, a container image, or a protocol scheme.
 	serverOrImage := args[0]
 
 	// Process command arguments using os.Args to find everything after --
@@ -233,11 +231,34 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	workloadManager := workloads.NewManagerFromRuntime(rt)
 
+	// Select an env var validation strategy depending on how the CLI is run:
+	// If we have called the CLI directly, we use the CLIEnvVarValidator.
+	// If we are running in detached mode, or the CLI is wrapped by the K8s operator,
+	// we use the DetachedEnvVarValidator.
+	var envVarValidator runner.EnvVarValidator
+	if process.IsDetached() || container.IsKubernetesRuntime() {
+		envVarValidator = &runner.DetachedEnvVarValidator{}
+	} else {
+		envVarValidator = &runner.CLIEnvVarValidator{}
+	}
+
+	// Take the MCP server we were supplied and either fetch the image, or
+	// build it from a protocol scheme. If the server URI refers to an image
+	// in our trusted registry, we will also fetch the image metadata.
+	imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, serverOrImage, runCACertPath, runVerifyImage)
+	if err != nil {
+		return fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+	}
+
 	// Initialize a new RunConfig with values from command-line flags
-	runConfig := runner.NewRunConfigFromFlags(
+	// TODO: As noted elsewhere, we should use the builder pattern here to make it more readable.
+	runConfig, err := runner.NewRunConfigFromFlags(
+		ctx,
 		rt,
 		cmdArgs,
 		runName,
+		imageURL,
+		imageMetadata,
 		runHost,
 		debugMode,
 		runVolumes,
@@ -247,6 +268,10 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runEnableAudit,
 		runPermissionProfile,
 		runTargetHost,
+		runTransport,
+		runPort,
+		runTargetPort,
+		runEnv,
 		oidcIssuer,
 		oidcAudience,
 		oidcJwksURL,
@@ -259,30 +284,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runOtelEnablePrometheusMetricsPath,
 		runOtelEnvironmentVariables,
 		runIsolateNetwork,
+		runK8sPodPatch,
+		envVarValidator,
 	)
-
-	// Set the Kubernetes pod template patch if provided
-	if runK8sPodPatch != "" {
-		runConfig.K8sPodTemplatePatch = runK8sPodPatch
-	}
-
-	imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, serverOrImage, runCACertPath, runVerifyImage)
 	if err != nil {
-		return fmt.Errorf("failed to retrieve MCP server: %v", err)
-	}
-	runConfig.Image = imageURL
-
-	if imageMetadata != nil {
-		// If the image came from our registry, apply settings from the registry metadata.
-		err = applyRegistrySettings(ctx, cmd, serverOrImage, imageMetadata, runConfig, debugMode)
-		if err != nil {
-			return fmt.Errorf("failed to apply registry settings: %v", err)
-		}
-	}
-
-	// Configure the RunConfig with transport, ports, permissions, etc.
-	if err := configureRunConfig(runConfig, runTransport, runPort, runTargetPort, runEnv); err != nil {
-		return err
+		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}
 
 	// Once we have built the RunConfig, start the MCP workload.
@@ -291,85 +297,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return workloadManager.RunWorkload(ctx, runConfig)
 	}
 	return workloadManager.RunWorkloadDetached(runConfig)
-}
-
-// applyRegistrySettings applies settings from a registry server to the run config
-func applyRegistrySettings(
-	ctx context.Context,
-	cmd *cobra.Command,
-	serverName string,
-	metadata *registry.ImageMetadata,
-	runConfig *runner.RunConfig,
-	debugMode bool,
-) error {
-	// Use the image from the registry
-	runConfig.Image = metadata.Image
-
-	// If name is not provided, use the metadata name from registry
-	if runConfig.Name == "" {
-		runConfig.Name = serverName
-	}
-
-	// Use registry transport if not overridden
-	if !cmd.Flags().Changed("transport") {
-		logDebug(debugMode, "Using registry transport: %s", metadata.Transport)
-		runTransport = metadata.Transport
-	} else {
-		logDebug(debugMode, "Using provided transport: %s (overriding registry default: %s)",
-			runTransport, metadata.Transport)
-	}
-
-	// Use registry target port if not overridden and transport is SSE or Streamable HTTP
-	if !cmd.Flags().Changed("target-port") && (metadata.Transport == types.TransportTypeSSE.String() ||
-		metadata.Transport == types.TransportTypeStreamableHTTP.String()) && metadata.TargetPort > 0 {
-		logDebug(debugMode, "Using registry target port: %d", metadata.TargetPort)
-		runTargetPort = metadata.TargetPort
-	}
-
-	// Prepend registry args to command-line args if available
-	if len(metadata.Args) > 0 {
-		logDebug(debugMode, "Prepending registry args: %v", metadata.Args)
-		runConfig.CmdArgs = append(metadata.Args, runConfig.CmdArgs...)
-	}
-
-	// Note this logic will be moved elsewhere in a future PR.
-	// Select an env var validation strategy depending on how the CLI is run:
-	// If we have called the CLI directly, we use the CLIEnvVarValidator.
-	// If we are running in detached mode, or the CLI is wrapped by the K8s operator,
-	// we use the DetachedEnvVarValidator.
-	var envVarValidator runner.EnvVarValidator
-	if process.IsDetached() || container.IsKubernetesRuntime() {
-		envVarValidator = &runner.DetachedEnvVarValidator{}
-	} else {
-		envVarValidator = &runner.CLIEnvVarValidator{}
-	}
-
-	// Process environment variables from registry.
-	// This will be merged with command-line env vars in configureRunConfig
-	if err := envVarValidator.Validate(ctx, metadata, runConfig, runEnv); err != nil {
-		return fmt.Errorf("failed to validate required configuration values: %v", err)
-	}
-
-	// Create a temporary file for the permission profile if not explicitly provided
-	if !cmd.Flags().Changed("permission-profile") {
-		permProfilePath, err := runner.CreatePermissionProfileFile(serverName, metadata.Permissions)
-		if err != nil {
-			// Just log the error and continue with the default permission profile
-			logger.Warnf("Warning: Failed to create permission profile file: %v", err)
-		} else {
-			// Update the permission profile path
-			runConfig.PermissionProfileNameOrPath = permProfilePath
-		}
-	}
-
-	return nil
-}
-
-// logDebug logs a message if debug mode is enabled
-func logDebug(debugMode bool, format string, args ...interface{}) {
-	if debugMode {
-		logger.Infof(format+"", args...)
-	}
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator

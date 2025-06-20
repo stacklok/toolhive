@@ -3,14 +3,15 @@ package v1
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -216,89 +217,70 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Failure		409		{string}	string	"Conflict"
 //	@Router			/api/v1beta/workloads [post]
 func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
 		return
 	}
 
+	// Fetch or build the requested image
+	// TODO: Make verification configurable and return errors over the API.
+	imageURL, imageMetadata, err := retriever.GetMCPServer(
+		ctx,
+		req.Image,
+		"", // We do not let the user specify a CA cert path here.
+		retriever.VerifyImageWarn,
+	)
+	if err != nil {
+		if errors.Is(err, retriever.ErrImageNotFound) {
+			http.Error(w, "MCP server image not found", http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("Failed to retrieve MCP server image: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
 	// NOTE: None of the k8s-related config logic is included here.
 	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
-	runConfig := runner.NewRunConfigFromFlags(
+	runConfig, err := runner.NewRunConfigFromFlags(
+		ctx,
 		s.containerRuntime,
 		req.CmdArguments,
 		req.Name,
+		imageURL,
+		imageMetadata,
 		req.Host,
 		s.debugMode,
 		req.Volumes,
 		runSecrets,
 		req.AuthzConfig,
-		"",    // auditConfigPath - will be added in future PR
-		false, // enableAudit - will be added in future PR
+		"",    // req.AuditConfig not set - auditing not exposed through API yet.
+		false, // req.EnableAudit not set - auditing not exposed through API yet.
 		req.PermissionProfile,
 		transport.LocalhostIPv4, // Seems like a reasonable default for now.
+		req.Transport,
+		0, // Let the manager figure out which port to use.
+		req.TargetPort,
+		req.EnvVars,
 		req.OIDC.Issuer,
 		req.OIDC.Audience,
 		req.OIDC.JwksURL,
 		req.OIDC.ClientID,
 		"",    // otelEndpoint - not exposed through API yet
 		"",    // otelServiceName - not exposed through API yet
-		0.1,   // otelSamplingRate - default value
+		0.0,   // otelSamplingRate - default value
 		nil,   // otelHeaders - not exposed through API yet
 		false, // otelInsecure - not exposed through API yet
 		false, // otelEnablePrometheusMetricsPath - not exposed through API yet
 		nil,   // otelEnvironmentVariables - not exposed through API yet
 		false, // isolateNetwork - not exposed through API yet
+		"",    // k8s patch - not relevant here.
+		&runner.DetachedEnvVarValidator{},
 	)
-
-	// TODO: De-dupe from `configureRunConfig` in `cmd/thv/app/run_common.go`.
-	if req.Transport == "" {
-		req.Transport = "stdio"
-	}
-	if _, err := runConfig.WithTransport(req.Transport); err != nil {
-		// TODO: More fine grained error handling.
-		http.Error(w, "Unable to configure transport", http.StatusBadRequest)
-		return
-	}
-	// Let the manager handle the port mapping.
-	// Configure ports and target host
-	if _, err := runConfig.WithPorts(0, req.TargetPort); err != nil {
-		http.Error(w, "Unable to configure ports", http.StatusInternalServerError)
-	}
-
-	if runConfig.PermissionProfileNameOrPath == "" {
-		runConfig.PermissionProfileNameOrPath = permissions.ProfileNetwork
-	}
-
-	// Set permission profile (mandatory)
-	if _, err := runConfig.ParsePermissionProfile(); err != nil {
-		http.Error(w, "Unable to configure permission profile", http.StatusBadRequest)
-	}
-
-	// Process volume mounts
-	if err := runConfig.ProcessVolumeMounts(); err != nil {
-		http.Error(w, "Unable to configure volume mounts", http.StatusBadRequest)
-	}
-
-	// Parse and set environment variables
-	if _, err := runConfig.WithEnvironmentVariables(req.EnvVars); err != nil {
-		http.Error(w, "Unable to configure ports", http.StatusBadRequest)
-	}
-
-	runConfig.Image = req.Image
-	runConfig.WithContainerName()
-	runConfig.WithStandardLabels()
-
-	// ASSUMPTION MADE: The CLI parses the image and pulls it, but since the
-	// same code is called when the process is detached, I do not call it here.
-	// Some basic testing has confirmed this, but it may need some further
-	// testing with npx/uvx.
-	// TODO: Refactor the code out of the CLI.
-
-	err := s.manager.RunWorkloadDetached(runConfig)
 	if err != nil {
-		logger.Errorf("Failed to start workload: %v", err)
-		http.Error(w, "Failed to start workload", http.StatusInternalServerError)
+		logger.Errorf("Failed to create run config: %v", err)
+		http.Error(w, "Failed to create run config", http.StatusBadRequest)
 		return
 	}
 

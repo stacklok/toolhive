@@ -1347,7 +1347,7 @@
             "allow_transport": [
               "tcp"
             ],
-            "insecure_allow_all": false
+            "insecure_allow_all": true
           }
         },
         "read": [],

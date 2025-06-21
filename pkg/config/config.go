@@ -24,10 +24,11 @@ const lockTimeout = 1 * time.Second
 
 // Config represents the configuration of the application.
 type Config struct {
-	Secrets           Secrets `yaml:"secrets"`
-	Clients           Clients `yaml:"clients"`
-	RegistryUrl       string  `yaml:"registry_url"`
-	CACertificatePath string  `yaml:"ca_certificate_path,omitempty"`
+	Secrets                Secrets `yaml:"secrets"`
+	Clients                Clients `yaml:"clients"`
+	RegistryUrl            string  `yaml:"registry_url"`
+	AllowPrivateRegistryIp bool    `yaml:"allow_private_registry_ip"`
+	CACertificatePath      string  `yaml:"ca_certificate_path,omitempty"`
 }
 
 // Secrets contains the settings for secrets management.
@@ -93,7 +94,8 @@ func createNewConfigWithDefaults() Config {
 		Clients: Clients{
 			AutoDiscovery: true,
 		},
-		RegistryUrl: "",
+		RegistryUrl:            "",
+		AllowPrivateRegistryIp: false,
 	}
 }
 

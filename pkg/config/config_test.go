@@ -214,6 +214,49 @@ func TestRegistryURLConfig(t *testing.T) {
 			}
 		})
 	})
+
+	t.Run("TestAllowPrivateRegistryIp", func(t *testing.T) {
+		t.Parallel()
+		tempDir, configPath := SetupTestConfig(t, &Config{
+			Secrets: Secrets{
+				ProviderType: string(secrets.EncryptedType),
+			},
+			Clients: Clients{
+				AutoDiscovery:     false,
+				RegisteredClients: []string{},
+			},
+			RegistryUrl:            "",
+			AllowPrivateRegistryIp: false,
+		})
+
+		// Test enabling
+		err := UpdateConfigAtPath(configPath, func(c *Config) {
+			c.AllowPrivateRegistryIp = true
+		})
+		require.NoError(t, err)
+
+		// Load the config and verify the setting was toggled to true
+		config, err := LoadOrCreateConfigWithPath(configPath)
+		require.NoError(t, err)
+		assert.Equal(t, true, config.AllowPrivateRegistryIp)
+
+		// Test toggling setting to false
+		err = UpdateConfigAtPath(configPath, func(c *Config) {
+			c.AllowPrivateRegistryIp = false
+		})
+		require.NoError(t, err)
+
+		// Load the config and verify the setting was toggled to false
+		config, err = LoadOrCreateConfigWithPath(configPath)
+		require.NoError(t, err)
+		assert.Equal(t, false, config.AllowPrivateRegistryIp)
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
 }
 
 func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {

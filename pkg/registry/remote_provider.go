@@ -12,23 +12,25 @@ import (
 
 // RemoteRegistryProvider provides registry data from a remote HTTP endpoint
 type RemoteRegistryProvider struct {
-	registryURL  string
-	registry     *Registry
-	registryOnce sync.Once
-	registryErr  error
+	registryURL    string
+	allowPrivateIp bool
+	registry       *Registry
+	registryOnce   sync.Once
+	registryErr    error
 }
 
 // NewRemoteRegistryProvider creates a new remote registry provider
-func NewRemoteRegistryProvider(registryURL string) *RemoteRegistryProvider {
+func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) *RemoteRegistryProvider {
 	return &RemoteRegistryProvider{
-		registryURL: registryURL,
+		registryURL:    registryURL,
+		allowPrivateIp: allowPrivateIp,
 	}
 }
 
 // GetRegistry returns the remote registry data
 func (p *RemoteRegistryProvider) GetRegistry() (*Registry, error) {
 	p.registryOnce.Do(func() {
-		client := networking.GetProtectedHttpClient()
+		client := networking.GetHttpClient(p.allowPrivateIp)
 		resp, err := client.Get(p.registryURL)
 		if err != nil {
 			p.registryErr = fmt.Errorf("failed to fetch registry data from URL %s: %w", p.registryURL, err)

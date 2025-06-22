@@ -1,0 +1,54 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-server-with-ingress
+  namespace: toolhive-system
+spec:
+  image: "github.com/modelcontextprotocol/servers/src/github"
+  transport: "sse"
+  port: 8080
+  
+  # Ingress configuration for external access
+  ingress:
+    enabled: true
+    host: "github-mcp.example.com"
+    path: "/mcp"
+    pathType: "Prefix"
+    ingressClassName: "nginx"  # or your ingress controller class
+    
+    # Optional: TLS configuration
+    tls:
+      enabled: true
+      secretName: "github-mcp-tls"
+    
+    # Optional: Custom annotations for your ingress controller
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: "/"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  
+  # Environment variables (if needed for the MCP server)
+  env:
+    - name: GITHUB_TOKEN
+      value: "your-github-token"
+  
+  # Resource limits
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+---
+# Example TLS Secret (if using manual TLS)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-mcp-tls
+  namespace: toolhive-system
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUdJTi... # base64 encoded certificate
+  tls.key: LS0tLS1CRUdJTi... # base64 encoded private key 

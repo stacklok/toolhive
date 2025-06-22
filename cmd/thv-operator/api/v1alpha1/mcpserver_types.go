@@ -5,6 +5,53 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// IngressConfig defines the configuration for Ingress resources
+type IngressConfig struct {
+	// Enabled controls whether to create an Ingress resource
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Host is the hostname for the Ingress rule
+	// +kubebuilder:validation:Required
+	Host string `json:"host"`
+
+	// Path is the path for the Ingress rule
+	// +kubebuilder:default=/
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// PathType specifies the interpretation of the Path matching
+	// +kubebuilder:validation:Enum=Exact;Prefix;ImplementationSpecific
+	// +kubebuilder:default=Prefix
+	// +optional
+	PathType string `json:"pathType,omitempty"`
+
+	// IngressClassName is the name of the ingress class to use
+	// +optional
+	IngressClassName *string `json:"ingressClassName,omitempty"`
+
+	// TLS configuration for the Ingress
+	// +optional
+	TLS *IngressTLSConfig `json:"tls,omitempty"`
+
+	// Annotations to add to the Ingress resource
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// IngressTLSConfig defines TLS configuration for Ingress
+type IngressTLSConfig struct {
+	// Enabled controls whether to enable TLS
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// SecretName is the name of the secret containing the TLS certificate
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
+}
+
 // MCPServerSpec defines the desired state of MCPServer
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server
@@ -52,6 +99,10 @@ type MCPServerSpec struct {
 	// the `mcp` container name in the PodTemplateSpec.
 	// +optional
 	PodTemplateSpec *corev1.PodTemplateSpec `json:"podTemplateSpec,omitempty"`
+
+	// Ingress configuration for exposing the MCP server externally
+	// +optional
+	Ingress *IngressConfig `json:"ingress,omitempty"`
 }
 
 // EnvVar represents an environment variable in a container

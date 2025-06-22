@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -57,6 +58,9 @@ type MCPServerReconciler struct {
 
 // Allow the operator to manage StatefulSets
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=create;delete;get;list;patch;update;watch
+
+// Allow the operator to manage Ingress resources
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=create;delete;get;list;patch;update;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -209,14 +213,89 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Check if the Ingress should be created and managed
+	var ingress *networkingv1.Ingress
+	if mcpServer.Spec.Ingress != nil && mcpServer.Spec.Ingress.Enabled {
+		ingressName := fmt.Sprintf("mcp-%s-ingress", mcpServer.Name)
+		ingress = &networkingv1.Ingress{}
+		err = r.Get(ctx, types.NamespacedName{Name: ingressName, Namespace: mcpServer.Namespace}, ingress)
+		if err != nil && errors.IsNotFound(err) {
+			// Define a new ingress
+			ing := r.ingressForMCPServer(mcpServer)
+			if ing == nil {
+				ctxLogger.Error(nil, "Failed to create Ingress object")
+				return ctrl.Result{}, fmt.Errorf("failed to create Ingress object")
+			}
+			ctxLogger.Info("Creating a new Ingress", "Ingress.Namespace", ing.Namespace, "Ingress.Name", ing.Name)
+			err = r.Create(ctx, ing)
+			if err != nil {
+				ctxLogger.Error(err, "Failed to create new Ingress", "Ingress.Namespace", ing.Namespace, "Ingress.Name", ing.Name)
+				return ctrl.Result{}, err
+			}
+			// Ingress created successfully - return and requeue
+			return ctrl.Result{Requeue: true}, nil
+		} else if err != nil {
+			ctxLogger.Error(err, "Failed to get Ingress")
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Generate URL based on ingress configuration or fallback to service
 	var expectURL string
-	schema := "http"
-	if service != nil && len(service.Status.LoadBalancer.Ingress) > 0 && service.Status.LoadBalancer.Ingress[0].IP != "" {
-		expectURL = fmt.Sprintf("%s://%s:%d/sse", schema, service.Status.LoadBalancer.Ingress[0].IP, mcpServer.Spec.Port)
+	if mcpServer.Spec.Ingress != nil && mcpServer.Spec.Ingress.Enabled && ingress != nil {
+		// Use Ingress-based URL
+		schema := "http"
+		if mcpServer.Spec.Ingress.TLS != nil && mcpServer.Spec.Ingress.TLS.Enabled {
+			schema = "https"
+		}
+
+		// Check if Ingress has external IP/hostname from LoadBalancer ingress
+		if len(ingress.Status.LoadBalancer.Ingress) > 0 {
+			ingressHost := ""
+			if ingress.Status.LoadBalancer.Ingress[0].IP != "" {
+				ingressHost = ingress.Status.LoadBalancer.Ingress[0].IP
+			} else if ingress.Status.LoadBalancer.Ingress[0].Hostname != "" {
+				ingressHost = ingress.Status.LoadBalancer.Ingress[0].Hostname
+			}
+
+			if ingressHost != "" {
+				path := mcpServer.Spec.Ingress.Path
+				if path == "" {
+					path = "/"
+				}
+				// Remove trailing slash if path is not just "/"
+				if path != "/" && path[len(path)-1] == '/' {
+					path = path[:len(path)-1]
+				}
+				expectURL = fmt.Sprintf("%s://%s%s/sse", schema, ingressHost, path)
+			} else {
+				// Use the configured host from ingress spec as fallback
+				path := mcpServer.Spec.Ingress.Path
+				if path == "" {
+					path = "/"
+				}
+				if path != "/" && path[len(path)-1] == '/' {
+					path = path[:len(path)-1]
+				}
+				expectURL = fmt.Sprintf("%s://%s%s/sse", schema, mcpServer.Spec.Ingress.Host, path)
+			}
+		} else {
+			// No external endpoint available yet, use the configured host
+			path := mcpServer.Spec.Ingress.Path
+			if path == "" {
+				path = "/"
+			}
+			if path != "/" && path[len(path)-1] == '/' {
+				path = path[:len(path)-1]
+			}
+			expectURL = fmt.Sprintf("%s://%s%s/sse", schema, mcpServer.Spec.Ingress.Host, path)
+		}
 	} else {
+		// Fallback to ClusterIP service (for internal access only)
 		expectURL = ""
 	}
-	// Update the MCPServer status with the service URL
+
+	// Update the MCPServer status with the URL
 	if mcpServer.Status.URL == "" || mcpServer.Status.URL != expectURL {
 		mcpServer.Status.URL = expectURL
 		err = r.Status().Update(ctx, mcpServer)
@@ -254,6 +333,23 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		// Spec updated - return and requeue
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Check if the ingress spec changed
+	if ingress != nil && ingressNeedsUpdate(ingress, mcpServer) {
+		// Update the ingress
+		newIngress := r.ingressForMCPServer(mcpServer)
+		if newIngress != nil {
+			ingress.Spec = newIngress.Spec
+			ingress.ObjectMeta.Annotations = newIngress.ObjectMeta.Annotations
+			err = r.Update(ctx, ingress)
+			if err != nil {
+				ctxLogger.Error(err, "Failed to update Ingress", "Ingress.Namespace", ingress.Namespace, "Ingress.Name", ingress.Name)
+				return ctrl.Result{}, err
+			}
+			// Spec updated - return and requeue
+			return ctrl.Result{Requeue: true}, nil
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -437,12 +533,9 @@ func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *cor
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      svcName,
 			Namespace: m.Namespace,
-			Annotations: map[string]string{
-				"cloud.google.com/l4-rbs": "enabled",
-			},
 		},
 		Spec: corev1.ServiceSpec{
-			Type:     corev1.ServiceTypeLoadBalancer,
+			Type:     corev1.ServiceTypeClusterIP,
 			Selector: ls,
 			Ports: []corev1.ServicePort{{
 				Port:       m.Spec.Port,
@@ -459,6 +552,90 @@ func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *cor
 		return nil
 	}
 	return svc
+}
+
+// ingressForMCPServer returns a MCPServer Ingress object
+func (r *MCPServerReconciler) ingressForMCPServer(m *mcpv1alpha1.MCPServer) *networkingv1.Ingress {
+	// Skip creating Ingress if not configured or disabled
+	if m.Spec.Ingress == nil || !m.Spec.Ingress.Enabled {
+		return nil
+	}
+
+	serviceName := createServiceName(m.Name)
+	ingressName := fmt.Sprintf("mcp-%s-ingress", m.Name)
+
+	// Set default path if not specified
+	path := m.Spec.Ingress.Path
+	if path == "" {
+		path = "/"
+	}
+
+	// Set default path type if not specified
+	pathType := networkingv1.PathType(m.Spec.Ingress.PathType)
+	if m.Spec.Ingress.PathType == "" {
+		pathType = networkingv1.PathTypePrefix
+	}
+
+	// Create Ingress spec
+	ingressSpec := networkingv1.IngressSpec{
+		Rules: []networkingv1.IngressRule{
+			{
+				Host: m.Spec.Ingress.Host,
+				IngressRuleValue: networkingv1.IngressRuleValue{
+					HTTP: &networkingv1.HTTPIngressRuleValue{
+						Paths: []networkingv1.HTTPIngressPath{
+							{
+								Path:     path,
+								PathType: &pathType,
+								Backend: networkingv1.IngressBackend{
+									Service: &networkingv1.IngressServiceBackend{
+										Name: serviceName,
+										Port: networkingv1.ServiceBackendPort{
+											Number: m.Spec.Port,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Add TLS configuration if enabled
+	if m.Spec.Ingress.TLS != nil && m.Spec.Ingress.TLS.Enabled {
+		ingressSpec.TLS = []networkingv1.IngressTLS{
+			{
+				Hosts: []string{m.Spec.Ingress.Host},
+			},
+		}
+		if m.Spec.Ingress.TLS.SecretName != "" {
+			ingressSpec.TLS[0].SecretName = m.Spec.Ingress.TLS.SecretName
+		}
+	}
+
+	// Add IngressClassName if specified
+	if m.Spec.Ingress.IngressClassName != nil {
+		ingressSpec.IngressClassName = m.Spec.Ingress.IngressClassName
+	}
+
+	// Create Ingress object
+	ingress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        ingressName,
+			Namespace:   m.Namespace,
+			Annotations: m.Spec.Ingress.Annotations,
+		},
+		Spec: ingressSpec,
+	}
+
+	// Set MCPServer instance as the owner and controller
+	if err := controllerutil.SetControllerReference(m, ingress, r.Scheme); err != nil {
+		logger.Error("Failed to set controller reference for Ingress", err)
+		return nil
+	}
+	return ingress
 }
 
 // updateMCPServerStatus updates the status of the MCPServer
@@ -653,6 +830,86 @@ func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServe
 	return false
 }
 
+// ingressNeedsUpdate checks if the ingress needs to be updated
+func ingressNeedsUpdate(ingress *networkingv1.Ingress, mcpServer *mcpv1alpha1.MCPServer) bool {
+	// Skip check if ingress is not enabled
+	if mcpServer.Spec.Ingress == nil || !mcpServer.Spec.Ingress.Enabled {
+		return false
+	}
+
+	// Check if the host has changed
+	if len(ingress.Spec.Rules) == 0 || ingress.Spec.Rules[0].Host != mcpServer.Spec.Ingress.Host {
+		return true
+	}
+
+	// Check if the path has changed
+	expectedPath := mcpServer.Spec.Ingress.Path
+	if expectedPath == "" {
+		expectedPath = "/"
+	}
+	if len(ingress.Spec.Rules) > 0 &&
+		ingress.Spec.Rules[0].HTTP != nil &&
+		len(ingress.Spec.Rules[0].HTTP.Paths) > 0 &&
+		ingress.Spec.Rules[0].HTTP.Paths[0].Path != expectedPath {
+		return true
+	}
+
+	// Check if the path type has changed
+	expectedPathType := networkingv1.PathType(mcpServer.Spec.Ingress.PathType)
+	if mcpServer.Spec.Ingress.PathType == "" {
+		expectedPathType = networkingv1.PathTypePrefix
+	}
+	if len(ingress.Spec.Rules) > 0 &&
+		ingress.Spec.Rules[0].HTTP != nil &&
+		len(ingress.Spec.Rules[0].HTTP.Paths) > 0 &&
+		ingress.Spec.Rules[0].HTTP.Paths[0].PathType != nil &&
+		*ingress.Spec.Rules[0].HTTP.Paths[0].PathType != expectedPathType {
+		return true
+	}
+
+	// Check if the backend service port has changed
+	if len(ingress.Spec.Rules) > 0 &&
+		ingress.Spec.Rules[0].HTTP != nil &&
+		len(ingress.Spec.Rules[0].HTTP.Paths) > 0 &&
+		ingress.Spec.Rules[0].HTTP.Paths[0].Backend.Service != nil &&
+		ingress.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Number != mcpServer.Spec.Port {
+		return true
+	}
+
+	// Check if TLS configuration has changed
+	tlsEnabled := mcpServer.Spec.Ingress.TLS != nil && mcpServer.Spec.Ingress.TLS.Enabled
+	if tlsEnabled {
+		if len(ingress.Spec.TLS) == 0 {
+			return true
+		}
+		// Check if TLS secret name has changed
+		if mcpServer.Spec.Ingress.TLS.SecretName != "" &&
+			ingress.Spec.TLS[0].SecretName != mcpServer.Spec.Ingress.TLS.SecretName {
+			return true
+		}
+		// Check if TLS hosts have changed
+		if len(ingress.Spec.TLS[0].Hosts) == 0 ||
+			ingress.Spec.TLS[0].Hosts[0] != mcpServer.Spec.Ingress.Host {
+			return true
+		}
+	} else if len(ingress.Spec.TLS) > 0 {
+		// TLS was disabled but ingress still has TLS config
+		return true
+	}
+
+	// Check if IngressClassName has changed
+	if (mcpServer.Spec.Ingress.IngressClassName == nil) != (ingress.Spec.IngressClassName == nil) {
+		return true
+	}
+	if mcpServer.Spec.Ingress.IngressClassName != nil &&
+		ingress.Spec.IngressClassName != nil &&
+		*mcpServer.Spec.Ingress.IngressClassName != *ingress.Spec.IngressClassName {
+		return true
+	}
+
+	return false
+}
+
 // resourceRequirementsForMCPServer returns the resource requirements for the MCPServer
 func resourceRequirementsForMCPServer(m *mcpv1alpha1.MCPServer) corev1.ResourceRequirements {
 	resources := corev1.ResourceRequirements{}
@@ -720,5 +977,6 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&mcpv1alpha1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&networkingv1.Ingress{}).
 		Complete(r)
 }

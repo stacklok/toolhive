@@ -16,7 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
-const defaultSquidImage = "ubuntu/squid:latest"
+const defaultSquidImage = "ghcr.io/stacklok/toolhive/egress-proxy:latest"
 
 // createIngressSquidContainer creates an instance of the squid proxy for ingress traffic.
 func createIngressSquidContainer(

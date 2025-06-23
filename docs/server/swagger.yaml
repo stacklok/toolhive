@@ -121,58 +121,7 @@ components:
             If true, the value will be stored as a secret rather than as a plain environment variable
           type: boolean
       type: object
-    registry.Metadata:
-      description: Metadata contains additional information about the server such
-        as popularity metrics
-      properties:
-        last_updated:
-          description: LastUpdated is the timestamp when the server was last updated,
-            in RFC3339 format
-          type: string
-        pulls:
-          description: Pulls indicates how many times the server image has been downloaded
-          type: integer
-        stars:
-          description: Stars represents the popularity rating or number of stars for
-            the server
-          type: integer
-      type: object
-    registry.Provenance:
-      description: Provenance contains verification and signing metadata
-      properties:
-        attestation:
-          $ref: '#/components/schemas/registry.VerifiedAttestation'
-        cert_issuer:
-          type: string
-        repository_ref:
-          type: string
-        repository_uri:
-          type: string
-        runner_environment:
-          type: string
-        signer_identity:
-          type: string
-        sigstore_url:
-          type: string
-      type: object
-    registry.Registry:
-      description: Full registry data
-      properties:
-        last_updated:
-          description: LastUpdated is the timestamp when the registry was last updated,
-            in RFC3339 format
-          type: string
-        servers:
-          additionalProperties:
-            $ref: '#/components/schemas/registry.Server'
-          description: Servers is a map of server names to their corresponding server
-            definitions
-          type: object
-        version:
-          description: Version is the schema version of the registry
-          type: string
-      type: object
-    registry.Server:
+    registry.ImageMetadata:
       description: Server details
       properties:
         args:
@@ -239,6 +188,57 @@ components:
         transport:
           description: Transport defines the communication protocol for the server
             (stdio or sse)
+          type: string
+      type: object
+    registry.Metadata:
+      description: Metadata contains additional information about the server such
+        as popularity metrics
+      properties:
+        last_updated:
+          description: LastUpdated is the timestamp when the server was last updated,
+            in RFC3339 format
+          type: string
+        pulls:
+          description: Pulls indicates how many times the server image has been downloaded
+          type: integer
+        stars:
+          description: Stars represents the popularity rating or number of stars for
+            the server
+          type: integer
+      type: object
+    registry.Provenance:
+      description: Provenance contains verification and signing metadata
+      properties:
+        attestation:
+          $ref: '#/components/schemas/registry.VerifiedAttestation'
+        cert_issuer:
+          type: string
+        repository_ref:
+          type: string
+        repository_uri:
+          type: string
+        runner_environment:
+          type: string
+        signer_identity:
+          type: string
+        sigstore_url:
+          type: string
+      type: object
+    registry.Registry:
+      description: Full registry data
+      properties:
+        last_updated:
+          description: LastUpdated is the timestamp when the registry was last updated,
+            in RFC3339 format
+          type: string
+        servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.ImageMetadata'
+          description: Servers is a map of server names to their corresponding server
+            definitions
+          type: object
+        version:
+          description: Version is the schema version of the registry
           type: string
       type: object
     registry.VerifiedAttestation:
@@ -411,7 +411,7 @@ components:
       description: Response containing server details
       properties:
         server:
-          $ref: '#/components/schemas/registry.Server'
+          $ref: '#/components/schemas/registry.ImageMetadata'
       type: object
     v1.listSecretsResponse:
       description: Response containing a list of secret keys
@@ -429,7 +429,7 @@ components:
         servers:
           description: List of servers in the registry
           items:
-            $ref: '#/components/schemas/registry.Server'
+            $ref: '#/components/schemas/registry.ImageMetadata'
           type: array
           uniqueItems: false
       type: object
@@ -818,7 +818,7 @@ paths:
         required: true
         schema:
           type: string
-      - description: Server name
+      - description: ImageMetadata name
         in: path
         name: serverName
         required: true

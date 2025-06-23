@@ -26,7 +26,7 @@ var (
 
 type serverWithName struct {
 	name   string
-	server *registry.Server
+	server *registry.ImageMetadata
 }
 
 var updateCmd = &cobra.Command{
@@ -130,7 +130,7 @@ func selectOldestServers(reg *registry.Registry) ([]serverWithName, error) {
 	return servers[:limit], nil
 }
 
-func isOlder(serverI, serverJ *registry.Server) bool {
+func isOlder(serverI, serverJ *registry.ImageMetadata) bool {
 	var lastUpdatedI, lastUpdatedJ string
 
 	if serverI.Metadata != nil {
@@ -202,10 +202,10 @@ func saveResults(reg *registry.Registry, updatedServers []string) error {
 }
 
 // updateServerInfo updates the GitHub stars and pulls for a server
-func updateServerInfo(name string, server *registry.Server) error {
+func updateServerInfo(name string, server *registry.ImageMetadata) error {
 	// Skip if no repository URL
 	if server.RepositoryURL == "" {
-		logger.Warnf("Server %s has no repository URL, skipping", name)
+		logger.Warnf("ImageMetadata %s has no repository URL, skipping", name)
 		return nil
 	}
 
@@ -369,7 +369,7 @@ func saveRegistry(reg *registry.Registry, updatedServers []string) error {
 		// Get the server from the original JSON
 		serverJSON, ok := serversMap[name].(map[string]interface{})
 		if !ok {
-			logger.Warnf("Server %s not found in original registry, skipping", name)
+			logger.Warnf("ImageMetadata %s not found in original registry, skipping", name)
 			continue
 		}
 

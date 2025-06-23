@@ -285,7 +285,7 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 	// Pass the permission profile to the detached process
 	if runConfig.PermissionProfile != nil {
 		// We need to create a temporary file for the permission profile
-		permProfilePath, err := CreatePermissionProfileFile(runConfig.BaseName, runConfig.PermissionProfile)
+		permProfilePath, err := runner.CreatePermissionProfileFile(runConfig.BaseName, runConfig.PermissionProfile)
 		if err != nil {
 			logger.Warnf("Warning: Failed to create permission profile file: %v", err)
 		} else {
@@ -583,7 +583,7 @@ func (*defaultManager) cleanupTempPermissionProfile(ctx context.Context, baseNam
 
 	// Clean up the temporary permission profile if it exists
 	if r.Config.PermissionProfileNameOrPath != "" {
-		if err := CleanupTempPermissionProfile(r.Config.PermissionProfileNameOrPath); err != nil {
+		if err := runner.CleanupTempPermissionProfile(r.Config.PermissionProfileNameOrPath); err != nil {
 			return fmt.Errorf("failed to cleanup temporary permission profile: %v", err)
 		}
 	}

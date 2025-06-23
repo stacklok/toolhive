@@ -23,7 +23,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
-	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var runCmd = &cobra.Command{
@@ -268,7 +267,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runConfig.K8sPodTemplatePatch = runK8sPodPatch
 	}
 
-	var server *registry.Server
+	var server *registry.ImageMetadata
 
 	imageManager := images.NewImageManager(ctx)
 	// Check if the serverOrImage is a protocol scheme, e.g., uvx://, npx://, or go://
@@ -288,11 +287,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		// Try to find the server in the registry
 		server, err = registry.GetServer(serverOrImage)
 		if err != nil {
-			// Server isn't found in registry, treat as direct image
-			logger.Debugf("Server '%s' not found in registry: %v", serverOrImage, err)
+			// ImageMetadata isn't found in registry, treat as direct image
+			logger.Debugf("ImageMetadata '%s' not found in registry: %v", serverOrImage, err)
 			runConfig.Image = serverOrImage
 		} else {
-			// Server found in registry
+			// ImageMetadata found in registry
 			logger.Debugf("Found server '%s' in registry: %v", serverOrImage, server)
 			// Apply registry settings to runConfig
 			applyRegistrySettings(ctx, cmd, serverOrImage, server, runConfig, debugMode)
@@ -372,7 +371,7 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 }
 
 // verifyImage verifies the image using the specified verification setting (warn, enabled, or disabled)
-func verifyImage(image string, server *registry.Server, verifySetting string) error {
+func verifyImage(image string, server *registry.ImageMetadata, verifySetting string) error {
 	switch verifySetting {
 	case verifyImageDisabled:
 		logger.Warn("Image verification is disabled")
@@ -414,7 +413,7 @@ func applyRegistrySettings(
 	ctx context.Context,
 	cmd *cobra.Command,
 	serverName string,
-	server *registry.Server,
+	server *registry.ImageMetadata,
 	runConfig *runner.RunConfig,
 	debugMode bool,
 ) {
@@ -456,7 +455,7 @@ func applyRegistrySettings(
 
 	// Create a temporary file for the permission profile if not explicitly provided
 	if !cmd.Flags().Changed("permission-profile") {
-		permProfilePath, err := workloads.CreatePermissionProfileFile(serverName, server.Permissions)
+		permProfilePath, err := runner.CreatePermissionProfileFile(serverName, server.Permissions)
 		if err != nil {
 			// Just log the error and continue with the default permission profile
 			logger.Warnf("Warning: Failed to create permission profile file: %v", err)

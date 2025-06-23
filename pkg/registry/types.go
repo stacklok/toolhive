@@ -14,11 +14,11 @@ type Registry struct {
 	// LastUpdated is the timestamp when the registry was last updated, in RFC3339 format
 	LastUpdated string `json:"last_updated"`
 	// Servers is a map of server names to their corresponding server definitions
-	Servers map[string]*Server `json:"servers"`
+	Servers map[string]*ImageMetadata `json:"servers"`
 }
 
-// Server represents an MCP server in the registry
-type Server struct {
+// ImageMetadata represents the metadata for an MCP server image stored in our registry.
+type ImageMetadata struct {
 	// Name is the identifier for the MCP server, used when referencing the server in commands
 	// If not provided, it will be auto-generated from the image name
 	Name string `json:"name,omitempty"`

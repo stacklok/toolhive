@@ -69,7 +69,7 @@ func TestEmbeddedRegistryProvider(t *testing.T) {
 	// Test that server names are set
 	for name, server := range registry.Servers {
 		if server.Name != name {
-			t.Errorf("Server name not set correctly: got %s, want %s", server.Name, name)
+			t.Errorf("ImageMetadata name not set correctly: got %s, want %s", server.Name, name)
 		}
 	}
 

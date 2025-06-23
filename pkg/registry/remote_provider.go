@@ -64,7 +64,7 @@ func (p *RemoteRegistryProvider) GetRegistry() (*Registry, error) {
 }
 
 // GetServer returns a specific server by name
-func (p *RemoteRegistryProvider) GetServer(name string) (*Server, error) {
+func (p *RemoteRegistryProvider) GetServer(name string) (*ImageMetadata, error) {
 	reg, err := p.GetRegistry()
 	if err != nil {
 		return nil, err
@@ -79,14 +79,14 @@ func (p *RemoteRegistryProvider) GetServer(name string) (*Server, error) {
 }
 
 // SearchServers searches for servers matching the query
-func (p *RemoteRegistryProvider) SearchServers(query string) ([]*Server, error) {
+func (p *RemoteRegistryProvider) SearchServers(query string) ([]*ImageMetadata, error) {
 	reg, err := p.GetRegistry()
 	if err != nil {
 		return nil, err
 	}
 
 	query = strings.ToLower(query)
-	var results []*Server
+	var results []*ImageMetadata
 
 	for name, server := range reg.Servers {
 		// Search in name
@@ -114,13 +114,13 @@ func (p *RemoteRegistryProvider) SearchServers(query string) ([]*Server, error) 
 }
 
 // ListServers returns all available servers
-func (p *RemoteRegistryProvider) ListServers() ([]*Server, error) {
+func (p *RemoteRegistryProvider) ListServers() ([]*ImageMetadata, error) {
 	reg, err := p.GetRegistry()
 	if err != nil {
 		return nil, err
 	}
 
-	servers := make([]*Server, 0, len(reg.Servers))
+	servers := make([]*ImageMetadata, 0, len(reg.Servers))
 	for _, server := range reg.Servers {
 		servers = append(servers, server)
 	}

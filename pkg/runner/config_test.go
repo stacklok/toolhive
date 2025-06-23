@@ -76,7 +76,7 @@ func (*mockRuntime) PullImage(_ context.Context, _ string) error {
 	return nil
 }
 
-func (*mockRuntime) VerifyImage(_ context.Context, _ *registry.Server, _ string) (bool, error) {
+func (*mockRuntime) VerifyImage(_ context.Context, _ *registry.ImageMetadata, _ string) (bool, error) {
 	return true, nil
 }
 

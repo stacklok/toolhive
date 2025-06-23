@@ -485,7 +485,7 @@ func (d *defaultManager) findContainerByName(ctx context.Context, name string) (
 
 func shouldRemoveClientConfig() bool {
 	c := config.GetConfig()
-	return len(c.Clients.RegisteredClients) > 0 || c.Clients.AutoDiscovery
+	return len(c.Clients.RegisteredClients) > 0
 }
 
 // TODO: Move to dedicated config management interface.

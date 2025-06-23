@@ -17,6 +17,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
+var ErrRuntimeNotFound = fmt.Errorf("container runtime not found")
+
 // Windows named pipe paths
 const (
 	// DockerDesktopWindowsPipePath is the Docker Desktop named pipe path on Windows

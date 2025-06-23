@@ -189,7 +189,7 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 //		@Tags			registry
 //		@Produce		json
 //		@Param			name		path		string	true	"Registry name"
-//		@Param			serverName	path		string	true	"Server name"
+//		@Param			serverName	path		string	true	"ImageMetadata name"
 //		@Success		200	{object}	getServerResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name}/servers/{serverName} [get]
@@ -206,7 +206,7 @@ func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	server, err := registry.GetServer(serverName)
 	if err != nil {
 		logger.Errorf("Failed to get server '%s': %v", serverName, err)
-		http.Error(w, "Server not found", http.StatusNotFound)
+		http.Error(w, "ImageMetadata not found", http.StatusNotFound)
 		return
 	}
 
@@ -264,7 +264,7 @@ type getRegistryResponse struct {
 //	@Description	Response containing a list of servers
 type listServersResponse struct {
 	// List of servers in the registry
-	Servers []*registry.Server `json:"servers"`
+	Servers []*registry.ImageMetadata `json:"servers"`
 }
 
 // getServerResponse represents the response for getting a server from a registry
@@ -272,5 +272,5 @@ type listServersResponse struct {
 //	@Description	Response containing server details
 type getServerResponse struct {
 	// Server details
-	Server *registry.Server `json:"server"`
+	Server *registry.ImageMetadata `json:"server"`
 }

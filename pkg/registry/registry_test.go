@@ -38,16 +38,16 @@ func TestGetServer(t *testing.T) {
 	}
 
 	if server == nil {
-		t.Fatal("Server is nil")
+		t.Fatal("ImageMetadata is nil")
 		return
 	}
 
 	if server.Image == "" {
-		t.Error("Server image is empty")
+		t.Error("ImageMetadata image is empty")
 	}
 
 	if server.Description == "" {
-		t.Error("Server description is empty")
+		t.Error("ImageMetadata description is empty")
 	}
 
 	// Test getting a non-existent server

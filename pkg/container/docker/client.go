@@ -457,21 +457,14 @@ func (c *Client) DeployWorkload(
 		return "", 0, fmt.Errorf("failed to create mcp container: %v", err)
 	}
 
-	// now create ingress container
-	var firstPort string
-	if len(options.ExposedPorts) == 0 {
-		return "", 0, fmt.Errorf("no exposed ports specified in options.ExposedPorts")
+	// Don't try and set up an ingress proxy if the transport type is stdio.
+	if transportType == "stdio" {
+		return containerId, 0, nil
 	}
-	for port := range options.ExposedPorts {
-		firstPort = port
 
-		// need to strip the protocol
-		firstPort = strings.Split(firstPort, "/")[0]
-		break // take only the first one
-	}
-	firstPortInt, err := strconv.Atoi(firstPort)
+	firstPortInt, err := extractFirstPort(options)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to convert port %s to int: %v", firstPort, err)
+		return "", 0, err // extractFirstPort already wraps the error with context.
 	}
 
 	if isolateNetwork {
@@ -482,6 +475,25 @@ func (c *Client) DeployWorkload(
 	}
 
 	return containerId, firstPortInt, nil
+}
+
+func extractFirstPort(options *runtime.DeployWorkloadOptions) (int, error) {
+	var firstPort string
+	if len(options.ExposedPorts) == 0 {
+		return 0, fmt.Errorf("no exposed ports specified in options.ExposedPorts")
+	}
+	for port := range options.ExposedPorts {
+		firstPort = port
+
+		// need to strip the protocol
+		firstPort = strings.Split(firstPort, "/")[0]
+		break // take only the first one
+	}
+	firstPortInt, err := strconv.Atoi(firstPort)
+	if err != nil {
+		return 0, fmt.Errorf("failed to convert port %s to int: %v", firstPort, err)
+	}
+	return firstPortInt, nil
 }
 
 // ListWorkloads lists workloads

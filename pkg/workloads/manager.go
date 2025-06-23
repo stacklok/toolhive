@@ -4,9 +4,11 @@ package workloads
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/adrg/xdg"
 	"golang.org/x/sync/errgroup"
@@ -32,12 +34,15 @@ type Manager interface {
 	// DeleteWorkload deletes a container and all associated processes/containers.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	DeleteWorkload(ctx context.Context, name string) (*errgroup.Group, error)
+	// DeleteWorkloads deletes the specified workloads by name.
+	// It is implemented as an asynchronous operation which returns an errgroup.Group
+	DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
 	// StopWorkload stops the named workload.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	StopWorkload(ctx context.Context, name string) (*errgroup.Group, error)
-	// StopAllWorkloads stops all running workloads.
+	// StopWorkloads stops the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
-	StopAllWorkloads(ctx context.Context) (*errgroup.Group, error)
+	StopWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
 	// RunWorkload runs a container in the foreground.
 	RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error
 	// RunWorkloadDetached runs a container in the background.
@@ -45,6 +50,9 @@ type Manager interface {
 	// RestartWorkload restarts a previously stopped container.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	RestartWorkload(ctx context.Context, name string) (*errgroup.Group, error)
+	// RestartWorkloads restarts the specified workloads by name.
+	// It is implemented as an asynchronous operation which returns an errgroup.Group
+	RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
 }
 
 type defaultManager struct {
@@ -55,6 +63,11 @@ type defaultManager struct {
 var (
 	ErrContainerNotFound   = fmt.Errorf("container not found")
 	ErrContainerNotRunning = fmt.Errorf("container not running")
+)
+
+const (
+	// AsyncOperationTimeout is the timeout for async workload operations
+	AsyncOperationTimeout = 5 * time.Minute
 )
 
 // NewManager creates a new container manager instance.
@@ -116,21 +129,23 @@ func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) (*errg
 	// Create second errorgroup for deletion.
 	deleteGroup := &errgroup.Group{}
 	deleteGroup.Go(func() error {
+		childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
+		defer cancel()
 		// Remove the container
 		logger.Infof("Removing container %s...", name)
-		if err := d.runtime.RemoveWorkload(ctx, containerID); err != nil {
+		if err := d.runtime.RemoveWorkload(childCtx, containerID); err != nil {
 			return fmt.Errorf("failed to remove container: %v", err)
 		}
 
 		// Get the base name from the container labels
 		if baseName != "" {
 			// Clean up temporary permission profile before deleting saved state
-			if err := d.cleanupTempPermissionProfile(ctx, baseName); err != nil {
+			if err := d.cleanupTempPermissionProfile(childCtx, baseName); err != nil {
 				logger.Warnf("Warning: Failed to cleanup temporary permission profile: %v", err)
 			}
 
 			// Delete the saved state if it exists
-			if err := runner.DeleteSavedConfig(ctx, baseName); err != nil {
+			if err := runner.DeleteSavedConfig(childCtx, baseName); err != nil {
 				logger.Warnf("Warning: Failed to delete saved state: %v", err)
 			} else {
 				logger.Infof("Saved state for %s removed", baseName)
@@ -168,24 +183,32 @@ func (d *defaultManager) StopWorkload(ctx context.Context, name string) (*errgro
 	return d.stopWorkloads(ctx, []*rt.ContainerInfo{container}), nil
 }
 
-func (d *defaultManager) StopAllWorkloads(ctx context.Context) (*errgroup.Group, error) {
-	// Get list of all running workloads.
-	containers, err := d.runtime.ListWorkloads(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %v", err)
+func (d *defaultManager) StopWorkloads(_ context.Context, names []string) (*errgroup.Group, error) {
+	group := &errgroup.Group{}
+
+	for _, name := range names {
+		name := name // Capture the loop variable
+		group.Go(func() error {
+			// Create a child context with a longer timeout
+			childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
+			defer cancel()
+
+			individualGroup, err := d.StopWorkload(childCtx, name)
+			if err != nil {
+				if errors.Is(err, ErrContainerNotFound) || errors.Is(err, ErrContainerNotRunning) {
+					// Log but don't fail the entire operation for not found or not running containers
+					logger.Warnf("Warning: Failed to stop workload %s: %v", name, err)
+					return nil
+				}
+				return fmt.Errorf("failed to stop workload %s: %v", name, err)
+			}
+
+			// Wait for the individual stop to complete
+			return individualGroup.Wait()
+		})
 	}
 
-	// Duplicates the logic of GetWorkloads, but is simple enough that it's not
-	// worth duplicating.
-	var containersToStop []*rt.ContainerInfo
-	for _, c := range containers {
-		// If the caller did not set `listAll` to true, only include running containers.
-		if labels.IsToolHiveContainer(c.Labels) && isContainerRunning(&c) {
-			containersToStop = append(containersToStop, &c)
-		}
-	}
-
-	return d.stopWorkloads(ctx, containersToStop), nil
+	return group, nil
 }
 
 func (*defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
@@ -436,13 +459,16 @@ func (d *defaultManager) RestartWorkload(ctx context.Context, name string) (*err
 	logger.Infof("Starting tooling server %s...", name)
 	runGroup := &errgroup.Group{}
 	runGroup.Go(func() error {
+		childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
+		defer cancel()
+
 		containerID := container.ID
 		// If the container is running but the proxy is not, stop the container first
 		if container.ID != "" && running { // && !proxyRunning was previously here but is implied by previous if statement.
 			logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
 			// n.b. - we do not reuse the `StopWorkload` method here because it
 			// does some extra things which are not appropriate for resuming a workload.
-			if err = d.runtime.StopWorkload(ctx, containerID); err != nil {
+			if err = d.runtime.StopWorkload(childCtx, containerID); err != nil {
 				return fmt.Errorf("failed to stop container %s: %v", name, err)
 			}
 			logger.Infof("Container %s stopped", name)
@@ -567,17 +593,20 @@ func (*defaultManager) cleanupTempPermissionProfile(ctx context.Context, baseNam
 
 // stopWorkloads stops the named workloads concurrently.
 // It assumes that the workloads exist in the running state.
-func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.ContainerInfo) *errgroup.Group {
+func (d *defaultManager) stopWorkloads(_ context.Context, workloads []*rt.ContainerInfo) *errgroup.Group {
 	group := errgroup.Group{}
 	for _, workload := range workloads {
 		group.Go(func() error {
+			childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
+			defer cancel()
+
 			name := labels.GetContainerBaseName(workload.Labels)
 			// Stop the proxy process
 			proxy.StopProcess(name)
 
 			logger.Infof("Stopping containers for %s...", name)
 			// Stop the container
-			if err := d.runtime.StopWorkload(ctx, workload.ID); err != nil {
+			if err := d.runtime.StopWorkload(childCtx, workload.ID); err != nil {
 				return fmt.Errorf("failed to stop container: %w", err)
 			}
 
@@ -595,4 +624,62 @@ func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.Cont
 	}
 
 	return &group
+}
+
+// DeleteWorkloads deletes the specified workloads by name.
+func (d *defaultManager) DeleteWorkloads(_ context.Context, names []string) (*errgroup.Group, error) {
+	group := &errgroup.Group{}
+
+	for _, name := range names {
+		name := name // Capture the loop variable
+		group.Go(func() error {
+			// Create a child context with a longer timeout
+			childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
+			defer cancel()
+
+			individualGroup, err := d.DeleteWorkload(childCtx, name)
+			if err != nil {
+				if errors.Is(err, ErrContainerNotFound) {
+					// Log but don't fail the entire operation for not found containers
+					logger.Warnf("Warning: Failed to delete workload %s: %v", name, err)
+					return nil
+				}
+				return fmt.Errorf("failed to delete workload %s: %v", name, err)
+			}
+
+			// Wait for the individual delete to complete
+			return individualGroup.Wait()
+		})
+	}
+
+	return group, nil
+}
+
+// RestartWorkloads restarts the specified workloads by name.
+func (d *defaultManager) RestartWorkloads(_ context.Context, names []string) (*errgroup.Group, error) {
+	group := &errgroup.Group{}
+
+	for _, name := range names {
+		name := name // Capture the loop variable
+		group.Go(func() error {
+			// Create a child context with a longer timeout
+			childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
+			defer cancel()
+
+			individualGroup, err := d.RestartWorkload(childCtx, name)
+			if err != nil {
+				if errors.Is(err, ErrContainerNotFound) {
+					// Log but don't fail the entire operation for not found containers
+					logger.Warnf("Warning: Failed to restart workload %s: %v", name, err)
+					return nil
+				}
+				return fmt.Errorf("failed to restart workload %s: %v", name, err)
+			}
+
+			// Wait for the individual restart to complete
+			return individualGroup.Wait()
+		})
+	}
+
+	return group, nil
 }

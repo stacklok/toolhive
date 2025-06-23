@@ -44,7 +44,9 @@ func WorkloadRouter(
 	r := chi.NewRouter()
 	r.Get("/", routes.listWorkloads)
 	r.Post("/", routes.createWorkload)
-	r.Post("/stop", routes.stopAllWorkloads)
+	r.Post("/stop", routes.stopWorkloadsBulk)
+	r.Post("/restart", routes.restartWorkloadsBulk)
+	r.Post("/delete", routes.deleteWorkloadsBulk)
 	r.Get("/{name}", routes.getWorkload)
 	r.Post("/{name}/stop", routes.stopWorkload)
 	r.Post("/{name}/restart", routes.restartWorkload)
@@ -137,26 +139,6 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 		}
 		logger.Errorf("Failed to stop workload: %v", err)
 		http.Error(w, "Failed to stop workload", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusAccepted)
-}
-
-// stopAllWorkloads
-//
-//	@Summary		Stop all workloads
-//	@Description	Stop all running workload
-//	@Tags			workloads
-//	@Success		202		"Accepted"
-//	@Router			/api/v1beta/workloads/stop [post]
-func (s *WorkloadRoutes) stopAllWorkloads(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	// Note that this is an asynchronous operation.
-	// In the API, we do not wait for the operation to complete.
-	_, err := s.manager.StopAllWorkloads(ctx)
-	if err != nil {
-		logger.Errorf("Failed to stop workloads: %v", err)
-		http.Error(w, "Failed to stop workloads", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -327,6 +309,111 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// stopWorkloadsBulk
+//
+//	@Summary		Stop workloads in bulk
+//	@Description	Stop multiple workloads by name
+//	@Tags			workloads
+//	@Accept			json
+//	@Param			request	body		bulkOperationRequest	true	"Bulk stop request"
+//	@Success		202		{string}	string	"Accepted"
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Router			/api/v1beta/workloads/stop [post]
+func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req bulkOperationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Failed to decode request", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Names) == 0 {
+		http.Error(w, "No workload names provided", http.StatusBadRequest)
+		return
+	}
+
+	// Note that this is an asynchronous operation.
+	// The request is not blocked on completion.
+	_, err := s.manager.StopWorkloads(ctx, req.Names)
+	if err != nil {
+		logger.Errorf("Failed to stop workloads: %v", err)
+		http.Error(w, "Failed to stop workloads", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// restartWorkloadsBulk
+//
+//	@Summary		Restart workloads in bulk
+//	@Description	Restart multiple workloads by name
+//	@Tags			workloads
+//	@Accept			json
+//	@Param			request	body		bulkOperationRequest	true	"Bulk restart request"
+//	@Success		202		{string}	string	"Accepted"
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Router			/api/v1beta/workloads/restart [post]
+func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req bulkOperationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Failed to decode request", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Names) == 0 {
+		http.Error(w, "No workload names provided", http.StatusBadRequest)
+		return
+	}
+
+	// Note that this is an asynchronous operation.
+	// The request is not blocked on completion.
+	_, err := s.manager.RestartWorkloads(ctx, req.Names)
+	if err != nil {
+		logger.Errorf("Failed to restart workloads: %v", err)
+		http.Error(w, "Failed to restart workloads", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// deleteWorkloadsBulk
+//
+//	@Summary		Delete workloads in bulk
+//	@Description	Delete multiple workloads by name
+//	@Tags			workloads
+//	@Accept			json
+//	@Param			request	body		bulkOperationRequest	true	"Bulk delete request"
+//	@Success		202		{string}	string	"Accepted"
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Router			/api/v1beta/workloads/delete [post]
+func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req bulkOperationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Failed to decode request", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Names) == 0 {
+		http.Error(w, "No workload names provided", http.StatusBadRequest)
+		return
+	}
+
+	// Note that this is an asynchronous operation.
+	// The request is not blocked on completion.
+	_, err := s.manager.DeleteWorkloads(ctx, req.Names)
+	if err != nil {
+		logger.Errorf("Failed to delete workloads: %v", err)
+		http.Error(w, "Failed to delete workloads", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
 // Response type definitions.
 
 // workloadListResponse represents the response for listing workloads
@@ -389,4 +476,12 @@ type createWorkloadResponse struct {
 	Name string `json:"name"`
 	// Port the workload is listening on
 	Port int `json:"port"`
+}
+
+// bulkOperationRequest represents the request for bulk operations
+//
+//	@Description	Request to perform bulk operations on workloads
+type bulkOperationRequest struct {
+	// Names of the workloads to operate on
+	Names []string `json:"names"`
 }

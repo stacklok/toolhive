@@ -60,8 +60,25 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Check if --all flag is set
 	if stopAll {
-		// Stop all workloads
-		group, err = manager.StopAllWorkloads(ctx)
+		// Get list of all running workloads first
+		workloadList, err := manager.ListWorkloads(ctx, false) // false = only running workloads
+		if err != nil {
+			return fmt.Errorf("failed to list workloads: %v", err)
+		}
+
+		// Extract workload names
+		var workloadNames []string
+		for _, workload := range workloadList {
+			workloadNames = append(workloadNames, workload.Name)
+		}
+
+		if len(workloadNames) == 0 {
+			fmt.Println("No running workloads to stop")
+			return nil
+		}
+
+		// Stop all workloads using the bulk method
+		group, err = manager.StopWorkloads(ctx, workloadNames)
 		if err != nil {
 			return fmt.Errorf("failed to stop all containers: %v", err)
 		}

@@ -155,7 +155,7 @@ func printTextServerInfo(name string, server *registry.Server) {
 	fmt.Printf("Image: %s\n", server.Image)
 	fmt.Printf("Description: %s\n", server.Description)
 	fmt.Printf("Transport: %s\n", server.Transport)
-	if server.Transport == "sse" && server.TargetPort > 0 {
+	if (server.Transport == "sse" || server.Transport == "streamable-http") && server.TargetPort > 0 {
 		fmt.Printf("Target Port: %d\n", server.TargetPort)
 	}
 	fmt.Printf("Repository URL: %s\n", server.RepositoryURL)

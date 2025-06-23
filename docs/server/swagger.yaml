@@ -254,16 +254,14 @@ components:
         target:
           type: string
       type: object
-    v1.bulkOperationRequest:
-      description: Request to perform bulk operations on workloads
-      properties:
-        names:
-          description: Names of the workloads to operate on
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-      type: object
+    types.TransportType:
+      description: TransportType is the type of transport used for this workload.
+      type: string
+      x-enum-varnames:
+      - TransportTypeStdio
+      - TransportTypeSSE
+      - TransportTypeStreamableHTTP
+      - TransportTypeInspector
     v1.clientStatusResponse:
       properties:
         clients:
@@ -591,6 +589,8 @@ components:
             ToolType is the type of tool this workload represents.
             For now, it will always be "mcp" - representing an MCP server.
           type: string
+        transport_type:
+          $ref: '#/components/schemas/types.TransportType'
         url:
           description: URL is the URL of the workload exposed by the ToolHive proxy.
           type: string
@@ -1239,82 +1239,13 @@ paths:
       summary: Stop a workload
       tags:
       - workloads
-  /api/v1beta/workloads/delete:
-    post:
-      description: Delete multiple workloads by name
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
-        description: Bulk delete request
-        required: true
-      responses:
-        "202":
-          content:
-            application/json:
-              schema:
-                type: string
-          description: Accepted
-        "400":
-          content:
-            application/json:
-              schema:
-                type: string
-          description: Bad Request
-      summary: Delete workloads in bulk
-      tags:
-      - workloads
-  /api/v1beta/workloads/restart:
-    post:
-      description: Restart multiple workloads by name
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
-        description: Bulk restart request
-        required: true
-      responses:
-        "202":
-          content:
-            application/json:
-              schema:
-                type: string
-          description: Accepted
-        "400":
-          content:
-            application/json:
-              schema:
-                type: string
-          description: Bad Request
-      summary: Restart workloads in bulk
-      tags:
-      - workloads
   /api/v1beta/workloads/stop:
     post:
-      description: Stop multiple workloads by name
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
-        description: Bulk stop request
-        required: true
+      description: Stop all running workload
       responses:
         "202":
-          content:
-            application/json:
-              schema:
-                type: string
           description: Accepted
-        "400":
-          content:
-            application/json:
-              schema:
-                type: string
-          description: Bad Request
-      summary: Stop workloads in bulk
+      summary: Stop all workloads
       tags:
       - workloads
   /health:

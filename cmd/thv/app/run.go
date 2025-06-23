@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -100,16 +101,17 @@ var (
 )
 
 func init() {
-	runCmd.Flags().StringVar(&runTransport, "transport", "stdio", "Transport mode (sse or stdio)")
+	runCmd.Flags().StringVar(&runTransport, "transport", "stdio", "Transport mode (sse, streamable-http or stdio)")
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
-	runCmd.Flags().IntVar(&runTargetPort, "target-port", 0, "Port for the container to expose (only applicable to SSE transport)")
+	runCmd.Flags().IntVar(&runTargetPort, "target-port", 0,
+		"Port for the container to expose (only applicable to SSE or Streamable HTTP transport)")
 	runCmd.Flags().StringVar(
 		&runTargetHost,
 		"target-host",
 		transport.LocalhostIPv4,
-		"Host to forward traffic to (only applicable to SSE transport)")
+		"Host to forward traffic to (only applicable to SSE or Streamable HTTP transport)")
 	runCmd.Flags().StringVar(
 		&runPermissionProfile,
 		"permission-profile",
@@ -433,8 +435,9 @@ func applyRegistrySettings(
 			runTransport, server.Transport)
 	}
 
-	// Use registry target port if not overridden and transport is SSE
-	if !cmd.Flags().Changed("target-port") && server.Transport == "sse" && server.TargetPort > 0 {
+	// Use registry target port if not overridden and transport is SSE or Streamable HTTP
+	if !cmd.Flags().Changed("target-port") && (server.Transport == types.TransportTypeSSE.String() ||
+		server.Transport == types.TransportTypeStreamableHTTP.String()) && server.TargetPort > 0 {
 		logDebug(debugMode, "Using registry target port: %d", server.TargetPort)
 		runTargetPort = server.TargetPort
 	}

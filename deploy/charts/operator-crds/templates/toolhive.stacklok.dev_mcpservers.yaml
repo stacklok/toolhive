@@ -8316,9 +8316,10 @@ spec:
               transport:
                 default: stdio
                 description: Transport is the transport method for the MCP server
-                  (stdio or sse)
+                  (stdio, streamable-http or sse)
                 enum:
                 - stdio
+                - streamable-http
                 - sse
                 type: string
               volumes:

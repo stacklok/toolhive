@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -54,6 +56,33 @@ func WorkloadRouter(
 	return r
 }
 
+// validateWorkloadName validates workload names to prevent path traversal attacks
+// Workload names should only contain alphanumeric characters, hyphens, underscores, and dots
+var workloadNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+func validateWorkloadName(name string) error {
+	if name == "" {
+		return errors.New("workload name cannot be empty")
+	}
+
+	// Check for path traversal attempts
+	if strings.Contains(name, "..") || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return errors.New("workload name contains invalid characters")
+	}
+
+	// Validate against allowed pattern
+	if !workloadNamePattern.MatchString(name) {
+		return errors.New("workload name can only contain alphanumeric characters, dots, hyphens, and underscores")
+	}
+
+	// Reasonable length limit
+	if len(name) > 100 {
+		return errors.New("workload name too long (max 100 characters)")
+	}
+
+	return nil
+}
+
 //	 listWorkloads
 //		@Summary		List all workloads
 //		@Description	Get a list of all running workloads
@@ -93,6 +122,13 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
+
+	// Validate workload name to prevent path traversal
+	if err := validateWorkloadName(name); err != nil {
+		http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	workload, err := s.manager.GetWorkload(ctx, name)
 	if err != nil {
 		if errors.Is(err, workloads.ErrContainerNotFound) {
@@ -125,6 +161,13 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
+
+	// Validate workload name to prevent path traversal
+	if err := validateWorkloadName(name); err != nil {
+		http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
 	_, err := s.manager.StopWorkload(ctx, name)
@@ -156,6 +199,13 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
+
+	// Validate workload name to prevent path traversal
+	if err := validateWorkloadName(name); err != nil {
+		http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
 	_, err := s.manager.DeleteWorkload(ctx, name)
@@ -183,6 +233,13 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
+
+	// Validate workload name to prevent path traversal
+	if err := validateWorkloadName(name); err != nil {
+		http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Note that this is an asynchronous operation.
 	// In the API, we do not wait for the operation to complete.
 	_, err := s.manager.RestartWorkload(ctx, name)
@@ -333,6 +390,14 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Validate all workload names to prevent path traversal
+	for _, name := range req.Names {
+		if err := validateWorkloadName(name); err != nil {
+			http.Error(w, "Invalid workload name '"+name+"': "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
 	_, err := s.manager.StopWorkloads(ctx, req.Names)
@@ -368,6 +433,14 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Validate all workload names to prevent path traversal
+	for _, name := range req.Names {
+		if err := validateWorkloadName(name); err != nil {
+			http.Error(w, "Invalid workload name '"+name+"': "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
 	_, err := s.manager.RestartWorkloads(ctx, req.Names)
@@ -401,6 +474,14 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 	if len(req.Names) == 0 {
 		http.Error(w, "No workload names provided", http.StatusBadRequest)
 		return
+	}
+
+	// Validate all workload names to prevent path traversal
+	for _, name := range req.Names {
+		if err := validateWorkloadName(name); err != nil {
+			http.Error(w, "Invalid workload name '"+name+"': "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Note that this is an asynchronous operation.

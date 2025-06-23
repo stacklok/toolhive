@@ -15,7 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
-	"github.com/stacklok/toolhive/pkg/transport/streamablehttpcommon"
+	"github.com/stacklok/toolhive/pkg/transport/streamable"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -223,7 +223,7 @@ func GenerateMCPServerURL(transportType string, host string, port int, container
 	if transportType == types.TransportTypeSSE.String() || transportType == types.TransportTypeStdio.String() {
 		return fmt.Sprintf("http://%s:%d%s#%s", host, port, ssecommon.HTTPSSEEndpoint, containerName)
 	} else if transportType == types.TransportTypeStreamableHTTP.String() {
-		return fmt.Sprintf("http://%s:%d/%s", host, port, streamablehttpcommon.HTTPStreamableHTTPEndpoint)
+		return fmt.Sprintf("http://%s:%d/%s", host, port, streamable.HTTPStreamableHTTPEndpoint)
 	}
 	return ""
 }

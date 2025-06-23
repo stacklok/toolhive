@@ -1,6 +1,6 @@
-// Package streamablehttpcommon provides common types and utilities for
+// Package streamable provides common types and utilities for
 // Streamable HTTP connections used in communication between the client and MCP server.
-package streamablehttpcommon
+package streamable
 
 const (
 	// HTTPStreamableHTTPEndpoint is the endpoint for Streamable HTTP connections

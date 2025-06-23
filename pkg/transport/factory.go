@@ -22,7 +22,8 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 		return NewStdioTransport(
 			config.Host, config.Port, config.Runtime, config.Debug, config.PrometheusHandler, config.Middlewares...), nil
 	case types.TransportTypeSSE:
-		return NewSSETransport(
+		return NewHTTPTransport(
+			types.TransportTypeSSE,
 			config.Host,
 			config.Port,
 			config.TargetPort,
@@ -33,7 +34,8 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 			config.Middlewares...,
 		), nil
 	case types.TransportTypeStreamableHTTP:
-		return NewStreamableHTTPTransport(
+		return NewHTTPTransport(
+			types.TransportTypeStreamableHTTP,
 			config.Host,
 			config.Port,
 			config.TargetPort,

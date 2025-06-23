@@ -246,7 +246,7 @@ func (c *RunConfig) WithAudit(config *audit.Config) *RunConfig {
 func (c *RunConfig) WithTransport(t string) (*RunConfig, error) {
 	transportType, err := types.ParseTransportType(t)
 	if err != nil {
-		return c, fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", t)
+		return c, fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, streamable-http, stdio", t)
 	}
 	c.Transport = transportType
 	return c, nil
@@ -262,8 +262,8 @@ func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
 	logger.Infof("Using host port: %d", selectedPort)
 	c.Port = selectedPort
 
-	// Select a target port for the container if using SSE transport
-	if c.Transport == types.TransportTypeSSE {
+	// Select a target port for the container if using SSE or Streamable HTTP transport
+	if c.Transport == types.TransportTypeSSE || c.Transport == types.TransportTypeStreamableHTTP {
 		selectedTargetPort, err := networking.FindOrUsePort(targetPort)
 		if err != nil {
 			return c, fmt.Errorf("target port error: %w", err)

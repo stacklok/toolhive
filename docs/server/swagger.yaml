@@ -254,6 +254,14 @@ components:
         target:
           type: string
       type: object
+    types.TransportType:
+      description: TransportType is the type of transport used for this workload.
+      type: string
+      x-enum-varnames:
+      - TransportTypeStdio
+      - TransportTypeSSE
+      - TransportTypeStreamableHTTP
+      - TransportTypeInspector
     v1.clientStatusResponse:
       properties:
         clients:
@@ -581,6 +589,8 @@ components:
             ToolType is the type of tool this workload represents.
             For now, it will always be "mcp" - representing an MCP server.
           type: string
+        transport_type:
+          $ref: '#/components/schemas/types.TransportType'
         url:
           description: URL is the URL of the workload exposed by the ToolHive proxy.
           type: string

@@ -56,6 +56,9 @@ const (
 	// TransportTypeSSE represents the SSE transport.
 	TransportTypeSSE TransportType = "sse"
 
+	// TransportTypeStreamableHTTP represents the streamable HTTP transport.
+	TransportTypeStreamableHTTP TransportType = "streamable-http"
+
 	// TransportTypeInspector represents the transport mode for MCP Inspector.
 	TransportTypeInspector TransportType = "inspector"
 )
@@ -72,6 +75,8 @@ func ParseTransportType(s string) (TransportType, error) {
 		return TransportTypeStdio, nil
 	case "sse", "SSE":
 		return TransportTypeSSE, nil
+	case "streamable-http", "STREAMABLE-HTTP":
+		return TransportTypeStreamableHTTP, nil
 	case "inspector", "INSPECTOR":
 		return TransportTypeInspector, nil
 	default:

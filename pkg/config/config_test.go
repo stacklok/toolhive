@@ -108,6 +108,7 @@ func TestSave(t *testing.T) {
 			Clients: Clients{
 				RegisteredClients: []string{
 					"vscode", "cursor", "roo-code", "cline", "claude-code", "amp-cli", "amp-vscode", "amp-cursor",
+					"copilot-jetbrains",
 				},
 			},
 		}

@@ -1,3 +1,4 @@
+// Package ui provides terminal UI helpers for the ToolHive CLI.
 package ui
 
 import (
@@ -6,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
 	"github.com/stacklok/toolhive/pkg/client"
 )
 
@@ -23,7 +25,7 @@ type setupModel struct {
 	Confirmed bool
 }
 
-func (_ *setupModel) Init() tea.Cmd { return nil }
+func (*setupModel) Init() tea.Cmd { return nil }
 
 func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {

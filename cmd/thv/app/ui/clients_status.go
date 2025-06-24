@@ -6,6 +6,7 @@ import (
 
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
+
 	"github.com/stacklok/toolhive/pkg/client"
 )
 

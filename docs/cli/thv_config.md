@@ -21,8 +21,6 @@ The config command provides subcommands to manage application configuration sett
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
-* [thv config client-setup](thv_config_client-setup.md)	 - Interactively setup and register installed clients
-* [thv config client-status](thv_config_client-status.md)	 - Show status of all supported MCP clients
 * [thv config get-ca-cert](thv_config_get-ca-cert.md)	 - Get the currently configured CA certificate path
 * [thv config get-registry-url](thv_config_get-registry-url.md)	 - Get the currently configured registry URL
 * [thv config list-registered-clients](thv_config_list-registered-clients.md)	 - List all registered MCP clients

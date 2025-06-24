@@ -7,11 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 	"github.com/stacklok/toolhive/pkg/certs"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
@@ -117,20 +114,6 @@ var unsetRegistryURLCmd = &cobra.Command{
 	RunE:  unsetRegistryURLCmdFunc,
 }
 
-var clientStatusCmd = &cobra.Command{
-	Use:   "client-status",
-	Short: "Show status of all supported MCP clients",
-	Long:  "Display the installation and registration status of all supported MCP clients in a table format.",
-	RunE:  clientStatusCmdFunc,
-}
-
-var clientSetupCmd = &cobra.Command{
-	Use:   "client-setup",
-	Short: "Interactively setup and register installed clients",
-	Long:  `Presents a list of installed but unregistered clients for interactive selection and registration.`,
-	RunE:  clientSetupCmdFunc,
-}
-
 func init() {
 	// Add config command to root command
 	rootCmd.AddCommand(configCmd)
@@ -145,8 +128,6 @@ func init() {
 	configCmd.AddCommand(setRegistryURLCmd)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
-	configCmd.AddCommand(clientStatusCmd)
-	configCmd.AddCommand(clientSetupCmd)
 }
 
 func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
@@ -444,164 +425,4 @@ func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	return nil
-}
-
-func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
-	clientStatuses, err := client.GetClientStatus()
-	if err != nil {
-		return fmt.Errorf("failed to get client status: %w", err)
-	}
-	return ui.RenderClientStatusTable(clientStatuses)
-}
-
-func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
-	clientStatuses, err := client.GetClientStatus()
-	if err != nil {
-		return fmt.Errorf("failed to get client status: %w", err)
-	}
-	availableClients := getAvailableClients(clientStatuses)
-	if len(availableClients) == 0 {
-		fmt.Println("All installed clients are already registered.")
-		return nil
-	}
-	selected, confirmed, err := ui.RunClientSetup(availableClients)
-	if err != nil {
-		return fmt.Errorf("error running interactive setup: %w", err)
-	}
-	if !confirmed {
-		fmt.Println("Setup cancelled. No clients registered.")
-		return nil
-	}
-	if len(selected) == 0 {
-		fmt.Println("No clients selected for registration.")
-		return nil
-	}
-	return registerSelectedClients(cmd, selected)
-}
-
-// Helper to get available (installed but unregistered) clients
-func getAvailableClients(statuses []client.MCPClientStatus) []client.MCPClientStatus {
-	var available []client.MCPClientStatus
-	for _, s := range statuses {
-		if s.Installed && !s.Registered {
-			available = append(available, s)
-		}
-	}
-	return available
-}
-
-// Helper to register selected clients
-func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.MCPClientStatus) error {
-	err := config.UpdateConfig(func(c *config.Config) {
-		registeredClientsMap := make(map[string]bool)
-		for _, registeredClient := range c.Clients.RegisteredClients {
-			registeredClientsMap[registeredClient] = true
-		}
-		for _, cli := range clientsToRegister {
-			clientName := string(cli.ClientType)
-			if _, ok := registeredClientsMap[clientName]; !ok {
-				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, clientName)
-			}
-		}
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
-	}
-
-	fmt.Println("Registering selected clients...")
-	for _, cli := range clientsToRegister {
-		clientName := string(cli.ClientType)
-		fmt.Printf("Successfully registered client: %s\n", clientName)
-		if err := addRunningMCPsToClient(cmd.Context(), clientName); err != nil {
-			fmt.Printf("Warning: Failed to add running MCPs to client %s: %v\n", clientName, err)
-		}
-	}
-	return nil
-}
-
-var (
-	docStyle          = lipgloss.NewStyle().Margin(1, 2)
-	selectedItemStyle = lipgloss.NewStyle().Padding(0, 2).Foreground(lipgloss.Color("170"))
-	itemStyle         = lipgloss.NewStyle().Padding(0, 2)
-)
-
-type setupModel struct {
-	clients   []client.MCPClientStatus
-	cursor    int
-	selected  map[int]struct{}
-	quitting  bool
-	confirmed bool // true if user pressed enter, false if quit
-}
-
-func (*setupModel) Init() tea.Cmd {
-	return nil
-}
-
-func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if keyMsg, ok := msg.(tea.KeyMsg); ok {
-		switch keyMsg.String() {
-		case "ctrl+c", "q":
-			m.confirmed = false
-			m.quitting = true
-			return m, tea.Quit
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.cursor < len(m.clients)-1 {
-				m.cursor++
-			}
-		case "enter":
-			m.confirmed = true
-			m.quitting = true
-			return m, tea.Quit
-		case " ":
-			if _, ok := m.selected[m.cursor]; ok {
-				delete(m.selected, m.cursor)
-			} else {
-				m.selected[m.cursor] = struct{}{}
-			}
-		}
-	}
-	return m, nil
-}
-
-func (m *setupModel) View() string {
-	if m.quitting {
-		return ""
-	}
-
-	var b strings.Builder
-	b.WriteString("Select clients to register:\n\n")
-
-	for i, cli := range m.clients {
-		b.WriteString(m.renderClientRow(i, cli))
-	}
-
-	b.WriteString("\nUse ↑/↓ (or j/k) to move, 'space' to select, 'enter' to confirm, 'q' to quit.\n")
-	return docStyle.Render(b.String())
-}
-
-// renderClientRow returns the formatted string for a single client row
-func (m *setupModel) renderClientRow(i int, cli client.MCPClientStatus) string {
-	// Cursor indicator
-	cursor := "  "
-	if m.cursor == i {
-		cursor = "> "
-	}
-
-	// Checkbox indicator
-	checked := " "
-	if _, ok := m.selected[i]; ok {
-		checked = "x"
-	}
-
-	row := fmt.Sprintf("%s[%s] %s", cursor, checked, cli.ClientType)
-
-	// Apply style and add newline
-	if m.cursor == i {
-		return selectedItemStyle.Render(row) + "\n"
-	}
-	return itemStyle.Render(row) + "\n"
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var runCmd = &cobra.Command{
@@ -228,6 +229,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
+	workloadManager := workloads.NewManagerFromRuntime(rt)
 
 	// Initialize a new RunConfig with values from command-line flags
 	runConfig := runner.NewRunConfigFromFlags(
@@ -277,8 +279,12 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Run the MCP server
-	return RunMCPServer(ctx, runConfig, runForeground)
+	// Once we have built the RunConfig, start the MCP workload.
+	// If we are running the container in the foreground - call the RunWorkload method directly.
+	if runForeground {
+		return workloadManager.RunWorkload(ctx, runConfig)
+	}
+	return workloadManager.RunWorkloadDetached(runConfig)
 }
 
 // applyRegistrySettings applies settings from a registry server to the run config

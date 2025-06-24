@@ -538,6 +538,15 @@ func (d *defaultManager) DeleteWorkloads(_ context.Context, names []string) (*er
 			containerID := container.ID
 			containerLabels := container.Labels
 			baseName := labels.GetContainerBaseName(containerLabels)
+			isRunning := isContainerRunning(container)
+
+			if isRunning {
+				// Stop the proxy process first (like StopWorkload does)
+				logger.Infof("Removing proxy process for %s...", name)
+				if baseName != "" {
+					proxy.StopProcess(baseName)
+				}
+			}
 
 			// Remove the container
 			logger.Infof("Removing container %s...", name)

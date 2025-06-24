@@ -85,6 +85,13 @@ func NewManager(ctx context.Context) (Manager, error) {
 	}, nil
 }
 
+// NewManagerFromRuntime creates a new container manager instance from an existing runtime.
+func NewManagerFromRuntime(runtime rt.Runtime) Manager {
+	return &defaultManager{
+		runtime: runtime,
+	}
+}
+
 func (d *defaultManager) GetWorkload(ctx context.Context, name string) (Workload, error) {
 	// Validate workload name to prevent path traversal attacks
 	if err := validateWorkloadName(name); err != nil {
@@ -413,7 +420,7 @@ func (d *defaultManager) findContainerByName(ctx context.Context, name string) (
 
 func shouldRemoveClientConfig() bool {
 	c := config.GetConfig()
-	return len(c.Clients.RegisteredClients) > 0 || c.Clients.AutoDiscovery
+	return len(c.Clients.RegisteredClients) > 0
 }
 
 // TODO: Move to dedicated config management interface.

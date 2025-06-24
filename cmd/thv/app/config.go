@@ -32,16 +32,6 @@ var listRegisteredClientsCmd = &cobra.Command{
 	RunE:  listRegisteredClientsCmdFunc,
 }
 
-var autoDiscoveryCmd = &cobra.Command{
-	Use:   "auto-discovery [true|false]",
-	Short: "Set whether to enable auto-discovery of MCP clients",
-	Long: `Set whether to enable auto-discovery and configuration of MCP clients.
-When enabled, ToolHive will automatically update client configuration files
-with the URLs of running MCP servers.`,
-	Args: cobra.ExactArgs(1),
-	RunE: autoDiscoveryCmdFunc,
-}
-
 var registerClientCmd = &cobra.Command{
 	Use:   "register-client [client]",
 	Short: "Register a client for MCP server configuration",
@@ -129,7 +119,6 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 
 	// Add subcommands to config command
-	configCmd.AddCommand(autoDiscoveryCmd)
 	configCmd.AddCommand(registerClientCmd)
 	configCmd.AddCommand(removeClientCmd)
 	configCmd.AddCommand(listRegisteredClientsCmd)
@@ -139,41 +128,6 @@ func init() {
 	configCmd.AddCommand(setRegistryURLCmd)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
-}
-
-func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {
-	value := args[0]
-
-	// Validate the boolean value
-	var enabled bool
-	switch value {
-	case "true", "1", "yes":
-		enabled = true
-	case "false", "0", "no":
-		enabled = false
-	default:
-		return fmt.Errorf("invalid boolean value: %s (valid values: true, false)", value)
-	}
-
-	// Update the auto-discovery setting
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.Clients.AutoDiscovery = enabled
-		// If auto-discovery is enabled, update all registered clients with currently running MCPs
-		if enabled && len(c.Clients.RegisteredClients) > 0 {
-			for _, clientName := range c.Clients.RegisteredClients {
-				if err := addRunningMCPsToClient(cmd.Context(), clientName); err != nil {
-					fmt.Printf("Warning: Failed to add running MCPs to client %s: %v\n", clientName, err)
-				}
-			}
-		}
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
-	}
-
-	fmt.Printf("Auto-discovery of MCP clients %s\n", map[bool]string{true: "enabled", false: "disabled"}[enabled])
-
-	return nil
 }
 
 func registerClientCmdFunc(cmd *cobra.Command, args []string) error {

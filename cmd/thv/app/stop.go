@@ -93,10 +93,12 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		containerName := args[0]
 
 		// Stop a single workload
-		group, err = manager.StopWorkload(ctx, containerName)
+		group, err = manager.StopWorkloads(ctx, []string{containerName})
 		if err != nil {
 			// If the container is not found or not running, treat as a non-fatal error.
-			if errors.Is(err, workloads.ErrContainerNotFound) || errors.Is(err, workloads.ErrContainerNotRunning) {
+			if errors.Is(err, workloads.ErrContainerNotFound) ||
+				errors.Is(err, workloads.ErrContainerNotRunning) ||
+				errors.Is(err, workloads.ErrInvalidWorkloadName) {
 				fmt.Printf("Container %s is not running\n", containerName)
 				return nil
 			}

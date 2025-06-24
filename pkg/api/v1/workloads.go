@@ -48,6 +48,9 @@ func WorkloadRouter(
 	r.Post("/restart", routes.restartWorkloadsBulk)
 	r.Post("/delete", routes.deleteWorkloadsBulk)
 	r.Get("/{name}", routes.getWorkload)
+	r.Post("/{name}/stop", routes.stopWorkload)
+	r.Post("/{name}/restart", routes.restartWorkload)
+	r.Delete("/{name}", routes.deleteWorkload)
 	return r
 }
 
@@ -111,6 +114,90 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to marshal workload details", http.StatusInternalServerError)
 		return
 	}
+}
+
+// stopWorkload
+//
+//	@Summary		Stop a workload
+//	@Description	Stop a running workload
+//	@Tags			workloads
+//	@Param			name	path		string	true	"Workload name"
+//	@Success		202		{string}	string	"Accepted"
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		404		{string}	string	"Not Found"
+//	@Router			/api/v1beta/workloads/{name}/stop [post]
+func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := chi.URLParam(r, "name")
+
+	// Use the bulk method with a single workload
+	_, err := s.manager.StopWorkloads(ctx, []string{name})
+	if err != nil {
+		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
+			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		logger.Errorf("Failed to stop workload: %v", err)
+		http.Error(w, "Failed to stop workload", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// restartWorkload
+//
+//	@Summary		Restart a workload
+//	@Description	Restart a running workload
+//	@Tags			workloads
+//	@Param			name	path		string	true	"Workload name"
+//	@Success		202		{string}	string	"Accepted"
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		404		{string}	string	"Not Found"
+//	@Router			/api/v1beta/workloads/{name}/restart [post]
+func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := chi.URLParam(r, "name")
+
+	// Use the bulk method with a single workload
+	_, err := s.manager.RestartWorkloads(ctx, []string{name})
+	if err != nil {
+		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
+			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		logger.Errorf("Failed to restart workload: %v", err)
+		http.Error(w, "Failed to restart workload", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// deleteWorkload
+//
+//	@Summary		Delete a workload
+//	@Description	Delete a workload
+//	@Tags			workloads
+//	@Param			name	path		string	true	"Workload name"
+//	@Success		202		{string}	string	"Accepted"
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		404		{string}	string	"Not Found"
+//	@Router			/api/v1beta/workloads/{name} [delete]
+func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := chi.URLParam(r, "name")
+
+	// Use the bulk method with a single workload
+	_, err := s.manager.DeleteWorkloads(ctx, []string{name})
+	if err != nil {
+		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
+			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		logger.Errorf("Failed to delete workload: %v", err)
+		http.Error(w, "Failed to delete workload", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // createWorkload

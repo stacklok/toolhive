@@ -7,12 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"time"
 
 	"github.com/tailscale/hujson"
 
-	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/streamable"
@@ -169,26 +167,8 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 
 // FindClientConfigs searches for client configuration files in standard locations
 func FindClientConfigs() ([]ConfigFile, error) {
-	// Start by assuming all clients are enabled
-	var filters []MCPClient
-	appConfig := config.GetConfig()
-	// If we are not using auto-discovery, we need to filter the set of clients to configure.
-	if !appConfig.Clients.AutoDiscovery {
-		if len(appConfig.Clients.RegisteredClients) > 0 {
-			filters = make([]MCPClient, len(appConfig.Clients.RegisteredClients))
-			for _, client := range appConfig.Clients.RegisteredClients {
-				// Not validating client names here - assuming that A) they are
-				// validated when set, and B) they will be dropped later if not valid.
-				filters = append(filters, MCPClient(client))
-			}
-		} else {
-			// No clients configured - exit early.
-			return nil, nil
-		}
-	}
-
 	// retrieve the metadata of the config files
-	configFiles, err := retrieveConfigFilesMetadata(filters)
+	configFiles, err := retrieveConfigFilesMetadata()
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve client config metadata: %w", err)
 	}
@@ -231,7 +211,7 @@ func GenerateMCPServerURL(transportType string, host string, port int, container
 // retrieveConfigFilesMetadata retrieves the metadata for client configuration files.
 // It returns a list of ConfigFile objects, which contain metadata about the file that
 // can be used when performing operations on the file.
-func retrieveConfigFilesMetadata(filters []MCPClient) ([]ConfigFile, error) {
+func retrieveConfigFilesMetadata() ([]ConfigFile, error) {
 	var configFiles []ConfigFile
 
 	// Get home directory
@@ -241,11 +221,6 @@ func retrieveConfigFilesMetadata(filters []MCPClient) ([]ConfigFile, error) {
 	}
 
 	for _, cfg := range supportedClientIntegrations {
-		// If filters are specified, filter out the clients we don't care about.
-		if len(filters) > 0 && !slices.Contains(filters, cfg.ClientType) {
-			continue
-		}
-
 		path := buildConfigFilePath(cfg.SettingsFile, cfg.RelPath, cfg.PlatformPrefix, []string{home})
 
 		err := validateConfigFileExists(path)

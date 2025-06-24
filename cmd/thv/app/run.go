@@ -2,24 +2,20 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strings"
 
-	nameref "github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/container/images"
-	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -60,13 +56,6 @@ permission profile. Additional configuration can be provided via flags.`,
 		UnknownFlags: true,
 	},
 }
-
-const (
-	verifyImageWarn     = "warn"
-	verifyImageEnabled  = "enabled"
-	verifyImageDisabled = "disabled"
-	verifyImageDefault  = verifyImageWarn
-)
 
 var (
 	runTransport         string
@@ -171,8 +160,13 @@ func init() {
 	runCmd.Flags().StringVar(
 		&runVerifyImage,
 		"image-verification",
-		verifyImageDefault,
-		fmt.Sprintf("Set image verification mode (%s, %s, %s)", verifyImageWarn, verifyImageEnabled, verifyImageDisabled),
+		retriever.VerifyImageWarn,
+		fmt.Sprintf(
+			"Set image verification mode (%s, %s, %s)",
+			retriever.VerifyImageWarn,
+			retriever.VerifyImageEnabled,
+			retriever.VerifyImageDisabled,
+		),
 	)
 
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
@@ -267,45 +261,15 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runConfig.K8sPodTemplatePatch = runK8sPodPatch
 	}
 
-	var server *registry.ImageMetadata
-
-	imageManager := images.NewImageManager(ctx)
-	// Check if the serverOrImage is a protocol scheme, e.g., uvx://, npx://, or go://
-	if runner.IsImageProtocolScheme(serverOrImage) {
-		logger.Debugf("Detected protocol scheme: %s", serverOrImage)
-		// Process the protocol scheme and build the image
-		caCertPath := resolveCACertPath(runCACertPath)
-		generatedImage, err := runner.HandleProtocolScheme(ctx, imageManager, serverOrImage, caCertPath)
-		if err != nil {
-			return fmt.Errorf("failed to process protocol scheme: %v", err)
-		}
-		// Update the image in the runConfig with the generated image
-		logger.Debugf("Using built image: %s instead of %s", generatedImage, serverOrImage)
-		runConfig.Image = generatedImage
-	} else {
-		logger.Debugf("No protocol scheme detected, using image: %s", serverOrImage)
-		// Try to find the server in the registry
-		server, err = registry.GetServer(serverOrImage)
-		if err != nil {
-			// ImageMetadata isn't found in registry, treat as direct image
-			logger.Debugf("ImageMetadata '%s' not found in registry: %v", serverOrImage, err)
-			runConfig.Image = serverOrImage
-		} else {
-			// ImageMetadata found in registry
-			logger.Debugf("Found server '%s' in registry: %v", serverOrImage, server)
-			// Apply registry settings to runConfig
-			applyRegistrySettings(ctx, cmd, serverOrImage, server, runConfig, debugMode)
-		}
+	imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, serverOrImage, runCACertPath, runVerifyImage)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve MCP server: %v", err)
 	}
+	runConfig.Image = imageURL
 
-	// Verify the image against the expected provenance info (if applicable)
-	if err := verifyImage(runConfig.Image, server, runVerifyImage); err != nil {
-		return err
-	}
-
-	// Pull the image if necessary
-	if err := pullImage(ctx, runConfig.Image, imageManager); err != nil {
-		return fmt.Errorf("failed to retrieve or pull image: %v", err)
+	if imageMetadata != nil {
+		// If the image came from our registry, apply settings from the registry metadata.
+		applyRegistrySettings(ctx, cmd, serverOrImage, imageMetadata, runConfig, debugMode)
 	}
 
 	// Configure the RunConfig with transport, ports, permissions, etc.
@@ -315,97 +279,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Run the MCP server
 	return RunMCPServer(ctx, runConfig, runForeground)
-}
-
-// pullImage pulls an image from a remote registry if it has the "latest" tag
-// or if it doesn't exist locally. If the image is a local image, it will not be pulled.
-// If the image has the latest tag, it will be pulled to ensure we have the most recent version.
-// however, if there is a failure in pulling the "latest" tag, it will check if the image exists locally
-// as it is possible that the image was locally built.
-func pullImage(ctx context.Context, image string, imageManager images.ImageManager) error {
-	// Check if the image has the "latest" tag
-	isLatestTag := hasLatestTag(image)
-
-	if isLatestTag {
-		// For "latest" tag, try to pull first
-		logger.Infof("Image %s has 'latest' tag, pulling to ensure we have the most recent version...", image)
-		err := imageManager.PullImage(ctx, image)
-		if err != nil {
-			// Pull failed, check if it exists locally
-			logger.Infof("Pull failed, checking if image exists locally: %s", image)
-			imageExists, checkErr := imageManager.ImageExists(ctx, image)
-			if checkErr != nil {
-				return fmt.Errorf("failed to check if image exists: %v", checkErr)
-			}
-
-			if imageExists {
-				logger.Debugf("Using existing local image: %s", image)
-			} else {
-				return fmt.Errorf("failed to pull image from remote registry and image doesn't exist locally. %v", err)
-			}
-		} else {
-			logger.Infof("Successfully pulled image: %s", image)
-		}
-	} else {
-		// For non-latest tags, check locally first
-		logger.Debugf("Checking if image exists locally: %s", image)
-		imageExists, err := imageManager.ImageExists(ctx, image)
-		logger.Debugf("ImageExists locally: %t", imageExists)
-		if err != nil {
-			return fmt.Errorf("failed to check if image exists locally: %v", err)
-		}
-
-		if imageExists {
-			logger.Debugf("Using existing local image: %s", image)
-		} else {
-			// Image doesn't exist locally, try to pull
-			logger.Infof("Image %s not found locally, pulling...", image)
-			if err := imageManager.PullImage(ctx, image); err != nil {
-				return fmt.Errorf("failed to pull image: %v", err)
-			}
-			logger.Infof("Successfully pulled image: %s", image)
-		}
-	}
-
-	return nil
-}
-
-// verifyImage verifies the image using the specified verification setting (warn, enabled, or disabled)
-func verifyImage(image string, server *registry.ImageMetadata, verifySetting string) error {
-	switch verifySetting {
-	case verifyImageDisabled:
-		logger.Warn("Image verification is disabled")
-	case verifyImageWarn, verifyImageEnabled:
-		// Create a new verifier
-		v, err := verifier.New(server)
-		if err != nil {
-			// This happens if we have no provenance entry in the registry for this server.
-			// Not finding provenance info in the registry is not a fatal error if the setting is "warn".
-			if errors.Is(err, verifier.ErrProvenanceServerInformationNotSet) && verifySetting == verifyImageWarn {
-				logger.Warnf("⚠️  MCP server %s has no provenance information set, skipping image verification", image)
-				return nil
-			}
-			return err
-		}
-
-		// Verify the image passing the server info
-		isSafe, err := v.VerifyServer(image, server)
-		if err != nil {
-			return fmt.Errorf("❌ image verification failed: %v", err)
-		}
-		if !isSafe {
-			if verifySetting == verifyImageWarn {
-				logger.Warnf("❌ MCP server %s failed image verification", image)
-			} else {
-				return fmt.Errorf("❌ MCP server %s failed image verification", image)
-			}
-		} else {
-			logger.Infof("✅ MCP server %s is verified successfully", image)
-		}
-	default:
-		return fmt.Errorf("invalid value for --image-verification: %s", verifySetting)
-	}
-	return nil
 }
 
 // applyRegistrySettings applies settings from a registry server to the run config
@@ -650,27 +523,6 @@ func isEnvVarProvided(name string, envVars []string, secretsConfig []string) boo
 	return findEnvironmentVariableFromSecrets(secretsConfig, name)
 }
 
-// hasLatestTag checks if the given image reference has the "latest" tag or no tag (which defaults to "latest")
-func hasLatestTag(imageRef string) bool {
-	ref, err := nameref.ParseReference(imageRef)
-	if err != nil {
-		// If we can't parse the reference, assume it's not "latest"
-		logger.Warnf("Warning: Failed to parse image reference: %v", err)
-		return false
-	}
-
-	// Check if the reference is a tag
-	if taggedRef, ok := ref.(nameref.Tag); ok {
-		// Check if the tag is "latest"
-		return taggedRef.TagStr() == "latest"
-	}
-
-	// If the reference is not a tag (e.g., it's a digest), it's not "latest"
-	// If no tag was specified, it defaults to "latest"
-	_, isDigest := ref.(nameref.Digest)
-	return !isDigest
-}
-
 // logDebug logs a message if debug mode is enabled
 func logDebug(debugMode bool, format string, args ...interface{}) {
 	if debugMode {
@@ -718,22 +570,4 @@ func ValidateAndNormaliseHostFlag(host string) (string, error) {
 	}
 
 	return "", fmt.Errorf("could not resolve host: %s", host)
-}
-
-// resolveCACertPath determines the CA certificate path to use, prioritizing command-line flag over configuration
-func resolveCACertPath(flagValue string) string {
-	// If command-line flag is provided, use it (highest priority)
-	if flagValue != "" {
-		return flagValue
-	}
-
-	// Otherwise, check configuration
-	cfg := config.GetConfig()
-	if cfg.CACertificatePath != "" {
-		logger.Debugf("Using configured CA certificate: %s", cfg.CACertificatePath)
-		return cfg.CACertificatePath
-	}
-
-	// No CA certificate configured
-	return ""
 }

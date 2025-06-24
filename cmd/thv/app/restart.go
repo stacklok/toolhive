@@ -49,7 +49,7 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Restart single container
 	containerName := args[0]
-	restartGroup, err := manager.RestartWorkload(ctx, containerName)
+	restartGroup, err := manager.RestartWorkloads(ctx, []string{containerName})
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func restartAllContainers(ctx context.Context, manager workloads.Manager) error 
 	for _, container := range containers {
 		containerName := container.Name
 		fmt.Printf("Restarting %s...", containerName)
-		restart, err := manager.RestartWorkload(ctx, containerName)
+		restart, err := manager.RestartWorkloads(ctx, []string{containerName})
 		if err != nil {
 			fmt.Printf(" failed: %v\n", err)
 			failedCount++

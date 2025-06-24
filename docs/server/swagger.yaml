@@ -262,6 +262,16 @@ components:
       - TransportTypeSSE
       - TransportTypeStreamableHTTP
       - TransportTypeInspector
+    v1.bulkOperationRequest:
+      description: Request to perform bulk operations on workloads
+      properties:
+        names:
+          description: Names of the workloads to operate on
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
     v1.clientStatusResponse:
       properties:
         clients:
@@ -1147,6 +1157,12 @@ paths:
               schema:
                 type: string
           description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
         "404":
           content:
             application/json:
@@ -1198,6 +1214,12 @@ paths:
               schema:
                 type: string
           description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
         "404":
           content:
             application/json:
@@ -1224,12 +1246,12 @@ paths:
               schema:
                 type: string
           description: Accepted
-        "204":
+        "400":
           content:
             application/json:
               schema:
                 type: string
-          description: No Content
+          description: Bad Request
         "404":
           content:
             application/json:
@@ -1239,13 +1261,82 @@ paths:
       summary: Stop a workload
       tags:
       - workloads
-  /api/v1beta/workloads/stop:
+  /api/v1beta/workloads/delete:
     post:
-      description: Stop all running workload
+      description: Delete multiple workloads by name
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.bulkOperationRequest'
+        description: Bulk delete request
+        required: true
       responses:
         "202":
+          content:
+            application/json:
+              schema:
+                type: string
           description: Accepted
-      summary: Stop all workloads
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+      summary: Delete workloads in bulk
+      tags:
+      - workloads
+  /api/v1beta/workloads/restart:
+    post:
+      description: Restart multiple workloads by name
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.bulkOperationRequest'
+        description: Bulk restart request
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+      summary: Restart workloads in bulk
+      tags:
+      - workloads
+  /api/v1beta/workloads/stop:
+    post:
+      description: Stop multiple workloads by name
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.bulkOperationRequest'
+        description: Bulk stop request
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+      summary: Stop workloads in bulk
       tags:
       - workloads
   /health:

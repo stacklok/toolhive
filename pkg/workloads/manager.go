@@ -589,7 +589,6 @@ func (d *defaultManager) RestartWorkloads(_ context.Context, names []string) (*e
 	group := &errgroup.Group{}
 
 	for _, name := range names {
-		name := name // Capture the loop variable
 		group.Go(func() error {
 			// Create a child context with a longer timeout
 			childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)

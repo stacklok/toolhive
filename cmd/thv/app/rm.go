@@ -29,7 +29,7 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Delete container.
-	group, err := manager.DeleteWorkload(ctx, containerName)
+	group, err := manager.DeleteWorkloads(ctx, []string{containerName})
 	if err != nil {
 		return fmt.Errorf("failed to delete container: %v", err)
 	}

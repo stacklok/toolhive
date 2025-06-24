@@ -590,7 +590,7 @@ func (m *setupModel) View() string {
 		b.WriteString(m.renderClientRow(i, cli))
 	}
 
-	b.WriteString("\nPress 'space' to select, 'enter' to confirm, 'q' to quit.\n")
+	b.WriteString("\nUse ↑/↓ (or j/k) to move, 'space' to select, 'enter' to confirm, 'q' to quit.\n")
 	return docStyle.Render(b.String())
 }
 
@@ -629,7 +629,7 @@ func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Create a table writer for professional output
+	// Create a table writer for output
 	table := tablewriter.NewWriter(os.Stdout)
 	table.Options(
 		tablewriter.WithHeader([]string{"Client Type", "Installed", "Registered"}),

@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -60,15 +63,65 @@ type defaultManager struct {
 }
 
 // ErrContainerNotFound is returned when a container cannot be found by name.
+// ErrInvalidWorkloadName is returned when a workload name fails validation.
 var (
 	ErrContainerNotFound   = fmt.Errorf("container not found")
 	ErrContainerNotRunning = fmt.Errorf("container not running")
+	ErrInvalidWorkloadName = fmt.Errorf("invalid workload name")
 )
 
 const (
 	// AsyncOperationTimeout is the timeout for async workload operations
 	AsyncOperationTimeout = 5 * time.Minute
 )
+
+// validateWorkloadName validates workload names to prevent path traversal attacks
+// and other security issues. Workload names should only contain alphanumeric
+// characters, hyphens, underscores, and dots.
+var workloadNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+func validateWorkloadName(name string) error {
+	if name == "" {
+		return fmt.Errorf("%w: workload name cannot be empty", ErrInvalidWorkloadName)
+	}
+
+	// Use filepath.Clean to normalize the path
+	cleanName := filepath.Clean(name)
+
+	// Check if the cleaned path tries to escape current directory using filepath.Rel
+	if rel, err := filepath.Rel(".", cleanName); err != nil || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("%w: workload name contains path traversal", ErrInvalidWorkloadName)
+	}
+
+	// Check for absolute paths
+	if filepath.IsAbs(cleanName) {
+		return fmt.Errorf("%w: workload name cannot be an absolute path", ErrInvalidWorkloadName)
+	}
+
+	// Check for command injection patterns (similar to permissions package)
+	commandInjectionPattern := regexp.MustCompile(`[$&;|]|\$\(|\` + "`")
+	if commandInjectionPattern.MatchString(name) {
+		return fmt.Errorf("%w: workload name contains potentially dangerous characters", ErrInvalidWorkloadName)
+	}
+
+	// Check for null bytes
+	if strings.Contains(name, "\x00") {
+		return fmt.Errorf("%w: workload name contains null bytes", ErrInvalidWorkloadName)
+	}
+
+	// Validate against allowed pattern
+	if !workloadNamePattern.MatchString(name) {
+		return fmt.Errorf("%w: workload name can only contain alphanumeric characters, dots, hyphens, and underscores",
+			ErrInvalidWorkloadName)
+	}
+
+	// Reasonable length limit
+	if len(name) > 100 {
+		return fmt.Errorf("%w: workload name too long (max 100 characters)", ErrInvalidWorkloadName)
+	}
+
+	return nil
+}
 
 // NewManager creates a new container manager instance.
 func NewManager(ctx context.Context) (Manager, error) {
@@ -83,6 +136,11 @@ func NewManager(ctx context.Context) (Manager, error) {
 }
 
 func (d *defaultManager) GetWorkload(ctx context.Context, name string) (Workload, error) {
+	// Validate workload name to prevent path traversal attacks
+	if err := validateWorkloadName(name); err != nil {
+		return Workload{}, err
+	}
+
 	container, err := d.findContainerByName(ctx, name)
 	if err != nil {
 		// Note that `findContainerByName` already wraps the error with a more specific message.
@@ -116,6 +174,11 @@ func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool) ([]Wor
 }
 
 func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) (*errgroup.Group, error) {
+	// Validate workload name to prevent path traversal attacks
+	if err := validateWorkloadName(name); err != nil {
+		return nil, err
+	}
+
 	// We need several fields from the container struct for deletion.
 	container, err := d.findContainerByName(ctx, name)
 	if err != nil {
@@ -169,6 +232,11 @@ func (d *defaultManager) DeleteWorkload(ctx context.Context, name string) (*errg
 }
 
 func (d *defaultManager) StopWorkload(ctx context.Context, name string) (*errgroup.Group, error) {
+	// Validate workload name to prevent path traversal attacks
+	if err := validateWorkloadName(name); err != nil {
+		return nil, err
+	}
+
 	// Find the container
 	container, err := d.findContainerByName(ctx, name)
 	if err != nil {
@@ -184,10 +252,16 @@ func (d *defaultManager) StopWorkload(ctx context.Context, name string) (*errgro
 }
 
 func (d *defaultManager) StopWorkloads(_ context.Context, names []string) (*errgroup.Group, error) {
+	// Validate all workload names to prevent path traversal attacks
+	for _, name := range names {
+		if err := validateWorkloadName(name); err != nil {
+			return nil, fmt.Errorf("invalid workload name '%s': %w", name, err)
+		}
+	}
+
 	group := &errgroup.Group{}
 
 	for _, name := range names {
-		name := name // Capture the loop variable
 		group.Go(func() error {
 			// Create a child context with a longer timeout
 			childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
@@ -418,6 +492,11 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 }
 
 func (d *defaultManager) RestartWorkload(ctx context.Context, name string) (*errgroup.Group, error) {
+	// Validate workload name to prevent path traversal attacks
+	if err := validateWorkloadName(name); err != nil {
+		return nil, err
+	}
+
 	var containerBaseName string
 	var running bool
 	// Try to find the container.
@@ -628,6 +707,13 @@ func (d *defaultManager) stopWorkloads(_ context.Context, workloads []*rt.Contai
 
 // DeleteWorkloads deletes the specified workloads by name.
 func (d *defaultManager) DeleteWorkloads(_ context.Context, names []string) (*errgroup.Group, error) {
+	// Validate all workload names to prevent path traversal attacks
+	for _, name := range names {
+		if err := validateWorkloadName(name); err != nil {
+			return nil, fmt.Errorf("invalid workload name '%s': %w", name, err)
+		}
+	}
+
 	group := &errgroup.Group{}
 
 	for _, name := range names {
@@ -657,6 +743,13 @@ func (d *defaultManager) DeleteWorkloads(_ context.Context, names []string) (*er
 
 // RestartWorkloads restarts the specified workloads by name.
 func (d *defaultManager) RestartWorkloads(_ context.Context, names []string) (*errgroup.Group, error) {
+	// Validate all workload names to prevent path traversal attacks
+	for _, name := range names {
+		if err := validateWorkloadName(name); err != nil {
+			return nil, fmt.Errorf("invalid workload name '%s': %w", name, err)
+		}
+	}
+
 	group := &errgroup.Group{}
 
 	for _, name := range names {

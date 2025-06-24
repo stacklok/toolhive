@@ -110,7 +110,7 @@ func TestSave(t *testing.T) {
 			},
 			Clients: Clients{
 				AutoDiscovery:     true,
-				RegisteredClients: []string{"vscode", "cursor", "roo-code", "cline", "claude-code"},
+				RegisteredClients: []string{"vscode", "cursor", "roo-code", "cline", "claude-code", "jetbrains-copilot"},
 			},
 		}
 

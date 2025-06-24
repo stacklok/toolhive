@@ -14,6 +14,7 @@ components:
       - VSCodeInsider
       - VSCode
       - ClaudeCode
+      - JetBrainsCopilot
     client.MCPClientStatus:
       properties:
         client_type:
@@ -26,6 +27,7 @@ components:
           - VSCodeInsider
           - VSCode
           - ClaudeCode
+          - JetBrainsCopilot
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -282,6 +284,7 @@ components:
           - VSCodeInsider
           - VSCode
           - ClaudeCode
+          - JetBrainsCopilot
       type: object
     v1.createClientResponse:
       properties:
@@ -295,6 +298,7 @@ components:
           - VSCodeInsider
           - VSCode
           - ClaudeCode
+          - JetBrainsCopilot
       type: object
     v1.createRequest:
       description: Request to create a new workload

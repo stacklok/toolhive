@@ -38,6 +38,8 @@ const (
 	VSCode MCPClient = "vscode"
 	// ClaudeCode represents the Claude Code CLI.
 	ClaudeCode MCPClient = "claude-code"
+	// JetBrainsCopilot represents the Copilot plugin for JetBrains IDEs.
+	JetBrainsCopilot MCPClient = "jetbrains-copilot"
 )
 
 // Extension is extension of the client config file.
@@ -136,6 +138,21 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{},
 		Extension:            JSON,
 	},
+	{
+		ClientType:   JetBrainsCopilot,
+		Description:  "JetBrains Copilot plugin",
+		SettingsFile: "mcp.json",
+		RelPath: []string{
+			"github-copilot", "intellij",
+		},
+		MCPServersPathPrefix: "/servers",
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {".config"},
+			"windows": {"AppData", "Local"},
+		},
+		Extension: JSON,
+	},
 }
 
 // ConfigFile represents a client configuration file
@@ -209,7 +226,10 @@ func FindClientConfigs() ([]ConfigFile, error) {
 // build up more complex MCP server configurations for different clients
 // without leaking them into the CMD layer.
 func Upsert(cf ConfigFile, name string, url string) error {
-	if cf.ClientType == VSCode || cf.ClientType == VSCodeInsider || cf.ClientType == ClaudeCode {
+	if cf.ClientType == VSCode ||
+		cf.ClientType == VSCodeInsider ||
+		cf.ClientType == ClaudeCode ||
+		cf.ClientType == JetBrainsCopilot {
 		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: "sse"})
 	}
 

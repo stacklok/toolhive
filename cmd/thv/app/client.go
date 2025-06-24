@@ -52,7 +52,7 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 	availableClients := getAvailableClients(clientStatuses)
 	if len(availableClients) == 0 {
-		fmt.Println("All installed clients are already registered.")
+		fmt.Println("No new clients found.")
 		return nil
 	}
 	selected, confirmed, err := ui.RunClientSetup(availableClients)

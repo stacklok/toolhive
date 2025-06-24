@@ -127,7 +127,7 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 func notifyIfUpdateAvailable(current, latest string) {
 	// Print a meaningful message for people running local builds.
 	if strings.HasPrefix(current, "build-") {
-		fmt.Fprintf(os.Stderr, "You are running a local build of ToolHive, latest release is: %s\n", latest)
+		// No need to compare versions, user is already aware they are not on the latest release.
 		return
 	}
 	// Ensure both versions have the 'v' prefix for proper semantic version comparison
@@ -140,7 +140,5 @@ func notifyIfUpdateAvailable(current, latest string) {
 	// Compare the versions ensuring their canonical forms
 	if semver.Compare(semver.Canonical(current), semver.Canonical(latest)) < 0 {
 		fmt.Fprintf(os.Stderr, "A new version of ToolHive is available: %s\nCurrently running: %s\n", latest, current)
-	} else if semver.Compare(semver.Canonical(current), semver.Canonical(latest)) == 0 {
-		fmt.Fprintf(os.Stderr, "You are running the latest version of ToolHive: %s\n", current)
 	}
 }

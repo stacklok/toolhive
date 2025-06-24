@@ -48,9 +48,6 @@ func WorkloadRouter(
 	r.Post("/restart", routes.restartWorkloadsBulk)
 	r.Post("/delete", routes.deleteWorkloadsBulk)
 	r.Get("/{name}", routes.getWorkload)
-	r.Post("/{name}/stop", routes.stopWorkload)
-	r.Post("/{name}/restart", routes.restartWorkload)
-	r.Delete("/{name}", routes.deleteWorkload)
 	return r
 }
 
@@ -114,104 +111,6 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to marshal workload details", http.StatusInternalServerError)
 		return
 	}
-}
-
-// stopWorkload
-//
-//	@Summary		Stop a workload
-//	@Description	Stop a running workload
-//	@Tags			workloads
-//	@Param			name	path		string	true	"Workload name"
-//	@Success		202		{string}	string	"Accepted"
-//	@Success		204		{string}	string	"No Content"
-//	@Failure		404		{string}	string	"Not Found"
-//	@Router			/api/v1beta/workloads/{name}/stop [post]
-func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	name := chi.URLParam(r, "name")
-
-	// Note that this is an asynchronous operation.
-	// The request is not blocked on completion.
-	_, err := s.manager.StopWorkload(ctx, name)
-	if err != nil {
-		if errors.Is(err, workloads.ErrContainerNotFound) {
-			http.Error(w, "Workload not found", http.StatusNotFound)
-			return
-		} else if errors.Is(err, workloads.ErrContainerNotRunning) {
-			// Treat this as a non-fatal error.
-			w.WriteHeader(http.StatusNoContent)
-			return
-		} else if errors.Is(err, workloads.ErrInvalidWorkloadName) {
-			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		logger.Errorf("Failed to stop workload: %v", err)
-		http.Error(w, "Failed to stop workload", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusAccepted)
-}
-
-// deleteWorkload
-//
-//	@Summary		Delete a workload
-//	@Description	Delete a workload
-//	@Tags			workloads
-//	@Param			name	path		string	true	"Workload name"
-//	@Success		202		{string}	string	"Accepted"
-//	@Failure		404		{string}	string	"Not Found"
-//	@Router			/api/v1beta/workloads/{name} [delete]
-func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	name := chi.URLParam(r, "name")
-
-	// Note that this is an asynchronous operation.
-	// The request is not blocked on completion.
-	_, err := s.manager.DeleteWorkload(ctx, name)
-	if err != nil {
-		if errors.Is(err, workloads.ErrContainerNotFound) {
-			http.Error(w, "Workload not found", http.StatusNotFound)
-			return
-		} else if errors.Is(err, workloads.ErrInvalidWorkloadName) {
-			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		logger.Errorf("Failed to delete workload: %v", err)
-		http.Error(w, "Failed to delete workload", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusAccepted)
-}
-
-// restartWorkload
-//
-//	@Summary		Restart a workload
-//	@Description	Restart a running workload
-//	@Tags			workloads
-//	@Param			name	path		string	true	"Workload name"
-//	@Success		202		{string}	string	"Accepted"
-//	@Failure		404		{string}	string	"Not Found"
-//	@Router			/api/v1beta/workloads/{name}/restart [post]
-func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	name := chi.URLParam(r, "name")
-
-	// Note that this is an asynchronous operation.
-	// In the API, we do not wait for the operation to complete.
-	_, err := s.manager.RestartWorkload(ctx, name)
-	if err != nil {
-		if errors.Is(err, workloads.ErrContainerNotFound) {
-			http.Error(w, "Workload not found", http.StatusNotFound)
-			return
-		} else if errors.Is(err, workloads.ErrInvalidWorkloadName) {
-			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		logger.Errorf("Failed to restart workload: %v", err)
-		http.Error(w, "Failed to restart workload", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusAccepted)
 }
 
 // createWorkload

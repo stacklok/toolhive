@@ -47,6 +47,8 @@ type Manager interface {
 	// RestartWorkloads restarts the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
+	// GetLogs retrieves the logs of a container.
+	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
 }
 
 type defaultManager struct {
@@ -366,6 +368,25 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 	logger.Infof("Use 'thv stop %s' to stop the server", runConfig.ContainerName)
 
 	return nil
+}
+
+func (d *defaultManager) GetLogs(ctx context.Context, containerName string, follow bool) (string, error) {
+	container, err := d.findContainerByName(ctx, containerName)
+	if err != nil {
+		// Propagate the error if the container is not found
+		if errors.Is(err, ErrContainerNotFound) {
+			return "", fmt.Errorf("%w: %s", ErrContainerNotFound, containerName)
+		}
+		return "", fmt.Errorf("failed to find container %s: %v", containerName, err)
+	}
+
+	// Get the logs from the runtime
+	logs, err := d.runtime.GetWorkloadLogs(ctx, container.ID, follow)
+	if err != nil {
+		return "", fmt.Errorf("failed to get container logs %s: %v", containerName, err)
+	}
+
+	return logs, nil
 }
 
 func (d *defaultManager) findContainerByName(ctx context.Context, name string) (*rt.ContainerInfo, error) {

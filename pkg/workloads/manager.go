@@ -519,7 +519,6 @@ func (d *defaultManager) DeleteWorkloads(_ context.Context, names []string) (*er
 	group := &errgroup.Group{}
 
 	for _, name := range names {
-		name := name // Capture the loop variable
 		group.Go(func() error {
 			// Create a child context with a longer timeout
 			childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)

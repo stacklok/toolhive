@@ -9,10 +9,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/olekukonko/tablewriter"
-	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 	"github.com/stacklok/toolhive/pkg/certs"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
@@ -447,6 +446,39 @@ func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
+func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
+	clientStatuses, err := client.GetClientStatus()
+	if err != nil {
+		return fmt.Errorf("failed to get client status: %w", err)
+	}
+	return ui.RenderClientStatusTable(clientStatuses)
+}
+
+func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
+	clientStatuses, err := client.GetClientStatus()
+	if err != nil {
+		return fmt.Errorf("failed to get client status: %w", err)
+	}
+	availableClients := getAvailableClients(clientStatuses)
+	if len(availableClients) == 0 {
+		fmt.Println("All installed clients are already registered.")
+		return nil
+	}
+	selected, confirmed, err := ui.RunClientSetup(availableClients)
+	if err != nil {
+		return fmt.Errorf("error running interactive setup: %w", err)
+	}
+	if !confirmed {
+		fmt.Println("Setup cancelled. No clients registered.")
+		return nil
+	}
+	if len(selected) == 0 {
+		fmt.Println("No clients selected for registration.")
+		return nil
+	}
+	return registerSelectedClients(cmd, selected)
+}
+
 // Helper to get available (installed but unregistered) clients
 func getAvailableClients(statuses []client.MCPClientStatus) []client.MCPClientStatus {
 	var available []client.MCPClientStatus
@@ -465,8 +497,8 @@ func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.MCPC
 		for _, registeredClient := range c.Clients.RegisteredClients {
 			registeredClientsMap[registeredClient] = true
 		}
-		for _, clientToRegister := range clientsToRegister {
-			clientName := string(clientToRegister.ClientType)
+		for _, cli := range clientsToRegister {
+			clientName := string(cli.ClientType)
 			if _, ok := registeredClientsMap[clientName]; !ok {
 				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, clientName)
 			}
@@ -477,57 +509,14 @@ func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.MCPC
 	}
 
 	fmt.Println("Registering selected clients...")
-	for _, clientToRegister := range clientsToRegister {
-		clientName := string(clientToRegister.ClientType)
+	for _, cli := range clientsToRegister {
+		clientName := string(cli.ClientType)
 		fmt.Printf("Successfully registered client: %s\n", clientName)
 		if err := addRunningMCPsToClient(cmd.Context(), clientName); err != nil {
 			fmt.Printf("Warning: Failed to add running MCPs to client %s: %v\n", clientName, err)
 		}
 	}
 	return nil
-}
-
-func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
-	clientStatuses, err := client.GetClientStatus()
-	if err != nil {
-		return fmt.Errorf("failed to get client status: %w", err)
-	}
-
-	availableClients := getAvailableClients(clientStatuses)
-	if len(availableClients) == 0 {
-		fmt.Println("All installed clients are already registered.")
-		return nil
-	}
-
-	initialModel := &setupModel{
-		clients:  availableClients,
-		selected: make(map[int]struct{}),
-	}
-
-	p := tea.NewProgram(initialModel)
-	finalModel, err := p.Run()
-	if err != nil {
-		return fmt.Errorf("error running interactive setup: %w", err)
-	}
-
-	model := finalModel.(*setupModel)
-	if !model.confirmed {
-		fmt.Println("Setup cancelled. No clients registered.")
-		return nil
-	}
-
-	// Get selected clients
-	var clientsToRegister []client.MCPClientStatus
-	for i := range model.selected {
-		clientsToRegister = append(clientsToRegister, availableClients[i])
-	}
-
-	if len(clientsToRegister) == 0 {
-		fmt.Println("No clients selected for registration.")
-		return nil
-	}
-
-	return registerSelectedClients(cmd, clientsToRegister)
 }
 
 var (
@@ -615,61 +604,4 @@ func (m *setupModel) renderClientRow(i int, cli client.MCPClientStatus) string {
 		return selectedItemStyle.Render(row) + "\n"
 	}
 	return itemStyle.Render(row) + "\n"
-}
-
-func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
-	// Get client status for all supported clients
-	clientStatuses, err := client.GetClientStatus()
-	if err != nil {
-		return fmt.Errorf("failed to get client status: %w", err)
-	}
-
-	if len(clientStatuses) == 0 {
-		fmt.Println("No supported clients found.")
-		return nil
-	}
-
-	// Create a table writer for output
-	table := tablewriter.NewWriter(os.Stdout)
-	table.Options(
-		tablewriter.WithHeader([]string{"Client Type", "Installed", "Registered"}),
-		tablewriter.WithRendition(
-			tw.Rendition{
-				Borders: tw.Border{
-					Left:   tw.State(1),
-					Top:    tw.State(1),
-					Right:  tw.State(1),
-					Bottom: tw.State(1),
-				},
-			},
-		),
-		tablewriter.WithAlignment(tw.MakeAlign(3, tw.AlignLeft)),
-	)
-
-	// Add rows to the table
-	for _, status := range clientStatuses {
-		installed := "❌ No"
-		if status.Installed {
-			installed = "✅ Yes"
-		}
-
-		registered := "❌ No"
-		if status.Registered {
-			registered = "✅ Yes"
-		}
-
-		if err := table.Append([]string{
-			string(status.ClientType),
-			installed,
-			registered,
-		}); err != nil {
-			return fmt.Errorf("failed to append row: %w", err)
-		}
-	}
-
-	if err := table.Render(); err != nil {
-		return fmt.Errorf("failed to render table: %w", err)
-	}
-
-	return nil
 }

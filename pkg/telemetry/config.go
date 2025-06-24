@@ -52,6 +52,12 @@ type Config struct {
 	// The metrics are served on the main transport port at /metrics
 	// This is separate from OTLP metrics which are sent to the Endpoint
 	EnablePrometheusMetricsPath bool
+
+	// EnvironmentVariables is a list of environment variable names that should be
+	// included in telemetry spans as attributes. Only variables in this list will
+	// be read from the host machine and included in spans for observability.
+	// Example: []string{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"}
+	EnvironmentVariables []string
 }
 
 // DefaultConfig returns a default telemetry configuration.
@@ -63,7 +69,8 @@ func DefaultConfig() Config {
 		SamplingRate:                0.1, // 10% sampling by default
 		Headers:                     make(map[string]string),
 		Insecure:                    false,
-		EnablePrometheusMetricsPath: false, // No metrics endpoint by default
+		EnablePrometheusMetricsPath: false,      // No metrics endpoint by default
+		EnvironmentVariables:        []string{}, // No environment variables by default
 	}
 }
 

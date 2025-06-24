@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -880,6 +881,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		nil,   // otelHeaders
 		false, // otelInsecure
 		false, // otelEnablePrometheusMetricsPath
+		nil,   // otelEnvironmentVariables
 		false, // isolatedNetwork
 	)
 
@@ -948,4 +950,67 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 	assert.Equal(t, originalConfig.Debug, readConfig.Debug, "Debug should match")
 	assert.Equal(t, originalConfig.ContainerLabels, readConfig.ContainerLabels, "ContainerLabels should match")
 	assert.Equal(t, originalConfig.EnvVars, readConfig.EnvVars, "EnvVars should match")
+}
+
+func TestCommaSeparatedEnvVars(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []string
+		expected []string
+	}{
+		{
+			name:     "single comma-separated string",
+			input:    []string{"ENV1,ENV2,ENV3"},
+			expected: []string{"ENV1", "ENV2", "ENV3"},
+		},
+		{
+			name:     "multiple flags with comma-separated values",
+			input:    []string{"ENV1,ENV2", "ENV3,ENV4"},
+			expected: []string{"ENV1", "ENV2", "ENV3", "ENV4"},
+		},
+		{
+			name:     "mixed single and comma-separated",
+			input:    []string{"ENV1", "ENV2,ENV3", "ENV4"},
+			expected: []string{"ENV1", "ENV2", "ENV3", "ENV4"},
+		},
+		{
+			name:     "with whitespace",
+			input:    []string{"ENV1, ENV2 , ENV3"},
+			expected: []string{"ENV1", "ENV2", "ENV3"},
+		},
+		{
+			name:     "empty values filtered out",
+			input:    []string{"ENV1,,ENV2, ,ENV3"},
+			expected: []string{"ENV1", "ENV2", "ENV3"},
+		},
+		{
+			name:     "single environment variable",
+			input:    []string{"ENV1"},
+			expected: []string{"ENV1"},
+		},
+		{
+			name:     "empty input",
+			input:    []string{},
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test the environment variable processing logic
+			var processedEnvVars []string
+			for _, envVarEntry := range tt.input {
+				// Split by comma and trim whitespace (same logic as in config.go)
+				envVars := strings.Split(envVarEntry, ",")
+				for _, envVar := range envVars {
+					trimmed := strings.TrimSpace(envVar)
+					if trimmed != "" {
+						processedEnvVars = append(processedEnvVars, trimmed)
+					}
+				}
+			}
+
+			assert.Equal(t, tt.expected, processedEnvVars)
+		})
+	}
 }

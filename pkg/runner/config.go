@@ -158,6 +158,7 @@ func NewRunConfigFromFlags(
 	otelHeaders []string,
 	otelInsecure bool,
 	otelEnablePrometheusMetricsPath bool,
+	otelEnvironmentVariables []string,
 	isolateNetwork bool,
 ) *RunConfig {
 	// Ensure default values for host and targetHost
@@ -216,6 +217,19 @@ func NewRunConfigFromFlags(
 			serviceName = telemetry.DefaultConfig().ServiceName
 		}
 
+		// Process environment variables - split comma-separated values
+		var processedEnvVars []string
+		for _, envVarEntry := range otelEnvironmentVariables {
+			// Split by comma and trim whitespace
+			envVars := strings.Split(envVarEntry, ",")
+			for _, envVar := range envVars {
+				trimmed := strings.TrimSpace(envVar)
+				if trimmed != "" {
+					processedEnvVars = append(processedEnvVars, trimmed)
+				}
+			}
+		}
+
 		config.TelemetryConfig = &telemetry.Config{
 			Endpoint:                    otelEndpoint,
 			ServiceName:                 serviceName,
@@ -224,6 +238,7 @@ func NewRunConfigFromFlags(
 			Headers:                     headers,
 			Insecure:                    otelInsecure,
 			EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
+			EnvironmentVariables:        processedEnvVars,
 		}
 	}
 

@@ -247,6 +247,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		nil,   // otelHeaders - not exposed through API yet
 		false, // otelInsecure - not exposed through API yet
 		false, // otelEnablePrometheusMetricsPath - not exposed through API yet
+		nil,   // otelEnvironmentVariables - not exposed through API yet
 		false, // isolateNetwork - not exposed through API yet
 	)
 

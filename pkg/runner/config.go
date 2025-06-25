@@ -158,6 +158,7 @@ func NewRunConfigFromFlags(
 	otelHeaders []string,
 	otelInsecure bool,
 	otelEnablePrometheusMetricsPath bool,
+	otelEnvironmentVariables []string,
 	isolateNetwork bool,
 ) *RunConfig {
 	// Ensure default values for host and targetHost
@@ -167,6 +168,7 @@ func NewRunConfigFromFlags(
 	if targetHost == "" {
 		targetHost = transport.LocalhostIPv4
 	}
+
 	config := &RunConfig{
 		Runtime:                     runtime,
 		CmdArgs:                     cmdArgs,
@@ -184,12 +186,28 @@ func NewRunConfigFromFlags(
 		IsolateNetwork:              isolateNetwork,
 	}
 
-	// If enable audit is true and no audit config path is provided, use default config
+	// Configure audit if enabled
+	configureAudit(config, enableAudit, auditConfigPath)
+
+	// Configure OIDC if any values are provided
+	configureOIDC(config, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID)
+
+	// Configure telemetry if endpoint or metrics port is provided
+	configureTelemetry(config, otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
+		otelSamplingRate, otelHeaders, otelInsecure, otelEnvironmentVariables)
+
+	return config
+}
+
+// configureAudit sets up audit configuration if enabled
+func configureAudit(config *RunConfig, enableAudit bool, auditConfigPath string) {
 	if enableAudit && auditConfigPath == "" {
 		config.AuditConfig = audit.DefaultConfig()
 	}
+}
 
-	// Set OIDC config if any values are provided
+// configureOIDC sets up OIDC configuration if any values are provided
+func configureOIDC(config *RunConfig, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string) {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
 		config.OIDCConfig = &auth.JWTValidatorConfig{
 			Issuer:   oidcIssuer,
@@ -198,36 +216,55 @@ func NewRunConfigFromFlags(
 			ClientID: oidcClientID,
 		}
 	}
+}
 
-	// Set telemetry config if endpoint or metrics port is provided
-	if otelEndpoint != "" || otelEnablePrometheusMetricsPath {
-		// Parse headers from key=value format
-		headers := make(map[string]string)
-		for _, header := range otelHeaders {
-			parts := strings.SplitN(header, "=", 2)
-			if len(parts) == 2 {
-				headers[parts[0]] = parts[1]
-			}
-		}
+// configureTelemetry sets up telemetry configuration if endpoint or metrics port is provided
+func configureTelemetry(config *RunConfig, otelEndpoint string, otelEnablePrometheusMetricsPath bool,
+	otelServiceName string, otelSamplingRate float64, otelHeaders []string, otelInsecure bool,
+	otelEnvironmentVariables []string) {
 
-		// Use provided service name or default
-		serviceName := otelServiceName
-		if serviceName == "" {
-			serviceName = telemetry.DefaultConfig().ServiceName
-		}
+	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
+		return
+	}
 
-		config.TelemetryConfig = &telemetry.Config{
-			Endpoint:                    otelEndpoint,
-			ServiceName:                 serviceName,
-			ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
-			SamplingRate:                otelSamplingRate,
-			Headers:                     headers,
-			Insecure:                    otelInsecure,
-			EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
+	// Parse headers from key=value format
+	headers := make(map[string]string)
+	for _, header := range otelHeaders {
+		parts := strings.SplitN(header, "=", 2)
+		if len(parts) == 2 {
+			headers[parts[0]] = parts[1]
 		}
 	}
 
-	return config
+	// Use provided service name or default
+	serviceName := otelServiceName
+	if serviceName == "" {
+		serviceName = telemetry.DefaultConfig().ServiceName
+	}
+
+	// Process environment variables - split comma-separated values
+	var processedEnvVars []string
+	for _, envVarEntry := range otelEnvironmentVariables {
+		// Split by comma and trim whitespace
+		envVars := strings.Split(envVarEntry, ",")
+		for _, envVar := range envVars {
+			trimmed := strings.TrimSpace(envVar)
+			if trimmed != "" {
+				processedEnvVars = append(processedEnvVars, trimmed)
+			}
+		}
+	}
+
+	config.TelemetryConfig = &telemetry.Config{
+		Endpoint:                    otelEndpoint,
+		ServiceName:                 serviceName,
+		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+		SamplingRate:                otelSamplingRate,
+		Headers:                     headers,
+		Insecure:                    otelInsecure,
+		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
+		EnvironmentVariables:        processedEnvVars,
+	}
 }
 
 // WithAuthz adds authorization configuration to the RunConfig

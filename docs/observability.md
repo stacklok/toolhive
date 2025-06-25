@@ -46,12 +46,13 @@ graph TD
 Enable OpenTelemetry instrumentation with CLI flags:
 
 ```bash
-# Enable OTLP export to Jaeger
+# Enable OTLP export to Jaeger with environment variables
 thv run \
   --otel-endpoint localhost:14268 \
   --otel-insecure \
   --otel-service-name my-mcp-proxy \
   --otel-sampling-rate 0.1 \
+  --otel-env-vars NODE_ENV,DEPLOYMENT_ENV,SERVICE_VERSION \
   --transport sse \
   --name github \
   ghcr.io/example/github-mcp:latest
@@ -74,6 +75,7 @@ thv run \
 | `--otel-headers` | Authentication headers (key=value format) | None |
 | `--otel-insecure` | Disable TLS verification | `false` |
 | `--otel-enable-prometheus-metrics-path` | Enable Prometheus `/metrics` endpoint on main transport port | `false` (disabled) |
+| `--otel-env-vars` | Environment variable names to include as span attributes (comma-separated) | None |
 
 ### Environment Variables
 

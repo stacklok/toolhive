@@ -82,6 +82,7 @@ var (
 	runOtelHeaders                     []string
 	runOtelInsecure                    bool
 	runOtelEnablePrometheusMetricsPath bool
+	runOtelEnvironmentVariables        []string
 
 	// Network isolation flag
 	runIsolateNetwork bool
@@ -189,6 +190,9 @@ func init() {
 		"Disable TLS verification for OpenTelemetry endpoint")
 	runCmd.Flags().BoolVar(&runOtelEnablePrometheusMetricsPath, "otel-enable-prometheus-metrics-path", false,
 		"Enable Prometheus-style /metrics endpoint on the main transport port")
+	runCmd.Flags().StringArrayVar(&runOtelEnvironmentVariables, "otel-env-vars", nil,
+		"Environment variable names to include in OpenTelemetry spans "+
+			"(comma-separated: ENV1,ENV2)")
 	runCmd.Flags().BoolVar(&runIsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
 
@@ -253,6 +257,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runOtelHeaders,
 		runOtelInsecure,
 		runOtelEnablePrometheusMetricsPath,
+		runOtelEnvironmentVariables,
 		runIsolateNetwork,
 	)
 

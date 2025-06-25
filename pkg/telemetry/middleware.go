@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -130,6 +131,9 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		// Add MCP attributes if parsed data is available
 		m.addMCPAttributes(ctx, span, r)
 
+		// Add environment variables as attributes
+		m.addEnvironmentAttributes(span)
+
 		// Record request start time
 		startTime := time.Now()
 
@@ -173,6 +177,23 @@ func (*HTTPMiddleware) addHTTPAttributes(span trace.Span, r *http.Request) {
 	// Add query parameters if present
 	if r.URL.RawQuery != "" {
 		span.SetAttributes(attribute.String("http.query", r.URL.RawQuery))
+	}
+}
+
+func (m *HTTPMiddleware) addEnvironmentAttributes(span trace.Span) {
+	// Include environment variables from host machine as configured
+	// Only environment variables specified in the config will be read and included
+	for _, envVar := range m.config.EnvironmentVariables {
+		if envVar == "" {
+			continue // Skip empty environment variable names
+		}
+
+		value := os.Getenv(envVar)
+		// Always set the attribute, even if the environment variable is empty
+		// This helps distinguish between unset variables and empty string values
+		span.SetAttributes(
+			attribute.String(fmt.Sprintf("environment.%s", envVar), value),
+		)
 	}
 }
 

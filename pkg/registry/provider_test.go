@@ -60,6 +60,7 @@ func TestEmbeddedRegistryProvider(t *testing.T) {
 
 	if registry == nil {
 		t.Fatal("GetRegistry() returned nil registry")
+		return
 	}
 
 	if len(registry.Servers) == 0 {

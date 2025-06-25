@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -223,11 +224,11 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 	}
 
 	if runConfig.Port != 0 {
-		detachedArgs = append(detachedArgs, "--port", fmt.Sprintf("%d", runConfig.Port))
+		detachedArgs = append(detachedArgs, "--port", strconv.Itoa(runConfig.Port))
 	}
 
 	if runConfig.TargetPort != 0 {
-		detachedArgs = append(detachedArgs, "--target-port", fmt.Sprintf("%d", runConfig.TargetPort))
+		detachedArgs = append(detachedArgs, "--target-port", strconv.Itoa(runConfig.TargetPort))
 	}
 
 	// Add target host if it's not the default

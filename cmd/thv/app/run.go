@@ -5,18 +5,16 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
-	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -213,7 +211,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	cmdArgs := parseCommandArguments(os.Args)
 
 	// Print the processed command arguments for debugging
-	logger.Infof("Processed cmdArgs: %v", cmdArgs)
+	logger.Debugf("Processed cmdArgs: %v", cmdArgs)
 
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
@@ -271,7 +269,10 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	if imageMetadata != nil {
 		// If the image came from our registry, apply settings from the registry metadata.
-		applyRegistrySettings(ctx, cmd, serverOrImage, imageMetadata, runConfig, debugMode)
+		err = applyRegistrySettings(ctx, cmd, serverOrImage, imageMetadata, runConfig, debugMode)
+		if err != nil {
+			return fmt.Errorf("failed to apply registry settings: %v", err)
+		}
 	}
 
 	// Configure the RunConfig with transport, ports, permissions, etc.
@@ -292,49 +293,61 @@ func applyRegistrySettings(
 	ctx context.Context,
 	cmd *cobra.Command,
 	serverName string,
-	server *registry.ImageMetadata,
+	metadata *registry.ImageMetadata,
 	runConfig *runner.RunConfig,
 	debugMode bool,
-) {
+) error {
 	// Use the image from the registry
-	runConfig.Image = server.Image
+	runConfig.Image = metadata.Image
 
-	// If name is not provided, use the server name from registry
+	// If name is not provided, use the metadata name from registry
 	if runConfig.Name == "" {
 		runConfig.Name = serverName
 	}
 
 	// Use registry transport if not overridden
 	if !cmd.Flags().Changed("transport") {
-		logDebug(debugMode, "Using registry transport: %s", server.Transport)
-		runTransport = server.Transport
+		logDebug(debugMode, "Using registry transport: %s", metadata.Transport)
+		runTransport = metadata.Transport
 	} else {
 		logDebug(debugMode, "Using provided transport: %s (overriding registry default: %s)",
-			runTransport, server.Transport)
+			runTransport, metadata.Transport)
 	}
 
 	// Use registry target port if not overridden and transport is SSE or Streamable HTTP
-	if !cmd.Flags().Changed("target-port") && (server.Transport == types.TransportTypeSSE.String() ||
-		server.Transport == types.TransportTypeStreamableHTTP.String()) && server.TargetPort > 0 {
-		logDebug(debugMode, "Using registry target port: %d", server.TargetPort)
-		runTargetPort = server.TargetPort
+	if !cmd.Flags().Changed("target-port") && (metadata.Transport == types.TransportTypeSSE.String() ||
+		metadata.Transport == types.TransportTypeStreamableHTTP.String()) && metadata.TargetPort > 0 {
+		logDebug(debugMode, "Using registry target port: %d", metadata.TargetPort)
+		runTargetPort = metadata.TargetPort
 	}
 
 	// Prepend registry args to command-line args if available
-	if len(server.Args) > 0 {
-		logDebug(debugMode, "Prepending registry args: %v", server.Args)
-		runConfig.CmdArgs = append(server.Args, runConfig.CmdArgs...)
+	if len(metadata.Args) > 0 {
+		logDebug(debugMode, "Prepending registry args: %v", metadata.Args)
+		runConfig.CmdArgs = append(metadata.Args, runConfig.CmdArgs...)
 	}
 
-	// Process environment variables from registry
+	// Note this logic will be moved elsewhere in a future PR.
+	// Select an env var validation strategy depending on how the CLI is run:
+	// If we have called the CLI directly, we use the CLIEnvVarValidator.
+	// If we are running in detached mode, or the CLI is wrapped by the K8s operator,
+	// we use the DetachedEnvVarValidator.
+	var envVarValidator runner.EnvVarValidator
+	if process.IsDetached() || container.IsKubernetesRuntime() {
+		envVarValidator = &runner.DetachedEnvVarValidator{}
+	} else {
+		envVarValidator = &runner.CLIEnvVarValidator{}
+	}
+
+	// Process environment variables from registry.
 	// This will be merged with command-line env vars in configureRunConfig
-	envVarStrings, secretStrings := processEnvironmentVariables(ctx, server.EnvVars, runEnv, runConfig.Secrets, debugMode)
-	runEnv = envVarStrings
-	runConfig.Secrets = secretStrings
+	if err := envVarValidator.Validate(ctx, metadata, runConfig, runEnv); err != nil {
+		return fmt.Errorf("failed to validate required configuration values: %v", err)
+	}
 
 	// Create a temporary file for the permission profile if not explicitly provided
 	if !cmd.Flags().Changed("permission-profile") {
-		permProfilePath, err := runner.CreatePermissionProfileFile(serverName, server.Permissions)
+		permProfilePath, err := runner.CreatePermissionProfileFile(serverName, metadata.Permissions)
 		if err != nil {
 			// Just log the error and continue with the default permission profile
 			logger.Warnf("Warning: Failed to create permission profile file: %v", err)
@@ -343,190 +356,8 @@ func applyRegistrySettings(
 			runConfig.PermissionProfileNameOrPath = permProfilePath
 		}
 	}
-}
 
-// processEnvironmentVariables processes environment variables from the registry
-// Returns two lists: regular environment variables and secrets
-func processEnvironmentVariables(
-	ctx context.Context,
-	registryEnvVars []*registry.EnvVar,
-	cmdEnvVars []string,
-	secretsConfig []string,
-	debugMode bool,
-) ([]string, []string) {
-	// Create a new slice with capacity for all env vars
-	envVars := make([]string, 0, len(cmdEnvVars)+len(registryEnvVars))
-	secretsList := make([]string, 0, len(secretsConfig))
-
-	// Copy existing env vars and secrets
-	envVars = append(envVars, cmdEnvVars...)
-	secretsList = append(secretsList, secretsConfig...)
-
-	// Initialize secrets manager if needed
-	secretsManager := initializeSecretsManagerIfNeeded(registryEnvVars)
-
-	// Process each environment variable from the registry
-	for _, envVar := range registryEnvVars {
-		if isEnvVarProvided(envVar.Name, envVars, secretsList) {
-			continue
-		}
-
-		if envVar.Required {
-			value, err := promptForEnvironmentVariable(envVar)
-			if err != nil {
-				logger.Warnf("Warning: Failed to read input for %s: %v", envVar.Name, err)
-				continue
-			}
-			if value != "" {
-				addEnvironmentVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList, debugMode)
-			}
-		} else if envVar.Default != "" {
-			addEnvironmentVariable(ctx, envVar, envVar.Default, secretsManager, &envVars, &secretsList, debugMode)
-		}
-	}
-
-	return envVars, secretsList
-}
-
-// initializeSecretsManagerIfNeeded initializes the secrets manager if there are secret environment variables
-func initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secrets.Provider {
-	// Check if we have any secret environment variables
-	hasSecrets := false
-	for _, envVar := range registryEnvVars {
-		if envVar.Secret {
-			hasSecrets = true
-			break
-		}
-	}
-
-	if !hasSecrets {
-		return nil
-	}
-
-	secretsManager, err := getSecretsManager()
-	if err != nil {
-		logger.Warnf("Warning: Failed to initialize secrets manager: %v", err)
-		logger.Warnf("Secret environment variables will be stored as regular environment variables")
-		return nil
-	}
-
-	return secretsManager
-}
-
-// promptForEnvironmentVariable prompts the user for an environment variable value
-func promptForEnvironmentVariable(envVar *registry.EnvVar) (string, error) {
-	var byteValue []byte
-	var err error
-	if envVar.Secret {
-		logger.Infof("Required secret environment variable: %s (%s)", envVar.Name, envVar.Description)
-		fmt.Printf("Enter value for %s (input will be hidden): ", envVar.Name)
-		byteValue, err = term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Println() // Move to the next line after hidden input
-	} else {
-		logger.Infof("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
-		fmt.Printf("Enter value for %s: ", envVar.Name)
-		// For non-secret input, we can use a simple fmt.Scanln or bufio.Scanner
-		var input string
-		_, err = fmt.Scanln(&input)
-		if err != nil {
-			return "", fmt.Errorf("failed to read input for %s: %v", envVar.Name, err)
-		}
-		byteValue = []byte(input)
-	}
-
-	if err != nil {
-		return "", fmt.Errorf("failed to read input for %s: %v", envVar.Name, err)
-	}
-
-	return strings.TrimSpace(string(byteValue)), nil
-}
-
-// addEnvironmentVariable adds an environment variable or secret to the appropriate list
-func addEnvironmentVariable(
-	ctx context.Context,
-	envVar *registry.EnvVar,
-	value string,
-	secretsManager secrets.Provider,
-	envVars *[]string,
-	secretsList *[]string,
-	debugMode bool,
-) {
-	if envVar.Secret && secretsManager != nil {
-		addAsSecret(ctx, envVar, value, secretsManager, secretsList, envVars, debugMode)
-	} else {
-		addAsEnvironmentVariable(envVar, value, envVars, debugMode)
-	}
-}
-
-// addAsSecret stores the value as a secret and adds a secret reference
-func addAsSecret(
-	ctx context.Context,
-	envVar *registry.EnvVar,
-	value string,
-	secretsManager secrets.Provider,
-	secretsList *[]string,
-	envVars *[]string,
-	debugMode bool,
-) {
-	var secretName string
-	if envVar.Required {
-		secretName = fmt.Sprintf("registry-user-%s", strings.ToLower(envVar.Name))
-	} else {
-		secretName = fmt.Sprintf("registry-default-%s", strings.ToLower(envVar.Name))
-	}
-
-	if err := secretsManager.SetSecret(ctx, secretName, value); err != nil {
-		logger.Warnf("Warning: Failed to store secret %s: %v", secretName, err)
-		logger.Warnf("Falling back to environment variable for %s", envVar.Name)
-		*envVars = append(*envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
-		logDebug(debugMode, "Added environment variable (secret fallback): %s", envVar.Name)
-	} else {
-		// Create secret reference for RunConfig
-		secretEntry := fmt.Sprintf("%s,target=%s", secretName, envVar.Name)
-		*secretsList = append(*secretsList, secretEntry)
-		if envVar.Required {
-			logDebug(debugMode, "Created secret for %s: %s", envVar.Name, secretName)
-		} else {
-			logDebug(debugMode, "Created secret with default value for %s: %s", envVar.Name, secretName)
-		}
-	}
-}
-
-// addAsEnvironmentVariable adds the value as a regular environment variable
-func addAsEnvironmentVariable(
-	envVar *registry.EnvVar,
-	value string,
-	envVars *[]string,
-	debugMode bool,
-) {
-	*envVars = append(*envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
-
-	if envVar.Secret {
-		if envVar.Required {
-			logDebug(debugMode, "Added secret as environment variable (no secrets manager): %s", envVar.Name)
-		} else {
-			logDebug(debugMode, "Added default secret as environment variable (no secrets manager): %s", envVar.Name)
-		}
-	} else {
-		if envVar.Required {
-			logDebug(debugMode, "Added environment variable: %s", envVar.Name)
-		} else {
-			logDebug(debugMode, "Using default value for %s: %s", envVar.Name, value)
-		}
-	}
-}
-
-// isEnvVarProvided checks if an environment variable is already provided
-func isEnvVarProvided(name string, envVars []string, secretsConfig []string) bool {
-	// Check if the environment variable is already provided in the command line
-	for _, env := range envVars {
-		if strings.HasPrefix(env, name+"=") {
-			return true
-		}
-	}
-
-	// Check if the environment variable is provided as a secret
-	return findEnvironmentVariableFromSecrets(secretsConfig, name)
+	return nil
 }
 
 // logDebug logs a message if debug mode is enabled

@@ -216,7 +216,6 @@ func TestRegistryURLConfig(t *testing.T) {
 				ProviderType: string(secrets.EncryptedType),
 			},
 			Clients: Clients{
-				AutoDiscovery:     false,
 				RegisteredClients: []string{},
 			},
 			RegistryUrl:            "",

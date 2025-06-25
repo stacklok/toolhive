@@ -89,15 +89,8 @@ func createNewConfigWithDefaults() Config {
 			ProviderType:   "", // No default provider - user must run setup
 			SetupCompleted: false,
 		},
-<<<<<<< feature/remote-registry-private-url
-		Clients: Clients{
-			AutoDiscovery: true,
-		},
 		RegistryUrl:            "",
 		AllowPrivateRegistryIp: false,
-=======
-		RegistryUrl: "",
->>>>>>> main
 	}
 }
 

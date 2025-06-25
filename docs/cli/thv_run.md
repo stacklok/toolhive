@@ -54,7 +54,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --oidc-jwks-url string                  URL to fetch the JWKS from
       --otel-enable-prometheus-metrics-path   Enable Prometheus-style /metrics endpoint on the main transport port
       --otel-endpoint string                  OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
-      --otel-env-vars stringArray             Environment variable names to include in OpenTelemetry spans (comma-separated or multiple flags: ENV1,ENV2)
+      --otel-env-vars stringArray             Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)
       --otel-headers stringArray              OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)
       --otel-insecure                         Disable TLS verification for OpenTelemetry endpoint
       --otel-sampling-rate float              OpenTelemetry trace sampling rate (0.0-1.0) (default 0.1)

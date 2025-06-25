@@ -200,9 +200,12 @@ func FindClientConfigs() ([]ConfigFile, error) {
 // for a `type` field, but Cursor and others do not. This allows us to
 // build up more complex MCP server configurations for different clients
 // without leaking them into the CMD layer.
-func Upsert(cf ConfigFile, name string, url string) error {
+func Upsert(cf ConfigFile, name string, url string, transportType string) error {
+	if transportType == types.TransportTypeStreamableHTTP.String() {
+		transportType = "http" // just uses this conventiontest
+	}
 	if cf.ClientType == VSCode || cf.ClientType == VSCodeInsider || cf.ClientType == ClaudeCode {
-		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: "sse"})
+		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: transportType})
 	}
 
 	return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})

@@ -274,7 +274,7 @@ func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 		// Update each configuration file
 		for _, clientConfig := range filteredClientConfigs {
 			// Update the MCP server configuration with locking
-			if err := client.Upsert(clientConfig, name, url); err != nil {
+			if err := client.Upsert(clientConfig, name, url, transportType); err != nil {
 				logger.Warnf("Warning: Failed to update MCP server configuration in %s: %v", clientConfig.Path, err)
 				continue
 			}

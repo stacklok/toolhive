@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
@@ -19,6 +18,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
+
+	"github.com/stacklok/toolhive/pkg/mcp"
 )
 
 func TestNewHTTPMiddleware(t *testing.T) {
@@ -670,6 +671,7 @@ func TestHTTPMiddleware_WithRealMetrics(t *testing.T) {
 }
 
 func TestHTTPMiddleware_addEnvironmentAttributes(t *testing.T) {
+	t.Parallel()
 	// Setup test environment variables
 	originalEnv1 := os.Getenv("TEST_ENV_1")
 	originalEnv2 := os.Getenv("TEST_ENV_2")
@@ -678,7 +680,7 @@ func TestHTTPMiddleware_addEnvironmentAttributes(t *testing.T) {
 	os.Setenv("TEST_ENV_1", "value1")
 	os.Setenv("TEST_ENV_2", "value2")
 	os.Setenv("TEST_ENV_3", "")
-	defer func() {
+	t.Cleanup(func() {
 		if originalEnv1 == "" {
 			os.Unsetenv("TEST_ENV_1")
 		} else {
@@ -694,7 +696,7 @@ func TestHTTPMiddleware_addEnvironmentAttributes(t *testing.T) {
 		} else {
 			os.Setenv("TEST_ENV_3", originalEnv3)
 		}
-	}()
+	})
 
 	tests := []struct {
 		name          string
@@ -735,6 +737,7 @@ func TestHTTPMiddleware_addEnvironmentAttributes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Create a mock span to capture attributes
 			mockSpan := &mockSpan{attributes: make(map[string]interface{})}
 
@@ -746,11 +749,8 @@ func TestHTTPMiddleware_addEnvironmentAttributes(t *testing.T) {
 				config: config,
 			}
 
-			// Create test request
-			req := httptest.NewRequest("GET", "/test", nil)
-
 			// Call the method under test
-			middleware.addEnvironmentAttributes(mockSpan, req)
+			middleware.addEnvironmentAttributes(mockSpan)
 
 			// Verify the correct number of attributes were set
 			assert.Len(t, mockSpan.attributes, tt.expectedAttrs,
@@ -785,14 +785,14 @@ func (m *mockSpan) SetAttributes(kv ...attribute.KeyValue) {
 	}
 }
 
-func (m *mockSpan) End(...trace.SpanEndOption)              {}
-func (m *mockSpan) AddEvent(string, ...trace.EventOption)   {}
-func (m *mockSpan) IsRecording() bool                       { return true }
-func (m *mockSpan) RecordError(error, ...trace.EventOption) {}
-func (m *mockSpan) SpanContext() trace.SpanContext          { return trace.SpanContext{} }
-func (m *mockSpan) SetStatus(codes.Code, string)            {}
-func (m *mockSpan) SetName(string)                          {}
-func (m *mockSpan) TracerProvider() trace.TracerProvider    { return tracenoop.NewTracerProvider() }
+func (*mockSpan) End(...trace.SpanEndOption)              {}
+func (*mockSpan) AddEvent(string, ...trace.EventOption)   {}
+func (*mockSpan) IsRecording() bool                       { return true }
+func (*mockSpan) RecordError(error, ...trace.EventOption) {}
+func (*mockSpan) SpanContext() trace.SpanContext          { return trace.SpanContext{} }
+func (*mockSpan) SetStatus(codes.Code, string)            {}
+func (*mockSpan) SetName(string)                          {}
+func (*mockSpan) TracerProvider() trace.TracerProvider    { return tracenoop.NewTracerProvider() }
 
 // contains checks if a slice contains a string
 func contains(slice []string, item string) bool {

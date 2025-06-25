@@ -193,7 +193,8 @@ func init() {
 	runCmd.Flags().BoolVar(&runOtelEnablePrometheusMetricsPath, "otel-enable-prometheus-metrics-path", false,
 		"Enable Prometheus-style /metrics endpoint on the main transport port")
 	runCmd.Flags().StringArrayVar(&runOtelEnvironmentVariables, "otel-env-vars", nil,
-		"Environment variable names to include in OpenTelemetry spans (comma-separated or multiple flags: ENV1,ENV2 or --otel-env-vars ENV1 --otel-env-vars ENV2)")
+		"Environment variable names to include in OpenTelemetry spans "+
+			"(comma-separated or multiple flags: ENV1,ENV2 or --otel-env-vars ENV1 --otel-env-vars ENV2)")
 	runCmd.Flags().BoolVar(&runIsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
 

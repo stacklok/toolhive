@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -70,32 +69,4 @@ func configureRunConfig(
 	// Note: AuditConfig is already set from --enable-audit flag if provided
 
 	return nil
-}
-
-func findEnvironmentVariableFromSecrets(secs []string, envVarName string) bool {
-	for _, secret := range secs {
-		if isSecretReferenceEnvVar(secret, envVarName) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func isSecretReferenceEnvVar(secret, envVarName string) bool {
-	parts := strings.Split(secret, ",")
-	if len(parts) != 2 {
-		return false
-	}
-
-	targetSplit := strings.Split(parts[1], "=")
-	if len(targetSplit) != 2 {
-		return false
-	}
-
-	if targetSplit[1] == envVarName {
-		return true
-	}
-
-	return false
 }

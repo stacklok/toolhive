@@ -262,6 +262,22 @@ components:
       - TransportTypeSSE
       - TransportTypeStreamableHTTP
       - TransportTypeInspector
+    v1.bulkClientRequest:
+      properties:
+        names:
+          description: Names is the list of client names to operate on.
+          items:
+            type: string
+            x-enum-varnames:
+            - RooCode
+            - Cline
+            - Cursor
+            - VSCodeInsider
+            - VSCode
+            - ClaudeCode
+          type: array
+          uniqueItems: false
+      type: object
     v1.bulkOperationRequest:
       description: Request to perform bulk operations on workloads
       properties:
@@ -696,6 +712,56 @@ paths:
                 type: string
           description: Invalid request
       summary: Unregister a client
+      tags:
+      - clients
+  /api/v1beta/clients/register:
+    post:
+      description: Register multiple clients with ToolHive
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.bulkClientRequest'
+        description: Clients to register
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/v1.createClientResponse'
+                type: array
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid request
+      summary: Register multiple clients
+      tags:
+      - clients
+  /api/v1beta/clients/unregister:
+    post:
+      description: Unregister multiple clients from ToolHive
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.bulkClientRequest'
+        description: Clients to unregister
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid request
+      summary: Unregister multiple clients
       tags:
       - clients
   /api/v1beta/discovery/clients:

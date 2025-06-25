@@ -51,6 +51,9 @@ func WorkloadRouter(
 	r.Post("/{name}/stop", routes.stopWorkload)
 	r.Post("/{name}/restart", routes.restartWorkload)
 	r.Delete("/{name}", routes.deleteWorkload)
+
+	// Mount the logs sub-router
+	r.Mount("/{name}", LogsRouter(manager))
 	return r
 }
 

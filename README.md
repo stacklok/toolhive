@@ -91,27 +91,19 @@ Or download the latest binary from
 
 ### Run your first MCP server
 
-1. Enable client auto-discovery (optional):
-
-   ```sh
-   thv config auto-discovery true
-   ```
-
-2. Run the Fetch MCP server:
+1. Run the Fetch MCP server:
 
    ```sh
    thv run fetch
    ```
 
-3. List running servers:
+2. List running servers:
 
    ```sh
    thv list
    ```
 
-If you enabled auto-discovery, your
-[supported client](https://docs.stacklok.com/toolhive/reference/client-compatibility)
-can now use the `fetch` MCP tool to retrieve website content. You might need to
+Your registered client can now use the `fetch` MCP tool to retrieve website content. You might need to
 restart your client for changes to take effect.
 
 ### Next steps

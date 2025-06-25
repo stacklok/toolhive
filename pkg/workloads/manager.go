@@ -47,6 +47,8 @@ type Manager interface {
 	// RestartWorkloads restarts the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
+	// GetLogs retrieves the logs of a container.
+	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
 }
 
 type defaultManager struct {
@@ -81,6 +83,13 @@ func NewManager(ctx context.Context) (Manager, error) {
 	return &defaultManager{
 		runtime: runtime,
 	}, nil
+}
+
+// NewManagerFromRuntime creates a new container manager instance from an existing runtime.
+func NewManagerFromRuntime(runtime rt.Runtime) Manager {
+	return &defaultManager{
+		runtime: runtime,
+	}
 }
 
 func (d *defaultManager) GetWorkload(ctx context.Context, name string) (Workload, error) {
@@ -361,6 +370,25 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 	return nil
 }
 
+func (d *defaultManager) GetLogs(ctx context.Context, containerName string, follow bool) (string, error) {
+	container, err := d.findContainerByName(ctx, containerName)
+	if err != nil {
+		// Propagate the error if the container is not found
+		if errors.Is(err, ErrContainerNotFound) {
+			return "", fmt.Errorf("%w: %s", ErrContainerNotFound, containerName)
+		}
+		return "", fmt.Errorf("failed to find container %s: %v", containerName, err)
+	}
+
+	// Get the logs from the runtime
+	logs, err := d.runtime.GetWorkloadLogs(ctx, container.ID, follow)
+	if err != nil {
+		return "", fmt.Errorf("failed to get container logs %s: %v", containerName, err)
+	}
+
+	return logs, nil
+}
+
 func (d *defaultManager) findContainerByName(ctx context.Context, name string) (*rt.ContainerInfo, error) {
 	// List containers to find the one with the given name
 	containers, err := d.runtime.ListWorkloads(ctx)
@@ -392,7 +420,7 @@ func (d *defaultManager) findContainerByName(ctx context.Context, name string) (
 
 func shouldRemoveClientConfig() bool {
 	c := config.GetConfig()
-	return len(c.Clients.RegisteredClients) > 0 || c.Clients.AutoDiscovery
+	return len(c.Clients.RegisteredClients) > 0
 }
 
 // TODO: Move to dedicated config management interface.

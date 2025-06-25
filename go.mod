@@ -7,7 +7,7 @@ require (
 	github.com/cedar-policy/cedar-go v1.2.3
 	github.com/cenkalti/backoff/v5 v5.0.2
 	github.com/containerd/errdefs v1.0.0
-	github.com/docker/docker v28.2.2+incompatible
+	github.com/docker/docker v28.3.0+incompatible
 	github.com/docker/go-connections v0.5.0
 	github.com/go-chi/chi/v5 v5.2.2
 	github.com/gofrs/flock v0.12.1

@@ -48,13 +48,15 @@ const (
 
 // mcpClientConfig represents a configuration path for a supported MCP client.
 type mcpClientConfig struct {
-	ClientType           MCPClient
-	Description          string
-	RelPath              []string
-	SettingsFile         string
-	PlatformPrefix       map[string][]string
-	MCPServersPathPrefix string
-	Extension            Extension
+	ClientType                    MCPClient
+	Description                   string
+	RelPath                       []string
+	SettingsFile                  string
+	PlatformPrefix                map[string][]string
+	MCPServersPathPrefix          string
+	Extension                     Extension
+	SupportedTransportTypesMap    map[types.TransportType]string
+	IsTransportTypeFieldSupported bool
 }
 
 var supportedClientIntegrations = []mcpClientConfig{
@@ -72,6 +74,12 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		MCPServersPathPrefix: "/mcpServers",
 		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "stdio",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
 	},
 	{
 		ClientType:   Cline,
@@ -87,6 +95,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		MCPServersPathPrefix: "/mcpServers",
 		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeSSE:   "sse",
+			types.TransportTypeStdio: "stdio",
+		},
+		IsTransportTypeFieldSupported: false,
 	},
 	{
 		ClientType:   VSCodeInsider,
@@ -102,6 +115,12 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		MCPServersPathPrefix: "/mcp/servers",
 		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "stdio",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
 	},
 	{
 		ClientType:   VSCode,
@@ -117,6 +136,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"windows": {"AppData", "Roaming"},
 		},
 		Extension: JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "stdio",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
 	},
 	{
 		ClientType:           Cursor,
@@ -125,6 +149,12 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersPathPrefix: "/mcpServers",
 		RelPath:              []string{".cursor"},
 		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{ // Not explicitly required though, Cursor auto-detects and is able to connect to both sse and streamable-http types
+			types.TransportTypeStdio:          "stdio",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
 	},
 	{
 		ClientType:           ClaudeCode,
@@ -133,6 +163,12 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersPathPrefix: "/mcpServers",
 		RelPath:              []string{},
 		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "stdio",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
 	},
 }
 
@@ -200,12 +236,19 @@ func FindClientConfigs() ([]ConfigFile, error) {
 // for a `type` field, but Cursor and others do not. This allows us to
 // build up more complex MCP server configurations for different clients
 // without leaking them into the CMD layer.
-func Upsert(cf ConfigFile, name string, url string) error {
-	if cf.ClientType == VSCode || cf.ClientType == VSCodeInsider || cf.ClientType == ClaudeCode {
-		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: "sse"})
+func Upsert(cf ConfigFile, name string, url string, transportType string) error {
+	for i := range supportedClientIntegrations {
+		if cf.ClientType != supportedClientIntegrations[i].ClientType {
+			continue
+		}
+		mappedTransportType, ok := supportedClientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
+		if supportedClientIntegrations[i].IsTransportTypeFieldSupported && ok {
+			return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: mappedTransportType})
+		} else {
+			return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})
+		}
 	}
-
-	return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})
+	return nil
 }
 
 // GenerateMCPServerURL generates the URL for an MCP server

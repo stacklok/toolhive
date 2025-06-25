@@ -202,7 +202,7 @@ func FindClientConfigs() ([]ConfigFile, error) {
 // without leaking them into the CMD layer.
 func Upsert(cf ConfigFile, name string, url string, transportType string) error {
 	if transportType == types.TransportTypeStreamableHTTP.String() {
-		transportType = "http" // just uses this conventiontest
+		transportType = "http" // just uses this convention
 	}
 	if cf.ClientType == VSCode || cf.ClientType == VSCodeInsider || cf.ClientType == ClaudeCode {
 		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: transportType})

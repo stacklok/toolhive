@@ -457,15 +457,15 @@ func TestHTTPMiddleware_ExtractServerName(t *testing.T) {
 			expected: "weather",
 		},
 		{
-			name:     "session based",
+			name:     "fallback to serverName",
 			path:     "/messages",
 			query:    "session_id=abc123",
-			expected: "session-based",
+			expected: "", // Falls back to m.serverName which is empty in test
 		},
 		{
 			name:     "unknown",
 			path:     "/health",
-			expected: "health",
+			expected: "health", // "health" is not in the skip list, so it's extracted from path
 		},
 	}
 

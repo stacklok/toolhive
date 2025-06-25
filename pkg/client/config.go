@@ -167,8 +167,20 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 
 // FindClientConfigs searches for client configuration files in standard locations
 func FindClientConfigs() ([]ConfigFile, error) {
+	clientStatuses, err := GetClientStatus()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get client status: %w", err)
+	}
+
+	notInstalledClients := make(map[string]bool)
+	for _, clientStatus := range clientStatuses {
+		if !clientStatus.Installed {
+			notInstalledClients[string(clientStatus.ClientType)] = true
+		}
+	}
+
 	// retrieve the metadata of the config files
-	configFiles, err := retrieveConfigFilesMetadata()
+	configFiles, err := retrieveConfigFilesMetadata(notInstalledClients)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve client config metadata: %w", err)
 	}
@@ -211,7 +223,7 @@ func GenerateMCPServerURL(transportType string, host string, port int, container
 // retrieveConfigFilesMetadata retrieves the metadata for client configuration files.
 // It returns a list of ConfigFile objects, which contain metadata about the file that
 // can be used when performing operations on the file.
-func retrieveConfigFilesMetadata() ([]ConfigFile, error) {
+func retrieveConfigFilesMetadata(filters map[string]bool) ([]ConfigFile, error) {
 	var configFiles []ConfigFile
 
 	// Get home directory
@@ -221,6 +233,10 @@ func retrieveConfigFilesMetadata() ([]ConfigFile, error) {
 	}
 
 	for _, cfg := range supportedClientIntegrations {
+		if filters[string(cfg.ClientType)] {
+			continue
+		}
+
 		path := buildConfigFilePath(cfg.SettingsFile, cfg.RelPath, cfg.PlatformPrefix, []string{home})
 
 		err := validateConfigFileExists(path)

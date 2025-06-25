@@ -104,6 +104,9 @@ type RunConfig struct {
 
 	// Runtime is the container runtime to use (not serialized)
 	Runtime rt.Runtime `json:"-" yaml:"-"`
+
+	// IsolateNetwork indicates whether to isolate the network for the container
+	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -155,6 +158,8 @@ func NewRunConfigFromFlags(
 	otelHeaders []string,
 	otelInsecure bool,
 	otelEnablePrometheusMetricsPath bool,
+	otelEnvironmentVariables []string,
+	isolateNetwork bool,
 ) *RunConfig {
 	// Ensure default values for host and targetHost
 	if host == "" {
@@ -163,6 +168,7 @@ func NewRunConfigFromFlags(
 	if targetHost == "" {
 		targetHost = transport.LocalhostIPv4
 	}
+
 	config := &RunConfig{
 		Runtime:                     runtime,
 		CmdArgs:                     cmdArgs,
@@ -177,14 +183,31 @@ func NewRunConfigFromFlags(
 		ContainerLabels:             make(map[string]string),
 		EnvVars:                     make(map[string]string),
 		Host:                        host,
+		IsolateNetwork:              isolateNetwork,
 	}
 
-	// If enable audit is true and no audit config path is provided, use default config
+	// Configure audit if enabled
+	configureAudit(config, enableAudit, auditConfigPath)
+
+	// Configure OIDC if any values are provided
+	configureOIDC(config, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID)
+
+	// Configure telemetry if endpoint or metrics port is provided
+	configureTelemetry(config, otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
+		otelSamplingRate, otelHeaders, otelInsecure, otelEnvironmentVariables)
+
+	return config
+}
+
+// configureAudit sets up audit configuration if enabled
+func configureAudit(config *RunConfig, enableAudit bool, auditConfigPath string) {
 	if enableAudit && auditConfigPath == "" {
 		config.AuditConfig = audit.DefaultConfig()
 	}
+}
 
-	// Set OIDC config if any values are provided
+// configureOIDC sets up OIDC configuration if any values are provided
+func configureOIDC(config *RunConfig, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string) {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
 		config.OIDCConfig = &auth.JWTValidatorConfig{
 			Issuer:   oidcIssuer,
@@ -193,36 +216,55 @@ func NewRunConfigFromFlags(
 			ClientID: oidcClientID,
 		}
 	}
+}
 
-	// Set telemetry config if endpoint or metrics port is provided
-	if otelEndpoint != "" || otelEnablePrometheusMetricsPath {
-		// Parse headers from key=value format
-		headers := make(map[string]string)
-		for _, header := range otelHeaders {
-			parts := strings.SplitN(header, "=", 2)
-			if len(parts) == 2 {
-				headers[parts[0]] = parts[1]
-			}
-		}
+// configureTelemetry sets up telemetry configuration if endpoint or metrics port is provided
+func configureTelemetry(config *RunConfig, otelEndpoint string, otelEnablePrometheusMetricsPath bool,
+	otelServiceName string, otelSamplingRate float64, otelHeaders []string, otelInsecure bool,
+	otelEnvironmentVariables []string) {
 
-		// Use provided service name or default
-		serviceName := otelServiceName
-		if serviceName == "" {
-			serviceName = telemetry.DefaultConfig().ServiceName
-		}
+	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
+		return
+	}
 
-		config.TelemetryConfig = &telemetry.Config{
-			Endpoint:                    otelEndpoint,
-			ServiceName:                 serviceName,
-			ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
-			SamplingRate:                otelSamplingRate,
-			Headers:                     headers,
-			Insecure:                    otelInsecure,
-			EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
+	// Parse headers from key=value format
+	headers := make(map[string]string)
+	for _, header := range otelHeaders {
+		parts := strings.SplitN(header, "=", 2)
+		if len(parts) == 2 {
+			headers[parts[0]] = parts[1]
 		}
 	}
 
-	return config
+	// Use provided service name or default
+	serviceName := otelServiceName
+	if serviceName == "" {
+		serviceName = telemetry.DefaultConfig().ServiceName
+	}
+
+	// Process environment variables - split comma-separated values
+	var processedEnvVars []string
+	for _, envVarEntry := range otelEnvironmentVariables {
+		// Split by comma and trim whitespace
+		envVars := strings.Split(envVarEntry, ",")
+		for _, envVar := range envVars {
+			trimmed := strings.TrimSpace(envVar)
+			if trimmed != "" {
+				processedEnvVars = append(processedEnvVars, trimmed)
+			}
+		}
+	}
+
+	config.TelemetryConfig = &telemetry.Config{
+		Endpoint:                    otelEndpoint,
+		ServiceName:                 serviceName,
+		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+		SamplingRate:                otelSamplingRate,
+		Headers:                     headers,
+		Insecure:                    otelInsecure,
+		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
+		EnvironmentVariables:        processedEnvVars,
+	}
 }
 
 // WithAuthz adds authorization configuration to the RunConfig
@@ -241,7 +283,7 @@ func (c *RunConfig) WithAudit(config *audit.Config) *RunConfig {
 func (c *RunConfig) WithTransport(t string) (*RunConfig, error) {
 	transportType, err := types.ParseTransportType(t)
 	if err != nil {
-		return c, fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, stdio", t)
+		return c, fmt.Errorf("invalid transport mode: %s. Valid modes are: sse, streamable-http, stdio", t)
 	}
 	c.Transport = transportType
 	return c, nil
@@ -257,8 +299,8 @@ func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
 	logger.Infof("Using host port: %d", selectedPort)
 	c.Port = selectedPort
 
-	// Select a target port for the container if using SSE transport
-	if c.Transport == types.TransportTypeSSE {
+	// Select a target port for the container if using SSE or Streamable HTTP transport
+	if c.Transport == types.TransportTypeSSE || c.Transport == types.TransportTypeStreamableHTTP {
 		selectedTargetPort, err := networking.FindOrUsePort(targetPort)
 		if err != nil {
 			return c, fmt.Errorf("target port error: %w", err)

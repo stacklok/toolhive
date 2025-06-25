@@ -21,10 +21,10 @@ type Client struct {
 type Manager interface {
 	// ListClients returns a list of all registered.
 	ListClients() ([]Client, error)
-	// RegisterClient registers a new client with ToolHive.
-	RegisterClient(ctx context.Context, client Client) error
-	// UnregisterClient unregisters a client from ToolHive.
-	UnregisterClient(ctx context.Context, client Client) error
+	// RegisterClients registers multiple clients with ToolHive.
+	RegisterClients(ctx context.Context, clients []Client) error
+	// UnregisterClients unregisters multiple clients from ToolHive.
+	UnregisterClients(ctx context.Context, clients []Client) error
 }
 
 type defaultManager struct {
@@ -54,30 +54,32 @@ func (*defaultManager) ListClients() ([]Client, error) {
 	return clients, nil
 }
 
-func (m *defaultManager) RegisterClient(ctx context.Context, client Client) error {
-	err := config.UpdateConfig(func(c *config.Config) {
-		// Check if client is already registered and skip.
-		for _, registeredClient := range c.Clients.RegisteredClients {
-			if registeredClient == string(client.Name) {
-				logger.Infof("Client %s is already registered, skipping...", client.Name)
-				return
+// RegisterClients registers multiple clients with ToolHive.
+func (m *defaultManager) RegisterClients(ctx context.Context, clients []Client) error {
+	for _, client := range clients {
+		err := config.UpdateConfig(func(c *config.Config) {
+			// Check if client is already registered and skip.
+			for _, registeredClient := range c.Clients.RegisteredClients {
+				if registeredClient == string(client.Name) {
+					logger.Infof("Client %s is already registered, skipping...", client.Name)
+					return
+				}
 			}
+
+			// Add the client to the registered clients list
+			c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, string(client.Name))
+		})
+		if err != nil {
+			return fmt.Errorf("failed to update configuration for client %s: %w", client.Name, err)
 		}
 
-		// Add the client to the registered clients list
-		c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, string(client.Name))
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
+		logger.Infof("Successfully registered client: %s\n", client.Name)
+
+		// Add currently running MCPs to the newly registered client
+		if err := m.addRunningMCPsToClient(ctx, client.Name); err != nil {
+			logger.Warnf("Warning: Failed to add running MCPs to client %s: %v", client.Name, err)
+		}
 	}
-
-	logger.Infof("Successfully registered client: %s\n", client.Name)
-
-	// Add currently running MCPs to the newly registered client
-	if err := m.addRunningMCPsToClient(ctx, client.Name); err != nil {
-		fmt.Printf("Warning: Failed to add running MCPs to client: %v\n", err)
-	}
-
 	return nil
 }
 
@@ -130,8 +132,10 @@ func (m *defaultManager) addRunningMCPsToClient(ctx context.Context, clientType 
 			continue // Skip if we can't get the port
 		}
 
+		transportType := labels.GetTransportType(c.Labels)
+
 		// Generate URL for the MCP server
-		url := GenerateMCPServerURL(transport.LocalhostIPv4, port, name)
+		url := GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
 
 		// Update the MCP server configuration with locking
 		if err := Upsert(*clientConfig, name, url); err != nil {
@@ -145,28 +149,29 @@ func (m *defaultManager) addRunningMCPsToClient(ctx context.Context, clientType 
 	return nil
 }
 
-func (m *defaultManager) UnregisterClient(ctx context.Context, client Client) error {
-	err := config.UpdateConfig(func(c *config.Config) {
-		// Find and remove the client from registered clients list
-		for i, registeredClient := range c.Clients.RegisteredClients {
-			if registeredClient == string(client.Name) {
-				// Remove client from slice
-				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
-				logger.Infof("Successfully unregistered client: %s\n", client.Name)
-				return
+// UnregisterClients unregisters multiple clients from ToolHive.
+func (m *defaultManager) UnregisterClients(ctx context.Context, clients []Client) error {
+	for _, client := range clients {
+		err := config.UpdateConfig(func(c *config.Config) {
+			// Find and remove the client from registered clients list
+			for i, registeredClient := range c.Clients.RegisteredClients {
+				if registeredClient == string(client.Name) {
+					// Remove client from slice
+					c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
+					logger.Infof("Successfully unregistered client: %s\n", client.Name)
+					return
+				}
 			}
+			logger.Warnf("Client %s was not found in registered clients list", client.Name)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to update configuration for client %s: %w", client.Name, err)
 		}
-		logger.Warnf("Client %s was not found in registered clients list", client.Name)
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
+		// Remove MCPs from client configuration
+		if err := m.removeMCPsFromClient(ctx, client.Name); err != nil {
+			logger.Warnf("Warning: Failed to remove MCPs from client %s: %v", client.Name, err)
+		}
 	}
-
-	// Remove MCPs from client configuration
-	if err := m.removeMCPsFromClient(ctx, client.Name); err != nil {
-		fmt.Printf("Warning: Failed to remove MCPs from client: %v\n", err)
-	}
-
 	return nil
 }
 

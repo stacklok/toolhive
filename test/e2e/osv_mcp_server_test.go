@@ -128,7 +128,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Waiting for MCP server to be ready")
-				err = e2e.WaitForMCPServerReady(config, serverURL, 60*time.Second)
+				err = e2e.WaitForMCPServerReady(config, serverURL, "sse", 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "MCP server should be ready for protocol operations")
 
 				By("Creating MCP client and initializing connection")
@@ -180,7 +180,7 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				serverURL, err = e2e.GetMCPServerURL(config, serverName)
 				Expect(err).ToNot(HaveOccurred())
 
-				err = e2e.WaitForMCPServerReady(config, serverURL, 60*time.Second)
+				err = e2e.WaitForMCPServerReady(config, serverURL, "sse", 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 			})
 

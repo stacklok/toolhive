@@ -1,7 +1,7 @@
 //go:build !windows
 // +build !windows
 
-package docker
+package sdk
 
 import (
 	"context"
@@ -16,6 +16,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
+
+// ErrRuntimeNotFound is returned when a container runtime is not found
+var ErrRuntimeNotFound = fmt.Errorf("container runtime not found")
 
 // newPlatformClient creates a Docker client using Unix sockets
 func newPlatformClient(socketPath string) (*http.Client, []client.Opt) {

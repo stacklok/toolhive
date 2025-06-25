@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 // ContainerInfo represents information about a container
@@ -81,7 +80,8 @@ type Runtime interface {
 		permissionProfile *permissions.Profile,
 		transportType string,
 		options *DeployWorkloadOptions,
-	) (string, error)
+		isolateNetwork bool,
+	) (string, int, error)
 
 	// ListWorkloads lists all deployed workloads managed by this runtime.
 	// Returns information about each workload including its components,
@@ -119,18 +119,6 @@ type Runtime interface {
 	// of the workload for interactive communication. This is typically used
 	// for stdio transport where direct input/output streaming is required.
 	AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error)
-
-	// ImageExists checks if an image exists locally
-	ImageExists(ctx context.Context, image string) (bool, error)
-
-	// PullImage pulls an image from a registry
-	PullImage(ctx context.Context, image string) error
-
-	// VerifyImage verifies a container image
-	VerifyImage(ctx context.Context, server *registry.Server, image string) (bool, error)
-
-	// BuildImage builds a Docker image from a Dockerfile in the specified context directory
-	BuildImage(ctx context.Context, contextDir, imageName string) error
 }
 
 // Monitor defines the interface for container monitoring

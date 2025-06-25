@@ -24,6 +24,7 @@ thv [flags]
 
 ### SEE ALSO
 
+* [thv client](thv_client.md)	 - Manage MCP clients
 * [thv config](thv_config.md)	 - Manage application configuration
 * [thv inspector](thv_inspector.md)	 - Launches the MCP Inspector UI and connects it to the specified MCP server
 * [thv list](thv_list.md)	 - List running MCP servers

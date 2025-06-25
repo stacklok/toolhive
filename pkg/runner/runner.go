@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/process"
@@ -157,6 +158,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := transportHandler.Setup(
 		ctx, r.Config.Runtime, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
 		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile, r.Config.K8sPodTemplatePatch,
+		r.Config.IsolateNetwork,
 	); err != nil {
 		return fmt.Errorf("failed to set up transport: %v", err)
 	}
@@ -172,7 +174,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Update client configurations with the MCP server URL.
 	// Note that this function checks the configuration to determine which
 	// clients should be updated, if any.
-	if err := updateClientConfigurations(r.Config.ContainerName, "localhost", r.Config.Port); err != nil {
+	if err := updateClientConfigurations(r.Config.ContainerName, r.Config.ContainerLabels, "localhost", r.Config.Port); err != nil {
 		logger.Warnf("Warning: Failed to update client configurations: %v", err)
 	}
 
@@ -278,7 +280,7 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 }
 
 // updateClientConfigurations updates client configuration files with the MCP server URL
-func updateClientConfigurations(containerName, host string, port int) error {
+func updateClientConfigurations(containerName string, containerLabels map[string]string, host string, port int) error {
 	// Find client configuration files
 	clientConfigs, err := client.FindClientConfigs()
 	if err != nil {
@@ -291,7 +293,8 @@ func updateClientConfigurations(containerName, host string, port int) error {
 	}
 
 	// Generate the URL for the MCP server
-	url := client.GenerateMCPServerURL(host, port, containerName)
+	transportType := labels.GetTransportType(containerLabels)
+	url := client.GenerateMCPServerURL(transportType, host, port, containerName)
 
 	// Update each configuration file
 	for _, clientConfig := range clientConfigs {

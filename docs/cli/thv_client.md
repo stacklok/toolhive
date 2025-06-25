@@ -1,0 +1,26 @@
+## thv client
+
+Manage MCP clients
+
+### Synopsis
+
+The client command provides subcommands to manage MCP client integrations.
+
+### Options
+
+```
+  -h, --help   help for client
+```
+
+### Options inherited from parent commands
+
+```
+      --debug   Enable debug mode
+```
+
+### SEE ALSO
+
+* [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
+* [thv client setup](thv_client_setup.md)	 - Interactively setup and register installed clients
+* [thv client status](thv_client_status.md)	 - Show status of all supported MCP clients
+

@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -46,6 +47,9 @@ func newVersionCmd() *cobra.Command {
 
 // printVersionInfo prints the version information
 func printVersionInfo(info versions.VersionInfo) {
+	if strings.HasPrefix(info.Version, "build-") {
+		fmt.Printf("You are running a local build of ToolHive\n\n")
+	}
 	fmt.Printf("ToolHive %s\n", info.Version)
 	fmt.Printf("Commit: %s\n", info.Commit)
 	fmt.Printf("Built: %s\n", info.BuildDate)

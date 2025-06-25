@@ -30,7 +30,8 @@ type Transport interface {
 	// The permissionProfile is used to configure container permissions.
 	// The k8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template.
 	Setup(ctx context.Context, runtime rt.Runtime, containerName string, image string, cmdArgs []string,
-		envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string) error
+		envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
+		isolateNetwork bool) error
 
 	// Start initializes the transport and begins processing messages.
 	// The transport is responsible for container operations like attaching to stdin/stdout if needed.
@@ -55,6 +56,9 @@ const (
 	// TransportTypeSSE represents the SSE transport.
 	TransportTypeSSE TransportType = "sse"
 
+	// TransportTypeStreamableHTTP represents the streamable HTTP transport.
+	TransportTypeStreamableHTTP TransportType = "streamable-http"
+
 	// TransportTypeInspector represents the transport mode for MCP Inspector.
 	TransportTypeInspector TransportType = "inspector"
 )
@@ -71,6 +75,8 @@ func ParseTransportType(s string) (TransportType, error) {
 		return TransportTypeStdio, nil
 	case "sse", "SSE":
 		return TransportTypeSSE, nil
+	case "streamable-http", "STREAMABLE-HTTP":
+		return TransportTypeStreamableHTTP, nil
 	case "inspector", "INSPECTOR":
 		return TransportTypeInspector, nil
 	default:

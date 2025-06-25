@@ -136,6 +136,7 @@ func Serve(
 		"/api/v1beta/registry":  v1.RegistryRouter(),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(clientManager),
+		"/api/v1beta/secrets":   v1.SecretsRouter(),
 	}
 
 	// Only mount docs router if enabled

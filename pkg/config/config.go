@@ -3,7 +3,6 @@
 package config
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -72,7 +71,6 @@ func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 
 // Clients contains settings for client configuration.
 type Clients struct {
-	AutoDiscovery     bool     `yaml:"auto_discovery"`
 	RegisteredClients []string `yaml:"registered_clients"`
 }
 
@@ -91,11 +89,15 @@ func createNewConfigWithDefaults() Config {
 			ProviderType:   "", // No default provider - user must run setup
 			SetupCompleted: false,
 		},
+<<<<<<< feature/remote-registry-private-url
 		Clients: Clients{
 			AutoDiscovery: true,
 		},
 		RegistryUrl:            "",
 		AllowPrivateRegistryIp: false,
+=======
+		RegistryUrl: "",
+>>>>>>> main
 	}
 }
 
@@ -166,20 +168,6 @@ func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
 	if newConfig {
 		// Create a new config with default values.
 		config = createNewConfigWithDefaults()
-
-		// Prompt user explicitly for auto discovery behaviour.
-		logger.Info("Would you like to enable auto discovery and configuration of MCP clients? (y/n) [n]: ")
-		reader := bufio.NewReader(os.Stdin)
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			logger.Info("Unable to read input, defaulting to No.")
-		}
-		// Treat anything except y/Y as n.
-		if input == "y\n" || input == "Y\n" {
-			config.Clients.AutoDiscovery = true
-		} else {
-			config.Clients.AutoDiscovery = false
-		}
 
 		// Persist the new default to disk.
 		logger.Infof("initializing configuration file at %s", configPath)

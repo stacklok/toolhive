@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/certs"
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -26,7 +26,7 @@ const (
 // Returns the Docker image name to use and any error encountered.
 func HandleProtocolScheme(
 	ctx context.Context,
-	runtime rt.Runtime,
+	imageManager images.ImageManager,
 	serverOrImage string,
 	caCertPath string,
 ) (string, error) {
@@ -40,7 +40,7 @@ func HandleProtocolScheme(
 		return "", err
 	}
 
-	return buildImageFromTemplate(ctx, runtime, transportType, packageName, templateData)
+	return buildImageFromTemplate(ctx, imageManager, transportType, packageName, templateData)
 }
 
 // parseProtocolScheme extracts the transport type and package name from the protocol scheme.
@@ -246,7 +246,7 @@ func generateImageName(transportType templates.TransportType, packageName string
 // buildImageFromTemplate builds a Docker image from the template data.
 func buildImageFromTemplate(
 	ctx context.Context,
-	runtime rt.Runtime,
+	imageManager images.ImageManager,
 	transportType templates.TransportType,
 	packageName string,
 	templateData templates.TemplateData,
@@ -286,7 +286,7 @@ func buildImageFromTemplate(
 
 	// Build the Docker image
 	logger.Infof("Building Docker image for %s package: %s", transportType, packageName)
-	if err := runtime.BuildImage(ctx, buildCtx.Dir, imageName); err != nil {
+	if err := imageManager.BuildImage(ctx, buildCtx.Dir, imageName); err != nil {
 		return "", fmt.Errorf("failed to build Docker image: %w", err)
 	}
 	logger.Infof("Successfully built Docker image: %s", imageName)

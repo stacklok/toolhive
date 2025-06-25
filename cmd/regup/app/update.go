@@ -21,13 +21,21 @@ var (
 	count       int
 	dryRun      bool
 	githubToken string
+	serverName  string
 )
+
+type serverWithName struct {
+	name   string
+	server *registry.ImageMetadata
+}
 
 var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Update registry entries with latest information",
-	Long:  `Update the oldest entries in the registry with the latest GitHub stars and pulls information.`,
-	RunE:  updateCmdFunc,
+	Long: `Update entries in the registry with the latest GitHub stars and pulls information.
+By default, updates the oldest entry. Use --count to update multiple oldest entries,
+or --server to update a specific server by name.`,
+	RunE: updateCmdFunc,
 }
 
 func init() {
@@ -35,6 +43,11 @@ func init() {
 	updateCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", false, "Perform a dry run without making changes")
 	updateCmd.Flags().StringVarP(&githubToken, "github-token", "t", "",
 		"GitHub token for API authentication (can also be set via GITHUB_TOKEN env var)")
+	updateCmd.Flags().StringVarP(&serverName, "server", "s", "",
+		"Specific server name to update")
+
+	// Mark count and server flags as mutually exclusive
+	updateCmd.MarkFlagsMutuallyExclusive("count", "server")
 }
 
 func updateCmdFunc(_ *cobra.Command, _ []string) error {
@@ -43,69 +56,112 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 		githubToken = os.Getenv("GITHUB_TOKEN")
 	}
 
-	// Read the registry file directly
+	// Load registry
+	reg, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+
+	// Select servers to update
+	servers, err := selectServersToUpdate(reg)
+	if err != nil {
+		return err
+	}
+
+	// Update servers
+	updatedServers := updateServers(servers)
+
+	// Save results
+	return saveResults(reg, updatedServers)
+}
+
+func loadRegistry() (*registry.Registry, error) {
 	registryPath := filepath.Join("pkg", "registry", "data", "registry.json")
 	// #nosec G304 -- This is a known file path
 	data, err := os.ReadFile(registryPath)
 	if err != nil {
-		return fmt.Errorf("failed to read registry file: %w", err)
+		return nil, fmt.Errorf("failed to read registry file: %w", err)
 	}
 
-	// Parse the registry
 	var reg registry.Registry
 	if err := json.Unmarshal(data, &reg); err != nil {
-		return fmt.Errorf("failed to parse registry: %w", err)
+		return nil, fmt.Errorf("failed to parse registry: %w", err)
 	}
 
-	// Create a slice of servers with their names
-	type serverWithName struct {
-		name   string
-		server *registry.Server
+	return &reg, nil
+}
+
+func selectServersToUpdate(reg *registry.Registry) ([]serverWithName, error) {
+	if serverName != "" {
+		return selectSpecificServer(reg, serverName)
 	}
+
+	return selectOldestServers(reg)
+}
+
+func selectSpecificServer(reg *registry.Registry, name string) ([]serverWithName, error) {
+	server, exists := reg.Servers[name]
+	if !exists {
+		return nil, fmt.Errorf("server '%s' not found in registry", name)
+	}
+	server.Name = name
+	return []serverWithName{{name: name, server: server}}, nil
+}
+
+func selectOldestServers(reg *registry.Registry) ([]serverWithName, error) {
 	servers := make([]serverWithName, 0, len(reg.Servers))
 	for name, server := range reg.Servers {
-		// Set the name field on each server
 		server.Name = name
 		servers = append(servers, serverWithName{name: name, server: server})
 	}
 
 	// Sort servers by last updated time (oldest first)
 	sort.Slice(servers, func(i, j int) bool {
-		var lastUpdatedI, lastUpdatedJ string
-
-		// Handle nil metadata
-		if servers[i].server.Metadata != nil {
-			lastUpdatedI = servers[i].server.Metadata.LastUpdated
-		}
-		if servers[j].server.Metadata != nil {
-			lastUpdatedJ = servers[j].server.Metadata.LastUpdated
-		}
-
-		timeI, errI := time.Parse(time.RFC3339, lastUpdatedI)
-		timeJ, errJ := time.Parse(time.RFC3339, lastUpdatedJ)
-
-		// If we can't parse either time, put it at the beginning to ensure it gets updated
-		if errI != nil {
-			return true
-		}
-		if errJ != nil {
-			return false
-		}
-
-		return timeI.Before(timeJ)
+		return isOlder(servers[i].server, servers[j].server)
 	})
 
 	// Limit to the requested count
-	if count > len(servers) {
-		count = len(servers)
+	limit := count
+	if limit > len(servers) {
+		limit = len(servers)
 		logger.Warnf("Requested count %d exceeds available servers, limiting to %d", count, len(servers))
 	}
-	servers = servers[:count]
 
-	// Keep track of updated servers
-	updatedServers := make([]string, 0, count)
+	return servers[:limit], nil
+}
 
-	// Update each server
+func isOlder(serverI, serverJ *registry.ImageMetadata) bool {
+	var lastUpdatedI, lastUpdatedJ string
+
+	if serverI.Metadata != nil {
+		lastUpdatedI = serverI.Metadata.LastUpdated
+	}
+	if serverJ.Metadata != nil {
+		lastUpdatedJ = serverJ.Metadata.LastUpdated
+	}
+
+	timeI, errI := time.Parse(time.RFC3339, lastUpdatedI)
+	timeJ, errJ := time.Parse(time.RFC3339, lastUpdatedJ)
+
+	// If both times are invalid or missing, fall back to name comparison for stability
+	if errI != nil && errJ != nil {
+		return serverI.Name < serverJ.Name
+	}
+	// If only I is invalid, treat I as older
+	if errI != nil {
+		return true
+	}
+	// If only J is invalid, treat J as older
+	if errJ != nil {
+		return false
+	}
+
+	return timeI.Before(timeJ)
+}
+
+func updateServers(servers []serverWithName) []string {
+	updatedServers := make([]string, 0, len(servers))
+
 	for _, s := range servers {
 		logger.Infof("Updating server: %s", s.name)
 
@@ -117,6 +173,10 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 		updatedServers = append(updatedServers, s.name)
 	}
 
+	return updatedServers
+}
+
+func saveResults(reg *registry.Registry, updatedServers []string) error {
 	// If we're in dry run mode, don't save changes
 	if dryRun {
 		logger.Info("Dry run completed, no changes made")
@@ -129,7 +189,7 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 		reg.LastUpdated = time.Now().Format("2006-01-02 15:04:05")
 
 		// Save the updated registry
-		if err := saveRegistry(&reg, updatedServers); err != nil {
+		if err := saveRegistry(reg, updatedServers); err != nil {
 			return fmt.Errorf("failed to save registry: %w", err)
 		}
 
@@ -142,10 +202,10 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 // updateServerInfo updates the GitHub stars and pulls for a server
-func updateServerInfo(name string, server *registry.Server) error {
+func updateServerInfo(name string, server *registry.ImageMetadata) error {
 	// Skip if no repository URL
 	if server.RepositoryURL == "" {
-		logger.Warnf("Server %s has no repository URL, skipping", name)
+		logger.Warnf("ImageMetadata %s has no repository URL, skipping", name)
 		return nil
 	}
 
@@ -309,7 +369,7 @@ func saveRegistry(reg *registry.Registry, updatedServers []string) error {
 		// Get the server from the original JSON
 		serverJSON, ok := serversMap[name].(map[string]interface{})
 		if !ok {
-			logger.Warnf("Server %s not found in original registry, skipping", name)
+			logger.Warnf("ImageMetadata %s not found in original registry, skipping", name)
 			continue
 		}
 

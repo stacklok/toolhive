@@ -27,6 +27,8 @@ func ClientRouter(
 	r.Get("/", routes.listClients)
 	r.Post("/", routes.registerClient)
 	r.Delete("/{name}", routes.unregisterClient)
+	r.Post("/register", routes.registerClientsBulk)
+	r.Post("/unregister", routes.unregisterClientsBulk)
 	return r
 }
 
@@ -74,8 +76,8 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = c.manager.RegisterClient(r.Context(), client.Client{
-		Name: newClient.Name,
+	err = c.manager.RegisterClients(r.Context(), []client.Client{
+		{Name: newClient.Name},
 	})
 	if err != nil {
 		logger.Errorf("Failed to register client: %v", err)
@@ -107,12 +109,101 @@ func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	err := c.manager.UnregisterClient(r.Context(), client.Client{
-		Name: client.MCPClient(clientName),
+	err := c.manager.UnregisterClients(r.Context(), []client.Client{
+		{Name: client.MCPClient(clientName)},
 	})
 	if err != nil {
 		logger.Errorf("Failed to unregister client: %v", err)
 		http.Error(w, "Failed to unregister client", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// registerClientsBulk
+//
+//	@Summary		Register multiple clients
+//	@Description	Register multiple clients with ToolHive
+//	@Tags			clients
+//	@Accept			json
+//	@Produce		json
+//	@Param			clients	body	bulkClientRequest	true	"Clients to register"
+//	@Success		200	{array}	createClientResponse
+//	@Failure		400	{string}	string	"Invalid request"
+//	@Router			/api/v1beta/clients/register [post]
+func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Request) {
+	var req bulkClientRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		logger.Errorf("Failed to decode request body: %v", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Names) == 0 {
+		http.Error(w, "At least one client name is required", http.StatusBadRequest)
+		return
+	}
+
+	clients := make([]client.Client, len(req.Names))
+	for i, name := range req.Names {
+		clients[i] = client.Client{Name: name}
+	}
+
+	err = c.manager.RegisterClients(r.Context(), clients)
+	if err != nil {
+		logger.Errorf("Failed to register clients: %v", err)
+		http.Error(w, "Failed to register clients", http.StatusInternalServerError)
+		return
+	}
+
+	responses := make([]createClientResponse, len(req.Names))
+	for i, name := range req.Names {
+		responses[i] = createClientResponse{Name: name}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err = json.NewEncoder(w).Encode(responses); err != nil {
+		http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+		return
+	}
+}
+
+// unregisterClientsBulk
+//
+//	@Summary		Unregister multiple clients
+//	@Description	Unregister multiple clients from ToolHive
+//	@Tags			clients
+//	@Accept			json
+//	@Param			clients	body	bulkClientRequest	true	"Clients to unregister"
+//	@Success		204
+//	@Failure		400	{string}	string	"Invalid request"
+//	@Router			/api/v1beta/clients/unregister [post]
+func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Request) {
+	var req bulkClientRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		logger.Errorf("Failed to decode request body: %v", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Names) == 0 {
+		http.Error(w, "At least one client name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Convert to client.Client slice
+	clients := make([]client.Client, len(req.Names))
+	for i, name := range req.Names {
+		clients[i] = client.Client{Name: name}
+	}
+
+	err = c.manager.UnregisterClients(r.Context(), clients)
+	if err != nil {
+		logger.Errorf("Failed to unregister clients: %v", err)
+		http.Error(w, "Failed to unregister clients", http.StatusInternalServerError)
 		return
 	}
 
@@ -127,4 +218,9 @@ type createClientRequest struct {
 type createClientResponse struct {
 	// Name is the type of the client that was registered.
 	Name client.MCPClient `json:"name"`
+}
+
+type bulkClientRequest struct {
+	// Names is the list of client names to operate on.
+	Names []client.MCPClient `json:"names"`
 }

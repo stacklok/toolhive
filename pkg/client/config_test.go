@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // createMockClientConfigs creates a set of mock client configurations for testing
@@ -105,100 +106,6 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 	// Create test config files for different clients
 	createTestConfigFiles(t, tempHome)
 
-	t.Run("AutoDiscoveryEnabled", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		// Set up config with auto-discovery enabled
-		testConfig := &config.Config{
-			Secrets: config.Secrets{
-				ProviderType: "encrypted",
-			},
-			Clients: config.Clients{
-				AutoDiscovery:     true,
-				RegisteredClients: []string{},
-			},
-		}
-
-		cleanup := MockConfig(t, testConfig)
-		defer cleanup()
-
-		// Find client configs
-		configs, err := FindClientConfigs()
-		require.NoError(t, err)
-
-		// We should find configs for all supported clients that were created
-		assert.NotEmpty(t, configs)
-
-		// Verify that we found the expected client types
-		foundClients := make(map[MCPClient]bool)
-		for _, cf := range configs {
-			foundClients[cf.ClientType] = true
-		}
-
-		// Check that we found at least some of the expected clients
-		// Note: This depends on which config files were successfully created
-		assert.True(t, len(foundClients) > 0, "Should find at least one client config")
-	})
-
-	t.Run("AutoDiscoveryDisabledWithRegisteredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		// Set up config with auto-discovery disabled but with registered clients
-		testConfig := &config.Config{
-			Secrets: config.Secrets{
-				ProviderType: "encrypted",
-			},
-			Clients: config.Clients{
-				AutoDiscovery:     false,
-				RegisteredClients: []string{"vscode", "cursor", "claude-code"},
-			},
-		}
-
-		cleanup := MockConfig(t, testConfig)
-		defer cleanup()
-
-		// Find client configs
-		configs, err := FindClientConfigs()
-		require.NoError(t, err)
-
-		// We should only find configs for the registered clients
-		foundClients := make(map[MCPClient]bool)
-		for _, cf := range configs {
-			foundClients[cf.ClientType] = true
-		}
-
-		// Check that we only found the registered clients
-		for _, clientName := range testConfig.Clients.RegisteredClients {
-			if foundClients[MCPClient(clientName)] {
-				// At least one registered client was found
-				return
-			}
-		}
-
-		// If we get here, it means none of the registered clients were found
-		// This is acceptable if the test environment doesn't have those clients configured
-		t.Log("None of the registered clients were found, but this may be expected in the test environment")
-	})
-
-	t.Run("AutoDiscoveryDisabledWithNoRegisteredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		// Set up config with auto-discovery disabled and no registered clients
-		testConfig := &config.Config{
-			Secrets: config.Secrets{
-				ProviderType: "encrypted",
-			},
-			Clients: config.Clients{
-				AutoDiscovery:     false,
-				RegisteredClients: []string{},
-			},
-		}
-
-		cleanup := MockConfig(t, testConfig)
-		defer cleanup()
-
-		// Find client configs
-		configs, err := FindClientConfigs()
-		require.NoError(t, err)
-
-		// We should not find any configs
-		assert.Empty(t, configs)
-	})
-
 	t.Run("InvalidConfigFileFormat", func(t *testing.T) { //nolint:paralleltest // Modifies global state
 		// Create an invalid JSON file
 		invalidPath := filepath.Join(tempHome, ".cursor", "invalid.json")
@@ -227,13 +134,11 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 		// Add our invalid client to the supported clients
 		supportedClientIntegrations = append(supportedClientIntegrations, invalidClient)
 
-		// Set up config with auto-discovery enabled
 		testConfig := &config.Config{
 			Secrets: config.Secrets{
 				ProviderType: "encrypted",
 			},
 			Clients: config.Clients{
-				AutoDiscovery:     true,
 				RegisteredClients: []string{},
 			},
 		}
@@ -279,7 +184,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			url := GenerateMCPServerURL(tt.host, tt.port, tt.containerName)
+			url := GenerateMCPServerURL(types.TransportTypeSSE.String(), tt.host, tt.port, tt.containerName)
 			if url != tt.expected {
 				t.Errorf("GenerateMCPServerURL() = %v, want %v", url, tt.expected)
 			}
@@ -311,13 +216,11 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	createTestConfigFiles(t, tempHome)
 
 	t.Run("FindAllConfiguredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		// Set up config with auto-discovery enabled
 		testConfig := &config.Config{
 			Secrets: config.Secrets{
 				ProviderType: "encrypted",
 			},
 			Clients: config.Clients{
-				AutoDiscovery:     true,
 				RegisteredClients: []string{},
 			},
 		}

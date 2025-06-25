@@ -29,10 +29,8 @@ import (
 	"k8s.io/client-go/tools/watch"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
 	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -259,7 +257,9 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	containerLabels map[string]string,
 	_ *permissions.Profile, // TODO: Implement permission profile support for Kubernetes
 	transportType string,
-	options *runtime.DeployWorkloadOptions) (string, error) {
+	options *runtime.DeployWorkloadOptions,
+	_ bool,
+) (string, int, error) {
 	namespace := getCurrentNamespace()
 	containerLabels["app"] = containerName
 	containerLabels["toolhive"] = "true"
@@ -280,7 +280,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		var err error
 		podTemplateSpec, err = applyPodTemplatePatch(podTemplateSpec, options.K8sPodTemplatePatch)
 		if err != nil {
-			return "", fmt.Errorf("failed to apply pod template patch: %w", err)
+			return "", 0, fmt.Errorf("failed to apply pod template patch: %w", err)
 		}
 	}
 
@@ -298,7 +298,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		options,
 	)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 
 	// Create an apply configuration for the statefulset
@@ -321,7 +321,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 			Force:        true,
 		})
 	if err != nil {
-		return "", fmt.Errorf("failed to apply statefulset: %v", err)
+		return "", 0, fmt.Errorf("failed to apply statefulset: %v", err)
 	}
 
 	logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
@@ -330,7 +330,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		// Create a headless service for SSE transport
 		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
 		if err != nil {
-			return "", fmt.Errorf("failed to create headless service: %v", err)
+			return "", 0, fmt.Errorf("failed to create headless service: %v", err)
 		}
 	}
 
@@ -341,10 +341,10 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 	err = waitFunc(ctx, c.client, namespace, createdStatefulSet.Name)
 	if err != nil {
-		return createdStatefulSet.Name, fmt.Errorf("statefulset applied but failed to become ready: %w", err)
+		return createdStatefulSet.Name, 0, fmt.Errorf("statefulset applied but failed to become ready: %w", err)
 	}
 
-	return createdStatefulSet.Name, nil
+	return createdStatefulSet.Name, 0, nil
 }
 
 // GetWorkloadInfo implements runtime.Runtime.
@@ -411,26 +411,6 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtim
 		Labels:  statefulset.Labels,
 		Ports:   ports,
 	}, nil
-}
-
-// ImageExists implements runtime.Runtime.
-func (*Client) ImageExists(_ context.Context, imageName string) (bool, error) {
-	// In Kubernetes, we can't directly check if an image exists in the cluster
-	// without trying to use it. For simplicity, we'll assume the image exists
-	// if it's a valid image name.
-	//
-	// In a more complete implementation, we could:
-	// 1. Create a temporary pod with the image to see if it can be pulled
-	// 2. Use the Kubernetes API to check node status for the image
-	// 3. Use an external registry API to check if the image exists
-
-	// For now, just return true if the image name is not empty
-	if imageName == "" {
-		return false, fmt.Errorf("image name cannot be empty")
-	}
-
-	// We could add more validation here if needed
-	return true, nil
 }
 
 // IsWorkloadRunning implements runtime.Runtime.
@@ -508,40 +488,6 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 	}
 
 	return result, nil
-}
-
-// PullImage implements runtime.Runtime.
-func (*Client) PullImage(_ context.Context, imageName string) error {
-	// In Kubernetes, we don't need to explicitly pull images as they are pulled
-	// automatically when creating pods. The kubelet on each node will pull the
-	// image when needed.
-
-	// Log that we're skipping the pull operation
-	logger.Infof("Skipping explicit image pull for %s in Kubernetes - "+
-		"images are pulled automatically when pods are created", imageName)
-
-	return nil
-}
-
-// VerifyImage verifies a container image
-func (*Client) VerifyImage(_ context.Context, serverInfo *registry.Server, imageRef string) (bool, error) {
-	// Create a new verifier
-	v, err := verifier.New(serverInfo)
-	if err != nil {
-		return false, err
-	}
-
-	// Verify the image passing the server info
-	return v.VerifyServer(imageRef, serverInfo)
-}
-
-// BuildImage implements runtime.Runtime.
-func (*Client) BuildImage(_ context.Context, _, _ string) error {
-	// In Kubernetes, we don't build images directly within the cluster.
-	// Images should be built externally and pushed to a registry.
-	logger.Warnf("BuildImage is not supported in Kubernetes runtime. " +
-		"Images should be built externally and pushed to a registry.")
-	return fmt.Errorf("building images directly is not supported in Kubernetes runtime")
 }
 
 // RemoveWorkload implements runtime.Runtime.

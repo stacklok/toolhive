@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,8 +12,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -62,50 +61,22 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	// Get container name
 	containerName := args[0]
-
-	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
-	}
-
-	// List workloads to find the one with the given name
-	containers, err := runtime.ListWorkloads(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list containers: %w", err)
-	}
-
-	// Find the container with the given name
-	var containerID string
-	for _, c := range containers {
-		// Check if the container is managed by ToolHive
-		if !labels.IsToolHiveContainer(c.Labels) {
-			continue
-		}
-
-		// Check if the container name matches
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
-
-		// Check if the name matches (exact match or prefix match)
-		if name == containerName || strings.HasPrefix(c.ID, containerName) {
-			containerID = c.ID
-			break
-		}
-	}
-
-	if containerID == "" {
-		logger.Infof("container %s not found", containerName)
-		return nil
-	}
-
 	follow := viper.GetBool("follow")
-	logs, err := runtime.GetWorkloadLogs(ctx, containerID, follow)
+
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get container logs: %v", err)
+		return fmt.Errorf("failed to create lifecycle manager: %v", err)
 	}
+
+	logs, err := manager.GetLogs(ctx, containerName, follow)
+	if err != nil {
+		if errors.Is(err, workloads.ErrContainerNotFound) {
+			logger.Infof("container %s not found", containerName)
+			return nil
+		}
+		return fmt.Errorf("failed to get logs for container %s: %v", containerName, err)
+	}
+
 	fmt.Print(logs)
 	return nil
 }
@@ -133,8 +104,8 @@ func logsPruneCmdFunc(cmd *cobra.Command) error {
 		return nil
 	}
 
-	prunedFiles, errors := pruneOrphanedLogFiles(logFiles, managedNames)
-	reportPruneResults(prunedFiles, errors)
+	prunedFiles, errs := pruneOrphanedLogFiles(logFiles, managedNames)
+	reportPruneResults(prunedFiles, errs)
 
 	return nil
 }
@@ -190,14 +161,14 @@ func getLogFiles(logsDir string) ([]string, error) {
 
 func pruneOrphanedLogFiles(logFiles []string, managedNames map[string]bool) ([]string, []string) {
 	var prunedFiles []string
-	var errors []string
+	var errs []string
 
 	for _, logFile := range logFiles {
 		baseName := strings.TrimSuffix(filepath.Base(logFile), ".log")
 
 		if !managedNames[baseName] {
 			if err := os.Remove(logFile); err != nil {
-				errors = append(errors, fmt.Sprintf("failed to remove %s: %v", logFile, err))
+				errs = append(errs, fmt.Sprintf("failed to remove %s: %v", logFile, err))
 				logger.Warnf("Failed to remove log file %s: %v", logFile, err)
 			} else {
 				prunedFiles = append(prunedFiles, logFile)
@@ -206,10 +177,10 @@ func pruneOrphanedLogFiles(logFiles []string, managedNames map[string]bool) ([]s
 		}
 	}
 
-	return prunedFiles, errors
+	return prunedFiles, errs
 }
 
-func reportPruneResults(prunedFiles, errors []string) {
+func reportPruneResults(prunedFiles, errs []string) {
 	if len(prunedFiles) == 0 {
 		logger.Info("No orphaned log files found to prune")
 	} else {
@@ -219,9 +190,9 @@ func reportPruneResults(prunedFiles, errors []string) {
 		}
 	}
 
-	if len(errors) > 0 {
-		logger.Warnf("Encountered %d error(s) during pruning:", len(errors))
-		for _, errMsg := range errors {
+	if len(errs) > 0 {
+		logger.Warnf("Encountered %d error(s) during pruning:", len(errs))
+		for _, errMsg := range errs {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", errMsg)
 		}
 	}

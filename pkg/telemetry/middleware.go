@@ -226,11 +226,9 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 	// Add method-specific attributes
 	m.addMethodSpecificAttributes(span, parsedMCP)
 
-	// Extract server name from URL or headers
+	// Extract server name from the request, defaulting to the middleware's configured server name
 	serverName := m.extractServerName(r)
-	if serverName != "" {
-		span.SetAttributes(attribute.String("mcp.server.name", serverName))
-	}
+	span.SetAttributes(attribute.String("mcp.server.name", serverName))
 
 	// Determine backend transport type
 	// Note: ToolHive always serves SSE to clients, but backends can be stdio or sse
@@ -276,29 +274,21 @@ func (m *HTTPMiddleware) addMethodSpecificAttributes(span trace.Span, parsedMCP 
 	}
 }
 
-// extractServerName attempts to extract the server name from the request.
-func (*HTTPMiddleware) extractServerName(r *http.Request) string {
-	// Try to get server name from custom headers (if set by proxy)
+// extractServerName extracts the MCP server name from the HTTP request using multiple fallback strategies.
+// It first checks for the X-MCP-Server-Name header, then extracts from URL path segments
+// (skipping common prefixes like "sse", "messages", "api", "v1"), and finally falls back
+// to the middleware's configured server name.
+func (m *HTTPMiddleware) extractServerName(r *http.Request) string {
 	if serverName := r.Header.Get("X-MCP-Server-Name"); serverName != "" {
 		return serverName
 	}
-
-	// Try to extract from path segments (skip common prefixes)
 	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	for _, part := range pathParts {
 		if part != "" && part != "sse" && part != "messages" && part != "api" && part != "v1" {
 			return part
 		}
 	}
-
-	// Try to get from query parameters (for session-based routing)
-	if sessionID := r.URL.Query().Get("session_id"); sessionID != "" {
-		// In a real implementation, this could map session IDs to server names
-		// For now, return a placeholder
-		return "session-based"
-	}
-
-	return "unknown"
+	return m.serverName
 }
 
 // extractBackendTransport determines the backend transport type.

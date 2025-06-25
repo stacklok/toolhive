@@ -207,26 +207,26 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 	return nil
 }
 
+func getFilteredClientConfigs(clientName string) ([]client.ConfigFile, error) {
+	clientConfigs, err := client.FindClientConfigs()
+	if err != nil {
+		return nil, fmt.Errorf("failed to find client configurations: %w", err)
+	}
+	var filtered []client.ConfigFile
+	for _, clientConfig := range clientConfigs {
+		if clientConfig.ClientType == client.MCPClient(clientName) {
+			filtered = append(filtered, clientConfig)
+		}
+	}
+	return filtered, nil
+}
+
 // addRunningMCPsToClient adds currently running MCP servers to the specified client's configuration
 func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
+	runningContainers, err := getRunningToolHiveContainers(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
-	}
-
-	// List workloads
-	containers, err := runtime.ListWorkloads(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Filter containers to only show those managed by ToolHive and running
-	var runningContainers []rt.ContainerInfo
-	for _, c := range containers {
-		if labels.IsToolHiveContainer(c.Labels) && c.State == "running" {
-			runningContainers = append(runningContainers, c)
-		}
+		return err
 	}
 
 	if len(runningContainers) == 0 {
@@ -234,17 +234,9 @@ func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 		return nil
 	}
 
-	clientConfigs, err := client.FindClientConfigs()
+	filteredClientConfigs, err := getFilteredClientConfigs(clientName)
 	if err != nil {
-		return fmt.Errorf("failed to find client configurations: %w", err)
-	}
-
-	// Filter out the client configuration for the specified client
-	var filteredClientConfigs []client.ConfigFile
-	for _, clientConfig := range clientConfigs {
-		if clientConfig.ClientType == client.MCPClient(clientName) {
-			filteredClientConfigs = append(filteredClientConfigs, clientConfig)
-		}
+		return err
 	}
 
 	// If no configs found, nothing to do
@@ -292,6 +284,28 @@ func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 	}
 
 	return nil
+}
+
+func getRunningToolHiveContainers(ctx context.Context) ([]rt.ContainerInfo, error) {
+	runtime, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create container runtime: %v", err)
+	}
+
+	// List workloads
+	containers, err := runtime.ListWorkloads(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %v", err)
+	}
+
+	// Filter containers to only show those managed by ToolHive and running
+	var runningContainers []rt.ContainerInfo
+	for _, c := range containers {
+		if labels.IsToolHiveContainer(c.Labels) && c.State == "running" {
+			runningContainers = append(runningContainers, c)
+		}
+	}
+	return runningContainers, nil
 }
 
 func setCACertCmdFunc(_ *cobra.Command, args []string) error {

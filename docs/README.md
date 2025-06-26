@@ -99,7 +99,7 @@ task --list
 ## Contributing
 
 We welcome contributions to ToolHive! If you want to contribute, please review
-the [contributing guide](./CONTRIBUTING.md).
+the [contributing guide](../CONTRIBUTING.md).
 
 Contributions to the user-facing documentation are also welcome. If you have
 suggestions or improvements, please open an issue or submit a pull request in

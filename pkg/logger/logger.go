@@ -2,9 +2,11 @@
 package logger
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -56,8 +58,8 @@ func Errorf(msg string, args ...any) {
 }
 
 // Panic logs a message at error level using the singleton logger and panics the program.
-func Panic(msg string, args ...any) {
-	log.Panic(msg, args...)
+func Panic(msg string) {
+	log.Panic(msg)
 }
 
 // Panicf logs a message at error level using the singleton logger and panics the program.
@@ -75,7 +77,7 @@ type Logger interface {
 	Warnf(msg string, args ...any)
 	Error(msg string, args ...any)
 	Errorf(msg string, args ...any)
-	Panic(msg string, args ...any)
+	Panic(msg string)
 	Panicf(msg string, args ...any)
 }
 
@@ -101,9 +103,7 @@ func (l *slogLogger) Errorf(msg string, args ...any) {
 }
 
 func (l *slogLogger) Panicf(msg string, args ...any) {
-	l.logger.Error(fmt.Sprintf(msg, args...))
-	// TODO: Check if logger has native panic method.
-	panic(msg)
+	l.Panic(fmt.Sprintf(msg, args...))
 }
 
 func (l *slogLogger) Debug(msg string, args ...any) {
@@ -122,8 +122,11 @@ func (l *slogLogger) Error(msg string, args ...any) {
 	l.logger.Error(msg, args...)
 }
 
-func (l *slogLogger) Panic(msg string, args ...any) {
-	l.logger.Error(msg, args...)
+func (l *slogLogger) Panic(msg string) {
+	var pcs [1]uintptr
+	runtime.Callers(2, pcs[:]) // skip [Callers, Panic]
+	record := slog.NewRecord(time.Now(), slog.LevelError, msg, pcs[0])
+	_ = l.logger.Handler().Handle(context.Background(), record)
 	panic(msg)
 }
 

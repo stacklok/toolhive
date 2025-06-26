@@ -308,6 +308,9 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 		if runConfig.TelemetryConfig.EnablePrometheusMetricsPath {
 			detachedArgs = append(detachedArgs, "--otel-enable-prometheus-metrics-path")
 		}
+		for _, envVar := range runConfig.TelemetryConfig.EnvironmentVariables {
+			detachedArgs = append(detachedArgs, "--otel-env-vars", envVar)
+		}
 	}
 
 	// Add enable audit flag if audit config is set but no config path is provided

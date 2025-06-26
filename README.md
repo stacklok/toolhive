@@ -67,70 +67,14 @@ setup, no security headaches, no runtime hassles.
 
 ---
 
-## Quickstart
-
-To get started, make sure you have Docker or Podman installed.
-
-### Install the ToolHive CLI
-
-macOS (or Linux) with Homebrew:
-
-```sh title="Install ToolHive CLI"
-brew tap stacklok/tap
-brew install thv
-```
-
-Windows:
-
-```sh
-winget install stacklok.thv
-```
-
-Or download the latest binary from
-[GitHub releases](https://github.com/stacklok/toolhive/releases/latest)
-
-### Run your first MCP server
-
-1. Run the Fetch MCP server:
-
-   ```sh
-   thv run fetch
-   ```
-
-2. List running servers:
-
-   ```sh
-   thv list
-   ```
-
-Your registered client can now use the `fetch` MCP tool to retrieve website content. You might need to
-restart your client for changes to take effect.
-
-### Next steps
-
-ToolHive can run any MCP server from the built-in registry, custom container
-images, or even build images on the fly from source packages.
-
-Want to explore more? Run:
-
-```sh
-thv registry list
-```
-
-This will show additional MCP servers available in the built-in registry that
-you can run with ToolHive.
-
-For more details, see the
-[Quickstart guide](https://docs.stacklok.com/toolhive/quickstart).
-
----
-
 ## Contributing
 
 We welcome contributions and feedback from the community!
 
 - 🐛 [Report issues](https://github.com/stacklok/toolhive/issues)
+- 💬 [Join our Discord](https://discord.gg/stacklok)
 - 🤝 [Contributing guide](./CONTRIBUTING.md)
+- 📖 [Developer guide](./docs/README.md)
 
 If you have ideas, suggestions, or want to get involved, check out our
 contributing guide or open an issue. Join us in making ToolHive even better!

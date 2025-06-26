@@ -3,3 +3,6 @@
 # https://github.com/github/linguist.
 
 docs/cli/thv*.md linguist-generated=true
+docs/operator/crd-api.md linguist-generated=true
+docs/server/docs.go linguist-generated=true
+docs/server/swagger.* linguist-generated=true

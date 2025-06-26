@@ -266,7 +266,7 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 	// Create host configuration
 	hostConfig := &container.HostConfig{
 		Mounts:      convertMounts(permissionConfig.Mounts),
-		NetworkMode: container.NetworkMode(permissionConfig.NetworkMode),
+		NetworkMode: "",
 		CapAdd:      permissionConfig.CapAdd,
 		CapDrop:     permissionConfig.CapDrop,
 		SecurityOpt: permissionConfig.SecurityOpt,
@@ -292,12 +292,15 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 	// create mcp container
 	internalEndpointsConfig := map[string]*network.EndpointSettings{}
 	if isolateNetwork {
-		internalEndpointsConfig[networkName] = &network.EndpointSettings{}
+		internalEndpointsConfig[networkName] = &network.EndpointSettings{
+			NetworkID: networkName,
+		}
 	} else {
 		// for other workloads such as inspector, add to external network
-		internalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{}
+		internalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{
+			NetworkID: "toolhive-external",
+		}
 	}
-
 	containerId, err := c.createContainer(ctx, name, config, hostConfig, internalEndpointsConfig)
 	if err != nil {
 		return "", fmt.Errorf("failed to create container: %v", err)

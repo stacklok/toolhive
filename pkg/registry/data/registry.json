@@ -681,7 +681,12 @@
       "transport": "stdio"
     },
     "github": {
-      "args": [],
+      "args": [
+          "stdio",
+          "--toolsets",
+          "all",
+          "--dynamic-toolsets"
+      ],
       "description": "The GitHub MCP Server provides seamless integration with GitHub APIs, enabling advanced automation and interaction capabilities for developers and tools",
       "env_vars": [
         {

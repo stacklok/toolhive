@@ -203,7 +203,7 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 			// Propagate the error if the file is not found
 			return nil, fmt.Errorf("%w: for client %s", ErrConfigFileNotFound, clientType)
 		}
-		return nil, fmt.Errorf("failed to retrieve client config metadata: %w", err)
+		return nil, err
 	}
 
 	// validate the format of the config files

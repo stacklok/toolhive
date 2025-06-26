@@ -56,7 +56,7 @@ type mcpClientConfig struct {
 	PlatformPrefix                map[string][]string
 	MCPServersPathPrefix          string
 	Extension                     Extension
-	SupportedTransportTypesMap    map[types.TransportType]string
+	SupportedTransportTypesMap    map[types.TransportType]string // stdio should be mapped to sse
 	IsTransportTypeFieldSupported bool
 }
 
@@ -81,7 +81,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersPathPrefix: "/mcpServers",
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "stdio",
+			types.TransportTypeStdio:          "sse",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -103,7 +103,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
 			types.TransportTypeSSE:   "sse",
-			types.TransportTypeStdio: "stdio",
+			types.TransportTypeStdio: "sse",
 		},
 		IsTransportTypeFieldSupported: false,
 	},
@@ -122,7 +122,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersPathPrefix: "/mcp/servers",
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "stdio",
+			types.TransportTypeStdio:          "sse",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -143,7 +143,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "stdio",
+			types.TransportTypeStdio:          "sse",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -157,7 +157,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{".cursor"},
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "stdio",
+			types.TransportTypeStdio:          "sse",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -173,7 +173,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{},
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "stdio",
+			types.TransportTypeStdio:          "sse",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},

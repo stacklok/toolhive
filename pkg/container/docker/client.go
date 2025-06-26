@@ -266,7 +266,7 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 	// Create host configuration
 	hostConfig := &container.HostConfig{
 		Mounts:      convertMounts(permissionConfig.Mounts),
-		NetworkMode: "",
+		NetworkMode: container.NetworkMode(permissionConfig.NetworkMode),
 		CapAdd:      permissionConfig.CapAdd,
 		CapDrop:     permissionConfig.CapDrop,
 		SecurityOpt: permissionConfig.SecurityOpt,
@@ -955,7 +955,7 @@ func (c *Client) getPermissionConfigFromProfile(
 	// Start with a default permission config
 	config := &runtime.PermissionConfig{
 		Mounts:      []runtime.Mount{},
-		NetworkMode: "none",
+		NetworkMode: "", // set to blank as podman is not recognizing the "none" value when we attach to other networks
 		CapDrop:     []string{"ALL"},
 		CapAdd:      []string{},
 		SecurityOpt: []string{},

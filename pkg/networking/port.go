@@ -137,7 +137,7 @@ func FindOrUsePort(port int) (int, error) {
 	// Requested port is busy — find an alternative
 	alt := FindAvailable()
 	if alt == 0 {
-		return 0, fmt.Errorf("requested port %d is in use; no alternative available", port)
+		return 0, fmt.Errorf("failed to find an alternative port after requested port %d was unavailable", port)
 	}
 	return alt, nil
 }

@@ -286,7 +286,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 		testURL := "http://localhost:9999/sse#test-server"
 
 		for _, cf := range configs {
-			err := Upsert(cf, testServer, testURL)
+			err := Upsert(cf, testServer, testURL, types.TransportTypeSSE.String())
 			require.NoError(t, err, "Should be able to add MCP server to %s config", cf.ClientType)
 
 			// Read the file and verify the server was added

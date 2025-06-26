@@ -138,7 +138,7 @@ func (m *defaultManager) addRunningMCPsToClient(ctx context.Context, clientType 
 		url := GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
 
 		// Update the MCP server configuration with locking
-		if err := Upsert(*clientConfig, name, url); err != nil {
+		if err := Upsert(*clientConfig, name, url, transportType); err != nil {
 			logger.Warnf("Warning: Failed to update MCP server configuration in %s: %v", clientConfig.Path, err)
 			continue
 		}

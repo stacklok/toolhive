@@ -9,6 +9,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
@@ -129,11 +130,13 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)
 	containerOptions.ExposedPorts[containerPortStr] = struct{}{}
 
+	// bind to a random host port
 	// Create host port bindings (configurable through the --host flag)
+	hostPort := networking.FindAvailable()
 	portBindings := []rt.PortBinding{
 		{
 			HostIP:   t.host,
-			HostPort: fmt.Sprintf("%d", t.targetPort),
+			HostPort: fmt.Sprintf("%d", hostPort),
 		},
 	}
 
@@ -147,8 +150,6 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 
 	// Set the port bindings
 	containerOptions.PortBindings[containerPortStr] = portBindings
-
-	logger.Infof("Exposing container port %d", t.targetPort)
 
 	// For SSE transport, we don't need to attach stdio
 	containerOptions.AttachStdio = false

@@ -77,7 +77,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		SupportedTransportTypesMap: map[types.TransportType]string{
 			types.TransportTypeStdio:          "sse",
 			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: "http",
+			types.TransportTypeStreamableHTTP: "streamable-http",
 		},
 		IsTransportTypeFieldSupported: true,
 	},

@@ -141,6 +141,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
+		IsTransportTypeFieldSupported: true,
 	},
 	{
 		ClientType:           Cursor,
@@ -149,11 +150,13 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersPathPrefix: "/mcpServers",
 		RelPath:              []string{".cursor"},
 		Extension:            JSON,
-		SupportedTransportTypesMap: map[types.TransportType]string{ // Not explicitly required though, Cursor auto-detects and is able to connect to both sse and streamable-http types
+		SupportedTransportTypesMap: map[types.TransportType]string{
 			types.TransportTypeStdio:          "stdio",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
+		// Adding type field is not explicitly required though, Cursor auto-detects and is able to
+		// connect to both sse and streamable-http types
 		IsTransportTypeFieldSupported: true,
 	},
 	{
@@ -244,9 +247,8 @@ func Upsert(cf ConfigFile, name string, url string, transportType string) error 
 		mappedTransportType, ok := supportedClientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
 		if supportedClientIntegrations[i].IsTransportTypeFieldSupported && ok {
 			return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: mappedTransportType})
-		} else {
-			return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})
 		}
+		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})
 	}
 	return nil
 }

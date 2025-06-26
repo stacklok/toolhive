@@ -285,6 +285,95 @@
       ],
       "transport": "stdio"
     },
+    "elasticsearch": {
+      "args": [],
+      "description": "Connect to your Elasticsearch data directly from any MCP Client.",
+      "env_vars": [
+        {
+          "description": "Your Elasticsearch instance URL",
+          "name": "ES_URL",
+          "required": true
+        },
+        {
+          "description": "Elasticsearch API key for authentication",
+          "name": "ES_API_KEY",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "Elasticsearch username for basic authentication",
+          "name": "ES_USERNAME",
+          "required": false
+        },
+        {
+          "description": "Elasticsearch password for basic authentication",
+          "name": "ES_PASSWORD",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "Path to custom CA certificate for Elasticsearch SSL/TLS",
+          "name": "ES_CA_CERT",
+          "required": false
+        },
+        {
+          "description": "Set to '1' or 'true' to skip SSL certificate verification",
+          "name": "ES_SSL_SKIP_VERIFY",
+          "required": false
+        },
+        {
+          "description": "Path prefix for Elasticsearch instance exposed at a non-root path",
+          "name": "ES_PATH_PREFIX",
+          "required": false
+        },
+        {
+          "description": "Server assumes Elasticsearch 9.x. Set to 8 target Elasticsearch 8.x",
+          "name": "ES_VERSION",
+          "required": false
+        }
+      ],
+      "image": "mcp/elasticsearch:latest",
+      "metadata": {
+        "last_updated": "2025-06-26T13:29:23-04:00",
+        "pulls": 4703,
+        "stars": 298
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [
+              443,
+              9200
+            ],
+            "allow_transport": [
+              "tcp"
+            ],
+            "insecure_allow_all": true
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/elastic/mcp-server-elasticsearch",
+      "tags": [
+        "elasticsearch",
+        "search",
+        "analytics",
+        "data",
+        "alerting",
+        "observability",
+        "metrics",
+        "logs"
+      ],
+      "tools": [
+        "get_mappings",
+        "get_shards",
+        "list_indices",
+        "search"
+      ],
+      "transport": "stdio"
+    },
     "everart": {
       "args": [],
       "description": "Image generation server for Claude Desktop using EverArt's API.",

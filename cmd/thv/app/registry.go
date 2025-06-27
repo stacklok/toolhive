@@ -154,11 +154,14 @@ func printTextServerInfo(name string, server *registry.ImageMetadata) {
 	fmt.Printf("Name: %s\n", server.Name)
 	fmt.Printf("Image: %s\n", server.Image)
 	fmt.Printf("Description: %s\n", server.Description)
+	fmt.Printf("Tier: %s\n", server.Tier)
+	fmt.Printf("Status: %s\n", server.Status)
 	fmt.Printf("Transport: %s\n", server.Transport)
 	if (server.Transport == "sse" || server.Transport == "streamable-http") && server.TargetPort > 0 {
 		fmt.Printf("Target Port: %d\n", server.TargetPort)
 	}
 	fmt.Printf("Repository URL: %s\n", server.RepositoryURL)
+	fmt.Printf("Has Provenance: %s\n", map[bool]string{true: "Yes", false: "No"}[server.Provenance != nil])
 
 	if server.Metadata != nil {
 		fmt.Printf("Popularity: %d stars, %d pulls\n", server.Metadata.Stars, server.Metadata.Pulls)

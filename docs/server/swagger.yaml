@@ -168,6 +168,10 @@ components:
           description: RepositoryURL is the URL to the source code repository for
             the server
           type: string
+        status:
+          description: The Status indicates whether the server is currently active
+            or deprecated
+          type: string
         tags:
           description: Tags are categorization labels for the server to aid in discovery
             and filtering
@@ -179,6 +183,10 @@ components:
           description: TargetPort is the port for the container to expose (only applicable
             to SSE transport)
           type: integer
+        tier:
+          description: Tier represents the tier classification level of the server,
+            e.g., "official" or "community" driven
+          type: string
         tools:
           description: Tools is a list of tool names provided by this MCP server
           items:

@@ -563,10 +563,10 @@ func (c *RunConfig) validateConfig(
 
 	// If we are missing the permission profile, attempt to load one from the image metadata.
 	if c.PermissionProfileNameOrPath == "" && imageMetadata != nil {
-		permProfilePath, err := CreatePermissionProfileFile(c.Image, imageMetadata.Permissions)
+		permProfilePath, err := CreatePermissionProfileFile(c.Name, imageMetadata.Permissions)
 		if err != nil {
 			// Just log the error and continue with the default permission profile
-			logger.Warnf("Warning: Failed to create permission profile file: %v", err)
+			logger.Warnf("Warning: failed to create permission profile file: %v", err)
 		} else {
 			// Update the permission profile path
 			c.PermissionProfileNameOrPath = permProfilePath

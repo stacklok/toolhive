@@ -181,7 +181,7 @@ components:
           uniqueItems: false
         target_port:
           description: TargetPort is the port for the container to expose (only applicable
-            to SSE transport)
+            to SSE and Streamable HTTP transports)
           type: integer
         tier:
           description: Tier represents the tier classification level of the server,
@@ -195,7 +195,7 @@ components:
           uniqueItems: false
         transport:
           description: Transport defines the communication protocol for the server
-            (stdio or sse)
+            (stdio, sse, or streamable-http)
           type: string
       type: object
     registry.Metadata:

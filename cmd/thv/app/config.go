@@ -115,79 +115,86 @@ var unsetRegistryURLCmd = &cobra.Command{
 	RunE:  unsetRegistryURLCmdFunc,
 }
 
+// Parent command for OpenTelemetry configuration
+var otelCmd = &cobra.Command{
+	Use:   "otel",
+	Short: "Manage OpenTelemetry configuration",
+	Long:  "Configure OpenTelemetry settings for observability and monitoring of MCP servers.",
+}
+
 var setOtelEndpointCmd = &cobra.Command{
-	Use:   "set-otel-endpoint <endpoint>",
+	Use:   "set-endpoint <endpoint>",
 	Short: "Set the OpenTelemetry endpoint URL",
 	Long: `Set the OpenTelemetry OTLP endpoint URL for tracing and metrics.
 This endpoint will be used by default when running MCP servers unless overridden by the --otel-endpoint flag.
 
 Example:
-  thv config set-otel-endpoint https://api.honeycomb.io`,
+  thv config otel set-endpoint https://api.honeycomb.io`,
 	Args: cobra.ExactArgs(1),
 	RunE: setOtelEndpointCmdFunc,
 }
 
 var getOtelEndpointCmd = &cobra.Command{
-	Use:   "get-otel-endpoint",
+	Use:   "get-endpoint",
 	Short: "Get the currently configured OpenTelemetry endpoint",
 	Long:  "Display the OpenTelemetry endpoint URL that is currently configured.",
 	RunE:  getOtelEndpointCmdFunc,
 }
 
 var unsetOtelEndpointCmd = &cobra.Command{
-	Use:   "unset-otel-endpoint",
+	Use:   "unset-endpoint",
 	Short: "Remove the configured OpenTelemetry endpoint",
 	Long:  "Remove the OpenTelemetry endpoint configuration.",
 	RunE:  unsetOtelEndpointCmdFunc,
 }
 
 var setOtelSamplingRateCmd = &cobra.Command{
-	Use:   "set-otel-sampling-rate <rate>",
+	Use:   "set-sampling-rate <rate>",
 	Short: "Set the OpenTelemetry sampling rate",
 	Long: `Set the OpenTelemetry trace sampling rate (between 0.0 and 1.0).
 This sampling rate will be used by default when running MCP servers unless overridden by the --otel-sampling-rate flag.
 
 Example:
-  thv config set-otel-sampling-rate 0.1`,
+  thv config otel set-sampling-rate 0.1`,
 	Args: cobra.ExactArgs(1),
 	RunE: setOtelSamplingRateCmdFunc,
 }
 
 var getOtelSamplingRateCmd = &cobra.Command{
-	Use:   "get-otel-sampling-rate",
+	Use:   "get-sampling-rate",
 	Short: "Get the currently configured OpenTelemetry sampling rate",
 	Long:  "Display the OpenTelemetry sampling rate that is currently configured.",
 	RunE:  getOtelSamplingRateCmdFunc,
 }
 
 var unsetOtelSamplingRateCmd = &cobra.Command{
-	Use:   "unset-otel-sampling-rate",
+	Use:   "unset-sampling-rate",
 	Short: "Remove the configured OpenTelemetry sampling rate",
 	Long:  "Remove the OpenTelemetry sampling rate configuration.",
 	RunE:  unsetOtelSamplingRateCmdFunc,
 }
 
 var setOtelEnvVarsCmd = &cobra.Command{
-	Use:   "set-otel-env-vars <var1,var2,...>",
+	Use:   "set-env-vars <var1,var2,...>",
 	Short: "Set the OpenTelemetry environment variables",
 	Long: `Set the list of environment variable names to include in OpenTelemetry spans.
 These environment variables will be used by default when running MCP servers unless overridden by the --otel-env-vars flag.
 
 Example:
-  thv config set-otel-env-vars USER,HOME,PATH`,
+  thv config otel set-env-vars USER,HOME,PATH`,
 	Args: cobra.ExactArgs(1),
 	RunE: setOtelEnvVarsCmdFunc,
 }
 
 var getOtelEnvVarsCmd = &cobra.Command{
-	Use:   "get-otel-env-vars",
+	Use:   "get-env-vars",
 	Short: "Get the currently configured OpenTelemetry environment variables",
 	Long:  "Display the OpenTelemetry environment variables that are currently configured.",
 	RunE:  getOtelEnvVarsCmdFunc,
 }
 
 var unsetOtelEnvVarsCmd = &cobra.Command{
-	Use:   "unset-otel-env-vars",
+	Use:   "unset-env-vars",
 	Short: "Remove the configured OpenTelemetry environment variables",
 	Long:  "Remove the OpenTelemetry environment variables configuration.",
 	RunE:  unsetOtelEnvVarsCmdFunc,
@@ -207,15 +214,20 @@ func init() {
 	configCmd.AddCommand(setRegistryURLCmd)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
-	configCmd.AddCommand(setOtelEndpointCmd)
-	configCmd.AddCommand(getOtelEndpointCmd)
-	configCmd.AddCommand(unsetOtelEndpointCmd)
-	configCmd.AddCommand(setOtelSamplingRateCmd)
-	configCmd.AddCommand(getOtelSamplingRateCmd)
-	configCmd.AddCommand(unsetOtelSamplingRateCmd)
-	configCmd.AddCommand(setOtelEnvVarsCmd)
-	configCmd.AddCommand(getOtelEnvVarsCmd)
-	configCmd.AddCommand(unsetOtelEnvVarsCmd)
+
+	// Add OTEL parent command to config
+	configCmd.AddCommand(otelCmd)
+
+	// Add OTEL subcommands to otel command
+	otelCmd.AddCommand(setOtelEndpointCmd)
+	otelCmd.AddCommand(getOtelEndpointCmd)
+	otelCmd.AddCommand(unsetOtelEndpointCmd)
+	otelCmd.AddCommand(setOtelSamplingRateCmd)
+	otelCmd.AddCommand(getOtelSamplingRateCmd)
+	otelCmd.AddCommand(unsetOtelSamplingRateCmd)
+	otelCmd.AddCommand(setOtelEnvVarsCmd)
+	otelCmd.AddCommand(getOtelEnvVarsCmd)
+	otelCmd.AddCommand(unsetOtelEnvVarsCmd)
 }
 
 func registerClientCmdFunc(cmd *cobra.Command, args []string) error {

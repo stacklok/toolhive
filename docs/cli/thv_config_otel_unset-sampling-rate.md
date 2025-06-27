@@ -1,4 +1,4 @@
-## thv config unset-otel-sampling-rate
+## thv config otel unset-sampling-rate
 
 Remove the configured OpenTelemetry sampling rate
 
@@ -7,13 +7,13 @@ Remove the configured OpenTelemetry sampling rate
 Remove the OpenTelemetry sampling rate configuration.
 
 ```
-thv config unset-otel-sampling-rate [flags]
+thv config otel unset-sampling-rate [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for unset-otel-sampling-rate
+  -h, --help   help for unset-sampling-rate
 ```
 
 ### Options inherited from parent commands
@@ -24,5 +24,5 @@ thv config unset-otel-sampling-rate [flags]
 
 ### SEE ALSO
 
-* [thv config](thv_config.md)	 - Manage application configuration
+* [thv config otel](thv_config_otel.md)	 - Manage OpenTelemetry configuration
 

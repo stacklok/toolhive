@@ -1,4 +1,4 @@
-## thv config get-otel-env-vars
+## thv config otel get-env-vars
 
 Get the currently configured OpenTelemetry environment variables
 
@@ -7,13 +7,13 @@ Get the currently configured OpenTelemetry environment variables
 Display the OpenTelemetry environment variables that are currently configured.
 
 ```
-thv config get-otel-env-vars [flags]
+thv config otel get-env-vars [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for get-otel-env-vars
+  -h, --help   help for get-env-vars
 ```
 
 ### Options inherited from parent commands
@@ -24,5 +24,5 @@ thv config get-otel-env-vars [flags]
 
 ### SEE ALSO
 
-* [thv config](thv_config.md)	 - Manage application configuration
+* [thv config otel](thv_config_otel.md)	 - Manage OpenTelemetry configuration
 

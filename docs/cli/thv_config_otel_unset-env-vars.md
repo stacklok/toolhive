@@ -1,4 +1,4 @@
-## thv config unset-otel-env-vars
+## thv config otel unset-env-vars
 
 Remove the configured OpenTelemetry environment variables
 
@@ -7,13 +7,13 @@ Remove the configured OpenTelemetry environment variables
 Remove the OpenTelemetry environment variables configuration.
 
 ```
-thv config unset-otel-env-vars [flags]
+thv config otel unset-env-vars [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for unset-otel-env-vars
+  -h, --help   help for unset-env-vars
 ```
 
 ### Options inherited from parent commands
@@ -24,5 +24,5 @@ thv config unset-otel-env-vars [flags]
 
 ### SEE ALSO
 
-* [thv config](thv_config.md)	 - Manage application configuration
+* [thv config otel](thv_config_otel.md)	 - Manage OpenTelemetry configuration
 

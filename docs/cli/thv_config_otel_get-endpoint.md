@@ -1,4 +1,4 @@
-## thv config get-otel-endpoint
+## thv config otel get-endpoint
 
 Get the currently configured OpenTelemetry endpoint
 
@@ -7,13 +7,13 @@ Get the currently configured OpenTelemetry endpoint
 Display the OpenTelemetry endpoint URL that is currently configured.
 
 ```
-thv config get-otel-endpoint [flags]
+thv config otel get-endpoint [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for get-otel-endpoint
+  -h, --help   help for get-endpoint
 ```
 
 ### Options inherited from parent commands
@@ -24,5 +24,5 @@ thv config get-otel-endpoint [flags]
 
 ### SEE ALSO
 
-* [thv config](thv_config.md)	 - Manage application configuration
+* [thv config otel](thv_config_otel.md)	 - Manage OpenTelemetry configuration
 

@@ -1,4 +1,4 @@
-## thv config unset-otel-endpoint
+## thv config otel unset-endpoint
 
 Remove the configured OpenTelemetry endpoint
 
@@ -7,13 +7,13 @@ Remove the configured OpenTelemetry endpoint
 Remove the OpenTelemetry endpoint configuration.
 
 ```
-thv config unset-otel-endpoint [flags]
+thv config otel unset-endpoint [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for unset-otel-endpoint
+  -h, --help   help for unset-endpoint
 ```
 
 ### Options inherited from parent commands
@@ -24,5 +24,5 @@ thv config unset-otel-endpoint [flags]
 
 ### SEE ALSO
 
-* [thv config](thv_config.md)	 - Manage application configuration
+* [thv config otel](thv_config_otel.md)	 - Manage OpenTelemetry configuration
 

@@ -1,4 +1,4 @@
-## thv config set-otel-endpoint
+## thv config otel set-endpoint
 
 Set the OpenTelemetry endpoint URL
 
@@ -8,16 +8,16 @@ Set the OpenTelemetry OTLP endpoint URL for tracing and metrics.
 This endpoint will be used by default when running MCP servers unless overridden by the --otel-endpoint flag.
 
 Example:
-  thv config set-otel-endpoint https://api.honeycomb.io
+  thv config otel set-endpoint https://api.honeycomb.io
 
 ```
-thv config set-otel-endpoint <endpoint> [flags]
+thv config otel set-endpoint <endpoint> [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for set-otel-endpoint
+  -h, --help   help for set-endpoint
 ```
 
 ### Options inherited from parent commands
@@ -28,5 +28,5 @@ thv config set-otel-endpoint <endpoint> [flags]
 
 ### SEE ALSO
 
-* [thv config](thv_config.md)	 - Manage application configuration
+* [thv config otel](thv_config_otel.md)	 - Manage OpenTelemetry configuration
 

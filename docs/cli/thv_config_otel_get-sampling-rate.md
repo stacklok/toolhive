@@ -1,4 +1,4 @@
-## thv config get-otel-sampling-rate
+## thv config otel get-sampling-rate
 
 Get the currently configured OpenTelemetry sampling rate
 
@@ -7,13 +7,13 @@ Get the currently configured OpenTelemetry sampling rate
 Display the OpenTelemetry sampling rate that is currently configured.
 
 ```
-thv config get-otel-sampling-rate [flags]
+thv config otel get-sampling-rate [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for get-otel-sampling-rate
+  -h, --help   help for get-sampling-rate
 ```
 
 ### Options inherited from parent commands
@@ -24,5 +24,5 @@ thv config get-otel-sampling-rate [flags]
 
 ### SEE ALSO
 
-* [thv config](thv_config.md)	 - Manage application configuration
+* [thv config otel](thv_config_otel.md)	 - Manage OpenTelemetry configuration
 

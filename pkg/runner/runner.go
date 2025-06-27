@@ -300,7 +300,7 @@ func updateClientConfigurations(containerName string, containerLabels map[string
 	for _, clientConfig := range clientConfigs {
 		logger.Infof("Updating client configuration: %s", clientConfig.Path)
 
-		if err := client.Upsert(clientConfig, containerName, url); err != nil {
+		if err := client.Upsert(clientConfig, containerName, url, transportType); err != nil {
 			fmt.Printf("Warning: Failed to update MCP server configuration in %s: %v\n", clientConfig.Path, err)
 			continue
 		}

@@ -292,12 +292,15 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 	// create mcp container
 	internalEndpointsConfig := map[string]*network.EndpointSettings{}
 	if isolateNetwork {
-		internalEndpointsConfig[networkName] = &network.EndpointSettings{}
+		internalEndpointsConfig[networkName] = &network.EndpointSettings{
+			NetworkID: networkName,
+		}
 	} else {
 		// for other workloads such as inspector, add to external network
-		internalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{}
+		internalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{
+			NetworkID: "toolhive-external",
+		}
 	}
-
 	containerId, err := c.createContainer(ctx, name, config, hostConfig, internalEndpointsConfig)
 	if err != nil {
 		return "", fmt.Errorf("failed to create container: %v", err)
@@ -952,7 +955,7 @@ func (c *Client) getPermissionConfigFromProfile(
 	// Start with a default permission config
 	config := &runtime.PermissionConfig{
 		Mounts:      []runtime.Mount{},
-		NetworkMode: "none",
+		NetworkMode: "", // set to blank as podman is not recognizing the "none" value when we attach to other networks
 		CapDrop:     []string{"ALL"},
 		CapAdd:      []string{},
 		SecurityOpt: []string{},

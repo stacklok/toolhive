@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/stacklok/toolhive/pkg/config"
@@ -77,7 +78,7 @@ func (m *defaultManager) RegisterClients(ctx context.Context, clients []Client) 
 
 		// Add currently running MCPs to the newly registered client
 		if err := m.addRunningMCPsToClient(ctx, client.Name); err != nil {
-			logger.Warnf("Warning: Failed to add running MCPs to client %s: %v", client.Name, err)
+			return fmt.Errorf("failed to add running MCPs to client %s: %v", client.Name, err)
 		}
 	}
 	return nil
@@ -107,7 +108,15 @@ func (m *defaultManager) addRunningMCPsToClient(ctx context.Context, clientType 
 	// Find the client configuration for the specified client
 	clientConfig, err := FindClientConfig(clientType)
 	if err != nil {
-		return fmt.Errorf("failed to find client configurations: %w", err)
+		if errors.Is(err, ErrConfigFileNotFound) {
+			// Create a new client configuration if it doesn't exist
+			clientConfig, err = CreateClientConfig(clientType)
+			if err != nil {
+				return fmt.Errorf("failed to create client configuration for %s: %w", clientType, err)
+			}
+		} else {
+			return fmt.Errorf("failed to find client configuration: %w", err)
+		}
 	}
 
 	// For each running container, add it to the client configuration
@@ -138,7 +147,7 @@ func (m *defaultManager) addRunningMCPsToClient(ctx context.Context, clientType 
 		url := GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
 
 		// Update the MCP server configuration with locking
-		if err := Upsert(*clientConfig, name, url); err != nil {
+		if err := Upsert(*clientConfig, name, url, transportType); err != nil {
 			logger.Warnf("Warning: Failed to update MCP server configuration in %s: %v", clientConfig.Path, err)
 			continue
 		}

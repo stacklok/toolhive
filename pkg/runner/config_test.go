@@ -122,6 +122,12 @@ func TestRunConfig_WithTransport(t *testing.T) {
 			expected:    types.TransportTypeStdio,
 		},
 		{
+			name:        "Valid streamable-http transport",
+			transport:   "streamable-http",
+			expectError: false,
+			expected:    types.TransportTypeStreamableHTTP,
+		},
+		{
 			name:        "Invalid transport",
 			transport:   "invalid",
 			expectError: true,
@@ -137,7 +143,7 @@ func TestRunConfig_WithTransport(t *testing.T) {
 
 			if tc.expectError {
 				assert.Error(t, err, "WithTransport should return an error for invalid transport")
-				assert.Contains(t, err.Error(), "invalid transport mode", "Error message should mention invalid transport")
+				assert.Contains(t, err.Error(), "invalid transport mode: invalid. Valid modes are: sse, streamable-http, stdio", "Error message should match expected format")
 			} else {
 				assert.NoError(t, err, "WithTransport should not return an error for valid transport")
 				assert.Equal(t, config, result, "WithTransport should return the same config instance")
@@ -173,10 +179,17 @@ func TestRunConfig_WithPorts(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:        "Streamable HTTP transport with specific ports",
+			config:      &RunConfig{Transport: types.TransportTypeStreamableHTTP},
+			port:        8002,
+			targetPort:  9002,
+			expectError: false,
+		},
+		{
 			name:        "Stdio transport with specific port",
 			config:      &RunConfig{Transport: types.TransportTypeStdio},
-			port:        8002,
-			targetPort:  9002, // This should be ignored for stdio
+			port:        8003,
+			targetPort:  9003, // This should be ignored for stdio
 			expectError: false,
 		},
 	}
@@ -200,7 +213,7 @@ func TestRunConfig_WithPorts(t *testing.T) {
 					assert.Equal(t, tc.port, tc.config.Port, "Port should be set correctly")
 				}
 
-				if tc.config.Transport == types.TransportTypeSSE {
+				if tc.config.Transport == types.TransportTypeSSE || tc.config.Transport == types.TransportTypeStreamableHTTP {
 					if tc.targetPort == 0 {
 						assert.Greater(t, tc.config.TargetPort, 0, "TargetPort should be auto-selected")
 					} else {
@@ -841,27 +854,56 @@ func TestRunConfig_WithAuthz(t *testing.T) {
 	assert.Equal(t, authzConfig, config.AuthzConfig, "AuthzConfig should be set correctly")
 }
 
+// mockEnvVarValidator implements the EnvVarValidator interface for testing
+type mockEnvVarValidator struct{}
+
+func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadata, config *RunConfig, envVars []string) error {
+	// For testing, just set the environment variables directly
+	if len(envVars) > 0 {
+		var err error
+		_, err = config.WithEnvironmentVariables(envVars)
+		return err
+	}
+	return nil
+}
+
 func TestNewRunConfigFromFlags(t *testing.T) {
 	t.Parallel()
 	runtime := &mockRuntime{}
 	cmdArgs := []string{"arg1", "arg2"}
 	name := "test-server"
+	imageURL := "test-image:latest"
+	imageMetadata := &registry.ImageMetadata{
+		Name:       "test-metadata-name",
+		Transport:  "sse",
+		TargetPort: 9090,
+		Args:       []string{"--metadata-arg"},
+	}
 	host := "localhost"
 	debug := true
 	volumes := []string{"/host:/container"}
 	secretsList := []string{"secret1,target=ENV_VAR1"}
-	authzConfigPath := "/path/to/authz.json"
+	authzConfigPath := "" // Empty to skip loading the authorization configuration
 	permissionProfile := permissions.ProfileNone
 	targetHost := "localhost"
+	mcpTransport := "sse"
+	port := 8080
+	targetPort := 9000
+	envVars := []string{"TEST_ENV=test_value"}
 	oidcIssuer := "https://issuer.example.com"
 	oidcAudience := "test-audience"
 	oidcJwksURL := "https://issuer.example.com/.well-known/jwks.json"
 	oidcClientID := "test-client"
+	k8sPodPatch := `{"spec":{"containers":[{"name":"test","resources":{"limits":{"memory":"512Mi"}}}]}}`
+	envVarValidator := &mockEnvVarValidator{}
 
-	config := NewRunConfigFromFlags(
+	config, err := NewRunConfigFromFlags(
+		context.Background(),
 		runtime,
 		cmdArgs,
 		name,
+		imageURL,
+		imageMetadata,
 		host,
 		debug,
 		volumes,
@@ -871,6 +913,10 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		false, // enableAudit
 		permissionProfile,
 		targetHost,
+		mcpTransport,
+		port,
+		targetPort,
+		envVars,
 		oidcIssuer,
 		oidcAudience,
 		oidcJwksURL,
@@ -882,14 +928,21 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		false, // otelInsecure
 		false, // otelEnablePrometheusMetricsPath
 		nil,   // otelEnvironmentVariables
-		false, // isolatedNetwork
+		false, // isolateNetwork
+		k8sPodPatch,
+		envVarValidator,
 	)
+	require.NoError(t, err, "NewRunConfigFromFlags should not return an error")
 
 	assert.NotNil(t, config, "NewRunConfigFromFlags should return a non-nil config")
 	assert.Equal(t, runtime, config.Runtime, "Runtime should match")
 	assert.Equal(t, targetHost, config.TargetHost, "TargetHost should match")
-	assert.Equal(t, cmdArgs, config.CmdArgs, "CmdArgs should match")
+	// The metadata args are appended to the command-line args
+	expectedCmdArgs := append([]string{}, cmdArgs...)
+	expectedCmdArgs = append(expectedCmdArgs, imageMetadata.Args...)
+	assert.Equal(t, expectedCmdArgs, config.CmdArgs, "CmdArgs should include metadata args")
 	assert.Equal(t, name, config.Name, "Name should match")
+	assert.Equal(t, imageURL, config.Image, "Image should match")
 	assert.Equal(t, debug, config.Debug, "Debug should match")
 	assert.Equal(t, volumes, config.Volumes, "Volumes should match")
 	assert.Equal(t, secretsList, config.Secrets, "Secrets should match")
@@ -897,6 +950,15 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	assert.Equal(t, permissionProfile, config.PermissionProfileNameOrPath, "PermissionProfileNameOrPath should match")
 	assert.NotNil(t, config.ContainerLabels, "ContainerLabels should be initialized")
 	assert.NotNil(t, config.EnvVars, "EnvVars should be initialized")
+	assert.Equal(t, k8sPodPatch, config.K8sPodTemplatePatch, "K8sPodTemplatePatch should match")
+
+	// Check that environment variables were set
+	assert.Equal(t, "test_value", config.EnvVars["TEST_ENV"], "Environment variable should be set")
+
+	// Check transport settings
+	assert.Equal(t, types.TransportTypeSSE, config.Transport, "Transport should be set to SSE")
+	assert.Equal(t, port, config.Port, "Port should match")
+	assert.Equal(t, targetPort, config.TargetPort, "TargetPort should match")
 
 	// Check OIDC config
 	assert.NotNil(t, config.OIDCConfig, "OIDCConfig should be initialized")
@@ -904,6 +966,9 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	assert.Equal(t, oidcAudience, config.OIDCConfig.Audience, "OIDCConfig.Audience should match")
 	assert.Equal(t, oidcJwksURL, config.OIDCConfig.JWKSURL, "OIDCConfig.JWKSURL should match")
 	assert.Equal(t, oidcClientID, config.OIDCConfig.ClientID, "OIDCConfig.ClientID should match")
+
+	// Check that metadata args were prepended
+	assert.Contains(t, config.CmdArgs, "--metadata-arg", "Metadata args should be prepended")
 }
 
 func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {

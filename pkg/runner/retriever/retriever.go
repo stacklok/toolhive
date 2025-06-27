@@ -25,6 +25,13 @@ const (
 	VerifyImageDisabled = "disabled"
 )
 
+var (
+	// ErrBadProtocolScheme is returned when the provided serverOrImage is not a valid protocol scheme.
+	ErrBadProtocolScheme = errors.New("invalid protocol scheme provided for MCP server")
+	// ErrImageNotFound is returned when the specified image is not found in the registry.
+	ErrImageNotFound = errors.New("image not found in registry, please check the image name or tag")
+)
+
 // GetMCPServer retrieves the MCP server definition from the registry.
 func GetMCPServer(
 	ctx context.Context,
@@ -44,7 +51,7 @@ func GetMCPServer(
 		caCertPath := resolveCACertPath(rawCACertPath)
 		generatedImage, err := runner.HandleProtocolScheme(ctx, imageManager, serverOrImage, caCertPath)
 		if err != nil {
-			return "", nil, fmt.Errorf("failed to process protocol scheme: %v", err)
+			return "", nil, errors.Join(ErrBadProtocolScheme, err)
 		}
 		// Update the image in the runConfig with the generated image
 		logger.Debugf("Using built image: %s instead of %s", generatedImage, serverOrImage)
@@ -99,7 +106,7 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 			if imageExists {
 				logger.Debugf("Using existing local image: %s", image)
 			} else {
-				return fmt.Errorf("failed to pull image from remote registry and image doesn't exist locally. %v", err)
+				return fmt.Errorf("%w: %s", ErrImageNotFound, image)
 			}
 		} else {
 			logger.Infof("Successfully pulled image: %s", image)
@@ -119,7 +126,8 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 			// Image doesn't exist locally, try to pull
 			logger.Infof("Image %s not found locally, pulling...", image)
 			if err := imageManager.PullImage(ctx, image); err != nil {
-				return fmt.Errorf("failed to pull image: %v", err)
+				// TODO: need more fine grained error handling here.
+				return fmt.Errorf("%w: %s", ErrImageNotFound, image)
 			}
 			logger.Infof("Successfully pulled image: %s", image)
 		}

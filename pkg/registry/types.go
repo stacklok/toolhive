@@ -26,6 +26,10 @@ type ImageMetadata struct {
 	Image string `json:"image"`
 	// Description is a human-readable description of the server's purpose and functionality
 	Description string `json:"description"`
+	// Tier represents the tier classification level of the server, e.g., "official" or "community" driven
+	Tier string `json:"tier"`
+	// The Status indicates whether the server is currently active or deprecated
+	Status string `json:"status"`
 	// Transport defines the communication protocol for the server (stdio or sse)
 	Transport string `json:"transport"`
 	// TargetPort is the port for the container to expose (only applicable to SSE transport)

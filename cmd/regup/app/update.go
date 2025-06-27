@@ -186,7 +186,7 @@ func saveResults(reg *registry.Registry, updatedServers []string) error {
 	// If we updated any servers, save the registry
 	if len(updatedServers) > 0 {
 		// Update the last_updated timestamp
-		reg.LastUpdated = time.Now().Format("2006-01-02 15:04:05")
+		reg.LastUpdated = time.Now().UTC().Format(time.RFC3339)
 
 		// Save the updated registry
 		if err := saveRegistry(reg, updatedServers); err != nil {
@@ -240,7 +240,7 @@ func updateServerInfo(name string, server *registry.ImageMetadata) error {
 	// Update the metadata
 	server.Metadata.Stars = stars
 	server.Metadata.Pulls = pulls
-	server.Metadata.LastUpdated = time.Now().Format(time.RFC3339)
+	server.Metadata.LastUpdated = time.Now().UTC().Format(time.RFC3339)
 
 	return nil
 }

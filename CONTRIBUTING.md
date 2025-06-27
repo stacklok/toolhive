@@ -30,7 +30,7 @@ report unacceptable behavior to
 If you think you have found a security vulnerability in ToolHive please DO NOT
 disclose it publicly until we've had a chance to fix it. Please don't report
 security vulnerabilities using GitHub issues; instead, please follow this
-[process](https://github.com/stacklok/toolhive/blob/main/SECURITY.md)
+[process](https://github.com/stacklok/toolhive/blob/main/SECURITY.MD)
 
 ## How to contribute
 
@@ -75,7 +75,7 @@ The ToolHive user documentation website is maintained in the
 to contribute to the documentation, please open a PR in that repo.
 
 Please review the README and
-[STYLE-GUIDE](https://github.com/stacklok/docs-website/blob/add-release-update-workflow/STYLE-GUIDE.md)
+[STYLE-GUIDE](https://github.com/stacklok/docs-website/blob/main/STYLE-GUIDE.md)
 in the docs-website repository for more information on how to contribute to the
 documentation.
 

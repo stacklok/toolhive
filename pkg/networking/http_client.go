@@ -1,7 +1,6 @@
 package networking
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,51 +14,14 @@ var privateIPBlocks []*net.IPNet
 // HttpTimeout is the timeout for outgoing HTTP requests
 const HttpTimeout = 30 * time.Second
 
-func init() {
-	for _, cidr := range []string{
-		"127.0.0.0/8",    // IPv4 loopback
-		"10.0.0.0/8",     // RFC1918
-		"172.16.0.0/12",  // RFC1918
-		"192.168.0.0/16", // RFC1918
-		"169.254.0.0/16", // RFC3927 link-local
-		"::1/128",        // IPv6 loopback
-		"fe80::/10",      // IPv6 link-local
-		"fc00::/7",       // IPv6 unique local addr
-	} {
-		_, block, err := net.ParseCIDR(cidr)
-		if err != nil {
-			panic(fmt.Errorf("parse error on %q: %v", cidr, err))
-		}
-		privateIPBlocks = append(privateIPBlocks, block)
-	}
-}
-
-func isPrivateIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-	for _, block := range privateIPBlocks {
-		if block.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
 // Dialer control function for validating addresses prior to connection
-func protectedDialerControl(network, address string, _ syscall.RawConn) error {
+func protectedDialerControl(_, address string, _ syscall.RawConn) error {
 
-	fmt.Printf("protectedDialerControl: %s, %s\n", network, address)
-
-	host, _, err := net.SplitHostPort(address)
+	err := AddressReferencesPrivateIp(address)
 	if err != nil {
 		return err
 	}
-	// Check for a private IP address or loopback
-	ip := net.ParseIP(host)
-	if isPrivateIP(ip) {
-		return errors.New("private IP address not allowed")
-	}
+
 	return nil
 }
 
@@ -85,18 +47,23 @@ func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return t.Transport.RoundTrip(req)
 }
 
-// GetProtectedHttpClient returns a new http client with a protected dialer and URL validation
-func GetProtectedHttpClient() *http.Client {
+// GetHttpClient returns a new http client which uses a protected dialer and URL validation by default
+func GetHttpClient(allowPrivateIp bool) *http.Client {
 
-	protectedTransport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Control: protectedDialerControl,
-		}).DialContext,
+	var transport *http.Transport
+	if !allowPrivateIp {
+		transport = &http.Transport{
+			DialContext: (&net.Dialer{
+				Control: protectedDialerControl,
+			}).DialContext,
+		}
+	} else {
+		transport = &http.Transport{}
 	}
 
 	client := &http.Client{
 		Transport: &ValidatingTransport{
-			Transport: protectedTransport,
+			Transport: transport,
 		},
 		Timeout: HttpTimeout,
 	}

@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
   "last_updated": "2025-06-27T00:22:12Z",
   "servers": {
     "atlassian": {

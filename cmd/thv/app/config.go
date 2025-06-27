@@ -115,6 +115,10 @@ var unsetRegistryURLCmd = &cobra.Command{
 	RunE:  unsetRegistryURLCmdFunc,
 }
 
+var (
+	allowPrivateRegistryIp bool
+)
+
 func init() {
 	// Add config command to root command
 	rootCmd.AddCommand(configCmd)
@@ -127,7 +131,8 @@ func init() {
 	configCmd.AddCommand(getCACertCmd)
 	configCmd.AddCommand(unsetCACertCmd)
 	configCmd.AddCommand(setRegistryURLCmd)
-	setRegistryURLCmd.Flags().BoolP(
+	setRegistryURLCmd.Flags().BoolVarP(
+		&allowPrivateRegistryIp,
 		"allow-private-ip",
 		"p",
 		false,
@@ -385,9 +390,8 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func setRegistryURLCmdFunc(cmd *cobra.Command, args []string) error {
+func setRegistryURLCmdFunc(_ *cobra.Command, args []string) error {
 	registryURL := args[0]
-	allowPrivateRegistryIp, _ := cmd.Flags().GetBool("allow-private-ip")
 
 	// Basic URL validation - check if it starts with http:// or https://
 	if registryURL != "" && !strings.HasPrefix(registryURL, "http://") && !strings.HasPrefix(registryURL, "https://") {

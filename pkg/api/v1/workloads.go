@@ -283,6 +283,14 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Start workload with specified RunConfig.
+	err = s.manager.RunWorkloadDetached(runConfig)
+	if err != nil {
+		logger.Errorf("Failed to start workload: %v", err)
+		http.Error(w, "Failed to start workload", http.StatusInternalServerError)
+		return
+	}
+
 	// Return name so that the client will get the auto-generated name.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

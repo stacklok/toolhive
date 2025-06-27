@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/stacklok/toolhive/pkg/permissions"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -221,6 +222,12 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
 		return
+	}
+
+	// Mimic behavior of the CLI by defaulting to the "network" permission profile.
+	// TODO: Consider moving this into the run config creation logic.
+	if req.PermissionProfile == "" {
+		req.PermissionProfile = permissions.ProfileNetwork
 	}
 
 	// Fetch or build the requested image

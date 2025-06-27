@@ -27,8 +27,8 @@ type WorkloadRoutes struct {
 //	@title			ToolHive API
 //	@version		1.0
 //	@description	This is the ToolHive API workload.
-//	@workloads		[ { "url": "http://localhost:8080/api/v1" } ]
-//	@basePath		/api/v1
+//	@workloads		[ { "url": "http://localhost:8080/api/v1beta" } ]
+//	@basePath		/api/v1beta
 
 // WorkloadRouter creates a new WorkloadRoutes instance.
 func WorkloadRouter(
@@ -51,10 +51,9 @@ func WorkloadRouter(
 	r.Get("/{name}", routes.getWorkload)
 	r.Post("/{name}/stop", routes.stopWorkload)
 	r.Post("/{name}/restart", routes.restartWorkload)
+	r.Get("/{name}/logs", routes.getLogsForWorkload)
 	r.Delete("/{name}", routes.deleteWorkload)
 
-	// Mount the logs sub-router
-	r.Mount("/{name}", LogsRouter(manager))
 	return r
 }
 
@@ -412,6 +411,39 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// getLogsForWorkload
+//
+// @Summary      Get logs for a specific workload
+// @Description  Retrieve at most 100 lines of logs for a specific workload by name.
+// @Tags         logs
+// @Produce      text/plain
+// @Param        name  path      string  true  "Workload name"
+// @Success      200   {string}  string  "Logs for the specified workload"
+// @Failure      404   {string}  string  "Not Found"
+// @Router       /api/v1beta/workloads/{name}/logs [get]
+func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := chi.URLParam(r, "name")
+
+	logs, err := s.manager.GetLogs(ctx, name, false)
+	if err != nil {
+		if errors.Is(err, workloads.ErrContainerNotFound) {
+			http.Error(w, "Workload not found", http.StatusNotFound)
+			return
+		}
+		logger.Errorf("Failed to get logs: %v", err)
+		http.Error(w, "Failed to get logs", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	_, err = w.Write([]byte(logs))
+	if err != nil {
+		logger.Errorf("Failed to write logs response: %v", err)
+		http.Error(w, "Failed to write logs response", http.StatusInternalServerError)
+		return
+	}
 }
 
 // Response type definitions.

@@ -122,7 +122,7 @@ func printJSONServer(server *registry.ImageMetadata) error {
 func printTextServers(servers []*registry.ImageMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS")
+	fmt.Fprintln(w, "NAME\tDESCRIPTION\tTIER\tSTARS\tPULLS")
 
 	// Print server information
 	for _, server := range servers {
@@ -133,10 +133,15 @@ func printTextServers(servers []*registry.ImageMetadata) {
 			pulls = server.Metadata.Pulls
 		}
 
+		desc := server.Description
+		if server.Status == "Deprecated" {
+			desc = "**DEPRECATED** " + desc
+		}
+
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n",
 			server.Name,
-			truncateString(server.Description, 60),
-			server.Transport,
+			truncateString(desc, 60),
+			server.Tier,
 			stars,
 			pulls,
 		)

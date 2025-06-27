@@ -296,7 +296,6 @@ func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
 	if err != nil {
 		return c, err
 	}
-	logger.Infof("Using host port: %d", selectedPort)
 	c.Port = selectedPort
 
 	// Select a target port for the container if using SSE or Streamable HTTP transport

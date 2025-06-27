@@ -23,7 +23,7 @@ const (
 // IsAvailable checks if a port is available
 func IsAvailable(port int) bool {
 	// Check TCP
-	tcpAddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
+	tcpAddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return false
 	}
@@ -38,7 +38,7 @@ func IsAvailable(port int) bool {
 	}
 
 	// Check UDP
-	udpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", port))
+	udpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return false
 	}
@@ -128,11 +128,16 @@ func FindOrUsePort(port int) (int, error) {
 			return 0, fmt.Errorf("could not find an available port")
 		}
 		return port, nil
-	} else if port > 0 && !IsAvailable(port) {
-		// Check if the provided port is available
-		return 0, fmt.Errorf("port %d is already in use", port)
 	}
 
-	// Port is available
-	return port, nil
+	if IsAvailable(port) {
+		return port, nil
+	}
+
+	// Requested port is busy — find an alternative
+	alt := FindAvailable()
+	if alt == 0 {
+		return 0, fmt.Errorf("failed to find an alternative port after requested port %d was unavailable", port)
+	}
+	return alt, nil
 }

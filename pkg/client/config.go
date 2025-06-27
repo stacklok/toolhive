@@ -3,6 +3,7 @@
 package client
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,6 +60,11 @@ type mcpClientConfig struct {
 	IsTransportTypeFieldSupported bool
 }
 
+var (
+	// ErrConfigFileNotFound is returned when a client configuration file is not found
+	ErrConfigFileNotFound = fmt.Errorf("client config file not found")
+)
+
 var supportedClientIntegrations = []mcpClientConfig{
 	{
 		ClientType:   RooCode,
@@ -77,7 +83,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		SupportedTransportTypesMap: map[types.TransportType]string{
 			types.TransportTypeStdio:          "sse",
 			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: "http",
+			types.TransportTypeStreamableHTTP: "streamable-http",
 		},
 		IsTransportTypeFieldSupported: true,
 	},
@@ -190,18 +196,22 @@ type MCPServerConfig struct {
 
 // FindClientConfig returns the client configuration file for a given client type.
 func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
-	configFiles, err := FindClientConfigs()
+	// retrieve the metadata of the config files
+	configFile, err := retrieveConfigFileMetadata(clientType)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch client configurations: %w", err)
-	}
-
-	for _, cf := range configFiles {
-		if cf.ClientType == clientType {
-			return &cf, nil
+		if errors.Is(err, ErrConfigFileNotFound) {
+			// Propagate the error if the file is not found
+			return nil, fmt.Errorf("%w: for client %s", ErrConfigFileNotFound, clientType)
 		}
+		return nil, err
 	}
 
-	return nil, fmt.Errorf("client configuration for %s not found", clientType)
+	// validate the format of the config files
+	err = validateConfigFileFormat(configFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate config file format: %w", err)
+	}
+	return configFile, nil
 }
 
 // FindClientConfigs searches for client configuration files in standard locations
@@ -211,25 +221,58 @@ func FindClientConfigs() ([]ConfigFile, error) {
 		return nil, fmt.Errorf("failed to get client status: %w", err)
 	}
 
-	notInstalledClients := make(map[string]bool)
+	var configFiles []ConfigFile
 	for _, clientStatus := range clientStatuses {
 		if !clientStatus.Installed {
-			notInstalledClients[string(clientStatus.ClientType)] = true
+			continue
+		}
+		cf, err := FindClientConfig(clientStatus.ClientType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find client config for %s: %w", clientStatus.ClientType, err)
+		}
+		configFiles = append(configFiles, *cf)
+	}
+
+	return configFiles, nil
+}
+
+// CreateClientConfig creates a new client configuration file for a given client type.
+func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
+	// Get home directory
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	// Find the configuration for the requested client type
+	var clientCfg *mcpClientConfig
+	for _, cfg := range supportedClientIntegrations {
+		if cfg.ClientType == clientType {
+			clientCfg = &cfg
+			break
 		}
 	}
 
-	// retrieve the metadata of the config files
-	configFiles, err := retrieveConfigFilesMetadata(notInstalledClients)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve client config metadata: %w", err)
+	if clientCfg == nil {
+		return nil, fmt.Errorf("unsupported client type: %s", clientType)
 	}
 
-	// validate the format of the config files
-	err = validateConfigFilesFormat(configFiles)
-	if err != nil {
-		return nil, fmt.Errorf("failed to validate config file format: %w", err)
+	// Build the path to the configuration file
+	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{home})
+
+	// Validate that the file does not already exist
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		return nil, fmt.Errorf("client config file already exists at %s", path)
 	}
-	return configFiles, nil
+
+	// Create the file if it does not exist
+	logger.Infof("Creating new client config file at %s", path)
+	err = os.WriteFile(path, []byte("{}"), 0600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create client config file: %w", err)
+	}
+
+	return FindClientConfig(clientType)
 }
 
 // Upsert updates/inserts an MCP server in a client configuration file
@@ -265,44 +308,48 @@ func GenerateMCPServerURL(transportType string, host string, port int, container
 	return ""
 }
 
-// retrieveConfigFilesMetadata retrieves the metadata for client configuration files.
-// It returns a list of ConfigFile objects, which contain metadata about the file that
-// can be used when performing operations on the file.
-func retrieveConfigFilesMetadata(filters map[string]bool) ([]ConfigFile, error) {
-	var configFiles []ConfigFile
-
+// retrieveConfigFileMetadata retrieves the metadata for client configuration files for a given client type.
+func retrieveConfigFileMetadata(clientType MCPClient) (*ConfigFile, error) {
 	// Get home directory
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get home directory: %w", err)
 	}
 
+	// Find the configuration for the requested client type
+	var clientCfg *mcpClientConfig
 	for _, cfg := range supportedClientIntegrations {
-		if filters[string(cfg.ClientType)] {
-			continue
+		if cfg.ClientType == clientType {
+			clientCfg = &cfg
+			break
 		}
-
-		path := buildConfigFilePath(cfg.SettingsFile, cfg.RelPath, cfg.PlatformPrefix, []string{home})
-
-		err := validateConfigFileExists(path)
-		if err != nil {
-			logger.Warnf("failed to validate config file: %w", err)
-			continue
-		}
-
-		configUpdater := &JSONConfigUpdater{Path: path, MCPServersPathPrefix: cfg.MCPServersPathPrefix}
-
-		clientConfig := ConfigFile{
-			Path:          path,
-			ConfigUpdater: configUpdater,
-			ClientType:    cfg.ClientType,
-			Extension:     cfg.Extension,
-		}
-
-		configFiles = append(configFiles, clientConfig)
 	}
 
-	return configFiles, nil
+	if clientCfg == nil {
+		return nil, fmt.Errorf("unsupported client type: %s", clientType)
+	}
+
+	// Build the path to the configuration file
+	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{home})
+
+	// Validate that the file exists
+	if err := validateConfigFileExists(path); err != nil {
+		return nil, err
+	}
+
+	// Create a config updater for this file
+	configUpdater := &JSONConfigUpdater{
+		Path:                 path,
+		MCPServersPathPrefix: clientCfg.MCPServersPathPrefix,
+	}
+
+	// Return the configuration file metadata
+	return &ConfigFile{
+		Path:          path,
+		ConfigUpdater: configUpdater,
+		ClientType:    clientCfg.ClientType,
+		Extension:     clientCfg.Extension,
+	}, nil
 }
 
 func buildConfigFilePath(settingsFile string, relPath []string, platformPrefix map[string][]string, path []string) string {
@@ -317,27 +364,22 @@ func buildConfigFilePath(settingsFile string, relPath []string, platformPrefix m
 // validateConfigFileExists validates that a client configuration file exists.
 func validateConfigFileExists(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return fmt.Errorf("file does not exist: %s", path)
+		return ErrConfigFileNotFound
 	}
 	return nil
 }
 
-// validateConfigFileFormat validates the format of a client configuration file
-// It returns an error if the file is not valid JSON.
-func validateConfigFilesFormat(configFiles []ConfigFile) error {
-	for _, cf := range configFiles {
-		data, err := os.ReadFile(cf.Path)
-		if err != nil {
-			return fmt.Errorf("failed to read file %s: %w", cf.Path, err)
-		}
-
-		// Default to JSON
-		// we don't care about the contents of the file, we just want to validate that it's valid JSON
-		_, err = hujson.Parse(data)
-		if err != nil {
-			return fmt.Errorf("failed to parse JSON for file %s: %w", cf.Path, err)
-		}
+func validateConfigFileFormat(cf *ConfigFile) error {
+	data, err := os.ReadFile(cf.Path)
+	if err != nil {
+		return fmt.Errorf("failed to read file %s: %w", cf.Path, err)
 	}
 
+	// Default to JSON
+	// we don't care about the contents of the file, we just want to validate that it's valid JSON
+	_, err = hujson.Parse(data)
+	if err != nil {
+		return fmt.Errorf("failed to parse JSON for file %s: %w", cf.Path, err)
+	}
 	return nil
 }

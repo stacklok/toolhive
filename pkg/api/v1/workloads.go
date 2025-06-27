@@ -45,7 +45,6 @@ func WorkloadRouter(
 	r := chi.NewRouter()
 	r.Get("/", routes.listWorkloads)
 	r.Post("/", routes.createWorkload)
-	r.Delete("/{name}", routes.deleteWorkload)
 	r.Post("/stop", routes.stopWorkloadsBulk)
 	r.Post("/restart", routes.restartWorkloadsBulk)
 	r.Post("/delete", routes.deleteWorkloadsBulk)
@@ -53,7 +52,8 @@ func WorkloadRouter(
 	r.Post("/{name}/stop", routes.stopWorkload)
 	r.Post("/{name}/restart", routes.restartWorkload)
 	r.Get("/{name}/logs", routes.getLogsForWorkload)
-	
+	r.Delete("/{name}", routes.deleteWorkload)
+
 	return r
 }
 

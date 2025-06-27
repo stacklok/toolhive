@@ -166,7 +166,9 @@
         "jira_create_version",
         "jira_batch_create_versions"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Active"
     },
     "aws-kb-retrieval-server": {
       "args": [],
@@ -228,7 +230,9 @@
       "tools": [
         "retrieve_from_aws_kb"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Deprecated"
     },
     "brave-search": {
       "args": [],
@@ -283,7 +287,9 @@
         "brave_web_search",
         "brave_local_search"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Deprecated"
     },
     "elasticsearch": {
       "args": [],
@@ -372,7 +378,9 @@
         "list_indices",
         "search"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Official",
+      "status": "Active"
     },
     "everart": {
       "args": [],
@@ -421,7 +429,9 @@
       "tools": [
         "generate_image"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Deprecated"
     },
     "everything": {
       "args": [],
@@ -467,7 +477,9 @@
         "printEnv",
         "annotatedMessage"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Active"
     },
     "fetch": {
       "args": [],
@@ -511,7 +523,9 @@
       "tools": [
         "fetch"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Active"
     },
     "filesystem": {
       "args": [],
@@ -564,7 +578,9 @@
         "get_file_info",
         "list_allowed_directories"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Active"
     },
     "firecrawl": {
       "args": [],
@@ -661,7 +677,9 @@
         "firecrawl_generate_llmstxt",
         "firecrawl_map"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Official",
+      "status": "Active"
     },
     "gdrive": {
       "args": [],
@@ -717,7 +735,9 @@
       "tools": [
         "search"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Deprecated"
     },
     "git": {
       "args": [],
@@ -767,7 +787,9 @@
         "git_show",
         "git_init"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Active"
     },
     "github": {
       "args": [],
@@ -862,7 +884,9 @@
         "get_code_scanning_alert",
         "list_code_scanning_alerts"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Official",
+      "status": "Active"
     },
     "gitlab": {
       "args": [],
@@ -930,7 +954,9 @@
         "fork_repository",
         "create_branch"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Deprecated"
     },
     "google-maps": {
       "args": [],
@@ -989,7 +1015,9 @@
         "maps_elevation",
         "maps_directions"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Deprecated"
     },
     "grafana": {
       "args": [],
@@ -1089,7 +1117,9 @@
         "list_pyroscope_profile_types",
         "fetch_pyroscope_profile"
       ],
-      "transport": "sse"
+      "transport": "sse",
+      "tier": "Official",
+      "status": "Active"
     },
     "hass-mcp": {
       "args": [],
@@ -1153,7 +1183,9 @@
         "get_history",
         "get_error_log"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Active"
     },
     "k8s": {
       "args": [],
@@ -1211,7 +1243,9 @@
         "get_resource",
         "apply_resource"
       ],
-      "transport": "sse"
+      "transport": "sse",
+      "tier": "Community",
+      "status": "Active"
     },
     "memory": {
       "args": [],
@@ -1266,7 +1300,9 @@
         "search_nodes",
         "open_nodes"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Active"
     },
     "mongodb": {
       "args": [],
@@ -1395,7 +1431,9 @@
         "collection-storage-size",
         "db-stats"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Official",
+      "status": "Active"
     },
     "netbird": {
       "args": [
@@ -1463,7 +1501,9 @@
         "list_netbird_networks",
         "list_netbird_nameservers"
       ],
-      "transport": "sse"
+      "transport": "sse",
+      "tier": "Community",
+      "status": "Active"
     },
     "notion": {
       "args": [],
@@ -1526,7 +1566,9 @@
         "API-retrieve-a-comment",
         "API-create-a-comment"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Official",
+      "status": "Active"
     },
     "oci-registry": {
       "args": [],
@@ -1597,7 +1639,9 @@
         "get_image_manifest",
         "get_image_config"
       ],
-      "transport": "sse"
+      "transport": "sse",
+      "tier": "Community",
+      "status": "Active"
     },
     "osv": {
       "args": [],
@@ -1652,7 +1696,9 @@
         "query_vulnerabilities_batch",
         "get_vulnerability"
       ],
-      "transport": "sse"
+      "transport": "sse",
+      "tier": "Community",
+      "status": "Active"
     },
     "perplexity-ask": {
       "args": [],
@@ -1700,7 +1746,9 @@
         "perplexity_research",
         "perplexity_reason"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Official",
+      "status": "Active"
     },
     "playwright": {
       "args": [
@@ -1766,7 +1814,9 @@
         "browser_generate_playwright_test",
         "browser_wait_for"
       ],
-      "transport": "sse"
+      "transport": "sse",
+      "tier": "Official",
+      "status": "Active"
     },
     "postgres": {
       "args": [
@@ -1813,7 +1863,9 @@
       "tools": [
         "query"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Deprecated"
     },
     "puppeteer": {
       "args": [],
@@ -1870,7 +1922,9 @@
         "puppeteer_select",
         "puppeteer_evaluate"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Deprecated"
     },
     "redis": {
       "args": [],
@@ -2021,7 +2075,9 @@
         "subscribe",
         "unsubscribe"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Official",
+      "status": "Active"
     },
     "semgrep": {
       "args": [
@@ -2083,7 +2139,9 @@
         "semgrep_rule_schema",
         "write_custom_semgrep_rule"
       ],
-      "transport": "sse"
+      "transport": "sse",
+      "tier": "Official",
+      "status": "Active"
     },
     "sentry": {
       "args": [],
@@ -2129,7 +2187,9 @@
       "tools": [
         "get_sentry_issue"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Deprecated"
     },
     "sequentialthinking": {
       "args": [],
@@ -2171,7 +2231,9 @@
       "tools": [
         "sequentialthinking"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Active"
     },
     "slack": {
       "args": [],
@@ -2236,7 +2298,9 @@
         "slack_get_users",
         "slack_get_user_profile"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Deprecated"
     },
     "sqlite": {
       "args": [],
@@ -2285,7 +2349,9 @@
         "describe_table",
         "append_insight"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Deprecated"
     },
     "terraform": {
       "args": [],
@@ -2337,7 +2403,9 @@
         "searchModules",
         "moduleDetails"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Official",
+      "status": "Active"
     },
     "time": {
       "args": [],
@@ -2378,7 +2446,9 @@
         "get_current_time",
         "convert_time"
       ],
-      "transport": "stdio"
+      "transport": "stdio",
+      "tier": "Community",
+      "status": "Active"
     }
   },
   "version": "1.0.0"

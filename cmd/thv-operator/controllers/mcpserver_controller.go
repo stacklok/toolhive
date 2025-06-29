@@ -429,7 +429,20 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 	}
 
 	// Prepare container env vars for the proxy container
-	env := []corev1.EnvVar{}
+	env := []corev1.EnvVar{
+		{
+			Name:  "XDG_CONFIG_HOME",
+			Value: "/dev/shm/xdg-config-home",
+		},
+	}
+
+	// Add user-specified proxy environment variables (can override defaults)
+	for _, envVar := range m.Spec.ProxyEnv {
+		env = append(env, corev1.EnvVar{
+			Name:  envVar.Name,
+			Value: envVar.Value,
+		})
+	}
 
 	// Prepare container volume mounts
 	volumeMounts := []corev1.VolumeMount{}

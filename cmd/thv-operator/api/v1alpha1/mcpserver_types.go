@@ -76,11 +76,22 @@ type MCPServerSpec struct {
 type ResourceOverrides struct {
 	// ProxyDeployment defines overrides for the Proxy Deployment resource (toolhive proxy)
 	// +optional
-	ProxyDeployment *ResourceMetadataOverrides `json:"proxyDeployment,omitempty"`
+	ProxyDeployment *ProxyDeploymentOverrides `json:"proxyDeployment,omitempty"`
 
 	// ProxyService defines overrides for the Proxy Service resource (points to the proxy deployment)
 	// +optional
 	ProxyService *ResourceMetadataOverrides `json:"proxyService,omitempty"`
+}
+
+// ProxyDeploymentOverrides defines overrides specific to the proxy deployment
+type ProxyDeploymentOverrides struct {
+	// ResourceMetadataOverrides is embedded to inherit annotations and labels fields
+	ResourceMetadataOverrides `json:",inline"` // nolint:revive
+
+	// Env are environment variables to set in the proxy container (thv run process)
+	// These affect the toolhive proxy itself, not the MCP server it manages
+	// +optional
+	Env []EnvVar `json:"env,omitempty"`
 }
 
 // ResourceMetadataOverrides defines metadata overrides for a resource

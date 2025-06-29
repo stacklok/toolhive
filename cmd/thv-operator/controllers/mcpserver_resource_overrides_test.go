@@ -80,15 +80,17 @@ func TestResourceOverrides(t *testing.T) {
 					Image: "test-image",
 					Port:  8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ResourceMetadataOverrides{
-							Labels: map[string]string{
-								"custom-label": "deployment-value",
-								"environment":  "test",
-								"app":          "should-be-overridden", // This should be overridden by default
-							},
-							Annotations: map[string]string{
-								"custom-annotation": "deployment-annotation",
-								"monitoring/scrape": "true",
+						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+								Labels: map[string]string{
+									"custom-label": "deployment-value",
+									"environment":  "test",
+									"app":          "should-be-overridden", // This should be overridden by default
+								},
+								Annotations: map[string]string{
+									"custom-annotation": "deployment-annotation",
+									"monitoring/scrape": "true",
+								},
 							},
 						},
 						ProxyService: &mcpv1alpha1.ResourceMetadataOverrides{
@@ -132,6 +134,124 @@ func TestResourceOverrides(t *testing.T) {
 				"service.beta.kubernetes.io/aws-load-balancer-type": "nlb",
 			},
 		},
+		{
+			name: "with proxy environment variables",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "test-image",
+					Port:  8080,
+					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
+						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+								Labels: map[string]string{
+									"environment": "test",
+								},
+							},
+							Env: []mcpv1alpha1.EnvVar{
+								{
+									Name:  "HTTP_PROXY",
+									Value: "http://proxy.example.com:8080",
+								},
+								{
+									Name:  "NO_PROXY",
+									Value: "localhost,127.0.0.1",
+								},
+								{
+									Name:  "CUSTOM_ENV",
+									Value: "custom-value",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedDeploymentLabels: map[string]string{
+				"app":                        "mcpserver",
+				"app.kubernetes.io/name":     "mcpserver",
+				"app.kubernetes.io/instance": "test-server",
+				"toolhive":                   "true",
+				"toolhive-name":              "test-server",
+				"environment":                "test",
+			},
+			expectedDeploymentAnns: map[string]string{},
+			expectedServiceLabels: map[string]string{
+				"app":                        "mcpserver",
+				"app.kubernetes.io/name":     "mcpserver",
+				"app.kubernetes.io/instance": "test-server",
+				"toolhive":                   "true",
+				"toolhive-name":              "test-server",
+			},
+			expectedServiceAnns: map[string]string{},
+		},
+		{
+			name: "with both metadata overrides and proxy environment variables",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "test-image",
+					Port:  8080,
+					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
+						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+								Labels: map[string]string{
+									"environment": "production",
+									"team":        "platform",
+								},
+								Annotations: map[string]string{
+									"monitoring/enabled": "true",
+									"version":            "v1.2.3",
+								},
+							},
+							Env: []mcpv1alpha1.EnvVar{
+								{
+									Name:  "LOG_LEVEL",
+									Value: "debug",
+								},
+								{
+									Name:  "METRICS_ENABLED",
+									Value: "true",
+								},
+							},
+						},
+						ProxyService: &mcpv1alpha1.ResourceMetadataOverrides{
+							Annotations: map[string]string{
+								"service.beta.kubernetes.io/aws-load-balancer-type": "nlb",
+							},
+						},
+					},
+				},
+			},
+			expectedDeploymentLabels: map[string]string{
+				"app":                        "mcpserver",
+				"app.kubernetes.io/name":     "mcpserver",
+				"app.kubernetes.io/instance": "test-server",
+				"toolhive":                   "true",
+				"toolhive-name":              "test-server",
+				"environment":                "production",
+				"team":                       "platform",
+			},
+			expectedDeploymentAnns: map[string]string{
+				"monitoring/enabled": "true",
+				"version":            "v1.2.3",
+			},
+			expectedServiceLabels: map[string]string{
+				"app":                        "mcpserver",
+				"app.kubernetes.io/name":     "mcpserver",
+				"app.kubernetes.io/instance": "test-server",
+				"toolhive":                   "true",
+				"toolhive-name":              "test-server",
+			},
+			expectedServiceAnns: map[string]string{
+				"service.beta.kubernetes.io/aws-load-balancer-type": "nlb",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -157,6 +277,35 @@ func TestResourceOverrides(t *testing.T) {
 
 			assert.Equal(t, tt.expectedServiceLabels, service.Labels)
 			assert.Equal(t, tt.expectedServiceAnns, service.Annotations)
+
+			// For test cases with environment variables, verify they are set correctly
+			if tt.name == "with proxy environment variables" || tt.name == "with both metadata overrides and proxy environment variables" {
+				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+				container := deployment.Spec.Template.Spec.Containers[0]
+
+				// Define expected environment variables based on test case
+				var expectedEnvVars map[string]string
+				if tt.name == "with proxy environment variables" {
+					expectedEnvVars = map[string]string{
+						"HTTP_PROXY": "http://proxy.example.com:8080",
+						"NO_PROXY":   "localhost,127.0.0.1",
+						"CUSTOM_ENV": "custom-value",
+					}
+				} else {
+					expectedEnvVars = map[string]string{
+						"LOG_LEVEL":       "debug",
+						"METRICS_ENABLED": "true",
+					}
+				}
+
+				assert.Len(t, container.Env, len(expectedEnvVars))
+
+				for _, env := range container.Env {
+					expectedValue, exists := expectedEnvVars[env.Name]
+					assert.True(t, exists, "Unexpected environment variable: %s", env.Name)
+					assert.Equal(t, expectedValue, env.Value, "Environment variable %s has incorrect value", env.Name)
+				}
+			}
 		})
 	}
 }

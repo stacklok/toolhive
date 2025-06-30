@@ -133,6 +133,10 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 	// bind to a random host port
 	// Create host port bindings (configurable through the --host flag)
 	hostPort := networking.FindAvailable()
+	if hostPort == 0 {
+		return fmt.Errorf("could not find an available port")
+	}
+
 	portBindings := []rt.PortBinding{
 		{
 			HostIP:   t.host,

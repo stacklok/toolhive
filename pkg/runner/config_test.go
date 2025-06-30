@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"testing"
@@ -13,85 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authz"
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
-
-// mockRuntime implements the Runtime interface for testing
-type mockRuntime struct{}
-
-func (*mockRuntime) DeployWorkload(
-	_ context.Context,
-	_, _ string,
-	_ []string,
-	_, _ map[string]string,
-	_ *permissions.Profile,
-	_ string,
-	_ *rt.DeployWorkloadOptions,
-	_ bool,
-) (string, int, error) {
-	return "container-id", 8080, nil
-}
-
-func (*mockRuntime) StartContainer(_ context.Context, _ string) error {
-	return nil
-}
-
-func (*mockRuntime) ListWorkloads(_ context.Context) ([]rt.ContainerInfo, error) {
-	return []rt.ContainerInfo{}, nil
-}
-
-func (*mockRuntime) StopWorkload(_ context.Context, _ string) error {
-	return nil
-}
-
-func (*mockRuntime) RemoveWorkload(_ context.Context, _ string) error {
-	return nil
-}
-
-func (*mockRuntime) GetWorkloadLogs(_ context.Context, _ string, _ bool) (string, error) {
-	return "", nil
-}
-
-func (*mockRuntime) IsWorkloadRunning(_ context.Context, _ string) (bool, error) {
-	return true, nil
-}
-
-func (*mockRuntime) GetWorkloadInfo(_ context.Context, _ string) (rt.ContainerInfo, error) {
-	return rt.ContainerInfo{}, nil
-}
-
-func (*mockRuntime) AttachToWorkload(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, error) {
-	return nil, nil, nil
-}
-
-func (*mockRuntime) ImageExists(_ context.Context, _ string) (bool, error) {
-	return true, nil
-}
-
-func (*mockRuntime) PullImage(_ context.Context, _ string) error {
-	return nil
-}
-
-func (*mockRuntime) VerifyImage(_ context.Context, _ *registry.ImageMetadata, _ string) (bool, error) {
-	return true, nil
-}
-
-func (*mockRuntime) BuildImage(_ context.Context, _, _ string) error {
-	return nil
-}
-
-func (*mockRuntime) Name() string {
-	return "mock"
-}
-
-func (*mockRuntime) String() string {
-	return "mock"
-}
 
 func TestNewRunConfig(t *testing.T) {
 	t.Parallel()
@@ -869,7 +796,7 @@ func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadat
 
 func TestNewRunConfigFromFlags(t *testing.T) {
 	t.Parallel()
-	runtime := &mockRuntime{}
+	runtime := &mocks.MockRuntime{}
 	cmdArgs := []string{"arg1", "arg2"}
 	name := "test-server"
 	imageURL := "test-image:latest"

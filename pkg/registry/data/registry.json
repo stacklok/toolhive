@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
-  "last_updated": "2025-06-27T00:22:12Z",
+  "last_updated": "2025-06-30T00:23:31Z",
   "servers": {
     "atlassian": {
       "args": [],
@@ -88,9 +88,9 @@
       ],
       "image": "ghcr.io/sooperset/mcp-atlassian:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:09Z",
-        "pulls": 7679,
-        "stars": 2152
+        "last_updated": "2025-06-30T00:23:29Z",
+        "pulls": 7789,
+        "stars": 2194
       },
       "permissions": {
         "network": {
@@ -112,6 +112,7 @@
         "write": []
       },
       "repository_url": "https://github.com/sooperset/mcp-atlassian",
+      "status": "Active",
       "tags": [
         "atlassian",
         "confluence",
@@ -124,6 +125,7 @@
         "server",
         "data-center"
       ],
+      "tier": "Community",
       "tools": [
         "confluence_search",
         "confluence_get_page",
@@ -167,9 +169,7 @@
         "jira_create_version",
         "jira_batch_create_versions"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "stdio"
     },
     "aws-kb-retrieval-server": {
       "args": [],
@@ -195,9 +195,9 @@
       ],
       "image": "mcp/aws-kb-retrieval-server:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:10Z",
-        "pulls": 4339,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:29Z",
+        "pulls": 4397,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -216,6 +216,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Deprecated",
       "tags": [
         "agent",
         "aws",
@@ -228,12 +229,11 @@
         "retrieving",
         "runtime"
       ],
+      "tier": "Community",
       "tools": [
         "retrieve_from_aws_kb"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Deprecated"
+      "transport": "stdio"
     },
     "brave-search": {
       "args": [],
@@ -248,9 +248,9 @@
       ],
       "image": "mcp/brave-search:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:08Z",
-        "pulls": 7930,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:28Z",
+        "pulls": 7983,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -272,6 +272,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Deprecated",
       "tags": [
         "api",
         "both",
@@ -284,13 +285,12 @@
         "local",
         "providing"
       ],
+      "tier": "Community",
       "tools": [
         "brave_web_search",
         "brave_local_search"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Deprecated"
+      "transport": "stdio"
     },
     "elasticsearch": {
       "args": [],
@@ -341,9 +341,9 @@
       ],
       "image": "mcp/elasticsearch:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:12Z",
-        "pulls": 5308,
-        "stars": 299
+        "last_updated": "2025-06-30T00:23:31Z",
+        "pulls": 5429,
+        "stars": 305
       },
       "permissions": {
         "network": {
@@ -363,6 +363,7 @@
         "write": []
       },
       "repository_url": "https://github.com/elastic/mcp-server-elasticsearch",
+      "status": "Active",
       "tags": [
         "elasticsearch",
         "search",
@@ -373,15 +374,14 @@
         "metrics",
         "logs"
       ],
+      "tier": "Official",
       "tools": [
         "get_mappings",
         "get_shards",
         "list_indices",
         "search"
       ],
-      "transport": "stdio",
-      "tier": "Official",
-      "status": "Active"
+      "transport": "stdio"
     },
     "everart": {
       "args": [],
@@ -396,9 +396,9 @@
       ],
       "image": "mcp/everart:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:07Z",
-        "pulls": 7933,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:28Z",
+        "pulls": 8044,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -417,6 +417,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Deprecated",
       "tags": [
         "api",
         "claude",
@@ -427,12 +428,11 @@
         "tools",
         "using"
       ],
+      "tier": "Community",
       "tools": [
         "generate_image"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Deprecated"
+      "transport": "stdio"
     },
     "everything": {
       "args": [],
@@ -440,9 +440,9 @@
       "env_vars": [],
       "image": "mcp/everything:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:11Z",
-        "pulls": 10298,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:30Z",
+        "pulls": 10441,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -457,6 +457,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Active",
       "tags": [
         "adds",
         "all",
@@ -469,6 +470,7 @@
         "simple",
         "tools"
       ],
+      "tier": "Community",
       "tools": [
         "echo",
         "add",
@@ -478,9 +480,7 @@
         "printEnv",
         "annotatedMessage"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "stdio"
     },
     "fetch": {
       "args": [],
@@ -488,9 +488,9 @@
       "env_vars": [],
       "image": "mcp/fetch:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:10Z",
-        "pulls": 9006,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:30Z",
+        "pulls": 9078,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -509,6 +509,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Active",
       "tags": [
         "content",
         "html",
@@ -521,12 +522,11 @@
         "curl",
         "modelcontextprotocol"
       ],
+      "tier": "Community",
       "tools": [
         "fetch"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "stdio"
     },
     "filesystem": {
       "args": [],
@@ -534,9 +534,9 @@
       "env_vars": [],
       "image": "mcp/filesystem:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:07Z",
-        "pulls": 13898,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:27Z",
+        "pulls": 14041,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -555,6 +555,7 @@
         ]
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Active",
       "tags": [
         "create_directory",
         "edit_file",
@@ -567,6 +568,7 @@
         "node",
         "operations"
       ],
+      "tier": "Community",
       "tools": [
         "read_file",
         "read_multiple_files",
@@ -579,9 +581,7 @@
         "get_file_info",
         "list_allowed_directories"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "stdio"
     },
     "firecrawl": {
       "args": [],
@@ -631,9 +631,9 @@
       ],
       "image": "mcp/firecrawl:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:06Z",
-        "pulls": 7521,
-        "stars": 3567
+        "last_updated": "2025-06-30T00:23:27Z",
+        "pulls": 7630,
+        "stars": 3605
       },
       "permissions": {
         "network": {
@@ -654,6 +654,7 @@
         "write": []
       },
       "repository_url": "https://github.com/mendableai/firecrawl-mcp-server",
+      "status": "Active",
       "tags": [
         "web-crawler",
         "web-scraping",
@@ -666,6 +667,7 @@
         "research",
         "automation"
       ],
+      "tier": "Official",
       "tools": [
         "firecrawl_scrape",
         "firecrawl_batch_scrape",
@@ -678,9 +680,7 @@
         "firecrawl_generate_llmstxt",
         "firecrawl_map"
       ],
-      "transport": "stdio",
-      "tier": "Official",
-      "status": "Active"
+      "transport": "stdio"
     },
     "gdrive": {
       "args": [],
@@ -699,9 +699,9 @@
       ],
       "image": "mcp/gdrive:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:12Z",
-        "pulls": 6926,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:31Z",
+        "pulls": 7017,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -720,6 +720,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Deprecated",
       "tags": [
         "drive",
         "files",
@@ -733,12 +734,11 @@
         "spreadsheets",
         "presentations"
       ],
+      "tier": "Community",
       "tools": [
         "search"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Deprecated"
+      "transport": "stdio"
     },
     "git": {
       "args": [],
@@ -746,9 +746,9 @@
       "env_vars": [],
       "image": "mcp/git:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:12Z",
-        "pulls": 6926,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:31Z",
+        "pulls": 7000,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -763,6 +763,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Active",
       "tags": [
         "adds",
         "automation",
@@ -774,6 +775,7 @@
         "tools",
         "unstages"
       ],
+      "tier": "Community",
       "tools": [
         "git_status",
         "git_diff_unstaged",
@@ -788,9 +790,7 @@
         "git_show",
         "git_init"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "stdio"
     },
     "github": {
       "args": [],
@@ -810,9 +810,9 @@
       ],
       "image": "ghcr.io/github/github-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:09Z",
+        "last_updated": "2025-06-30T00:23:29Z",
         "pulls": 5000,
-        "stars": 16453
+        "stars": 16578
       },
       "permissions": {
         "network": {
@@ -841,6 +841,7 @@
         "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/github/github-mcp-server",
+      "status": "Active",
       "tags": [
         "api",
         "create",
@@ -854,6 +855,7 @@
         "update",
         "issues"
       ],
+      "tier": "Official",
       "tools": [
         "get_me",
         "get_issue",
@@ -885,9 +887,7 @@
         "get_code_scanning_alert",
         "list_code_scanning_alerts"
       ],
-      "transport": "stdio",
-      "tier": "Official",
-      "status": "Active"
+      "transport": "stdio"
     },
     "gitlab": {
       "args": [],
@@ -907,9 +907,9 @@
       ],
       "image": "mcp/gitlab:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:06Z",
-        "pulls": 6157,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:27Z",
+        "pulls": 6234,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -932,6 +932,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Deprecated",
       "tags": [
         "api",
         "create",
@@ -944,6 +945,7 @@
         "project",
         "search"
       ],
+      "tier": "Community",
       "tools": [
         "create_or_update_file",
         "push_files",
@@ -955,9 +957,7 @@
         "fork_repository",
         "create_branch"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Deprecated"
+      "transport": "stdio"
     },
     "google-maps": {
       "args": [],
@@ -972,9 +972,9 @@
       ],
       "image": "mcp/google-maps:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:09Z",
-        "pulls": 5036,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:29Z",
+        "pulls": 5101,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -996,6 +996,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Deprecated",
       "tags": [
         "api",
         "directions",
@@ -1007,6 +1008,7 @@
         "places",
         "search"
       ],
+      "tier": "Community",
       "tools": [
         "maps_geocode",
         "maps_reverse_geocode",
@@ -1016,9 +1018,7 @@
         "maps_elevation",
         "maps_directions"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Deprecated"
+      "transport": "stdio"
     },
     "grafana": {
       "args": [],
@@ -1038,9 +1038,9 @@
       ],
       "image": "mcp/grafana:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:07Z",
-        "pulls": 4830,
-        "stars": 1004
+        "last_updated": "2025-06-30T00:23:27Z",
+        "pulls": 4900,
+        "stars": 1014
       },
       "permissions": {
         "network": {
@@ -1059,6 +1059,7 @@
         "write": []
       },
       "repository_url": "https://github.com/grafana/mcp-grafana",
+      "status": "Active",
       "tags": [
         "grafana",
         "dashboards",
@@ -1079,6 +1080,7 @@
         "oncall"
       ],
       "target_port": 8000,
+      "tier": "Official",
       "tools": [
         "list_teams",
         "search_dashboards",
@@ -1118,9 +1120,7 @@
         "list_pyroscope_profile_types",
         "fetch_pyroscope_profile"
       ],
-      "transport": "sse",
-      "tier": "Official",
-      "status": "Active"
+      "transport": "sse"
     },
     "hass-mcp": {
       "args": [],
@@ -1140,9 +1140,9 @@
       ],
       "image": "voska/hass-mcp:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:07Z",
-        "pulls": 10074,
-        "stars": 112
+        "last_updated": "2025-06-30T00:23:27Z",
+        "pulls": 10220,
+        "stars": 114
       },
       "permissions": {
         "network": {
@@ -1159,6 +1159,7 @@
         "write": []
       },
       "repository_url": "https://github.com/voska/hass-mcp",
+      "status": "Active",
       "tags": [
         "home-assistant",
         "smart-home",
@@ -1171,6 +1172,7 @@
         "home-automation",
         "domotics"
       ],
+      "tier": "Community",
       "tools": [
         "get_version",
         "get_entity",
@@ -1184,9 +1186,7 @@
         "get_history",
         "get_error_log"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "stdio"
     },
     "k8s": {
       "args": [],
@@ -1200,8 +1200,8 @@
       ],
       "image": "ghcr.io/stackloklabs/mkp/server:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:11Z",
-        "pulls": 7936,
+        "last_updated": "2025-06-30T00:23:30Z",
+        "pulls": 8064,
         "stars": 32
       },
       "permissions": {
@@ -1228,6 +1228,7 @@
         "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/StacklokLabs/mkp",
+      "status": "Active",
       "tags": [
         "kubernetes",
         "k8s",
@@ -1239,14 +1240,13 @@
         "get",
         "list"
       ],
+      "tier": "Community",
       "tools": [
         "list_resources",
         "get_resource",
         "apply_resource"
       ],
-      "transport": "sse",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "sse"
     },
     "memory": {
       "args": [],
@@ -1260,9 +1260,9 @@
       ],
       "image": "mcp/memory:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:09Z",
-        "pulls": 10449,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:29Z",
+        "pulls": 10564,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -1281,6 +1281,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Active",
       "tags": [
         "entities",
         "graph",
@@ -1290,6 +1291,7 @@
         "persistent",
         "relations"
       ],
+      "tier": "Community",
       "tools": [
         "create_entities",
         "create_relations",
@@ -1301,9 +1303,7 @@
         "search_nodes",
         "open_nodes"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "stdio"
     },
     "mongodb": {
       "args": [],
@@ -1365,9 +1365,9 @@
       ],
       "image": "mongodb/mongodb-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:07Z",
-        "pulls": 736,
-        "stars": 345
+        "last_updated": "2025-06-30T00:23:27Z",
+        "pulls": 828,
+        "stars": 360
       },
       "permissions": {
         "network": {
@@ -1390,6 +1390,7 @@
         "write": []
       },
       "repository_url": "https://github.com/mongodb-js/mongodb-mcp-server",
+      "status": "Active",
       "tags": [
         "mongodb",
         "mongo",
@@ -1398,6 +1399,7 @@
         "data",
         "query"
       ],
+      "tier": "Official",
       "tools": [
         "atlas-list-orgs",
         "atlas-list-projects",
@@ -1432,9 +1434,7 @@
         "collection-storage-size",
         "db-stats"
       ],
-      "transport": "stdio",
-      "tier": "Official",
-      "status": "Active"
+      "transport": "stdio"
     },
     "netbird": {
       "args": [
@@ -1459,8 +1459,8 @@
       ],
       "image": "aantti/mcp-netbird:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:08Z",
-        "pulls": 6486,
+        "last_updated": "2025-06-30T00:23:28Z",
+        "pulls": 6580,
         "stars": 33
       },
       "permissions": {
@@ -1482,6 +1482,7 @@
         "write": []
       },
       "repository_url": "https://github.com/aantti/mcp-netbird",
+      "status": "Active",
       "tags": [
         "netbird",
         "vpn",
@@ -1493,6 +1494,7 @@
         "management"
       ],
       "target_port": 8001,
+      "tier": "Community",
       "tools": [
         "list_netbird_peers",
         "list_netbird_port_allocations",
@@ -1502,9 +1504,7 @@
         "list_netbird_networks",
         "list_netbird_nameservers"
       ],
-      "transport": "sse",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "sse"
     },
     "notion": {
       "args": [],
@@ -1519,9 +1519,9 @@
       ],
       "image": "mcp/notion:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:11Z",
-        "pulls": 996,
-        "stars": 2328
+        "last_updated": "2025-06-30T00:23:30Z",
+        "pulls": 1109,
+        "stars": 2358
       },
       "permissions": {
         "network": {
@@ -1542,10 +1542,12 @@
         "write": []
       },
       "repository_url": "https://github.com/makenotion/notion-mcp-server",
+      "status": "Active",
       "tags": [
         "notion",
         "notes"
       ],
+      "tier": "Official",
       "tools": [
         "API-get-user",
         "API-get-users",
@@ -1567,9 +1569,7 @@
         "API-retrieve-a-comment",
         "API-create-a-comment"
       ],
-      "transport": "stdio",
-      "tier": "Official",
-      "status": "Active"
+      "transport": "stdio"
     },
     "oci-registry": {
       "args": [],
@@ -1595,8 +1595,8 @@
       ],
       "image": "ghcr.io/stackloklabs/ocireg-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:07Z",
-        "pulls": 3376,
+        "last_updated": "2025-06-30T00:23:27Z",
+        "pulls": 3475,
         "stars": 3
       },
       "permissions": {
@@ -1623,6 +1623,7 @@
         "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/StacklokLabs/ocireg-mcp",
+      "status": "Active",
       "tags": [
         "oci",
         "registry",
@@ -1634,15 +1635,14 @@
         "mcp",
         "docker"
       ],
+      "tier": "Community",
       "tools": [
         "get_image_info",
         "list_tags",
         "get_image_manifest",
         "get_image_config"
       ],
-      "transport": "sse",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "sse"
     },
     "osv": {
       "args": [],
@@ -1650,8 +1650,8 @@
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/osv-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:06Z",
-        "pulls": 5900,
+        "last_updated": "2025-06-30T00:23:26Z",
+        "pulls": 5994,
         "stars": 5
       },
       "permissions": {
@@ -1680,6 +1680,7 @@
         "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/StacklokLabs/osv-mcp",
+      "status": "Active",
       "tags": [
         "vulnerability",
         "security",
@@ -1692,14 +1693,13 @@
         "security-scanning",
         "vulnerability-detection"
       ],
+      "tier": "Community",
       "tools": [
         "query_vulnerability",
         "query_vulnerabilities_batch",
         "get_vulnerability"
       ],
-      "transport": "sse",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "sse"
     },
     "perplexity-ask": {
       "args": [],
@@ -1714,9 +1714,9 @@
       ],
       "image": "mcp/perplexity-ask:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:10Z",
-        "pulls": 9360,
-        "stars": 1289
+        "last_updated": "2025-06-30T00:23:30Z",
+        "pulls": 9484,
+        "stars": 1302
       },
       "permissions": {
         "network": {
@@ -1737,19 +1737,19 @@
         "write": []
       },
       "repository_url": "https://github.com/ppl-ai/modelcontextprotocol",
+      "status": "Active",
       "tags": [
         "ask",
         "perplexity",
         "perplexity-ask"
       ],
+      "tier": "Official",
       "tools": [
         "perplexity_ask",
         "perplexity_research",
         "perplexity_reason"
       ],
-      "transport": "stdio",
-      "tier": "Official",
-      "status": "Active"
+      "transport": "stdio"
     },
     "playwright": {
       "args": [
@@ -1760,9 +1760,9 @@
       "env_vars": [],
       "image": "mcr.microsoft.com/playwright/mcp",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:11Z",
-        "pulls": 16619,
-        "stars": 13159
+        "last_updated": "2025-06-30T00:23:30Z",
+        "pulls": 16768,
+        "stars": 13376
       },
       "permissions": {
         "network": {
@@ -1781,6 +1781,7 @@
         "write": []
       },
       "repository_url": "https://github.com/microsoft/playwright-mcp",
+      "status": "Active",
       "tags": [
         "playwright",
         "automation",
@@ -1788,6 +1789,7 @@
         "navigate"
       ],
       "target_port": 8931,
+      "tier": "Official",
       "tools": [
         "browser_close",
         "browser_resize",
@@ -1815,9 +1817,7 @@
         "browser_generate_playwright_test",
         "browser_wait_for"
       ],
-      "transport": "sse",
-      "tier": "Official",
-      "status": "Active"
+      "transport": "sse"
     },
     "postgres": {
       "args": [
@@ -1827,9 +1827,9 @@
       "env_vars": [],
       "image": "mcp/postgres:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:10Z",
-        "pulls": 12794,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:29Z",
+        "pulls": 12931,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -1852,6 +1852,7 @@
         ]
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Deprecated",
       "tags": [
         "database",
         "postgres",
@@ -1861,12 +1862,11 @@
         "schema",
         "sql"
       ],
+      "tier": "Community",
       "tools": [
         "query"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Deprecated"
+      "transport": "stdio"
     },
     "puppeteer": {
       "args": [],
@@ -1881,9 +1881,9 @@
       ],
       "image": "mcp/puppeteer:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:06Z",
-        "pulls": 16379,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:26Z",
+        "pulls": 16515,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -1902,6 +1902,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Deprecated",
       "tags": [
         "automation",
         "browser",
@@ -1914,6 +1915,7 @@
         "puppeteer_fill",
         "puppeteer_hover"
       ],
+      "tier": "Community",
       "tools": [
         "puppeteer_navigate",
         "puppeteer_screenshot",
@@ -1923,9 +1925,7 @@
         "puppeteer_select",
         "puppeteer_evaluate"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Deprecated"
+      "transport": "stdio"
     },
     "redis": {
       "args": [],
@@ -2000,9 +2000,9 @@
       ],
       "image": "mcp/redis:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:10Z",
-        "pulls": 6371,
-        "stars": 105
+        "last_updated": "2025-06-30T00:23:30Z",
+        "pulls": 6456,
+        "stars": 108
       },
       "permissions": {
         "network": {
@@ -2022,6 +2022,7 @@
         "write": []
       },
       "repository_url": "https://github.com/redis/mcp-redis",
+      "status": "Active",
       "tags": [
         "redis",
         "database",
@@ -2030,6 +2031,7 @@
         "cache",
         "data"
       ],
+      "tier": "Official",
       "tools": [
         "dbsize",
         "info",
@@ -2076,9 +2078,7 @@
         "subscribe",
         "unsubscribe"
       ],
-      "transport": "stdio",
-      "tier": "Official",
-      "status": "Active"
+      "transport": "stdio"
     },
     "semgrep": {
       "args": [
@@ -2096,9 +2096,9 @@
       ],
       "image": "ghcr.io/semgrep/mcp:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:06Z",
-        "pulls": 7245,
-        "stars": 203
+        "last_updated": "2025-06-30T00:23:27Z",
+        "pulls": 7350,
+        "stars": 205
       },
       "permissions": {
         "network": {
@@ -2119,6 +2119,7 @@
         "write": []
       },
       "repository_url": "https://github.com/semgrep/mcp",
+      "status": "Active",
       "tags": [
         "security",
         "static-analysis",
@@ -2131,6 +2132,7 @@
         "ast",
         "code-analysis"
       ],
+      "tier": "Official",
       "tools": [
         "security_check",
         "semgrep_scan",
@@ -2140,9 +2142,7 @@
         "semgrep_rule_schema",
         "write_custom_semgrep_rule"
       ],
-      "transport": "sse",
-      "tier": "Official",
-      "status": "Active"
+      "transport": "sse"
     },
     "sentry": {
       "args": [],
@@ -2157,9 +2157,9 @@
       ],
       "image": "mcp/sentry:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:12Z",
-        "pulls": 9145,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:31Z",
+        "pulls": 9272,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -2178,6 +2178,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Deprecated",
       "tags": [
         "analyzing",
         "issues",
@@ -2185,12 +2186,11 @@
         "sentry",
         "tools"
       ],
+      "tier": "Community",
       "tools": [
         "get_sentry_issue"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Deprecated"
+      "transport": "stdio"
     },
     "sequentialthinking": {
       "args": [],
@@ -2198,9 +2198,9 @@
       "env_vars": [],
       "image": "mcp/sequentialthinking:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:10Z",
-        "pulls": 10448,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:29Z",
+        "pulls": 10541,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -2215,6 +2215,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Active",
       "tags": [
         "approach",
         "dynamic",
@@ -2229,12 +2230,11 @@
         "branching",
         "chain-of-thought"
       ],
+      "tier": "Community",
       "tools": [
         "sequentialthinking"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "stdio"
     },
     "slack": {
       "args": [],
@@ -2254,9 +2254,9 @@
       ],
       "image": "mcp/slack:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:08Z",
-        "pulls": 5871,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:28Z",
+        "pulls": 5947,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -2277,6 +2277,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Deprecated",
       "tags": [
         "api",
         "claude",
@@ -2289,6 +2290,7 @@
         "tools",
         "workspaces"
       ],
+      "tier": "Community",
       "tools": [
         "slack_list_channels",
         "slack_post_message",
@@ -2299,9 +2301,7 @@
         "slack_get_users",
         "slack_get_user_profile"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Deprecated"
+      "transport": "stdio"
     },
     "sqlite": {
       "args": [],
@@ -2309,9 +2309,9 @@
       "env_vars": [],
       "image": "mcp/sqlite:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:08Z",
-        "pulls": 9546,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:28Z",
+        "pulls": 9654,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -2330,6 +2330,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Deprecated",
       "tags": [
         "analysis",
         "auto",
@@ -2342,6 +2343,7 @@
         "sqlite",
         "tools"
       ],
+      "tier": "Community",
       "tools": [
         "read_query",
         "write_query",
@@ -2350,9 +2352,7 @@
         "describe_table",
         "append_insight"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Deprecated"
+      "transport": "stdio"
     },
     "terraform": {
       "args": [],
@@ -2360,9 +2360,9 @@
       "env_vars": [],
       "image": "hashicorp/terraform-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:08Z",
-        "pulls": 3584,
-        "stars": 654
+        "last_updated": "2025-06-30T00:23:28Z",
+        "pulls": 3712,
+        "stars": 660
       },
       "permissions": {
         "network": {
@@ -2383,6 +2383,7 @@
         "write": []
       },
       "repository_url": "https://github.com/hashicorp/terraform-mcp-server",
+      "status": "Active",
       "tags": [
         "terraform",
         "iac",
@@ -2398,15 +2399,14 @@
         "gcp",
         "azure"
       ],
+      "tier": "Official",
       "tools": [
         "resolveProviderDocID",
         "getProviderDocs",
         "searchModules",
         "moduleDetails"
       ],
-      "transport": "stdio",
-      "tier": "Official",
-      "status": "Active"
+      "transport": "stdio"
     },
     "time": {
       "args": [],
@@ -2414,9 +2414,9 @@
       "env_vars": [],
       "image": "mcp/time:latest",
       "metadata": {
-        "last_updated": "2025-06-27T00:22:09Z",
-        "pulls": 7179,
-        "stars": 56214
+        "last_updated": "2025-06-30T00:23:29Z",
+        "pulls": 7260,
+        "stars": 56714
       },
       "permissions": {
         "network": {
@@ -2431,6 +2431,7 @@
         "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "status": "Active",
       "tags": [
         "auto",
         "available",
@@ -2443,13 +2444,12 @@
         "example",
         "examples"
       ],
+      "tier": "Community",
       "tools": [
         "get_current_time",
         "convert_time"
       ],
-      "transport": "stdio",
-      "tier": "Community",
-      "status": "Active"
+      "transport": "stdio"
     }
   },
   "version": "1.0.0"

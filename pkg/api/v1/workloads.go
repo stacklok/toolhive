@@ -10,6 +10,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -27,8 +28,8 @@ type WorkloadRoutes struct {
 //	@title			ToolHive API
 //	@version		1.0
 //	@description	This is the ToolHive API workload.
-//	@workloads		[ { "url": "http://localhost:8080/api/v1" } ]
-//	@basePath		/api/v1
+//	@workloads		[ { "url": "http://localhost:8080/api/v1beta" } ]
+//	@basePath		/api/v1beta
 
 // WorkloadRouter creates a new WorkloadRoutes instance.
 func WorkloadRouter(
@@ -51,10 +52,9 @@ func WorkloadRouter(
 	r.Get("/{name}", routes.getWorkload)
 	r.Post("/{name}/stop", routes.stopWorkload)
 	r.Post("/{name}/restart", routes.restartWorkload)
+	r.Get("/{name}/logs", routes.getLogsForWorkload)
 	r.Delete("/{name}", routes.deleteWorkload)
 
-	// Mount the logs sub-router
-	r.Mount("/{name}", LogsRouter(manager))
 	return r
 }
 
@@ -224,6 +224,12 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Mimic behavior of the CLI by defaulting to the "network" permission profile.
+	// TODO: Consider moving this into the run config creation logic.
+	if req.PermissionProfile == "" {
+		req.PermissionProfile = permissions.ProfileNetwork
+	}
+
 	// Fetch or build the requested image
 	// TODO: Make verification configurable and return errors over the API.
 	imageURL, imageMetadata, err := retriever.GetMCPServer(
@@ -281,6 +287,14 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		logger.Errorf("Failed to create run config: %v", err)
 		http.Error(w, "Failed to create run config", http.StatusBadRequest)
+		return
+	}
+
+	// Start workload with specified RunConfig.
+	err = s.manager.RunWorkloadDetached(runConfig)
+	if err != nil {
+		logger.Errorf("Failed to start workload: %v", err)
+		http.Error(w, "Failed to start workload", http.StatusInternalServerError)
 		return
 	}
 
@@ -412,6 +426,39 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// getLogsForWorkload
+//
+// @Summary      Get logs for a specific workload
+// @Description  Retrieve at most 100 lines of logs for a specific workload by name.
+// @Tags         logs
+// @Produce      text/plain
+// @Param        name  path      string  true  "Workload name"
+// @Success      200   {string}  string  "Logs for the specified workload"
+// @Failure      404   {string}  string  "Not Found"
+// @Router       /api/v1beta/workloads/{name}/logs [get]
+func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := chi.URLParam(r, "name")
+
+	logs, err := s.manager.GetLogs(ctx, name, false)
+	if err != nil {
+		if errors.Is(err, workloads.ErrContainerNotFound) {
+			http.Error(w, "Workload not found", http.StatusNotFound)
+			return
+		}
+		logger.Errorf("Failed to get logs: %v", err)
+		http.Error(w, "Failed to get logs", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	_, err = w.Write([]byte(logs))
+	if err != nil {
+		logger.Errorf("Failed to write logs response: %v", err)
+		http.Error(w, "Failed to write logs response", http.StatusInternalServerError)
+		return
+	}
 }
 
 // Response type definitions.

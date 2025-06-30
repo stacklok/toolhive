@@ -53,6 +53,8 @@ type PortMapping struct {
 // This is a departure from simple container management, as modern deployments
 // often require orchestrating multiple interconnected components that work
 // together to provide a complete service.
+//
+//go:generate mockgen -destination=mocks/mock_runtime.go -package=mocks -source=types.go Runtime
 type Runtime interface {
 	// DeployWorkload creates and starts a complete workload deployment.
 	// This includes the primary container, any required sidecars, networking setup,
@@ -119,6 +121,10 @@ type Runtime interface {
 	// of the workload for interactive communication. This is typically used
 	// for stdio transport where direct input/output streaming is required.
 	AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error)
+
+	// IsRunning checks the health of the container runtime.
+	// This is used to verify that the runtime is operational and can manage workloads.
+	IsRunning(ctx context.Context) error
 }
 
 // Monitor defines the interface for container monitoring

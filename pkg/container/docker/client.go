@@ -850,6 +850,18 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.Wr
 	return resp.Conn, readCloser, nil
 }
 
+// IsRunning checks the health of the container runtime.
+// This is used to verify that the runtime is operational and can manage workloads.
+func (c *Client) IsRunning(ctx context.Context) error {
+	// Try to ping the Docker server
+	_, err := c.client.Ping(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to ping Docker server: %v", err)
+	}
+
+	return nil
+}
+
 // getPermissionConfigFromProfile converts a permission profile to a container permission config
 // with transport-specific settings (internal function)
 // addReadOnlyMounts adds read-only mounts to the permission config

@@ -108,7 +108,7 @@ func TestRemoteRegistryProvider(t *testing.T) {
 	t.Parallel()
 	// Note: This test would require a mock HTTP server for full testing
 	// For now, we just test the creation
-	provider := NewRemoteRegistryProvider("https://example.com/registry.json")
+	provider := NewRemoteRegistryProvider("https://example.com/registry.json", false)
 
 	if provider == nil {
 		t.Fatal("NewRemoteRegistryProvider() returned nil")

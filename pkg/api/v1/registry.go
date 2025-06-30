@@ -16,11 +16,13 @@ const (
 )
 
 // RegistryRoutes defines the routes for the registry API.
-type RegistryRoutes struct{}
+type RegistryRoutes struct {
+	provider registry.Provider
+}
 
 // RegistryRouter creates a new router for the registry API.
-func RegistryRouter() http.Handler {
-	routes := RegistryRoutes{}
+func RegistryRouter(provider registry.Provider) http.Handler {
+	routes := RegistryRoutes{provider: provider}
 
 	r := chi.NewRouter()
 	r.Get("/", routes.listRegistries)
@@ -44,13 +46,8 @@ func RegistryRouter() http.Handler {
 //		@Produce		json
 //		@Success		200	{object}	registryListResponse
 //		@Router			/api/v1beta/registry [get]
-func (*RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
-	provider, err := registry.GetDefaultProvider()
-	if err != nil {
-		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
-		return
-	}
-	reg, err := provider.GetRegistry()
+func (routes *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
+	reg, err := routes.provider.GetRegistry()
 	if err != nil {
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
@@ -98,7 +95,7 @@ func (*RegistryRoutes) addRegistry(w http.ResponseWriter, _ *http.Request) {
 //		@Success		200	{object}	getRegistryResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name} [get]
-func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
+func (routes *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Only "default" registry is supported currently
@@ -107,12 +104,7 @@ func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := registry.GetDefaultProvider()
-	if err != nil {
-		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
-		return
-	}
-	reg, err := provider.GetRegistry()
+	reg, err := routes.provider.GetRegistry()
 	if err != nil {
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
@@ -167,7 +159,7 @@ func (*RegistryRoutes) removeRegistry(w http.ResponseWriter, r *http.Request) {
 //		@Success		200	{object}	listServersResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name}/servers [get]
-func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
+func (routes *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 
 	// Only "default" registry is supported currently
@@ -176,13 +168,7 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := registry.GetDefaultProvider()
-	if err != nil {
-		logger.Errorf("Failed to get registry provider: %v", err)
-		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
-		return
-	}
-	servers, err := provider.ListServers()
+	servers, err := routes.provider.ListServers()
 	if err != nil {
 		logger.Errorf("Failed to list servers: %v", err)
 		http.Error(w, "Failed to list servers", http.StatusInternalServerError)
@@ -209,7 +195,7 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 //		@Success		200	{object}	getServerResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name}/servers/{serverName} [get]
-func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
+func (routes *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 	serverName := chi.URLParam(r, "serverName")
 
@@ -219,13 +205,7 @@ func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := registry.GetDefaultProvider()
-	if err != nil {
-		logger.Errorf("Failed to get registry provider: %v", err)
-		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
-		return
-	}
-	server, err := provider.GetServer(serverName)
+	server, err := routes.provider.GetServer(serverName)
 	if err != nil {
 		logger.Errorf("Failed to get server '%s': %v", serverName, err)
 		http.Error(w, "ImageMetadata not found", http.StatusNotFound)

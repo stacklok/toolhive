@@ -71,6 +71,15 @@ var ctxLogger = log.FromContext(context.Background())
 // mcpContainerName is the name of the mcp container used in pod templates
 const mcpContainerName = "mcp"
 
+// Authorization ConfigMap label constants
+const (
+	// authzLabelKey is the label key for authorization configuration type
+	authzLabelKey = "toolhive.stacklok.io/authz"
+
+	// authzLabelValueInline is the label value for inline authorization configuration
+	authzLabelValueInline = "inline"
+)
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 //
@@ -131,6 +140,12 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// check if the RBAC resources are in place for the MCP server
 	if err := r.ensureRBACResources(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RBAC resources")
+		return ctrl.Result{}, err
+	}
+
+	// Ensure authorization ConfigMap for inline configuration
+	if err := r.ensureAuthzConfigMap(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to ensure authorization ConfigMap")
 		return ctrl.Result{}, err
 	}
 
@@ -414,6 +429,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		args = append(args, oidcArgs...)
 	}
 
+	// Add authorization configuration args
+	if m.Spec.AuthzConfig != nil {
+		authzArgs := r.generateAuthzArgs(m)
+		args = append(args, authzArgs...)
+	}
+
 	// Add environment variables as --env flags for the MCP server
 	for _, e := range m.Spec.Env {
 		args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))
@@ -471,6 +492,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 				},
 			},
 		})
+	}
+
+	// Add volume mounts for authorization configuration
+	authzVolumeMount, authzVolume := r.generateAuthzVolumeConfig(m)
+	if authzVolumeMount != nil {
+		volumeMounts = append(volumeMounts, *authzVolumeMount)
+		volumes = append(volumes, *authzVolume)
 	}
 
 	// Prepare container resources
@@ -938,6 +966,92 @@ func labelsForMCPServer(name string) map[string]string {
 	}
 }
 
+// labelsForInlineAuthzConfig returns the labels for inline authorization ConfigMaps
+// belonging to the given MCPServer CR name.
+func labelsForInlineAuthzConfig(name string) map[string]string {
+	labels := labelsForMCPServer(name)
+	labels[authzLabelKey] = authzLabelValueInline
+	return labels
+}
+
+// generateAuthzVolumeConfig generates volume mount and volume configuration for authorization policies
+// Returns nil for both if no authorization configuration is present
+func (*MCPServerReconciler) generateAuthzVolumeConfig(m *mcpv1alpha1.MCPServer) (*corev1.VolumeMount, *corev1.Volume) {
+	if m.Spec.AuthzConfig == nil {
+		return nil, nil
+	}
+
+	switch m.Spec.AuthzConfig.Type {
+	case mcpv1alpha1.AuthzConfigTypeConfigMap:
+		if m.Spec.AuthzConfig.ConfigMap == nil {
+			return nil, nil
+		}
+
+		volumeMount := &corev1.VolumeMount{
+			Name:      "authz-config",
+			MountPath: "/etc/toolhive/authz",
+			ReadOnly:  true,
+		}
+
+		volume := &corev1.Volume{
+			Name: "authz-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: m.Spec.AuthzConfig.ConfigMap.Name,
+					},
+					Items: []corev1.KeyToPath{
+						{
+							Key: func() string {
+								if m.Spec.AuthzConfig.ConfigMap.Key != "" {
+									return m.Spec.AuthzConfig.ConfigMap.Key
+								}
+								return "authz.json"
+							}(),
+							Path: "authz.json",
+						},
+					},
+				},
+			},
+		}
+
+		return volumeMount, volume
+
+	case mcpv1alpha1.AuthzConfigTypeInline:
+		if m.Spec.AuthzConfig.Inline == nil {
+			return nil, nil
+		}
+
+		volumeMount := &corev1.VolumeMount{
+			Name:      "authz-config",
+			MountPath: "/etc/toolhive/authz",
+			ReadOnly:  true,
+		}
+
+		volume := &corev1.Volume{
+			Name: "authz-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: fmt.Sprintf("%s-authz-inline", m.Name),
+					},
+					Items: []corev1.KeyToPath{
+						{
+							Key:  "authz.json",
+							Path: "authz.json",
+						},
+					},
+				},
+			},
+		}
+
+		return volumeMount, volume
+
+	default:
+		return nil, nil
+	}
+}
+
 // mergeStringMaps merges override map with default map, with default map taking precedence
 // This ensures that operator-required metadata is preserved for proper functionality
 func mergeStringMaps(defaultMap, overrideMap map[string]string) map[string]string {
@@ -1111,6 +1225,109 @@ func (*MCPServerReconciler) generateInlineOIDCArgs(m *mcpv1alpha1.MCPServer) []s
 	}
 
 	return args
+}
+
+// generateAuthzArgs generates authorization command-line arguments based on the configuration type
+func (*MCPServerReconciler) generateAuthzArgs(m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+
+	if m.Spec.AuthzConfig == nil {
+		return args
+	}
+
+	// Validate that the configuration is properly set based on type
+	switch m.Spec.AuthzConfig.Type {
+	case mcpv1alpha1.AuthzConfigTypeConfigMap:
+		if m.Spec.AuthzConfig.ConfigMap == nil {
+			return args
+		}
+	case mcpv1alpha1.AuthzConfigTypeInline:
+		if m.Spec.AuthzConfig.Inline == nil {
+			return args
+		}
+	default:
+		return args
+	}
+
+	// Both ConfigMap and inline configurations use the same mounted path
+	authzConfigPath := "/etc/toolhive/authz/authz.json"
+	args = append(args, fmt.Sprintf("--authz-config=%s", authzConfigPath))
+
+	return args
+}
+
+// ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline configuration
+func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	// Only create ConfigMap for inline authorization configuration
+	if m.Spec.AuthzConfig == nil || m.Spec.AuthzConfig.Type != mcpv1alpha1.AuthzConfigTypeInline ||
+		m.Spec.AuthzConfig.Inline == nil {
+		return nil
+	}
+
+	configMapName := fmt.Sprintf("%s-authz-inline", m.Name)
+
+	// Create authorization configuration data
+	authzConfigData := map[string]interface{}{
+		"version": "1.0",
+		"type":    "cedarv1",
+		"cedar": map[string]interface{}{
+			"policies": m.Spec.AuthzConfig.Inline.Policies,
+			"entities_json": func() string {
+				if m.Spec.AuthzConfig.Inline.EntitiesJSON != "" {
+					return m.Spec.AuthzConfig.Inline.EntitiesJSON
+				}
+				return "[]"
+			}(),
+		},
+	}
+
+	// Marshal to JSON
+	authzConfigJSON, err := json.Marshal(authzConfigData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal inline authz config: %w", err)
+	}
+
+	// Define the ConfigMap
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: m.Namespace,
+			Labels:    labelsForInlineAuthzConfig(m.Name),
+		},
+		Data: map[string]string{
+			"authz.json": string(authzConfigJSON),
+		},
+	}
+
+	// Set the MCPServer as the owner of the ConfigMap
+	if err := controllerutil.SetControllerReference(m, configMap, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference for authorization ConfigMap: %w", err)
+	}
+
+	// Check if the ConfigMap already exists
+	existingConfigMap := &corev1.ConfigMap{}
+	err = r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: m.Namespace}, existingConfigMap)
+	if err != nil && errors.IsNotFound(err) {
+		// Create the ConfigMap
+		ctxLogger.Info("Creating authorization ConfigMap", "ConfigMap.Namespace", configMap.Namespace, "ConfigMap.Name", configMap.Name)
+		if err := r.Create(ctx, configMap); err != nil {
+			return fmt.Errorf("failed to create authorization ConfigMap: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to get authorization ConfigMap: %w", err)
+	} else {
+		// ConfigMap exists, check if it needs to be updated
+		if !reflect.DeepEqual(existingConfigMap.Data, configMap.Data) {
+			ctxLogger.Info("Updating authorization ConfigMap",
+				"ConfigMap.Namespace", configMap.Namespace, "ConfigMap.Name", configMap.Name)
+			existingConfigMap.Data = configMap.Data
+			if err := r.Update(ctx, existingConfigMap); err != nil {
+				return fmt.Errorf("failed to update authorization ConfigMap: %w", err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // int32Ptr returns a pointer to an int32

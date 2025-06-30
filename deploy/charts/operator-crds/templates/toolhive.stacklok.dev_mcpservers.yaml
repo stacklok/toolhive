@@ -54,6 +54,55 @@ spec:
                 items:
                   type: string
                 type: array
+              authzConfig:
+                description: AuthzConfig defines authorization policy configuration
+                  for the MCP server
+                properties:
+                  configMap:
+                    description: |-
+                      ConfigMap references a ConfigMap containing authorization configuration
+                      Only used when Type is "configMap"
+                    properties:
+                      key:
+                        default: authz.json
+                        description: Key is the key in the ConfigMap that contains
+                          the authorization configuration
+                        type: string
+                      name:
+                        description: Name is the name of the ConfigMap
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  inline:
+                    description: |-
+                      Inline contains direct authorization configuration
+                      Only used when Type is "inline"
+                    properties:
+                      entitiesJson:
+                        default: '[]'
+                        description: EntitiesJSON is a JSON string representing Cedar
+                          entities
+                        type: string
+                      policies:
+                        description: Policies is a list of Cedar policy strings
+                        items:
+                          type: string
+                        minItems: 1
+                        type: array
+                    required:
+                    - policies
+                    type: object
+                  type:
+                    default: configMap
+                    description: Type is the type of authorization configuration
+                    enum:
+                    - configMap
+                    - inline
+                    type: string
+                required:
+                - type
+                type: object
               env:
                 description: Env are environment variables to set in the MCP server
                   container

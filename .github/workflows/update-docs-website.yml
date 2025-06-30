@@ -8,9 +8,6 @@ on:
 
 jobs:
   trigger:
-    # Don't trigger on operator releases
-    # On a release event, ref is the release tag
-    if: ${{ startsWith(github.event.release.tag_name, 'v') }}
     runs-on: ubuntu-latest
 
     steps:

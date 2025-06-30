@@ -1,0 +1,32 @@
+## thv config otel set-env-vars
+
+Set the OpenTelemetry environment variables
+
+### Synopsis
+
+Set the list of environment variable names to include in OpenTelemetry spans.
+These environment variables will be used by default when running MCP servers unless overridden by the --otel-env-vars flag.
+
+Example:
+  thv config otel set-env-vars USER,HOME,PATH
+
+```
+thv config otel set-env-vars <var1,var2,...> [flags]
+```
+
+### Options
+
+```
+  -h, --help   help for set-env-vars
+```
+
+### Options inherited from parent commands
+
+```
+      --debug   Enable debug mode
+```
+
+### SEE ALSO
+
+* [thv config otel](thv_config_otel.md)	 - Manage OpenTelemetry configuration
+

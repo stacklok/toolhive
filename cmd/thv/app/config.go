@@ -141,6 +141,8 @@ func init() {
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
 
+	// Add OTEL parent command to config
+	configCmd.AddCommand(OtelCmd)
 }
 
 func registerClientCmdFunc(cmd *cobra.Command, args []string) error {

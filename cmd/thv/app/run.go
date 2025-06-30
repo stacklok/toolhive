@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"net"
 	"os"
 
@@ -250,7 +249,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Only pull image if we are not running in Kubernetes mode.
 	// This split will go away if we implement a separate command or binary
 	// for running MCP servers in Kubernetes.
-	if container.IsKubernetesRuntime() {
+	if !container.IsKubernetesRuntime() {
 		// Take the MCP server we were supplied and either fetch the image, or
 		// build it from a protocol scheme. If the server URI refers to an image
 		// in our trusted registry, we will also fetch the image metadata.

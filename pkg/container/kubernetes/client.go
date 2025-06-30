@@ -516,6 +516,19 @@ func (*Client) StopWorkload(_ context.Context, _ string) error {
 	return nil
 }
 
+// IsRunning checks the health of the container runtime.
+// This is used to verify that the runtime is operational and can manage workloads.
+func (c *Client) IsRunning(ctx context.Context) error {
+	// Use /readyz endpoint to check if the Kubernetes API server is ready.
+	var status int
+	result := c.client.Discovery().RESTClient().Get().AbsPath("/readyz").Do(ctx)
+	if result.StatusCode(&status); status != 200 {
+		return fmt.Errorf("kubernetes API server is not ready, status code: %d", status)
+	}
+
+	return nil
+}
+
 // waitForStatefulSetReady waits for a statefulset to be ready using the watch API
 func waitForStatefulSetReady(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error {
 	// Create a field selector to watch only this specific statefulset

@@ -130,7 +130,7 @@ func Serve(
 		return fmt.Errorf("failed to create client manager: %v", err)
 	}
 	routers := map[string]http.Handler{
-		"/health":               v1.HealthcheckRouter(),
+		"/health":               v1.HealthcheckRouter(rt),
 		"/api/v1beta/version":   v1.VersionRouter(),
 		"/api/v1beta/workloads": v1.WorkloadRouter(manager, rt, debugMode),
 		"/api/v1beta/registry":  v1.RegistryRouter(),

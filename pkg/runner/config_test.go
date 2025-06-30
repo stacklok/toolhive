@@ -796,6 +796,9 @@ func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadat
 
 func TestNewRunConfigFromFlags(t *testing.T) {
 	t.Parallel()
+
+	// Needed to prevent a nil pointer dereference in the logger.
+	logger.Initialize()
 	runtime := &mocks.MockRuntime{}
 	cmdArgs := []string{"arg1", "arg2"}
 	name := "test-server"

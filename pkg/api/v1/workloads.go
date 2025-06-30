@@ -10,6 +10,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -223,6 +224,12 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Mimic behavior of the CLI by defaulting to the "network" permission profile.
+	// TODO: Consider moving this into the run config creation logic.
+	if req.PermissionProfile == "" {
+		req.PermissionProfile = permissions.ProfileNetwork
+	}
+
 	// Fetch or build the requested image
 	// TODO: Make verification configurable and return errors over the API.
 	imageURL, imageMetadata, err := retriever.GetMCPServer(
@@ -280,6 +287,14 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		logger.Errorf("Failed to create run config: %v", err)
 		http.Error(w, "Failed to create run config", http.StatusBadRequest)
+		return
+	}
+
+	// Start workload with specified RunConfig.
+	err = s.manager.RunWorkloadDetached(runConfig)
+	if err != nil {
+		logger.Errorf("Failed to start workload: %v", err)
+		http.Error(w, "Failed to start workload", http.StatusInternalServerError)
 		return
 	}
 

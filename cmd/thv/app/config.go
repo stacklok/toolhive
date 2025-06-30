@@ -16,6 +16,7 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport"
 )
 
@@ -114,6 +115,10 @@ var unsetRegistryURLCmd = &cobra.Command{
 	RunE:  unsetRegistryURLCmdFunc,
 }
 
+var (
+	allowPrivateRegistryIp bool
+)
+
 func init() {
 	// Add config command to root command
 	rootCmd.AddCommand(configCmd)
@@ -126,8 +131,18 @@ func init() {
 	configCmd.AddCommand(getCACertCmd)
 	configCmd.AddCommand(unsetCACertCmd)
 	configCmd.AddCommand(setRegistryURLCmd)
+	setRegistryURLCmd.Flags().BoolVarP(
+		&allowPrivateRegistryIp,
+		"allow-private-ip",
+		"p",
+		false,
+		"Allow setting the registry URL, even if it references a private IP address",
+	)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
+
+	// Add OTEL parent command to config
+	configCmd.AddCommand(OtelCmd)
 }
 
 func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
@@ -385,15 +400,33 @@ func setRegistryURLCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("registry URL must start with http:// or https://")
 	}
 
+	if !allowPrivateRegistryIp {
+		registryClient := networking.GetHttpClient(false)
+		_, err := registryClient.Get(registryURL)
+		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
+			return err
+		}
+	}
+
 	// Update the configuration
 	err := config.UpdateConfig(func(c *config.Config) {
 		c.RegistryUrl = registryURL
+		c.AllowPrivateRegistryIp = allowPrivateRegistryIp
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
 	fmt.Printf("Successfully set registry URL: %s\n", registryURL)
+	if allowPrivateRegistryIp {
+		fmt.Print("Successfully enabled use of private IP addresses for the remote registry\n")
+		fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +
+			"Make sure you trust any remote registries you configure with ToolHive.")
+	} else {
+		fmt.Printf("Use of private IP addresses for the remote registry has been disabled" +
+			" as it's not needed for the provided registry.\n")
+	}
+
 	return nil
 }
 

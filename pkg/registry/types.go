@@ -7,6 +7,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
+// Updates to the registry schema should be reflected in the JSON schema file located at docs/registry/schema.json.
+// The schema is used for validation and documentation purposes.
+
 // Registry represents the top-level structure of the MCP registry
 type Registry struct {
 	// Version is the schema version of the registry
@@ -26,9 +29,13 @@ type ImageMetadata struct {
 	Image string `json:"image"`
 	// Description is a human-readable description of the server's purpose and functionality
 	Description string `json:"description"`
-	// Transport defines the communication protocol for the server (stdio or sse)
+	// Tier represents the tier classification level of the server, e.g., "official" or "community" driven
+	Tier string `json:"tier"`
+	// The Status indicates whether the server is currently active or deprecated
+	Status string `json:"status"`
+	// Transport defines the communication protocol for the server (stdio, sse, or streamable-http)
 	Transport string `json:"transport"`
-	// TargetPort is the port for the container to expose (only applicable to SSE transport)
+	// TargetPort is the port for the container to expose (only applicable to SSE and Streamable HTTP transports)
 	TargetPort int `json:"target_port,omitempty"`
 	// Permissions defines the security profile and access permissions for the server
 	Permissions *permissions.Profile `json:"permissions"`

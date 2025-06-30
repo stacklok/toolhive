@@ -23,10 +23,12 @@ const lockTimeout = 1 * time.Second
 
 // Config represents the configuration of the application.
 type Config struct {
-	Secrets           Secrets `yaml:"secrets"`
-	Clients           Clients `yaml:"clients"`
-	RegistryUrl       string  `yaml:"registry_url"`
-	CACertificatePath string  `yaml:"ca_certificate_path,omitempty"`
+	Secrets                Secrets             `yaml:"secrets"`
+	Clients                Clients             `yaml:"clients"`
+	RegistryUrl            string              `yaml:"registry_url"`
+	AllowPrivateRegistryIp bool                `yaml:"allow_private_registry_ip"`
+	CACertificatePath      string              `yaml:"ca_certificate_path,omitempty"`
+	OTEL                   OpenTelemetryConfig `yaml:"otel,omitempty"`
 }
 
 // Secrets contains the settings for secrets management.
@@ -89,7 +91,8 @@ func createNewConfigWithDefaults() Config {
 			ProviderType:   "", // No default provider - user must run setup
 			SetupCompleted: false,
 		},
-		RegistryUrl: "",
+		RegistryUrl:            "",
+		AllowPrivateRegistryIp: false,
 	}
 }
 
@@ -268,4 +271,11 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 
 	// Lock is released automatically when the function returns.
 	return nil
+}
+
+// OpenTelemetryConfig contains the settings for OpenTelemetry configuration.
+type OpenTelemetryConfig struct {
+	Endpoint     string   `yaml:"endpoint,omitempty"`
+	SamplingRate float64  `yaml:"sampling-rate,omitempty"`
+	EnvVars      []string `yaml:"env-vars,omitempty"`
 }

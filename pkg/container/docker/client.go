@@ -362,6 +362,40 @@ func (c *Client) createIngressContainer(ctx context.Context, containerName strin
 
 }
 
+func extractFirstPort(options *runtime.DeployWorkloadOptions) (int, error) {
+	var firstPort string
+	if len(options.ExposedPorts) == 0 {
+		return 0, fmt.Errorf("no exposed ports specified in options.ExposedPorts")
+	}
+	for port := range options.ExposedPorts {
+		firstPort = port
+
+		// need to strip the protocol
+		firstPort = strings.Split(firstPort, "/")[0]
+		break // take only the first one
+	}
+	firstPortInt, err := strconv.Atoi(firstPort)
+	if err != nil {
+		return 0, fmt.Errorf("failed to convert port %s to int: %v", firstPort, err)
+	}
+	return firstPortInt, nil
+}
+
+func extractFirstPortBinding(portBindings map[string][]runtime.PortBinding) (int, error) {
+	var firstHostPort string
+	for _, bindings := range portBindings {
+		if len(bindings) > 0 {
+			firstHostPort = bindings[0].HostPort
+			break // we only want the first item in the map
+		}
+	}
+	hostPortInt, err := strconv.Atoi(firstHostPort)
+	if err != nil {
+		return 0, fmt.Errorf("failed to convert host port %s to int: %v", firstHostPort, err)
+	}
+	return hostPortInt, nil
+}
+
 // DeployWorkload creates and starts a workload.
 // It configures the workload based on the provided permission profile and transport type.
 // If options is nil, default options will be used.
@@ -465,38 +499,24 @@ func (c *Client) DeployWorkload(
 		return containerId, 0, nil
 	}
 
-	firstPortInt, err := extractFirstPort(options)
+	// extract the first port binding
+	firstHostPort, err := extractFirstPortBinding(options.PortBindings)
 	if err != nil {
-		return "", 0, err // extractFirstPort already wraps the error with context.
+		return "", 0, err
 	}
-
 	if isolateNetwork {
-		firstPortInt, err = c.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
+		// just extract the first exposed port
+		firstPortInt, err := extractFirstPort(options)
+		if err != nil {
+			return "", 0, err // extractFirstPort already wraps the error with context.
+		}
+		firstHostPort, err = c.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
 		if err != nil {
 			return "", 0, fmt.Errorf("failed to create ingress container: %v", err)
 		}
 	}
 
-	return containerId, firstPortInt, nil
-}
-
-func extractFirstPort(options *runtime.DeployWorkloadOptions) (int, error) {
-	var firstPort string
-	if len(options.ExposedPorts) == 0 {
-		return 0, fmt.Errorf("no exposed ports specified in options.ExposedPorts")
-	}
-	for port := range options.ExposedPorts {
-		firstPort = port
-
-		// need to strip the protocol
-		firstPort = strings.Split(firstPort, "/")[0]
-		break // take only the first one
-	}
-	firstPortInt, err := strconv.Atoi(firstPort)
-	if err != nil {
-		return 0, fmt.Errorf("failed to convert port %s to int: %v", firstPort, err)
-	}
-	return firstPortInt, nil
+	return containerId, firstHostPort, nil
 }
 
 // ListWorkloads lists workloads
@@ -848,6 +868,18 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.Wr
 	readCloser := &readCloserWrapper{reader: resp.Reader}
 
 	return resp.Conn, readCloser, nil
+}
+
+// IsRunning checks the health of the container runtime.
+// This is used to verify that the runtime is operational and can manage workloads.
+func (c *Client) IsRunning(ctx context.Context) error {
+	// Try to ping the Docker server
+	_, err := c.client.Ping(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to ping Docker server: %v", err)
+	}
+
+	return nil
 }
 
 // getPermissionConfigFromProfile converts a permission profile to a container permission config

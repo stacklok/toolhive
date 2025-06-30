@@ -7,10 +7,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -224,6 +226,25 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
 
+	// Get OTEL flag values with config fallbacks
+	cfg := config.GetConfig()
+
+	// Use config values as fallbacks for OTEL flags if not explicitly set
+	finalOtelEndpoint := runOtelEndpoint
+	if !cmd.Flags().Changed("otel-endpoint") && cfg.OTEL.Endpoint != "" {
+		finalOtelEndpoint = cfg.OTEL.Endpoint
+	}
+
+	finalOtelSamplingRate := runOtelSamplingRate
+	if !cmd.Flags().Changed("otel-sampling-rate") && cfg.OTEL.SamplingRate != 0.0 {
+		finalOtelSamplingRate = cfg.OTEL.SamplingRate
+	}
+
+	finalOtelEnvironmentVariables := runOtelEnvironmentVariables
+	if !cmd.Flags().Changed("otel-env-vars") && len(cfg.OTEL.EnvVars) > 0 {
+		finalOtelEnvironmentVariables = cfg.OTEL.EnvVars
+	}
+
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
@@ -242,12 +263,20 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		envVarValidator = &runner.CLIEnvVarValidator{}
 	}
 
-	// Take the MCP server we were supplied and either fetch the image, or
-	// build it from a protocol scheme. If the server URI refers to an image
-	// in our trusted registry, we will also fetch the image metadata.
-	imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, serverOrImage, runCACertPath, runVerifyImage)
-	if err != nil {
-		return fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+	var imageMetadata *registry.ImageMetadata
+	imageURL := serverOrImage
+
+	// Only pull image if we are not running in Kubernetes mode.
+	// This split will go away if we implement a separate command or binary
+	// for running MCP servers in Kubernetes.
+	if !container.IsKubernetesRuntime() {
+		// Take the MCP server we were supplied and either fetch the image, or
+		// build it from a protocol scheme. If the server URI refers to an image
+		// in our trusted registry, we will also fetch the image metadata.
+		imageURL, imageMetadata, err = retriever.GetMCPServer(ctx, serverOrImage, runCACertPath, runVerifyImage)
+		if err != nil {
+			return fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+		}
 	}
 
 	// Initialize a new RunConfig with values from command-line flags
@@ -276,13 +305,13 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		oidcAudience,
 		oidcJwksURL,
 		oidcClientID,
-		runOtelEndpoint,
+		finalOtelEndpoint,
 		runOtelServiceName,
-		runOtelSamplingRate,
+		finalOtelSamplingRate,
 		runOtelHeaders,
 		runOtelInsecure,
 		runOtelEnablePrometheusMetricsPath,
-		runOtelEnvironmentVariables,
+		finalOtelEnvironmentVariables,
 		runIsolateNetwork,
 		runK8sPodPatch,
 		envVarValidator,

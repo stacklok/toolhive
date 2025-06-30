@@ -78,7 +78,7 @@ type RunConfig struct {
 	ContainerLabels map[string]string `json:"container_labels,omitempty" yaml:"container_labels,omitempty"`
 
 	// OIDCConfig contains OIDC configuration
-	OIDCConfig *auth.JWTValidatorConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
+	OIDCConfig *auth.TokenValidatorConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
 
 	// AuthzConfig contains the authorization configuration
 	AuthzConfig *authz.Config `json:"authz_config,omitempty" yaml:"authz_config,omitempty"`
@@ -234,7 +234,7 @@ func configureAudit(config *RunConfig, enableAudit bool, auditConfigPath string)
 // configureOIDC sets up OIDC configuration if any values are provided
 func configureOIDC(config *RunConfig, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string) {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
-		config.OIDCConfig = &auth.JWTValidatorConfig{
+		config.OIDCConfig = &auth.TokenValidatorConfig{
 			Issuer:   oidcIssuer,
 			Audience: oidcAudience,
 			JWKSURL:  oidcJwksURL,

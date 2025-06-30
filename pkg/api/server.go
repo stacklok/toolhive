@@ -97,7 +97,7 @@ func Serve(
 	isUnixSocket bool,
 	debugMode bool,
 	enableDocs bool,
-	oidcConfig *auth.JWTValidatorConfig,
+	oidcConfig *auth.TokenValidatorConfig,
 ) error {
 	r := chi.NewRouter()
 	r.Use(

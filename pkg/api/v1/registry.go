@@ -45,7 +45,12 @@ func RegistryRouter() http.Handler {
 //		@Success		200	{object}	registryListResponse
 //		@Router			/api/v1beta/registry [get]
 func (*RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
-	reg, err := registry.GetRegistry()
+	provider, err := registry.GetDefaultProvider()
+	if err != nil {
+		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
+		return
+	}
+	reg, err := provider.GetRegistry()
 	if err != nil {
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
@@ -102,7 +107,12 @@ func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reg, err := registry.GetRegistry()
+	provider, err := registry.GetDefaultProvider()
+	if err != nil {
+		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
+		return
+	}
+	reg, err := provider.GetRegistry()
 	if err != nil {
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
@@ -166,7 +176,13 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	servers, err := registry.ListServers()
+	provider, err := registry.GetDefaultProvider()
+	if err != nil {
+		logger.Errorf("Failed to get registry provider: %v", err)
+		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
+		return
+	}
+	servers, err := provider.ListServers()
 	if err != nil {
 		logger.Errorf("Failed to list servers: %v", err)
 		http.Error(w, "Failed to list servers", http.StatusInternalServerError)
@@ -203,7 +219,13 @@ func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	server, err := registry.GetServer(serverName)
+	provider, err := registry.GetDefaultProvider()
+	if err != nil {
+		logger.Errorf("Failed to get registry provider: %v", err)
+		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
+		return
+	}
+	server, err := provider.GetServer(serverName)
 	if err != nil {
 		logger.Errorf("Failed to get server '%s': %v", serverName, err)
 		http.Error(w, "ImageMetadata not found", http.StatusNotFound)

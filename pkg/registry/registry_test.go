@@ -6,7 +6,11 @@ import (
 
 func TestGetRegistry(t *testing.T) {
 	t.Parallel()
-	reg, err := GetRegistry()
+	provider, err := GetDefaultProvider()
+	if err != nil {
+		t.Fatalf("Failed to get registry provider: %v", err)
+	}
+	reg, err := provider.GetRegistry()
 	if err != nil {
 		t.Fatalf("Failed to get registry: %v", err)
 	}
@@ -32,7 +36,11 @@ func TestGetRegistry(t *testing.T) {
 func TestGetServer(t *testing.T) {
 	t.Parallel()
 	// Test getting an existing server
-	server, err := GetServer("brave-search")
+	provider, err := GetDefaultProvider()
+	if err != nil {
+		t.Fatalf("Failed to get registry provider: %v", err)
+	}
+	server, err := provider.GetServer("brave-search")
 	if err != nil {
 		t.Fatalf("Failed to get server: %v", err)
 	}
@@ -51,7 +59,7 @@ func TestGetServer(t *testing.T) {
 	}
 
 	// Test getting a non-existent server
-	_, err = GetServer("non-existent-server")
+	_, err = provider.GetServer("non-existent-server")
 	if err == nil {
 		t.Error("Expected error when getting non-existent server")
 	}
@@ -60,7 +68,11 @@ func TestGetServer(t *testing.T) {
 func TestSearchServers(t *testing.T) {
 	t.Parallel()
 	// Test searching for servers
-	servers, err := SearchServers("search")
+	provider, err := GetDefaultProvider()
+	if err != nil {
+		t.Fatalf("Failed to get registry provider: %v", err)
+	}
+	servers, err := provider.SearchServers("search")
 	if err != nil {
 		t.Fatalf("Failed to search servers: %v", err)
 	}
@@ -70,7 +82,7 @@ func TestSearchServers(t *testing.T) {
 	}
 
 	// Test searching for non-existent servers
-	servers, err = SearchServers("non-existent-server")
+	servers, err = provider.SearchServers("non-existent-server")
 	if err != nil {
 		t.Fatalf("Failed to search servers: %v", err)
 	}
@@ -82,7 +94,11 @@ func TestSearchServers(t *testing.T) {
 
 func TestListServers(t *testing.T) {
 	t.Parallel()
-	servers, err := ListServers()
+	provider, err := GetDefaultProvider()
+	if err != nil {
+		t.Fatalf("Failed to get registry provider: %v", err)
+	}
+	servers, err := provider.ListServers()
 	if err != nil {
 		t.Fatalf("Failed to list servers: %v", err)
 	}
@@ -92,7 +108,7 @@ func TestListServers(t *testing.T) {
 	}
 
 	// Verify that we get the same number of servers as in the registry
-	reg, err := GetRegistry()
+	reg, err := provider.GetRegistry()
 	if err != nil {
 		t.Fatalf("Failed to get registry: %v", err)
 	}

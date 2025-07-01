@@ -35,6 +35,7 @@ type Config struct {
 // ServerArgs stores arguments for specific MCP servers
 type ServerArgs struct {
 	Servers map[string]map[string]string `yaml:"servers,omitempty"`
+	Global  map[string]string            `yaml:"global,omitempty"`
 }
 
 // GetServerArgs returns the configured arguments for a specific server as a map
@@ -49,10 +50,6 @@ func (c *Config) GetServerArgs(serverName string) map[string]string {
 // Only arguments provided in the args map will be updated
 // Existing arguments not present in args will be preserved
 func (c *Config) SetServerArgs(serverName string, args map[string]string) error {
-	if c.ServerArgs.Servers == nil {
-		c.ServerArgs.Servers = make(map[string]map[string]string)
-	}
-
 	// Get existing arguments or create new map if none exist
 	existing := c.ServerArgs.Servers[serverName]
 	if existing == nil {
@@ -91,6 +88,41 @@ func (c *Config) DeleteAllServerArgs() error {
 	}
 
 	c.ServerArgs.Servers = make(map[string]map[string]string)
+	return c.save()
+}
+
+// GetServerArgs returns the configured arguments for a specific server as a map
+func (c *Config) GetGlobalServerArgs() map[string]string {
+	return c.ServerArgs.Global
+}
+
+// SetServerArgs updates the arguments for a specific server
+// Only arguments provided in the args map will be updated
+// Existing arguments not present in args will be preserved
+func (c *Config) SetGlobalServerArgs(args map[string]string) error {
+	// Get existing arguments or create new map if none exist
+	existing := c.ServerArgs.Global
+	if existing == nil {
+		existing = make(map[string]string)
+	}
+
+	// Only update arguments that are provided in args
+	for k, v := range args {
+		existing[k] = v
+	}
+
+	c.ServerArgs.Global = existing
+	return c.save()
+}
+
+// DeleteServerArgs removes all arguments for a specific server from the config
+// Returns an error if the server doesn't exist in the config
+func (c *Config) DeleteGlobalServerArgs() error {
+	if c.ServerArgs.Global == nil {
+		return fmt.Errorf("no server arguments found in config")
+	}
+
+	c.ServerArgs.Global = make(map[string]string)
 	return c.save()
 }
 

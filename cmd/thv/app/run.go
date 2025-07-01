@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -346,7 +347,71 @@ func parseCommandArguments(args []string) []string {
 	return cmdArgs
 }
 
-func resolveCommandAndConfigArgs(cmdLineArgs map[string]string, serverOrImage string) map[string]string {
+// parseArgsToMap converts a slice of command line arguments to a map[string]string
+// It handles both short flags (-f) and long flags (--flag) with their values
+func parseArgsToMap(args []string) map[string]string {
+	result := make(map[string]string)
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		// Skip empty arguments
+		if arg == "" {
+			continue
+		}
+
+		// Handle long flags (--flag=value or --flag value)
+		if strings.HasPrefix(arg, "--") {
+			// Check if it's --flag=value format
+			if strings.Contains(arg, "=") {
+				parts := strings.SplitN(arg, "=", 2)
+				flag := strings.TrimPrefix(parts[0], "--")
+				result[flag] = parts[1]
+			} else {
+				// Check if next argument is a value (not a flag)
+				flag := strings.TrimPrefix(arg, "--")
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					result[flag] = args[i+1]
+					i++ // Skip the value in next iteration
+				} else {
+					// Flag without value, set to empty string
+					result[flag] = ""
+				}
+			}
+			continue
+		}
+
+		// Handle short flags (-f=value, -f value, or -f)
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") {
+			// Check if it's -f=value format
+			if strings.Contains(arg, "=") {
+				parts := strings.SplitN(arg, "=", 2)
+				flag := strings.TrimPrefix(parts[0], "-")
+				result[flag] = parts[1]
+			} else {
+				// Check if next argument is a value (not a flag)
+				flag := strings.TrimPrefix(arg, "-")
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					result[flag] = args[i+1]
+					i++ // Skip the value in next iteration
+				} else {
+					// Flag without value, set to empty string
+					result[flag] = ""
+				}
+			}
+			continue
+		}
+
+		// If it's not a flag, treat as positional argument
+		// You might want to handle this differently based on your needs
+		result[fmt.Sprintf("arg_%d", len(result))] = arg
+	}
+
+	return result
+}
+
+func resolveCommandAndConfigArgs(cmdArgs []string, serverOrImage string) map[string]string {
+	cmdArgsMap := parseArgsToMap(cmdArgs)
 
 	var mergedArgs map[string]string
 
@@ -354,40 +419,56 @@ func resolveCommandAndConfigArgs(cmdLineArgs map[string]string, serverOrImage st
 	cfg, err := config.LoadOrCreateConfig()
 	if err != nil {
 		logger.Warnf("Failed to load config: %v", err)
-		mergedArgs = cmdLineArgs
+		mergedArgs = cmdArgsMap
 	} else if cfg != nil {
-		configArgs := cfg.GetServerArgs(serverOrImage)
+		// Get global arguments first
+		globalArgs := cfg.GetGlobalServerArgs()
+		logger.Debugf("Found global arguments: %v", globalArgs)
+
+		// Get server-specific arguments
+		serverArgs := cfg.GetServerArgs(serverOrImage)
+		logger.Debugf("Found server-specific arguments: %v", serverArgs)
 
 		// If save-config flag is set, save the command line arguments to config
 		// Do this before merging to only save explicitly provided arguments
-		if runSaveConfig && len(cmdLineArgs) > 0 {
-			if err := cfg.SetServerArgs(serverOrImage, cmdLineArgs); err != nil {
+		if runSaveConfig && len(cmdArgsMap) > 0 {
+			if err := cfg.SetServerArgs(serverOrImage, cmdArgsMap); err != nil {
 				logger.Warnf("Failed to save arguments to config: %v", err)
 			} else {
-				logger.Infof("Saved arguments to config for server %s: %v", serverOrImage, cmdLineArgs)
+				logger.Infof("Saved arguments to config for server %s: %v", serverOrImage, cmdArgsMap)
 			}
 		}
 
 		// Merge config args with command line args for this run
-		if len(configArgs) > 0 {
-			logger.Debugf("Found configured arguments for server %s: %v", serverOrImage, configArgs)
-			mergedArgs = mergeArguments(configArgs, cmdLineArgs)
+		if len(serverArgs) > 0 || len(globalArgs) > 0 {
+			mergedArgs = mergeArguments(globalArgs, serverArgs, cmdArgsMap)
 			logger.Debugf("Merged arguments: %v", mergedArgs)
+		} else {
+			logger.Warnf("No configured arguments found for server %s", serverOrImage)
+			mergedArgs = cmdArgsMap
 		}
 	} else {
 		logger.Debugf("No config found for server %s", serverOrImage)
-		mergedArgs = cmdLineArgs
+		mergedArgs = cmdArgsMap
 	}
 
 	return mergedArgs
 }
 
 // mergeArguments merges arguments from config and command line
-// Command line arguments take precedence over config arguments
-func mergeArguments(configArgs map[string]string, cmdArgs map[string]string) map[string]string {
-	// Start with config args
+// In increasing order of precedence:
+// 1. Global arguments
+// 2. Server-specific arguments
+// 3. Command line arguments
+func mergeArguments(globalArgs map[string]string, serverArgs map[string]string, cmdArgs map[string]string) map[string]string {
+	// Start with global args
 	merged := make(map[string]string)
-	for k, v := range configArgs {
+	for k, v := range globalArgs {
+		merged[k] = v
+	}
+
+	// Override with server-specific arguments
+	for k, v := range serverArgs {
 		merged[k] = v
 	}
 

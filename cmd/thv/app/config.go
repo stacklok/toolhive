@@ -149,6 +149,28 @@ Examples:
 	},
 }
 
+var setGlobalServerArgsCmd = &cobra.Command{
+	Use:   "set-global-server-args KEY=VALUE [KEY=VALUE...]",
+	Short: "Set global arguments for all MCP servers",
+	Long: `Set global arguments that will be applied to all MCP servers.
+These arguments will be used as defaults for all servers unless overridden by server-specific arguments.
+
+Example:
+  thv config set-global-server-args debug=true log-level=info`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: setGlobalServerArgsCmdFunc,
+}
+
+var resetGlobalServerArgsCmd = &cobra.Command{
+	Use:   "reset-global-server-args",
+	Short: "Reset/delete global arguments for all MCP servers",
+	Long: `Reset/delete global arguments from the config.
+This command removes all saved global arguments from the config file.
+Future runs of servers will not use any pre-configured global arguments.`,
+	Args: cobra.NoArgs,
+	RunE: resetGlobalServerArgsCmdFunc,
+}
+
 func init() {
 	// Add config command to root command
 	rootCmd.AddCommand(configCmd)
@@ -171,6 +193,8 @@ func init() {
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
 	configCmd.AddCommand(resetServerArgsCmd)
+	configCmd.AddCommand(setGlobalServerArgsCmd)
+	configCmd.AddCommand(resetGlobalServerArgsCmd)
 
 	resetServerArgsCmd.Flags().BoolVarP(&resetServerArgsAll, "all", "a", false,
 		"Reset arguments for all MCP servers")
@@ -537,5 +561,47 @@ func resetServerArgsCmdFunc(_ *cobra.Command, args []string) error {
 		logger.Infof("Successfully reset arguments for server %s", serverName)
 	}
 
+	return nil
+}
+
+func setGlobalServerArgsCmdFunc(_ *cobra.Command, args []string) error {
+	// Parse the arguments into a map
+	argsMap := make(map[string]string)
+	for _, arg := range args {
+		parts := strings.SplitN(arg, "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid argument format: %s (expected KEY=VALUE)", arg)
+		}
+		argsMap[parts[0]] = parts[1]
+	}
+
+	// Load the config
+	cfg, err := config.LoadOrCreateConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %v", err)
+	}
+
+	// Set the global arguments
+	if err := cfg.SetGlobalServerArgs(argsMap); err != nil {
+		return fmt.Errorf("failed to set global server arguments: %v", err)
+	}
+
+	logger.Info("Successfully set global server arguments")
+	return nil
+}
+
+func resetGlobalServerArgsCmdFunc(_ *cobra.Command, _ []string) error {
+	// Load the config
+	cfg, err := config.LoadOrCreateConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %v", err)
+	}
+
+	// Reset the global arguments
+	if err := cfg.DeleteGlobalServerArgs(); err != nil {
+		return fmt.Errorf("failed to reset global server arguments: %v", err)
+	}
+
+	logger.Info("Successfully reset global server arguments")
 	return nil
 }

@@ -196,7 +196,7 @@ spec:
                     description: Type is the type of OIDC configuration
                     enum:
                     - kubernetes
-                    - configmap
+                    - configMap
                     - inline
                     type: string
                 required:

@@ -30,6 +30,7 @@ type Config struct {
 	CACertificatePath      string              `yaml:"ca_certificate_path,omitempty"`
 	OTEL                   OpenTelemetryConfig `yaml:"otel,omitempty"`
 	ServerArgs             ServerArgs          `yaml:"server_args,omitempty"`
+	DefaultServers         []string            `yaml:"default_servers,omitempty"`
 }
 
 // ServerArgs stores arguments for specific MCP servers
@@ -91,12 +92,12 @@ func (c *Config) DeleteAllServerArgs() error {
 	return c.save()
 }
 
-// GetServerArgs returns the configured arguments for a specific server as a map
+// GetGlobalServerArgs returns the configured arguments for a specific server as a map
 func (c *Config) GetGlobalServerArgs() map[string]string {
 	return c.ServerArgs.Global
 }
 
-// SetServerArgs updates the arguments for a specific server
+// SetGlobalServerArgs updates the arguments for a specific server
 // Only arguments provided in the args map will be updated
 // Existing arguments not present in args will be preserved
 func (c *Config) SetGlobalServerArgs(args map[string]string) error {
@@ -115,7 +116,7 @@ func (c *Config) SetGlobalServerArgs(args map[string]string) error {
 	return c.save()
 }
 
-// DeleteServerArgs removes all arguments for a specific server from the config
+// DeleteGlobalServerArgs removes all arguments for a specific server from the config
 // Returns an error if the server doesn't exist in the config
 func (c *Config) DeleteGlobalServerArgs() error {
 	if c.ServerArgs.Global == nil {

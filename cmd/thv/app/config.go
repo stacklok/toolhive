@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/transport"
 )
 
@@ -115,6 +116,30 @@ var unsetRegistryURLCmd = &cobra.Command{
 	RunE:  unsetRegistryURLCmdFunc,
 }
 
+var addDefaultServerCmd = &cobra.Command{
+	Use:   "add-default-server [server]",
+	Short: "Add a server to the list of default servers",
+	Long: `Add a server to the list of default servers that will be started when running 'thv run' without arguments.
+The server must exist in the registry.
+
+Example:
+  thv config add-default-server my-server`,
+	Args: cobra.ExactArgs(1),
+	RunE: addDefaultServerCmdFunc,
+}
+
+var removeDefaultServerCmd = &cobra.Command{
+	Use:   "remove-default-server [server]",
+	Short: "Remove a server from the list of default servers",
+	Long: `Remove a server from the list of default servers.
+This only removes the server from the default list, it does not delete or stop the server.
+
+Example:
+  thv config remove-default-server my-server`,
+	Args: cobra.ExactArgs(1),
+	RunE: removeDefaultServerCmdFunc,
+}
+
 var (
 	allowPrivateRegistryIp bool
 )
@@ -183,18 +208,13 @@ func init() {
 	configCmd.AddCommand(getCACertCmd)
 	configCmd.AddCommand(unsetCACertCmd)
 	configCmd.AddCommand(setRegistryURLCmd)
-	setRegistryURLCmd.Flags().BoolVarP(
-		&allowPrivateRegistryIp,
-		"allow-private-ip",
-		"p",
-		false,
-		"Allow setting the registry URL, even if it references a private IP address",
-	)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
 	configCmd.AddCommand(resetServerArgsCmd)
 	configCmd.AddCommand(setGlobalServerArgsCmd)
 	configCmd.AddCommand(resetGlobalServerArgsCmd)
+	configCmd.AddCommand(addDefaultServerCmd)
+	configCmd.AddCommand(removeDefaultServerCmd)
 
 	resetServerArgsCmd.Flags().BoolVarP(&resetServerArgsAll, "all", "a", false,
 		"Reset arguments for all MCP servers")
@@ -603,5 +623,68 @@ func resetGlobalServerArgsCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	logger.Info("Successfully reset global server arguments")
+	return nil
+}
+
+func addDefaultServerCmdFunc(_ *cobra.Command, args []string) error {
+	serverName := args[0]
+
+	// Load the registry to validate the server exists
+	provider, err := registry.GetDefaultProvider()
+	if err != nil {
+		return fmt.Errorf("failed to get registry provider: %v", err)
+	}
+
+	// Check if the server exists in the registry
+	if _, err := provider.GetServer(serverName); err != nil {
+		return fmt.Errorf("server %q not found in registry: %w", serverName, err)
+	}
+
+	// Update the configuration
+	err = config.UpdateConfig(func(c *config.Config) {
+		// Check if server is already in default servers
+		for _, s := range c.DefaultServers {
+			if s == serverName {
+				fmt.Printf("Server %q is already in default servers list\n", serverName)
+				return
+			}
+		}
+
+		// Add the server to default servers
+		c.DefaultServers = append(c.DefaultServers, serverName)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	fmt.Printf("Successfully added %q to default servers\n", serverName)
+	return nil
+}
+
+func removeDefaultServerCmdFunc(_ *cobra.Command, args []string) error {
+	serverName := args[0]
+
+	// Update the configuration
+	err := config.UpdateConfig(func(c *config.Config) {
+		// Find and remove the server from the default servers list
+		found := false
+		for i, s := range c.DefaultServers {
+			if s == serverName {
+				// Remove the server by appending the slice before and after the index
+				c.DefaultServers = append(c.DefaultServers[:i], c.DefaultServers[i+1:]...)
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Printf("Server %q not found in default servers list\n", serverName)
+			return
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	fmt.Printf("Successfully removed %q from default servers\n", serverName)
 	return nil
 }

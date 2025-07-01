@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -21,7 +22,7 @@ import (
 )
 
 var runCmd = &cobra.Command{
-	Use:   "run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]",
+	Use:   "run [flags] [SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]]",
 	Short: "Run an MCP server",
 	Long: `Run an MCP server with the specified name, image, or protocol scheme.
 
@@ -46,9 +47,12 @@ ToolHive supports three ways to run an MCP server:
    or go (Golang). For Go, you can also specify local paths starting
    with './' or '../' to build and run local Go projects.
 
+If no server is specified, ToolHive will run all servers configured in the
+default_servers list in the config file.
+
 The container will be started with the specified transport mode and
 permission profile. Additional configuration can be provided via flags.`,
-	Args: cobra.MinimumNArgs(1),
+	Args: cobra.ArbitraryArgs,
 	RunE: runCmdFunc,
 	// Ignore unknown flags to allow passing flags to the MCP server
 	FParseErrWhitelist: cobra.FParseErrWhitelist{
@@ -211,6 +215,32 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	runHost = validatedHost
 
+	// If no server is specified, run all default servers
+	if len(args) == 0 {
+		return runDefaultServers(ctx, cmd)
+	}
+
+	return runServer(ctx, cmd, args)
+}
+
+// runDefaultServers runs all default servers
+func runDefaultServers(ctx context.Context, cmd *cobra.Command) error {
+	cfg := config.GetConfig()
+	if len(cfg.DefaultServers) == 0 {
+		return fmt.Errorf("no default servers configured")
+	}
+
+	// Run each default server
+	for _, server := range cfg.DefaultServers {
+		if err := runServer(ctx, cmd, []string{server}); err != nil {
+			logger.Warnf("Failed to run default server %s: %v", server, err)
+		}
+	}
+	return nil
+}
+
+// runServer runs a single MCP server with the given arguments
+func runServer(ctx context.Context, cmd *cobra.Command, args []string) error {
 	// Get the name of the MCP server to run.
 	// This may be a server name from the registry, a container image, or a protocol scheme.
 	serverOrImage := args[0]

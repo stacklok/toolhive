@@ -14,6 +14,41 @@ Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API g
 
 
 
+#### AuthzConfigRef
+
+
+
+AuthzConfigRef defines a reference to authorization configuration
+
+
+
+_Appears in:_
+- [MCPServerSpec](#mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is the type of authorization configuration | configMap | Enum: [configMap inline] <br /> |
+| `configMap` _[ConfigMapAuthzRef](#configmapauthzref)_ | ConfigMap references a ConfigMap containing authorization configuration<br />Only used when Type is "configMap" |  |  |
+| `inline` _[InlineAuthzConfig](#inlineauthzconfig)_ | Inline contains direct authorization configuration<br />Only used when Type is "inline" |  |  |
+
+
+#### ConfigMapAuthzRef
+
+
+
+ConfigMapAuthzRef references a ConfigMap containing authorization configuration
+
+
+
+_Appears in:_
+- [AuthzConfigRef](#authzconfigref)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the ConfigMap |  | Required: \{\} <br /> |
+| `key` _string_ | Key is the key in the ConfigMap that contains the authorization configuration | authz.json |  |
+
+
 #### ConfigMapOIDCRef
 
 
@@ -46,6 +81,23 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the environment variable |  | Required: \{\} <br /> |
 | `value` _string_ | Value of the environment variable |  | Required: \{\} <br /> |
+
+
+#### InlineAuthzConfig
+
+
+
+InlineAuthzConfig contains direct authorization configuration
+
+
+
+_Appears in:_
+- [AuthzConfigRef](#authzconfigref)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `policies` _string array_ | Policies is a list of Cedar policy strings |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `entitiesJson` _string_ | EntitiesJSON is a JSON string representing Cedar entities | [] |  |
 
 
 #### InlineOIDCConfig
@@ -175,6 +227,7 @@ _Appears in:_
 | `podTemplateSpec` _[PodTemplateSpec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#podtemplatespec-v1-core)_ | PodTemplateSpec defines the pod template to use for the MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the MCP server runs in, you must specify<br />the `mcp` container name in the PodTemplateSpec. |  |  |
 | `resourceOverrides` _[ResourceOverrides](#resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
 | `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the MCP server |  |  |
+| `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  |  |
 
 
 #### MCPServerStatus

@@ -66,6 +66,10 @@ type MCPServerSpec struct {
 	// OIDCConfig defines OIDC authentication configuration for the MCP server
 	// +optional
 	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
+
+	// AuthzConfig defines authorization policy configuration for the MCP server
+	// +optional
+	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -178,6 +182,15 @@ const (
 
 	// OIDCConfigTypeInline is the type for inline OIDC configuration
 	OIDCConfigTypeInline = "inline"
+)
+
+// Authorization configuration types
+const (
+	// AuthzConfigTypeConfigMap is the type for authorization configuration stored in ConfigMaps
+	AuthzConfigTypeConfigMap = "configMap"
+
+	// AuthzConfigTypeInline is the type for inline authorization configuration
+	AuthzConfigTypeInline = "inline"
 )
 
 // PermissionProfileRef defines a reference to a permission profile
@@ -321,6 +334,49 @@ type InlineOIDCConfig struct {
 	// ClientID is the OIDC client ID
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
+}
+
+// AuthzConfigRef defines a reference to authorization configuration
+type AuthzConfigRef struct {
+	// Type is the type of authorization configuration
+	// +kubebuilder:validation:Enum=configMap;inline
+	// +kubebuilder:default=configMap
+	Type string `json:"type"`
+
+	// ConfigMap references a ConfigMap containing authorization configuration
+	// Only used when Type is "configMap"
+	// +optional
+	ConfigMap *ConfigMapAuthzRef `json:"configMap,omitempty"`
+
+	// Inline contains direct authorization configuration
+	// Only used when Type is "inline"
+	// +optional
+	Inline *InlineAuthzConfig `json:"inline,omitempty"`
+}
+
+// ConfigMapAuthzRef references a ConfigMap containing authorization configuration
+type ConfigMapAuthzRef struct {
+	// Name is the name of the ConfigMap
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Key is the key in the ConfigMap that contains the authorization configuration
+	// +kubebuilder:default=authz.json
+	// +optional
+	Key string `json:"key,omitempty"`
+}
+
+// InlineAuthzConfig contains direct authorization configuration
+type InlineAuthzConfig struct {
+	// Policies is a list of Cedar policy strings
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	Policies []string `json:"policies"`
+
+	// EntitiesJSON is a JSON string representing Cedar entities
+	// +kubebuilder:default="[]"
+	// +optional
+	EntitiesJSON string `json:"entitiesJson,omitempty"`
 }
 
 // MCPServerStatus defines the observed state of MCPServer

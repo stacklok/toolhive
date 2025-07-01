@@ -241,33 +241,36 @@ func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 // ValidateToken validates a token.
 func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) (jwt.MapClaims, error) {
 	// Parse the token
-	token, _ := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
 		return v.getKeyFromJWKS(ctx, token)
 	})
 
-	if token != nil && token.Valid {
-		// it is a jwt token
-		// Check if the token is valid
-		if !token.Valid {
-			return nil, ErrInvalidToken
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenMalformed) {
+			// just an opaque token, let it run
+			return nil, nil
 		}
-
-		// Get the claims
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			return nil, fmt.Errorf("failed to get claims from token")
-		}
-
-		// Validate the claims
-		if err := v.validateClaims(claims); err != nil {
-			return nil, err
-		}
-
-		return claims, nil
-
+		return nil, fmt.Errorf("failed to parse token: %w", err)
 	}
-	return nil, nil // Opaque token validation is not implemented for now
 
+	// it is a jwt token
+	// Check if the token is valid
+	if !token.Valid {
+		return nil, ErrInvalidToken
+	}
+
+	// Get the claims
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("failed to get claims from token")
+	}
+
+	// Validate the claims
+	if err := v.validateClaims(claims); err != nil {
+		return nil, err
+	}
+
+	return claims, nil
 }
 
 // ClaimsContextKey is the key used to store claims in the request context.

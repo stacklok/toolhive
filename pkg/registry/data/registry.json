@@ -486,7 +486,7 @@
       "args": [],
       "description": "A Model Context Protocol server that provides web content fetching capabilities",
       "env_vars": [],
-      "image": "mcp/fetch:latest",
+      "image": "ghcr.io/stackloklabs/gofetch/server:latest",
       "metadata": {
         "last_updated": "2025-07-01T00:25:11Z",
         "pulls": 9150,
@@ -508,8 +508,19 @@
         "read": [],
         "write": []
       },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/StacklokLabs/gofetch",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/release.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
+      "repository_url": "https://github.com/stackloklabs/gofetch",
       "status": "Active",
+      "tier": "Community",
+      "tools": [
+        "fetch"
+      ],
       "tags": [
         "content",
         "html",
@@ -522,11 +533,7 @@
         "curl",
         "modelcontextprotocol"
       ],
-      "tier": "Community",
-      "tools": [
-        "fetch"
-      ],
-      "transport": "stdio"
+      "transport": "sse"
     },
     "filesystem": {
       "args": [],

@@ -76,7 +76,7 @@ func NewTransparentProxy(
 }
 
 // Start starts the transparent proxy.
-func (p *TransparentProxy) Start(_ context.Context) error {
+func (p *TransparentProxy) Start(ctx context.Context) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
@@ -141,7 +141,33 @@ func (p *TransparentProxy) Start(_ context.Context) error {
 		}
 	}()
 
+	// Start health-check monitoring
+	go p.monitorHealth(ctx)
+
 	return nil
+}
+
+func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-parentCtx.Done():
+			logger.Infof("Context cancelled, stopping health monitor for %s", p.containerName)
+			return
+		case <-p.shutdownCh:
+			logger.Infof("Shutdown initiated, stopping health monitor for %s", p.containerName)
+			return
+		case <-ticker.C:
+			alive := p.healthChecker.CheckHealth(parentCtx)
+			if alive.Status != healthcheck.StatusHealthy {
+				logger.Infof("Health check failed for %s; initiating proxy shutdown", p.containerName)
+				_ = p.Stop(context.Background())
+				return
+			}
+		}
+	}
 }
 
 // Stop stops the transparent proxy.

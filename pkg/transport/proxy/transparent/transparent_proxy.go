@@ -163,7 +163,9 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			alive := p.healthChecker.CheckHealth(parentCtx)
 			if alive.Status != healthcheck.StatusHealthy {
 				logger.Infof("Health check failed for %s; initiating proxy shutdown", p.containerName)
-				_ = p.Stop(context.Background())
+				if err := p.Stop(parentCtx); err != nil {
+					logger.Errorf("Failed to stop proxy for %s: %v", p.containerName, err)
+				}
 				return
 			}
 		}

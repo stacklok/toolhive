@@ -116,7 +116,7 @@ _Appears in:_
 | `issuer` _string_ | Issuer is the OIDC issuer URL |  | Required: \{\} <br /> |
 | `audience` _string_ | Audience is the expected audience for the token |  |  |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  |  |
-| `clientId` _string_ | ClientID is the OIDC client ID |  |  |
+| `clientId` _string_ | ClientID is deprecated and will be removed in a future release. |  |  |
 
 
 #### KubernetesOIDCConfig
@@ -132,7 +132,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `serviceAccount` _string_ | ServiceAccount is the name of the service account to validate tokens for<br />If empty, uses the pod's service account |  |  |
+| `serviceAccount` _string_ | ServiceAccount is deprecated and will be removed in a future release. |  |  |
 | `namespace` _string_ | Namespace is the namespace of the service account<br />If empty, uses the MCPServer's namespace |  |  |
 | `audience` _string_ | Audience is the expected audience for the token | toolhive |  |
 | `issuer` _string_ | Issuer is the OIDC issuer URL | https://kubernetes.default.svc |  |

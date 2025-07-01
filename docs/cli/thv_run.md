@@ -64,7 +64,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --secret stringArray                    Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
       --target-host string                    Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")
       --target-port int                       Port for the container to expose (only applicable to SSE or Streamable HTTP transport)
-      --transport string                      Transport mode (sse, streamable-http or stdio) (default "stdio")
+      --transport string                      Transport mode (sse, streamable-http or stdio)
   -v, --volume stringArray                    Mount a volume into the container (format: host-path:container-path[:ro])
 ```
 

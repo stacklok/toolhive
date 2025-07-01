@@ -124,6 +124,36 @@ var unsetRegistryURLCmd = &cobra.Command{
 	RunE:  unsetRegistryURLCmdFunc,
 }
 
+var (
+	resetServerArgsAll bool
+)
+
+var resetServerArgsCmd = &cobra.Command{
+	Use:   "reset-server-args [SERVER_NAME]",
+	Short: "Reset/delete arguments for MCP servers from the config",
+	Long: `Reset/delete configured arguments for MCP servers from the config.
+This command removes saved arguments from the config file.
+Future runs of the affected servers will not use any pre-configured arguments unless explicitly provided.
+
+Examples:
+  # Reset arguments for a specific server
+  thv config reset-server-args my-server
+
+  # Reset arguments for all servers
+  thv config reset-server-args --all`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: resetServerArgsCmdFunc,
+	PreRunE: func(_ *cobra.Command, args []string) error {
+		if !resetServerArgsAll && len(args) == 0 {
+			return fmt.Errorf("server name is required when --all flag is not set")
+		}
+		if resetServerArgsAll && len(args) > 0 {
+			return fmt.Errorf("server name cannot be specified when using --all flag")
+		}
+		return nil
+	},
+}
+
 func init() {
 	// Add config command to root command
 	rootCmd.AddCommand(configCmd)
@@ -139,6 +169,10 @@ func init() {
 	configCmd.AddCommand(setRegistryURLCmd)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
+	configCmd.AddCommand(resetServerArgsCmd)
+
+	resetServerArgsCmd.Flags().BoolVarP(&resetServerArgsAll, "all", "a", false,
+		"Reset arguments for all MCP servers")
 }
 
 func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {
@@ -466,6 +500,31 @@ func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
 	fmt.Println("Registered clients:")
 	for _, clientName := range cfg.Clients.RegisteredClients {
 		fmt.Printf("  - %s\n", clientName)
+	}
+
+	return nil
+}
+
+func resetServerArgsCmdFunc(_ *cobra.Command, args []string) error {
+	// Load the config
+	cfg, err := config.LoadOrCreateConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %v", err)
+	}
+
+	if resetServerArgsAll {
+		// Delete all server arguments
+		if err := cfg.DeleteAllServerArgs(); err != nil {
+			return fmt.Errorf("failed to reset all server arguments: %v", err)
+		}
+		logger.Info("Successfully reset arguments for all servers")
+	} else {
+		// Delete arguments for specific server
+		serverName := args[0]
+		if err := cfg.DeleteServerArgs(serverName); err != nil {
+			return fmt.Errorf("failed to reset server arguments: %v", err)
+		}
+		logger.Infof("Successfully reset arguments for server %s", serverName)
 	}
 
 	return nil

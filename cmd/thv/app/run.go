@@ -86,6 +86,7 @@ var (
 	runK8sPodPatch       string
 	runCACertPath        string
 	runVerifyImage       string
+	runSaveConfig        bool
 
 	// OpenTelemetry flags
 	runOtelEndpoint                    string
@@ -170,6 +171,8 @@ func init() {
 		verifyImageDefault,
 		fmt.Sprintf("Set image verification mode (%s, %s, %s)", verifyImageWarn, verifyImageEnabled, verifyImageDisabled),
 	)
+	runCmd.Flags().BoolVarP(&runSaveConfig, "save-config", "s", false,
+		"Save the provided command line arguments to the config file for this server")
 
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
 	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
@@ -208,10 +211,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	serverOrImage := args[0]
 
 	// Process command arguments using os.Args to find everything after --
-	cmdArgs := parseCommandArguments(os.Args)
+	cmdLineArgs := parseCommandArguments(os.Args)
+	mergedArgs := resolveCommandAndConfigArgs(cmdLineArgs, serverOrImage)
 
 	// Print the processed command arguments for debugging
-	logger.Infof("Processed cmdArgs: %v", cmdArgs)
+	logger.Infof("Processed cmdArgs: %v", cmdLineArgs)
 
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
@@ -231,7 +235,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Initialize a new RunConfig with values from command-line flags
 	runConfig := runner.NewRunConfigFromFlags(
 		rt,
-		cmdArgs,
+		argsMapToSlice(mergedArgs),
 		runName,
 		runHost,
 		debugMode,
@@ -661,18 +665,133 @@ func logDebug(debugMode bool, format string, args ...interface{}) {
 	}
 }
 
+// parseArgToKeyValue parses a command line argument into a key-value pair
+// Arguments can be in the format:
+// --key=value
+// --key value
+// -k=value
+// -k value
+func parseArgToKeyValue(args []string, index int) (string, string, bool, int) {
+	if index >= len(args) {
+		return "", "", false, index
+	}
+
+	arg := args[index]
+	if !strings.HasPrefix(arg, "-") {
+		return "", "", false, index
+	}
+
+	// Strip leading dashes
+	key := strings.TrimLeft(arg, "-")
+
+	// Check if the key contains an equals sign
+	if strings.Contains(key, "=") {
+		parts := strings.SplitN(key, "=", 2)
+		return parts[0], parts[1], true, index
+	}
+
+	// If there's no equals sign, check the next argument
+	if index+1 < len(args) && !strings.HasPrefix(args[index+1], "-") {
+		return key, args[index+1], true, index + 1
+	}
+
+	// Key with no value
+	return key, "", true, index
+}
+
 // parseCommandArguments processes command-line arguments to find everything after the -- separator
-// which are the arguments to be passed to the MCP server
-func parseCommandArguments(args []string) []string {
-	var cmdArgs []string
-	for i, arg := range args {
-		if arg == "--" && i < len(args)-1 {
-			// Found the separator, take everything after it
-			cmdArgs = args[i+1:]
-			break
+// and returns them as a map of key-value pairs
+func parseCommandArguments(args []string) map[string]string {
+	argMap := make(map[string]string)
+	foundSeparator := false
+
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			foundSeparator = true
+			i++
+			continue
+		}
+
+		if !foundSeparator {
+			continue
+		}
+
+		key, value, ok, newIndex := parseArgToKeyValue(args, i)
+		if ok {
+			argMap[key] = value
+			i = newIndex
 		}
 	}
-	return cmdArgs
+
+	return argMap
+}
+
+func resolveCommandAndConfigArgs(cmdLineArgs map[string]string, serverOrImage string) map[string]string {
+
+	var mergedArgs map[string]string
+
+	// Get any configured arguments for this server
+	cfg, err := config.LoadOrCreateConfig()
+	if err != nil {
+		logger.Warnf("Failed to load config: %v", err)
+		mergedArgs = cmdLineArgs
+	} else if cfg != nil {
+		configArgs := cfg.GetServerArgs(serverOrImage)
+
+		// If save-config flag is set, save the command line arguments to config
+		// Do this before merging to only save explicitly provided arguments
+		if runSaveConfig && len(cmdLineArgs) > 0 {
+			if err := cfg.SetServerArgs(serverOrImage, cmdLineArgs); err != nil {
+				logger.Warnf("Failed to save arguments to config: %v", err)
+			} else {
+				logger.Infof("Saved arguments to config for server %s: %v", serverOrImage, cmdLineArgs)
+			}
+		}
+
+		// Merge config args with command line args for this run
+		if len(configArgs) > 0 {
+			logger.Debugf("Found configured arguments for server %s: %v", serverOrImage, configArgs)
+			mergedArgs = mergeArguments(configArgs, cmdLineArgs)
+			logger.Debugf("Merged arguments: %v", mergedArgs)
+		}
+	} else {
+		logger.Debugf("No config found for server %s", serverOrImage)
+		mergedArgs = cmdLineArgs
+	}
+
+	return mergedArgs
+}
+
+// mergeArguments merges arguments from config and command line
+// Command line arguments take precedence over config arguments
+func mergeArguments(configArgs map[string]string, cmdArgs map[string]string) map[string]string {
+	// Start with config args
+	merged := make(map[string]string)
+	for k, v := range configArgs {
+		merged[k] = v
+	}
+
+	// Override with command line args
+	for k, v := range cmdArgs {
+		merged[k] = v
+	}
+
+	return merged
+}
+
+// argsMapToSlice converts a map of arguments to a slice of strings
+func argsMapToSlice(args map[string]string) []string {
+	// Convert back to slice of strings
+	var result []string
+	for k, v := range args {
+		if v == "" {
+			result = append(result, fmt.Sprintf("--%s", k))
+		} else {
+			result = append(result, fmt.Sprintf("--%s=%s", k, v))
+		}
+	}
+
+	return result
 }
 
 // ValidateAndNormaliseHostFlag validates and normalizes the host flag resolving it to an IP address if hostname is provided

@@ -565,6 +565,30 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 							Name:          "http",
 							Protocol:      corev1.ProtocolTCP,
 						}},
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{
+									Path: "/health",
+									Port: intstr.FromString("http"),
+								},
+							},
+							InitialDelaySeconds: 30,
+							PeriodSeconds:       10,
+							TimeoutSeconds:      5,
+							FailureThreshold:    3,
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{
+									Path: "/health",
+									Port: intstr.FromString("http"),
+								},
+							},
+							InitialDelaySeconds: 5,
+							PeriodSeconds:       5,
+							TimeoutSeconds:      3,
+							FailureThreshold:    3,
+						},
 					}},
 					Volumes: volumes,
 				},

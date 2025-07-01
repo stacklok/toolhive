@@ -16,6 +16,7 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport"
 )
 
@@ -30,16 +31,6 @@ var listRegisteredClientsCmd = &cobra.Command{
 	Short: "List all registered MCP clients",
 	Long:  "List all clients that are registered for MCP server configuration.",
 	RunE:  listRegisteredClientsCmdFunc,
-}
-
-var autoDiscoveryCmd = &cobra.Command{
-	Use:   "auto-discovery [true|false]",
-	Short: "Set whether to enable auto-discovery of MCP clients",
-	Long: `Set whether to enable auto-discovery and configuration of MCP clients.
-When enabled, ToolHive will automatically update client configuration files
-with the URLs of running MCP servers.`,
-	Args: cobra.ExactArgs(1),
-	RunE: autoDiscoveryCmdFunc,
 }
 
 var registerClientCmd = &cobra.Command{
@@ -125,6 +116,10 @@ var unsetRegistryURLCmd = &cobra.Command{
 }
 
 var (
+	allowPrivateRegistryIp bool
+)
+
+var (
 	resetServerArgsAll bool
 )
 
@@ -159,7 +154,6 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 
 	// Add subcommands to config command
-	configCmd.AddCommand(autoDiscoveryCmd)
 	configCmd.AddCommand(registerClientCmd)
 	configCmd.AddCommand(removeClientCmd)
 	configCmd.AddCommand(listRegisteredClientsCmd)
@@ -167,47 +161,22 @@ func init() {
 	configCmd.AddCommand(getCACertCmd)
 	configCmd.AddCommand(unsetCACertCmd)
 	configCmd.AddCommand(setRegistryURLCmd)
+	setRegistryURLCmd.Flags().BoolVarP(
+		&allowPrivateRegistryIp,
+		"allow-private-ip",
+		"p",
+		false,
+		"Allow setting the registry URL, even if it references a private IP address",
+	)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
 	configCmd.AddCommand(resetServerArgsCmd)
 
 	resetServerArgsCmd.Flags().BoolVarP(&resetServerArgsAll, "all", "a", false,
 		"Reset arguments for all MCP servers")
-}
 
-func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {
-	value := args[0]
-
-	// Validate the boolean value
-	var enabled bool
-	switch value {
-	case "true", "1", "yes":
-		enabled = true
-	case "false", "0", "no":
-		enabled = false
-	default:
-		return fmt.Errorf("invalid boolean value: %s (valid values: true, false)", value)
-	}
-
-	// Update the auto-discovery setting
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.Clients.AutoDiscovery = enabled
-		// If auto-discovery is enabled, update all registered clients with currently running MCPs
-		if enabled && len(c.Clients.RegisteredClients) > 0 {
-			for _, clientName := range c.Clients.RegisteredClients {
-				if err := addRunningMCPsToClient(cmd.Context(), clientName); err != nil {
-					fmt.Printf("Warning: Failed to add running MCPs to client %s: %v\n", clientName, err)
-				}
-			}
-		}
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
-	}
-
-	fmt.Printf("Auto-discovery of MCP clients %s\n", map[bool]string{true: "enabled", false: "disabled"}[enabled])
-
-	return nil
+	// Add OTEL parent command to config
+	configCmd.AddCommand(OtelCmd)
 }
 
 func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
@@ -287,26 +256,26 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 	return nil
 }
 
+func getFilteredClientConfigs(clientName string) ([]client.ConfigFile, error) {
+	clientConfigs, err := client.FindClientConfigs()
+	if err != nil {
+		return nil, fmt.Errorf("failed to find client configurations: %w", err)
+	}
+	var filtered []client.ConfigFile
+	for _, clientConfig := range clientConfigs {
+		if clientConfig.ClientType == client.MCPClient(clientName) {
+			filtered = append(filtered, clientConfig)
+		}
+	}
+	return filtered, nil
+}
+
 // addRunningMCPsToClient adds currently running MCP servers to the specified client's configuration
 func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
+	runningContainers, err := getRunningToolHiveContainers(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
-	}
-
-	// List workloads
-	containers, err := runtime.ListWorkloads(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Filter containers to only show those managed by ToolHive and running
-	var runningContainers []rt.ContainerInfo
-	for _, c := range containers {
-		if labels.IsToolHiveContainer(c.Labels) && c.State == "running" {
-			runningContainers = append(runningContainers, c)
-		}
+		return err
 	}
 
 	if len(runningContainers) == 0 {
@@ -314,14 +283,13 @@ func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 		return nil
 	}
 
-	// Find the client configuration for the specified client
-	clientConfigs, err := client.FindClientConfigs()
+	filteredClientConfigs, err := getFilteredClientConfigs(clientName)
 	if err != nil {
-		return fmt.Errorf("failed to find client configurations: %w", err)
+		return err
 	}
 
 	// If no configs found, nothing to do
-	if len(clientConfigs) == 0 {
+	if len(filteredClientConfigs) == 0 {
 		return nil
 	}
 
@@ -347,13 +315,15 @@ func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 			continue // Skip if we can't get the port
 		}
 
+		transportType := labels.GetTransportType(c.Labels)
+
 		// Generate URL for the MCP server
-		url := client.GenerateMCPServerURL(transport.LocalhostIPv4, port, name)
+		url := client.GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
 
 		// Update each configuration file
-		for _, clientConfig := range clientConfigs {
+		for _, clientConfig := range filteredClientConfigs {
 			// Update the MCP server configuration with locking
-			if err := client.Upsert(clientConfig, name, url); err != nil {
+			if err := client.Upsert(clientConfig, name, url, transportType); err != nil {
 				logger.Warnf("Warning: Failed to update MCP server configuration in %s: %v", clientConfig.Path, err)
 				continue
 			}
@@ -363,6 +333,28 @@ func addRunningMCPsToClient(ctx context.Context, clientName string) error {
 	}
 
 	return nil
+}
+
+func getRunningToolHiveContainers(ctx context.Context) ([]rt.ContainerInfo, error) {
+	runtime, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create container runtime: %v", err)
+	}
+
+	// List workloads
+	containers, err := runtime.ListWorkloads(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %v", err)
+	}
+
+	// Filter containers to only show those managed by ToolHive and running
+	var runningContainers []rt.ContainerInfo
+	for _, c := range containers {
+		if labels.IsToolHiveContainer(c.Labels) && c.State == "running" {
+			runningContainers = append(runningContainers, c)
+		}
+	}
+	return runningContainers, nil
 }
 
 func setCACertCmdFunc(_ *cobra.Command, args []string) error {
@@ -442,15 +434,33 @@ func setRegistryURLCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("registry URL must start with http:// or https://")
 	}
 
+	if !allowPrivateRegistryIp {
+		registryClient := networking.GetHttpClient(false)
+		_, err := registryClient.Get(registryURL)
+		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
+			return err
+		}
+	}
+
 	// Update the configuration
 	err := config.UpdateConfig(func(c *config.Config) {
 		c.RegistryUrl = registryURL
+		c.AllowPrivateRegistryIp = allowPrivateRegistryIp
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
 	fmt.Printf("Successfully set registry URL: %s\n", registryURL)
+	if allowPrivateRegistryIp {
+		fmt.Print("Successfully enabled use of private IP addresses for the remote registry\n")
+		fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +
+			"Make sure you trust any remote registries you configure with ToolHive.")
+	} else {
+		fmt.Printf("Use of private IP addresses for the remote registry has been disabled" +
+			" as it's not needed for the provided registry.\n")
+	}
+
 	return nil
 }
 

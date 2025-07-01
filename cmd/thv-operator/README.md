@@ -29,6 +29,7 @@ flowchart LR
  subgraph namespace[namespace: toolhive-system]
     operator["POD: Operator"]
     sse
+    streamable-http
     stdio
  end
 
@@ -161,17 +162,17 @@ kubectl describe mcpserver <name>
 ### MCPServer Spec
 
 | Field               | Description                                     | Required | Default |
-|---------------------|-------------------------------------------------|----------|---------|
-| `image`             | Container image for the MCP server              | Yes      | -       |
-| `transport`         | Transport method (stdio or sse)                 | No       | stdio   |
-| `port`              | Port to expose the MCP server on                | No       | 8080    |
-| `targetPort`        | Port that MCP server listens to                 | No       | -       |
-| `args`              | Additional arguments to pass to the MCP server  | No       | -       |
-| `env`               | Environment variables to set in the container   | No       | -       |
-| `volumes`           | Volumes to mount in the container               | No       | -       |
-| `resources`         | Resource requirements for the container         | No       | -       |
-| `secrets`           | References to secrets to mount in the container | No       | -       |
-| `permissionProfile` | Permission profile configuration                | No       | -       |
+|---------------------|--------------------------------------------------|----------|---------|
+| `image`             | Container image for the MCP server               | Yes      | -       |
+| `transport`         | Transport method (stdio, streamable-http or sse) | No       | stdio   |
+| `port`              | Port to expose the MCP server on                 | No       | 8080    |
+| `targetPort`        | Port that MCP server listens to                  | No       | -       |
+| `args`              | Additional arguments to pass to the MCP server   | No       | -       |
+| `env`               | Environment variables to set in the container    | No       | -       |
+| `volumes`           | Volumes to mount in the container                | No       | -       |
+| `resources`         | Resource requirements for the container          | No       | -       |
+| `secrets`           | References to secrets to mount in the container  | No       | -       |
+| `permissionProfile` | Permission profile configuration                 | No       | -       |
 
 ### Permission Profiles
 

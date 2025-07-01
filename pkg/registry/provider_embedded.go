@@ -1,51 +1,34 @@
 package registry
 
 import (
+	"embed"
+	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"sync"
-
-	"github.com/stacklok/toolhive/pkg/networking"
 )
 
-// RemoteRegistryProvider provides registry data from a remote HTTP endpoint
-type RemoteRegistryProvider struct {
-	registryURL  string
+//go:embed data/registry.json
+var embeddedRegistryFS embed.FS
+
+// EmbeddedRegistryProvider provides registry data from embedded JSON files
+type EmbeddedRegistryProvider struct {
 	registry     *Registry
 	registryOnce sync.Once
 	registryErr  error
 }
 
-// NewRemoteRegistryProvider creates a new remote registry provider
-func NewRemoteRegistryProvider(registryURL string) *RemoteRegistryProvider {
-	return &RemoteRegistryProvider{
-		registryURL: registryURL,
-	}
+// NewEmbeddedRegistryProvider creates a new embedded registry provider
+func NewEmbeddedRegistryProvider() *EmbeddedRegistryProvider {
+	return &EmbeddedRegistryProvider{}
 }
 
-// GetRegistry returns the remote registry data
-func (p *RemoteRegistryProvider) GetRegistry() (*Registry, error) {
+// GetRegistry returns the embedded registry data
+func (p *EmbeddedRegistryProvider) GetRegistry() (*Registry, error) {
 	p.registryOnce.Do(func() {
-		client := networking.GetProtectedHttpClient()
-		resp, err := client.Get(p.registryURL)
+		data, err := embeddedRegistryFS.ReadFile("data/registry.json")
 		if err != nil {
-			p.registryErr = fmt.Errorf("failed to fetch registry data from URL %s: %w", p.registryURL, err)
-			return
-		}
-		defer resp.Body.Close()
-
-		// Check if the response status code is OK
-		if resp.StatusCode != http.StatusOK {
-			p.registryErr = fmt.Errorf("response status code from URL %s not OK: status code %d", p.registryURL, resp.StatusCode)
-			return
-		}
-
-		// Read the response body
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
-			p.registryErr = fmt.Errorf("failed to read registry data from response body: %w", err)
+			p.registryErr = fmt.Errorf("failed to read embedded registry data: %w", err)
 			return
 		}
 
@@ -64,7 +47,7 @@ func (p *RemoteRegistryProvider) GetRegistry() (*Registry, error) {
 }
 
 // GetServer returns a specific server by name
-func (p *RemoteRegistryProvider) GetServer(name string) (*Server, error) {
+func (p *EmbeddedRegistryProvider) GetServer(name string) (*ImageMetadata, error) {
 	reg, err := p.GetRegistry()
 	if err != nil {
 		return nil, err
@@ -79,14 +62,14 @@ func (p *RemoteRegistryProvider) GetServer(name string) (*Server, error) {
 }
 
 // SearchServers searches for servers matching the query
-func (p *RemoteRegistryProvider) SearchServers(query string) ([]*Server, error) {
+func (p *EmbeddedRegistryProvider) SearchServers(query string) ([]*ImageMetadata, error) {
 	reg, err := p.GetRegistry()
 	if err != nil {
 		return nil, err
 	}
 
 	query = strings.ToLower(query)
-	var results []*Server
+	var results []*ImageMetadata
 
 	for name, server := range reg.Servers {
 		// Search in name
@@ -114,16 +97,25 @@ func (p *RemoteRegistryProvider) SearchServers(query string) ([]*Server, error) 
 }
 
 // ListServers returns all available servers
-func (p *RemoteRegistryProvider) ListServers() ([]*Server, error) {
+func (p *EmbeddedRegistryProvider) ListServers() ([]*ImageMetadata, error) {
 	reg, err := p.GetRegistry()
 	if err != nil {
 		return nil, err
 	}
 
-	servers := make([]*Server, 0, len(reg.Servers))
+	servers := make([]*ImageMetadata, 0, len(reg.Servers))
 	for _, server := range reg.Servers {
 		servers = append(servers, server)
 	}
 
 	return servers, nil
+}
+
+// parseRegistryData parses JSON data into a Registry struct
+func parseRegistryData(data []byte) (*Registry, error) {
+	registry := &Registry{}
+	if err := json.Unmarshal(data, registry); err != nil {
+		return nil, fmt.Errorf("failed to parse registry data: %w", err)
+	}
+	return registry, nil
 }

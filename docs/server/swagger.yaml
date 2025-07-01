@@ -121,58 +121,7 @@ components:
             If true, the value will be stored as a secret rather than as a plain environment variable
           type: boolean
       type: object
-    registry.Metadata:
-      description: Metadata contains additional information about the server such
-        as popularity metrics
-      properties:
-        last_updated:
-          description: LastUpdated is the timestamp when the server was last updated,
-            in RFC3339 format
-          type: string
-        pulls:
-          description: Pulls indicates how many times the server image has been downloaded
-          type: integer
-        stars:
-          description: Stars represents the popularity rating or number of stars for
-            the server
-          type: integer
-      type: object
-    registry.Provenance:
-      description: Provenance contains verification and signing metadata
-      properties:
-        attestation:
-          $ref: '#/components/schemas/registry.VerifiedAttestation'
-        cert_issuer:
-          type: string
-        repository_ref:
-          type: string
-        repository_uri:
-          type: string
-        runner_environment:
-          type: string
-        signer_identity:
-          type: string
-        sigstore_url:
-          type: string
-      type: object
-    registry.Registry:
-      description: Full registry data
-      properties:
-        last_updated:
-          description: LastUpdated is the timestamp when the registry was last updated,
-            in RFC3339 format
-          type: string
-        servers:
-          additionalProperties:
-            $ref: '#/components/schemas/registry.Server'
-          description: Servers is a map of server names to their corresponding server
-            definitions
-          type: object
-        version:
-          description: Version is the schema version of the registry
-          type: string
-      type: object
-    registry.Server:
+    registry.ImageMetadata:
       description: Server details
       properties:
         args:
@@ -219,6 +168,10 @@ components:
           description: RepositoryURL is the URL to the source code repository for
             the server
           type: string
+        status:
+          description: The Status indicates whether the server is currently active
+            or deprecated
+          type: string
         tags:
           description: Tags are categorization labels for the server to aid in discovery
             and filtering
@@ -228,8 +181,12 @@ components:
           uniqueItems: false
         target_port:
           description: TargetPort is the port for the container to expose (only applicable
-            to SSE transport)
+            to SSE and Streamable HTTP transports)
           type: integer
+        tier:
+          description: Tier represents the tier classification level of the server,
+            e.g., "official" or "community" driven
+          type: string
         tools:
           description: Tools is a list of tool names provided by this MCP server
           items:
@@ -238,7 +195,58 @@ components:
           uniqueItems: false
         transport:
           description: Transport defines the communication protocol for the server
-            (stdio or sse)
+            (stdio, sse, or streamable-http)
+          type: string
+      type: object
+    registry.Metadata:
+      description: Metadata contains additional information about the server such
+        as popularity metrics
+      properties:
+        last_updated:
+          description: LastUpdated is the timestamp when the server was last updated,
+            in RFC3339 format
+          type: string
+        pulls:
+          description: Pulls indicates how many times the server image has been downloaded
+          type: integer
+        stars:
+          description: Stars represents the popularity rating or number of stars for
+            the server
+          type: integer
+      type: object
+    registry.Provenance:
+      description: Provenance contains verification and signing metadata
+      properties:
+        attestation:
+          $ref: '#/components/schemas/registry.VerifiedAttestation'
+        cert_issuer:
+          type: string
+        repository_ref:
+          type: string
+        repository_uri:
+          type: string
+        runner_environment:
+          type: string
+        signer_identity:
+          type: string
+        sigstore_url:
+          type: string
+      type: object
+    registry.Registry:
+      description: Full registry data
+      properties:
+        last_updated:
+          description: LastUpdated is the timestamp when the registry was last updated,
+            in RFC3339 format
+          type: string
+        servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.ImageMetadata'
+          description: Servers is a map of server names to their corresponding server
+            definitions
+          type: object
+        version:
+          description: Version is the schema version of the registry
           type: string
       type: object
     registry.VerifiedAttestation:
@@ -253,6 +261,40 @@ components:
           type: string
         target:
           type: string
+      type: object
+    types.TransportType:
+      description: TransportType is the type of transport used for this workload.
+      type: string
+      x-enum-varnames:
+      - TransportTypeStdio
+      - TransportTypeSSE
+      - TransportTypeStreamableHTTP
+      - TransportTypeInspector
+    v1.bulkClientRequest:
+      properties:
+        names:
+          description: Names is the list of client names to operate on.
+          items:
+            type: string
+            x-enum-varnames:
+            - RooCode
+            - Cline
+            - Cursor
+            - VSCodeInsider
+            - VSCode
+            - ClaudeCode
+          type: array
+          uniqueItems: false
+      type: object
+    v1.bulkOperationRequest:
+      description: Request to perform bulk operations on workloads
+      properties:
+        names:
+          description: Names of the workloads to operate on
+          items:
+            type: string
+          type: array
+          uniqueItems: false
       type: object
     v1.clientStatusResponse:
       properties:
@@ -339,6 +381,26 @@ components:
           type: array
           uniqueItems: false
       type: object
+    v1.createSecretRequest:
+      description: Request to create a new secret
+      properties:
+        key:
+          description: Secret key name
+          type: string
+        value:
+          description: Secret value
+          type: string
+      type: object
+    v1.createSecretResponse:
+      description: Response after creating a secret
+      properties:
+        key:
+          description: Secret key that was created
+          type: string
+        message:
+          description: Success message
+          type: string
+      type: object
     v1.createWorkloadResponse:
       description: Response after successfully creating a workload
       properties:
@@ -367,11 +429,33 @@ components:
           description: Version of the registry schema
           type: string
       type: object
+    v1.getSecretsProviderResponse:
+      description: Response containing secrets provider details
+      properties:
+        capabilities:
+          $ref: '#/components/schemas/v1.providerCapabilitiesResponse'
+        name:
+          description: Name of the secrets provider
+          type: string
+        provider_type:
+          description: Type of the secrets provider
+          type: string
+      type: object
     v1.getServerResponse:
       description: Response containing server details
       properties:
         server:
-          $ref: '#/components/schemas/registry.Server'
+          $ref: '#/components/schemas/registry.ImageMetadata'
+      type: object
+    v1.listSecretsResponse:
+      description: Response containing a list of secret keys
+      properties:
+        keys:
+          description: List of secret keys
+          items:
+            $ref: '#/components/schemas/v1.secretKeyResponse'
+          type: array
+          uniqueItems: false
       type: object
     v1.listServersResponse:
       description: Response containing a list of servers
@@ -379,7 +463,7 @@ components:
         servers:
           description: List of servers in the registry
           items:
-            $ref: '#/components/schemas/registry.Server'
+            $ref: '#/components/schemas/registry.ImageMetadata'
           type: array
           uniqueItems: false
       type: object
@@ -398,6 +482,25 @@ components:
         jwks_url:
           description: JWKS URL for key verification
           type: string
+      type: object
+    v1.providerCapabilitiesResponse:
+      description: Capabilities of the secrets provider
+      properties:
+        can_cleanup:
+          description: Whether the provider can cleanup all secrets
+          type: boolean
+        can_delete:
+          description: Whether the provider can delete secrets
+          type: boolean
+        can_list:
+          description: Whether the provider can list secrets
+          type: boolean
+        can_read:
+          description: Whether the provider can read secrets
+          type: boolean
+        can_write:
+          description: Whether the provider can write secrets
+          type: boolean
       type: object
     v1.registryInfo:
       description: Basic information about a registry
@@ -424,6 +527,55 @@ components:
             $ref: '#/components/schemas/v1.registryInfo'
           type: array
           uniqueItems: false
+      type: object
+    v1.secretKeyResponse:
+      description: Secret key information
+      properties:
+        description:
+          description: Optional description of the secret
+          type: string
+        key:
+          description: Secret key name
+          type: string
+      type: object
+    v1.setupSecretsRequest:
+      description: Request to setup a secrets provider
+      properties:
+        password:
+          description: |-
+            Password for encrypted provider (optional, can be set via environment variable)
+            TODO Review environment variable for this
+          type: string
+        provider_type:
+          description: Type of the secrets provider (encrypted, 1password, none)
+          type: string
+      type: object
+    v1.setupSecretsResponse:
+      description: Response after initializing a secrets provider
+      properties:
+        message:
+          description: Success message
+          type: string
+        provider_type:
+          description: Type of the secrets provider that was setup
+          type: string
+      type: object
+    v1.updateSecretRequest:
+      description: Request to update an existing secret
+      properties:
+        value:
+          description: New secret value
+          type: string
+      type: object
+    v1.updateSecretResponse:
+      description: Response after updating a secret
+      properties:
+        key:
+          description: Secret key that was updated
+          type: string
+        message:
+          description: Success message
+          type: string
       type: object
     v1.versionResponse:
       properties:
@@ -471,6 +623,8 @@ components:
             ToolType is the type of tool this workload represents.
             For now, it will always be "mcp" - representing an MCP server.
           type: string
+        transport_type:
+          $ref: '#/components/schemas/types.TransportType'
         url:
           description: URL is the URL of the workload exposed by the ToolHive proxy.
           type: string
@@ -566,6 +720,56 @@ paths:
                 type: string
           description: Invalid request
       summary: Unregister a client
+      tags:
+      - clients
+  /api/v1beta/clients/register:
+    post:
+      description: Register multiple clients with ToolHive
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.bulkClientRequest'
+        description: Clients to register
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/v1.createClientResponse'
+                type: array
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid request
+      summary: Register multiple clients
+      tags:
+      - clients
+  /api/v1beta/clients/unregister:
+    post:
+      description: Unregister multiple clients from ToolHive
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.bulkClientRequest'
+        description: Clients to unregister
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid request
+      summary: Unregister multiple clients
       tags:
       - clients
   /api/v1beta/discovery/clients:
@@ -698,7 +902,7 @@ paths:
         required: true
         schema:
           type: string
-      - description: Server name
+      - description: ImageMetadata name
         in: path
         name: serverName
         required: true
@@ -720,6 +924,233 @@ paths:
       summary: Get a server from a registry
       tags:
       - registry
+  /api/v1beta/secrets:
+    post:
+      description: Setup the secrets provider with the specified type and configuration.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.setupSecretsRequest'
+        description: Setup secrets provider request
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.setupSecretsResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Setup or reconfigure secrets provider
+      tags:
+      - secrets
+  /api/v1beta/secrets/default:
+    get:
+      description: Get details of the default secrets provider
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.getSecretsProviderResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found - Provider not setup
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Get secrets provider details
+      tags:
+      - secrets
+  /api/v1beta/secrets/default/keys:
+    get:
+      description: Get a list of all secret keys from the default provider
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.listSecretsResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found - Provider not setup
+        "405":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Method Not Allowed - Provider doesn't support listing
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: List secrets
+      tags:
+      - secrets
+    post:
+      description: Create a new secret in the default provider (encrypted provider
+        only)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.createSecretRequest'
+        description: Create secret request
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.createSecretResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found - Provider not setup
+        "405":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Method Not Allowed - Provider doesn't support writing
+        "409":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Conflict - Secret already exists
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Create a new secret
+      tags:
+      - secrets
+  /api/v1beta/secrets/default/keys/{key}:
+    delete:
+      description: Delete a secret from the default provider (encrypted provider only)
+      parameters:
+      - description: Secret key
+        in: path
+        name: key
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found - Provider not setup or secret not found
+        "405":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Method Not Allowed - Provider doesn't support deletion
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Delete a secret
+      tags:
+      - secrets
+    put:
+      description: Update an existing secret in the default provider (encrypted provider
+        only)
+      parameters:
+      - description: Secret key
+        in: path
+        name: key
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.updateSecretRequest'
+        description: Update secret request
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.updateSecretResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found - Provider not setup or secret not found
+        "405":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Method Not Allowed - Provider doesn't support writing
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Update a secret
+      tags:
+      - secrets
   /api/v1beta/version:
     get:
       description: Returns the current version of the server
@@ -794,12 +1225,18 @@ paths:
         schema:
           type: string
       responses:
-        "204":
+        "202":
           content:
             application/json:
               schema:
                 type: string
-          description: No Content
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
         "404":
           content:
             application/json:
@@ -834,6 +1271,35 @@ paths:
       summary: Get workload details
       tags:
       - workloads
+  /api/v1beta/workloads/{name}/logs:
+    get:
+      description: Retrieve at most 100 lines of logs for a specific workload by name.
+      parameters:
+      - description: Workload name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: string
+            text/plain:
+              schema:
+                type: string
+          description: Logs for the specified workload
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+      summary: Get logs for a specific workload
+      tags:
+      - logs
   /api/v1beta/workloads/{name}/restart:
     post:
       description: Restart a running workload
@@ -845,12 +1311,18 @@ paths:
         schema:
           type: string
       responses:
-        "204":
+        "202":
           content:
             application/json:
               schema:
                 type: string
-          description: No Content
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
         "404":
           content:
             application/json:
@@ -877,12 +1349,12 @@ paths:
               schema:
                 type: string
           description: Accepted
-        "204":
+        "400":
           content:
             application/json:
               schema:
                 type: string
-          description: No Content
+          description: Bad Request
         "404":
           content:
             application/json:
@@ -892,13 +1364,82 @@ paths:
       summary: Stop a workload
       tags:
       - workloads
-  /api/v1beta/workloads/stop:
+  /api/v1beta/workloads/delete:
     post:
-      description: Stop all running workload
+      description: Delete multiple workloads by name
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.bulkOperationRequest'
+        description: Bulk delete request
+        required: true
       responses:
         "202":
+          content:
+            application/json:
+              schema:
+                type: string
           description: Accepted
-      summary: Stop all workloads
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+      summary: Delete workloads in bulk
+      tags:
+      - workloads
+  /api/v1beta/workloads/restart:
+    post:
+      description: Restart multiple workloads by name
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.bulkOperationRequest'
+        description: Bulk restart request
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+      summary: Restart workloads in bulk
+      tags:
+      - workloads
+  /api/v1beta/workloads/stop:
+    post:
+      description: Stop multiple workloads by name
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.bulkOperationRequest'
+        description: Bulk stop request
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+      summary: Stop workloads in bulk
       tags:
       - workloads
   /health:

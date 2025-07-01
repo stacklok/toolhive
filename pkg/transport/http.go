@@ -9,6 +9,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
@@ -22,8 +23,9 @@ const (
 	LocalhostIPv4 = "127.0.0.1"
 )
 
-// SSETransport implements the Transport interface using Server-Sent Events.
-type SSETransport struct {
+// HTTPTransport implements the Transport interface using Server-Sent/Streamable Events.
+type HTTPTransport struct {
+	transportType     types.TransportType
 	host              string
 	port              int
 	targetPort        int
@@ -49,8 +51,9 @@ type SSETransport struct {
 	errorCh <-chan error
 }
 
-// NewSSETransport creates a new SSE transport.
-func NewSSETransport(
+// NewHTTPTransport creates a new HTTP transport.
+func NewHTTPTransport(
+	transportType types.TransportType,
 	host string,
 	port int,
 	targetPort int,
@@ -59,7 +62,7 @@ func NewSSETransport(
 	targetHost string,
 	prometheusHandler http.Handler,
 	middlewares ...types.Middleware,
-) *SSETransport {
+) *HTTPTransport {
 	if host == "" {
 		host = LocalhostIPv4
 	}
@@ -69,7 +72,8 @@ func NewSSETransport(
 		targetHost = LocalhostIPv4
 	}
 
-	return &SSETransport{
+	return &HTTPTransport{
+		transportType:     transportType,
 		host:              host,
 		port:              port,
 		middlewares:       middlewares,
@@ -83,26 +87,35 @@ func NewSSETransport(
 }
 
 // Mode returns the transport mode.
-func (*SSETransport) Mode() types.TransportType {
-	return types.TransportTypeSSE
+func (t *HTTPTransport) Mode() types.TransportType {
+	return t.transportType
 }
 
 // Port returns the port used by the transport.
-func (t *SSETransport) Port() int {
+func (t *HTTPTransport) Port() int {
 	return t.port
 }
 
+var transportEnvMap = map[types.TransportType]string{
+	types.TransportTypeSSE:            "sse",
+	types.TransportTypeStreamableHTTP: "streamable-http",
+}
+
 // Setup prepares the transport for use.
-func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerName string, image string, cmdArgs []string,
-	envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string) error {
+func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, containerName string, image string, cmdArgs []string,
+	envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
+	isolateNetwork bool) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
 	t.runtime = runtime
 	t.containerName = containerName
 
-	// Add transport-specific environment variables
-	envVars["MCP_TRANSPORT"] = "sse"
+	env, ok := transportEnvMap[t.transportType]
+	if !ok {
+		return fmt.Errorf("unsupported transport type: %s", t.transportType)
+	}
+	envVars["MCP_TRANSPORT"] = env
 
 	// Use the target port for the container's environment variables
 	envVars["MCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
@@ -113,15 +126,21 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	containerOptions := rt.NewDeployWorkloadOptions()
 	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
 
-	// For SSE transport, expose the target port in the container
+	// Expose the target port in the container
 	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)
 	containerOptions.ExposedPorts[containerPortStr] = struct{}{}
 
+	// bind to a random host port
 	// Create host port bindings (configurable through the --host flag)
+	hostPort := networking.FindAvailable()
+	if hostPort == 0 {
+		return fmt.Errorf("could not find an available port")
+	}
+
 	portBindings := []rt.PortBinding{
 		{
 			HostIP:   t.host,
-			HostPort: fmt.Sprintf("%d", t.targetPort),
+			HostPort: fmt.Sprintf("%d", hostPort),
 		},
 	}
 
@@ -136,14 +155,12 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	// Set the port bindings
 	containerOptions.PortBindings[containerPortStr] = portBindings
 
-	logger.Infof("Exposing container port %d", t.targetPort)
-
 	// For SSE transport, we don't need to attach stdio
 	containerOptions.AttachStdio = false
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, err := t.runtime.DeployWorkload(
+	containerID, exposedPort, err := t.runtime.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -151,8 +168,9 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 		envVars,
 		labels,
 		permissionProfile,
-		"sse",
+		t.Mode().String(), // Use the transport type as the mode
 		containerOptions,
+		isolateNetwork,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create container: %v", err)
@@ -160,19 +178,24 @@ func (t *SSETransport) Setup(ctx context.Context, runtime rt.Runtime, containerN
 	t.containerID = containerID
 	logger.Infof("Container created with ID: %s", containerID)
 
-	// If the SSEHeadlessServiceName is set, use it as the target host
-	// This is useful for Kubernetes deployments where the workload is
-	// exposed as a headless service.
-	if containerOptions.SSEHeadlessServiceName != "" {
-		t.targetHost = containerOptions.SSEHeadlessServiceName
+	if t.Mode() == types.TransportTypeSSE {
+		// If the SSEHeadlessServiceName is set, use it as the target host
+		// This is useful for Kubernetes deployments where the workload is
+		// exposed as a headless service.
+		if containerOptions.SSEHeadlessServiceName != "" {
+			t.targetHost = containerOptions.SSEHeadlessServiceName
+		}
 	}
+
+	// also override the exposed port, in case we need it via ingress
+	t.targetPort = exposedPort
 
 	return nil
 }
 
 // Start initializes the transport and begins processing messages.
 // The transport is responsible for starting the container.
-func (t *SSETransport) Start(ctx context.Context) error {
+func (t *HTTPTransport) Start(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -196,7 +219,7 @@ func (t *SSETransport) Start(ctx context.Context) error {
 
 	// Check if target port is set
 	if t.targetPort <= 0 {
-		return fmt.Errorf("target port not set for SSE transport")
+		return fmt.Errorf("target port not set for HTTP transport")
 	}
 
 	// Use the target port for the container
@@ -211,7 +234,7 @@ func (t *SSETransport) Start(ctx context.Context) error {
 		return err
 	}
 
-	logger.Infof("SSE transport started for container %s on port %d", t.containerName, t.port)
+	logger.Infof("HTTP transport started for container %s on port %d", t.containerName, t.port)
 
 	// Create a container monitor
 	monitorRuntime, err := container.NewFactory().Create(ctx)
@@ -233,7 +256,7 @@ func (t *SSETransport) Start(ctx context.Context) error {
 }
 
 // Stop gracefully shuts down the transport and the container.
-func (t *SSETransport) Stop(ctx context.Context) error {
+func (t *HTTPTransport) Stop(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -264,7 +287,7 @@ func (t *SSETransport) Stop(ctx context.Context) error {
 }
 
 // handleContainerExit handles container exit events.
-func (t *SSETransport) handleContainerExit(ctx context.Context) {
+func (t *HTTPTransport) handleContainerExit(ctx context.Context) {
 	select {
 	case <-ctx.Done():
 		return
@@ -278,7 +301,7 @@ func (t *SSETransport) handleContainerExit(ctx context.Context) {
 }
 
 // IsRunning checks if the transport is currently running.
-func (t *SSETransport) IsRunning(_ context.Context) (bool, error) {
+func (t *HTTPTransport) IsRunning(_ context.Context) (bool, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 

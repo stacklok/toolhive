@@ -16,11 +16,13 @@ const (
 )
 
 // RegistryRoutes defines the routes for the registry API.
-type RegistryRoutes struct{}
+type RegistryRoutes struct {
+	provider registry.Provider
+}
 
 // RegistryRouter creates a new router for the registry API.
-func RegistryRouter() http.Handler {
-	routes := RegistryRoutes{}
+func RegistryRouter(provider registry.Provider) http.Handler {
+	routes := RegistryRoutes{provider: provider}
 
 	r := chi.NewRouter()
 	r.Get("/", routes.listRegistries)
@@ -44,8 +46,8 @@ func RegistryRouter() http.Handler {
 //		@Produce		json
 //		@Success		200	{object}	registryListResponse
 //		@Router			/api/v1beta/registry [get]
-func (*RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
-	reg, err := registry.GetRegistry()
+func (routes *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
+	reg, err := routes.provider.GetRegistry()
 	if err != nil {
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
@@ -93,7 +95,7 @@ func (*RegistryRoutes) addRegistry(w http.ResponseWriter, _ *http.Request) {
 //		@Success		200	{object}	getRegistryResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name} [get]
-func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
+func (routes *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Only "default" registry is supported currently
@@ -102,7 +104,7 @@ func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reg, err := registry.GetRegistry()
+	reg, err := routes.provider.GetRegistry()
 	if err != nil {
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
@@ -157,7 +159,7 @@ func (*RegistryRoutes) removeRegistry(w http.ResponseWriter, r *http.Request) {
 //		@Success		200	{object}	listServersResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name}/servers [get]
-func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
+func (routes *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 
 	// Only "default" registry is supported currently
@@ -166,7 +168,7 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	servers, err := registry.ListServers()
+	servers, err := routes.provider.ListServers()
 	if err != nil {
 		logger.Errorf("Failed to list servers: %v", err)
 		http.Error(w, "Failed to list servers", http.StatusInternalServerError)
@@ -189,11 +191,11 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 //		@Tags			registry
 //		@Produce		json
 //		@Param			name		path		string	true	"Registry name"
-//		@Param			serverName	path		string	true	"Server name"
+//		@Param			serverName	path		string	true	"ImageMetadata name"
 //		@Success		200	{object}	getServerResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name}/servers/{serverName} [get]
-func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
+func (routes *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 	serverName := chi.URLParam(r, "serverName")
 
@@ -203,10 +205,10 @@ func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	server, err := registry.GetServer(serverName)
+	server, err := routes.provider.GetServer(serverName)
 	if err != nil {
 		logger.Errorf("Failed to get server '%s': %v", serverName, err)
-		http.Error(w, "Server not found", http.StatusNotFound)
+		http.Error(w, "ImageMetadata not found", http.StatusNotFound)
 		return
 	}
 
@@ -264,7 +266,7 @@ type getRegistryResponse struct {
 //	@Description	Response containing a list of servers
 type listServersResponse struct {
 	// List of servers in the registry
-	Servers []*registry.Server `json:"servers"`
+	Servers []*registry.ImageMetadata `json:"servers"`
 }
 
 // getServerResponse represents the response for getting a server from a registry
@@ -272,5 +274,5 @@ type listServersResponse struct {
 //	@Description	Response containing server details
 type getServerResponse struct {
 	// Server details
-	Server *registry.Server `json:"server"`
+	Server *registry.ImageMetadata `json:"server"`
 }

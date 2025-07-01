@@ -1,7 +1,7 @@
 //go:build windows
 // +build windows
 
-package docker
+package sdk
 
 import (
 	"context"
@@ -16,6 +16,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
+
+var ErrRuntimeNotFound = fmt.Errorf("container runtime not found")
 
 // Windows named pipe paths
 const (

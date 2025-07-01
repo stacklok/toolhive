@@ -92,6 +92,7 @@ func (t *StdioTransport) Setup(
 	envVars, labels map[string]string,
 	permissionProfile *permissions.Profile,
 	k8sPodTemplatePatch string,
+	isolateNetwork bool,
 ) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -109,7 +110,7 @@ func (t *StdioTransport) Setup(
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, err := t.runtime.DeployWorkload(
+	containerID, _, err := t.runtime.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -119,6 +120,7 @@ func (t *StdioTransport) Setup(
 		permissionProfile,
 		"stdio",
 		containerOptions,
+		isolateNetwork,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create container: %v", err)

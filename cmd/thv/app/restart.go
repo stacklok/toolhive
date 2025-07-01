@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -48,9 +49,14 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Restart single container
 	containerName := args[0]
-	err = manager.RestartWorkload(ctx, containerName)
+	restartGroup, err := manager.RestartWorkloads(ctx, []string{containerName})
 	if err != nil {
 		return err
+	}
+
+	// Wait for the restart group to complete
+	if err := restartGroup.Wait(); err != nil {
+		return fmt.Errorf("failed to restart container %s: %v", containerName, err)
 	}
 
 	fmt.Printf("Container %s restarted successfully\n", containerName)
@@ -75,14 +81,31 @@ func restartAllContainers(ctx context.Context, manager workloads.Manager) error 
 
 	fmt.Printf("Restarting %d MCP server(s)...\n", len(containers))
 
+	var restartRequests []*errgroup.Group
+	// First, trigger the restarts concurrently.
 	for _, container := range containers {
 		containerName := container.Name
 		fmt.Printf("Restarting %s...", containerName)
-		err := manager.RestartWorkload(ctx, containerName)
+		restart, err := manager.RestartWorkloads(ctx, []string{containerName})
 		if err != nil {
 			fmt.Printf(" failed: %v\n", err)
 			failedCount++
 			errors = append(errors, fmt.Sprintf("%s: %v", containerName, err))
+		} else {
+			// If it didn't fail during the synchronous part of the operation,
+			// append to the list of restart requests in flight.
+			restartRequests = append(restartRequests, restart)
+		}
+	}
+
+	// Wait for all restarts to complete.
+	for _, restart := range restartRequests {
+		err = restart.Wait()
+		if err != nil {
+			fmt.Printf(" failed: %v\n", err)
+			failedCount++
+			// Unfortunately we don't have the container name here, so we just log a generic error.
+			errors = append(errors, fmt.Sprintf("Error restarting container: %v", err))
 		} else {
 			fmt.Printf(" success\n")
 			restartedCount++

@@ -3,7 +3,6 @@
 package config
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -24,11 +23,13 @@ const lockTimeout = 1 * time.Second
 
 // Config represents the configuration of the application.
 type Config struct {
-	Secrets           Secrets    `yaml:"secrets"`
-	Clients           Clients    `yaml:"clients"`
-	RegistryUrl       string     `yaml:"registry_url"`
-	CACertificatePath string     `yaml:"ca_certificate_path,omitempty"`
-	ServerArgs        ServerArgs `yaml:"server_args,omitempty"`
+	Secrets                Secrets             `yaml:"secrets"`
+	Clients                Clients             `yaml:"clients"`
+	RegistryUrl            string              `yaml:"registry_url"`
+	AllowPrivateRegistryIp bool                `yaml:"allow_private_registry_ip"`
+	CACertificatePath      string              `yaml:"ca_certificate_path,omitempty"`
+	OTEL                   OpenTelemetryConfig `yaml:"otel,omitempty"`
+	ServerArgs             ServerArgs          `yaml:"server_args,omitempty"`
 }
 
 // ServerArgs stores arguments for specific MCP servers
@@ -134,8 +135,8 @@ func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 
 // Clients contains settings for client configuration.
 type Clients struct {
-	AutoDiscovery     bool     `yaml:"auto_discovery"`
 	RegisteredClients []string `yaml:"registered_clients"`
+	AutoDiscovery     bool     `yaml:"auto_discovery"` // Deprecated: kept for migration purposes only
 }
 
 // defaultPathGenerator generates the default config path using xdg
@@ -153,10 +154,8 @@ func createNewConfigWithDefaults() Config {
 			ProviderType:   "", // No default provider - user must run setup
 			SetupCompleted: false,
 		},
-		Clients: Clients{
-			AutoDiscovery: true,
-		},
-		RegistryUrl: "",
+		RegistryUrl:            "",
+		AllowPrivateRegistryIp: false,
 	}
 }
 
@@ -227,20 +226,6 @@ func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
 	if newConfig {
 		// Create a new config with default values.
 		config = createNewConfigWithDefaults()
-
-		// Prompt user explicitly for auto discovery behaviour.
-		logger.Info("Would you like to enable auto discovery and configuration of MCP clients? (y/n) [n]: ")
-		reader := bufio.NewReader(os.Stdin)
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			logger.Info("Unable to read input, defaulting to No.")
-		}
-		// Treat anything except y/Y as n.
-		if input == "y\n" || input == "Y\n" {
-			config.Clients.AutoDiscovery = true
-		} else {
-			config.Clients.AutoDiscovery = false
-		}
 
 		// Persist the new default to disk.
 		logger.Infof("initializing configuration file at %s", configPath)
@@ -349,4 +334,11 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 
 	// Lock is released automatically when the function returns.
 	return nil
+}
+
+// OpenTelemetryConfig contains the settings for OpenTelemetry configuration.
+type OpenTelemetryConfig struct {
+	Endpoint     string   `yaml:"endpoint,omitempty"`
+	SamplingRate float64  `yaml:"sampling-rate,omitempty"`
+	EnvVars      []string `yaml:"env-vars,omitempty"`
 }

@@ -21,10 +21,10 @@ The config command provides subcommands to manage application configuration sett
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
-* [thv config auto-discovery](thv_config_auto-discovery.md)	 - Set whether to enable auto-discovery of MCP clients
 * [thv config get-ca-cert](thv_config_get-ca-cert.md)	 - Get the currently configured CA certificate path
 * [thv config get-registry-url](thv_config_get-registry-url.md)	 - Get the currently configured registry URL
 * [thv config list-registered-clients](thv_config_list-registered-clients.md)	 - List all registered MCP clients
+* [thv config otel](thv_config_otel.md)	 - Manage OpenTelemetry configuration
 * [thv config register-client](thv_config_register-client.md)	 - Register a client for MCP server configuration
 * [thv config remove-client](thv_config_remove-client.md)	 - Remove a client from MCP server configuration
 * [thv config set-ca-cert](thv_config_set-ca-cert.md)	 - Set the default CA certificate for container builds

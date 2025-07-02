@@ -180,8 +180,17 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 		}
 	}
 
-	// also override the exposed port, in case we need it via ingress
-	t.targetPort = exposedPort
+	// ChrisB: I really don't like this, but it's a workaround for the fact that
+	// we don't want to override the targetPort in a Kubernetes deployment. Because
+	// by default the Kubernetes container runtime returns `0` for the exposedPort anyways
+	// therefore causing the "target port not set" error when it is assigned to the targetPort.
+	// Issues:
+	// - https://github.com/stacklok/toolhive/issues/902
+	// - https://github.com/stacklok/toolhive/issues/924
+	if k8sPodTemplatePatch == "" {
+		// also override the exposed port, in case we need it via ingress
+		t.targetPort = exposedPort
+	}
 
 	return nil
 }

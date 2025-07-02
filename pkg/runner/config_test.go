@@ -784,14 +784,9 @@ func TestRunConfig_WithAuthz(t *testing.T) {
 // mockEnvVarValidator implements the EnvVarValidator interface for testing
 type mockEnvVarValidator struct{}
 
-func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadata, config *RunConfig, envVars []string) error {
-	// For testing, just set the environment variables directly
-	if len(envVars) > 0 {
-		var err error
-		_, err = config.WithEnvironmentVariables(envVars)
-		return err
-	}
-	return nil
+func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadata, _ *RunConfig, suppliedEnvVars []string) ([]string, error) {
+	// For testing, just return the supplied environment variables as-is
+	return suppliedEnvVars, nil
 }
 
 func TestNewRunConfigFromFlags(t *testing.T) {

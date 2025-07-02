@@ -161,6 +161,7 @@ func NewRunConfigFromFlags(
 	oidcAudience string,
 	oidcJwksURL string,
 	oidcClientID string,
+	oidcAllowOpaqueTokens bool,
 	otelEndpoint string,
 	otelServiceName string,
 	otelSamplingRate float64,
@@ -203,7 +204,7 @@ func NewRunConfigFromFlags(
 	configureAudit(config, enableAudit, auditConfigPath)
 
 	// Configure OIDC if any values are provided
-	configureOIDC(config, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID)
+	configureOIDC(config, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens)
 
 	// Configure telemetry if endpoint or metrics port is provided
 	configureTelemetry(config, otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
@@ -232,13 +233,14 @@ func configureAudit(config *RunConfig, enableAudit bool, auditConfigPath string)
 }
 
 // configureOIDC sets up OIDC configuration if any values are provided
-func configureOIDC(config *RunConfig, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string) {
+func configureOIDC(config *RunConfig, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string, oidcAllowOpaqueTokens bool) {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
 		config.OIDCConfig = &auth.TokenValidatorConfig{
-			Issuer:   oidcIssuer,
-			Audience: oidcAudience,
-			JWKSURL:  oidcJwksURL,
-			ClientID: oidcClientID,
+			Issuer:            oidcIssuer,
+			Audience:          oidcAudience,
+			JWKSURL:           oidcJwksURL,
+			ClientID:          oidcClientID,
+			AllowOpaqueTokens: oidcAllowOpaqueTokens,
 		}
 	}
 }

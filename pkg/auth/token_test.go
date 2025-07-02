@@ -80,7 +80,7 @@ func TestTokenValidator(t *testing.T) {
 		Audience: "test-audience",
 		JWKSURL:  jwksServer.URL,
 		ClientID: "test-client",
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("Failed to create token validator: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 		Audience: "test-audience",
 		JWKSURL:  jwksServer.URL,
 		ClientID: "test-client",
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("Failed to create token validator: %v", err)
 	}
@@ -527,7 +527,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			ClientID: "test-client",
 		}
 
-		validator, err := NewTokenValidator(ctx, config)
+		validator, err := NewTokenValidator(ctx, config, false)
 		if err != nil {
 			t.Fatalf("Failed to create token validator: %v", err)
 		}
@@ -583,7 +583,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			ClientID: "test-client",
 		}
 
-		validator, err := NewTokenValidator(ctx, config)
+		validator, err := NewTokenValidator(ctx, config, false)
 		if err != nil {
 			t.Fatalf("Failed to create token validator: %v", err)
 		}
@@ -602,7 +602,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			ClientID: "test-client",
 		}
 
-		validator, err := NewTokenValidator(ctx, config)
+		validator, err := NewTokenValidator(ctx, config, false)
 		if err != ErrMissingIssuerAndJWKSURL {
 			t.Errorf("Expected error %v but got %v", ErrMissingIssuerAndJWKSURL, err)
 		}
@@ -619,7 +619,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			ClientID: "test-client",
 		}
 
-		validator, err := NewTokenValidator(ctx, config)
+		validator, err := NewTokenValidator(ctx, config, false)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}

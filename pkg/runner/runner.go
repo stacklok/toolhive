@@ -54,7 +54,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Get authentication middleware
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
+	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig, r.Config.OIDCConfig.AllowOpaqueTokens)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}

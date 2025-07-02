@@ -197,7 +197,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get authentication middleware for incoming requests
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, false)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}

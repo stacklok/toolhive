@@ -42,11 +42,12 @@ type OIDCDiscoveryDocument struct {
 // TokenValidator validates JWT or opaque tokens using OIDC configuration.
 type TokenValidator struct {
 	// OIDC configuration
-	issuer     string
-	audience   string
-	jwksURL    string
-	clientID   string
-	jwksClient *jwk.Cache
+	issuer            string
+	audience          string
+	jwksURL           string
+	clientID          string
+	jwksClient        *jwk.Cache
+	allowOpaqueTokens bool // Whether to allow opaque tokens (non-JWT)
 
 	// No need for additional caching as jwk.Cache handles it
 }
@@ -64,6 +65,9 @@ type TokenValidatorConfig struct {
 
 	// ClientID is the OIDC client ID
 	ClientID string
+
+	// AllowOpaqueTokens indicates whether to allow opaque tokens (non-JWT)
+	AllowOpaqueTokens bool
 }
 
 // discoverOIDCConfiguration discovers OIDC configuration from the issuer's well-known endpoint
@@ -115,22 +119,23 @@ func discoverOIDCConfiguration(ctx context.Context, issuer string) (*OIDCDiscove
 }
 
 // NewTokenValidatorConfig creates a new TokenValidatorConfig with the provided parameters
-func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string) *TokenValidatorConfig {
+func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string, allowOpaqueTokens bool) *TokenValidatorConfig {
 	// Only create a config if at least one parameter is provided
 	if issuer == "" && audience == "" && jwksURL == "" && clientID == "" {
 		return nil
 	}
 
 	return &TokenValidatorConfig{
-		Issuer:   issuer,
-		Audience: audience,
-		JWKSURL:  jwksURL,
-		ClientID: clientID,
+		Issuer:            issuer,
+		Audience:          audience,
+		JWKSURL:           jwksURL,
+		ClientID:          clientID,
+		AllowOpaqueTokens: allowOpaqueTokens,
 	}
 }
 
 // NewTokenValidator creates a new token validator.
-func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*TokenValidator, error) {
+func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, allowOpaqueTokens bool) (*TokenValidator, error) {
 	jwksURL := config.JWKSURL
 
 	// If JWKS URL is not provided but issuer is, try to discover it
@@ -157,11 +162,12 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 	}
 
 	return &TokenValidator{
-		issuer:     config.Issuer,
-		audience:   config.Audience,
-		jwksURL:    jwksURL,
-		clientID:   config.ClientID,
-		jwksClient: cache,
+		issuer:            config.Issuer,
+		audience:          config.Audience,
+		jwksURL:           jwksURL,
+		clientID:          config.ClientID,
+		jwksClient:        cache,
+		allowOpaqueTokens: allowOpaqueTokens,
 	}, nil
 }
 
@@ -248,7 +254,10 @@ func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) 
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenMalformed) {
 			// just an opaque token, let it run
-			return nil, nil
+			if v.allowOpaqueTokens {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("token seems to be opaque, but opaque tokens are not allowed: %w", err)
 		}
 		return nil, fmt.Errorf("failed to parse token: %w", err)
 	}

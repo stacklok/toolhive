@@ -5,11 +5,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - 'cmd/thv-operator/**'
       - 'deploy/charts/operator-crds/**'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/operator-ci.yml'
 
 permissions:
   contents: read

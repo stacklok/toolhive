@@ -381,19 +381,51 @@ func extractFirstPort(options *runtime.DeployWorkloadOptions) (int, error) {
 	return firstPortInt, nil
 }
 
-func extractFirstPortBinding(portBindings map[string][]runtime.PortBinding) (int, error) {
-	var firstHostPort string
-	for _, bindings := range portBindings {
-		if len(bindings) > 0 {
-			firstHostPort = bindings[0].HostPort
-			break // we only want the first item in the map
+func (c *Client) createExternalNetworks(ctx context.Context) error {
+	externalNetworkLabels := map[string]string{}
+	lb.AddNetworkLabels(externalNetworkLabels, "toolhive-external")
+	err := c.createNetwork(ctx, "toolhive-external", externalNetworkLabels, false)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func generatePortBindings(labels map[string]string,
+	portBindings map[string][]runtime.PortBinding) (map[string][]runtime.PortBinding, int, error) {
+	var hostPort int
+	// check if we need to map to a random port of not
+	if _, ok := labels["toolhive-auxiliary"]; ok && labels["toolhive-auxiliary"] == "true" {
+		// find first port
+		var err error
+		for _, bindings := range portBindings {
+			if len(bindings) > 0 {
+				hostPortStr := bindings[0].HostPort
+				hostPort, err = strconv.Atoi(hostPortStr)
+				if err != nil {
+					return nil, 0, fmt.Errorf("failed to convert host port %s to int: %v", hostPortStr, err)
+				}
+				break
+			}
+		}
+	} else {
+		// bind to a random host port
+		hostPort = networking.FindAvailable()
+		if hostPort == 0 {
+			return nil, 0, fmt.Errorf("could not find an available port")
+		}
+
+		// first port binding needs to map to the host port
+		for key, bindings := range portBindings {
+			if len(bindings) > 0 {
+				bindings[0].HostPort = fmt.Sprintf("%d", hostPort)
+				portBindings[key] = bindings
+				break
+			}
 		}
 	}
-	hostPortInt, err := strconv.Atoi(firstHostPort)
-	if err != nil {
-		return 0, fmt.Errorf("failed to convert host port %s to int: %v", firstHostPort, err)
-	}
-	return hostPortInt, nil
+
+	return portBindings, hostPort, nil
 }
 
 // DeployWorkload creates and starts a workload.
@@ -428,12 +460,9 @@ func (c *Client) DeployWorkload(
 		"toolhive-external": {},
 	}
 
-	externalNetworkLabels := map[string]string{}
-	lb.AddNetworkLabels(externalNetworkLabels, "toolhive-external")
-	err = c.createNetwork(ctx, "toolhive-external", externalNetworkLabels, false)
+	err = c.createExternalNetworks(ctx)
 	if err != nil {
-		// just log the error and continue
-		logger.Warnf("failed to create external network %q: %v", "toolhive-external", err)
+		return "", 0, fmt.Errorf("failed to create external networks: %v", err)
 	}
 
 	if isolateNetwork {
@@ -475,6 +504,12 @@ func (c *Client) DeployWorkload(
 		networkName = ""
 	}
 
+	// only remap if is not an auxiliary tool
+	newPortBindings, hostPort, err := generatePortBindings(labels, options.PortBindings)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to generate port bindings: %v", err)
+	}
+
 	containerId, err := c.createMcpContainer(
 		ctx,
 		name,
@@ -487,7 +522,7 @@ func (c *Client) DeployWorkload(
 		permissionConfig,
 		additionalDNS,
 		options.ExposedPorts,
-		options.PortBindings,
+		newPortBindings,
 		isolateNetwork,
 	)
 	if err != nil {
@@ -499,24 +534,19 @@ func (c *Client) DeployWorkload(
 		return containerId, 0, nil
 	}
 
-	// extract the first port binding
-	firstHostPort, err := extractFirstPortBinding(options.PortBindings)
-	if err != nil {
-		return "", 0, err
-	}
 	if isolateNetwork {
 		// just extract the first exposed port
 		firstPortInt, err := extractFirstPort(options)
 		if err != nil {
 			return "", 0, err // extractFirstPort already wraps the error with context.
 		}
-		firstHostPort, err = c.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
+		hostPort, err = c.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
 		if err != nil {
 			return "", 0, fmt.Errorf("failed to create ingress container: %v", err)
 		}
 	}
 
-	return containerId, firstHostPort, nil
+	return containerId, hostPort, nil
 }
 
 // ListWorkloads lists workloads

@@ -7,7 +7,6 @@ import (
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 	"github.com/stacklok/toolhive/pkg/client"
-	"github.com/stacklok/toolhive/pkg/config"
 )
 
 var clientCmd = &cobra.Command{
@@ -83,29 +82,22 @@ func getAvailableClients(statuses []client.MCPClientStatus) []client.MCPClientSt
 
 // Helper to register selected clients
 func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.MCPClientStatus) error {
-	err := config.UpdateConfig(func(c *config.Config) {
-		registeredClientsMap := make(map[string]bool)
-		for _, registeredClient := range c.Clients.RegisteredClients {
-			registeredClientsMap[registeredClient] = true
-		}
-		for _, cli := range clientsToRegister {
-			clientName := string(cli.ClientType)
-			if _, ok := registeredClientsMap[clientName]; !ok {
-				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, clientName)
-			}
-		}
-	})
+	ctx := cmd.Context()
+
+	manager, err := client.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
+		return fmt.Errorf("failed to create client manager: %w", err)
 	}
 
-	fmt.Println("Registering selected clients...")
-	for _, cli := range clientsToRegister {
-		clientName := string(cli.ClientType)
-		fmt.Printf("Successfully registered client: %s\n", clientName)
-		if err := addRunningMCPsToClient(cmd.Context(), clientName); err != nil {
-			fmt.Printf("Warning: Failed to add running MCPs to client %s: %v\n", clientName, err)
-		}
+	clients := make([]client.Client, len(clientsToRegister))
+	for i, cli := range clientsToRegister {
+		clients[i] = client.Client{Name: cli.ClientType}
 	}
+
+	err = manager.RegisterClients(ctx, clients)
+	if err != nil {
+		return fmt.Errorf("failed to register clients: %w", err)
+	}
+
 	return nil
 }

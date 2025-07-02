@@ -178,7 +178,7 @@ const (
 	OIDCConfigTypeKubernetes = "kubernetes"
 
 	// OIDCConfigTypeConfigMap is the type for OIDC configuration stored in ConfigMaps
-	OIDCConfigTypeConfigMap = "configmap"
+	OIDCConfigTypeConfigMap = "configMap"
 
 	// OIDCConfigTypeInline is the type for inline OIDC configuration
 	OIDCConfigTypeInline = "inline"
@@ -257,7 +257,7 @@ type OutboundNetworkPermissions struct {
 // OIDCConfigRef defines a reference to OIDC configuration
 type OIDCConfigRef struct {
 	// Type is the type of OIDC configuration
-	// +kubebuilder:validation:Enum=kubernetes;configmap;inline
+	// +kubebuilder:validation:Enum=kubernetes;configMap;inline
 	// +kubebuilder:default=kubernetes
 	Type string `json:"type"`
 

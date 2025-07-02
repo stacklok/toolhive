@@ -1916,6 +1916,46 @@
       ],
       "transport": "stdio"
     },
+    "sqlite": {
+      "args": [],
+      "description": "Provides tools and resources for querying SQLite databases.",
+      "env_vars": [],
+      "image": "ghcr.io/stackloklabs/sqlite-mcp/server:latest",
+      "metadata": {
+        "last_updated": "2025-07-01T00:25:09Z",
+        "pulls": 0,
+        "stars": 0
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [],
+            "allow_transport": [],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/StacklokLabs/sqlite-mcp",
+      "status": "Active",
+      "tags": [
+        "data",
+        "database",
+        "query",
+        "sql",
+        "sqlite"
+      ],
+      "tier": "Community",
+      "tools": [
+        "execute_query",
+        "execute_statement",
+        "list_tables",
+        "describe_table"
+      ],
+      "transport": "sse"
+    },
     "terraform": {
       "args": [],
       "description": "MCP Server for providing seamless integration with Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.",

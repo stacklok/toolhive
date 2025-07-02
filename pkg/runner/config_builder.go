@@ -165,6 +165,8 @@ func (b *RunConfigBuilder) WithAuditEnabled(enableAudit bool, auditConfigPath st
 func (b *RunConfigBuilder) WithOIDCConfig(
 	oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string,
 	oidcAllowOpaqueTokens bool,
+	thvCABundle, jwksAuthTokenFile string,
+	jwksAllowPrivateIP bool,
 ) *RunConfigBuilder {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
 		b.config.OIDCConfig = &auth.TokenValidatorConfig{
@@ -175,6 +177,10 @@ func (b *RunConfigBuilder) WithOIDCConfig(
 			AllowOpaqueTokens: oidcAllowOpaqueTokens,
 		}
 	}
+	// Set JWKS-related configuration
+	b.config.ThvCABundle = thvCABundle
+	b.config.JWKSAuthTokenFile = jwksAuthTokenFile
+	b.config.JWKSAllowPrivateIP = jwksAllowPrivateIP
 	return b
 }
 

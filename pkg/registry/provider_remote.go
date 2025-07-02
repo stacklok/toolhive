@@ -30,7 +30,13 @@ func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) *RemoteR
 // GetRegistry returns the remote registry data
 func (p *RemoteRegistryProvider) GetRegistry() (*Registry, error) {
 	p.registryOnce.Do(func() {
-		client := networking.GetHttpClient(p.allowPrivateIp)
+		client, err := networking.NewHttpClientBuilder().
+			WithPrivateIPs(p.allowPrivateIp).
+			Build()
+		if err != nil {
+			p.registryErr = fmt.Errorf("failed to build http client: %w", err)
+			return
+		}
 		resp, err := client.Get(p.registryURL)
 		if err != nil {
 			p.registryErr = fmt.Errorf("failed to fetch registry data from URL %s: %w", p.registryURL, err)

@@ -48,11 +48,11 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --image-verification string             Set image verification mode (warn, enabled, disabled) (default "warn")
       --isolate-network                       Isolate the container network from the host (default: false)
       --name string                           Name of the MCP server (auto-generated from image if not provided)
+      --oidc-allow-opaque-tokens              Allow opaque tokens (non-JWT) for OIDC validation
       --oidc-audience string                  Expected audience for the token
       --oidc-client-id string                 OIDC client ID
       --oidc-issuer string                    OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string                  URL to fetch the JWKS from
-      --oidc-allow-opaque-tokens              Allow authenticate with opaque tokens (default: false)
       --otel-enable-prometheus-metrics-path   Enable Prometheus-style /metrics endpoint on the main transport port
       --otel-endpoint string                  OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
       --otel-env-vars stringArray             Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)

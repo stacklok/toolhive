@@ -211,7 +211,8 @@ func NewRunConfigFromFlags(
 
 	// When using the CLI validation strategy, this is where the prompting for
 	// missing environment variables will happen.
-	if err := envVarValidator.Validate(ctx, imageMetadata, config, envVars); err != nil {
+	processedEnvVars, err := envVarValidator.Validate(ctx, imageMetadata, config, envVars)
+	if err != nil {
 		return nil, fmt.Errorf("failed to validate environment variables: %v", err)
 	}
 
@@ -219,6 +220,11 @@ func NewRunConfigFromFlags(
 	// Apply image metadata overrides if needed.
 	if err := config.validateConfig(imageMetadata, mcpTransport, port, targetPort); err != nil {
 		return nil, fmt.Errorf("failed to validate run config: %v", err)
+	}
+
+	// Now set environment variables with the correct transport and ports resolved
+	if _, err := config.WithEnvironmentVariables(processedEnvVars); err != nil {
+		return nil, fmt.Errorf("failed to set environment variables: %v", err)
 	}
 
 	return config, nil

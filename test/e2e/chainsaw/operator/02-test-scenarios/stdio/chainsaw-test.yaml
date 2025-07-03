@@ -1,0 +1,34 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: stdio-mcp-server
+spec:
+  description: Basic E2E test for ToolHive Operator
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  # Step 1: Verify operator is running
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+      
+  - name: deploy-mcpserver
+    description: Deploy a basic MCPServer instance and verify it's ready
+    try:
+    - apply:
+        file: 03-mcpserver.yaml
+    - assert:
+        file: 03-mcpserver.yaml
+    - assert:
+        file: 03-assert-mcpserver-running.yaml
+    - assert:
+        file: 03-assert-mcpserver-proxy-runner-running.yaml
+    - assert:
+        file: 03-assert-mcpserver-proxy-runner-svc.yaml
+    - assert:
+        file: 03-assert-mcpserver-pod-running.yaml

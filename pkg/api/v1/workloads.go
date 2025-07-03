@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -284,7 +285,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		false, // isolateNetwork - not exposed through API yet
 		"",    // k8s patch - not relevant here.
 		&runner.DetachedEnvVarValidator{},
-		req.ProxyMode,
+		types.ProxyMode(req.ProxyMode),
 	)
 	if err != nil {
 		logger.Errorf("Failed to create run config: %v", err)

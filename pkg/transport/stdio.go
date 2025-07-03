@@ -25,13 +25,6 @@ import (
 
 // StdioTransport implements the Transport interface using standard input/output.
 // It acts as a proxy between the MCP client and the container's stdin/stdout.
-type ProxyMode int
-
-const (
-	ProxyModeSSE ProxyMode = iota
-	ProxyModeStreamableHTTP
-)
-
 type StdioTransport struct {
 	host              string
 	port              int
@@ -51,7 +44,7 @@ type StdioTransport struct {
 
 	// Proxy (SSE or Streamable HTTP)
 	httpProxy types.Proxy
-	proxyMode ProxyMode
+	proxyMode types.ProxyMode
 
 	// Container I/O
 	stdin  io.WriteCloser
@@ -78,12 +71,12 @@ func NewStdioTransport(
 		middlewares:       middlewares,
 		prometheusHandler: prometheusHandler,
 		shutdownCh:        make(chan struct{}),
-		proxyMode:         ProxyModeSSE, // default to SSE for backward compatibility
+		proxyMode:         types.ProxyModeSSE, // default to SSE for backward compatibility
 	}
 }
 
 // SetProxyMode allows configuring the proxy mode (SSE or Streamable HTTP)
-func (t *StdioTransport) SetProxyMode(mode ProxyMode) {
+func (t *StdioTransport) SetProxyMode(mode types.ProxyMode) {
 	t.proxyMode = mode
 }
 
@@ -173,20 +166,20 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 
 	// Create and start the correct proxy with middlewares
 	switch t.proxyMode {
-	case ProxyModeStreamableHTTP:
+	case types.ProxyModeStreamableHTTP:
 		t.httpProxy = streamable.NewStreamableHTTPProxy(t.host, t.port, t.containerName, t.prometheusHandler, t.middlewares...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
 		logger.Info("Streamable HTTP proxy started, processing messages...")
-	case ProxyModeSSE:
-		fallthrough
-	default:
+	case types.ProxyModeSSE:
 		t.httpProxy = httpsse.NewHTTPSSEProxy(t.host, t.port, t.containerName, t.prometheusHandler, t.middlewares...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
 		logger.Info("HTTP SSE proxy started, processing messages...")
+	default:
+		return fmt.Errorf("unsupported proxy mode: %v", t.proxyMode)
 	}
 
 	// Start processing messages in a goroutine
@@ -311,7 +304,6 @@ func (t *StdioTransport) processMessages(ctx context.Context, stdin io.WriteClos
 	go t.processStdout(ctx, stdout)
 	// Process incoming messages and send them to the container
 	messageCh := t.httpProxy.GetMessageChannel()
-	// var responseCh <-chan jsonrpc2.Message // removed unused variable
 
 	for {
 		select {
@@ -447,7 +439,7 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	// Log the message
 	logger.Infof("Received JSON-RPC message: %T", msg)
 
-	if t.proxyMode == ProxyModeStreamableHTTP {
+	if t.proxyMode == types.ProxyModeStreamableHTTP {
 		if rc, ok := t.httpProxy.(interface {
 			ForwardResponseToClients(context.Context, jsonrpc2.Message) error
 		}); ok {

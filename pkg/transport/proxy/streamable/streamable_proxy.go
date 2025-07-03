@@ -124,16 +124,6 @@ func (p *StreamableHTTPProxy) applyMiddlewares(handler http.Handler) http.Handle
 	return handler
 }
 
-// isValidJSONRPC2Raw checks if the raw JSON contains 'jsonrpc': '2.0'.
-func isValidJSONRPC2Raw(data []byte) bool {
-	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return false
-	}
-	ver, ok := raw["jsonrpc"].(string)
-	return ok && ver == "2.0"
-}
-
 func isNotification(msg jsonrpc2.Message) bool {
 	if req, ok := msg.(*jsonrpc2.Request); ok {
 		return req.ID.Raw() == nil
@@ -162,12 +152,6 @@ func (p *StreamableHTTPProxy) handleStreamableRequest(w http.ResponseWriter, r *
 		return
 	}
 
-	// Single message
-	if !isValidJSONRPC2Raw(body) {
-		logger.Warnf("Skipping invalid JSON-RPC 2.0 message: %s", string(body))
-		http.Error(w, "Invalid JSON-RPC 2.0 message", http.StatusBadRequest)
-		return
-	}
 	msg, err := jsonrpc2.DecodeMessage(body)
 	if err != nil {
 		logger.Warnf("Skipping message that failed to decode: %s", string(body))
@@ -203,17 +187,22 @@ func (p *StreamableHTTPProxy) handleStreamableRequest(w http.ResponseWriter, r *
 		} else {
 			// Return a JSON-RPC error response
 			w.Header().Set("Content-Type", "application/json")
-			errResp := map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      nil,
-				"error": map[string]interface{}{
-					"code":    -32603,
-					"message": "Invalid JSON-RPC 2.0 response from server",
-				},
-			}
+			errResp := getInvalidJsonrpcError()
 			json.NewEncoder(w).Encode(errResp)
 		}
 	case <-time.After(10 * time.Second):
 		http.Error(w, "Timeout waiting for response from container", http.StatusGatewayTimeout)
 	}
+}
+
+func getInvalidJsonrpcError() map[string]interface{} {
+	errResp := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      nil,
+		"error": map[string]interface{}{
+			"code":    -32603,
+			"message": "Invalid JSON-RPC 2.0 response from server",
+		},
+	}
+	return errResp
 }

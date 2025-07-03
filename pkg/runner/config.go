@@ -43,7 +43,7 @@ type RunConfig struct {
 	// BaseName is the base name used for the container (without prefixes)
 	BaseName string `json:"base_name" yaml:"base_name"`
 
-	// Transport is the transport mode (sse or stdio)
+	// Transport is the transport mode (stdio, sse, or streamable-http)
 	Transport types.TransportType `json:"transport" yaml:"transport"`
 
 	// Host is the host for the HTTP proxy
@@ -110,7 +110,7 @@ type RunConfig struct {
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
-	ProxyMode string `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
+	ProxyMode types.ProxyMode `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -175,7 +175,7 @@ func NewRunConfigFromFlags(
 	isolateNetwork bool,
 	k8sPodPatch string,
 	envVarValidator EnvVarValidator,
-	proxyMode string,
+	proxyMode types.ProxyMode,
 ) (*RunConfig, error) {
 	// Ensure default values for host and targetHost
 	if host == "" {
@@ -442,11 +442,9 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 		containerName = c.Name
 	}
 
-	// TODO: This is a hack to allow the user to specify the proxy mode for stdio transport.
-	// This should be removed once we have a proper way to specify the proxy mode for stdio transport.
-	transportLabel := string(c.Transport)
-	if c.Transport == types.TransportTypeStdio && c.ProxyMode == "streamable-http" {
-		transportLabel = string(types.TransportTypeStreamableHTTP)
+	transportLabel := c.Transport.String()
+	if c.Transport == types.TransportTypeStdio && c.ProxyMode == types.ProxyModeStreamableHTTP {
+		transportLabel = types.TransportTypeStreamableHTTP.String()
 	}
 	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port)
 	return c

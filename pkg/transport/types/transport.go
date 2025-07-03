@@ -138,5 +138,21 @@ type Config struct {
 	PrometheusHandler http.Handler
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
-	ProxyMode string
+	ProxyMode ProxyMode
+}
+
+// ProxyMode represents the proxy mode for stdio transport.
+type ProxyMode string
+
+const (
+	ProxyModeSSE            ProxyMode = "sse"
+	ProxyModeStreamableHTTP ProxyMode = "streamable-http"
+)
+
+func IsValidProxyMode(mode string) bool {
+	return mode == ProxyModeSSE.String() || mode == ProxyModeStreamableHTTP.String()
+}
+
+func (p ProxyMode) String() string {
+	return string(p)
 }

@@ -20,16 +20,16 @@ spec:
     description: Deploy a basic MCPServer instance and verify it's ready
     try:
     - apply:
-        file: 03-mcpserver.yaml
+        file: mcpserver.yaml
     - assert:
-        file: 03-mcpserver.yaml
+        file: mcpserver.yaml
     - assert:
-        file: 03-assert-mcpserver-running.yaml
+        file: assert-mcpserver-running.yaml
     - assert:
-        file: 03-assert-mcpserver-proxy-runner-running.yaml
+        file: assert-mcpserver-proxy-runner-running.yaml
     - assert:
-        file: 03-assert-mcpserver-proxy-runner-svc.yaml
+        file: assert-mcpserver-proxy-runner-svc.yaml
     - assert:
-        file: 03-assert-mcpserver-pod-running.yaml
+        file: assert-mcpserver-pod-running.yaml
     - assert:
-        file: 03-assert-mcpserver-headless-svc.yaml
+        file: assert-mcpserver-headless-svc.yaml

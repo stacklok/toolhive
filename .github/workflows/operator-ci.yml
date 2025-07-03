@@ -191,4 +191,6 @@ jobs:
       run: |
         kind get kubeconfig --name toolhive > kconfig.yaml
         export KUBECONFIG=kconfig.yaml
-        chainsaw test --test-dir test/e2e/chainsaw --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/setup --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/test-scenarios --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/cleanup --config .chainsaw.yaml

@@ -3,9 +3,11 @@
 package workloads
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -344,28 +346,62 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 		detachedCmd.Env = append(detachedCmd.Env, fmt.Sprintf("%s=%s", secrets.PasswordEnvVar, password))
 	}
 
-	// Redirect stdout and stderr to the log file if it was created successfully
-	if logFile != nil {
-		detachedCmd.Stdout = logFile
-		detachedCmd.Stderr = logFile
-	} else {
-		// Otherwise, discard the output
-		detachedCmd.Stdout = nil
-		detachedCmd.Stderr = nil
-	}
-
 	// Detach the process from the terminal
 	detachedCmd.Stdin = nil
 	detachedCmd.SysProcAttr = getSysProcAttr()
 
 	// Start the detached process
+	stderrPipe, err := detachedCmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe error: %w", err)
+	}
+
+	// Redirect stdout and stderr to the log file if it was created successfully
+	var stderrWriter io.Writer
+	if logFile != nil {
+		detachedCmd.Stdout = logFile
+		stderrWriter = io.MultiWriter(logFile)
+	} else {
+		// Otherwise, discard the output
+		stderrWriter = io.Discard
+		detachedCmd.Stdout = nil
+	}
+
 	if err := detachedCmd.Start(); err != nil {
 		return fmt.Errorf("failed to start detached process: %v", err)
 	}
 
 	// Write the PID to a file so the stop command can kill the process
-	if err := process.WritePIDFile(runConfig.BaseName, detachedCmd.Process.Pid); err != nil {
+	pid := detachedCmd.Process.Pid
+	if err := process.WritePIDFile(runConfig.BaseName, pid); err != nil {
 		logger.Warnf("Warning: Failed to write PID file: %v", err)
+	}
+
+	stderrCh := make(chan string, 1)
+	go func() {
+		buf := &bytes.Buffer{}
+		_, err = io.Copy(buf, stderrPipe)
+		if err != nil {
+			logger.Warnf("Warning: Failed to read stderr: %v", err)
+			stderrCh <- ""
+			return
+		}
+
+		_, err = stderrWriter.Write(buf.Bytes())
+		if err != nil {
+			logger.Warnf("Warning: Failed to write stderr to log file: %v", err)
+			stderrCh <- ""
+		}
+
+		stderrCh <- buf.String()
+	}()
+
+	select {
+	case out := <-stderrCh:
+		if out != "" {
+			return fmt.Errorf("startup error (PID %d): %s", pid, out)
+		}
+	case <-time.After(2 * time.Second):
 	}
 
 	logger.Infof("MCP server is running in the background (PID: %d)", detachedCmd.Process.Pid)

@@ -13,6 +13,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Common errors for Cedar authorization
@@ -258,8 +259,17 @@ func (a *CedarAuthorizer) IsAuthorized(
 		entityMap = mergedEntities
 	}
 
+	// Debug logging for authorization
+	logger.Debugf("Cedar authorization check - Principal: %s, Action: %s, Resource: %s",
+		req.Principal, req.Action, req.Resource)
+	logger.Debugf("Cedar context: %+v", req.Context)
+
 	// Check authorization
 	decision, diagnostic := cedar.Authorize(a.policySet, entityMap, req)
+
+	// Log the decision
+	logger.Debugf("Cedar decision: %v, diagnostic: %+v", decision, diagnostic)
+
 	// Cedar's Authorize returns a Decision and a Diagnostic
 	// Check if the Diagnostic contains any errors
 	if len(diagnostic.Errors) > 0 {

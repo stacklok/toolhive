@@ -14,6 +14,41 @@ Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API g
 
 
 
+#### AuthzConfigRef
+
+
+
+AuthzConfigRef defines a reference to authorization configuration
+
+
+
+_Appears in:_
+- [MCPServerSpec](#mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is the type of authorization configuration | configMap | Enum: [configMap inline] <br /> |
+| `configMap` _[ConfigMapAuthzRef](#configmapauthzref)_ | ConfigMap references a ConfigMap containing authorization configuration<br />Only used when Type is "configMap" |  |  |
+| `inline` _[InlineAuthzConfig](#inlineauthzconfig)_ | Inline contains direct authorization configuration<br />Only used when Type is "inline" |  |  |
+
+
+#### ConfigMapAuthzRef
+
+
+
+ConfigMapAuthzRef references a ConfigMap containing authorization configuration
+
+
+
+_Appears in:_
+- [AuthzConfigRef](#authzconfigref)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the ConfigMap |  | Required: \{\} <br /> |
+| `key` _string_ | Key is the key in the ConfigMap that contains the authorization configuration | authz.json |  |
+
+
 #### ConfigMapOIDCRef
 
 
@@ -48,6 +83,23 @@ _Appears in:_
 | `value` _string_ | Value of the environment variable |  | Required: \{\} <br /> |
 
 
+#### InlineAuthzConfig
+
+
+
+InlineAuthzConfig contains direct authorization configuration
+
+
+
+_Appears in:_
+- [AuthzConfigRef](#authzconfigref)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `policies` _string array_ | Policies is a list of Cedar policy strings |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `entitiesJson` _string_ | EntitiesJSON is a JSON string representing Cedar entities | [] |  |
+
+
 #### InlineOIDCConfig
 
 
@@ -64,7 +116,7 @@ _Appears in:_
 | `issuer` _string_ | Issuer is the OIDC issuer URL |  | Required: \{\} <br /> |
 | `audience` _string_ | Audience is the expected audience for the token |  |  |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  |  |
-| `clientId` _string_ | ClientID is the OIDC client ID |  |  |
+| `clientId` _string_ | ClientID is deprecated and will be removed in a future release. |  |  |
 
 
 #### KubernetesOIDCConfig
@@ -80,7 +132,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `serviceAccount` _string_ | ServiceAccount is the name of the service account to validate tokens for<br />If empty, uses the pod's service account |  |  |
+| `serviceAccount` _string_ | ServiceAccount is deprecated and will be removed in a future release. |  |  |
 | `namespace` _string_ | Namespace is the namespace of the service account<br />If empty, uses the MCPServer's namespace |  |  |
 | `audience` _string_ | Audience is the expected audience for the token | toolhive |  |
 | `issuer` _string_ | Issuer is the OIDC issuer URL | https://kubernetes.default.svc |  |
@@ -175,6 +227,7 @@ _Appears in:_
 | `podTemplateSpec` _[PodTemplateSpec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#podtemplatespec-v1-core)_ | PodTemplateSpec defines the pod template to use for the MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the MCP server runs in, you must specify<br />the `mcp` container name in the PodTemplateSpec. |  |  |
 | `resourceOverrides` _[ResourceOverrides](#resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
 | `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the MCP server |  |  |
+| `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  |  |
 
 
 #### MCPServerStatus
@@ -225,7 +278,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the type of OIDC configuration | kubernetes | Enum: [kubernetes configmap inline] <br /> |
+| `type` _string_ | Type is the type of OIDC configuration | kubernetes | Enum: [kubernetes configMap inline] <br /> |
 | `kubernetes` _[KubernetesOIDCConfig](#kubernetesoidcconfig)_ | Kubernetes configures OIDC for Kubernetes service account token validation<br />Only used when Type is "kubernetes" |  |  |
 | `configMap` _[ConfigMapOIDCRef](#configmapoidcref)_ | ConfigMap references a ConfigMap containing OIDC configuration<br />Only used when Type is "configmap" |  |  |
 | `inline` _[InlineOIDCConfig](#inlineoidcconfig)_ | Inline contains direct OIDC configuration<br />Only used when Type is "inline" |  |  |

@@ -57,6 +57,7 @@ permission profile. Additional configuration can be provided via flags.`,
 
 var (
 	runTransport         string
+	runProxyMode         string
 	runName              string
 	runHost              string
 	runPort              int
@@ -88,7 +89,12 @@ var (
 )
 
 func init() {
+<<<<<<< Updated upstream
 	runCmd.Flags().StringVar(&runTransport, "transport", "stdio", "Transport mode (sse, streamable-http or stdio)")
+=======
+	runCmd.Flags().StringVar(&runTransport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
+>>>>>>> Stashed changes
+	runCmd.Flags().StringVar(&runProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
@@ -315,6 +321,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runIsolateNetwork,
 		runK8sPodPatch,
 		envVarValidator,
+		runProxyMode,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig: %v", err)

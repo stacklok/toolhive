@@ -136,4 +136,7 @@ type Config struct {
 	// PrometheusHandler is an optional HTTP handler for Prometheus metrics endpoint.
 	// If provided, it will be exposed at /metrics on the transport's HTTP server.
 	PrometheusHandler http.Handler
+
+	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+	ProxyMode string
 }

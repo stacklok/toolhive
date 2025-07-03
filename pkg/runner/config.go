@@ -108,6 +108,9 @@ type RunConfig struct {
 
 	// IsolateNetwork indicates whether to isolate the network for the container
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
+
+	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+	ProxyMode string `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -171,6 +174,7 @@ func NewRunConfigFromFlags(
 	isolateNetwork bool,
 	k8sPodPatch string,
 	envVarValidator EnvVarValidator,
+	proxyMode string,
 ) (*RunConfig, error) {
 	// Ensure default values for host and targetHost
 	if host == "" {
@@ -197,6 +201,7 @@ func NewRunConfigFromFlags(
 		Host:                        host,
 		IsolateNetwork:              isolateNetwork,
 		K8sPodTemplatePatch:         k8sPodPatch,
+		ProxyMode:                   proxyMode,
 	}
 
 	// Configure audit if enabled
@@ -428,7 +433,14 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 	if containerName == "" {
 		containerName = c.Name
 	}
-	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, string(c.Transport), c.Port)
+
+	// TODO: This is a hack to allow the user to specify the proxy mode for stdio transport.
+	// This should be removed once we have a proper way to specify the proxy mode for stdio transport.
+	transportLabel := string(c.Transport)
+	if c.Transport == types.TransportTypeStdio && c.ProxyMode == "streamable-http" {
+		transportLabel = string(types.TransportTypeStreamableHTTP)
+	}
+	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port)
 	return c
 }
 

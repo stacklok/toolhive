@@ -19,8 +19,15 @@ func NewFactory() *Factory {
 func (*Factory) Create(config types.Config) (types.Transport, error) {
 	switch config.Type {
 	case types.TransportTypeStdio:
-		return NewStdioTransport(
-			config.Host, config.Port, config.Runtime, config.Debug, config.PrometheusHandler, config.Middlewares...), nil
+		tr := NewStdioTransport(
+			config.Host, config.Port, config.Runtime, config.Debug, config.PrometheusHandler, config.Middlewares...)
+		// Set proxy mode if specified
+		if config.ProxyMode == "streamable-http" {
+			tr.SetProxyMode(ProxyModeStreamableHTTP)
+		} else {
+			tr.SetProxyMode(ProxyModeSSE)
+		}
+		return tr, nil
 	case types.TransportTypeSSE:
 		return NewHTTPTransport(
 			types.TransportTypeSSE,

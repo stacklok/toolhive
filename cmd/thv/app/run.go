@@ -202,9 +202,9 @@ func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, bool,
 	oidcAudience := GetStringFlagOrEmpty(cmd, "oidc-audience")
 	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
-	oidcAllowOpaqueTokens, err := cmd.Flags().GetBool("oidc-allow-opaque-tokens")
+	oidcAllowOpaqueTokens, err := cmd.Flags().GetBool("oidc-skip-opaque-token-validation")
 	if err != nil {
-		return "", "", "", "", false, fmt.Errorf("failed to get oidc-allow-opaque-tokens flag: %v", err)
+		return "", "", "", "", false, fmt.Errorf("failed to get oidc-skip-opaque-token-validation flag: %v", err)
 	}
 
 	return oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, nil

@@ -89,12 +89,7 @@ var (
 )
 
 func init() {
-<<<<<<< Updated upstream
-	runCmd.Flags().StringVar(&runTransport, "transport", "stdio", "Transport mode (sse, streamable-http or stdio)")
-=======
 	runCmd.Flags().StringVar(&runTransport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
->>>>>>> Stashed changes
-	runCmd.Flags().StringVar(&runProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
@@ -203,6 +198,40 @@ func init() {
 
 }
 
+func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, bool, error) {
+	oidcIssuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
+	oidcAudience := GetStringFlagOrEmpty(cmd, "oidc-audience")
+	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
+	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
+	oidcAllowOpaqueTokens, err := cmd.Flags().GetBool("oidc-skip-opaque-token-validation")
+	if err != nil {
+		return "", "", "", "", false, fmt.Errorf("failed to get oidc-skip-opaque-token-validation flag: %v", err)
+	}
+
+	return oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, nil
+}
+
+func getTelemetryFromFlags(cmd *cobra.Command, cfg *config.Config, runOtelEndpoint string, runOtelSamplingRate float64,
+	runOtelEnvironmentVariables []string) (string, float64, []string) {
+	// Use config values as fallbacks for OTEL flags if not explicitly set
+	finalOtelEndpoint := runOtelEndpoint
+	if !cmd.Flags().Changed("otel-endpoint") && cfg.OTEL.Endpoint != "" {
+		finalOtelEndpoint = cfg.OTEL.Endpoint
+	}
+
+	finalOtelSamplingRate := runOtelSamplingRate
+	if !cmd.Flags().Changed("otel-sampling-rate") && cfg.OTEL.SamplingRate != 0.0 {
+		finalOtelSamplingRate = cfg.OTEL.SamplingRate
+	}
+
+	finalOtelEnvironmentVariables := runOtelEnvironmentVariables
+	if !cmd.Flags().Changed("otel-env-vars") && len(cfg.OTEL.EnvVars) > 0 {
+		finalOtelEnvironmentVariables = cfg.OTEL.EnvVars
+	}
+
+	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables
+}
+
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
@@ -227,29 +256,15 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
 	// Get OIDC flag values
-	oidcIssuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
-	oidcAudience := GetStringFlagOrEmpty(cmd, "oidc-audience")
-	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
-	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
+	oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, err := getOidcFromFlags(cmd)
+	if err != nil {
+		return fmt.Errorf("failed to get OIDC flags: %v", err)
+	}
 
 	// Get OTEL flag values with config fallbacks
 	cfg := config.GetConfig()
-
-	// Use config values as fallbacks for OTEL flags if not explicitly set
-	finalOtelEndpoint := runOtelEndpoint
-	if !cmd.Flags().Changed("otel-endpoint") && cfg.OTEL.Endpoint != "" {
-		finalOtelEndpoint = cfg.OTEL.Endpoint
-	}
-
-	finalOtelSamplingRate := runOtelSamplingRate
-	if !cmd.Flags().Changed("otel-sampling-rate") && cfg.OTEL.SamplingRate != 0.0 {
-		finalOtelSamplingRate = cfg.OTEL.SamplingRate
-	}
-
-	finalOtelEnvironmentVariables := runOtelEnvironmentVariables
-	if !cmd.Flags().Changed("otel-env-vars") && len(cfg.OTEL.EnvVars) > 0 {
-		finalOtelEnvironmentVariables = cfg.OTEL.EnvVars
-	}
+	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(cmd, cfg,
+		runOtelEndpoint, runOtelSamplingRate, runOtelEnvironmentVariables)
 
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
@@ -311,6 +326,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		oidcAudience,
 		oidcJwksURL,
 		oidcClientID,
+		oidcAllowOpaqueTokens,
 		finalOtelEndpoint,
 		runOtelServiceName,
 		finalOtelSamplingRate,

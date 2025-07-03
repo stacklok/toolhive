@@ -78,7 +78,7 @@ type RunConfig struct {
 	ContainerLabels map[string]string `json:"container_labels,omitempty" yaml:"container_labels,omitempty"`
 
 	// OIDCConfig contains OIDC configuration
-	OIDCConfig *auth.JWTValidatorConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
+	OIDCConfig *auth.TokenValidatorConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
 
 	// AuthzConfig contains the authorization configuration
 	AuthzConfig *authz.Config `json:"authz_config,omitempty" yaml:"authz_config,omitempty"`
@@ -164,6 +164,7 @@ func NewRunConfigFromFlags(
 	oidcAudience string,
 	oidcJwksURL string,
 	oidcClientID string,
+	oidcAllowOpaqueTokens bool,
 	otelEndpoint string,
 	otelServiceName string,
 	otelSamplingRate float64,
@@ -208,7 +209,7 @@ func NewRunConfigFromFlags(
 	configureAudit(config, enableAudit, auditConfigPath)
 
 	// Configure OIDC if any values are provided
-	configureOIDC(config, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID)
+	configureOIDC(config, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens)
 
 	// Configure telemetry if endpoint or metrics port is provided
 	configureTelemetry(config, otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
@@ -216,7 +217,8 @@ func NewRunConfigFromFlags(
 
 	// When using the CLI validation strategy, this is where the prompting for
 	// missing environment variables will happen.
-	if err := envVarValidator.Validate(ctx, imageMetadata, config, envVars); err != nil {
+	processedEnvVars, err := envVarValidator.Validate(ctx, imageMetadata, config, envVars)
+	if err != nil {
 		return nil, fmt.Errorf("failed to validate environment variables: %v", err)
 	}
 
@@ -224,6 +226,11 @@ func NewRunConfigFromFlags(
 	// Apply image metadata overrides if needed.
 	if err := config.validateConfig(imageMetadata, mcpTransport, port, targetPort); err != nil {
 		return nil, fmt.Errorf("failed to validate run config: %v", err)
+	}
+
+	// Now set environment variables with the correct transport and ports resolved
+	if _, err := config.WithEnvironmentVariables(processedEnvVars); err != nil {
+		return nil, fmt.Errorf("failed to set environment variables: %v", err)
 	}
 
 	return config, nil
@@ -237,13 +244,14 @@ func configureAudit(config *RunConfig, enableAudit bool, auditConfigPath string)
 }
 
 // configureOIDC sets up OIDC configuration if any values are provided
-func configureOIDC(config *RunConfig, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string) {
+func configureOIDC(config *RunConfig, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string, oidcAllowOpaqueTokens bool) {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
-		config.OIDCConfig = &auth.JWTValidatorConfig{
-			Issuer:   oidcIssuer,
-			Audience: oidcAudience,
-			JWKSURL:  oidcJwksURL,
-			ClientID: oidcClientID,
+		config.OIDCConfig = &auth.TokenValidatorConfig{
+			Issuer:            oidcIssuer,
+			Audience:          oidcAudience,
+			JWKSURL:           oidcJwksURL,
+			ClientID:          oidcClientID,
+			AllowOpaqueTokens: oidcAllowOpaqueTokens,
 		}
 	}
 }

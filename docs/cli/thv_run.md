@@ -52,6 +52,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --oidc-client-id string                 OIDC client ID
       --oidc-issuer string                    OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string                  URL to fetch the JWKS from
+      --oidc-skip-opaque-token-validation     Allow skipping validation of opaque tokens
       --otel-enable-prometheus-metrics-path   Enable Prometheus-style /metrics endpoint on the main transport port
       --otel-endpoint string                  OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
       --otel-env-vars stringArray             Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)
@@ -64,7 +65,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --secret stringArray                    Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
       --target-host string                    Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")
       --target-port int                       Port for the container to expose (only applicable to SSE or Streamable HTTP transport)
-      --transport string                      Transport mode (sse, streamable-http or stdio) (default "stdio")
+      --transport string                      Transport mode (sse, streamable-http or stdio)
   -v, --volume stringArray                    Mount a volume into the container (format: host-path:container-path[:ro])
 ```
 

@@ -9,7 +9,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
@@ -130,17 +129,11 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)
 	containerOptions.ExposedPorts[containerPortStr] = struct{}{}
 
-	// bind to a random host port
 	// Create host port bindings (configurable through the --host flag)
-	hostPort := networking.FindAvailable()
-	if hostPort == 0 {
-		return fmt.Errorf("could not find an available port")
-	}
-
 	portBindings := []rt.PortBinding{
 		{
 			HostIP:   t.host,
-			HostPort: fmt.Sprintf("%d", hostPort),
+			HostPort: fmt.Sprintf("%d", t.targetPort),
 		},
 	}
 
@@ -187,8 +180,17 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 		}
 	}
 
-	// also override the exposed port, in case we need it via ingress
-	t.targetPort = exposedPort
+	// ChrisB: I really don't like this, but it's a workaround for the fact that
+	// we don't want to override the targetPort in a Kubernetes deployment. Because
+	// by default the Kubernetes container runtime returns `0` for the exposedPort anyways
+	// therefore causing the "target port not set" error when it is assigned to the targetPort.
+	// Issues:
+	// - https://github.com/stacklok/toolhive/issues/902
+	// - https://github.com/stacklok/toolhive/issues/924
+	if k8sPodTemplatePatch == "" {
+		// also override the exposed port, in case we need it via ingress
+		t.targetPort = exposedPort
+	}
 
 	return nil
 }

@@ -7,11 +7,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/kubernetes/container"
 	"github.com/stacklok/toolhive/pkg/kubernetes/config"
+	"github.com/stacklok/toolhive/pkg/kubernetes/container"
 	"github.com/stacklok/toolhive/pkg/kubernetes/logger"
 	"github.com/stacklok/toolhive/pkg/kubernetes/permissions"
-	"github.com/stacklok/toolhive/pkg/kubernetes/process"
 	"github.com/stacklok/toolhive/pkg/kubernetes/registry"
 	"github.com/stacklok/toolhive/pkg/kubernetes/runner"
 	"github.com/stacklok/toolhive/pkg/kubernetes/runner/retriever"
@@ -281,28 +280,10 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// If we have called the CLI directly, we use the CLIEnvVarValidator.
 	// If we are running in detached mode, or the CLI is wrapped by the K8s operator,
 	// we use the DetachedEnvVarValidator.
-	var envVarValidator runner.EnvVarValidator
-	if process.IsDetached() || container.IsKubernetesRuntime() {
-		envVarValidator = &runner.DetachedEnvVarValidator{}
-	} else {
-		envVarValidator = &runner.CLIEnvVarValidator{}
-	}
+	envVarValidator := &runner.CLIEnvVarValidator{}
 
 	var imageMetadata *registry.ImageMetadata
 	imageURL := serverOrImage
-
-	// Only pull image if we are not running in Kubernetes mode.
-	// This split will go away if we implement a separate command or binary
-	// for running MCP servers in Kubernetes.
-	if !container.IsKubernetesRuntime() {
-		// Take the MCP server we were supplied and either fetch the image, or
-		// build it from a protocol scheme. If the server URI refers to an image
-		// in our trusted registry, we will also fetch the image metadata.
-		imageURL, imageMetadata, err = retriever.GetMCPServer(ctx, serverOrImage, runCACertPath, runVerifyImage)
-		if err != nil {
-			return fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
-		}
-	}
 
 	// Initialize a new RunConfig with values from command-line flags
 	// TODO: As noted elsewhere, we should use the builder pattern here to make it more readable.
@@ -346,12 +327,8 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}
 
-	// Once we have built the RunConfig, start the MCP workload.
-	// If we are running the container in the foreground - call the RunWorkload method directly.
-	if runForeground {
-		return workloadManager.RunWorkload(ctx, runConfig)
-	}
-	return workloadManager.RunWorkloadDetached(runConfig)
+	mcpRunner := runner.NewRunner(runConfig)
+	return mcpRunner.Run(ctx)
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator

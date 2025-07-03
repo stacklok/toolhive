@@ -85,22 +85,6 @@ type Runtime interface {
 		isolateNetwork bool,
 	) (string, int, error)
 
-	// ListWorkloads lists all deployed workloads managed by this runtime.
-	// Returns information about each workload including its components,
-	// status, and resource usage.
-	ListWorkloads(ctx context.Context) ([]ContainerInfo, error)
-
-	// StopWorkload gracefully stops a running workload and all its components.
-	// This includes stopping the primary container, sidecars, and cleaning up
-	// any associated network resources. The workload remains available for restart.
-	StopWorkload(ctx context.Context, workloadID string) error
-
-	// RemoveWorkload completely removes a workload and all its components.
-	// This includes removing containers, cleaning up networks, volumes,
-	// and any other resources associated with the workload. This operation
-	// is irreversible.
-	RemoveWorkload(ctx context.Context, workloadID string) error
-
 	// GetWorkloadLogs retrieves logs from the primary container of the workload.
 	// If follow is true, the logs will be streamed continuously.
 	// For workloads with multiple containers, this returns logs from the
@@ -141,10 +125,6 @@ type Monitor interface {
 type Type string
 
 const (
-	// TypePodman represents the Podman runtime
-	TypePodman Type = "podman"
-	// TypeDocker represents the Docker runtime
-	TypeDocker Type = "docker"
 	// TypeKubernetes represents the Kubernetes runtime
 	TypeKubernetes Type = "kubernetes"
 )

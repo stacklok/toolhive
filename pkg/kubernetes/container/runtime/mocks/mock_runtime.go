@@ -149,33 +149,6 @@ func (mr *MockRuntimeMockRecorder) ListWorkloads(ctx any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloads", reflect.TypeOf((*MockRuntime)(nil).ListWorkloads), ctx)
 }
 
-// RemoveWorkload mocks base method.
-func (m *MockRuntime) RemoveWorkload(ctx context.Context, workloadID string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RemoveWorkload", ctx, workloadID)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// RemoveWorkload indicates an expected call of RemoveWorkload.
-func (mr *MockRuntimeMockRecorder) RemoveWorkload(ctx, workloadID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveWorkload", reflect.TypeOf((*MockRuntime)(nil).RemoveWorkload), ctx, workloadID)
-}
-
-// StopWorkload mocks base method.
-func (m *MockRuntime) StopWorkload(ctx context.Context, workloadID string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "StopWorkload", ctx, workloadID)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// StopWorkload indicates an expected call of StopWorkload.
-func (mr *MockRuntimeMockRecorder) StopWorkload(ctx, workloadID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StopWorkload", reflect.TypeOf((*MockRuntime)(nil).StopWorkload), ctx, workloadID)
-}
 
 // MockMonitor is a mock of Monitor interface.
 type MockMonitor struct {

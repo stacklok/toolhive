@@ -5,8 +5,6 @@ import (
 	"errors"
 	"reflect"
 	"testing"
-
-	"github.com/stacklok/toolhive/pkg/kubernetes/secrets"
 )
 
 // mockSecretsProvider is a mock implementation of the secrets.Provider interface
@@ -14,9 +12,6 @@ type mockSecretsProvider struct {
 	secrets map[string]string
 	getErr  error
 }
-
-// Ensure mockSecretsProvider implements secrets.Provider
-var _ secrets.Provider = (*mockSecretsProvider)(nil)
 
 func (m *mockSecretsProvider) GetSecret(_ context.Context, name string) (string, error) {
 	if m.getErr != nil {
@@ -36,87 +31,8 @@ func (*mockSecretsProvider) DeleteSecret(_ context.Context, _ string) error {
 	return nil
 }
 
-func (*mockSecretsProvider) ListSecrets(_ context.Context) ([]secrets.SecretDescription, error) {
-	return nil, nil
-}
-
 func (*mockSecretsProvider) Cleanup() error {
 	return nil
-}
-
-func (*mockSecretsProvider) Capabilities() secrets.ProviderCapabilities {
-	return secrets.ProviderCapabilities{
-		CanRead:    true,
-		CanWrite:   true,
-		CanDelete:  true,
-		CanList:    true,
-		CanCleanup: true,
-	}
-}
-
-func TestParseSecretParameters(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		parameters []string
-		provider   *mockSecretsProvider
-		want       map[string]string
-		wantErr    bool
-	}{
-		{
-			name:       "Success case",
-			parameters: []string{"secret1,target=ENV_VAR1", "secret2,target=ENV_VAR2"},
-			provider: &mockSecretsProvider{
-				secrets: map[string]string{
-					"secret1": "value1",
-					"secret2": "value2",
-				},
-			},
-			want: map[string]string{
-				"ENV_VAR1": "value1",
-				"ENV_VAR2": "value2",
-			},
-			wantErr: false,
-		},
-		{
-			name:       "Invalid parameter format",
-			parameters: []string{"invalid-format"},
-			provider:   &mockSecretsProvider{},
-			want:       nil,
-			wantErr:    true,
-		},
-		{
-			name:       "GetSecret error",
-			parameters: []string{"secret1,target=ENV_VAR1"},
-			provider: &mockSecretsProvider{
-				getErr: errors.New("failed to get secret"),
-			},
-			want:    nil,
-			wantErr: true,
-		},
-		{
-			name:       "Empty parameters",
-			parameters: []string{},
-			provider:   &mockSecretsProvider{},
-			want:       map[string]string{},
-			wantErr:    false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := ParseSecretParameters(t.Context(), tt.parameters, tt.provider)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseSecretParameters() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("ParseSecretParameters() = %v, want %v", got, tt.want)
-			}
-		})
-	}
 }
 
 func TestParseEnvironmentVariables(t *testing.T) {

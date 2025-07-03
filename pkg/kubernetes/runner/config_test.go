@@ -3,7 +3,6 @@ package runner
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -16,7 +15,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/kubernetes/logger"
 	"github.com/stacklok/toolhive/pkg/kubernetes/permissions"
 	"github.com/stacklok/toolhive/pkg/kubernetes/registry"
-	"github.com/stacklok/toolhive/pkg/kubernetes/secrets"
 	"github.com/stacklok/toolhive/pkg/kubernetes/transport/types"
 )
 
@@ -482,168 +480,6 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 			} else {
 				assert.NoError(t, err, "WithEnvironmentVariables should not return an error")
 				assert.Equal(t, tc.config, result, "WithEnvironmentVariables should return the same config instance")
-
-				// Check that all expected environment variables are set
-				for key, value := range tc.expected {
-					assert.Equal(t, value, tc.config.EnvVars[key], "Environment variable %s should be set correctly", key)
-				}
-			}
-		})
-	}
-}
-
-// TODO: Use mockgen for this
-// mockSecretManager is a mock implementation of a secret manager
-type mockSecretManager struct {
-	secrets map[string]string
-}
-
-func (m *mockSecretManager) GetSecret(_ context.Context, name string) (string, error) {
-	if value, ok := m.secrets[name]; ok {
-		return value, nil
-	}
-	return "", fmt.Errorf("secret %s not found", name)
-}
-
-func (m *mockSecretManager) SetSecret(_ context.Context, name, value string) error {
-	m.secrets[name] = value
-	return nil
-}
-
-func (m *mockSecretManager) DeleteSecret(_ context.Context, name string) error {
-	delete(m.secrets, name)
-	return nil
-}
-
-func (m *mockSecretManager) ListSecrets(_ context.Context) ([]secrets.SecretDescription, error) {
-	keys := make([]secrets.SecretDescription, 0, len(m.secrets))
-	for k := range m.secrets {
-		keys = append(keys, secrets.SecretDescription{Key: k})
-	}
-	return keys, nil
-}
-
-func (*mockSecretManager) Cleanup() error {
-	return nil
-}
-
-func (*mockSecretManager) Capabilities() secrets.ProviderCapabilities {
-	return secrets.ProviderCapabilities{
-		CanRead:    true,
-		CanWrite:   true,
-		CanDelete:  true,
-		CanList:    true,
-		CanCleanup: true,
-	}
-}
-
-func TestRunConfig_WithSecrets(t *testing.T) {
-	t.Parallel()
-	testCases := []struct {
-		name        string
-		config      *RunConfig
-		secrets     []string
-		mockSecrets map[string]string
-		expectError bool
-		expected    map[string]string
-	}{
-		{
-			name:        "No secrets",
-			config:      &RunConfig{EnvVars: map[string]string{}},
-			secrets:     []string{},
-			mockSecrets: map[string]string{},
-			expectError: false,
-			expected:    map[string]string{},
-		},
-		{
-			name:   "Valid secrets",
-			config: &RunConfig{EnvVars: map[string]string{}},
-			secrets: []string{
-				"secret1,target=ENV_VAR1",
-				"secret2,target=ENV_VAR2",
-			},
-			mockSecrets: map[string]string{
-				"secret1": "value1",
-				"secret2": "value2",
-			},
-			expectError: false,
-			expected: map[string]string{
-				"ENV_VAR1": "value1",
-				"ENV_VAR2": "value2",
-			},
-		},
-		{
-			name: "Preserve existing environment variables",
-			config: &RunConfig{EnvVars: map[string]string{
-				"EXISTING_VAR": "existing_value",
-			}},
-			secrets: []string{
-				"secret1,target=ENV_VAR1",
-			},
-			mockSecrets: map[string]string{
-				"secret1": "value1",
-			},
-			expectError: false,
-			expected: map[string]string{
-				"EXISTING_VAR": "existing_value",
-				"ENV_VAR1":     "value1",
-			},
-		},
-		{
-			name: "Secret overrides existing environment variable",
-			config: &RunConfig{EnvVars: map[string]string{
-				"ENV_VAR1": "original_value",
-			}},
-			secrets: []string{
-				"secret1,target=ENV_VAR1",
-			},
-			mockSecrets: map[string]string{
-				"secret1": "new_value",
-			},
-			expectError: false,
-			expected: map[string]string{
-				"ENV_VAR1": "new_value",
-			},
-		},
-		{
-			name:   "Invalid secret format",
-			config: &RunConfig{EnvVars: map[string]string{}},
-			secrets: []string{
-				"invalid-format",
-			},
-			mockSecrets: map[string]string{},
-			expectError: true,
-		},
-		{
-			name:   "Secret not found",
-			config: &RunConfig{EnvVars: map[string]string{}},
-			secrets: []string{
-				"nonexistent,target=ENV_VAR",
-			},
-			mockSecrets: map[string]string{},
-			expectError: true,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			// Create a mock secret manager
-			secretManager := &mockSecretManager{
-				secrets: tc.mockSecrets,
-			}
-
-			// Set the secrets in the config
-			tc.config.Secrets = tc.secrets
-
-			// Call the function
-			result, err := tc.config.WithSecrets(t.Context(), secretManager)
-
-			if tc.expectError {
-				assert.Error(t, err, "WithSecrets should return an error")
-			} else {
-				assert.NoError(t, err, "WithSecrets should not return an error")
-				assert.Equal(t, tc.config, result, "WithSecrets should return the same config instance")
 
 				// Check that all expected environment variables are set
 				for key, value := range tc.expected {

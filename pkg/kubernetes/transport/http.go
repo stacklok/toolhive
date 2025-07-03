@@ -278,13 +278,6 @@ func (t *HTTPTransport) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Stop the container if runtime is available
-	if t.runtime != nil && t.containerID != "" {
-		if err := t.runtime.StopWorkload(ctx, t.containerID); err != nil {
-			return fmt.Errorf("failed to stop workload: %w", err)
-		}
-	}
-
 	return nil
 }
 

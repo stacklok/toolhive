@@ -1,4 +1,4 @@
-package docker
+package container
 
 import (
 	"context"
@@ -31,6 +31,21 @@ func NewMonitor(rt runtime.Runtime, containerID, containerName string) runtime.M
 		errorCh:       make(chan error, 1), // Buffered to prevent blocking
 	}
 }
+
+// Error types for container operations
+var (
+	// ErrContainerNotFound is returned when a container is not found
+	ErrContainerNotFound = fmt.Errorf("container not found")
+
+	// ErrContainerNotRunning is returned when a container is not running
+	ErrContainerNotRunning = fmt.Errorf("container not running")
+
+	// ErrAttachFailed is returned when attaching to a container fails
+	ErrAttachFailed = fmt.Errorf("failed to attach to container")
+
+	// ErrContainerExited is returned when a container has exited unexpectedly
+	ErrContainerExited = fmt.Errorf("container exited unexpectedly")
+)
 
 // StartMonitoring starts monitoring the container
 func (m *ContainerMonitor) StartMonitoring(ctx context.Context) (<-chan error, error) {
@@ -71,6 +86,46 @@ func (m *ContainerMonitor) StopMonitoring() {
 	close(m.stopCh)
 	m.wg.Wait()
 	m.running = false
+}
+
+// ContainerError represents an error related to container operations
+type ContainerError struct {
+	// Err is the underlying error
+	Err error
+	// ContainerID is the ID of the container
+	ContainerID string
+	// Message is an optional error message
+	Message string
+}
+
+// Error returns the error message
+func (e *ContainerError) Error() string {
+	if e.Message != "" {
+		if e.ContainerID != "" {
+			return fmt.Sprintf("%s: %s (container: %s)", e.Err, e.Message, e.ContainerID)
+		}
+		return fmt.Sprintf("%s: %s", e.Err, e.Message)
+	}
+
+	if e.ContainerID != "" {
+		return fmt.Sprintf("%s (container: %s)", e.Err, e.ContainerID)
+	}
+
+	return e.Err.Error()
+}
+
+// Unwrap returns the underlying error
+func (e *ContainerError) Unwrap() error {
+	return e.Err
+}
+
+// NewContainerError creates a new container error
+func NewContainerError(err error, containerID, message string) *ContainerError {
+	return &ContainerError{
+		Err:         err,
+		ContainerID: containerID,
+		Message:     message,
+	}
 }
 
 // monitor checks the container status periodically

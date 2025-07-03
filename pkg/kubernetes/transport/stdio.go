@@ -232,22 +232,6 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 		}
 		t.stdin = nil
 	}
-
-	// Stop the container if runtime is available and we haven't already stopped it
-	if t.runtime != nil && t.containerID != "" {
-		// Check if the workload is still running before trying to stop it
-		running, err := t.runtime.IsWorkloadRunning(ctx, t.containerID)
-		if err != nil {
-			// If there's an error checking the workload status, it might be gone already
-			logger.Warnf("Warning: Failed to check workload status: %v", err)
-		} else if running {
-			// Only try to stop the workload if it's still running
-			if err := t.runtime.StopWorkload(ctx, t.containerID); err != nil {
-				logger.Warnf("Warning: Failed to stop workload: %v", err)
-			}
-		}
-	}
-
 	return nil
 }
 

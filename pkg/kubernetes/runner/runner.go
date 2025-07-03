@@ -10,13 +10,9 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/kubernetes/auth"
-	"github.com/stacklok/toolhive/pkg/kubernetes/client"
-	"github.com/stacklok/toolhive/pkg/kubernetes/config"
-	"github.com/stacklok/toolhive/pkg/kubernetes/labels"
 	"github.com/stacklok/toolhive/pkg/kubernetes/logger"
 	"github.com/stacklok/toolhive/pkg/kubernetes/mcp"
 	"github.com/stacklok/toolhive/pkg/kubernetes/process"
-	"github.com/stacklok/toolhive/pkg/kubernetes/secrets"
 	"github.com/stacklok/toolhive/pkg/kubernetes/telemetry"
 	"github.com/stacklok/toolhive/pkg/kubernetes/transport"
 	"github.com/stacklok/toolhive/pkg/kubernetes/transport/types"
@@ -135,28 +131,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		logger.Warnf("Warning: Failed to save run configuration: %v", err)
 	}
 
-	// Process secrets if provided
-	// NOTE: This MUST happen after we save the run config to avoid storing
-	// the secrets in the state store.
-	if len(r.Config.Secrets) > 0 {
-		cfg := config.GetConfig()
-
-		providerType, err := cfg.Secrets.GetProviderType()
-		if err != nil {
-			return fmt.Errorf("error determining secrets provider type: %w", err)
-		}
-
-		secretManager, err := secrets.CreateSecretProvider(providerType)
-		if err != nil {
-			return fmt.Errorf("error instantiating secret manager %v", err)
-		}
-
-		// Process secrets
-		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
-			return err
-		}
-	}
-
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)
 	if err := transportHandler.Setup(
@@ -174,13 +148,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	logger.Infof("MCP server %s started successfully", r.Config.ContainerName)
-
-	// Update client configurations with the MCP server URL.
-	// Note that this function checks the configuration to determine which
-	// clients should be updated, if any.
-	if err := updateClientConfigurations(r.Config.ContainerName, r.Config.ContainerLabels, "localhost", r.Config.Port); err != nil {
-		logger.Warnf("Warning: Failed to update client configurations: %v", err)
-	}
 
 	// Define a function to stop the MCP server
 	stopMCPServer := func(reason string) {
@@ -205,17 +172,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
-	if process.IsDetached() {
-		// We're a detached process running in foreground mode
-		// Write the PID to a file so the stop command can kill the process
-		if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to write PID file: %v", err)
-		}
-
-		logger.Infof("Running as detached process (PID: %d)", os.Getpid())
-	} else {
-		logger.Info("Press Ctrl+C to stop or wait for container to exit")
-	}
+	logger.Info("Press Ctrl+C to stop or wait for container to exit")
 
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
@@ -280,37 +237,5 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
-}
-
-// updateClientConfigurations updates client configuration files with the MCP server URL
-func updateClientConfigurations(containerName string, containerLabels map[string]string, host string, port int) error {
-	// Find client configuration files
-	clientConfigs, err := client.FindClientConfigs()
-	if err != nil {
-		return fmt.Errorf("failed to find client configurations: %w", err)
-	}
-
-	if len(clientConfigs) == 0 {
-		logger.Infof("No client configuration files found")
-		return nil
-	}
-
-	// Generate the URL for the MCP server
-	transportType := labels.GetTransportType(containerLabels)
-	url := client.GenerateMCPServerURL(transportType, host, port, containerName)
-
-	// Update each configuration file
-	for _, clientConfig := range clientConfigs {
-		logger.Infof("Updating client configuration: %s", clientConfig.Path)
-
-		if err := client.Upsert(clientConfig, containerName, url, transportType); err != nil {
-			fmt.Printf("Warning: Failed to update MCP server configuration in %s: %v\n", clientConfig.Path, err)
-			continue
-		}
-
-		logger.Infof("Successfully updated client configuration: %s", clientConfig.Path)
-	}
-
 	return nil
 }

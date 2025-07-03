@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/kubernetes/audit"
-	"github.com/stacklok/toolhive/pkg/kubernetes/auth"
-	"github.com/stacklok/toolhive/pkg/kubernetes/authz"
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/kubernetes/container"
 	rt "github.com/stacklok/toolhive/pkg/kubernetes/container/runtime"
 	"github.com/stacklok/toolhive/pkg/kubernetes/environment"
@@ -19,7 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/kubernetes/networking"
 	"github.com/stacklok/toolhive/pkg/kubernetes/permissions"
 	"github.com/stacklok/toolhive/pkg/kubernetes/registry"
-	"github.com/stacklok/toolhive/pkg/kubernetes/secrets"
 	"github.com/stacklok/toolhive/pkg/kubernetes/telemetry"
 	"github.com/stacklok/toolhive/pkg/kubernetes/transport"
 	"github.com/stacklok/toolhive/pkg/kubernetes/transport/types"
@@ -389,30 +388,6 @@ func (c *RunConfig) WithEnvironmentVariables(envVarStrings []string) (*RunConfig
 
 	// Set transport-specific environment variables
 	environment.SetTransportEnvironmentVariables(c.EnvVars, string(c.Transport), c.TargetPort)
-	return c, nil
-}
-
-// WithSecrets processes secrets and adds them to environment variables
-func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provider) (*RunConfig, error) {
-	if len(c.Secrets) == 0 {
-		return c, nil // No secrets to process
-	}
-
-	secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
-	if err != nil {
-		return c, fmt.Errorf("failed to get secrets: %v", err)
-	}
-
-	// Initialize EnvVars if it's nil
-	if c.EnvVars == nil {
-		c.EnvVars = make(map[string]string)
-	}
-
-	// Add secret variables to environment variables
-	for key, value := range secretVariables {
-		c.EnvVars[key] = value
-	}
-
 	return c, nil
 }
 

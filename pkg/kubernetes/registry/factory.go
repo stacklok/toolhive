@@ -19,18 +19,3 @@ func NewRegistryProvider(cfg *config.Config) Provider {
 	}
 	return NewEmbeddedRegistryProvider()
 }
-
-// GetDefaultProvider returns the default registry provider instance
-// This maintains backward compatibility with the existing singleton pattern
-func GetDefaultProvider() (Provider, error) {
-	defaultProviderOnce.Do(func() {
-		cfg, err := config.LoadOrCreateConfig()
-		if err != nil {
-			defaultProviderErr = err
-			return
-		}
-		defaultProvider = NewRegistryProvider(cfg)
-	})
-
-	return defaultProvider, defaultProviderErr
-}

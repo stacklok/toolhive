@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stacklok/toolhive/pkg/kubernetes/logger"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestIsTempPermissionProfile(t *testing.T) {

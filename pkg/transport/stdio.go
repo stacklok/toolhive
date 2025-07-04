@@ -439,21 +439,12 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	// Log the message
 	logger.Infof("Received JSON-RPC message: %T", msg)
 
-	if t.proxyMode == types.ProxyModeStreamableHTTP {
-		if rc, ok := t.httpProxy.(interface {
-			ForwardResponseToClients(context.Context, jsonrpc2.Message) error
-		}); ok {
-			err := rc.ForwardResponseToClients(ctx, msg)
-			if err != nil {
-				logger.Errorf("Error forwarding to streamable-http client: %v", err)
-			}
-		}
-		return
-	}
-
-	// Default: Forward to SSE clients via the HTTP proxy
 	if err := t.httpProxy.ForwardResponseToClients(ctx, msg); err != nil {
-		logger.Errorf("Error forwarding to SSE clients: %v", err)
+		if t.proxyMode == types.ProxyModeStreamableHTTP {
+			logger.Errorf("Error forwarding to streamable-http client: %v", err)
+		} else {
+			logger.Errorf("Error forwarding to SSE clients: %v", err)
+		}
 	}
 }
 

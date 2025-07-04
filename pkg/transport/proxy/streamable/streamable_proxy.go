@@ -143,26 +143,68 @@ func isNotification(msg jsonrpc2.Message) bool {
 	return false
 }
 
-// handleBatchRequest checks if the request is a batch and returns true if so.
-func handleBatchRequest(w http.ResponseWriter, body []byte) bool {
+// handleBatchRequest processes a batch JSON-RPC request and returns true if it handled the request.
+func (p *HTTPProxy) handleBatchRequest(w http.ResponseWriter, body []byte) bool {
 	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) > 0 && trimmed[0] == '[' {
-		logger.Warnf("Batch JSON-RPC requests are not supported: %s", string(body))
-		http.Error(w, "Batch JSON-RPC requests are not supported", http.StatusBadRequest)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return false
+	}
+
+	// Decode batch
+	var rawMessages []json.RawMessage
+	if err := json.Unmarshal(trimmed, &rawMessages); err != nil {
+		logger.Warnf("Failed to decode batch JSON-RPC: %s", string(body))
+		http.Error(w, "Invalid batch JSON-RPC", http.StatusBadRequest)
 		return true
 	}
-	return false
-}
 
-// decodeJSONRPCMessage decodes a JSON-RPC message from the request body.
-func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message, bool) {
-	msg, err := jsonrpc2.DecodeMessage(body)
-	if err != nil {
-		logger.Warnf("Skipping message that failed to decode: %s", string(body))
-		http.Error(w, "Invalid JSON-RPC 2.0 message", http.StatusBadRequest)
-		return nil, false
+	var responses []json.RawMessage
+	for _, raw := range rawMessages {
+		msg, err := jsonrpc2.DecodeMessage(raw)
+		if err != nil {
+			logger.Warnf("Skipping invalid message in batch: %s", string(raw))
+			continue
+		}
+
+		// Send each message to the container
+		if err := p.SendMessageToDestination(msg); err != nil {
+			logger.Errorf("Failed to send message to destination: %v", err)
+			continue
+		}
+
+		// Wait for response (sequential, can be improved for concurrency)
+		select {
+		case resp := <-p.responseCh:
+			if r, ok := resp.(*jsonrpc2.Response); ok && r.ID.IsValid() {
+				data, err := jsonrpc2.EncodeMessage(r)
+				if err != nil {
+					logger.Errorf("Failed to encode JSON-RPC response: %v", err)
+					continue
+				}
+				responses = append(responses, data)
+			}
+		case <-time.After(10 * time.Second):
+			logger.Warnf("Timeout waiting for response from container for batch message")
+			// Optionally, append a JSON-RPC error response here
+		}
 	}
-	return msg, true
+
+	// Write the batch response
+	w.Header().Set("Content-Type", "application/json")
+	if len(responses) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	respBytes, err := json.Marshal(responses)
+	if err != nil {
+		logger.Errorf("Failed to marshal batch response: %v", err)
+		http.Error(w, "Failed to encode batch response", http.StatusInternalServerError)
+		return true
+	}
+	if _, err := w.Write(respBytes); err != nil {
+		logger.Errorf("Failed to write batch response: %v", err)
+	}
+	return true
 }
 
 // handleStreamableRequest handles HTTP POST requests to /mcp.
@@ -178,7 +220,7 @@ func (p *HTTPProxy) handleStreamableRequest(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if handleBatchRequest(w, body) {
+	if p.handleBatchRequest(w, body) {
 		return
 	}
 
@@ -245,4 +287,15 @@ func getInvalidJsonrpcError() map[string]interface{} {
 		},
 	}
 	return errResp
+}
+
+// decodeJSONRPCMessage decodes a JSON-RPC message from the request body.
+func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message, bool) {
+	msg, err := jsonrpc2.DecodeMessage(body)
+	if err != nil {
+		logger.Warnf("Skipping message that failed to decode: %s", string(body))
+		http.Error(w, "Invalid JSON-RPC 2.0 message", http.StatusBadRequest)
+		return nil, false
+	}
+	return msg, true
 }

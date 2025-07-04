@@ -858,20 +858,6 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtim
 	}, nil
 }
 
-// readCloserWrapper wraps an io.Reader to implement io.ReadCloser
-type readCloserWrapper struct {
-	reader io.Reader
-}
-
-func (r *readCloserWrapper) Read(p []byte) (n int, err error) {
-	return r.reader.Read(p)
-}
-
-func (*readCloserWrapper) Close() error {
-	// No-op close for readers that don't need closing
-	return nil
-}
-
 // AttachToWorkload attaches to a workload
 func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error) {
 	// Check if workload exists and is running
@@ -894,10 +880,20 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.Wr
 		return nil, nil, NewContainerError(ErrAttachFailed, workloadID, fmt.Sprintf("failed to attach to workload: %v", err))
 	}
 
-	// Wrap the reader in a ReadCloser
-	readCloser := &readCloserWrapper{reader: resp.Reader}
+	stdoutReader, stdoutWriter := io.Pipe()
 
-	return resp.Conn, readCloser, nil
+	go func() {
+		defer stdoutWriter.Close()
+		defer resp.Close()
+
+		// Use stdcopy to demultiplex the container streams
+		_, err := stdcopy.StdCopy(stdoutWriter, io.Discard, resp.Reader)
+		if err != nil && err != io.EOF {
+			logger.Errorf("Error demultiplexing container streams: %v", err)
+		}
+	}()
+
+	return resp.Conn, stdoutReader, nil
 }
 
 // IsRunning checks the health of the container runtime.

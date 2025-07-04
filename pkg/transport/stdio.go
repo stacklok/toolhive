@@ -145,6 +145,9 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
+	// logger.Infof("Starting stdio transport with proxy mode: %s", t.proxyMode)
+	fmt.Printf("DEBUG: Starting stdio transport with proxy mode: %s\n", t.proxyMode)
+
 	if t.containerID == "" {
 		return errors.ErrContainerIDNotSet
 	}

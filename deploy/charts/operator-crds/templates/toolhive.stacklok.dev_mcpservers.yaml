@@ -158,8 +158,24 @@ spec:
                       issuer:
                         description: Issuer is the OIDC issuer URL
                         type: string
+                      jwksAllowPrivateIP:
+                        default: false
+                        description: |-
+                          JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+                          Use with caution - only enable for trusted internal IDPs
+                        type: boolean
+                      jwksAuthTokenPath:
+                        description: |-
+                          JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests
+                          The file must be mounted into the pod (e.g., via Secret volume)
+                        type: string
                       jwksUrl:
                         description: JWKSURL is the URL to fetch the JWKS from
+                        type: string
+                      thvCABundlePath:
+                        description: |-
+                          ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
+                          The file must be mounted into the pod (e.g., via ConfigMap or Secret volume)
                         type: string
                     required:
                     - issuer
@@ -178,8 +194,9 @@ spec:
                         description: Issuer is the OIDC issuer URL
                         type: string
                       jwksUrl:
-                        default: https://kubernetes.default.svc/openid/v1/jwks
-                        description: JWKSURL is the URL to fetch the JWKS from
+                        description: |-
+                          JWKSURL is the URL to fetch the JWKS from
+                          If empty, OIDC discovery will be used to automatically determine the JWKS URL
                         type: string
                       namespace:
                         description: |-
@@ -190,6 +207,13 @@ spec:
                         description: ServiceAccount is deprecated and will be removed
                           in a future release.
                         type: string
+                      useClusterAuth:
+                        description: |-
+                          UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token
+                          When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification
+                          and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication
+                          Defaults to true if not specified
+                        type: boolean
                     type: object
                   type:
                     default: kubernetes

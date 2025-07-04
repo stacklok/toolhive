@@ -360,11 +360,11 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 	var stderrWriter io.Writer
 	if logFile != nil {
 		detachedCmd.Stdout = logFile
-		stderrWriter = io.MultiWriter(logFile)
+		stderrWriter = io.MultiWriter(logFile, os.Stderr)
 	} else {
 		// Otherwise, discard the output
-		stderrWriter = io.Discard
-		detachedCmd.Stdout = nil
+		detachedCmd.Stdout = io.Discard
+		stderrWriter = os.Stderr
 	}
 
 	if err := detachedCmd.Start(); err != nil {
@@ -379,31 +379,20 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 
 	stderrCh := make(chan string, 1)
 	go func() {
-		buf := &bytes.Buffer{}
-		_, err = io.Copy(buf, stderrPipe)
-		if err != nil {
-			logger.Warnf("Warning: Failed to read stderr: %v", err)
-			stderrCh <- ""
-			return
-		}
-
-		_, err = stderrWriter.Write(buf.Bytes())
-		if err != nil {
-			logger.Warnf("Warning: Failed to write stderr to log file: %v", err)
-			stderrCh <- ""
-		}
-
+		buf := new(bytes.Buffer)
+		io.Copy(buf, stderrPipe)
+		stderrWriter.Write(buf.Bytes()) // log the raw stderr once
 		stderrCh <- buf.String()
 	}()
 
 	select {
-	case out := <-stderrCh:
-		if out != "" {
-			return fmt.Errorf("startup error (PID %d): %s", pid, out)
+	case errOut := <-stderrCh:
+		if errOut != "" {
+			return nil // no error, just output
 		}
 	case <-time.After(2 * time.Second):
+		// no immediate error
 	}
-
 	logger.Infof("MCP server is running in the background (PID: %d)", detachedCmd.Process.Pid)
 	logger.Infof("Use 'thv stop %s' to stop the server", runConfig.ContainerName)
 

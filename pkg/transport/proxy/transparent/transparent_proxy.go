@@ -151,6 +151,9 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
+	var failCount int
+	const maxFails = 5
+
 	for {
 		select {
 		case <-parentCtx.Done():
@@ -162,11 +165,21 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 		case <-ticker.C:
 			alive := p.healthChecker.CheckHealth(parentCtx)
 			if alive.Status != healthcheck.StatusHealthy {
-				logger.Infof("Health check failed for %s; initiating proxy shutdown", p.containerName)
-				if err := p.Stop(parentCtx); err != nil {
-					logger.Errorf("Failed to stop proxy for %s: %v", p.containerName, err)
+				failCount++
+				logger.Warnf("Health check %d/%d failed for %s", failCount, maxFails, p.containerName)
+				if failCount >= maxFails {
+					logger.Infof("Health check failed %d times; shutting down proxy for %s", maxFails, p.containerName)
+					if err := p.Stop(parentCtx); err != nil {
+						logger.Errorf("Failed to stop proxy for %s: %v", p.containerName, err)
+					}
+					return
 				}
-				return
+			} else {
+				// Reset counter on success
+				if failCount > 0 {
+					logger.Infof("Health check recovered for %s; resetting failure counter", p.containerName)
+				}
+				failCount = 0
 			}
 		}
 	}

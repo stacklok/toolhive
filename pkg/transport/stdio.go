@@ -167,7 +167,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	// Create and start the correct proxy with middlewares
 	switch t.proxyMode {
 	case types.ProxyModeStreamableHTTP:
-		t.httpProxy = streamable.NewStreamableHTTPProxy(t.host, t.port, t.containerName, t.prometheusHandler, t.middlewares...)
+		t.httpProxy = streamable.NewHTTPProxy(t.host, t.port, t.containerName, t.prometheusHandler, t.middlewares...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}

@@ -1,3 +1,4 @@
+// Package streamable provides a streamable HTTP proxy for MCP servers.
 package streamable
 
 import (
@@ -7,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
 	"time"
 
 	"golang.org/x/exp/jsonrpc2"
@@ -17,12 +17,12 @@ import (
 )
 
 const (
-	// Endpoint for streamable HTTP
+	// StreamableHTTPEndpoint is the endpoint for streamable HTTP.
 	StreamableHTTPEndpoint = "/mcp"
 )
 
-// StreamableHTTPProxy implements a proxy for streamable HTTP transport.
-type StreamableHTTPProxy struct {
+// HTTPProxy implements a proxy for streamable HTTP transport.
+type HTTPProxy struct {
 	host              string
 	port              int
 	containerName     string
@@ -36,11 +36,17 @@ type StreamableHTTPProxy struct {
 	responseCh chan jsonrpc2.Message
 
 	server *http.Server
-	mutex  sync.Mutex
 }
 
-func NewStreamableHTTPProxy(host string, port int, containerName string, prometheusHandler http.Handler, middlewares ...types.Middleware) *StreamableHTTPProxy {
-	return &StreamableHTTPProxy{
+// NewHTTPProxy creates a new HTTPProxy for streamable HTTP transport.
+func NewHTTPProxy(
+	host string,
+	port int,
+	containerName string,
+	prometheusHandler http.Handler,
+	middlewares ...types.Middleware,
+) *HTTPProxy {
+	return &HTTPProxy{
 		host:              host,
 		port:              port,
 		containerName:     containerName,
@@ -52,7 +58,8 @@ func NewStreamableHTTPProxy(host string, port int, containerName string, prometh
 	}
 }
 
-func (p *StreamableHTTPProxy) Start(_ context.Context) error {
+// Start starts the HTTPProxy server.
+func (p *HTTPProxy) Start(_ context.Context) error {
 	mux := http.NewServeMux()
 
 	mux.Handle(StreamableHTTPEndpoint, p.applyMiddlewares(http.HandlerFunc(p.handleStreamableRequest)))
@@ -78,7 +85,8 @@ func (p *StreamableHTTPProxy) Start(_ context.Context) error {
 	return nil
 }
 
-func (p *StreamableHTTPProxy) Stop(ctx context.Context) error {
+// Stop gracefully shuts down the HTTPProxy server.
+func (p *HTTPProxy) Stop(ctx context.Context) error {
 	close(p.shutdownCh)
 	if p.server != nil {
 		return p.server.Shutdown(ctx)
@@ -86,15 +94,18 @@ func (p *StreamableHTTPProxy) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (p *StreamableHTTPProxy) GetMessageChannel() chan jsonrpc2.Message {
+// GetMessageChannel returns the message channel for sending JSON-RPC to the container.
+func (p *HTTPProxy) GetMessageChannel() chan jsonrpc2.Message {
 	return p.messageCh
 }
 
-func (p *StreamableHTTPProxy) GetResponseChannel() <-chan jsonrpc2.Message {
+// GetResponseChannel returns the response channel for receiving JSON-RPC from the container.
+func (p *HTTPProxy) GetResponseChannel() <-chan jsonrpc2.Message {
 	return p.responseCh
 }
 
-func (p *StreamableHTTPProxy) SendMessageToDestination(msg jsonrpc2.Message) error {
+// SendMessageToDestination sends a message to the container.
+func (p *HTTPProxy) SendMessageToDestination(msg jsonrpc2.Message) error {
 	select {
 	case p.messageCh <- msg:
 		return nil
@@ -103,7 +114,8 @@ func (p *StreamableHTTPProxy) SendMessageToDestination(msg jsonrpc2.Message) err
 	}
 }
 
-func (p *StreamableHTTPProxy) ForwardResponseToClients(_ context.Context, msg jsonrpc2.Message) error {
+// ForwardResponseToClients forwards a response from the container to the client.
+func (p *HTTPProxy) ForwardResponseToClients(_ context.Context, msg jsonrpc2.Message) error {
 	select {
 	case p.responseCh <- msg:
 		return nil
@@ -112,12 +124,12 @@ func (p *StreamableHTTPProxy) ForwardResponseToClients(_ context.Context, msg js
 	}
 }
 
-// For compatibility with the Proxy interface
-func (p *StreamableHTTPProxy) SendResponseMessage(msg jsonrpc2.Message) error {
+// SendResponseMessage is for compatibility with the Proxy interface.
+func (p *HTTPProxy) SendResponseMessage(msg jsonrpc2.Message) error {
 	return p.ForwardResponseToClients(context.Background(), msg)
 }
 
-func (p *StreamableHTTPProxy) applyMiddlewares(handler http.Handler) http.Handler {
+func (p *HTTPProxy) applyMiddlewares(handler http.Handler) http.Handler {
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
 		handler = p.middlewares[i](handler)
 	}
@@ -131,8 +143,30 @@ func isNotification(msg jsonrpc2.Message) bool {
 	return false
 }
 
-// handleStreamableRequest handles HTTP POST requests to /mcp
-func (p *StreamableHTTPProxy) handleStreamableRequest(w http.ResponseWriter, r *http.Request) {
+// handleBatchRequest checks if the request is a batch and returns true if so.
+func handleBatchRequest(w http.ResponseWriter, body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		logger.Warnf("Batch JSON-RPC requests are not supported: %s", string(body))
+		http.Error(w, "Batch JSON-RPC requests are not supported", http.StatusBadRequest)
+		return true
+	}
+	return false
+}
+
+// decodeJSONRPCMessage decodes a JSON-RPC message from the request body.
+func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message, bool) {
+	msg, err := jsonrpc2.DecodeMessage(body)
+	if err != nil {
+		logger.Warnf("Skipping message that failed to decode: %s", string(body))
+		http.Error(w, "Invalid JSON-RPC 2.0 message", http.StatusBadRequest)
+		return nil, false
+	}
+	return msg, true
+}
+
+// handleStreamableRequest handles HTTP POST requests to /mcp.
+func (p *HTTPProxy) handleStreamableRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -144,31 +178,34 @@ func (p *StreamableHTTPProxy) handleStreamableRequest(w http.ResponseWriter, r *
 		return
 	}
 
-	// Check for batch (JSON array)
-	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) > 0 && trimmed[0] == '[' {
-		logger.Warnf("Batch JSON-RPC requests are not supported: %s", string(body))
-		http.Error(w, "Batch JSON-RPC requests are not supported", http.StatusBadRequest)
+	if handleBatchRequest(w, body) {
 		return
 	}
 
-	msg, err := jsonrpc2.DecodeMessage(body)
-	if err != nil {
-		logger.Warnf("Skipping message that failed to decode: %s", string(body))
-		http.Error(w, "Invalid JSON-RPC 2.0 message", http.StatusBadRequest)
+	msg, ok := decodeJSONRPCMessage(w, body)
+	if !ok {
 		return
 	}
 
-	// Notification or response: 202 Accepted, no body
+	if p.handleNotificationOrResponse(w, msg) {
+		return
+	}
+
+	p.handleRequestResponse(w, msg)
+}
+
+func (p *HTTPProxy) handleNotificationOrResponse(w http.ResponseWriter, msg jsonrpc2.Message) bool {
 	if isNotification(msg) || (func() bool { _, ok := msg.(*jsonrpc2.Response); return ok })() {
 		if err := p.SendMessageToDestination(msg); err != nil {
 			logger.Errorf("Failed to send message to destination: %v", err)
 		}
 		w.WriteHeader(http.StatusAccepted)
-		return
+		return true
 	}
+	return false
+}
 
-	// Request: forward and wait for response
+func (p *HTTPProxy) handleRequestResponse(w http.ResponseWriter, msg jsonrpc2.Message) {
 	if err := p.SendMessageToDestination(msg); err != nil {
 		http.Error(w, "Failed to send message to destination", http.StatusInternalServerError)
 		return
@@ -183,12 +220,15 @@ func (p *StreamableHTTPProxy) handleStreamableRequest(w http.ResponseWriter, r *
 				http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 				return
 			}
-			w.Write(data)
+			if _, err := w.Write(data); err != nil {
+				logger.Errorf("Failed to write response: %v", err)
+			}
 		} else {
-			// Return a JSON-RPC error response
 			w.Header().Set("Content-Type", "application/json")
 			errResp := getInvalidJsonrpcError()
-			json.NewEncoder(w).Encode(errResp)
+			if err := json.NewEncoder(w).Encode(errResp); err != nil {
+				logger.Errorf("Failed to encode error response: %v", err)
+			}
 		}
 	case <-time.After(10 * time.Second):
 		http.Error(w, "Timeout waiting for response from container", http.StatusGatewayTimeout)

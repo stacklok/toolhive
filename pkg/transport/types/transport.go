@@ -145,10 +145,13 @@ type Config struct {
 type ProxyMode string
 
 const (
-	ProxyModeSSE            ProxyMode = "sse"
+	// ProxyModeSSE is the proxy mode for SSE.
+	ProxyModeSSE ProxyMode = "sse"
+	// ProxyModeStreamableHTTP is the proxy mode for streamable HTTP.
 	ProxyModeStreamableHTTP ProxyMode = "streamable-http"
 )
 
+// IsValidProxyMode returns true if the given mode is a valid ProxyMode.
 func IsValidProxyMode(mode string) bool {
 	return mode == ProxyModeSSE.String() || mode == ProxyModeStreamableHTTP.String()
 }

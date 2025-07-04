@@ -153,7 +153,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, exposedPort, err := t.runtime.DeployWorkload(
+	containerID, err := t.runtime.DeployWorkload(
 		ctx,
 		image,
 		containerName,

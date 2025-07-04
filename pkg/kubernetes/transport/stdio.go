@@ -110,7 +110,7 @@ func (t *StdioTransport) Setup(
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, _, err := t.runtime.DeployWorkload(
+	containerID, err := t.runtime.DeployWorkload(
 		ctx,
 		image,
 		containerName,

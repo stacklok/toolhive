@@ -13,7 +13,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/kubernetes/permissions"
 	"github.com/stacklok/toolhive/pkg/kubernetes/registry"
 	"github.com/stacklok/toolhive/pkg/kubernetes/runner"
-	"github.com/stacklok/toolhive/pkg/kubernetes/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/kubernetes/transport"
 )
 
@@ -140,17 +139,17 @@ func init() {
 		"",
 		"Path to a custom CA certificate file to use for container builds",
 	)
-	runCmd.Flags().StringVar(
-		&runVerifyImage,
-		"image-verification",
-		retriever.VerifyImageWarn,
-		fmt.Sprintf(
-			"Set image verification mode (%s, %s, %s)",
-			retriever.VerifyImageWarn,
-			retriever.VerifyImageEnabled,
-			retriever.VerifyImageDisabled,
-		),
-	)
+	// runCmd.Flags().StringVar(
+	// 	&runVerifyImage,
+	// 	"image-verification",
+	// 	retriever.VerifyImageWarn,
+	// 	fmt.Sprintf(
+	// 		"Set image verification mode (%s, %s, %s)",
+	// 		retriever.VerifyImageWarn,
+	// 		retriever.VerifyImageEnabled,
+	// 		retriever.VerifyImageDisabled,
+	// 	),
+	// )
 
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
 	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {

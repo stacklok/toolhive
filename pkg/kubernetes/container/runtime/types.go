@@ -83,7 +83,7 @@ type Runtime interface {
 		transportType string,
 		options *DeployWorkloadOptions,
 		isolateNetwork bool,
-	) (string, int, error)
+	) (string, error)
 
 	// GetWorkloadLogs retrieves logs from the primary container of the workload.
 	// If follow is true, the logs will be streamed continuously.

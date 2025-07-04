@@ -126,11 +126,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create transport: %v", err)
 	}
 
-	// Save the configuration to the state store
-	if err := r.SaveState(ctx); err != nil {
-		logger.Warnf("Warning: Failed to save run configuration: %v", err)
-	}
-
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)
 	if err := transportHandler.Setup(

@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/kubernetes/audit"
-	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/kubernetes/auth"
+	"github.com/stacklok/toolhive/pkg/kubernetes/authz"
 	"github.com/stacklok/toolhive/pkg/kubernetes/container"
 	rt "github.com/stacklok/toolhive/pkg/kubernetes/container/runtime"
 	"github.com/stacklok/toolhive/pkg/kubernetes/environment"

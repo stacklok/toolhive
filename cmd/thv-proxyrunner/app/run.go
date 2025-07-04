@@ -15,7 +15,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/kubernetes/runner"
 	"github.com/stacklok/toolhive/pkg/kubernetes/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/kubernetes/transport"
-	"github.com/stacklok/toolhive/pkg/kubernetes/workloads"
 )
 
 var runCmd = &cobra.Command{
@@ -274,7 +273,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
-	workloadManager := workloads.NewManagerFromRuntime(rt)
 
 	// Select an env var validation strategy depending on how the CLI is run:
 	// If we have called the CLI directly, we use the CLIEnvVarValidator.

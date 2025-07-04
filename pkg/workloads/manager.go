@@ -3,11 +3,9 @@
 package workloads
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -190,8 +188,28 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 	if err != nil {
 		logger.Warnf("Warning: Failed to create log file: %v", err)
 	} else {
-		defer logFile.Close()
-		logger.Infof("Logging to: %s", logFilePath)
+		defer func() {
+			// Read and print the log file contents when closing
+			if err := logFile.Close(); err != nil {
+				logger.Warnf("Warning: failed to close log file: %v", err)
+				return
+			}
+			// Print the log file contents
+			// This is done in a deferred function to ensure it runs after the log file is closed
+			defer func() {
+				// print the log file contents
+				data, err := os.ReadFile(logFilePath) // #nosec G304 - This is safe as logFilePath is controlled by the application
+				if err != nil {
+					logger.Warnf("Warning: failed to read log file: %v", err)
+					return
+				}
+				fmt.Println("\n\n=== Log file contents ===")
+				fmt.Print(string(data))
+				fmt.Println("=== End of log file ===")
+			}()
+		}()
+		logger.Infof("Logging to: %s - Please check log for more information about process success", logFilePath)
+
 	}
 
 	// Prepare the command arguments for the detached process
@@ -346,55 +364,29 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 		detachedCmd.Env = append(detachedCmd.Env, fmt.Sprintf("%s=%s", secrets.PasswordEnvVar, password))
 	}
 
+	// Redirect stdout and stderr to the log file if it was created successfully
+	if logFile != nil {
+		detachedCmd.Stdout = logFile
+		detachedCmd.Stderr = logFile
+	} else {
+		// Otherwise, discard the output
+		detachedCmd.Stdout = nil
+		detachedCmd.Stderr = nil
+	}
+
 	// Detach the process from the terminal
 	detachedCmd.Stdin = nil
 	detachedCmd.SysProcAttr = getSysProcAttr()
 
 	// Start the detached process
-	stderrPipe, err := detachedCmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("stderr pipe error: %w", err)
-	}
-
-	// Redirect stdout and stderr to the log file if it was created successfully
-	var stderrWriter io.Writer
-	if logFile != nil {
-		detachedCmd.Stdout = logFile
-		stderrWriter = io.MultiWriter(logFile, os.Stderr)
-	} else {
-		// Otherwise, discard the output
-		detachedCmd.Stdout = io.Discard
-		stderrWriter = os.Stderr
-	}
-
 	if err := detachedCmd.Start(); err != nil {
 		return fmt.Errorf("failed to start detached process: %v", err)
 	}
 
 	// Write the PID to a file so the stop command can kill the process
-	pid := detachedCmd.Process.Pid
-	if err := process.WritePIDFile(runConfig.BaseName, pid); err != nil {
+	if err := process.WritePIDFile(runConfig.BaseName, detachedCmd.Process.Pid); err != nil {
 		logger.Warnf("Warning: Failed to write PID file: %v", err)
 	}
-
-	stderrCh := make(chan string, 1)
-	go func() {
-		buf := new(bytes.Buffer)
-		io.Copy(buf, stderrPipe)
-		stderrWriter.Write(buf.Bytes()) // log the raw stderr once
-		stderrCh <- buf.String()
-	}()
-
-	select {
-	case errOut := <-stderrCh:
-		if errOut != "" {
-			return nil // no error, just output
-		}
-	case <-time.After(2 * time.Second):
-		// no immediate error
-	}
-	logger.Infof("MCP server is running in the background (PID: %d)", detachedCmd.Process.Pid)
-	logger.Infof("Use 'thv stop %s' to stop the server", runConfig.ContainerName)
 
 	return nil
 }

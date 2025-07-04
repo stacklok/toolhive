@@ -148,7 +148,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 }
 
 func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	var failCount int
@@ -166,7 +166,6 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			alive := p.healthChecker.CheckHealth(parentCtx)
 			if alive.Status != healthcheck.StatusHealthy {
 				failCount++
-				logger.Warnf("Health check %d/%d failed for %s", failCount, maxFails, p.containerName)
 				if failCount >= maxFails {
 					logger.Infof("Health check failed %d times; shutting down proxy for %s", maxFails, p.containerName)
 					if err := p.Stop(parentCtx); err != nil {

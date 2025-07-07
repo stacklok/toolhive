@@ -11,8 +11,8 @@ type MCPServerSpec struct {
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
 
-	// Transport is the transport method for the MCP server (stdio or sse)
-	// +kubebuilder:validation:Enum=stdio;sse
+	// Transport is the transport method for the MCP server (stdio, streamable-http or sse)
+	// +kubebuilder:validation:Enum=stdio;streamable-http;sse
 	// +kubebuilder:default=stdio
 	Transport string `json:"transport,omitempty"`
 
@@ -66,6 +66,10 @@ type MCPServerSpec struct {
 	// OIDCConfig defines OIDC authentication configuration for the MCP server
 	// +optional
 	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
+
+	// AuthzConfig defines authorization policy configuration for the MCP server
+	// +optional
+	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -174,10 +178,19 @@ const (
 	OIDCConfigTypeKubernetes = "kubernetes"
 
 	// OIDCConfigTypeConfigMap is the type for OIDC configuration stored in ConfigMaps
-	OIDCConfigTypeConfigMap = "configmap"
+	OIDCConfigTypeConfigMap = "configMap"
 
 	// OIDCConfigTypeInline is the type for inline OIDC configuration
 	OIDCConfigTypeInline = "inline"
+)
+
+// Authorization configuration types
+const (
+	// AuthzConfigTypeConfigMap is the type for authorization configuration stored in ConfigMaps
+	AuthzConfigTypeConfigMap = "configMap"
+
+	// AuthzConfigTypeInline is the type for inline authorization configuration
+	AuthzConfigTypeInline = "inline"
 )
 
 // PermissionProfileRef defines a reference to a permission profile
@@ -244,7 +257,7 @@ type OutboundNetworkPermissions struct {
 // OIDCConfigRef defines a reference to OIDC configuration
 type OIDCConfigRef struct {
 	// Type is the type of OIDC configuration
-	// +kubebuilder:validation:Enum=kubernetes;configmap;inline
+	// +kubebuilder:validation:Enum=kubernetes;configMap;inline
 	// +kubebuilder:default=kubernetes
 	Type string `json:"type"`
 
@@ -266,8 +279,7 @@ type OIDCConfigRef struct {
 
 // KubernetesOIDCConfig configures OIDC for Kubernetes service account token validation
 type KubernetesOIDCConfig struct {
-	// ServiceAccount is the name of the service account to validate tokens for
-	// If empty, uses the pod's service account
+	// ServiceAccount is deprecated and will be removed in a future release.
 	// +optional
 	ServiceAccount string `json:"serviceAccount,omitempty"`
 
@@ -318,9 +330,52 @@ type InlineOIDCConfig struct {
 	// +optional
 	JWKSURL string `json:"jwksUrl,omitempty"`
 
-	// ClientID is the OIDC client ID
+	// ClientID is deprecated and will be removed in a future release.
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
+}
+
+// AuthzConfigRef defines a reference to authorization configuration
+type AuthzConfigRef struct {
+	// Type is the type of authorization configuration
+	// +kubebuilder:validation:Enum=configMap;inline
+	// +kubebuilder:default=configMap
+	Type string `json:"type"`
+
+	// ConfigMap references a ConfigMap containing authorization configuration
+	// Only used when Type is "configMap"
+	// +optional
+	ConfigMap *ConfigMapAuthzRef `json:"configMap,omitempty"`
+
+	// Inline contains direct authorization configuration
+	// Only used when Type is "inline"
+	// +optional
+	Inline *InlineAuthzConfig `json:"inline,omitempty"`
+}
+
+// ConfigMapAuthzRef references a ConfigMap containing authorization configuration
+type ConfigMapAuthzRef struct {
+	// Name is the name of the ConfigMap
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Key is the key in the ConfigMap that contains the authorization configuration
+	// +kubebuilder:default=authz.json
+	// +optional
+	Key string `json:"key,omitempty"`
+}
+
+// InlineAuthzConfig contains direct authorization configuration
+type InlineAuthzConfig struct {
+	// Policies is a list of Cedar policy strings
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	Policies []string `json:"policies"`
+
+	// EntitiesJSON is a JSON string representing Cedar entities
+	// +kubebuilder:default="[]"
+	// +optional
+	EntitiesJSON string `json:"entitiesJson,omitempty"`
 }
 
 // MCPServerStatus defines the observed state of MCPServer

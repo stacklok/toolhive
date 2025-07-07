@@ -171,7 +171,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 			options.K8sPodTemplatePatch = tc.k8sPodTemplatePatch
 
 			// Deploy the workload
-			containerID, err := client.DeployWorkload(
+			containerID, _, err := client.DeployWorkload(
 				context.Background(),
 				"test-image",
 				"test-container",
@@ -181,6 +181,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 				nil,
 				"stdio",
 				options,
+				false,
 			)
 
 			// Check that there was no error
@@ -666,7 +667,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 			}
 
 			// Deploy the workload
-			containerID, err := client.DeployWorkload(
+			containerID, _, err := client.DeployWorkload(
 				context.Background(),
 				tc.image,
 				"test-container",
@@ -676,6 +677,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 				nil,
 				tc.transportType,
 				tc.options,
+				false,
 			)
 
 			// Check that there was no error

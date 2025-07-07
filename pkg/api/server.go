@@ -31,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -97,7 +98,7 @@ func Serve(
 	isUnixSocket bool,
 	debugMode bool,
 	enableDocs bool,
-	oidcConfig *auth.JWTValidatorConfig,
+	oidcConfig *auth.TokenValidatorConfig,
 ) error {
 	r := chi.NewRouter()
 	r.Use(
@@ -108,7 +109,7 @@ func Serve(
 	)
 
 	// Add authentication middleware
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, false)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
@@ -125,17 +126,24 @@ func Serve(
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
+	// Create registry provider
+	registryProvider, err := registry.GetDefaultProvider()
+	if err != nil {
+		return fmt.Errorf("failed to create registry provider: %v", err)
+	}
+
 	clientManager, err := client.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create client manager: %v", err)
 	}
 	routers := map[string]http.Handler{
-		"/health":               v1.HealthcheckRouter(),
+		"/health":               v1.HealthcheckRouter(rt),
 		"/api/v1beta/version":   v1.VersionRouter(),
 		"/api/v1beta/workloads": v1.WorkloadRouter(manager, rt, debugMode),
-		"/api/v1beta/registry":  v1.RegistryRouter(),
+		"/api/v1beta/registry":  v1.RegistryRouter(registryProvider),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(clientManager),
+		"/api/v1beta/secrets":   v1.SecretsRouter(),
 	}
 
 	// Only mount docs router if enabled

@@ -54,7 +54,11 @@ func init() {
 
 func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 	// Get all servers from registry
-	servers, err := registry.ListServers()
+	provider, err := registry.GetDefaultProvider()
+	if err != nil {
+		return fmt.Errorf("failed to get registry provider: %v", err)
+	}
+	servers, err := provider.ListServers()
 	if err != nil {
 		return fmt.Errorf("failed to list servers: %v", err)
 	}
@@ -77,7 +81,11 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 	// Get server information
 	serverName := args[0]
-	server, err := registry.GetServer(serverName)
+	provider, err := registry.GetDefaultProvider()
+	if err != nil {
+		return fmt.Errorf("failed to get registry provider: %v", err)
+	}
+	server, err := provider.GetServer(serverName)
 	if err != nil {
 		return fmt.Errorf("failed to get server information: %v", err)
 	}
@@ -93,7 +101,7 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 // printJSONServers prints servers in JSON format
-func printJSONServers(servers []*registry.Server) error {
+func printJSONServers(servers []*registry.ImageMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
@@ -106,7 +114,7 @@ func printJSONServers(servers []*registry.Server) error {
 }
 
 // printJSONServer prints a single server in JSON format
-func printJSONServer(server *registry.Server) error {
+func printJSONServer(server *registry.ImageMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(server, "", "  ")
 	if err != nil {
@@ -119,10 +127,10 @@ func printJSONServer(server *registry.Server) error {
 }
 
 // printTextServers prints servers in text format
-func printTextServers(servers []*registry.Server) {
+func printTextServers(servers []*registry.ImageMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS")
+	fmt.Fprintln(w, "NAME\tDESCRIPTION\tTIER\tSTARS\tPULLS")
 
 	// Print server information
 	for _, server := range servers {
@@ -133,10 +141,15 @@ func printTextServers(servers []*registry.Server) {
 			pulls = server.Metadata.Pulls
 		}
 
+		desc := server.Description
+		if server.Status == "Deprecated" {
+			desc = "**DEPRECATED** " + desc
+		}
+
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n",
 			server.Name,
-			truncateString(server.Description, 60),
-			server.Transport,
+			truncateString(desc, 60),
+			server.Tier,
 			stars,
 			pulls,
 		)
@@ -150,15 +163,18 @@ func printTextServers(servers []*registry.Server) {
 
 // printTextServerInfo prints detailed information about a server in text format
 // nolint:gocyclo
-func printTextServerInfo(name string, server *registry.Server) {
+func printTextServerInfo(name string, server *registry.ImageMetadata) {
 	fmt.Printf("Name: %s\n", server.Name)
 	fmt.Printf("Image: %s\n", server.Image)
 	fmt.Printf("Description: %s\n", server.Description)
+	fmt.Printf("Tier: %s\n", server.Tier)
+	fmt.Printf("Status: %s\n", server.Status)
 	fmt.Printf("Transport: %s\n", server.Transport)
-	if server.Transport == "sse" && server.TargetPort > 0 {
+	if (server.Transport == "sse" || server.Transport == "streamable-http") && server.TargetPort > 0 {
 		fmt.Printf("Target Port: %d\n", server.TargetPort)
 	}
 	fmt.Printf("Repository URL: %s\n", server.RepositoryURL)
+	fmt.Printf("Has Provenance: %s\n", map[bool]string{true: "Yes", false: "No"}[server.Provenance != nil])
 
 	if server.Metadata != nil {
 		fmt.Printf("Popularity: %d stars, %d pulls\n", server.Metadata.Stars, server.Metadata.Pulls)

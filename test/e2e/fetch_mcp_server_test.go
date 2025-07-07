@@ -188,7 +188,7 @@ var _ = Describe("FetchMcpServer", func() {
 			It("should handle stopping non-existent server gracefully", func() {
 				By("Trying to stop a non-existent server")
 				stdout, _ := e2e.NewTHVCommand(config, "stop", "non-existent-server-12345").ExpectSuccess()
-				Expect(stdout).To(ContainSubstring("not running"), "Should indicate server is not running")
+				Expect(stdout).To(ContainSubstring("stopped successfully"), "Should indicate server has stopped successfully")
 			})
 		})
 	})

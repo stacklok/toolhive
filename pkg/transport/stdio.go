@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/httpsse"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/streamable"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -41,8 +42,9 @@ type StdioTransport struct {
 	shutdownCh chan struct{}
 	errorCh    <-chan error
 
-	// HTTP SSE proxy
+	// Proxy (SSE or Streamable HTTP)
 	httpProxy types.Proxy
+	proxyMode types.ProxyMode
 
 	// Container I/O
 	stdin  io.WriteCloser
@@ -69,7 +71,13 @@ func NewStdioTransport(
 		middlewares:       middlewares,
 		prometheusHandler: prometheusHandler,
 		shutdownCh:        make(chan struct{}),
+		proxyMode:         types.ProxyModeSSE, // default to SSE for backward compatibility
 	}
+}
+
+// SetProxyMode allows configuring the proxy mode (SSE or Streamable HTTP)
+func (t *StdioTransport) SetProxyMode(mode types.ProxyMode) {
+	t.proxyMode = mode
 }
 
 // Mode returns the transport mode.
@@ -92,6 +100,7 @@ func (t *StdioTransport) Setup(
 	envVars, labels map[string]string,
 	permissionProfile *permissions.Profile,
 	k8sPodTemplatePatch string,
+	isolateNetwork bool,
 ) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -109,7 +118,7 @@ func (t *StdioTransport) Setup(
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, err := t.runtime.DeployWorkload(
+	containerID, _, err := t.runtime.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -119,6 +128,7 @@ func (t *StdioTransport) Setup(
 		permissionProfile,
 		"stdio",
 		containerOptions,
+		isolateNetwork,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create container: %v", err)
@@ -134,6 +144,9 @@ func (t *StdioTransport) Setup(
 func (t *StdioTransport) Start(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+
+	// logger.Infof("Starting stdio transport with proxy mode: %s", t.proxyMode)
+	fmt.Printf("DEBUG: Starting stdio transport with proxy mode: %s\n", t.proxyMode)
 
 	if t.containerID == "" {
 		return errors.ErrContainerIDNotSet
@@ -154,12 +167,23 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to attach to container: %w", err)
 	}
 
-	// Create and start the HTTP SSE proxy with middlewares
-	t.httpProxy = httpsse.NewHTTPSSEProxy(t.host, t.port, t.containerName, t.prometheusHandler, t.middlewares...)
-	if err := t.httpProxy.Start(ctx); err != nil {
-		return err
+	// Create and start the correct proxy with middlewares
+	switch t.proxyMode {
+	case types.ProxyModeStreamableHTTP:
+		t.httpProxy = streamable.NewHTTPProxy(t.host, t.port, t.containerName, t.prometheusHandler, t.middlewares...)
+		if err := t.httpProxy.Start(ctx); err != nil {
+			return err
+		}
+		logger.Info("Streamable HTTP proxy started, processing messages...")
+	case types.ProxyModeSSE:
+		t.httpProxy = httpsse.NewHTTPSSEProxy(t.host, t.port, t.containerName, t.prometheusHandler, t.middlewares...)
+		if err := t.httpProxy.Start(ctx); err != nil {
+			return err
+		}
+		logger.Info("HTTP SSE proxy started, processing messages...")
+	default:
+		return fmt.Errorf("unsupported proxy mode: %v", t.proxyMode)
 	}
-	logger.Info("HTTP SSE proxy started, processing messages...")
 
 	// Start processing messages in a goroutine
 	go t.processMessages(ctx, t.stdin, t.stdout)
@@ -418,9 +442,12 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	// Log the message
 	logger.Infof("Received JSON-RPC message: %T", msg)
 
-	// Forward to SSE clients via the HTTP proxy
 	if err := t.httpProxy.ForwardResponseToClients(ctx, msg); err != nil {
-		logger.Errorf("Error forwarding to SSE clients: %v", err)
+		if t.proxyMode == types.ProxyModeStreamableHTTP {
+			logger.Errorf("Error forwarding to streamable-http client: %v", err)
+		} else {
+			logger.Errorf("Error forwarding to SSE clients: %v", err)
+		}
 	}
 }
 

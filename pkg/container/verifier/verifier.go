@@ -36,7 +36,7 @@ type Result struct {
 }
 
 // New creates a new Sigstore verifier
-func New(serverInfo *registry.Server) (*Sigstore, error) {
+func New(serverInfo *registry.ImageMetadata) (*Sigstore, error) {
 	// Fail the verification early if the server information is not set
 	if serverInfo == nil || serverInfo.Provenance == nil {
 		return nil, ErrProvenanceServerInformationNotSet
@@ -120,7 +120,7 @@ func getVerifiedResults(
 }
 
 // VerifyServer verifies the server information for the given image reference
-func (s *Sigstore) VerifyServer(imageRef string, serverInfo *registry.Server) (bool, error) {
+func (s *Sigstore) VerifyServer(imageRef string, serverInfo *registry.ImageMetadata) (bool, error) {
 	// Get the verification results for the image reference
 	results, err := s.GetVerificationResults(imageRef)
 	if err != nil {

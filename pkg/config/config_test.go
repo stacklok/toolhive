@@ -50,7 +50,6 @@ func TestLoadOrCreateConfig(t *testing.T) {
 				ProviderType: string(secrets.EncryptedType),
 			},
 			Clients: Clients{
-				AutoDiscovery:     true,
 				RegisteredClients: []string{"vscode", "cursor"},
 			},
 		})
@@ -61,7 +60,6 @@ func TestLoadOrCreateConfig(t *testing.T) {
 
 		// Verify the loaded config matches our mock
 		assert.Equal(t, string(secrets.EncryptedType), config.Secrets.ProviderType)
-		assert.True(t, config.Clients.AutoDiscovery)
 		assert.Equal(t, []string{"vscode", "cursor"}, config.Clients.RegisteredClients)
 
 		t.Cleanup(func() {
@@ -83,7 +81,6 @@ func TestLoadOrCreateConfig(t *testing.T) {
 		// Verify the default values
 		assert.Equal(t, "", config.Secrets.ProviderType) // Default is empty - requires explicit setup
 		assert.False(t, config.Secrets.SetupCompleted)   // Setup not completed by default
-		assert.False(t, config.Clients.AutoDiscovery)    // Default is false when no input is provided
 		assert.Empty(t, config.Clients.RegisteredClients)
 
 		t.Cleanup(func() {
@@ -109,7 +106,6 @@ func TestSave(t *testing.T) {
 				ProviderType: string(secrets.EncryptedType),
 			},
 			Clients: Clients{
-				AutoDiscovery:     true,
 				RegisteredClients: []string{"vscode", "cursor", "roo-code", "cline", "claude-code"},
 			},
 		}
@@ -133,7 +129,6 @@ func TestSave(t *testing.T) {
 
 		// Verify the loaded config matches what we wrote
 		assert.Equal(t, config.Secrets.ProviderType, loadedConfig.Secrets.ProviderType)
-		assert.Equal(t, config.Clients.AutoDiscovery, loadedConfig.Clients.AutoDiscovery)
 		assert.Equal(t, config.Clients.RegisteredClients, loadedConfig.Clients.RegisteredClients)
 
 		t.Cleanup(func() {
@@ -155,7 +150,6 @@ func TestRegistryURLConfig(t *testing.T) {
 				ProviderType: string(secrets.EncryptedType),
 			},
 			Clients: Clients{
-				AutoDiscovery:     false,
 				RegisteredClients: []string{},
 			},
 			RegistryUrl: "",
@@ -207,6 +201,48 @@ func TestRegistryURLConfig(t *testing.T) {
 		config, err := LoadOrCreateConfigWithPath(configPath)
 		require.NoError(t, err)
 		assert.Equal(t, testURL, config.RegistryUrl)
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("TestAllowPrivateRegistryIp", func(t *testing.T) {
+		t.Parallel()
+		tempDir, configPath := SetupTestConfig(t, &Config{
+			Secrets: Secrets{
+				ProviderType: string(secrets.EncryptedType),
+			},
+			Clients: Clients{
+				RegisteredClients: []string{},
+			},
+			RegistryUrl:            "",
+			AllowPrivateRegistryIp: false,
+		})
+
+		// Test enabling
+		err := UpdateConfigAtPath(configPath, func(c *Config) {
+			c.AllowPrivateRegistryIp = true
+		})
+		require.NoError(t, err)
+
+		// Load the config and verify the setting was toggled to true
+		config, err := LoadOrCreateConfigWithPath(configPath)
+		require.NoError(t, err)
+		assert.Equal(t, true, config.AllowPrivateRegistryIp)
+
+		// Test toggling setting to false
+		err = UpdateConfigAtPath(configPath, func(c *Config) {
+			c.AllowPrivateRegistryIp = false
+		})
+		require.NoError(t, err)
+
+		// Load the config and verify the setting was toggled to false
+		config, err = LoadOrCreateConfigWithPath(configPath)
+		require.NoError(t, err)
+		assert.Equal(t, false, config.AllowPrivateRegistryIp)
 
 		t.Cleanup(func() {
 			if err := os.RemoveAll(tempDir); err != nil {

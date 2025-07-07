@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -49,6 +50,48 @@ var (
 	inspectorImage = "npx://@modelcontextprotocol/inspector@latest"
 )
 
+func buildInspectorContainerOptions(uiPortStr string, mcpPortStr string) *runtime.DeployWorkloadOptions {
+	return &runtime.DeployWorkloadOptions{
+		ExposedPorts: map[string]struct{}{
+			uiPortStr + "/tcp":  {},
+			mcpPortStr + "/tcp": {},
+		},
+		PortBindings: map[string][]runtime.PortBinding{
+			uiPortStr + "/tcp": {
+				{HostIP: "127.0.0.1", HostPort: uiPortStr},
+			},
+			mcpPortStr + "/tcp": {
+				{HostIP: "127.0.0.1", HostPort: mcpPortStr},
+			},
+		},
+		AttachStdio: false,
+	}
+}
+
+func waitForInspectorReady(ctx context.Context, port int, statusChan chan bool) {
+	go func() {
+		url := fmt.Sprintf("http://localhost:%d", port)
+		for {
+			resp, err := http.Get(url) //nolint:gosec
+			if err == nil && resp.StatusCode == 200 {
+				_ = resp.Body.Close()
+				statusChan <- true
+				return
+			}
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				logger.Info("Waiting for MCP Inspector to be ready...")
+				time.Sleep(3 * time.Second)
+			}
+		}
+	}()
+}
+
 func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
@@ -60,10 +103,22 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	serverName := args[0]
 
 	// find the port of the server if it is running / exists
-	serverPort, err := getServerPort(ctx, serverName)
+	serverPort, transportType, err := getServerPortAndTransport(ctx, serverName)
 	if err != nil {
 		return fmt.Errorf("failed to find server: %v", err)
 	}
+
+	imageManager := images.NewImageManager(ctx)
+	processedImage, err := runner.HandleProtocolScheme(ctx, imageManager, inspectorImage, "")
+	if err != nil {
+		return fmt.Errorf("failed to handle protocol scheme: %v", err)
+	}
+
+	// Setup container options with the required port configuration
+	uiPortStr := strconv.Itoa(inspectorUIPort)
+	mcpPortStr := strconv.Itoa(inspectorMCPProxyPort)
+
+	options := buildInspectorContainerOptions(uiPortStr, mcpPortStr)
 
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
@@ -71,40 +126,10 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
-	processedImage, err := runner.HandleProtocolScheme(ctx, rt, inspectorImage, "")
-	if err != nil {
-		return fmt.Errorf("failed to handle protocol scheme: %v", err)
-	}
-
-	inspectorUIPortStr := strconv.Itoa(inspectorUIPort)
-	inspectorMCPProxyPortStr := strconv.Itoa(inspectorMCPProxyPort)
-
-	// Setup container options with the required port configuration
-	options := &runtime.DeployWorkloadOptions{
-		ExposedPorts: map[string]struct{}{
-			inspectorUIPortStr + "/tcp":       {},
-			inspectorMCPProxyPortStr + "/tcp": {},
-		},
-		PortBindings: map[string][]runtime.PortBinding{
-			inspectorUIPortStr + "/tcp": {
-				{
-					HostIP:   "127.0.0.1",
-					HostPort: inspectorUIPortStr,
-				},
-			},
-			inspectorMCPProxyPortStr + "/tcp": {
-				{
-					HostIP:   "127.0.0.1",
-					HostPort: inspectorMCPProxyPortStr,
-				},
-			},
-		},
-		AttachStdio: false,
-	}
-
 	labelsMap := map[string]string{}
 	labels.AddStandardLabels(labelsMap, "inspector", "inspector", string(types.TransportTypeInspector), inspectorUIPort)
-	_, err = rt.DeployWorkload(
+	labelsMap["toolhive-auxiliary"] = "true"
+	_, _, err = rt.DeployWorkload(
 		ctx,
 		processedImage,
 		"inspector",
@@ -114,6 +139,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		&permissions.Profile{}, // Empty profile as we don't need special permissions
 		string(types.TransportTypeInspector),
 		options,
+		false, // Do not isolate network
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create inspector container: %v", err)
@@ -121,36 +147,25 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Monitor inspector readiness by checking HTTP response
 	statusChan := make(chan bool, 1)
-	go func() {
-		inspectorURL := fmt.Sprintf("http://localhost:%d", inspectorUIPort)
-		for {
-			resp, err := http.Get(inspectorURL) //nolint:gosec // URL is constructed from trusted local port
-			if err == nil && resp.StatusCode == 200 {
-				_ = resp.Body.Close()
-				statusChan <- true
-				return
-			}
-			if resp != nil {
-				_ = resp.Body.Close()
-			}
-			// Small delay before checking again
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				logger.Info("Waiting for MCP Inspector to be ready...")
-				time.Sleep(3 * time.Second)
-			}
-		}
-	}()
+	waitForInspectorReady(ctx, inspectorUIPort, statusChan)
 
 	// Wait for container to be running or context to be cancelled
 	select {
 	case <-statusChan:
 		logger.Infof("Connected to MCP server: %s", serverName)
+
+		var suffix string
+		var transportTypeStr string
+		if transportType == types.TransportTypeSSE || transportType == types.TransportTypeStdio {
+			suffix = "sse"
+			transportTypeStr = transportType.String()
+		} else {
+			suffix = "mcp/"
+			transportTypeStr = "streamable-http"
+		}
 		inspectorURL := fmt.Sprintf(
-			"http://localhost:%d?transport=sse&serverUrl=http://host.docker.internal:%d/sse",
-			inspectorUIPort, serverPort)
+			"http://localhost:%d?transport=%s&serverUrl=http://host.docker.internal:%d/%s",
+			inspectorUIPort, transportTypeStr, serverPort, suffix)
 		logger.Infof("Inspector UI is now available at %s", inspectorURL)
 		return nil
 	case <-ctx.Done():
@@ -158,17 +173,17 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func getServerPort(ctx context.Context, serverName string) (int, error) {
+func getServerPortAndTransport(ctx context.Context, serverName string) (int, types.TransportType, error) {
 	// Instantiate the container manager
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create container manager: %v", err)
+		return 0, types.TransportTypeSSE, fmt.Errorf("failed to create container manager: %v", err)
 	}
 
 	// Get list of all containers
 	containers, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
-		return 0, fmt.Errorf("failed to list containers: %v", err)
+		return 0, types.TransportTypeSSE, fmt.Errorf("failed to list containers: %v", err)
 	}
 
 	for _, c := range containers {
@@ -177,12 +192,15 @@ func getServerPort(ctx context.Context, serverName string) (int, error) {
 		if name == serverName {
 			// Get port from labels
 			port := c.Port
-			// Generate URL for the MCP server
-			if port > 0 {
-				return port, nil
+			if port <= 0 {
+				return 0, types.TransportTypeSSE, fmt.Errorf("server %s does not have a valid port", serverName)
 			}
+
+			// now get the transport type from labels
+			transportType := c.TransportType
+			return port, transportType, nil
 		}
 	}
 
-	return 0, fmt.Errorf("server with name %s not found", serverName)
+	return 0, types.TransportTypeSSE, fmt.Errorf("server with name %s not found", serverName)
 }

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,11 +11,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/certs"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/container"
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 var configCmd = &cobra.Command{
@@ -30,16 +25,6 @@ var listRegisteredClientsCmd = &cobra.Command{
 	Short: "List all registered MCP clients",
 	Long:  "List all clients that are registered for MCP server configuration.",
 	RunE:  listRegisteredClientsCmdFunc,
-}
-
-var autoDiscoveryCmd = &cobra.Command{
-	Use:   "auto-discovery [true|false]",
-	Short: "Set whether to enable auto-discovery of MCP clients",
-	Long: `Set whether to enable auto-discovery and configuration of MCP clients.
-When enabled, ToolHive will automatically update client configuration files
-with the URLs of running MCP servers.`,
-	Args: cobra.ExactArgs(1),
-	RunE: autoDiscoveryCmdFunc,
 }
 
 var registerClientCmd = &cobra.Command{
@@ -124,12 +109,15 @@ var unsetRegistryURLCmd = &cobra.Command{
 	RunE:  unsetRegistryURLCmdFunc,
 }
 
+var (
+	allowPrivateRegistryIp bool
+)
+
 func init() {
 	// Add config command to root command
 	rootCmd.AddCommand(configCmd)
 
 	// Add subcommands to config command
-	configCmd.AddCommand(autoDiscoveryCmd)
 	configCmd.AddCommand(registerClientCmd)
 	configCmd.AddCommand(removeClientCmd)
 	configCmd.AddCommand(listRegisteredClientsCmd)
@@ -137,43 +125,18 @@ func init() {
 	configCmd.AddCommand(getCACertCmd)
 	configCmd.AddCommand(unsetCACertCmd)
 	configCmd.AddCommand(setRegistryURLCmd)
+	setRegistryURLCmd.Flags().BoolVarP(
+		&allowPrivateRegistryIp,
+		"allow-private-ip",
+		"p",
+		false,
+		"Allow setting the registry URL, even if it references a private IP address",
+	)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
-}
 
-func autoDiscoveryCmdFunc(cmd *cobra.Command, args []string) error {
-	value := args[0]
-
-	// Validate the boolean value
-	var enabled bool
-	switch value {
-	case "true", "1", "yes":
-		enabled = true
-	case "false", "0", "no":
-		enabled = false
-	default:
-		return fmt.Errorf("invalid boolean value: %s (valid values: true, false)", value)
-	}
-
-	// Update the auto-discovery setting
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.Clients.AutoDiscovery = enabled
-		// If auto-discovery is enabled, update all registered clients with currently running MCPs
-		if enabled && len(c.Clients.RegisteredClients) > 0 {
-			for _, clientName := range c.Clients.RegisteredClients {
-				if err := addRunningMCPsToClient(cmd.Context(), clientName); err != nil {
-					fmt.Printf("Warning: Failed to add running MCPs to client %s: %v\n", clientName, err)
-				}
-			}
-		}
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
-	}
-
-	fmt.Printf("Auto-discovery of MCP clients %s\n", map[bool]string{true: "enabled", false: "disabled"}[enabled])
-
-	return nil
+	// Add OTEL parent command to config
+	configCmd.AddCommand(OtelCmd)
 }
 
 func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
@@ -189,27 +152,18 @@ func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
 			clientType)
 	}
 
-	err := config.UpdateConfig(func(c *config.Config) {
-		// Check if client is already registered and skip.
-		for _, registeredClient := range c.Clients.RegisteredClients {
-			if registeredClient == clientType {
-				fmt.Printf("Client %s is already registered, skipping...\n", clientType)
-				return
-			}
-		}
+	ctx := cmd.Context()
 
-		// Add the client to the registered clients list
-		c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, clientType)
-	})
+	manager, err := client.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
+		return fmt.Errorf("failed to create client manager: %w", err)
 	}
 
-	fmt.Printf("Successfully registered client: %s\n", clientType)
-
-	// Add currently running MCPs to the newly registered client
-	if err := addRunningMCPsToClient(cmd.Context(), clientType); err != nil {
-		fmt.Printf("Warning: Failed to add running MCPs to client: %v\n", err)
+	err = manager.RegisterClients(ctx, []client.Client{
+		{Name: client.MCPClient(clientType)},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to register client %s: %w", clientType, err)
 	}
 
 	return nil
@@ -250,84 +204,6 @@ func removeClientCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Successfully removed client: %s\n", clientType)
-	return nil
-}
-
-// addRunningMCPsToClient adds currently running MCP servers to the specified client's configuration
-func addRunningMCPsToClient(ctx context.Context, clientName string) error {
-	// Create container runtime
-	runtime, err := container.NewFactory().Create(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
-	}
-
-	// List workloads
-	containers, err := runtime.ListWorkloads(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Filter containers to only show those managed by ToolHive and running
-	var runningContainers []rt.ContainerInfo
-	for _, c := range containers {
-		if labels.IsToolHiveContainer(c.Labels) && c.State == "running" {
-			runningContainers = append(runningContainers, c)
-		}
-	}
-
-	if len(runningContainers) == 0 {
-		// No running servers, nothing to do
-		return nil
-	}
-
-	// Find the client configuration for the specified client
-	clientConfigs, err := client.FindClientConfigs()
-	if err != nil {
-		return fmt.Errorf("failed to find client configurations: %w", err)
-	}
-
-	// If no configs found, nothing to do
-	if len(clientConfigs) == 0 {
-		return nil
-	}
-
-	// For each running container, add it to the client configuration
-	for _, c := range runningContainers {
-		// Get container name from labels
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
-
-		// Get tool type from labels
-		toolType := labels.GetToolType(c.Labels)
-
-		// Only include containers with tool type "mcp"
-		if toolType != "mcp" {
-			continue
-		}
-
-		// Get port from labels
-		port, err := labels.GetPort(c.Labels)
-		if err != nil {
-			continue // Skip if we can't get the port
-		}
-
-		// Generate URL for the MCP server
-		url := client.GenerateMCPServerURL(transport.LocalhostIPv4, port, name)
-
-		// Update each configuration file
-		for _, clientConfig := range clientConfigs {
-			// Update the MCP server configuration with locking
-			if err := client.Upsert(clientConfig, name, url); err != nil {
-				logger.Warnf("Warning: Failed to update MCP server configuration in %s: %v", clientConfig.Path, err)
-				continue
-			}
-
-			fmt.Printf("Added MCP server %s to client %s\n", name, clientName)
-		}
-	}
-
 	return nil
 }
 
@@ -408,15 +284,33 @@ func setRegistryURLCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("registry URL must start with http:// or https://")
 	}
 
+	if !allowPrivateRegistryIp {
+		registryClient := networking.GetHttpClient(false)
+		_, err := registryClient.Get(registryURL)
+		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
+			return err
+		}
+	}
+
 	// Update the configuration
 	err := config.UpdateConfig(func(c *config.Config) {
 		c.RegistryUrl = registryURL
+		c.AllowPrivateRegistryIp = allowPrivateRegistryIp
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
 	fmt.Printf("Successfully set registry URL: %s\n", registryURL)
+	if allowPrivateRegistryIp {
+		fmt.Print("Successfully enabled use of private IP addresses for the remote registry\n")
+		fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +
+			"Make sure you trust any remote registries you configure with ToolHive.")
+	} else {
+		fmt.Printf("Use of private IP addresses for the remote registry has been disabled" +
+			" as it's not needed for the provided registry.\n")
+	}
+
 	return nil
 }
 

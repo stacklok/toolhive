@@ -54,6 +54,55 @@ spec:
                 items:
                   type: string
                 type: array
+              authzConfig:
+                description: AuthzConfig defines authorization policy configuration
+                  for the MCP server
+                properties:
+                  configMap:
+                    description: |-
+                      ConfigMap references a ConfigMap containing authorization configuration
+                      Only used when Type is "configMap"
+                    properties:
+                      key:
+                        default: authz.json
+                        description: Key is the key in the ConfigMap that contains
+                          the authorization configuration
+                        type: string
+                      name:
+                        description: Name is the name of the ConfigMap
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  inline:
+                    description: |-
+                      Inline contains direct authorization configuration
+                      Only used when Type is "inline"
+                    properties:
+                      entitiesJson:
+                        default: '[]'
+                        description: EntitiesJSON is a JSON string representing Cedar
+                          entities
+                        type: string
+                      policies:
+                        description: Policies is a list of Cedar policy strings
+                        items:
+                          type: string
+                        minItems: 1
+                        type: array
+                    required:
+                    - policies
+                    type: object
+                  type:
+                    default: configMap
+                    description: Type is the type of authorization configuration
+                    enum:
+                    - configMap
+                    - inline
+                    type: string
+                required:
+                - type
+                type: object
               env:
                 description: Env are environment variables to set in the MCP server
                   container
@@ -103,7 +152,8 @@ spec:
                         description: Audience is the expected audience for the token
                         type: string
                       clientId:
-                        description: ClientID is the OIDC client ID
+                        description: ClientID is deprecated and will be removed in
+                          a future release.
                         type: string
                       issuer:
                         description: Issuer is the OIDC issuer URL
@@ -137,9 +187,8 @@ spec:
                           If empty, uses the MCPServer's namespace
                         type: string
                       serviceAccount:
-                        description: |-
-                          ServiceAccount is the name of the service account to validate tokens for
-                          If empty, uses the pod's service account
+                        description: ServiceAccount is deprecated and will be removed
+                          in a future release.
                         type: string
                     type: object
                   type:
@@ -147,7 +196,7 @@ spec:
                     description: Type is the type of OIDC configuration
                     enum:
                     - kubernetes
-                    - configmap
+                    - configMap
                     - inline
                     type: string
                 required:
@@ -8316,9 +8365,10 @@ spec:
               transport:
                 default: stdio
                 description: Transport is the transport method for the MCP server
-                  (stdio or sse)
+                  (stdio, streamable-http or sse)
                 enum:
                 - stdio
+                - streamable-http
                 - sse
                 type: string
               volumes:

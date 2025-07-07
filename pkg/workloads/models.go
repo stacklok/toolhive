@@ -7,6 +7,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // WorkloadStatus is an enum representing the possible statuses of a workload.
@@ -42,6 +43,8 @@ type Workload struct {
 	// ToolType is the type of tool this workload represents.
 	// For now, it will always be "mcp" - representing an MCP server.
 	ToolType string `json:"tool_type"`
+	// TransportType is the type of transport used for this workload.
+	TransportType types.TransportType `json:"transport_type"`
 	// Status is the current status of the workload.
 	Status WorkloadStatus `json:"status"`
 	// StatusContext provides additional context about the workload's status.
@@ -68,10 +71,13 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 		port = 0
 	}
 
+	// check if we have the label for transport type (toolhive-transport)
+	transportType := labels.GetTransportType(container.Labels)
+
 	// Generate URL for the MCP server
 	url := ""
 	if port > 0 {
-		url = client.GenerateMCPServerURL(transport.LocalhostIPv4, port, name)
+		url = client.GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
 	}
 
 	// https://docs.docker.com/reference/api/engine/version/v1.45/#tag/Container/operation/ContainerList
@@ -87,6 +93,12 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 		workloadStatus = WorkloadStatusStarting
 	}
 
+	tType, err := types.ParseTransportType(transportType)
+	if err != nil {
+		// If we can't parse the transport type, default to SSE.
+		tType = types.TransportTypeSSE
+	}
+
 	// Translate to domain model.
 	return Workload{
 		Name: container.Name,
@@ -94,6 +106,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 		Package:       container.Image,
 		URL:           url,
 		ToolType:      toolType,
+		TransportType: tType,
 		Status:        workloadStatus,
 		StatusContext: container.Status,
 		CreatedAt:     container.Created,

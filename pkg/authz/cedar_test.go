@@ -9,11 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // TestNewCedarAuthorizer tests the creation of a new Cedar authorizer with different configurations.
 func TestNewCedarAuthorizer(t *testing.T) {
 	t.Parallel()
+
+	// Initialize logger for tests
+	logger.Initialize()
 	// Test cases
 	testCases := []struct {
 		name         string

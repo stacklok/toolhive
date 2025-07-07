@@ -436,7 +436,7 @@ func shouldRemoveClientConfig() bool {
 // updateClientConfigurations updates client configuration files with the MCP server URL
 func removeClientConfigurations(containerName string) error {
 	// Find client configuration files
-	configs, err := client.FindClientConfigs()
+	configs, err := client.FindRegisteredClientConfigs()
 	if err != nil {
 		return fmt.Errorf("failed to find client configurations: %w", err)
 	}

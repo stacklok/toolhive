@@ -123,6 +123,19 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 
 			logger.Debugf("Failed to check Docker Desktop socket at %s: %v", dockerDesktopPath, err)
 		}
+
+		// Try Rancher Desktop socket path on macOS
+		if home := os.Getenv("HOME"); home != "" {
+			rancherDesktopPath := filepath.Join(home, RancherDesktopMacSocketPath)
+			_, err := os.Stat(rancherDesktopPath)
+
+			if err == nil {
+				logger.Debugf("Found Rancher Desktop socket at %s", rancherDesktopPath)
+				return rancherDesktopPath, runtime.TypeDocker, nil
+			}
+
+			logger.Debugf("Failed to check Rancher Desktop socket at %s: %v", rancherDesktopPath, err)
+		}
 	}
 
 	return "", "", ErrRuntimeNotFound

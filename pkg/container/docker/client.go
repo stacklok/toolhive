@@ -5,6 +5,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -466,6 +467,11 @@ func (c *Client) DeployWorkload(
 	}
 
 	if isolateNetwork {
+		// Add a label to the MCP server indicating network isolation.
+		// This allows other methods to determine whether it needs to care
+		// about ingress/egress/dns containers.
+		lb.AddNetworkIsolationLabel(labels)
+
 		internalNetworkLabels := map[string]string{}
 		lb.AddNetworkLabels(internalNetworkLabels, networkName)
 		err := c.createNetwork(ctx, networkName, internalNetworkLabels, true)
@@ -611,17 +617,17 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 // If the workload is already stopped, it returns success
 func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 	// Check if the workload is running
-	running, err := c.IsWorkloadRunning(ctx, workloadID)
+	info, err := c.GetWorkloadInfo(ctx, workloadID)
 	if err != nil {
 		// If the container doesn't exist, that's fine - it's already "stopped"
-		if err, ok := err.(*ContainerError); ok && err.Err == ErrContainerNotFound {
+		if errors.Is(err, ErrContainerNotFound) {
 			return nil
 		}
 		return err
 	}
 
 	// If the container is not running, return success
-	if !running {
+	if info.State != container.StateRunning {
 		return nil
 	}
 
@@ -632,50 +638,37 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 		return NewContainerError(err, workloadID, fmt.Sprintf("failed to stop workload: %v", err))
 	}
 
-	// stop egress and dns containers
-	containerResponse, err := c.client.ContainerInspect(ctx, workloadID)
-	if err != nil {
-		logger.Warnf("Failed to inspect container %s: %v", workloadID, err)
-	} else {
-		// remove / from container name
-		containerName := strings.TrimPrefix(containerResponse.Name, "/")
-		egressContainerName := fmt.Sprintf("%s-egress", containerName)
-		ingressContainerName := fmt.Sprintf("%s-ingress", containerName)
-		dnsContainerName := fmt.Sprintf("%s-dns", containerName)
+	// If network isolation is not enabled, then there is nothing else to do.
+	if !lb.HasNetworkIsolation(info.Labels) {
+		return nil
+	}
 
-		// find the egress container by name
-		egressContainerId, err := c.findExistingContainer(ctx, egressContainerName)
-		if err != nil {
-			logger.Warnf("Failed to find egress container %s: %v", egressContainerName, err)
-		} else {
-			err = c.client.ContainerStop(ctx, egressContainerId, container.StopOptions{Timeout: &timeoutSeconds})
-			if err != nil {
-				logger.Warnf("Failed to stop egress container %s: %v", egressContainerName, err)
-			}
-		}
+	// remove / from container name
+	containerName := strings.TrimPrefix(info.Name, "/")
+	egressContainerName := fmt.Sprintf("%s-egress", containerName)
+	ingressContainerName := fmt.Sprintf("%s-ingress", containerName)
+	dnsContainerName := fmt.Sprintf("%s-dns", containerName)
 
-		ingressContainerId, err := c.findExistingContainer(ctx, ingressContainerName)
-		if err != nil {
-			logger.Warnf("Failed to find ingress container %s: %v", ingressContainerName, err)
-		} else {
-			err = c.client.ContainerStop(ctx, ingressContainerId, container.StopOptions{Timeout: &timeoutSeconds})
-			if err != nil {
-				logger.Warnf("Failed to stop ingress container %s: %v", ingressContainerName, err)
-			}
-		}
-
-		dnsContainerId, err := c.findExistingContainer(ctx, dnsContainerName)
-		if err != nil {
-			logger.Warnf("Failed to find dns container %s: %v", dnsContainerName, err)
-		} else {
-			err = c.client.ContainerStop(ctx, dnsContainerId, container.StopOptions{Timeout: &timeoutSeconds})
-			if err != nil {
-				logger.Warnf("Failed to stop dns container %s: %v", dnsContainerName, err)
-			}
-		}
+	// Attempt to stop each auxiliary container gracefully.
+	// Treat any errors as non-fatal and log them.
+	proxyContainers := []string{egressContainerName, ingressContainerName, dnsContainerName}
+	for _, name := range proxyContainers {
+		c.stopProxyContainer(ctx, name, timeoutSeconds)
 	}
 
 	return nil
+}
+
+func (c *Client) stopProxyContainer(ctx context.Context, containerName string, timeoutSeconds int) {
+	containerId, err := c.findExistingContainer(ctx, containerName)
+	if err != nil {
+		logger.Warnf("Failed to find internal container %s: %v", containerName, err)
+	} else {
+		err = c.client.ContainerStop(ctx, containerId, container.StopOptions{Timeout: &timeoutSeconds})
+		if err != nil {
+			logger.Warnf("Failed to stop internal container %s: %v", containerName, err)
+		}
+	}
 }
 
 func (c *Client) deleteNetworks(ctx context.Context, containerName string) error {
@@ -727,6 +720,11 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 			return nil
 		}
 		return NewContainerError(err, workloadID, fmt.Sprintf("failed to remove workload: %v", err))
+	}
+
+	// If network isolation is not enabled, then there is nothing else to do.
+	if containerResponse.Config != nil && !lb.HasNetworkIsolation(containerResponse.Config.Labels) {
+		return nil
 	}
 
 	// remove egress, ingress, and dns containers

@@ -201,6 +201,11 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 		detachedArgs = append(detachedArgs, "--transport", string(runConfig.Transport))
 	}
 
+	// Add proxy-mode if set
+	if runConfig.ProxyMode != "" {
+		detachedArgs = append(detachedArgs, "--proxy-mode", runConfig.ProxyMode.String())
+	}
+
 	if runConfig.Debug {
 		detachedArgs = append(detachedArgs, "--debug")
 	}
@@ -431,7 +436,7 @@ func shouldRemoveClientConfig() bool {
 // updateClientConfigurations updates client configuration files with the MCP server URL
 func removeClientConfigurations(containerName string) error {
 	// Find client configuration files
-	configs, err := client.FindClientConfigs()
+	configs, err := client.FindRegisteredClientConfigs()
 	if err != nil {
 		return fmt.Errorf("failed to find client configurations: %w", err)
 	}

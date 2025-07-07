@@ -139,7 +139,9 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 				ProviderType: "encrypted",
 			},
 			Clients: config.Clients{
-				RegisteredClients: []string{},
+				RegisteredClients: []string{
+					"invalid", // Register the invalid client
+				},
 			},
 		}
 
@@ -147,7 +149,7 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 		defer cleanup()
 
 		// Find client configs - this should fail due to the invalid JSON
-		_, err = FindClientConfigs()
+		_, err = FindRegisteredClientConfigs()
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to validate config file format")
 		// we check if cursor is in the error message because that's the
@@ -221,14 +223,21 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				ProviderType: "encrypted",
 			},
 			Clients: config.Clients{
-				RegisteredClients: []string{},
+				RegisteredClients: []string{
+					string(VSCode),
+					string(VSCodeInsider),
+					string(Cursor),
+					string(RooCode),
+					string(ClaudeCode),
+					string(Cline),
+				},
 			},
 		}
 
 		cleanup := MockConfig(t, testConfig)
 		defer cleanup()
 
-		configs, err := FindClientConfigs()
+		configs, err := FindRegisteredClientConfigs()
 		require.NoError(t, err)
 		assert.Len(t, configs, len(supportedClientIntegrations), "Should find all mock client configs")
 
@@ -245,7 +254,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	})
 
 	t.Run("VerifyConfigFileContents", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindClientConfigs()
+		configs, err := FindRegisteredClientConfigs()
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
 
@@ -278,7 +287,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	})
 
 	t.Run("AddAndVerifyMCPServer", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindClientConfigs()
+		configs, err := FindRegisteredClientConfigs()
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
 

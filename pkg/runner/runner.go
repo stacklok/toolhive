@@ -125,6 +125,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
 	}
 
+	// Set proxy mode for stdio transport
+	transportConfig.ProxyMode = r.Config.ProxyMode
+
 	transportHandler, err := transport.NewFactory().Create(transportConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create transport: %v", err)
@@ -286,7 +289,7 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 // updateClientConfigurations updates client configuration files with the MCP server URL
 func updateClientConfigurations(containerName string, containerLabels map[string]string, host string, port int) error {
 	// Find client configuration files
-	clientConfigs, err := client.FindClientConfigs()
+	clientConfigs, err := client.FindRegisteredClientConfigs()
 	if err != nil {
 		return fmt.Errorf("failed to find client configurations: %w", err)
 	}

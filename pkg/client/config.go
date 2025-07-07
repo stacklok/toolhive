@@ -214,8 +214,8 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	return configFile, nil
 }
 
-// FindClientConfigs searches for client configuration files in standard locations
-func FindClientConfigs() ([]ConfigFile, error) {
+// FindRegisteredClientConfigs searches for client configuration files for registered clients in standard locations
+func FindRegisteredClientConfigs() ([]ConfigFile, error) {
 	clientStatuses, err := GetClientStatus()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client status: %w", err)
@@ -223,7 +223,7 @@ func FindClientConfigs() ([]ConfigFile, error) {
 
 	var configFiles []ConfigFile
 	for _, clientStatus := range clientStatuses {
-		if !clientStatus.Installed {
+		if !clientStatus.Installed || !clientStatus.Registered {
 			continue
 		}
 		cf, err := FindClientConfig(clientStatus.ClientType)

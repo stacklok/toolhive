@@ -639,9 +639,15 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 	}
 
 	// If network isolation is not enabled, then there is nothing else to do.
-	if !lb.HasNetworkIsolation(info.Labels) {
-		return nil
-	}
+	// TODO: This check is currently commented out because we need to ensure
+	// that workloads created by older versions of ToolHive get cleaned up
+	// properly. Once we are confident that all workloads with network isolation
+	// have the label set, we can uncomment this check.
+	/*
+		if !lb.HasNetworkIsolation(info.Labels) {
+			return nil
+		}
+	*/
 
 	// remove / from container name
 	containerName := strings.TrimPrefix(info.Name, "/")
@@ -723,9 +729,16 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 	}
 
 	// If network isolation is not enabled, then there is nothing else to do.
-	if containerResponse.Config != nil && !lb.HasNetworkIsolation(containerResponse.Config.Labels) {
-		return nil
-	}
+	// TODO: This check is currently commented out because we need to ensure
+	// that workloads created by older versions of ToolHive get cleaned up
+	// properly. Once we are confident that all workloads with network isolation
+	// have the label set, we can uncomment this check.
+	// If network isolation is not enabled, then there is nothing else to do.
+	/*
+		if containerResponse.Config != nil && !lb.HasNetworkIsolation(containerResponse.Config.Labels) {
+			return nil
+		}
+	*/
 
 	// remove egress, ingress, and dns containers
 	suffixes := []string{"egress", "ingress", "dns"}

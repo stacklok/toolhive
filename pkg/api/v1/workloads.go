@@ -101,7 +101,7 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 
 	workload, err := s.manager.GetWorkload(ctx, name)
 	if err != nil {
-		if errors.Is(err, workloads.ErrContainerNotFound) {
+		if errors.Is(err, workloads.ErrWorkloadNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)
 			return
 		} else if errors.Is(err, workloads.ErrInvalidWorkloadName) {
@@ -447,7 +447,7 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 
 	logs, err := s.manager.GetLogs(ctx, name, false)
 	if err != nil {
-		if errors.Is(err, workloads.ErrContainerNotFound) {
+		if errors.Is(err, workloads.ErrWorkloadNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)
 			return
 		}

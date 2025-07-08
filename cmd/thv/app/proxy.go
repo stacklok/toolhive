@@ -28,7 +28,7 @@ var proxyCmd = &cobra.Command{
 	Use:   "proxy [flags] SERVER_NAME",
 	Short: "Create a transparent proxy for an MCP server with authentication support",
 	Long: `Create a transparent HTTP proxy that forwards requests to an MCP server endpoint.
-This command starts a standalone proxy without launching a container, providing:
+This command starts a standalone proxy without creating a workload, providing:
 
 • Transparent request forwarding to the target MCP server
 • Optional OAuth/OIDC authentication to remote MCP servers

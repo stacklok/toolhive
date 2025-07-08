@@ -56,11 +56,11 @@ type defaultManager struct {
 	runtime rt.Runtime
 }
 
-// ErrContainerNotFound is returned when a container cannot be found by name.
+// ErrWorkloadNotFound is returned when a container cannot be found by name.
 // ErrInvalidWorkloadName is returned when a workload name fails validation.
 var (
-	ErrContainerNotFound   = fmt.Errorf("container not found")
-	ErrContainerNotRunning = fmt.Errorf("container not running")
+	ErrWorkloadNotFound    = fmt.Errorf("workload not found")
+	ErrWorkloadNotRunning  = fmt.Errorf("workload not running")
 	ErrInvalidWorkloadName = fmt.Errorf("invalid workload name")
 )
 
@@ -144,7 +144,7 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 	for _, name := range names {
 		container, err := d.findContainerByName(ctx, name)
 		if err != nil {
-			if errors.Is(err, ErrContainerNotFound) {
+			if errors.Is(err, ErrWorkloadNotFound) {
 				// Log but don't fail the entire operation for not found containers
 				logger.Warnf("Warning: Failed to stop workload %s: %v", name, err)
 				continue
@@ -155,7 +155,7 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 		running := isContainerRunning(container)
 		if !running {
 			// Log but don't fail the entire operation for not running containers
-			logger.Warnf("Warning: Failed to stop workload %s: %v", name, ErrContainerNotRunning)
+			logger.Warnf("Warning: Failed to stop workload %s: %v", name, ErrWorkloadNotRunning)
 			continue
 		}
 
@@ -383,8 +383,8 @@ func (d *defaultManager) GetLogs(ctx context.Context, containerName string, foll
 	container, err := d.findContainerByName(ctx, containerName)
 	if err != nil {
 		// Propagate the error if the container is not found
-		if errors.Is(err, ErrContainerNotFound) {
-			return "", fmt.Errorf("%w: %s", ErrContainerNotFound, containerName)
+		if errors.Is(err, ErrWorkloadNotFound) {
+			return "", fmt.Errorf("%w: %s", ErrWorkloadNotFound, containerName)
 		}
 		return "", fmt.Errorf("failed to find container %s: %v", containerName, err)
 	}
@@ -424,7 +424,7 @@ func (d *defaultManager) findContainerByName(ctx context.Context, name string) (
 		}
 	}
 
-	return nil, fmt.Errorf("%w: %s", ErrContainerNotFound, name)
+	return nil, fmt.Errorf("%w: %s", ErrWorkloadNotFound, name)
 }
 
 func shouldRemoveClientConfig() bool {
@@ -564,7 +564,7 @@ func (d *defaultManager) DeleteWorkloads(_ context.Context, names []string) (*er
 			// Find the container
 			container, err := d.findContainerByName(childCtx, name)
 			if err != nil {
-				if errors.Is(err, ErrContainerNotFound) {
+				if errors.Is(err, ErrWorkloadNotFound) {
 					// Log but don't fail the entire operation for not found containers
 					logger.Warnf("Warning: Failed to delete workload %s: %v", name, err)
 					return nil
@@ -645,7 +645,7 @@ func (d *defaultManager) RestartWorkloads(_ context.Context, names []string) (*e
 			// Try to find the container.
 			container, err := d.findContainerByName(childCtx, name)
 			if err != nil {
-				if errors.Is(err, ErrContainerNotFound) {
+				if errors.Is(err, ErrWorkloadNotFound) {
 					logger.Warnf("Warning: Failed to find container: %v", err)
 					logger.Warnf("Trying to find state with name %s directly...", name)
 

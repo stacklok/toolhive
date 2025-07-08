@@ -17,7 +17,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/jwx/v2 v2.1.6
 	github.com/lmittmann/tint v1.1.2
-	github.com/mark3labs/mcp-go v0.32.0
+	github.com/mark3labs/mcp-go v0.33.0
 	github.com/olekukonko/tablewriter v1.0.8
 	github.com/onsi/ginkgo/v2 v2.23.4
 	github.com/onsi/gomega v1.37.0

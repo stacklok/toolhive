@@ -21,7 +21,8 @@ import (
 
 // WorkloadRoutes defines the routes for workload management.
 type WorkloadRoutes struct {
-	manager          workloads.Manager
+	workloadManager  workloads.Manager
+	statusManager    workloads.StatusManager
 	containerRuntime runtime.Runtime
 	debugMode        bool
 }
@@ -34,12 +35,14 @@ type WorkloadRoutes struct {
 
 // WorkloadRouter creates a new WorkloadRoutes instance.
 func WorkloadRouter(
-	manager workloads.Manager,
+	workloadManager workloads.Manager,
+	statusManager workloads.StatusManager,
 	containerRuntime runtime.Runtime,
 	debugMode bool,
 ) http.Handler {
 	routes := WorkloadRoutes{
-		manager:          manager,
+		workloadManager:  workloadManager,
+		statusManager:    statusManager,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 	}
@@ -70,7 +73,7 @@ func WorkloadRouter(
 func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	listAll := r.URL.Query().Get("all") == "true"
-	workloadList, err := s.manager.ListWorkloads(ctx, listAll)
+	workloadList, err := s.statusManager.ListWorkloads(ctx, listAll)
 	if err != nil {
 		logger.Errorf("Failed to list workloads: %v", err)
 		http.Error(w, "Failed to list workloads", http.StatusInternalServerError)
@@ -99,7 +102,7 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
-	workload, err := s.manager.GetWorkload(ctx, name)
+	workload, err := s.statusManager.GetWorkload(ctx, name)
 	if err != nil {
 		if errors.Is(err, workloads.ErrWorkloadNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)
@@ -136,7 +139,7 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.manager.StopWorkloads(ctx, []string{name})
+	_, err := s.workloadManager.StopWorkloads(ctx, []string{name})
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -164,7 +167,7 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.manager.RestartWorkloads(ctx, []string{name})
+	_, err := s.workloadManager.RestartWorkloads(ctx, []string{name})
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -192,7 +195,7 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.manager.DeleteWorkloads(ctx, []string{name})
+	_, err := s.workloadManager.DeleteWorkloads(ctx, []string{name})
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -267,7 +270,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		req.PermissionProfile,
 		transport.LocalhostIPv4, // Seems like a reasonable default for now.
 		req.Transport,
-		0, // Let the manager figure out which port to use.
+		0, // Let the workloadManager figure out which port to use.
 		req.TargetPort,
 		req.EnvVars,
 		req.OIDC.Issuer,
@@ -294,7 +297,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Start workload with specified RunConfig.
-	err = s.manager.RunWorkloadDetached(runConfig)
+	err = s.workloadManager.RunWorkloadDetached(runConfig)
 	if err != nil {
 		logger.Errorf("Failed to start workload: %v", err)
 		http.Error(w, "Failed to start workload", http.StatusInternalServerError)
@@ -340,7 +343,7 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err := s.manager.StopWorkloads(ctx, req.Names)
+	_, err := s.workloadManager.StopWorkloads(ctx, req.Names)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -379,7 +382,7 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err := s.manager.RestartWorkloads(ctx, req.Names)
+	_, err := s.workloadManager.RestartWorkloads(ctx, req.Names)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -418,7 +421,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err := s.manager.DeleteWorkloads(ctx, req.Names)
+	_, err := s.workloadManager.DeleteWorkloads(ctx, req.Names)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -445,7 +448,7 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
-	logs, err := s.manager.GetLogs(ctx, name, false)
+	logs, err := s.workloadManager.GetLogs(ctx, name, false)
 	if err != nil {
 		if errors.Is(err, workloads.ErrWorkloadNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)

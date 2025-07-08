@@ -38,19 +38,24 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("must specify either --all flag or workload name")
 	}
 
-	// Create lifecycle manager.
-	manager, err := workloads.NewManager(ctx)
+	// Create workload managers.
+	workloadManager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create lifecycle manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
+
+	statusManager, err := workloads.NewStatusManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create status manager: %v", err)
 	}
 
 	if restartAll {
-		return restartAllContainers(ctx, manager)
+		return restartAllContainers(ctx, statusManager, workloadManager)
 	}
 
 	// Restart single workload
 	workloadName := args[0]
-	restartGroup, err := manager.RestartWorkloads(ctx, []string{workloadName})
+	restartGroup, err := workloadManager.RestartWorkloads(ctx, []string{workloadName})
 	if err != nil {
 		return err
 	}
@@ -64,9 +69,13 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func restartAllContainers(ctx context.Context, manager workloads.Manager) error {
-	// Get all allWorkloads (including stopped ones since restart can start stopped allWorkloads)
-	allWorkloads, err := manager.ListWorkloads(ctx, true)
+func restartAllContainers(
+	ctx context.Context,
+	statusManager workloads.StatusManager,
+	workloadManager workloads.Manager,
+) error {
+	// Get all containers (including stopped ones since restart can start stopped containers)
+	allWorkloads, err := statusManager.ListWorkloads(ctx, true)
 	if err != nil {
 		return fmt.Errorf("failed to list allWorkloads: %v", err)
 	}
@@ -87,7 +96,7 @@ func restartAllContainers(ctx context.Context, manager workloads.Manager) error 
 	for _, workload := range allWorkloads {
 		workloadName := workload.Name
 		fmt.Printf("Restarting %s...", workloadName)
-		restart, err := manager.RestartWorkloads(ctx, []string{workloadName})
+		restart, err := workloadManager.RestartWorkloads(ctx, []string{workloadName})
 		if err != nil {
 			fmt.Printf(" failed: %v\n", err)
 			failedCount++

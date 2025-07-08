@@ -167,10 +167,10 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 }
 
 func getServerPortAndTransport(ctx context.Context, serverName string) (int, types.TransportType, error) {
-	// Instantiate the workload manager and list all workloads.
-	manager, err := workloads.NewManager(ctx)
+	// Instantiate the status manager and list all workloads.
+	manager, err := workloads.NewStatusManager(ctx)
 	if err != nil {
-		return 0, types.TransportTypeSSE, fmt.Errorf("failed to create workload manager: %v", err)
+		return 0, types.TransportTypeSSE, fmt.Errorf("failed to create status manager: %v", err)
 	}
 
 	workloadList, err := manager.ListWorkloads(ctx, true)

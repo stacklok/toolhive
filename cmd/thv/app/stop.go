@@ -52,9 +52,14 @@ func validateStopArgs(cmd *cobra.Command, args []string) error {
 func stopCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	manager, err := workloads.NewManager(ctx)
+	workloadManager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
+
+	statusManager, err := workloads.NewStatusManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create status manager: %v", err)
 	}
 
 	var group *errgroup.Group
@@ -62,7 +67,7 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 	// Check if --all flag is set
 	if stopAll {
 		// Get list of all running workloads first
-		workloadList, err := manager.ListWorkloads(ctx, false) // false = only running workloads
+		workloadList, err := statusManager.ListWorkloads(ctx, false) // false = only running workloads
 		if err != nil {
 			return fmt.Errorf("failed to list workloads: %v", err)
 		}
@@ -79,7 +84,7 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 
 		// Stop all workloads using the bulk method
-		group, err = manager.StopWorkloads(ctx, workloadNames)
+		group, err = workloadManager.StopWorkloads(ctx, workloadNames)
 		if err != nil {
 			return fmt.Errorf("failed to stop all workloads: %v", err)
 		}
@@ -94,7 +99,7 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		workloadName := args[0]
 
 		// Stop a single workload
-		group, err = manager.StopWorkloads(ctx, []string{workloadName})
+		group, err = workloadManager.StopWorkloads(ctx, []string{workloadName})
 		if err != nil {
 			// If the workload is not found or not running, treat as a non-fatal error.
 			if errors.Is(err, workloads.ErrWorkloadNotFound) ||

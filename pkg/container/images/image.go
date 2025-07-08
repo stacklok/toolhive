@@ -26,14 +26,21 @@ type ImageManager interface {
 // NewImageManager creates an instance of ImageManager appropriate
 // for the current environment, or returns an error if it is not supported.
 func NewImageManager(ctx context.Context) ImageManager {
-	// ASSUMPTION: This only works for the Docker runtime.
-	// Otherwise, return a no-op implementation.
+	// First try the registry-based implementation (no Docker daemon required)
+	registryManager := NewRegistryImageManager()
+	if registryManager != nil {
+		logger.Debug("using registry-based image manager")
+		return registryManager
+	}
+
+	// Fall back to Docker client if registry manager is not available
 	dockerClient, _, _, err := sdk.NewDockerClient(ctx)
 	if err != nil {
 		logger.Debug("no docker runtime found, using no-op image manager")
 		return &NoopImageManager{}
 	}
 
+	logger.Debug("using docker-based image manager")
 	return NewDockerImageManager(dockerClient)
 }
 

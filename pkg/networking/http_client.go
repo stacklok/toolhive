@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/oauth2"
 )
 
 var privateIPBlocks []*net.IPNet
@@ -51,38 +53,26 @@ func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return t.Transport.RoundTrip(req)
 }
 
-// authenticatedTransport adds Bearer token authentication to HTTP requests
-type authenticatedTransport struct {
-	transport http.RoundTripper
-	token     string
-}
-
-// newAuthenticatedTransport creates a new authenticatedTransport with token from file
-func newAuthenticatedTransport(transport http.RoundTripper, tokenFile string) (*authenticatedTransport, error) {
-	token, err := os.ReadFile(tokenFile) // #nosec G304 - tokenFile path is provided by user via CLI flag
+// createTokenSourceFromFile creates an oauth2.TokenSource from a token file
+func createTokenSourceFromFile(tokenFile string) (oauth2.TokenSource, error) {
+	tokenBytes, err := os.ReadFile(tokenFile) // #nosec G304 - tokenFile path is provided by user via CLI flag
 	if err != nil {
 		return nil, fmt.Errorf("failed to read auth token file: %w", err)
 	}
 
 	// Remove any trailing newlines/whitespace
-	tokenStr := strings.TrimSpace(string(token))
+	tokenStr := strings.TrimSpace(string(tokenBytes))
 	if tokenStr == "" {
 		return nil, fmt.Errorf("auth token file is empty")
 	}
 
-	return &authenticatedTransport{
-		transport: transport,
-		token:     tokenStr,
-	}, nil
-}
+	// Create a static token source
+	token := &oauth2.Token{
+		AccessToken: tokenStr,
+		TokenType:   "Bearer",
+	}
 
-// RoundTrip adds the Authorization header and forwards the request
-func (t *authenticatedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Clone the request to avoid modifying the original
-	newReq := req.Clone(req.Context())
-	newReq.Header.Set("Authorization", "Bearer "+t.token)
-
-	return t.transport.RoundTrip(newReq)
+	return oauth2.StaticTokenSource(token), nil
 }
 
 // HttpClientBuilder provides a fluent interface for building HTTP clients
@@ -159,13 +149,18 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 		Transport: transport,
 	}
 
-	// Add auth transport if token file is provided
+	// Add auth transport if token file is provided using oauth2.Transport
 	if b.authTokenFile != "" {
-		transportWithToken, err := newAuthenticatedTransport(clientTransport, b.authTokenFile)
+		tokenSource, err := createTokenSourceFromFile(b.authTokenFile)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create auth transport: %w", err)
+			return nil, fmt.Errorf("failed to create token source: %w", err)
 		}
-		clientTransport = transportWithToken
+
+		// oauth2.Transport wraps our existing transport and adds Bearer token authentication
+		clientTransport = &oauth2.Transport{
+			Source: tokenSource,
+			Base:   clientTransport, // Preserves our ValidatingTransport
+		}
 	}
 
 	client := &http.Client{

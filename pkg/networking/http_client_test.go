@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 )
 
 func TestNewHttpClientBuilder(t *testing.T) {
@@ -165,7 +166,7 @@ lT/G27CBRUlDiDhthwY1dccTCFhICg6ENUGqh2I=
 			expectError: false,
 			validateClient: func(t *testing.T, client *http.Client) {
 				t.Helper()
-				assert.IsType(t, &authenticatedTransport{}, client.Transport)
+				assert.IsType(t, &oauth2.Transport{}, client.Transport)
 			},
 		},
 		{
@@ -207,9 +208,9 @@ lT/G27CBRUlDiDhthwY1dccTCFhICg6ENUGqh2I=
 			expectError: false,
 			validateClient: func(t *testing.T, client *http.Client) {
 				t.Helper()
-				// Should have auth transport wrapping validating transport
-				authTransport := client.Transport.(*authenticatedTransport)
-				assert.IsType(t, &ValidatingTransport{}, authTransport.transport)
+				// Should have oauth2 transport wrapping validating transport
+				authTransport := client.Transport.(*oauth2.Transport)
+				assert.IsType(t, &ValidatingTransport{}, authTransport.Base)
 			},
 		},
 		{
@@ -278,7 +279,7 @@ lT/G27CBRUlDiDhthwY1dccTCFhICg6ENUGqh2I=
 				return "", "/nonexistent/token"
 			},
 			expectError:   true,
-			errorContains: "failed to create auth transport",
+			errorContains: "failed to create token source",
 		},
 		{
 			name: "empty token file",
@@ -407,7 +408,7 @@ func TestValidatingTransport_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestAuthenticatedTransport_RoundTrip(t *testing.T) {
+func TestOAuth2Transport_RoundTrip(t *testing.T) {
 	t.Parallel()
 
 	// Create a test server to capture the Authorization header
@@ -424,9 +425,14 @@ func TestAuthenticatedTransport_RoundTrip(t *testing.T) {
 	testToken := "test-bearer-token-123"
 	require.NoError(t, os.WriteFile(tokenFile, []byte(testToken), 0644))
 
-	// Create authenticated transport
-	authTransport, err := newAuthenticatedTransport(server.Client().Transport, tokenFile)
+	// Create token source and oauth2 transport
+	tokenSource, err := createTokenSourceFromFile(tokenFile)
 	require.NoError(t, err)
+
+	authTransport := &oauth2.Transport{
+		Source: tokenSource,
+		Base:   server.Client().Transport,
+	}
 
 	// Make request
 	req, err := http.NewRequest("GET", server.URL, nil)
@@ -445,7 +451,7 @@ func TestAuthenticatedTransport_RoundTrip(t *testing.T) {
 	assert.Empty(t, req.Header.Get("Authorization"))
 }
 
-func TestNewAuthenticatedTransport(t *testing.T) {
+func TestCreateTokenSourceFromFile(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -495,20 +501,23 @@ func TestNewAuthenticatedTransport(t *testing.T) {
 			tokenFile := filepath.Join(t.TempDir(), "token")
 			require.NoError(t, os.WriteFile(tokenFile, []byte(tt.tokenContent), 0644))
 
-			mockTransport := &mockRoundTripper{}
-			authTransport, err := newAuthenticatedTransport(mockTransport, tokenFile)
+			tokenSource, err := createTokenSourceFromFile(tokenFile)
 
 			if tt.expectError {
 				assert.Error(t, err)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error(), tt.errorContains)
 				}
-				assert.Nil(t, authTransport)
+				assert.Nil(t, tokenSource)
 			} else {
 				assert.NoError(t, err)
-				assert.NotNil(t, authTransport)
-				assert.Equal(t, tt.expectedToken, authTransport.token)
-				assert.Same(t, mockTransport, authTransport.transport)
+				assert.NotNil(t, tokenSource)
+
+				// Get token from source and verify
+				token, err := tokenSource.Token()
+				require.NoError(t, err)
+				assert.Equal(t, tt.expectedToken, token.AccessToken)
+				assert.Equal(t, "Bearer", token.TokenType)
 			}
 		})
 	}
@@ -516,12 +525,11 @@ func TestNewAuthenticatedTransport(t *testing.T) {
 	t.Run("missing token file", func(t *testing.T) {
 		t.Parallel()
 
-		mockTransport := &mockRoundTripper{}
-		authTransport, err := newAuthenticatedTransport(mockTransport, "/nonexistent/token")
+		tokenSource, err := createTokenSourceFromFile("/nonexistent/token")
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to read auth token file")
-		assert.Nil(t, authTransport)
+		assert.Nil(t, tokenSource)
 	})
 }
 

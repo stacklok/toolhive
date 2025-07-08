@@ -182,7 +182,7 @@ func getServerPortAndTransport(ctx context.Context, serverName string) (int, typ
 
 	workloadList, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
-		return 0, types.TransportTypeSSE, fmt.Errorf("failed to list workloadList: %v", err)
+		return 0, types.TransportTypeSSE, fmt.Errorf("failed to list workloads: %v", err)
 	}
 
 	for _, c := range workloadList {

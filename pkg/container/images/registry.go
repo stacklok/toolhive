@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/daemon"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
@@ -18,12 +20,23 @@ import (
 // for direct registry operations without requiring a Docker daemon.
 type RegistryImageManager struct {
 	keychain authn.Keychain
+	platform *v1.Platform
 }
 
 // NewRegistryImageManager creates a new RegistryImageManager instance
 func NewRegistryImageManager() *RegistryImageManager {
 	return &RegistryImageManager{
 		keychain: NewCompositeKeychain(), // Use composite keychain (env vars + default)
+		platform: getDefaultPlatform(),   // Use a default platform based on host architecture
+	}
+}
+
+// getDefaultPlatform returns the default platform for containers
+// Uses host architecture
+func getDefaultPlatform() *v1.Platform {
+	return &v1.Platform{
+		Architecture: runtime.GOARCH,
+		OS:           "linux", // TODO: Should we support Windows too?
 	}
 }
 
@@ -44,6 +57,10 @@ func (r *RegistryImageManager) ImageExists(ctx context.Context, imageName string
 	remoteOpts := []remote.Option{
 		remote.WithAuthFromKeychain(r.keychain),
 		remote.WithContext(ctx),
+	}
+
+	if r.platform != nil {
+		remoteOpts = append(remoteOpts, remote.WithPlatform(*r.platform))
 	}
 
 	// Use HEAD request to check if image exists without downloading
@@ -70,6 +87,10 @@ func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) 
 	remoteOpts := []remote.Option{
 		remote.WithAuthFromKeychain(r.keychain),
 		remote.WithContext(ctx),
+	}
+
+	if r.platform != nil {
+		remoteOpts = append(remoteOpts, remote.WithPlatform(*r.platform))
 	}
 
 	// Pull the image from the registry
@@ -161,5 +182,11 @@ func (*RegistryImageManager) BuildImage(_ context.Context, contextDir, imageName
 // WithKeychain sets the keychain for authentication
 func (r *RegistryImageManager) WithKeychain(keychain authn.Keychain) *RegistryImageManager {
 	r.keychain = keychain
+	return r
+}
+
+// WithPlatform sets the platform for the RegistryImageManager
+func (r *RegistryImageManager) WithPlatform(platform *v1.Platform) *RegistryImageManager {
+	r.platform = platform
 	return r
 }

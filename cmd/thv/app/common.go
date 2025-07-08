@@ -82,23 +82,23 @@ func SetSecretsProvider(provider secrets.ProviderType) error {
 
 // completeMCPServerNames provides completion for MCP server names.
 // This function is used by commands like 'rm' and 'stop' to auto-complete
-// container names with available MCP servers.
+// workload names with available MCP servers.
 func completeMCPServerNames(cmd *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
-	// Only complete the first argument (container name)
+	// Only complete the first argument (workload name)
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 
 	ctx := cmd.Context()
 
-	// Create container manager
+	// Create workload manager
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
 	}
 
 	// List all workloads (including stopped ones for rm command, only running for stop)
-	// We'll include all workloads since rm can remove stopped containers too
+	// We'll include all workloads since rm can remove stopped workloads too
 	workloadList, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
@@ -123,7 +123,7 @@ func completeLogsArgs(cmd *cobra.Command, args []string, _ string) ([]string, co
 
 	ctx := cmd.Context()
 
-	// Create container manager
+	// Create workload manager
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return []string{"prune"}, cobra.ShellCompDirectiveNoFileComp

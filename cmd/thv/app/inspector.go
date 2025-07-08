@@ -27,7 +27,7 @@ var (
 
 func inspectorCommand() *cobra.Command {
 	inspectorCommand := &cobra.Command{
-		Use:   "inspector [container-name]",
+		Use:   "inspector [workload-name]",
 		Short: "Launches the MCP Inspector UI and connects it to the specified MCP server",
 		Long:  `Launches the MCP Inspector UI and connects it to the specified MCP server`,
 		Args:  cobra.ExactArgs(1),
@@ -114,16 +114,16 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to handle protocol scheme: %v", err)
 	}
 
-	// Setup container options with the required port configuration
+	// Setup workload options with the required port configuration
 	uiPortStr := strconv.Itoa(inspectorUIPort)
 	mcpPortStr := strconv.Itoa(inspectorMCPProxyPort)
 
 	options := buildInspectorContainerOptions(uiPortStr, mcpPortStr)
 
-	// Create container runtime
+	// Create workload runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		return fmt.Errorf("failed to create workload runtime: %v", err)
 	}
 
 	labelsMap := map[string]string{}
@@ -142,14 +142,14 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		false, // Do not isolate network
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create inspector container: %v", err)
+		return fmt.Errorf("failed to create inspector workload: %v", err)
 	}
 
 	// Monitor inspector readiness by checking HTTP response
 	statusChan := make(chan bool, 1)
 	waitForInspectorReady(ctx, inspectorUIPort, statusChan)
 
-	// Wait for container to be running or context to be cancelled
+	// Wait for workload to be running or context to be cancelled
 	select {
 	case <-statusChan:
 		logger.Infof("Connected to MCP server: %s", serverName)
@@ -169,24 +169,23 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		logger.Infof("Inspector UI is now available at %s", inspectorURL)
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("context cancelled while waiting for container to start")
+		return fmt.Errorf("context cancelled while waiting for workload to start")
 	}
 }
 
 func getServerPortAndTransport(ctx context.Context, serverName string) (int, types.TransportType, error) {
-	// Instantiate the container manager
+	// Instantiate the workload manager and list all workloads.
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return 0, types.TransportTypeSSE, fmt.Errorf("failed to create container manager: %v", err)
+		return 0, types.TransportTypeSSE, fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
-	// Get list of all containers
-	containers, err := manager.ListWorkloads(ctx, true)
+	workloadList, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
-		return 0, types.TransportTypeSSE, fmt.Errorf("failed to list containers: %v", err)
+		return 0, types.TransportTypeSSE, fmt.Errorf("failed to list workloads: %v", err)
 	}
 
-	for _, c := range containers {
+	for _, c := range workloadList {
 		name := c.Name
 
 		if name == serverName {

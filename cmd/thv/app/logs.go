@@ -22,7 +22,7 @@ var (
 
 func logsCommand() *cobra.Command {
 	logsCommand := &cobra.Command{
-		Use:   "logs [container-name|prune]",
+		Use:   "logs [workload-name|prune]",
 		Short: "Output the logs of an MCP server or manage log files",
 		Long:  `Output the logs of an MCP server managed by ToolHive, or manage log files.`,
 		Args:  cobra.ExactArgs(1),
@@ -36,7 +36,7 @@ func logsCommand() *cobra.Command {
 		ValidArgsFunction: completeLogsArgs,
 	}
 
-	logsCommand.Flags().BoolVarP(&followFlag, "follow", "f", false, "Follow log output (only for container logs)")
+	logsCommand.Flags().BoolVarP(&followFlag, "follow", "f", false, "Follow log output (only for workload logs)")
 	err := viper.BindPFlag("follow", logsCommand.Flags().Lookup("follow"))
 	if err != nil {
 		logger.Errorf("failed to bind flag: %v", err)
@@ -60,8 +60,8 @@ This helps clean up old log files that accumulate over time from removed servers
 
 func logsCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	// Get container name
-	containerName := args[0]
+	// Get workload name
+	workloadName := args[0]
 	follow := viper.GetBool("follow")
 
 	manager, err := workloads.NewManager(ctx)
@@ -69,13 +69,13 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create lifecycle manager: %v", err)
 	}
 
-	logs, err := manager.GetLogs(ctx, containerName, follow)
+	logs, err := manager.GetLogs(ctx, workloadName, follow)
 	if err != nil {
-		if errors.Is(err, workloads.ErrContainerNotFound) {
-			logger.Infof("container %s not found", containerName)
+		if errors.Is(err, workloads.ErrWorkloadNotFound) {
+			logger.Infof("workload %s not found", workloadName)
 			return nil
 		}
-		return fmt.Errorf("failed to get logs for container %s: %v", containerName, err)
+		return fmt.Errorf("failed to get logs for workload %s: %v", workloadName, err)
 	}
 
 	fmt.Print(logs)
@@ -128,12 +128,12 @@ func getLogsDirectory() (string, error) {
 func getManagedContainerNames(ctx context.Context) (map[string]bool, error) {
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create container manager: %v", err)
+		return nil, fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
 	managedContainers, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %v", err)
+		return nil, fmt.Errorf("failed to list workloads: %v", err)
 	}
 
 	managedNames := make(map[string]bool)

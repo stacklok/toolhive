@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/daemon"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
@@ -20,14 +18,12 @@ import (
 // for direct registry operations without requiring a Docker daemon.
 type RegistryImageManager struct {
 	keychain authn.Keychain
-	platform *v1.Platform
 }
 
 // NewRegistryImageManager creates a new RegistryImageManager instance
 func NewRegistryImageManager() *RegistryImageManager {
 	return &RegistryImageManager{
-		keychain: newCompositeKeychain(), // Use composite keychain (env vars + default)
-		platform: nil,                   // Use default platform
+		keychain: NewCompositeKeychain(), // Use composite keychain (env vars + default)
 	}
 }
 
@@ -48,10 +44,6 @@ func (r *RegistryImageManager) ImageExists(ctx context.Context, imageName string
 	remoteOpts := []remote.Option{
 		remote.WithAuthFromKeychain(r.keychain),
 		remote.WithContext(ctx),
-	}
-
-	if r.platform != nil {
-		remoteOpts = append(remoteOpts, remote.WithPlatform(*r.platform))
 	}
 
 	// Use HEAD request to check if image exists without downloading
@@ -78,10 +70,6 @@ func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) 
 	remoteOpts := []remote.Option{
 		remote.WithAuthFromKeychain(r.keychain),
 		remote.WithContext(ctx),
-	}
-
-	if r.platform != nil {
-		remoteOpts = append(remoteOpts, remote.WithPlatform(*r.platform))
 	}
 
 	// Pull the image from the registry
@@ -114,7 +102,7 @@ func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) 
 }
 
 // BuildImage builds a Docker image from a Dockerfile in the specified context directory
-func (r *RegistryImageManager) BuildImage(ctx context.Context, contextDir, imageName string) error {
+func (*RegistryImageManager) BuildImage(_ context.Context, contextDir, imageName string) error {
 	logger.Infof("Building image %s from context directory %s", imageName, contextDir)
 
 	// Parse the image reference
@@ -170,85 +158,8 @@ func (r *RegistryImageManager) BuildImage(ctx context.Context, contextDir, image
 	return nil
 }
 
-// WithPlatform sets the platform for the RegistryImageManager
-func (r *RegistryImageManager) WithPlatform(platform *v1.Platform) *RegistryImageManager {
-	r.platform = platform
-	return r
-}
-
 // WithKeychain sets the keychain for authentication
 func (r *RegistryImageManager) WithKeychain(keychain authn.Keychain) *RegistryImageManager {
 	r.keychain = keychain
 	return r
-}
-
-// envKeychain implements a keychain that reads credentials from environment variables
-type envKeychain struct{}
-
-// Resolve implements the authn.Keychain interface
-func (e *envKeychain) Resolve(target authn.Resource) (authn.Authenticator, error) {
-	registry := target.RegistryStr()
-	
-	// Try registry-specific environment variables first
-	// Format: REGISTRY_<NORMALIZED_REGISTRY_NAME>_USERNAME/PASSWORD
-	normalizedRegistry := strings.ToUpper(strings.ReplaceAll(registry, ".", "_"))
-	normalizedRegistry = strings.ReplaceAll(normalizedRegistry, "-", "_")
-	
-	username := os.Getenv("REGISTRY_" + normalizedRegistry + "_USERNAME")
-	password := os.Getenv("REGISTRY_" + normalizedRegistry + "_PASSWORD")
-	
-	// If registry-specific vars not found, try generic ones
-	if username == "" || password == "" {
-		username = os.Getenv("DOCKER_USERNAME")
-		password = os.Getenv("DOCKER_PASSWORD")
-	}
-	
-	// If still not found, try REGISTRY_USERNAME/PASSWORD
-	if username == "" || password == "" {
-		username = os.Getenv("REGISTRY_USERNAME")
-		password = os.Getenv("REGISTRY_PASSWORD")
-	}
-	
-	if username != "" && password != "" {
-		return &authn.Basic{
-			Username: username,
-			Password: password,
-		}, nil
-	}
-	
-	return authn.Anonymous, nil
-}
-
-// compositeKeychain combines multiple keychains and tries them in order
-type compositeKeychain struct {
-	keychains []authn.Keychain
-}
-
-// Resolve implements the authn.Keychain interface
-func (c *compositeKeychain) Resolve(target authn.Resource) (authn.Authenticator, error) {
-	for _, keychain := range c.keychains {
-		auth, err := keychain.Resolve(target)
-		if err != nil {
-			continue
-		}
-		
-		// Check if we got actual credentials (not anonymous)
-		if auth != authn.Anonymous {
-			return auth, nil
-		}
-	}
-	
-	// If no keychain provided credentials, return anonymous
-	return authn.Anonymous, nil
-}
-
-// newCompositeKeychain creates a keychain that tries environment variables first,
-// then falls back to the default keychain
-func newCompositeKeychain() authn.Keychain {
-	return &compositeKeychain{
-		keychains: []authn.Keychain{
-			&envKeychain{},           // Try environment variables first
-			authn.DefaultKeychain,    // Then try default keychain (Docker config, etc.)
-		},
-	}
 }

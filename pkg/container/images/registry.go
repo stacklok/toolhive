@@ -41,7 +41,7 @@ func getDefaultPlatform() *v1.Platform {
 }
 
 // ImageExists checks if an image exists locally in the daemon or remotely in the registry
-func (r *RegistryImageManager) ImageExists(ctx context.Context, imageName string) (bool, error) {
+func (*RegistryImageManager) ImageExists(_ context.Context, imageName string) (bool, error) {
 	// Parse the image reference
 	ref, err := name.ParseReference(imageName)
 	if err != nil {
@@ -49,27 +49,11 @@ func (r *RegistryImageManager) ImageExists(ctx context.Context, imageName string
 	}
 
 	// First check if image exists locally in daemon
-	if _, err := daemon.Image(ref); err == nil {
-		return true, nil
-	}
-
-	// If not found locally, check if it exists in the remote registry
-	remoteOpts := []remote.Option{
-		remote.WithAuthFromKeychain(r.keychain),
-		remote.WithContext(ctx),
-	}
-
-	if r.platform != nil {
-		remoteOpts = append(remoteOpts, remote.WithPlatform(*r.platform))
-	}
-
-	// Use HEAD request to check if image exists without downloading
-	_, err = remote.Head(ref, remoteOpts...)
-	if err != nil {
-		// If we get an error, the image likely doesn't exist
+	if _, err := daemon.Image(ref); err != nil {
+		// Image does not exist locally
 		return false, nil
 	}
-
+	// Image exists locally
 	return true, nil
 }
 

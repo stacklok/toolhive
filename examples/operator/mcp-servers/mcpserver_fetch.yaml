@@ -11,13 +11,6 @@ spec:
   permissionProfile:
     type: builtin
     name: network
-  podTemplateSpec:
-    spec:
-      # this will not be needed once we have implemented separate
-      # service accounts for each MCP server and its proxyrunner
-      serviceAccountName: fetch-proxy-runner
-      containers:
-      - name: mcp
   resources:
     limits:
       cpu: "100m"

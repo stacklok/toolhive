@@ -644,8 +644,7 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 	// If network isolation is not enabled, then there is nothing else to do.
 	// NOTE: This check treats all workloads created before the introduction of
 	// this label as having network isolation enabled. This is to ensure that they
-	// get cleaned up properly during stop/rm. There may be some spurious warnings
-	// from the following code, but they can be ignored.
+	// get cleaned up properly during stop/rm.
 	if !lb.HasNetworkIsolation(info.Labels) {
 		return nil
 	}
@@ -669,11 +668,11 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 func (c *Client) stopProxyContainer(ctx context.Context, containerName string, timeoutSeconds int) {
 	containerId, err := c.findExistingContainer(ctx, containerName)
 	if err != nil {
-		logger.Warnf("Failed to find internal container %s: %v", containerName, err)
+		logger.Debugf("Failed to find internal container %s: %v", containerName, err)
 	} else {
 		err = c.client.ContainerStop(ctx, containerId, container.StopOptions{Timeout: &timeoutSeconds})
 		if err != nil {
-			logger.Warnf("Failed to stop internal container %s: %v", containerName, err)
+			logger.Debugf("Failed to stop internal container %s: %v", containerName, err)
 		}
 	}
 }
@@ -745,7 +744,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 		containerName := fmt.Sprintf("%s-%s", containerName, suffix)
 		containerId, err := c.findExistingContainer(ctx, containerName)
 		if err != nil {
-			logger.Warnf("Failed to find %s container %s: %v", suffix, containerName, err)
+			logger.Debugf("Failed to find %s container %s: %v", suffix, containerName, err)
 			continue
 		}
 		if containerId == "" {

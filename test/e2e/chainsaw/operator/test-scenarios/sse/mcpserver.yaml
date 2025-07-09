@@ -1,19 +1,19 @@
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
-  name: test-fetch
+  name: yardstick
   namespace: toolhive-system
 spec:
-  image: ghcr.io/stackloklabs/gofetch/server
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
   transport: sse
+  env:
+  - name: TRANSPORT
+    value: sse
   port: 8080
+  targetPort: 8080
   permissionProfile:
     type: builtin
     name: network
-  podTemplateSpec:
-    spec:
-      containers:
-        - name: mcp
   resources:
     limits:
       cpu: "100m"

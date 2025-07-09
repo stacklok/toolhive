@@ -3,13 +3,13 @@ package app
 import (
 	"context"
 	"fmt"
-	"github.com/stacklok/toolhive/cmd/thv/app/inspector"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/cmd/thv/app/inspector"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/runtime"

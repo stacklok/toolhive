@@ -326,7 +326,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 
 	logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
 
-	if transportType == string(transtypes.TransportTypeSSE) && options != nil {
+	if (transportType == string(transtypes.TransportTypeSSE) || transportType == string(transtypes.TransportTypeStreamableHTTP)) && options != nil {
 		// Create a headless service for SSE transport
 		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
 		if err != nil {
@@ -830,6 +830,10 @@ func extractPortMappingsFromPod(pod *corev1.Pod) []runtime.PortMapping {
 	}
 
 	return ports
+}
+
+func shouldCreateHeadlessService(transportType string) bool {
+	return transportType == string(transtypes.TransportTypeSSE) || transportType == string(transtypes.TransportTypeStreamableHTTP)
 }
 
 // extractPortMappingsFromService extracts port mappings from a Kubernetes service

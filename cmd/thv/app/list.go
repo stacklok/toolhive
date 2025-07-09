@@ -32,10 +32,10 @@ func init() {
 func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 
-	// Instantiate the workload manager.
-	manager, err := workloads.NewManager(ctx)
+	// Instantiate the status manager.
+	manager, err := workloads.NewStatusManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("failed to create status manager: %v", err)
 	}
 
 	workloadList, err := manager.ListWorkloads(ctx, listAll)

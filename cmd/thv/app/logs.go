@@ -66,7 +66,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create lifecycle manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
 	logs, err := manager.GetLogs(ctx, workloadName, follow)
@@ -126,9 +126,9 @@ func getLogsDirectory() (string, error) {
 }
 
 func getManagedContainerNames(ctx context.Context) (map[string]bool, error) {
-	manager, err := workloads.NewManager(ctx)
+	manager, err := workloads.NewStatusManager(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create workload manager: %v", err)
+		return nil, fmt.Errorf("failed to create status manager: %v", err)
 	}
 
 	managedContainers, err := manager.ListWorkloads(ctx, true)

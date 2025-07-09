@@ -30,11 +30,9 @@ import (
 )
 
 // Manager is responsible for managing the state of ToolHive-managed containers.
+// NOTE: This interface may be split up in future PRs, in particular, operations
+// which are only relevant to the CLI/API use case will be split out.
 type Manager interface {
-	// GetWorkload returns information about the named container.
-	GetWorkload(ctx context.Context, name string) (Workload, error)
-	// ListWorkloads lists all ToolHive-managed containers.
-	ListWorkloads(ctx context.Context, listAll bool) ([]Workload, error)
 	// DeleteWorkloads deletes the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
@@ -91,44 +89,6 @@ func NewManagerFromRuntime(runtime rt.Runtime) Manager {
 	return &defaultManager{
 		runtime: runtime,
 	}
-}
-
-func (d *defaultManager) GetWorkload(ctx context.Context, name string) (Workload, error) {
-	// Validate workload name to prevent path traversal attacks
-	if err := validateWorkloadName(name); err != nil {
-		return Workload{}, err
-	}
-
-	container, err := d.findContainerByName(ctx, name)
-	if err != nil {
-		// Note that `findContainerByName` already wraps the error with a more specific message.
-		return Workload{}, err
-	}
-
-	return WorkloadFromContainerInfo(container)
-}
-
-func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool) ([]Workload, error) {
-	// List containers
-	containers, err := d.runtime.ListWorkloads(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Filter containers to only show those managed by ToolHive
-	var workloads []Workload
-	for _, c := range containers {
-		// If the caller did not set `listAll` to true, only include running containers.
-		if labels.IsToolHiveContainer(c.Labels) && (isContainerRunning(&c) || listAll) {
-			workload, err := WorkloadFromContainerInfo(&c)
-			if err != nil {
-				return nil, err
-			}
-			workloads = append(workloads, workload)
-		}
-	}
-
-	return workloads, nil
 }
 
 func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {

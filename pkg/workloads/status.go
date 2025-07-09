@@ -16,10 +16,10 @@ type StatusManager interface {
 	// ListWorkloads retrieves the states of all workloads.
 	// The `listAll` parameter determines whether to include workloads that are not running.
 	ListWorkloads(ctx context.Context, listAll bool) ([]Workload, error)
-	// SetStatus sets the status of a workload by its name.
-	SetStatus(ctx context.Context, workloadName string, status WorkloadStatus, contextMsg string) error
-	// DeleteStatus removes the status of a workload by its name.
-	DeleteStatus(ctx context.Context, workloadName string) error
+	// SetWorkloadStatus sets the status of a workload by its name.
+	SetWorkloadStatus(ctx context.Context, workloadName string, status WorkloadStatus, contextMsg string) error
+	// DeleteWorkloadStatus removes the status of a workload by its name.
+	DeleteWorkloadStatus(ctx context.Context, workloadName string) error
 }
 
 // NewStatusManagerFromRuntime creates a new instance of StatusManager from an existing runtime.
@@ -87,12 +87,12 @@ func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool) 
 	return workloads, nil
 }
 
-func (*runtimeStatusManager) SetStatus(_ context.Context, _ string, _ WorkloadStatus, _ string) error {
+func (*runtimeStatusManager) SetWorkloadStatus(_ context.Context, _ string, _ WorkloadStatus, _ string) error {
 	// Noop
 	return nil
 }
 
-func (*runtimeStatusManager) DeleteStatus(_ context.Context, _ string) error {
+func (*runtimeStatusManager) DeleteWorkloadStatus(_ context.Context, _ string) error {
 	// Noop
 	return nil
 }

@@ -3,6 +3,7 @@ package images
 
 import (
 	"context"
+	"github.com/stacklok/toolhive/pkg/container"
 
 	"github.com/stacklok/toolhive/pkg/container/docker/sdk"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -26,6 +27,12 @@ type ImageManager interface {
 // NewImageManager creates an instance of ImageManager appropriate
 // for the current environment, or returns an error if it is not supported.
 func NewImageManager(ctx context.Context) ImageManager {
+	// Check if we are running in a Kubernetes environment
+	if container.IsKubernetesRuntime() {
+		logger.Debug("running in Kubernetes environment, using no-op image manager")
+		return &NoopImageManager{}
+	}
+
 	// First try the registry-based implementation (no Docker daemon required)
 	registryManager := NewRegistryImageManager()
 	if registryManager != nil {

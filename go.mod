@@ -41,7 +41,7 @@ require (
 	golang.org/x/exp/jsonrpc2 v0.0.0-20250620022241-b7579e27df2b
 	golang.org/x/mod v0.26.0
 	golang.org/x/oauth2 v0.30.0
-	golang.org/x/sync v0.15.0
+	golang.org/x/sync v0.16.0
 	golang.org/x/term v0.33.0
 	gopkg.in/yaml.v3 v3.0.1
 	gotest.tools v2.2.0+incompatible

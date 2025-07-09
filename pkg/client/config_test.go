@@ -3,6 +3,8 @@
 package client
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,6 +109,19 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 	createTestConfigFiles(t, tempHome)
 
 	t.Run("InvalidConfigFileFormat", func(t *testing.T) { //nolint:paralleltest // Modifies global state
+		// Set up environment for unstructured logs and capture stderr before initializing logger
+		originalUnstructuredLogs := os.Getenv("UNSTRUCTURED_LOGS")
+		os.Setenv("UNSTRUCTURED_LOGS", "true")
+		defer os.Setenv("UNSTRUCTURED_LOGS", originalUnstructuredLogs)
+
+		// Capture log output to verify error logging
+		originalStderr := os.Stderr
+		r, w, _ := os.Pipe()
+		os.Stderr = w
+
+		// Re-initialize logger to use the captured stderr
+		logger.Initialize()
+
 		// Create an invalid JSON file
 		invalidPath := filepath.Join(tempHome, ".cursor", "invalid.json")
 		err := os.MkdirAll(filepath.Dir(invalidPath), 0755)
@@ -140,7 +155,8 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 			},
 			Clients: config.Clients{
 				RegisteredClients: []string{
-					"invalid", // Register the invalid client
+					"invalid",      // Register the invalid client
+					string(VSCode), // Also register a valid client for comparison
 				},
 			},
 		}
@@ -148,13 +164,27 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 		cleanup := MockConfig(t, testConfig)
 		defer cleanup()
 
-		// Find client configs - this should fail due to the invalid JSON
-		_, err = FindRegisteredClientConfigs()
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to validate config file format")
-		// we check if cursor is in the error message because that's the
-		// config file that we inserted the bad json into
-		assert.Contains(t, err.Error(), "cursor")
+		// Find client configs - this should NOT fail due to the invalid JSON
+		// Instead, it should log a warning and continue
+		configs, err := FindRegisteredClientConfigs()
+		assert.NoError(t, err, "FindRegisteredClientConfigs should not return an error for invalid config files")
+
+		// The invalid client should be skipped, so we should get configs for valid clients only
+		// We expect 1 config (VSCode) since invalid should be skipped
+		assert.Len(t, configs, 1, "Should find configs for valid clients only, skipping invalid ones")
+
+		// Restore stderr and capture log output
+		w.Close()
+		os.Stderr = originalStderr
+
+		var capturedOutput bytes.Buffer
+		io.Copy(&capturedOutput, r)
+		logOutput := capturedOutput.String()
+
+		// Verify that the error was logged
+		assert.Contains(t, logOutput, "Unable to process client config for invalid", "Should log warning about invalid client config")
+		assert.Contains(t, logOutput, "failed to validate config file format", "Should log the specific validation error")
+		assert.Contains(t, logOutput, "cursor", "Should mention cursor in the error message")
 	})
 }
 

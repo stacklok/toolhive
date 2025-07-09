@@ -1,7 +1,7 @@
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
-  name: test-fetch
+  name: yardstick
   namespace: toolhive-system
 status:
   message: "MCP server is running"

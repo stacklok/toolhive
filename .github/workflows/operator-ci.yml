@@ -146,6 +146,9 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -168,12 +171,22 @@ jobs:
 
     - name: Setup Ko
       uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
+
+    - name: Set up Go
+      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+      with:
+        go-version-file: 'go.mod'
+        cache: true
         
     - name: Install Task
       uses: arduino/setup-task@v2
       with:
         version: 3.x
         repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install yardstick client
+      run: |
+        go install github.com/stackloklabs/yardstick/cmd/yardstick-client@v0.0.2
         
     - name: Install Chainsaw
       uses: kyverno/action-install-chainsaw@f2b47b97dc889c12702113753d713f01ec268de5 # v0.2.12

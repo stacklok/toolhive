@@ -5,6 +5,7 @@ package runtime
 import (
 	"context"
 	"io"
+	"os"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -218,4 +219,10 @@ type Mount struct {
 	Target string
 	// ReadOnly indicates if the mount is read-only
 	ReadOnly bool
+}
+
+// IsKubernetesRuntime returns true if the runtime is Kubernetes
+// isn't the best way to do this, but for now it's good enough
+func IsKubernetesRuntime() bool {
+	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
 }

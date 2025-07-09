@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/cmd/thv/app/inspector"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -41,14 +42,6 @@ func inspectorCommand() *cobra.Command {
 
 	return inspectorCommand
 }
-
-var (
-	// TODO: This could probably be a flag with a sensible default
-	// TODO: Additionally, when the inspector image has been published
-	// TODO: to docker.io, we can use that instead of npx
-	// TODO: https://github.com/modelcontextprotocol/inspector/issues/237
-	inspectorImage = "npx://@modelcontextprotocol/inspector@latest"
-)
 
 func buildInspectorContainerOptions(uiPortStr string, mcpPortStr string) *runtime.DeployWorkloadOptions {
 	return &runtime.DeployWorkloadOptions{
@@ -109,7 +102,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	imageManager := images.NewImageManager(ctx)
-	processedImage, err := runner.HandleProtocolScheme(ctx, imageManager, inspectorImage, "")
+	processedImage, err := runner.HandleProtocolScheme(ctx, imageManager, inspector.Image, "")
 	if err != nil {
 		return fmt.Errorf("failed to handle protocol scheme: %v", err)
 	}

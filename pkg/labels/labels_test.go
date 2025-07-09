@@ -314,14 +314,21 @@ func TestHasNetworkIsolation(t *testing.T) {
 		{
 			name: "Network isolation enabled",
 			labels: map[string]string{
-				LabelNetworkIsolation: LabelNetworkIsolationValue,
+				LabelNetworkIsolation: "true",
 			},
 			expected: true,
 		},
 		{
-			name:     "Network isolation not enabled",
-			labels:   map[string]string{},
+			name: "Network isolation disabled",
+			labels: map[string]string{
+				LabelNetworkIsolation: "false",
+			},
 			expected: false,
+		},
+		{
+			name:     "Legacy workload without label",
+			labels:   map[string]string{},
+			expected: true,
 		},
 	}
 

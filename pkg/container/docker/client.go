@@ -41,7 +41,7 @@ const (
 	LabelValueTrue                 = "true"
 )
 
-// Client implements the Runtime interface for container operations
+// Client implements the Runtime interface for Docker (and compatible runtimes)
 type Client struct {
 	runtimeType  runtime.Type
 	socketPath   string
@@ -717,51 +717,20 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 	containerName := containerResponse.Name
 	containerName = strings.TrimPrefix(containerName, "/")
 
-	err = c.client.ContainerRemove(ctx, workloadID, container.RemoveOptions{
-		Force: true,
-	})
+	// remove the workload containers
+	var labels map[string]string
+	if containerResponse.Config != nil {
+		labels = containerResponse.Config.Labels
+	} else {
+		labels = make(map[string]string)
+	}
+	err = c.removeWorkloadContainers(ctx, containerName, workloadID, labels)
 	if err != nil {
-		// If the workload doesn't exist, that's fine - it's already removed
-		if errdefs.IsNotFound(err) {
-			return nil
-		}
-		return NewContainerError(err, workloadID, fmt.Sprintf("failed to remove workload: %v", err))
+		return err // removeWorkloadContainers already wraps the error with context.
 	}
 
-	// If network isolation is not enabled, then there is nothing else to do.
-	// NOTE: This check treats all workloads created before the introduction of
-	// this label as having network isolation enabled. This is to ensure that they
-	// get cleaned up properly during stop/rm. There may be some spurious warnings
-	// from the following code, but they can be ignored.
-	if containerResponse.Config != nil && !lb.HasNetworkIsolation(containerResponse.Config.Labels) {
-		return nil
-	}
-
-	// remove egress, ingress, and dns containers
-	suffixes := []string{"egress", "ingress", "dns"}
-
-	for _, suffix := range suffixes {
-		containerName := fmt.Sprintf("%s-%s", containerName, suffix)
-		containerId, err := c.findExistingContainer(ctx, containerName)
-		if err != nil {
-			logger.Debugf("Failed to find %s container %s: %v", suffix, containerName, err)
-			continue
-		}
-		if containerId == "" {
-			continue
-		}
-
-		err = c.client.ContainerRemove(ctx, containerId, container.RemoveOptions{
-			Force: true,
-		})
-		if err != nil {
-			if errdefs.IsNotFound(err) {
-				continue
-			}
-			return NewContainerError(err, containerId, fmt.Sprintf("failed to remove %s container: %v", suffix, err))
-		}
-	}
-
+	// Clear up any networks associated with this workload.
+	// This also deletes the external network if no other workloads are using it.
 	err = c.deleteNetworks(ctx, containerName)
 	if err != nil {
 		logger.Warnf("Failed to delete networks for container %s: %v", containerName, err)
@@ -1358,14 +1327,17 @@ func (c *Client) handleExistingContainer(
 		return true, nil
 	}
 
-	// Configurations don't match, need to recreate the container
-	// Stop the workload
-	if err := c.StopWorkload(ctx, containerID); err != nil {
-		return false, err
+	// Configurations don't match, we need to recreate the container.
+	// Remove the existing container and any of the proxy containers.
+	// Note that we do not use the RemoveWorkload method because that
+	// will delete networks - which we do not want to do here.
+	var labels map[string]string
+	if info.Config != nil {
+		labels = info.Config.Labels
+	} else {
+		labels = make(map[string]string)
 	}
-
-	// Remove the workload
-	if err := c.RemoveWorkload(ctx, containerID); err != nil {
+	if err := c.removeWorkloadContainers(ctx, info.Name, containerID, labels); err != nil {
 		return false, err
 	}
 
@@ -1421,5 +1393,63 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 	if err := c.client.NetworkRemove(ctx, networks[0].ID); err != nil {
 		return fmt.Errorf("failed to remove network %s: %w", name, err)
 	}
+	return nil
+}
+
+// removeWorkloadContainers removes the MCP server container and any proxy containers.
+func (c *Client) removeWorkloadContainers(
+	ctx context.Context,
+	containerName string,
+	workloadID string,
+	workloadLabels map[string]string,
+) error {
+	// remove the / if it starts with it
+	containerName = strings.TrimPrefix(containerName, "/")
+
+	err := c.client.ContainerRemove(ctx, workloadID, container.RemoveOptions{
+		Force: true,
+	})
+	if err != nil {
+		// If the workload doesn't exist, that's fine - it's already removed
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return NewContainerError(err, workloadID, fmt.Sprintf("failed to remove workload: %v", err))
+	}
+
+	// If network isolation is not enabled, then there is nothing else to do.
+	// NOTE: This check treats all workloads created before the introduction of
+	// this label as having network isolation enabled. This is to ensure that they
+	// get cleaned up properly during stop/rm. There may be some spurious warnings
+	// from the following code, but they can be ignored.
+	if !lb.HasNetworkIsolation(workloadLabels) {
+		return nil
+	}
+
+	// remove egress, ingress, and dns containers
+	suffixes := []string{"egress", "ingress", "dns"}
+
+	for _, suffix := range suffixes {
+		containerName := fmt.Sprintf("%s-%s", containerName, suffix)
+		containerId, err := c.findExistingContainer(ctx, containerName)
+		if err != nil {
+			logger.Debugf("Failed to find %s container %s: %v", suffix, containerName, err)
+			continue
+		}
+		if containerId == "" {
+			continue
+		}
+
+		err = c.client.ContainerRemove(ctx, containerId, container.RemoveOptions{
+			Force: true,
+		})
+		if err != nil {
+			if errdefs.IsNotFound(err) {
+				continue
+			}
+			return NewContainerError(err, containerId, fmt.Sprintf("failed to remove %s container: %v", suffix, err))
+		}
+	}
+
 	return nil
 }

@@ -201,7 +201,7 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	if err != nil {
 		if errors.Is(err, ErrConfigFileNotFound) {
 			// Propagate the error if the file is not found
-			return nil, fmt.Errorf("%w: for client %s", ErrConfigFileNotFound, clientType)
+			return nil, fmt.Errorf("%w for client %s", ErrConfigFileNotFound, clientType)
 		}
 		return nil, err
 	}
@@ -214,8 +214,10 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	return configFile, nil
 }
 
-// FindClientConfigs searches for client configuration files in standard locations
-func FindClientConfigs() ([]ConfigFile, error) {
+// FindRegisteredClientConfigs searches for client configuration files for registered clients in standard locations
+// It returns a list of ConfigFile objects for each registered client.
+// If a client config file is not found, a log message is printed and the client is skipped.
+func FindRegisteredClientConfigs() ([]ConfigFile, error) {
 	clientStatuses, err := GetClientStatus()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client status: %w", err)
@@ -223,12 +225,13 @@ func FindClientConfigs() ([]ConfigFile, error) {
 
 	var configFiles []ConfigFile
 	for _, clientStatus := range clientStatuses {
-		if !clientStatus.Installed {
+		if !clientStatus.Installed || !clientStatus.Registered {
 			continue
 		}
 		cf, err := FindClientConfig(clientStatus.ClientType)
 		if err != nil {
-			return nil, fmt.Errorf("failed to find client config for %s: %w", clientStatus.ClientType, err)
+			logger.Warnf("Unable to process client config for %s: %v", clientStatus.ClientType, err)
+			continue
 		}
 		configFiles = append(configFiles, *cf)
 	}

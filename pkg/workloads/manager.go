@@ -30,11 +30,9 @@ import (
 )
 
 // Manager is responsible for managing the state of ToolHive-managed containers.
+// NOTE: This interface may be split up in future PRs, in particular, operations
+// which are only relevant to the CLI/API use case will be split out.
 type Manager interface {
-	// GetWorkload returns information about the named container.
-	GetWorkload(ctx context.Context, name string) (Workload, error)
-	// ListWorkloads lists all ToolHive-managed containers.
-	ListWorkloads(ctx context.Context, listAll bool) ([]Workload, error)
 	// DeleteWorkloads deletes the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
@@ -56,11 +54,11 @@ type defaultManager struct {
 	runtime rt.Runtime
 }
 
-// ErrContainerNotFound is returned when a container cannot be found by name.
+// ErrWorkloadNotFound is returned when a container cannot be found by name.
 // ErrInvalidWorkloadName is returned when a workload name fails validation.
 var (
-	ErrContainerNotFound   = fmt.Errorf("container not found")
-	ErrContainerNotRunning = fmt.Errorf("container not running")
+	ErrWorkloadNotFound    = fmt.Errorf("workload not found")
+	ErrWorkloadNotRunning  = fmt.Errorf("workload not running")
 	ErrInvalidWorkloadName = fmt.Errorf("invalid workload name")
 )
 
@@ -93,44 +91,6 @@ func NewManagerFromRuntime(runtime rt.Runtime) Manager {
 	}
 }
 
-func (d *defaultManager) GetWorkload(ctx context.Context, name string) (Workload, error) {
-	// Validate workload name to prevent path traversal attacks
-	if err := validateWorkloadName(name); err != nil {
-		return Workload{}, err
-	}
-
-	container, err := d.findContainerByName(ctx, name)
-	if err != nil {
-		// Note that `findContainerByName` already wraps the error with a more specific message.
-		return Workload{}, err
-	}
-
-	return WorkloadFromContainerInfo(container)
-}
-
-func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool) ([]Workload, error) {
-	// List containers
-	containers, err := d.runtime.ListWorkloads(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Filter containers to only show those managed by ToolHive
-	var workloads []Workload
-	for _, c := range containers {
-		// If the caller did not set `listAll` to true, only include running containers.
-		if labels.IsToolHiveContainer(c.Labels) && (isContainerRunning(&c) || listAll) {
-			workload, err := WorkloadFromContainerInfo(&c)
-			if err != nil {
-				return nil, err
-			}
-			workloads = append(workloads, workload)
-		}
-	}
-
-	return workloads, nil
-}
-
 func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
 	// Validate all workload names to prevent path traversal attacks
 	for _, name := range names {
@@ -144,7 +104,7 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 	for _, name := range names {
 		container, err := d.findContainerByName(ctx, name)
 		if err != nil {
-			if errors.Is(err, ErrContainerNotFound) {
+			if errors.Is(err, ErrWorkloadNotFound) {
 				// Log but don't fail the entire operation for not found containers
 				logger.Warnf("Warning: Failed to stop workload %s: %v", name, err)
 				continue
@@ -155,7 +115,7 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 		running := isContainerRunning(container)
 		if !running {
 			// Log but don't fail the entire operation for not running containers
-			logger.Warnf("Warning: Failed to stop workload %s: %v", name, ErrContainerNotRunning)
+			logger.Warnf("Warning: Failed to stop workload %s: %v", name, ErrWorkloadNotRunning)
 			continue
 		}
 
@@ -199,6 +159,11 @@ func (*defaultManager) RunWorkloadDetached(runConfig *runner.RunConfig) error {
 	// Add all the original flags
 	if runConfig.Transport != "stdio" {
 		detachedArgs = append(detachedArgs, "--transport", string(runConfig.Transport))
+	}
+
+	// Add proxy-mode if set
+	if runConfig.ProxyMode != "" {
+		detachedArgs = append(detachedArgs, "--proxy-mode", runConfig.ProxyMode.String())
 	}
 
 	if runConfig.Debug {
@@ -378,8 +343,8 @@ func (d *defaultManager) GetLogs(ctx context.Context, containerName string, foll
 	container, err := d.findContainerByName(ctx, containerName)
 	if err != nil {
 		// Propagate the error if the container is not found
-		if errors.Is(err, ErrContainerNotFound) {
-			return "", fmt.Errorf("%w: %s", ErrContainerNotFound, containerName)
+		if errors.Is(err, ErrWorkloadNotFound) {
+			return "", fmt.Errorf("%w: %s", ErrWorkloadNotFound, containerName)
 		}
 		return "", fmt.Errorf("failed to find container %s: %v", containerName, err)
 	}
@@ -419,7 +384,7 @@ func (d *defaultManager) findContainerByName(ctx context.Context, name string) (
 		}
 	}
 
-	return nil, fmt.Errorf("%w: %s", ErrContainerNotFound, name)
+	return nil, fmt.Errorf("%w: %s", ErrWorkloadNotFound, name)
 }
 
 func shouldRemoveClientConfig() bool {
@@ -431,7 +396,7 @@ func shouldRemoveClientConfig() bool {
 // updateClientConfigurations updates client configuration files with the MCP server URL
 func removeClientConfigurations(containerName string) error {
 	// Find client configuration files
-	configs, err := client.FindClientConfigs()
+	configs, err := client.FindRegisteredClientConfigs()
 	if err != nil {
 		return fmt.Errorf("failed to find client configurations: %w", err)
 	}
@@ -559,7 +524,7 @@ func (d *defaultManager) DeleteWorkloads(_ context.Context, names []string) (*er
 			// Find the container
 			container, err := d.findContainerByName(childCtx, name)
 			if err != nil {
-				if errors.Is(err, ErrContainerNotFound) {
+				if errors.Is(err, ErrWorkloadNotFound) {
 					// Log but don't fail the entire operation for not found containers
 					logger.Warnf("Warning: Failed to delete workload %s: %v", name, err)
 					return nil
@@ -640,7 +605,7 @@ func (d *defaultManager) RestartWorkloads(_ context.Context, names []string) (*e
 			// Try to find the container.
 			container, err := d.findContainerByName(childCtx, name)
 			if err != nil {
-				if errors.Is(err, ErrContainerNotFound) {
+				if errors.Is(err, ErrWorkloadNotFound) {
 					logger.Warnf("Warning: Failed to find container: %v", err)
 					logger.Warnf("Trying to find state with name %s directly...", name)
 

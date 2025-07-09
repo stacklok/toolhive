@@ -54,7 +54,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Get authentication middleware
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
+	allowOpaqueTokens := false
+	if r.Config.OIDCConfig != nil && r.Config.OIDCConfig.AllowOpaqueTokens {
+		allowOpaqueTokens = r.Config.OIDCConfig.AllowOpaqueTokens
+	}
+	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig, allowOpaqueTokens)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
@@ -120,6 +124,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Add audit middleware to transport config
 		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
 	}
+
+	// Set proxy mode for stdio transport
+	transportConfig.ProxyMode = r.Config.ProxyMode
 
 	transportHandler, err := transport.NewFactory().Create(transportConfig)
 	if err != nil {
@@ -282,7 +289,7 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 // updateClientConfigurations updates client configuration files with the MCP server URL
 func updateClientConfigurations(containerName string, containerLabels map[string]string, host string, port int) error {
 	// Find client configuration files
-	clientConfigs, err := client.FindClientConfigs()
+	clientConfigs, err := client.FindRegisteredClientConfigs()
 	if err != nil {
 		return fmt.Errorf("failed to find client configurations: %w", err)
 	}

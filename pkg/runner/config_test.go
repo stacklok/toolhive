@@ -846,6 +846,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		oidcAudience,
 		oidcJwksURL,
 		oidcClientID,
+		false,
 		"",    // otelEndpoint
 		"",    // otelServiceName
 		0.1,   // otelSamplingRate
@@ -856,6 +857,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		false, // isolateNetwork
 		k8sPodPatch,
 		envVarValidator,
+		"sse",
 	)
 	require.NoError(t, err, "NewRunConfigFromFlags should not return an error")
 

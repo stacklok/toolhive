@@ -21,7 +21,7 @@ func TestAddStandardLabels(t *testing.T) {
 			transportType:     "http",
 			port:              8080,
 			expected: map[string]string{
-				LabelEnabled:   "true",
+				LabelToolHive:  "true",
 				LabelName:      "test-container",
 				LabelBaseName:  "test-base",
 				LabelTransport: "http",
@@ -36,7 +36,7 @@ func TestAddStandardLabels(t *testing.T) {
 			transportType:     "https",
 			port:              9090,
 			expected: map[string]string{
-				LabelEnabled:   "true",
+				LabelToolHive:  "true",
 				LabelName:      "another-container",
 				LabelBaseName:  "another-base",
 				LabelTransport: "https",
@@ -90,35 +90,35 @@ func TestIsToolHiveContainer(t *testing.T) {
 		{
 			name: "Valid ToolHive container",
 			labels: map[string]string{
-				LabelEnabled: "true",
+				LabelToolHive: "true",
 			},
 			expected: true,
 		},
 		{
 			name: "Valid ToolHive container with uppercase TRUE",
 			labels: map[string]string{
-				LabelEnabled: "TRUE",
+				LabelToolHive: "TRUE",
 			},
 			expected: true,
 		},
 		{
 			name: "Valid ToolHive container with mixed case TrUe",
 			labels: map[string]string{
-				LabelEnabled: "TrUe",
+				LabelToolHive: "TrUe",
 			},
 			expected: true,
 		},
 		{
 			name: "Not a ToolHive container - false value",
 			labels: map[string]string{
-				LabelEnabled: "false",
+				LabelToolHive: "false",
 			},
 			expected: false,
 		},
 		{
 			name: "Not a ToolHive container - other value",
 			labels: map[string]string{
-				LabelEnabled: "yes",
+				LabelToolHive: "yes",
 			},
 			expected: false,
 		},
@@ -299,6 +299,45 @@ func TestGetPort(t *testing.T) {
 			// Check result
 			if result != tc.expected {
 				t.Errorf("Expected port to be %d, but got %d", tc.expected, result)
+			}
+		})
+	}
+}
+
+func TestHasNetworkIsolation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		labels   map[string]string
+		expected bool
+	}{
+		{
+			name: "Network isolation enabled",
+			labels: map[string]string{
+				LabelNetworkIsolation: "true",
+			},
+			expected: true,
+		},
+		{
+			name: "Network isolation disabled",
+			labels: map[string]string{
+				LabelNetworkIsolation: "false",
+			},
+			expected: false,
+		},
+		{
+			name:     "Legacy workload without label",
+			labels:   map[string]string{},
+			expected: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := HasNetworkIsolation(tc.labels)
+			if result != tc.expected {
+				t.Errorf("Expected HasNetworkIsolation to be %t, but got %t", tc.expected, result)
 			}
 		})
 	}

@@ -1,22 +1,19 @@
 <p float="left">
   <picture>
-    <img src="docs/images/toolhive.png" alt="ToolHive Logo" width="125" align="middle" />
+    <img src="docs/images/toolhive-icon-1024.png" alt="ToolHive Studio logo" height="100" align="middle" />
   </picture>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/toolhive-wordmark-white.png">
-    <img src="docs/images/toolhive-wordmark-black.png" alt="ToolHive Logo" width="500" align="middle" hspace="20" />
+    <img src="docs/images/toolhive-wordmark-black.png" alt="ToolHive wordmark" width="500" align="middle" hspace="20" />
+  </picture>
+  <picture>
+    <img src="docs/images/toolhive.png" alt="ToolHive mascot" width="125" align="middle"/>
   </picture>
 </p>
 
-[![Release](https://img.shields.io/github/v/release/stacklok/toolhive?style=flat&label=Latest%20version)](https://github.com/stacklok/toolhive/releases)
-|
-[![CI](https://github.com/stacklok/toolhive/actions/workflows/run-on-main.yml/badge.svg?event=push)](https://github.com/stacklok/toolhive/actions/workflows/run-on-main.yml)
-|
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache2.0-brightgreen.svg?style=flat)](https://opensource.org/licenses/Apache-2.0)
-|
-[![Star on GitHub](https://img.shields.io/github/stars/stacklok/toolhive.svg?style=flat&logo=github&label=Stars)](https://github.com/stacklok/toolhive)
-|
-[![Discord](https://img.shields.io/discord/1184987096302239844?style=flat&logo=discord&label=Discord)](https://discord.gg/stacklok)
+[![Release][release-img]][release] [![Build status][ci-img]][ci]
+[![License: Apache 2.0][license-img]][license]
+[![Star on GitHub][stars-img]][stars] [![Discord][discord-img]][discord]
 
 # ToolHive - simplify and secure MCP servers
 
@@ -84,5 +81,19 @@ contributing guide or open an issue. Join us in making ToolHive even better!
 ## License
 
 This project is licensed under the [Apache 2.0 License](./LICENSE).
+
+<!-- Badge links -->
+<!-- prettier-ignore-start -->
+[release-img]: https://img.shields.io/github/v/release/stacklok/toolhive?style=flat&label=Latest%20version
+[release]: https://github.com/stacklok/toolhive/releases/latest
+[ci-img]: https://img.shields.io/github/actions/workflow/status/stacklok/toolhive/run-on-main.yml?style=flat&logo=github&label=Build
+[ci]: https://github.com/stacklok/toolhive/actions/workflows/run-on-main.yml
+[license-img]: https://img.shields.io/badge/License-Apache2.0-blue.svg?style=flat
+[license]: https://opensource.org/licenses/Apache-2.0
+[stars-img]: https://img.shields.io/github/stars/stacklok/toolhive.svg?style=flat&logo=github&label=Stars
+[stars]: https://github.com/stacklok/toolhive
+[discord-img]: https://img.shields.io/discord/1184987096302239844?style=flat&logo=discord&logoColor=white&label=Discord
+[discord]: https://discord.gg/stacklok
+<!-- prettier-ignore-end -->
 
 <!-- markdownlint-disable-file first-line-heading no-inline-html -->

@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
-  "last_updated": "2025-07-02T00:21:53Z",
+  "last_updated": "2025-07-09T00:22:39Z",
   "servers": {
     "atlassian": {
       "args": [],
@@ -88,9 +88,9 @@
       ],
       "image": "ghcr.io/sooperset/mcp-atlassian:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:51Z",
-        "pulls": 8009,
-        "stars": 2227
+        "last_updated": "2025-07-09T00:22:35Z",
+        "pulls": 8779,
+        "stars": 2335
       },
       "permissions": {
         "network": {
@@ -171,93 +171,56 @@
       ],
       "transport": "stdio"
     },
-    "aws-kb-retrieval-server": {
+    "aws-cost-analysis": {
       "args": [],
-      "description": "MCP server for retrieving information from the AWS Knowledge Base using the Bedrock Agent Runtime.",
+      "description": "Generate upfront AWS service cost estimates and cost insights.",
       "env_vars": [
         {
-          "description": "AWS access key ID for Bedrock Agent Runtime operations",
+          "description": "AWS access key ID with access to the AWS Pricing API",
           "name": "AWS_ACCESS_KEY_ID",
-          "required": true,
+          "required": false,
           "secret": true
         },
         {
-          "description": "AWS secret access key for Bedrock Agent Runtime operations",
+          "description": "AWS secret access key",
           "name": "AWS_SECRET_ACCESS_KEY",
-          "required": true,
+          "required": false,
           "secret": true
         },
         {
-          "description": "AWS region where the Knowledge Base is located",
+          "description": "AWS sesison token for temporary credentials",
+          "name": "AWS_SESSION_TOKEN",
+          "required": false,
+          "secret": true
+        },
+        {
+          "default": "us-east-1",
+          "description": "AWS region for the Pricing API endpoint (us-east-1, eu-central-1, ap-southeast-1)",
           "name": "AWS_REGION",
-          "required": true
-        }
-      ],
-      "image": "mcp/aws-kb-retrieval-server:latest",
-      "metadata": {
-        "last_updated": "2025-07-02T00:21:51Z",
-        "pulls": 4513,
-        "stars": 57102
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
-            "insecure_allow_all": true
-          }
+          "required": false
         },
-        "read": [],
-        "write": []
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "status": "Deprecated",
-      "tags": [
-        "agent",
-        "aws",
-        "aws-kb-retrieval-server",
-        "base",
-        "bedrock",
-        "information",
-        "knowledge",
-        "retrieval",
-        "retrieving",
-        "runtime"
-      ],
-      "tier": "Community",
-      "tools": [
-        "retrieve_from_aws_kb"
-      ],
-      "transport": "stdio"
-    },
-    "brave-search": {
-      "args": [],
-      "description": "MCP server that integrates the Brave Search API, providing both web and local search capabilities.",
-      "env_vars": [
         {
-          "description": "Brave Search API key for web and local search capabilities",
-          "name": "BRAVE_API_KEY",
-          "required": true,
-          "secret": true
+          "default": "ERROR",
+          "description": "Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+          "name": "FASTMCP_LOG_LEVEL",
+          "required": false
         }
       ],
-      "image": "mcp/brave-search:latest",
+      "image": "public.ecr.aws/f3y8w4n0/awslabs/cost-analysis-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:50Z",
-        "pulls": 8089,
-        "stars": 57102
+        "last_updated": "2025-07-09T00:22:38Z",
+        "pulls": 5443,
+        "stars": 4464
       },
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [
-              "brave.com",
-              "api.search.brave.com"
+              "aws.amazon.com",
+              "pricing.us-east-1.amazonaws.com",
+              "api.pricing.us-east-1.amazonaws.com",
+              "api.pricing.eu-central-1.amazonaws.com",
+              "api.pricing.ap-southeast-1.amazonaws.com"
             ],
             "allow_port": [
               443
@@ -271,24 +234,130 @@
         "read": [],
         "write": []
       },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "status": "Deprecated",
+      "repository_url": "https://github.com/awslabs/mcp",
+      "status": "Active",
       "tags": [
-        "api",
-        "both",
-        "brave",
-        "brave-search",
-        "brave_local_search",
-        "capabilities",
-        "execute",
-        "integrates",
-        "local",
-        "providing"
+        "aws",
+        "cost-analysis",
+        "pricing",
+        "estimates",
+        "cost-insights",
+        "aws-costs",
+        "aws-pricing"
       ],
-      "tier": "Community",
+      "tier": "Official",
       "tools": [
-        "brave_web_search",
-        "brave_local_search"
+        "analyze_cdk_project",
+        "analyze_terraform_project",
+        "get_pricing_from_web",
+        "get_pricing_from_api",
+        "get_bedrock_patterns",
+        "generate_cost_report"
+      ],
+      "transport": "stdio"
+    },
+    "aws-diagram": {
+      "args": [],
+      "description": "Generate AWS diagrams, sequence diagrams, flow diagrams, and class diagrams using Python code.",
+      "env_vars": [
+        {
+          "default": "ERROR",
+          "description": "Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+          "name": "FASTMCP_LOG_LEVEL",
+          "required": false
+        }
+      ],
+      "image": "mcp/aws-diagram:latest",
+      "metadata": {
+        "last_updated": "2025-07-09T00:22:39Z",
+        "pulls": 5407,
+        "stars": 4464
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [],
+            "allow_transport": [],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/awslabs/mcp",
+      "status": "Active",
+      "tags": [
+        "aws",
+        "diagram",
+        "sequence-diagram",
+        "flow-diagram",
+        "class-diagram",
+        "python"
+      ],
+      "tier": "Official",
+      "tools": [
+        "generate_diagram",
+        "get_diagram_examples",
+        "list_icons"
+      ],
+      "transport": "stdio"
+    },
+    "aws-documentation": {
+      "args": [],
+      "description": "Access AWS documentation, search for content, and get recommendations.",
+      "env_vars": [
+        {
+          "default": "aws",
+          "description": "AWS documentation partition (aws, aws-cn)",
+          "name": "AWS_DOCUMENTATION_PARTITION",
+          "required": false
+        },
+        {
+          "default": "ERROR",
+          "description": "Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+          "name": "FASTMCP_LOG_LEVEL",
+          "required": false
+        }
+      ],
+      "image": "mcp/aws-documentation:latest",
+      "metadata": {
+        "last_updated": "2025-07-09T00:22:38Z",
+        "pulls": 5715,
+        "stars": 4464
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              ".docs.aws.amazon.com",
+              ".docs.amazonaws.cn"
+            ],
+            "allow_port": [
+              443
+            ],
+            "allow_transport": [
+              "tcp"
+            ],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/awslabs/mcp",
+      "status": "Active",
+      "tags": [
+        "aws",
+        "content",
+        "documentation",
+        "knowledge-base"
+      ],
+      "tier": "Official",
+      "tools": [
+        "read_documentation",
+        "recommend",
+        "search_documentation"
       ],
       "transport": "stdio"
     },
@@ -341,9 +410,9 @@
       ],
       "image": "mcp/elasticsearch:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:53Z",
-        "pulls": 5671,
-        "stars": 306
+        "last_updated": "2025-07-09T00:22:38Z",
+        "pulls": 6518,
+        "stars": 325
       },
       "permissions": {
         "network": {
@@ -383,66 +452,15 @@
       ],
       "transport": "stdio"
     },
-    "everart": {
-      "args": [],
-      "description": "Image generation server for Claude Desktop using EverArt's API.",
-      "env_vars": [
-        {
-          "description": "EverArt API key for image generation",
-          "name": "EVERART_API_KEY",
-          "required": true,
-          "secret": true
-        }
-      ],
-      "image": "mcp/everart:latest",
-      "metadata": {
-        "last_updated": "2025-07-02T00:21:50Z",
-        "pulls": 8266,
-        "stars": 57102
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
-            "insecure_allow_all": false
-          }
-        },
-        "read": [],
-        "write": []
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "status": "Deprecated",
-      "tags": [
-        "api",
-        "claude",
-        "desktop",
-        "everart",
-        "generation",
-        "image",
-        "tools",
-        "using"
-      ],
-      "tier": "Community",
-      "tools": [
-        "generate_image"
-      ],
-      "transport": "stdio"
-    },
     "everything": {
       "args": [],
       "description": "This MCP server attempts to exercise all the features of the MCP protocol",
       "env_vars": [],
       "image": "mcp/everything:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:52Z",
-        "pulls": 10727,
-        "stars": 57102
+        "last_updated": "2025-07-09T00:22:38Z",
+        "pulls": 11728,
+        "stars": 58454
       },
       "permissions": {
         "network": {
@@ -488,9 +506,9 @@
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/gofetch/server:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:52Z",
-        "pulls": 9222,
-        "stars": 57102
+        "last_updated": "2025-07-09T00:22:38Z",
+        "pulls": 9726,
+        "stars": 3
       },
       "permissions": {
         "network": {
@@ -517,10 +535,6 @@
       },
       "repository_url": "https://github.com/stackloklabs/gofetch",
       "status": "Active",
-      "tier": "Community",
-      "tools": [
-        "fetch"
-      ],
       "tags": [
         "content",
         "html",
@@ -533,6 +547,10 @@
         "curl",
         "modelcontextprotocol"
       ],
+      "tier": "Community",
+      "tools": [
+        "fetch"
+      ],
       "transport": "sse"
     },
     "filesystem": {
@@ -541,9 +559,9 @@
       "env_vars": [],
       "image": "mcp/filesystem:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:49Z",
-        "pulls": 14327,
-        "stars": 57102
+        "last_updated": "2025-07-09T00:22:36Z",
+        "pulls": 15328,
+        "stars": 58454
       },
       "permissions": {
         "network": {
@@ -638,9 +656,9 @@
       ],
       "image": "mcp/firecrawl:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:50Z",
-        "pulls": 7848,
-        "stars": 3625
+        "last_updated": "2025-07-09T00:22:37Z",
+        "pulls": 8611,
+        "stars": 3743
       },
       "permissions": {
         "network": {
@@ -689,73 +707,15 @@
       ],
       "transport": "stdio"
     },
-    "gdrive": {
-      "args": [],
-      "description": "This MCP server integrates with Google Drive to allow listing, reading, and searching over files.",
-      "env_vars": [
-        {
-          "description": "Path to the OAuth keys file for Google Drive API authentication",
-          "name": "GDRIVE_OAUTH_PATH",
-          "required": true
-        },
-        {
-          "description": "Path to save/load Google Drive API credentials",
-          "name": "GDRIVE_CREDENTIALS_PATH",
-          "required": true
-        }
-      ],
-      "image": "mcp/gdrive:latest",
-      "metadata": {
-        "last_updated": "2025-07-02T00:21:53Z",
-        "pulls": 7199,
-        "stars": 57102
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
-            "insecure_allow_all": false
-          }
-        },
-        "read": [],
-        "write": []
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "status": "Deprecated",
-      "tags": [
-        "drive",
-        "files",
-        "gdrive",
-        "google",
-        "integrates",
-        "listing",
-        "reading",
-        "searching",
-        "documents",
-        "spreadsheets",
-        "presentations"
-      ],
-      "tier": "Community",
-      "tools": [
-        "search"
-      ],
-      "transport": "stdio"
-    },
     "git": {
       "args": [],
       "description": "A Model Context Protocol server for Git repository interaction and automation",
       "env_vars": [],
       "image": "mcp/git:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:53Z",
-        "pulls": 7148,
-        "stars": 57102
+        "last_updated": "2025-07-09T00:22:39Z",
+        "pulls": 7666,
+        "stars": 58454
       },
       "permissions": {
         "network": {
@@ -817,9 +777,9 @@
       ],
       "image": "ghcr.io/github/github-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:51Z",
+        "last_updated": "2025-07-09T00:22:36Z",
         "pulls": 5000,
-        "stars": 16683
+        "stars": 17029
       },
       "permissions": {
         "network": {
@@ -896,137 +856,6 @@
       ],
       "transport": "stdio"
     },
-    "gitlab": {
-      "args": [],
-      "description": "MCP Server for the GitLab API, enabling project management, file operations, and more.",
-      "env_vars": [
-        {
-          "description": "GitLab personal access token with appropriate permissions",
-          "name": "GITLAB_PERSONAL_ACCESS_TOKEN",
-          "required": true,
-          "secret": true
-        },
-        {
-          "description": "Base URL for GitLab API (optional, defaults to https://gitlab.com/api/v4)",
-          "name": "GITLAB_API_URL",
-          "required": false
-        }
-      ],
-      "image": "mcp/gitlab:latest",
-      "metadata": {
-        "last_updated": "2025-07-02T00:21:49Z",
-        "pulls": 6388,
-        "stars": 57102
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [
-              "docs.gitlab.com",
-              "gitlab.com",
-              "full.com"
-            ],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
-            "insecure_allow_all": false
-          }
-        },
-        "read": [],
-        "write": []
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "status": "Deprecated",
-      "tags": [
-        "api",
-        "create",
-        "file",
-        "fork",
-        "gitlab",
-        "management",
-        "merge-request",
-        "operations",
-        "project",
-        "search"
-      ],
-      "tier": "Community",
-      "tools": [
-        "create_or_update_file",
-        "push_files",
-        "search_repositories",
-        "create_repository",
-        "get_file_contents",
-        "create_issue",
-        "create_merge_request",
-        "fork_repository",
-        "create_branch"
-      ],
-      "transport": "stdio"
-    },
-    "google-maps": {
-      "args": [],
-      "description": "MCP Server for the Google Maps API.",
-      "env_vars": [
-        {
-          "description": "Google Maps API key with appropriate permissions",
-          "name": "GOOGLE_MAPS_API_KEY",
-          "required": true,
-          "secret": true
-        }
-      ],
-      "image": "mcp/google-maps:latest",
-      "metadata": {
-        "last_updated": "2025-07-02T00:21:51Z",
-        "pulls": 5231,
-        "stars": 57102
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [
-              "developers.google.com",
-              "maps.com"
-            ],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
-            "insecure_allow_all": false
-          }
-        },
-        "read": [],
-        "write": []
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "status": "Deprecated",
-      "tags": [
-        "api",
-        "directions",
-        "distance",
-        "geocode",
-        "google",
-        "google-maps",
-        "maps",
-        "places",
-        "search"
-      ],
-      "tier": "Community",
-      "tools": [
-        "maps_geocode",
-        "maps_reverse_geocode",
-        "maps_search_places",
-        "maps_place_details",
-        "maps_distance_matrix",
-        "maps_elevation",
-        "maps_directions"
-      ],
-      "transport": "stdio"
-    },
     "grafana": {
       "args": [],
       "description": "A Model Context Protocol (MCP) server for Grafana that provides access to your Grafana instance and the surrounding ecosystem, enabling dashboard search, datasource queries, alerting management, incident response, and Sift investigations.",
@@ -1045,9 +874,9 @@
       ],
       "image": "mcp/grafana:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:49Z",
-        "pulls": 5040,
-        "stars": 1021
+        "last_updated": "2025-07-09T00:22:35Z",
+        "pulls": 5530,
+        "stars": 1110
       },
       "permissions": {
         "network": {
@@ -1147,9 +976,9 @@
       ],
       "image": "voska/hass-mcp:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:48Z",
-        "pulls": 10512,
-        "stars": 114
+        "last_updated": "2025-07-09T00:22:35Z",
+        "pulls": 11534,
+        "stars": 121
       },
       "permissions": {
         "network": {
@@ -1207,9 +1036,9 @@
       ],
       "image": "ghcr.io/stackloklabs/mkp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:52Z",
-        "pulls": 8320,
-        "stars": 32
+        "last_updated": "2025-07-09T00:22:37Z",
+        "pulls": 9216,
+        "stars": 33
       },
       "permissions": {
         "network": {
@@ -1267,9 +1096,9 @@
       ],
       "image": "mcp/memory:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:51Z",
-        "pulls": 10794,
-        "stars": 57102
+        "last_updated": "2025-07-09T00:22:36Z",
+        "pulls": 11599,
+        "stars": 58454
       },
       "permissions": {
         "network": {
@@ -1372,9 +1201,9 @@
       ],
       "image": "mongodb/mongodb-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:49Z",
-        "pulls": 1012,
-        "stars": 364
+        "last_updated": "2025-07-09T00:22:35Z",
+        "pulls": 1656,
+        "stars": 387
       },
       "permissions": {
         "network": {
@@ -1466,8 +1295,8 @@
       ],
       "image": "aantti/mcp-netbird:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:50Z",
-        "pulls": 6768,
+        "last_updated": "2025-07-09T00:22:36Z",
+        "pulls": 7426,
         "stars": 34
       },
       "permissions": {
@@ -1526,9 +1355,9 @@
       ],
       "image": "mcp/notion:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:53Z",
-        "pulls": 1335,
-        "stars": 2385
+        "last_updated": "2025-07-09T00:22:38Z",
+        "pulls": 2126,
+        "stars": 2512
       },
       "permissions": {
         "network": {
@@ -1602,8 +1431,8 @@
       ],
       "image": "ghcr.io/stackloklabs/ocireg-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:49Z",
-        "pulls": 3673,
+        "last_updated": "2025-07-09T00:22:36Z",
+        "pulls": 4366,
         "stars": 4
       },
       "permissions": {
@@ -1657,9 +1486,9 @@
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/osv-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:49Z",
-        "pulls": 6182,
-        "stars": 6
+        "last_updated": "2025-07-09T00:22:35Z",
+        "pulls": 6840,
+        "stars": 7
       },
       "permissions": {
         "network": {
@@ -1721,9 +1550,9 @@
       ],
       "image": "mcp/perplexity-ask:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:52Z",
-        "pulls": 9732,
-        "stars": 1310
+        "last_updated": "2025-07-09T00:22:37Z",
+        "pulls": 10600,
+        "stars": 1345
       },
       "permissions": {
         "network": {
@@ -1767,9 +1596,9 @@
       "env_vars": [],
       "image": "mcr.microsoft.com/playwright/mcp",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:52Z",
-        "pulls": 17066,
-        "stars": 13564
+        "last_updated": "2025-07-09T00:22:38Z",
+        "pulls": 18109,
+        "stars": 14239
       },
       "permissions": {
         "network": {
@@ -1825,114 +1654,6 @@
         "browser_wait_for"
       ],
       "transport": "sse"
-    },
-    "postgres": {
-      "args": [
-        "postgresql://host:port/db-name"
-      ],
-      "description": "A Model Context Protocol server that provides read-only access to PostgreSQL databases. This server enables LLMs to inspect database schemas and execute read-only queries.",
-      "env_vars": [],
-      "image": "mcp/postgres:latest",
-      "metadata": {
-        "last_updated": "2025-07-02T00:21:52Z",
-        "pulls": 13205,
-        "stars": 57102
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
-            "insecure_allow_all": false
-          }
-        },
-        "read": [
-          "/tmp/db"
-        ],
-        "write": [
-          "/tmp/db"
-        ]
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "status": "Deprecated",
-      "tags": [
-        "database",
-        "postgres",
-        "postgresql",
-        "query",
-        "read-only",
-        "schema",
-        "sql"
-      ],
-      "tier": "Community",
-      "tools": [
-        "query"
-      ],
-      "transport": "stdio"
-    },
-    "puppeteer": {
-      "args": [],
-      "description": "A Model Context Protocol server that provides browser automation capabilities using Puppeteer",
-      "env_vars": [
-        {
-          "default": "true",
-          "description": "Set to true when running in Docker to use headless mode",
-          "name": "DOCKER_CONTAINER",
-          "required": false
-        }
-      ],
-      "image": "mcp/puppeteer:latest",
-      "metadata": {
-        "last_updated": "2025-07-02T00:21:48Z",
-        "pulls": 16787,
-        "stars": 57102
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
-            "insecure_allow_all": true
-          }
-        },
-        "read": [],
-        "write": []
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "status": "Deprecated",
-      "tags": [
-        "automation",
-        "browser",
-        "capabilities",
-        "navigate",
-        "provides",
-        "puppeteer",
-        "puppeteer_click",
-        "puppeteer_evaluate",
-        "puppeteer_fill",
-        "puppeteer_hover"
-      ],
-      "tier": "Community",
-      "tools": [
-        "puppeteer_navigate",
-        "puppeteer_screenshot",
-        "puppeteer_click",
-        "puppeteer_hover",
-        "puppeteer_fill",
-        "puppeteer_select",
-        "puppeteer_evaluate"
-      ],
-      "transport": "stdio"
     },
     "redis": {
       "args": [],
@@ -2007,9 +1728,9 @@
       ],
       "image": "mcp/redis:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:52Z",
-        "pulls": 6626,
-        "stars": 112
+        "last_updated": "2025-07-09T00:22:37Z",
+        "pulls": 7221,
+        "stars": 136
       },
       "permissions": {
         "network": {
@@ -2103,9 +1824,9 @@
       ],
       "image": "ghcr.io/semgrep/mcp:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:50Z",
-        "pulls": 7560,
-        "stars": 208
+        "last_updated": "2025-07-09T00:22:36Z",
+        "pulls": 8295,
+        "stars": 216
       },
       "permissions": {
         "network": {
@@ -2151,63 +1872,15 @@
       ],
       "transport": "sse"
     },
-    "sentry": {
-      "args": [],
-      "description": "A Model Context Protocol server for retrieving and analyzing issues from Sentry.io",
-      "env_vars": [
-        {
-          "description": "Sentry authentication token for API access",
-          "name": "SENTRY_TOKEN",
-          "required": true,
-          "secret": true
-        }
-      ],
-      "image": "mcp/sentry:latest",
-      "metadata": {
-        "last_updated": "2025-07-02T00:21:53Z",
-        "pulls": 9526,
-        "stars": 57102
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
-            "insecure_allow_all": false
-          }
-        },
-        "read": [],
-        "write": []
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "status": "Deprecated",
-      "tags": [
-        "analyzing",
-        "issues",
-        "retrieving",
-        "sentry",
-        "tools"
-      ],
-      "tier": "Community",
-      "tools": [
-        "get_sentry_issue"
-      ],
-      "transport": "stdio"
-    },
     "sequentialthinking": {
       "args": [],
       "description": "MCP server enabling dynamic problem-solving with a structured, reflective approach that can adapt and evolve as understanding deepens.",
       "env_vars": [],
       "image": "mcp/sequentialthinking:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:51Z",
-        "pulls": 10727,
-        "stars": 57102
+        "last_updated": "2025-07-09T00:22:37Z",
+        "pulls": 11378,
+        "stars": 58454
       },
       "permissions": {
         "network": {
@@ -2243,123 +1916,45 @@
       ],
       "transport": "stdio"
     },
-    "slack": {
-      "args": [],
-      "description": "MCP Server for the Slack API, enabling Claude to interact with Slack workspaces",
-      "env_vars": [
-        {
-          "description": "Bot User OAuth Token that starts with xoxb-",
-          "name": "SLACK_BOT_TOKEN",
-          "required": true,
-          "secret": true
-        },
-        {
-          "description": "Slack Team ID that starts with T",
-          "name": "SLACK_TEAM_ID",
-          "required": true
-        }
-      ],
-      "image": "mcp/slack:latest",
-      "metadata": {
-        "last_updated": "2025-07-02T00:21:50Z",
-        "pulls": 6099,
-        "stars": 57102
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [
-              ".slack.com"
-            ],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
-            "insecure_allow_all": false
-          }
-        },
-        "read": [],
-        "write": []
-      },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "status": "Deprecated",
-      "tags": [
-        "api",
-        "claude",
-        "enabling",
-        "interact",
-        "list",
-        "post",
-        "reply",
-        "slack",
-        "tools",
-        "workspaces"
-      ],
-      "tier": "Community",
-      "tools": [
-        "slack_list_channels",
-        "slack_post_message",
-        "slack_reply_to_thread",
-        "slack_add_reaction",
-        "slack_get_channel_history",
-        "slack_get_thread_replies",
-        "slack_get_users",
-        "slack_get_user_profile"
-      ],
-      "transport": "stdio"
-    },
     "sqlite": {
       "args": [],
-      "description": "MCP server with SQLite for SQL queries, data analysis, and auto-generated business insights.",
+      "description": "Provides tools and resources for querying SQLite databases.",
       "env_vars": [],
-      "image": "mcp/sqlite:latest",
+      "image": "ghcr.io/stackloklabs/sqlite-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:50Z",
-        "pulls": 9870,
-        "stars": 57102
+        "last_updated": "2025-07-09T00:22:35Z",
+        "pulls": 216,
+        "stars": 1
       },
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [],
-            "allow_port": [
-              443
-            ],
-            "allow_transport": [
-              "tcp"
-            ],
+            "allow_port": [],
+            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
         "read": [],
         "write": []
       },
-      "repository_url": "https://github.com/modelcontextprotocol/servers",
-      "status": "Deprecated",
+      "repository_url": "https://github.com/StacklokLabs/sqlite-mcp",
+      "status": "Active",
       "tags": [
-        "analysis",
-        "auto",
-        "business",
         "data",
-        "generated",
-        "insights",
-        "queries",
+        "database",
+        "query",
         "sql",
-        "sqlite",
-        "tools"
+        "sqlite"
       ],
       "tier": "Community",
       "tools": [
-        "read_query",
-        "write_query",
-        "create_table",
+        "execute_query",
+        "execute_statement",
         "list_tables",
-        "describe_table",
-        "append_insight"
+        "describe_table"
       ],
-      "transport": "stdio"
+      "transport": "sse"
     },
     "terraform": {
       "args": [],
@@ -2367,9 +1962,9 @@
       "env_vars": [],
       "image": "hashicorp/terraform-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:50Z",
-        "pulls": 3968,
-        "stars": 665
+        "last_updated": "2025-07-09T00:22:37Z",
+        "pulls": 4864,
+        "stars": 708
       },
       "permissions": {
         "network": {
@@ -2421,9 +2016,9 @@
       "env_vars": [],
       "image": "mcp/time:latest",
       "metadata": {
-        "last_updated": "2025-07-02T00:21:51Z",
-        "pulls": 7422,
-        "stars": 57102
+        "last_updated": "2025-07-09T00:22:36Z",
+        "pulls": 7989,
+        "stars": 58454
       },
       "permissions": {
         "network": {

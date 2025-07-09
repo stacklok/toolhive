@@ -166,7 +166,7 @@ func TestGetServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get registry provider: %v", err)
 	}
-	server, err := provider.GetServer("brave-search")
+	server, err := provider.GetServer("osv")
 	if err != nil {
 		t.Fatalf("Failed to get server: %v", err)
 	}

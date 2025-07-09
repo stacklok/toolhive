@@ -15,20 +15,14 @@ func (*envKeychain) Resolve(target authn.Resource) (authn.Authenticator, error) 
 	registry := target.RegistryStr()
 
 	// Try registry-specific environment variables first
-	// Format: REGISTRY_<NORMALIZED_REGISTRY_NAME>_USERNAME/PASSWORD
+	// Format: REGISTRY_<NORMALIZED_REGISTRY_NAME>_USERNAME/PASSWORD, i.e., REGISTRY_DOCKER_IO_USERNAME
 	normalizedRegistry := strings.ToUpper(strings.ReplaceAll(registry, ".", "_"))
 	normalizedRegistry = strings.ReplaceAll(normalizedRegistry, "-", "_")
 
 	username := os.Getenv("REGISTRY_" + normalizedRegistry + "_USERNAME")
 	password := os.Getenv("REGISTRY_" + normalizedRegistry + "_PASSWORD")
 
-	// If registry-specific vars not found, try generic ones
-	if username == "" || password == "" {
-		username = os.Getenv("DOCKER_USERNAME")
-		password = os.Getenv("DOCKER_PASSWORD")
-	}
-
-	// If still not found, try REGISTRY_USERNAME/PASSWORD
+	// If registry-specific vars not found, try generic one REGISTRY_USERNAME/PASSWORD
 	if username == "" || password == "" {
 		username = os.Getenv("REGISTRY_USERNAME")
 		password = os.Getenv("REGISTRY_PASSWORD")

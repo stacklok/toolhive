@@ -4,6 +4,7 @@ package labels
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -34,9 +35,6 @@ const (
 
 	// LabelToolHiveValue is the value for the LabelToolHive label
 	LabelToolHiveValue = "true"
-
-	// LabelNetworkIsolationValue is the value for the LabelNetworkIsolation label
-	LabelNetworkIsolationValue = "true"
 )
 
 // AddStandardLabels adds standard labels to a container
@@ -59,8 +57,8 @@ func AddNetworkLabels(labels map[string]string, networkName string) {
 }
 
 // AddNetworkIsolationLabel adds the network isolation label to a container
-func AddNetworkIsolationLabel(labels map[string]string) {
-	labels[LabelNetworkIsolation] = LabelNetworkIsolationValue
+func AddNetworkIsolationLabel(labels map[string]string, networkIsolation bool) {
+	labels[LabelNetworkIsolation] = strconv.FormatBool(networkIsolation)
 }
 
 // FormatToolHiveFilter formats a filter for ToolHive containers
@@ -77,7 +75,10 @@ func IsToolHiveContainer(labels map[string]string) bool {
 // HasNetworkIsolation checks if a container has network isolation enabled.
 func HasNetworkIsolation(labels map[string]string) bool {
 	value, ok := labels[LabelNetworkIsolation]
-	return ok && strings.ToLower(value) == LabelNetworkIsolationValue
+	// If the label is not present, assume that network isolation is enabled.
+	// This is to ensure that workloads created before this label was introduced
+	// will be properly cleaned up during stop/rm.
+	return !ok || strings.ToLower(value) == "true"
 }
 
 // GetContainerName gets the container name from labels

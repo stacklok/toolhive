@@ -466,11 +466,9 @@ func (c *Client) DeployWorkload(
 		return "", 0, fmt.Errorf("failed to create external networks: %v", err)
 	}
 
+	networkIsolation := false
 	if isolateNetwork {
-		// Add a label to the MCP server indicating network isolation.
-		// This allows other methods to determine whether it needs to care
-		// about ingress/egress/dns containers.
-		lb.AddNetworkIsolationLabel(labels)
+		networkIsolation = true
 
 		internalNetworkLabels := map[string]string{}
 		lb.AddNetworkLabels(internalNetworkLabels, networkName)
@@ -515,6 +513,11 @@ func (c *Client) DeployWorkload(
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to generate port bindings: %v", err)
 	}
+
+	// Add a label to the MCP server indicating network isolation.
+	// This allows other methods to determine whether it needs to care
+	// about ingress/egress/dns containers.
+	lb.AddNetworkIsolationLabel(labels, networkIsolation)
 
 	containerId, err := c.createMcpContainer(
 		ctx,
@@ -639,15 +642,12 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 	}
 
 	// If network isolation is not enabled, then there is nothing else to do.
-	// TODO: This check is currently commented out because we need to ensure
-	// that workloads created by older versions of ToolHive get cleaned up
-	// properly. Once we are confident that all workloads with network isolation
-	// have the label set, we can uncomment this check.
-	/*
-		if !lb.HasNetworkIsolation(info.Labels) {
-			return nil
-		}
-	*/
+	// NOTE: This check treats all workloads created before the introduction of
+	// this label as having network isolation enabled. This is to ensure that they
+	// get cleaned up properly during stop/rm.
+	if !lb.HasNetworkIsolation(info.Labels) {
+		return nil
+	}
 
 	// remove / from container name
 	containerName := strings.TrimPrefix(info.Name, "/")
@@ -668,11 +668,11 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 func (c *Client) stopProxyContainer(ctx context.Context, containerName string, timeoutSeconds int) {
 	containerId, err := c.findExistingContainer(ctx, containerName)
 	if err != nil {
-		logger.Warnf("Failed to find internal container %s: %v", containerName, err)
+		logger.Debugf("Failed to find internal container %s: %v", containerName, err)
 	} else {
 		err = c.client.ContainerStop(ctx, containerId, container.StopOptions{Timeout: &timeoutSeconds})
 		if err != nil {
-			logger.Warnf("Failed to stop internal container %s: %v", containerName, err)
+			logger.Debugf("Failed to stop internal container %s: %v", containerName, err)
 		}
 	}
 }
@@ -729,16 +729,13 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 	}
 
 	// If network isolation is not enabled, then there is nothing else to do.
-	// TODO: This check is currently commented out because we need to ensure
-	// that workloads created by older versions of ToolHive get cleaned up
-	// properly. Once we are confident that all workloads with network isolation
-	// have the label set, we can uncomment this check.
-	// If network isolation is not enabled, then there is nothing else to do.
-	/*
-		if containerResponse.Config != nil && !lb.HasNetworkIsolation(containerResponse.Config.Labels) {
-			return nil
-		}
-	*/
+	// NOTE: This check treats all workloads created before the introduction of
+	// this label as having network isolation enabled. This is to ensure that they
+	// get cleaned up properly during stop/rm. There may be some spurious warnings
+	// from the following code, but they can be ignored.
+	if containerResponse.Config != nil && !lb.HasNetworkIsolation(containerResponse.Config.Labels) {
+		return nil
+	}
 
 	// remove egress, ingress, and dns containers
 	suffixes := []string{"egress", "ingress", "dns"}
@@ -747,7 +744,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 		containerName := fmt.Sprintf("%s-%s", containerName, suffix)
 		containerId, err := c.findExistingContainer(ctx, containerName)
 		if err != nil {
-			logger.Warnf("Failed to find %s container %s: %v", suffix, containerName, err)
+			logger.Debugf("Failed to find %s container %s: %v", suffix, containerName, err)
 			continue
 		}
 		if containerId == "" {

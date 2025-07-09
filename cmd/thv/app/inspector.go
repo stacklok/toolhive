@@ -47,7 +47,9 @@ var (
 	// TODO: Additionally, when the inspector image has been published
 	// TODO: to docker.io, we can use that instead of npx
 	// TODO: https://github.com/modelcontextprotocol/inspector/issues/237
-	inspectorImage = "npx://@modelcontextprotocol/inspector@latest"
+	// Pinning to a specific version for stability. The latest version
+	// as of 2025-07-09 broke the inspector command.
+	inspectorImage = "npx://@modelcontextprotocol/inspector@0.15.0"
 )
 
 func buildInspectorContainerOptions(uiPortStr string, mcpPortStr string) *runtime.DeployWorkloadOptions {

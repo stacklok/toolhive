@@ -33,22 +33,14 @@ func NewImageManager(ctx context.Context) ImageManager {
 		return &NoopImageManager{}
 	}
 
-	// First try the registry-based implementation (no Docker daemon required)
-	registryManager := NewRegistryImageManager()
-	if registryManager != nil {
-		logger.Debug("using registry-based image manager")
-		return registryManager
-	}
-
-	// Fall back to Docker client if registry manager is not available
+	// Check if we are running in a Docker or compatible environment
 	dockerClient, _, _, err := sdk.NewDockerClient(ctx)
 	if err != nil {
 		logger.Debug("no docker runtime found, using no-op image manager")
 		return &NoopImageManager{}
 	}
 
-	logger.Debug("using docker-based image manager")
-	return NewDockerImageManager(dockerClient)
+	return NewRegistryImageManager(dockerClient)
 }
 
 // NoopImageManager is a no-op implementation of ImageManager.

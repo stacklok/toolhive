@@ -6,28 +6,31 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/docker/docker/client"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/daemon"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // RegistryImageManager implements the ImageManager interface using go-containerregistry
 // for direct registry operations without requiring a Docker daemon.
+// However, for building images from Dockerfiles, it still uses the Docker client.
 type RegistryImageManager struct {
-	keychain authn.Keychain
-	platform *v1.Platform
+	keychain     authn.Keychain
+	platform     *v1.Platform
+	dockerClient *client.Client
 }
 
 // NewRegistryImageManager creates a new RegistryImageManager instance
-func NewRegistryImageManager() *RegistryImageManager {
+func NewRegistryImageManager(dockerClient *client.Client) *RegistryImageManager {
 	return &RegistryImageManager{
-		keychain: NewCompositeKeychain(), // Use composite keychain (env vars + default)
-		platform: getDefaultPlatform(),   // Use a default platform based on host architecture
+		keychain:     NewCompositeKeychain(), // Use composite keychain (env vars + default)
+		platform:     getDefaultPlatform(),   // Use a default platform based on host architecture
+		dockerClient: dockerClient,           // Used solely for building images from Dockerfiles
 	}
 }
 
@@ -107,60 +110,8 @@ func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) 
 }
 
 // BuildImage builds a Docker image from a Dockerfile in the specified context directory
-func (*RegistryImageManager) BuildImage(_ context.Context, contextDir, imageName string) error {
-	logger.Infof("Building image %s from context directory %s", imageName, contextDir)
-
-	// Parse the image reference
-	ref, err := name.ParseReference(imageName)
-	if err != nil {
-		return fmt.Errorf("failed to parse image reference %q: %w", imageName, err)
-	}
-
-	// Create a tar archive of the context directory (reusing existing logic)
-	tarFile, err := os.CreateTemp("", "registry-build-context-*.tar")
-	if err != nil {
-		return fmt.Errorf("failed to create temporary tar file: %w", err)
-	}
-	defer os.Remove(tarFile.Name())
-	defer tarFile.Close()
-
-	// Create a tar archive of the context directory
-	if err := createTarFromDir(contextDir, tarFile); err != nil {
-		return fmt.Errorf("failed to create tar archive: %w", err)
-	}
-
-	// Reset the file pointer to the beginning of the file
-	if _, err := tarFile.Seek(0, 0); err != nil {
-		return fmt.Errorf("failed to reset tar file pointer: %w", err)
-	}
-
-	// Build the image from the tarball
-	img, err := tarball.ImageFromPath(tarFile.Name(), nil)
-	if err != nil {
-		return fmt.Errorf("failed to build image from tarball: %w", err)
-	}
-
-	// Convert reference to tag for daemon.Write
-	tag, ok := ref.(name.Tag)
-	if !ok {
-		// If it's not a tag, try to convert to tag
-		tag, err = name.NewTag(ref.String())
-		if err != nil {
-			return fmt.Errorf("failed to convert reference to tag: %w", err)
-		}
-	}
-
-	// Save the image to the local daemon
-	response, err := daemon.Write(tag, img)
-	if err != nil {
-		return fmt.Errorf("failed to write built image to daemon: %w", err)
-	}
-
-	// Display success message
-	fmt.Fprintf(os.Stdout, "Successfully built %s\n", imageName)
-	logger.Infof("Build complete for image: %s, response: %s", imageName, response)
-
-	return nil
+func (r *RegistryImageManager) BuildImage(ctx context.Context, contextDir, imageName string) error {
+	return buildDockerImage(ctx, r.dockerClient, contextDir, imageName)
 }
 
 // WithKeychain sets the keychain for authentication

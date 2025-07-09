@@ -56,7 +56,7 @@ func NewClient(ctx context.Context) (*Client, error) {
 		return nil, err // there is already enough context in the error.
 	}
 
-	imageManager := images.NewDockerImageManager(dockerClient)
+	imageManager := images.NewRegistryImageManager(dockerClient)
 
 	c := &Client{
 		runtimeType:  runtimeType,

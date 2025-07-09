@@ -1,0 +1,99 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: streamable-http-mcp-server
+spec:
+  description: Deploys Streamable HTTP MCP server and verifies it's running
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+      
+  - name: deploy-mcpserver
+    description: Deploy a basic Streamable HTTP MCPServer instance and verify it's ready
+    try:
+    - apply:
+        file: mcpserver.yaml
+    - assert:
+        file: mcpserver.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+    - assert:
+        file: assert-mcpserver-proxy-runner-running.yaml
+    - assert:
+        file: assert-mcpserver-proxy-runner-svc.yaml
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+    - assert:
+        file: assert-mcpserver-headless-svc.yaml
+
+  - name: test-mcp-server
+    description: Test the StreamableHTTP->StreamableHTTP MCP server by sending requests at the toolhive proxy
+    try:
+    - script:
+        content: |
+          # Start port-forward in background
+          kubectl port-forward svc/mcp-yardstick-proxy -n toolhive-system 8080:8080 > /dev/null 2>&1 &
+          PORT_FORWARD_PID=$!
+          
+          # Function to cleanup port-forward
+          cleanup() {
+            if [ -n "$PORT_FORWARD_PID" ]; then
+              echo "Killing port-forward process $PORT_FORWARD_PID"
+              kill $PORT_FORWARD_PID 2>/dev/null || true
+            fi
+          }
+          
+          # Trap to ensure cleanup on exit
+          trap cleanup EXIT
+          
+          # Wait for port-forward to be ready (longer in CI)
+          sleep 5
+          
+          echo "🌊 ========== StreamableHTTP->StreamableHTTP TRANSPORT TESTING =========="
+          echo "📡 Testing StreamableHTTP transport on port 8080..."
+          
+          # Test StreamableHTTP endpoint with client binary
+          echo "🌊 Testing StreamableHTTP endpoint with client binary..."
+          if yardstick-client -transport streamable-http -address localhost -port 8080 -action info; then
+              echo "✓ StreamableHTTP client connection successful"
+          else
+              echo "! StreamableHTTP client connection failed"
+              exit 1
+          fi
+          
+          # Longer delay between calls for CI stability
+          sleep 3
+          
+          # Test listing tools via StreamableHTTP
+          echo "📋 Testing tool listing via StreamableHTTP..."
+          if yardstick-client -transport streamable-http -address localhost -port 8080 -action list-tools; then
+              echo "✓ StreamableHTTP tools listing successful"
+          else
+              echo "! StreamableHTTP tools listing failed"
+              exit 1
+          fi
+          
+          # Longer delay between calls for CI stability
+          sleep 3
+          
+          echo "🔧 Testing tool calling via StreamableHTTP..."
+          # We want to generate a random string to test the tool calling
+          # and then check if the output contains the string
+          TEST_INPUT_OUTPUT=$(openssl rand -hex 16)
+          if timeout 30 yardstick-client -transport streamable-http -address localhost -port 8080 -action=call-tool -tool=echo -args="{\"input\":\"$TEST_INPUT_OUTPUT\"}" | grep -q "$TEST_INPUT_OUTPUT"; then
+              echo "✓ StreamableHTTP tool call returned expected output: $TEST_INPUT_OUTPUT"
+          else
+              echo "! StreamableHTTP tool call failed or timed out"
+              exit 1
+          fi
+          
+          echo "✅ All StreamableHTTP->StreamableHTTP transport tests passed!"
+          exit 0

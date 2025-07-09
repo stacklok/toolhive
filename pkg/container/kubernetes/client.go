@@ -832,6 +832,7 @@ func extractPortMappingsFromPod(pod *corev1.Pod) []runtime.PortMapping {
 	return ports
 }
 
+// transportTypeRequiresHeadlessService returns true if the transport type requires a headless service
 func transportTypeRequiresHeadlessService(transportType string) bool {
 	return transportType == string(transtypes.TransportTypeSSE) || transportType == string(transtypes.TransportTypeStreamableHTTP)
 }

@@ -847,6 +847,20 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 			}
 		}
 
+		// Check if the proxy environment variables have changed
+		expectedProxyEnv := []corev1.EnvVar{}
+		if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
+			for _, envVar := range mcpServer.Spec.ResourceOverrides.ProxyDeployment.Env {
+				expectedProxyEnv = append(expectedProxyEnv, corev1.EnvVar{
+					Name:  envVar.Name,
+					Value: envVar.Value,
+				})
+			}
+		}
+		if !reflect.DeepEqual(container.Env, expectedProxyEnv) {
+			return true
+		}
+
 		// Check if the pod template spec has changed (including secrets)
 		expectedPodTemplateSpec := generateAndMergePodTemplateSpecs(mcpServer.Spec.Secrets, mcpServer.Spec.PodTemplateSpec)
 

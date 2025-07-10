@@ -21,7 +21,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
-	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -139,7 +138,6 @@ func NewRunConfig() *RunConfig {
 }
 
 // NewRunConfigFromFlags creates a new RunConfig with values from command-line flags
-// TODO: We may want to use some sort of builder pattern here to make it more readable.
 func NewRunConfigFromFlags(
 	ctx context.Context,
 	runtime rt.Runtime,
@@ -177,132 +175,28 @@ func NewRunConfigFromFlags(
 	envVarValidator EnvVarValidator,
 	proxyMode types.ProxyMode,
 ) (*RunConfig, error) {
-	// Ensure default values for host and targetHost
-	if host == "" {
-		host = transport.LocalhostIPv4
-	}
-	if targetHost == "" {
-		targetHost = transport.LocalhostIPv4
-	}
-
-	config := &RunConfig{
-		Runtime:                     runtime,
-		CmdArgs:                     cmdArgs,
-		Name:                        name,
-		Image:                       imageURL,
-		Debug:                       debug,
-		Volumes:                     volumes,
-		Secrets:                     secretsList,
-		AuthzConfigPath:             authzConfigPath,
-		AuditConfigPath:             auditConfigPath,
-		PermissionProfileNameOrPath: permissionProfile,
-		TargetHost:                  targetHost,
-		ContainerLabels:             make(map[string]string),
-		EnvVars:                     make(map[string]string),
-		Host:                        host,
-		IsolateNetwork:              isolateNetwork,
-		K8sPodTemplatePatch:         k8sPodPatch,
-		ProxyMode:                   proxyMode,
-	}
-
-	// Configure audit if enabled
-	configureAudit(config, enableAudit, auditConfigPath)
-
-	// Configure OIDC if any values are provided
-	configureOIDC(config, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens)
-
-	// Configure telemetry if endpoint or metrics port is provided
-	configureTelemetry(config, otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
-		otelSamplingRate, otelHeaders, otelInsecure, otelEnvironmentVariables)
-
-	// When using the CLI validation strategy, this is where the prompting for
-	// missing environment variables will happen.
-	processedEnvVars, err := envVarValidator.Validate(ctx, imageMetadata, config, envVars)
-	if err != nil {
-		return nil, fmt.Errorf("failed to validate environment variables: %v", err)
-	}
-
-	// Do some final validation which can only be done after everything else is set.
-	// Apply image metadata overrides if needed.
-	if err := config.validateConfig(imageMetadata, mcpTransport, port, targetPort); err != nil {
-		return nil, fmt.Errorf("failed to validate run config: %v", err)
-	}
-
-	// Now set environment variables with the correct transport and ports resolved
-	if _, err := config.WithEnvironmentVariables(processedEnvVars); err != nil {
-		return nil, fmt.Errorf("failed to set environment variables: %v", err)
-	}
-
-	return config, nil
-}
-
-// configureAudit sets up audit configuration if enabled
-func configureAudit(config *RunConfig, enableAudit bool, auditConfigPath string) {
-	if enableAudit && auditConfigPath == "" {
-		config.AuditConfig = audit.DefaultConfig()
-	}
-}
-
-// configureOIDC sets up OIDC configuration if any values are provided
-func configureOIDC(config *RunConfig, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string, oidcAllowOpaqueTokens bool) {
-	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
-		config.OIDCConfig = &auth.TokenValidatorConfig{
-			Issuer:            oidcIssuer,
-			Audience:          oidcAudience,
-			JWKSURL:           oidcJwksURL,
-			ClientID:          oidcClientID,
-			AllowOpaqueTokens: oidcAllowOpaqueTokens,
-		}
-	}
-}
-
-// configureTelemetry sets up telemetry configuration if endpoint or metrics port is provided
-func configureTelemetry(config *RunConfig, otelEndpoint string, otelEnablePrometheusMetricsPath bool,
-	otelServiceName string, otelSamplingRate float64, otelHeaders []string, otelInsecure bool,
-	otelEnvironmentVariables []string) {
-
-	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
-		return
-	}
-
-	// Parse headers from key=value format
-	headers := make(map[string]string)
-	for _, header := range otelHeaders {
-		parts := strings.SplitN(header, "=", 2)
-		if len(parts) == 2 {
-			headers[parts[0]] = parts[1]
-		}
-	}
-
-	// Use provided service name or default
-	serviceName := otelServiceName
-	if serviceName == "" {
-		serviceName = telemetry.DefaultConfig().ServiceName
-	}
-
-	// Process environment variables - split comma-separated values
-	var processedEnvVars []string
-	for _, envVarEntry := range otelEnvironmentVariables {
-		// Split by comma and trim whitespace
-		envVars := strings.Split(envVarEntry, ",")
-		for _, envVar := range envVars {
-			trimmed := strings.TrimSpace(envVar)
-			if trimmed != "" {
-				processedEnvVars = append(processedEnvVars, trimmed)
-			}
-		}
-	}
-
-	config.TelemetryConfig = &telemetry.Config{
-		Endpoint:                    otelEndpoint,
-		ServiceName:                 serviceName,
-		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
-		SamplingRate:                otelSamplingRate,
-		Headers:                     headers,
-		Insecure:                    otelInsecure,
-		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
-		EnvironmentVariables:        processedEnvVars,
-	}
+	return NewRunConfigBuilder().
+		WithRuntime(runtime).
+		WithCmdArgs(cmdArgs).
+		WithName(name).
+		WithImage(imageURL).
+		WithHost(host).
+		WithTargetHost(targetHost).
+		WithDebug(debug).
+		WithVolumes(volumes).
+		WithSecrets(secretsList).
+		WithAuthzConfigPath(authzConfigPath).
+		WithAuditConfigPath(auditConfigPath).
+		WithPermissionProfileNameOrPath(permissionProfile).
+		WithNetworkIsolation(isolateNetwork).
+		WithK8sPodPatch(k8sPodPatch).
+		WithProxyMode(proxyMode).
+		WithTransportAndPorts(mcpTransport, port, targetPort).
+		WithAuditEnabled(enableAudit, auditConfigPath).
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens).
+		WithTelemetryConfig(otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
+			otelSamplingRate, otelHeaders, otelInsecure, otelEnvironmentVariables).
+		Build(ctx, imageMetadata, envVars, envVarValidator)
 }
 
 // WithAuthz adds authorization configuration to the RunConfig
@@ -521,113 +415,6 @@ func (c *RunConfig) ProcessVolumeMounts() error {
 		logger.Infof("Adding volume mount: %s -> %s (%s)",
 			source, target,
 			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
-	}
-
-	return nil
-}
-
-// validateConfig ensures the RunConfig is valid and sets up some of the final
-// configuration details which can only be applied after all other flags are added.
-// This function also handles setting missing values based on the image metadata (if present).
-//
-//nolint:gocyclo // This function needs to be refactored to reduce cyclomatic complexity.
-func (c *RunConfig) validateConfig(
-	imageMetadata *registry.ImageMetadata,
-	mcpTransport string,
-	port int,
-	targetPort int,
-) error {
-	var err error
-
-	// The old logic claimed to override the name with the name from the registry
-	// but didn't. Instead, it used the name passed in from the CLI.
-	// See: https://github.com/stacklok/toolhive/blob/2873152b62bf61698cbcdd0aba1707a046151e67/cmd/thv/app/run.go#L425
-	// The following code implements what I believe was the intended behavior:
-	if c.Name == "" && imageMetadata != nil {
-		c.Name = imageMetadata.Name
-	}
-
-	// Check to see if the mcpTransport is defined in the metadata.
-	// Use this value if it was not set by the user.
-	// Else, default to stdio.
-	if mcpTransport == "" {
-		if imageMetadata != nil && imageMetadata.Transport != "" {
-			logger.Debugf("Using registry mcpTransport: %s", imageMetadata.Transport)
-			mcpTransport = imageMetadata.Transport
-		} else {
-			logger.Debugf("Defaulting mcpTransport to stdio")
-			mcpTransport = types.TransportTypeStdio.String()
-		}
-	}
-	// Set mcpTransport
-	if _, err = c.WithTransport(mcpTransport); err != nil {
-		return err
-	}
-
-	// Use registry target port if not overridden and if the mcpTransport is HTTP-based.
-	if imageMetadata != nil {
-		isHTTPServer := mcpTransport == types.TransportTypeSSE.String() ||
-			mcpTransport == types.TransportTypeStreamableHTTP.String()
-		if targetPort == 0 && isHTTPServer && imageMetadata.TargetPort > 0 {
-			logger.Debugf("Using registry target port: %d", imageMetadata.TargetPort)
-			targetPort = imageMetadata.TargetPort
-		}
-	}
-	// Configure ports and target host
-	if _, err = c.WithPorts(port, targetPort); err != nil {
-		return err
-	}
-
-	// If we are missing the permission profile, attempt to load one from the image metadata.
-	if c.PermissionProfileNameOrPath == "" && imageMetadata != nil {
-		permProfilePath, err := CreatePermissionProfileFile(c.Name, imageMetadata.Permissions)
-		if err != nil {
-			// Just log the error and continue with the default permission profile
-			logger.Warnf("Warning: failed to create permission profile file: %v", err)
-		} else {
-			// Update the permission profile path
-			c.PermissionProfileNameOrPath = permProfilePath
-		}
-	}
-	// Set permission profile (mandatory)
-	if _, err = c.ParsePermissionProfile(); err != nil {
-		return err
-	}
-
-	// Process volume mounts
-	if err = c.ProcessVolumeMounts(); err != nil {
-		return err
-	}
-
-	// Generate container name if not already set
-	c.WithContainerName()
-
-	// Add standard labels
-	c.WithStandardLabels()
-
-	// Add authorization configuration if provided
-	if c.AuthzConfigPath != "" {
-		authzConfig, err := authz.LoadConfig(c.AuthzConfigPath)
-		if err != nil {
-			return fmt.Errorf("failed to load authorization configuration: %v", err)
-		}
-		c.WithAuthz(authzConfig)
-	}
-
-	// Add audit configuration if provided
-	if c.AuditConfigPath != "" {
-		auditConfig, err := audit.LoadFromFile(c.AuditConfigPath)
-		if err != nil {
-			return fmt.Errorf("failed to load audit configuration: %v", err)
-		}
-		c.WithAudit(auditConfig)
-	}
-	// Note: AuditConfig is already set from --enable-audit flag if provided
-
-	// Prepend registry args to command-line args if available
-	if imageMetadata != nil && len(imageMetadata.Args) > 0 {
-		logger.Debugf("Prepending registry args: %v", imageMetadata.Args)
-		c.CmdArgs = append(c.CmdArgs, imageMetadata.Args...)
 	}
 
 	return nil

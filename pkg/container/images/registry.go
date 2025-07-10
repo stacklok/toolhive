@@ -44,7 +44,7 @@ func getDefaultPlatform() *v1.Platform {
 }
 
 // ImageExists checks if an image exists locally in the daemon or remotely in the registry
-func (*RegistryImageManager) ImageExists(_ context.Context, imageName string) (bool, error) {
+func (r *RegistryImageManager) ImageExists(_ context.Context, imageName string) (bool, error) {
 	// Parse the image reference
 	ref, err := name.ParseReference(imageName)
 	if err != nil {
@@ -52,7 +52,7 @@ func (*RegistryImageManager) ImageExists(_ context.Context, imageName string) (b
 	}
 
 	// First check if image exists locally in daemon
-	if _, err := daemon.Image(ref); err != nil {
+	if _, err := daemon.Image(ref, daemon.WithClient(r.dockerClient)); err != nil {
 		// Image does not exist locally
 		return false, nil
 	}
@@ -97,7 +97,7 @@ func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) 
 	}
 
 	// Save the image to the local daemon
-	response, err := daemon.Write(tag, img)
+	response, err := daemon.Write(tag, img, daemon.WithClient(r.dockerClient))
 	if err != nil {
 		return fmt.Errorf("failed to write image to daemon: %w", err)
 	}

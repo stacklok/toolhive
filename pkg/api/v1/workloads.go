@@ -230,8 +230,8 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 
 	// Mimic behavior of the CLI by defaulting to the "network" permission profile.
 	// TODO: Consider moving this into the run config creation logic.
-	if req.PermissionProfile == "" {
-		req.PermissionProfile = permissions.ProfileNetwork
+	if req.PermissionProfile != nil {
+		req.PermissionProfile = permissions.BuiltinNetworkProfile()
 	}
 
 	// Fetch or build the requested image
@@ -253,43 +253,28 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 
 	// NOTE: None of the k8s-related config logic is included here.
 	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
-	runConfig, err := runner.NewRunConfigFromFlags(
-		ctx,
-		s.containerRuntime,
-		req.CmdArguments,
-		req.Name,
-		imageURL,
-		imageMetadata,
-		req.Host,
-		s.debugMode,
-		req.Volumes,
-		runSecrets,
-		req.AuthzConfig,
-		"",    // req.AuditConfig not set - auditing not exposed through API yet.
-		false, // req.EnableAudit not set - auditing not exposed through API yet.
-		req.PermissionProfile,
-		transport.LocalhostIPv4, // Seems like a reasonable default for now.
-		req.Transport,
-		0, // Let the workloadManager figure out which port to use.
-		req.TargetPort,
-		req.EnvVars,
-		req.OIDC.Issuer,
-		req.OIDC.Audience,
-		req.OIDC.JwksURL,
-		req.OIDC.ClientID,
-		req.OIDC.AllowOpaqueTokens,
-		"",    // otelEndpoint - not exposed through API yet
-		"",    // otelServiceName - not exposed through API yet
-		0.0,   // otelSamplingRate - default value
-		nil,   // otelHeaders - not exposed through API yet
-		false, // otelInsecure - not exposed through API yet
-		false, // otelEnablePrometheusMetricsPath - not exposed through API yet
-		nil,   // otelEnvironmentVariables - not exposed through API yet
-		false, // isolateNetwork - not exposed through API yet
-		"",    // k8s patch - not relevant here.
-		&runner.DetachedEnvVarValidator{},
-		types.ProxyMode(req.ProxyMode),
-	)
+	runConfig, err := runner.NewRunConfigBuilder().
+		WithRuntime(s.containerRuntime).
+		WithCmdArgs(req.CmdArguments).
+		WithName(req.Name).
+		WithImage(imageURL).
+		WithHost(req.Host).
+		WithTargetHost(transport.LocalhostIPv4).
+		WithDebug(s.debugMode).
+		WithVolumes(req.Volumes).
+		WithSecrets(runSecrets).
+		WithAuthzConfigPath(req.AuthzConfig).
+		WithAuditConfigPath("").
+		WithPermissionProfile(req.PermissionProfile).
+		WithNetworkIsolation(req.NetworkIsolation).
+		WithK8sPodPatch("").
+		WithProxyMode(types.ProxyMode(req.ProxyMode)).
+		WithTransportAndPorts(req.Transport, 0, req.TargetPort).
+		WithAuditEnabled(false, "").
+		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID, req.OIDC.AllowOpaqueTokens).
+		WithTelemetryConfig("", false, "", 0.0, nil, false, nil). // Not exposed through API yet.
+		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
+
 	if err != nil {
 		logger.Errorf("Failed to create run config: %v", err)
 		http.Error(w, "Failed to create run config", http.StatusBadRequest)
@@ -504,9 +489,11 @@ type createRequest struct {
 	// OIDC configuration options
 	OIDC oidcOptions `json:"oidc"`
 	// Permission profile to apply
-	PermissionProfile string `json:"permission_profile"`
+	PermissionProfile *permissions.Profile `json:"permission_profile"`
 	// Proxy mode to use
 	ProxyMode string `json:"proxy_mode"`
+	// Whether network isolation is turned on. This applies the rules in the permission profile.
+	NetworkIsolation bool `json:"network_isolation"`
 }
 
 // oidcOptions represents OIDC configuration options

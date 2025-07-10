@@ -328,7 +328,7 @@ func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
 
 // ensureRBACResources ensures that the RBAC resources are in place for the MCP server
 func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
-	proxyRunnerNameForRBAC := fmt.Sprintf("%s-proxy-runner", mcpServer.Name)
+	proxyRunnerNameForRBAC := proxyRunnerServiceAccountName(mcpServer.Name)
 
 	// Ensure Role
 	if err := r.ensureRBACResource(ctx, mcpServer, "Role", func() client.Object {
@@ -552,7 +552,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 					Labels: ls, // Keep original labels for pod template
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: fmt.Sprintf("%s-proxy-runner", m.Name),
+					ServiceAccountName: proxyRunnerServiceAccountName(m.Name),
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",
@@ -895,7 +895,8 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 	}
 
 	// Check if the service account name has changed
-	if deployment.Spec.Template.Spec.ServiceAccountName != "toolhive" {
+	expectedServiceAccountName := proxyRunnerServiceAccountName(mcpServer.Name)
+	if deployment.Spec.Template.Spec.ServiceAccountName != expectedServiceAccountName {
 		return true
 	}
 
@@ -976,6 +977,11 @@ func resourceRequirementsForMCPServer(m *mcpv1alpha1.MCPServer) corev1.ResourceR
 		}
 	}
 	return resources
+}
+
+// proxyRunnerServiceAccountName returns the service account name for the proxy runner
+func proxyRunnerServiceAccountName(mcpServerName string) string {
+	return fmt.Sprintf("%s-proxy-runner", mcpServerName)
 }
 
 // labelsForMCPServer returns the labels for selecting the resources

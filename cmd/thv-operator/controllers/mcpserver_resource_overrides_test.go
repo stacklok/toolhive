@@ -205,3 +205,37 @@ func TestMergeStringMaps(t *testing.T) {
 		})
 	}
 }
+
+func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &MCPServerReconciler{
+		Client: client,
+		Scheme: scheme,
+	}
+
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-server",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			Port:  8080,
+		},
+	}
+
+	// Create a deployment using the current implementation
+	deployment := r.deploymentForMCPServer(mcpServer)
+	require.NotNil(t, deployment)
+
+	// Test with the current deployment - this should NOT need update
+	needsUpdate := deploymentNeedsUpdate(deployment, mcpServer)
+
+	// With the service account bug fixed, this should now return false
+	assert.False(t, needsUpdate, "deploymentNeedsUpdate should return false when deployment matches MCPServer spec")
+}

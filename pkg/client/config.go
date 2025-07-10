@@ -227,6 +227,7 @@ func ensureClientConfigWithRunningMCPs(clientType MCPClient) (*ConfigFile, error
 	if !ok {
 		return nil, fmt.Errorf("manager is not of type *defaultManager for %s", clientType)
 	}
+	// Add the running MCPs to the client config file by creating it if it doesn't exist
 	if err := mgr.addRunningMCPsToClient(ctx, clientType); err != nil {
 		return nil, fmt.Errorf("unable to add running MCPs to client config for %s: %w", clientType, err)
 	}

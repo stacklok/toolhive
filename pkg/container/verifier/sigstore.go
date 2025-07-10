@@ -31,15 +31,15 @@ type sigstoreBundle struct {
 }
 
 // bundleFromSigstoreSignedImage returns a bundle from a Sigstore signed image
-func bundleFromSigstoreSignedImage(imageRef string, auth authn.Authenticator) ([]sigstoreBundle, error) {
+func bundleFromSigstoreSignedImage(imageRef string, keychain authn.Keychain) ([]sigstoreBundle, error) {
 	// Get the signature manifest from the OCI image reference
-	signatureRef, err := getSignatureReferenceFromOCIImage(imageRef, auth)
+	signatureRef, err := getSignatureReferenceFromOCIImage(imageRef, keychain)
 	if err != nil {
 		return nil, fmt.Errorf("error getting signature reference from OCI image: %w", err)
 	}
 
 	// Parse the manifest and return a list of all simple signing layers we managed to extract
-	simpleSigningLayers, err := getSimpleSigningLayersFromSignatureManifest(signatureRef, auth)
+	simpleSigningLayers, err := getSimpleSigningLayersFromSignatureManifest(signatureRef, keychain)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrProvenanceNotFoundOrIncomplete, err.Error())
 	}
@@ -99,9 +99,9 @@ func bundleFromSigstoreSignedImage(imageRef string, auth authn.Authenticator) ([
 }
 
 // getSignatureReferenceFromOCIImage returns the simple signing layer from the OCI image reference
-func getSignatureReferenceFromOCIImage(imageRef string, auth authn.Authenticator) (string, error) {
+func getSignatureReferenceFromOCIImage(imageRef string, keychain authn.Keychain) (string, error) {
 	// 0. Get the auth options
-	opts := []remote.Option{remote.WithAuth(auth)}
+	opts := []remote.Option{remote.WithAuthFromKeychain(keychain)}
 
 	// 1. Get the image reference
 	ref, err := name.ParseReference(imageRef)
@@ -130,8 +130,8 @@ func getSignatureReferenceFromOCIImage(imageRef string, auth authn.Authenticator
 }
 
 // getSimpleSigningLayersFromSignatureManifest returns the identity and issuer from the certificate
-func getSimpleSigningLayersFromSignatureManifest(manifestRef string, auth authn.Authenticator) ([]v1.Descriptor, error) {
-	craneOpts := []crane.Option{crane.WithAuth(auth)}
+func getSimpleSigningLayersFromSignatureManifest(manifestRef string, keychain authn.Keychain) ([]v1.Descriptor, error) {
+	craneOpts := []crane.Option{crane.WithAuthFromKeychain(keychain)}
 	// Get the manifest of the signature
 	mf, err := crane.Manifest(manifestRef, craneOpts...)
 	if err != nil {

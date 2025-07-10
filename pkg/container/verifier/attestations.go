@@ -18,11 +18,11 @@ import (
 // bundleFromAttestation retrieves the attestation bundles from the image reference. Note that the attestation
 // bundles are stored as OCI image references. The function uses the referrers API to get the attestation. GitHub supports
 // discovering the attestations via their API, but this is not supported here for now.
-func bundleFromAttestation(imageRef string, auth authn.Authenticator, remoteOpts []remote.Option) ([]sigstoreBundle, error) {
+func bundleFromAttestation(imageRef string, keychain authn.Keychain) ([]sigstoreBundle, error) {
 	var bundles []sigstoreBundle
 
 	// Get the auth options
-	opts := []remote.Option{remote.WithAuth(auth)}
+	opts := []remote.Option{remote.WithAuthFromKeychain(keychain)}
 
 	// Get the image reference
 	ref, err := name.ParseReference(imageRef)
@@ -46,7 +46,7 @@ func bundleFromAttestation(imageRef string, auth authn.Authenticator, remoteOpts
 	}
 
 	// Use the referrers API to get the attestation reference
-	referrers, err := remote.Referrers(digest, remoteOpts...)
+	referrers, err := remote.Referrers(digest, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("error getting referrers: %w, %s", ErrProvenanceNotFoundOrIncomplete, err.Error())
 	}
@@ -61,7 +61,7 @@ func bundleFromAttestation(imageRef string, auth authn.Authenticator, remoteOpts
 		if !strings.HasPrefix(refDesc.ArtifactType, "application/vnd.dev.sigstore.bundle") {
 			continue
 		}
-		refImg, err := remote.Image(ref.Context().Digest(refDesc.Digest.String()), remoteOpts...)
+		refImg, err := remote.Image(ref.Context().Digest(refDesc.Digest.String()), opts...)
 		if err != nil {
 			logger.Debugf("error getting referrer image: %w", err)
 			continue

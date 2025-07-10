@@ -6,10 +6,12 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
+	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 )
@@ -26,6 +28,7 @@ const (
 // Sigstore is the sigstore verifier
 type Sigstore struct {
 	verifier *verify.Verifier
+	keychain authn.Keychain
 }
 
 // Result is the result of the verification
@@ -69,7 +72,14 @@ func New(serverInfo *registry.ImageMetadata) (*Sigstore, error) {
 	// return the verifier
 	return &Sigstore{
 		verifier: sev,
+		keychain: images.NewCompositeKeychain(),
 	}, nil
+}
+
+// WithKeychain sets the keychain for authentication
+func (s *Sigstore) WithKeychain(keychain authn.Keychain) *Sigstore {
+	s.keychain = keychain
+	return s
 }
 
 // GetVerificationResults returns the verification results for the given image reference
@@ -77,7 +87,7 @@ func (s *Sigstore) GetVerificationResults(
 	imageRef string,
 ) ([]*verify.VerificationResult, error) {
 	// Construct the bundle(s) for the image reference
-	bundles, err := getSigstoreBundles(imageRef)
+	bundles, err := getSigstoreBundles(imageRef, s.keychain)
 	if err != nil && !errors.Is(err, ErrProvenanceNotFoundOrIncomplete) {
 		// We got some other unexpected error prior to querying for the signature/attestation
 		return nil, err

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/process"
@@ -285,7 +286,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// If we are running in detached mode, or the CLI is wrapped by the K8s operator,
 	// we use the DetachedEnvVarValidator.
 	var envVarValidator runner.EnvVarValidator
-	if process.IsDetached() || container.IsKubernetesRuntime() {
+	if process.IsDetached() || runtime.IsKubernetesRuntime() {
 		envVarValidator = &runner.DetachedEnvVarValidator{}
 	} else {
 		envVarValidator = &runner.CLIEnvVarValidator{}
@@ -297,7 +298,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Only pull image if we are not running in Kubernetes mode.
 	// This split will go away if we implement a separate command or binary
 	// for running MCP servers in Kubernetes.
-	if !container.IsKubernetesRuntime() {
+	if !runtime.IsKubernetesRuntime() {
 		// Take the MCP server we were supplied and either fetch the image, or
 		// build it from a protocol scheme. If the server URI refers to an image
 		// in our trusted registry, we will also fetch the image metadata.

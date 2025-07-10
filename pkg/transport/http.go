@@ -171,7 +171,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 	t.containerID = containerID
 	logger.Infof("Container created with ID: %s", containerID)
 
-	if (t.Mode() == types.TransportTypeSSE || t.Mode() == types.TransportTypeStreamableHTTP) && container.IsKubernetesRuntime() {
+	if (t.Mode() == types.TransportTypeSSE || t.Mode() == types.TransportTypeStreamableHTTP) && rt.IsKubernetesRuntime() {
 		// If the SSEHeadlessServiceName is set, use it as the target host
 		// This is useful for Kubernetes deployments where the workload is
 		// exposed as a headless service.
@@ -186,7 +186,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 	// Issues:
 	// - https://github.com/stacklok/toolhive/issues/902
 	// - https://github.com/stacklok/toolhive/issues/924
-	if !container.IsKubernetesRuntime() {
+	if !rt.IsKubernetesRuntime() {
 		// also override the exposed port, in case we need it via ingress
 		t.targetPort = exposedPort
 	}

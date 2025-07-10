@@ -238,6 +238,8 @@ func ensureClientConfigWithRunningMCPs(clientType MCPClient) (*ConfigFile, error
 	return cf, nil
 }
 
+// FindRegisteredClientConfigs finds all registered client configs and creates them if they don't exist
+// and ensures they are populated with the running MCPs.
 func FindRegisteredClientConfigs() ([]ConfigFile, error) {
 	clientStatuses, err := GetClientStatus()
 	if err != nil {

@@ -20,12 +20,8 @@ const (
 	WorkloadStatusStopped WorkloadStatus = "stopped"
 	// WorkloadStatusError indicates that the workload encountered an error.
 	WorkloadStatusError WorkloadStatus = "error"
-	// WorkloadStatusStarting indicates that the workload is 	being started.
+	// WorkloadStatusStarting indicates that the workload is being started.
 	WorkloadStatusStarting WorkloadStatus = "starting"
-	// WorkloadStatusStopping indicates that the workload is being stopped.
-	WorkloadStatusStopping WorkloadStatus = "stopping"
-	// WorkloadStatusRemoving indicates that the workload is being removed.
-	WorkloadStatusRemoving WorkloadStatus = "removing"
 	// WorkloadStatusUnknown indicates that the workload status is unknown.
 	WorkloadStatusUnknown WorkloadStatus = "unknown"
 )

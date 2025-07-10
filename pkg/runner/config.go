@@ -245,6 +245,10 @@ func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
 
 // ParsePermissionProfile loads and sets the permission profile
 func (c *RunConfig) ParsePermissionProfile() (*RunConfig, error) {
+	if c.PermissionProfile != nil {
+		return c, nil
+	}
+
 	if c.PermissionProfileNameOrPath == "" {
 		return c, fmt.Errorf("permission profile name or path is required")
 	}

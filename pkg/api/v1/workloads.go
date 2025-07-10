@@ -230,8 +230,8 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 
 	// Mimic behavior of the CLI by defaulting to the "network" permission profile.
 	// TODO: Consider moving this into the run config creation logic.
-	if req.PermissionProfile == "" {
-		req.PermissionProfile = permissions.ProfileNetwork
+	if req.PermissionProfile != nil {
+		req.PermissionProfile = permissions.BuiltinNetworkProfile()
 	}
 
 	// Fetch or build the requested image
@@ -266,7 +266,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		WithAuthzConfigPath(req.AuthzConfig).
 		WithAuditConfigPath("").
 		WithPermissionProfile(req.PermissionProfile).
-		WithNetworkIsolation(false).
+		WithNetworkIsolation(req.NetworkIsolation).
 		WithK8sPodPatch("").
 		WithProxyMode(types.ProxyMode(req.ProxyMode)).
 		WithTransportAndPorts(req.Transport, 0, req.TargetPort).
@@ -489,9 +489,11 @@ type createRequest struct {
 	// OIDC configuration options
 	OIDC oidcOptions `json:"oidc"`
 	// Permission profile to apply
-	PermissionProfile string `json:"permission_profile"`
+	PermissionProfile *permissions.Profile `json:"permission_profile"`
 	// Proxy mode to use
 	ProxyMode string `json:"proxy_mode"`
+	// Whether network isolation is turned on. This applies the rules in the permission profile.
+	NetworkIsolation bool `json:"network_isolation"`
 }
 
 // oidcOptions represents OIDC configuration options

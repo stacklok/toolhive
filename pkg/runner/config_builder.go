@@ -10,6 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -108,9 +109,21 @@ func (b *RunConfigBuilder) WithAuditConfigPath(path string) *RunConfigBuilder {
 	return b
 }
 
-// WithPermissionProfileNameOrPath sets the permission profile name or path
+// WithPermissionProfileNameOrPath sets the permission profile name or path.
+// If called multiple times or mixed with WithPermissionProfile,
+// the last call takes precedence.
 func (b *RunConfigBuilder) WithPermissionProfileNameOrPath(profile string) *RunConfigBuilder {
 	b.config.PermissionProfileNameOrPath = profile
+	b.config.PermissionProfile = nil // Clear any existing profile
+	return b
+}
+
+// WithPermissionProfile sets the permission profile directly.
+// If called multiple times or mixed with WithPermissionProfile,
+// the last call takes precedence.
+func (b *RunConfigBuilder) WithPermissionProfile(profile *permissions.Profile) *RunConfigBuilder {
+	b.config.PermissionProfile = profile
+	b.config.PermissionProfileNameOrPath = "" // Clear any existing name or path
 	return b
 }
 
@@ -290,7 +303,7 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	}
 
 	// If we are missing the permission profile, attempt to load one from the image metadata.
-	if c.PermissionProfileNameOrPath == "" && imageMetadata != nil {
+	if c.PermissionProfileNameOrPath == "" && c.PermissionProfile == nil && imageMetadata != nil {
 		permProfilePath, err := CreatePermissionProfileFile(c.Name, imageMetadata.Permissions)
 		if err != nil {
 			// Just log the error and continue with the default permission profile

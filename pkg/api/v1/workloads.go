@@ -279,7 +279,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Start workload with specified RunConfig.
-	err = s.workloadManager.RunWorkloadDetached(runConfig)
+	err = s.workloadManager.RunWorkloadDetached(ctx, runConfig)
 	if err != nil {
 		logger.Errorf("Failed to start workload: %v", err)
 		http.Error(w, "Failed to start workload", http.StatusInternalServerError)

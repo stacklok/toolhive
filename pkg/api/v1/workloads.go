@@ -22,7 +22,6 @@ import (
 // WorkloadRoutes defines the routes for workload management.
 type WorkloadRoutes struct {
 	workloadManager  workloads.Manager
-	statusManager    workloads.StatusManager
 	containerRuntime runtime.Runtime
 	debugMode        bool
 }
@@ -36,13 +35,11 @@ type WorkloadRoutes struct {
 // WorkloadRouter creates a new WorkloadRoutes instance.
 func WorkloadRouter(
 	workloadManager workloads.Manager,
-	statusManager workloads.StatusManager,
 	containerRuntime runtime.Runtime,
 	debugMode bool,
 ) http.Handler {
 	routes := WorkloadRoutes{
 		workloadManager:  workloadManager,
-		statusManager:    statusManager,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 	}
@@ -73,7 +70,7 @@ func WorkloadRouter(
 func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	listAll := r.URL.Query().Get("all") == "true"
-	workloadList, err := s.statusManager.ListWorkloads(ctx, listAll)
+	workloadList, err := s.workloadManager.ListWorkloads(ctx, listAll)
 	if err != nil {
 		logger.Errorf("Failed to list workloads: %v", err)
 		http.Error(w, "Failed to list workloads", http.StatusInternalServerError)
@@ -102,7 +99,7 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
-	workload, err := s.statusManager.GetWorkload(ctx, name)
+	workload, err := s.workloadManager.GetWorkload(ctx, name)
 	if err != nil {
 		if errors.Is(err, workloads.ErrWorkloadNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)

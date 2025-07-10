@@ -92,7 +92,7 @@ func completeMCPServerNames(cmd *cobra.Command, args []string, _ string) ([]stri
 	ctx := cmd.Context()
 
 	// Create status manager
-	manager, err := workloads.NewStatusManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
 	}
@@ -124,7 +124,7 @@ func completeLogsArgs(cmd *cobra.Command, args []string, _ string) ([]string, co
 	ctx := cmd.Context()
 
 	// Create status manager
-	manager, err := workloads.NewStatusManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return []string{"prune"}, cobra.ShellCompDirectiveNoFileComp
 	}

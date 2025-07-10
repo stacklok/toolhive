@@ -227,7 +227,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 
 	// Mimic behavior of the CLI by defaulting to the "network" permission profile.
 	// TODO: Consider moving this into the run config creation logic.
-	if req.PermissionProfile != nil {
+	if req.PermissionProfile == nil {
 		req.PermissionProfile = permissions.BuiltinNetworkProfile()
 	}
 

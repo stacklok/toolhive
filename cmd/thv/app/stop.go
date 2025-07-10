@@ -57,17 +57,12 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
-	statusManager, err := workloads.NewStatusManager(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create status manager: %v", err)
-	}
-
 	var group *errgroup.Group
 
 	// Check if --all flag is set
 	if stopAll {
 		// Get list of all running workloads first
-		workloadList, err := statusManager.ListWorkloads(ctx, false) // false = only running workloads
+		workloadList, err := workloadManager.ListWorkloads(ctx, false) // false = only running workloads
 		if err != nil {
 			return fmt.Errorf("failed to list workloads: %v", err)
 		}

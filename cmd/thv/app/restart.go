@@ -44,13 +44,8 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
-	statusManager, err := workloads.NewStatusManager(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create status manager: %v", err)
-	}
-
 	if restartAll {
-		return restartAllContainers(ctx, statusManager, workloadManager)
+		return restartAllContainers(ctx, workloadManager)
 	}
 
 	// Restart single workload
@@ -69,13 +64,9 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func restartAllContainers(
-	ctx context.Context,
-	statusManager workloads.StatusManager,
-	workloadManager workloads.Manager,
-) error {
+func restartAllContainers(ctx context.Context, workloadManager workloads.Manager) error {
 	// Get all containers (including stopped ones since restart can start stopped containers)
-	allWorkloads, err := statusManager.ListWorkloads(ctx, true)
+	allWorkloads, err := workloadManager.ListWorkloads(ctx, true)
 	if err != nil {
 		return fmt.Errorf("failed to list allWorkloads: %v", err)
 	}

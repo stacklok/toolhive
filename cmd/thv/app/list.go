@@ -33,7 +33,7 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 
 	// Instantiate the status manager.
-	manager, err := workloads.NewStatusManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create status manager: %v", err)
 	}

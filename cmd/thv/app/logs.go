@@ -126,7 +126,7 @@ func getLogsDirectory() (string, error) {
 }
 
 func getManagedContainerNames(ctx context.Context) (map[string]bool, error) {
-	manager, err := workloads.NewStatusManager(ctx)
+	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create status manager: %v", err)
 	}

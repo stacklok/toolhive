@@ -622,6 +622,8 @@ github.com/shopspring/decimal v0.0.0-20180709203117-cd690d0c9e24/go.mod h1:M+9Nz
 github.com/shopspring/decimal v1.2.0/go.mod h1:DKyhrW/HYNuLGql+MJL6WCR6knT2jwCFRcu2hWCYk4o=
 github.com/sigstore/protobuf-specs v0.4.3 h1:kRgJ+ciznipH9xhrkAbAEHuuxD3GhYnGC873gZpjJT4=
 github.com/sigstore/protobuf-specs v0.4.3/go.mod h1:+gXR+38nIa2oEupqDdzg4qSBT0Os+sP7oYv6alWewWc=
+github.com/sigstore/protobuf-specs v0.5.0 h1:F8YTI65xOHw70NrvPwJ5PhAzsvTnuJMGLkA4FIkofAY=
+github.com/sigstore/protobuf-specs v0.5.0/go.mod h1:+gXR+38nIa2oEupqDdzg4qSBT0Os+sP7oYv6alWewWc=
 github.com/sigstore/rekor v1.3.10 h1:/mSvRo4MZ/59ECIlARhyykAlQlkmeAQpvBPlmJtZOCU=
 github.com/sigstore/rekor v1.3.10/go.mod h1:JvryKJ40O0XA48MdzYUPu0y4fyvqt0C4iSY7ri9iu3A=
 github.com/sigstore/sigstore v1.9.4 h1:64+OGed80+A4mRlNzRd055vFcgBeDghjZw24rPLZgDU=

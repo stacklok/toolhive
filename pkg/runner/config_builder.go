@@ -308,24 +308,15 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 		return err
 	}
 
-	// If we are missing the permission profile, attempt to load one from the image metadata.
-	if c.PermissionProfileNameOrPath == "" && c.PermissionProfile == nil && imageMetadata != nil {
-		permProfilePath, err := CreatePermissionProfileFile(c.Name, imageMetadata.Permissions)
-		if err != nil {
-			// Just log the error and continue with the default permission profile
-			logger.Warnf("Warning: failed to create permission profile file: %v", err)
-		} else {
-			// Update the permission profile path
-			c.PermissionProfileNameOrPath = permProfilePath
-		}
-	}
-	// Set permission profile (mandatory)
-	if _, err = c.ParsePermissionProfile(); err != nil {
+	// Load or default the permission profile
+	// NOTE: This must be done before processing volume mounts
+	c.PermissionProfile, err = b.loadPermissionProfile(imageMetadata)
+	if err != nil {
 		return err
 	}
 
 	// Process volume mounts
-	if err = c.ProcessVolumeMounts(); err != nil {
+	if err = b.processVolumeMounts(); err != nil {
 		return err
 	}
 
@@ -358,6 +349,106 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	if imageMetadata != nil && len(imageMetadata.Args) > 0 {
 		logger.Debugf("Prepending registry args: %v", imageMetadata.Args)
 		c.CmdArgs = append(c.CmdArgs, imageMetadata.Args...)
+	}
+
+	return nil
+}
+
+func (b *RunConfigBuilder) loadPermissionProfile(imageMetadata *registry.ImageMetadata) (*permissions.Profile, error) {
+	// The permission profile object takes precedence over the name or path.
+	if b.config.PermissionProfile != nil {
+		return b.config.PermissionProfile, nil
+	}
+
+	// Try to load the permission profile by name or path.
+	if b.config.PermissionProfileNameOrPath != "" {
+		switch b.config.PermissionProfileNameOrPath {
+		case permissions.ProfileNone, "stdio":
+			return permissions.BuiltinNoneProfile(), nil
+		case permissions.ProfileNetwork:
+			return permissions.BuiltinNetworkProfile(), nil
+		default:
+			// Try to load from file
+			return permissions.FromFile(b.config.PermissionProfileNameOrPath)
+		}
+	}
+
+	// If a profile was not set by name or path, check the image metadata.
+	if imageMetadata != nil && imageMetadata.Permissions != nil {
+
+		logger.Debugf("Using registry permission profile: %v", imageMetadata.Permissions)
+		return imageMetadata.Permissions, nil
+	}
+
+	// If no metadata is available, use the network permission profile as default.
+	logger.Debugf("Using default permission profile: %s", permissions.ProfileNetwork)
+	return permissions.BuiltinNetworkProfile(), nil
+}
+
+// processVolumeMounts processes volume mounts and adds them to the permission profile
+func (b *RunConfigBuilder) processVolumeMounts() error {
+
+	// Skip if no volumes to process
+	if len(b.config.Volumes) == 0 {
+		return nil
+	}
+
+	// Ensure permission profile is loaded
+	if b.config.PermissionProfile == nil {
+		return fmt.Errorf("permission profile is required when using volume mounts")
+	}
+
+	// Create a map of existing mount targets for quick lookup
+	existingMounts := make(map[string]string)
+
+	// Add existing read mounts to the map
+	for _, m := range b.config.PermissionProfile.Read {
+		source, target, _ := m.Parse()
+		existingMounts[target] = source
+	}
+
+	// Add existing write mounts to the map
+	for _, m := range b.config.PermissionProfile.Write {
+		source, target, _ := m.Parse()
+		existingMounts[target] = source
+	}
+
+	// Process each volume mount
+	for _, volume := range b.config.Volumes {
+		// Parse read-only flag
+		readOnly := strings.HasSuffix(volume, ":ro")
+		volumeSpec := volume
+		if readOnly {
+			volumeSpec = strings.TrimSuffix(volume, ":ro")
+		}
+
+		// Create and parse mount declaration
+		mount := permissions.MountDeclaration(volumeSpec)
+		source, target, err := mount.Parse()
+		if err != nil {
+			return fmt.Errorf("invalid volume format: %s (%v)", volume, err)
+		}
+
+		// Check for duplicate mount target
+		if existingSource, isDuplicate := existingMounts[target]; isDuplicate {
+			logger.Warnf("Skipping duplicate mount target: %s (already mounted from %s)",
+				target, existingSource)
+			continue
+		}
+
+		// Add the mount to the appropriate permission list
+		if readOnly {
+			b.config.PermissionProfile.Read = append(b.config.PermissionProfile.Read, mount)
+		} else {
+			b.config.PermissionProfile.Write = append(b.config.PermissionProfile.Write, mount)
+		}
+
+		// Add to the map of existing mounts
+		existingMounts[target] = source
+
+		logger.Infof("Adding volume mount: %s -> %s (%s)",
+			source, target,
+			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
 	}
 
 	return nil

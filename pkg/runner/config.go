@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -256,36 +255,6 @@ func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
 	return c, nil
 }
 
-// ParsePermissionProfile loads and sets the permission profile
-func (c *RunConfig) ParsePermissionProfile() (*RunConfig, error) {
-	if c.PermissionProfile != nil {
-		return c, nil
-	}
-
-	if c.PermissionProfileNameOrPath == "" {
-		return c, fmt.Errorf("permission profile name or path is required")
-	}
-
-	var permProfile *permissions.Profile
-	var err error
-
-	switch c.PermissionProfileNameOrPath {
-	case permissions.ProfileNone, "stdio":
-		permProfile = permissions.BuiltinNoneProfile()
-	case permissions.ProfileNetwork:
-		permProfile = permissions.BuiltinNetworkProfile()
-	default:
-		// Try to load from file
-		permProfile, err = permissions.FromFile(c.PermissionProfileNameOrPath)
-		if err != nil {
-			return c, fmt.Errorf("failed to load permission profile: %v", err)
-		}
-	}
-
-	c.PermissionProfile = permProfile
-	return c, nil
-}
-
 // WithEnvironmentVariables parses and sets environment variables
 func (c *RunConfig) WithEnvironmentVariables(envVarStrings []string) (*RunConfig, error) {
 	envVars, err := environment.ParseEnvironmentVariables(envVarStrings)
@@ -359,80 +328,4 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 	}
 	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port)
 	return c
-}
-
-// ProcessVolumeMounts processes volume mounts and adds them to the permission profile
-func (c *RunConfig) ProcessVolumeMounts() error {
-	// Skip if no volumes to process
-	if len(c.Volumes) == 0 {
-		return nil
-	}
-
-	// Ensure permission profile is loaded
-	if c.PermissionProfile == nil {
-		if c.PermissionProfileNameOrPath == "" {
-			return fmt.Errorf("permission profile is required when using volume mounts")
-		}
-
-		// Load the permission profile from the specified name or path
-		_, err := c.ParsePermissionProfile()
-		if err != nil {
-			return fmt.Errorf("failed to load permission profile: %v", err)
-		}
-	}
-
-	// Create a map of existing mount targets for quick lookup
-	existingMounts := make(map[string]string)
-
-	// Add existing read mounts to the map
-	for _, m := range c.PermissionProfile.Read {
-		source, target, _ := m.Parse()
-		existingMounts[target] = source
-	}
-
-	// Add existing write mounts to the map
-	for _, m := range c.PermissionProfile.Write {
-		source, target, _ := m.Parse()
-		existingMounts[target] = source
-	}
-
-	// Process each volume mount
-	for _, volume := range c.Volumes {
-		// Parse read-only flag
-		readOnly := strings.HasSuffix(volume, ":ro")
-		volumeSpec := volume
-		if readOnly {
-			volumeSpec = strings.TrimSuffix(volume, ":ro")
-		}
-
-		// Create and parse mount declaration
-		mount := permissions.MountDeclaration(volumeSpec)
-		source, target, err := mount.Parse()
-		if err != nil {
-			return fmt.Errorf("invalid volume format: %s (%v)", volume, err)
-		}
-
-		// Check for duplicate mount target
-		if existingSource, isDuplicate := existingMounts[target]; isDuplicate {
-			logger.Warnf("Skipping duplicate mount target: %s (already mounted from %s)",
-				target, existingSource)
-			continue
-		}
-
-		// Add the mount to the appropriate permission list
-		if readOnly {
-			c.PermissionProfile.Read = append(c.PermissionProfile.Read, mount)
-		} else {
-			c.PermissionProfile.Write = append(c.PermissionProfile.Write, mount)
-		}
-
-		// Add to the map of existing mounts
-		existingMounts[target] = source
-
-		logger.Infof("Adding volume mount: %s -> %s (%s)",
-			source, target,
-			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
-	}
-
-	return nil
 }

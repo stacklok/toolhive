@@ -11,7 +11,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -114,7 +113,7 @@ func init() {
 	runCmd.Flags().StringVar(
 		&runPermissionProfile,
 		"permission-profile",
-		permissions.ProfileNetwork,
+		"",
 		"Permission profile to use (none, network, or path to JSON file)",
 	)
 	runCmd.Flags().StringArrayVarP(

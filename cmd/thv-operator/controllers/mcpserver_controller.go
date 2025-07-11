@@ -452,6 +452,16 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}
 
+	// Add user-specified proxy environment variables from ResourceOverrides
+	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
+		for _, envVar := range m.Spec.ResourceOverrides.ProxyDeployment.Env {
+			env = append(env, corev1.EnvVar{
+				Name:  envVar.Name,
+				Value: envVar.Value,
+			})
+		}
+	}
+
 	// Prepare container volume mounts
 	volumeMounts := []corev1.VolumeMount{}
 	volumes := []corev1.Volume{}
@@ -835,6 +845,20 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 			if !found {
 				return true
 			}
+		}
+
+		// Check if the proxy environment variables have changed
+		expectedProxyEnv := []corev1.EnvVar{}
+		if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
+			for _, envVar := range mcpServer.Spec.ResourceOverrides.ProxyDeployment.Env {
+				expectedProxyEnv = append(expectedProxyEnv, corev1.EnvVar{
+					Name:  envVar.Name,
+					Value: envVar.Value,
+				})
+			}
+		}
+		if !reflect.DeepEqual(container.Env, expectedProxyEnv) {
+			return true
 		}
 
 		// Check if the pod template spec has changed (including secrets)

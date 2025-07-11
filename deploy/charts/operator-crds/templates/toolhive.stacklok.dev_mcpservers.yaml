@@ -8305,6 +8305,25 @@ spec:
                           type: string
                         description: Annotations to add or override on the resource
                         type: object
+                      env:
+                        description: |-
+                          Env are environment variables to set in the proxy container (thv run process)
+                          These affect the toolhive proxy itself, not the MCP server it manages
+                        items:
+                          description: EnvVar represents an environment variable in
+                            a container
+                          properties:
+                            name:
+                              description: Name of the environment variable
+                              type: string
+                            value:
+                              description: Value of the environment variable
+                              type: string
+                          required:
+                          - name
+                          - value
+                          type: object
+                        type: array
                       labels:
                         additionalProperties:
                           type: string

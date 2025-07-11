@@ -645,6 +645,9 @@ components:
       - WorkloadStatusStopped
       - WorkloadStatusError
       - WorkloadStatusStarting
+      - WorkloadStatusStopping
+      - WorkloadStatusUnhealthy
+      - WorkloadStatusRemoving
       - WorkloadStatusUnknown
 externalDocs:
   description: ""

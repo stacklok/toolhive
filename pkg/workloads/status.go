@@ -3,14 +3,22 @@ package workloads
 import (
 	"context"
 
-	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // StatusManager is an interface for fetching and retrieving workload statuses.
 type StatusManager interface {
+	// CreateWorkloadStatus creates the initial `starting` status for a new workload.
+	// Unlike SetWorkloadStatus, this will create a new entry in the status store,
+	// but will do nothing if the workload already exists.
+	CreateWorkloadStatus(ctx context.Context, workloadName string) error
+	// GetWorkloadStatus retrieves the status of a workload by its name.
+	GetWorkloadStatus(ctx context.Context, workloadName string) (*WorkloadStatus, string, error)
 	// SetWorkloadStatus sets the status of a workload by its name.
-	SetWorkloadStatus(ctx context.Context, workloadName string, status WorkloadStatus, contextMsg string) error
+	// Note that this does not return errors, but logs them instead.
+	// This method will do nothing if the workload does not exist.
+	SetWorkloadStatus(ctx context.Context, workloadName string, status WorkloadStatus, contextMsg string)
 	// DeleteWorkloadStatus removes the status of a workload by its name.
 	DeleteWorkloadStatus(ctx context.Context, workloadName string) error
 }
@@ -22,19 +30,6 @@ func NewStatusManagerFromRuntime(runtime rt.Runtime) StatusManager {
 	}
 }
 
-// NewStatusManager creates a new container manager instance.
-// It instantiates a runtime as part of creating the manager.
-func NewStatusManager(ctx context.Context) (StatusManager, error) {
-	runtime, err := ct.NewFactory().Create(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &runtimeStatusManager{
-		runtime: runtime,
-	}, nil
-}
-
 // runtimeStatusManager is an implementation of StatusManager that uses the state
 // returned by the underlying runtime. This reflects the existing behaviour of
 // ToolHive at the time of writing.
@@ -42,12 +37,23 @@ type runtimeStatusManager struct {
 	runtime rt.Runtime
 }
 
-func (*runtimeStatusManager) SetWorkloadStatus(_ context.Context, _ string, _ WorkloadStatus, _ string) error {
-	// Noop
+func (*runtimeStatusManager) CreateWorkloadStatus(_ context.Context, workloadName string) error {
+	// TODO: This will need to handle concurrent updates.
+	logger.Debugf("workload %s created", workloadName)
 	return nil
 }
 
+func (*runtimeStatusManager) GetWorkloadStatus(_ context.Context, _ string) (*WorkloadStatus, string, error) {
+	return nil, "", nil
+}
+
+func (*runtimeStatusManager) SetWorkloadStatus(_ context.Context, workloadName string, status WorkloadStatus, contextMsg string) {
+	// TODO: This will need to handle concurrent updates.
+	logger.Debugf("workload %s set to status %s (context: %s)", workloadName, status, contextMsg)
+}
+
 func (*runtimeStatusManager) DeleteWorkloadStatus(_ context.Context, _ string) error {
+	// TODO: This will need to handle concurrent updates.
 	// Noop
 	return nil
 }

@@ -31,3 +31,9 @@ spec:
         - operator-deploy-local
     - assert:
         file: assert-operator-ready.yaml
+    - assert:
+        file: assert-rbac-clusterrole.yaml
+    - assert:
+        file: assert-rbac-clusterrolebinding.yaml
+    - assert:
+        file: assert-rbac-serviceaccount.yaml

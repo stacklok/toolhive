@@ -1,0 +1,8 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick
+  namespace: test-namespace
+status:
+  message: "MCP server is running"
+  phase: "Running"

@@ -1,0 +1,129 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: stdio-mcp-server
+spec:
+  description: Deploys STDIO MCP server and verifies it's running
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+    - assert:
+        file: ../../setup/namespace.yaml
+      
+  - name: deploy-mcpserver
+    description: Deploy a basic MCPServer instance and verify it's ready
+    try:
+    - apply:
+        file: mcpserver.yaml
+    - assert:
+        file: mcpserver.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+    - assert:
+        file: assert-mcpserver-proxy-runner-running.yaml
+    - assert:
+        file: assert-mcpserver-proxy-runner-svc.yaml
+    - assert:
+        file: ../common/proxyrunner-role.yaml
+    - assert:
+        file: ../common/proxyrunner-rolebinding.yaml
+    - assert:
+        file: ../common/proxyrunner-serviceaccount.yaml
+    - apply:
+        file: ../common/proxy-svc-loadbalancer.yaml
+    - assert:
+        file: ../common/assert-proxy-svc-loadbalancer-ip.yaml
+
+  - name: test-mcp-server
+    description: Test the SSE->STDIO MCP server by sending requests at the toolhive proxy
+    try:
+    - script:
+        content: |
+          # Get LoadBalancer external IP
+          echo "Getting LoadBalancer external IP for service mcp-yardstick-proxy-lb..."
+          EXTERNAL_IP=$(kubectl get svc mcp-yardstick-proxy-lb -n test-namespace -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          
+          if [ -z "$EXTERNAL_IP" ]; then
+            echo "LoadBalancer did not get external IP within timeout"
+            kubectl describe svc mcp-yardstick-proxy-lb -n test-namespace
+            exit 1
+          fi
+          
+          # Wait additional time for LoadBalancer to be ready
+          echo "Waiting for LoadBalancer to be ready..."
+          
+          # Function to retry yardstick-client commands with backoff
+          retry_yardstick() {
+            local max_attempts=5
+            local delay=2
+            local attempt=1
+            local cmd="$@"
+            
+            while [ $attempt -le $max_attempts ]; do
+              echo "Attempt $attempt/$max_attempts: $cmd"
+              if eval $cmd; then
+                echo "✓ Command succeeded on attempt $attempt"
+                return 0
+              else
+                echo "! Command failed on attempt $attempt"
+                if [ $attempt -lt $max_attempts ]; then
+                  echo "Waiting ${delay}s before retry..."
+                  sleep $delay
+                  delay=$((delay * 2))  # exponential backoff
+                fi
+              fi
+              attempt=$((attempt + 1))
+            done
+            
+            echo "! Command failed after $max_attempts attempts"
+            return 1
+          }
+          
+          echo "🌊 ========== SSE->STDIO TRANSPORT TESTING =========="
+          echo "📡 Testing SSE transport on port 8080..."
+          
+          # Test SSE endpoint with client binary
+          echo "🌊 Testing SSE endpoint with client binary..."
+          if retry_yardstick "yardstick-client -transport sse -address $EXTERNAL_IP -port 8080 -action info"; then
+              echo "✓ SSE client connection successful"
+          else
+              echo "! SSE client connection failed"
+              exit 1
+          fi
+          
+          # Longer delay between calls for CI stability
+          
+          # Test listing tools via SSE
+          echo "📋 Testing tool listing via SSE..."
+          if retry_yardstick "yardstick-client -transport sse -address $EXTERNAL_IP -port 8080 -action list-tools"; then
+              echo "✓ SSE tools listing successful"
+          else
+              echo "! SSE tools listing failed"
+              exit 1
+          fi
+          
+          # Longer delay between calls for CI stability
+          
+          echo "🔧 Testing tool calling via SSE..."
+          # We want to generate a random string to test the tool calling
+          # and then check if the output contains the string
+          TEST_INPUT_OUTPUT=$(openssl rand -hex 16)
+          if retry_yardstick "timeout 30 yardstick-client -transport sse -address $EXTERNAL_IP -port 8080 -action=call-tool -tool=echo -args='{\"input\":\"$TEST_INPUT_OUTPUT\"}' | grep -q '$TEST_INPUT_OUTPUT'"; then
+              echo "✓ SSE tool call returned expected output: $TEST_INPUT_OUTPUT"
+          else
+              echo "! SSE tool call failed or timed out"
+              exit 1
+          fi
+          
+          echo "✅ All SSE->STDIO transport tests passed!"
+          exit 0

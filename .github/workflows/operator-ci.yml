@@ -156,7 +156,6 @@ jobs:
         # but we want to make sure renovate bumps the versions when new ones are released. Doing that with
         # just the number is a bit more difficult and i like simple things.
         version: [
-          "kindest/node:v1.30.13",
           "kindest/node:v1.31.9",
           "kindest/node:v1.32.5",
           "kindest/node:v1.33.1"
@@ -198,12 +197,16 @@ jobs:
       with:
         cluster_name: toolhive
         version: v0.29.0
+        cloud_provider: true
         node_image: ${{ matrix.version }}
 
     - name: Run Chainsaw tests
       run: |
         kind get kubeconfig --name toolhive > kconfig.yaml
         export KUBECONFIG=kconfig.yaml
-        chainsaw test --test-dir test/e2e/chainsaw/operator/setup --config .chainsaw.yaml
-        chainsaw test --test-dir test/e2e/chainsaw/operator/test-scenarios --config .chainsaw.yaml
-        chainsaw test --test-dir test/e2e/chainsaw/operator/cleanup --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/setup --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/test-scenarios --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/cleanup --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup --config .chainsaw.yaml

@@ -1,0 +1,54 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: operator-setup
+spec:
+  description: Setup ToolHive Operator CRDs and deployment - base for other tests
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  # Skip cleanup to leave resources for other tests
+  skipDelete: true
+  steps:
+  - name: setup-crds
+    description: Install ToolHive Operator CRDs
+    try:
+    - command:
+        entrypoint: task
+        args:
+        - operator-install-crds
+    - assert:
+        file: assert-crd.yaml
+
+  - name: setup-namespace
+    description: Create test namespace for multi-tenancy tests
+    try:
+    - apply:
+        file: namespace.yaml
+    - assert:
+        file: namespace.yaml
+
+  - name: setup-operator
+    description: Deploy ToolHive Operator
+    try:
+    - command:
+        entrypoint: task
+        args:
+        - operator-deploy-local
+        - --
+        - --set
+        - operator.rbac.scope=namespace
+        - --set
+        - operator.rbac.allowedNamespaces={toolhive-system,test-namespace}
+    - assert:
+        file: assert-operator-ready.yaml
+    - assert:
+        file: assert-rbac-clusterrole.yaml
+    - assert:
+        file: assert-rbac-rolebinding-ns-1.yaml
+    - assert:
+        file: assert-rbac-rolebinding-ns-2.yaml
+    - assert:
+        file: assert-rbac-serviceaccount.yaml

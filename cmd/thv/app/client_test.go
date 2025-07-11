@@ -27,6 +27,7 @@ func removeClientViaCLI(cmd *cobra.Command, client string) error {
 }
 
 func TestClientRegisterCmd(t *testing.T) {
+	t.Parallel()
 	tempDir := t.TempDir()
 	os.Setenv("XDG_CONFIG_HOME", tempDir)
 
@@ -40,6 +41,7 @@ func TestClientRegisterCmd(t *testing.T) {
 }
 
 func TestClientRemoveCmd(t *testing.T) {
+	t.Parallel()
 	tempDir := t.TempDir()
 	os.Setenv("XDG_CONFIG_HOME", tempDir)
 
@@ -59,6 +61,7 @@ func TestClientRemoveCmd(t *testing.T) {
 }
 
 func TestClientRegisterCmd_InvalidClient(t *testing.T) {
+	t.Parallel()
 	tempDir := t.TempDir()
 	os.Setenv("XDG_CONFIG_HOME", tempDir)
 
@@ -70,6 +73,7 @@ func TestClientRegisterCmd_InvalidClient(t *testing.T) {
 }
 
 func TestClientRemoveCmd_InvalidClient(t *testing.T) {
+	t.Parallel()
 	tempDir := t.TempDir()
 	os.Setenv("XDG_CONFIG_HOME", tempDir)
 

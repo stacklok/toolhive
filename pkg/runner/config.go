@@ -110,6 +110,15 @@ type RunConfig struct {
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode types.ProxyMode `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
+
+	// ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations
+	ThvCABundle string `json:"thv_ca_bundle,omitempty" yaml:"thv_ca_bundle,omitempty"`
+
+	// JWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests
+	JWKSAuthTokenFile string `json:"jwks_auth_token_file,omitempty" yaml:"jwks_auth_token_file,omitempty"`
+
+	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+	JWKSAllowPrivateIP bool `json:"jwks_allow_private_ip,omitempty" yaml:"jwks_allow_private_ip,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -172,6 +181,9 @@ func NewRunConfigFromFlags(
 	otelEnvironmentVariables []string,
 	isolateNetwork bool,
 	k8sPodPatch string,
+	thvCABundle string,
+	jwksAuthTokenFile string,
+	jwksAllowPrivateIP bool,
 	envVarValidator EnvVarValidator,
 	proxyMode types.ProxyMode,
 ) (*RunConfig, error) {
@@ -193,7 +205,8 @@ func NewRunConfigFromFlags(
 		WithProxyMode(proxyMode).
 		WithTransportAndPorts(mcpTransport, port, targetPort).
 		WithAuditEnabled(enableAudit, auditConfigPath).
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens).
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
+			thvCABundle, jwksAuthTokenFile, jwksAllowPrivateIP).
 		WithTelemetryConfig(otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
 			otelSamplingRate, otelHeaders, otelInsecure, otelEnvironmentVariables).
 		Build(ctx, imageMetadata, envVars, envVarValidator)

@@ -13,6 +13,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -68,10 +69,23 @@ type TokenValidatorConfig struct {
 
 	// AllowOpaqueTokens indicates whether to allow opaque tokens (non-JWT)
 	AllowOpaqueTokens bool
+
+	// CACertPath is the path to the CA certificate bundle for HTTPS requests
+	CACertPath string
+
+	// AuthTokenFile is the path to file containing bearer token for authentication
+	AuthTokenFile string
+
+	// AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+	AllowPrivateIP bool
 }
 
 // discoverOIDCConfiguration discovers OIDC configuration from the issuer's well-known endpoint
-func discoverOIDCConfiguration(ctx context.Context, issuer string) (*OIDCDiscoveryDocument, error) {
+func discoverOIDCConfiguration(
+	ctx context.Context,
+	issuer, caCertPath, authTokenFile string,
+	allowPrivateIP bool,
+) (*OIDCDiscoveryDocument, error) {
 	// Construct the well-known endpoint URL
 	wellKnownURL := strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration"
 
@@ -85,13 +99,14 @@ func discoverOIDCConfiguration(ctx context.Context, issuer string) (*OIDCDiscove
 	req.Header.Set("User-Agent", fmt.Sprintf("ToolHive/%s", versions.Version))
 	req.Header.Set("Accept", "application/json")
 
-	// Make the request
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-		},
+	// Create HTTP client with CA bundle and auth token support
+	client, err := networking.NewHttpClientBuilder().
+		WithCABundle(caCertPath).
+		WithTokenFromFile(authTokenFile).
+		WithPrivateIPs(allowPrivateIP).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -140,7 +155,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, allowOp
 
 	// If JWKS URL is not provided but issuer is, try to discover it
 	if jwksURL == "" && config.Issuer != "" {
-		doc, err := discoverOIDCConfiguration(ctx, config.Issuer)
+		doc, err := discoverOIDCConfiguration(ctx, config.Issuer, config.CACertPath, config.AuthTokenFile, config.AllowPrivateIP)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrFailedToDiscoverOIDC, err)
 		}
@@ -152,11 +167,21 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, allowOp
 		return nil, ErrMissingIssuerAndJWKSURL
 	}
 
+	// Create HTTP client with CA bundle and auth token support for JWKS
+	httpClient, err := networking.NewHttpClientBuilder().
+		WithCABundle(config.CACertPath).
+		WithPrivateIPs(config.AllowPrivateIP).
+		WithTokenFromFile(config.AuthTokenFile).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+
 	// Create a new JWKS client with auto-refresh
 	cache := jwk.NewCache(ctx)
 
-	// Register the JWKS URL with the cache
-	err := cache.Register(jwksURL)
+	// Register the JWKS URL with the cache using custom HTTP client
+	err = cache.Register(jwksURL, jwk.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, fmt.Errorf("failed to register JWKS URL: %w", err)
 	}

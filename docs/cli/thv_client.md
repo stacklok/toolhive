@@ -30,6 +30,8 @@ The client command provides subcommands to manage MCP client integrations.
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
+* [thv client register](thv_client_register.md)	 - Register a client for MCP server configuration
+* [thv client remove](thv_client_remove.md)	 - Remove a client from MCP server configuration
 * [thv client setup](thv_client_setup.md)	 - Interactively setup and register installed clients
 * [thv client status](thv_client_status.md)	 - Show status of all supported MCP clients
 

@@ -234,6 +234,12 @@ func (b *RunConfigBuilder) WithTelemetryConfig(otelEndpoint string, otelEnablePr
 	return b
 }
 
+// WithTools sets the list of tools to enable for this MCP server
+func (b *RunConfigBuilder) WithTools(tools []string) *RunConfigBuilder {
+	b.config.Tools = tools
+	return b
+}
+
 // Build creates the final RunConfig instance with validation and processing
 func (b *RunConfigBuilder) Build(ctx context.Context, imageMetadata *registry.ImageMetadata,
 	envVars []string, envVarValidator EnvVarValidator) (*RunConfig, error) {

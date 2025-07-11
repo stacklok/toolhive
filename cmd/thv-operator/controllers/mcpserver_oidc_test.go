@@ -27,7 +27,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
+
+func init() {
+	// Initialize logger for tests
+	logger.Initialize()
+}
 
 func TestGenerateOIDCArgs(t *testing.T) {
 	t.Parallel()
@@ -73,7 +79,9 @@ func TestGenerateOIDCArgs(t *testing.T) {
 			expectedArgs: []string{
 				"--oidc-issuer=https://kubernetes.default.svc",
 				"--oidc-audience=toolhive",
-				"--oidc-jwks-url=https://kubernetes.default.svc/openid/v1/jwks",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 		{
@@ -100,6 +108,9 @@ func TestGenerateOIDCArgs(t *testing.T) {
 				"--oidc-issuer=https://custom.issuer.com",
 				"--oidc-audience=custom-audience",
 				"--oidc-jwks-url=https://custom.issuer.com/jwks",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 		{
@@ -258,7 +269,9 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 			expectedArgs: []string{
 				"--oidc-issuer=https://kubernetes.default.svc",
 				"--oidc-audience=toolhive",
-				"--oidc-jwks-url=https://kubernetes.default.svc/openid/v1/jwks",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 		{
@@ -278,7 +291,9 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 			expectedArgs: []string{
 				"--oidc-issuer=https://kubernetes.default.svc",
 				"--oidc-audience=toolhive",
-				"--oidc-jwks-url=https://kubernetes.default.svc/openid/v1/jwks",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 		{
@@ -298,7 +313,9 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 			expectedArgs: []string{
 				"--oidc-issuer=https://kubernetes.default.svc",
 				"--oidc-audience=toolhive",
-				"--oidc-jwks-url=https://kubernetes.default.svc/openid/v1/jwks",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 		{
@@ -320,7 +337,9 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 			expectedArgs: []string{
 				"--oidc-issuer=https://kubernetes.default.svc",
 				"--oidc-audience=toolhive",
-				"--oidc-jwks-url=https://kubernetes.default.svc/openid/v1/jwks",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 	}

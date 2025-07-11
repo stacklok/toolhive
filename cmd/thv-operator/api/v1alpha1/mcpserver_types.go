@@ -76,11 +76,22 @@ type MCPServerSpec struct {
 type ResourceOverrides struct {
 	// ProxyDeployment defines overrides for the Proxy Deployment resource (toolhive proxy)
 	// +optional
-	ProxyDeployment *ResourceMetadataOverrides `json:"proxyDeployment,omitempty"`
+	ProxyDeployment *ProxyDeploymentOverrides `json:"proxyDeployment,omitempty"`
 
 	// ProxyService defines overrides for the Proxy Service resource (points to the proxy deployment)
 	// +optional
 	ProxyService *ResourceMetadataOverrides `json:"proxyService,omitempty"`
+}
+
+// ProxyDeploymentOverrides defines overrides specific to the proxy deployment
+type ProxyDeploymentOverrides struct {
+	// ResourceMetadataOverrides is embedded to inherit annotations and labels fields
+	ResourceMetadataOverrides `json:",inline"` // nolint:revive
+
+	// Env are environment variables to set in the proxy container (thv run process)
+	// These affect the toolhive proxy itself, not the MCP server it manages
+	// +optional
+	Env []EnvVar `json:"env,omitempty"`
 }
 
 // ResourceMetadataOverrides defines metadata overrides for a resource
@@ -299,9 +310,16 @@ type KubernetesOIDCConfig struct {
 	Issuer string `json:"issuer,omitempty"`
 
 	// JWKSURL is the URL to fetch the JWKS from
-	// +kubebuilder:default="https://kubernetes.default.svc/openid/v1/jwks"
+	// If empty, OIDC discovery will be used to automatically determine the JWKS URL
 	// +optional
 	JWKSURL string `json:"jwksUrl,omitempty"`
+
+	// UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token
+	// When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification
+	// and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication
+	// Defaults to true if not specified
+	// +optional
+	UseClusterAuth *bool `json:"useClusterAuth"`
 }
 
 // ConfigMapOIDCRef references a ConfigMap containing OIDC configuration
@@ -333,6 +351,22 @@ type InlineOIDCConfig struct {
 	// ClientID is deprecated and will be removed in a future release.
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
+
+	// ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
+	// The file must be mounted into the pod (e.g., via ConfigMap or Secret volume)
+	// +optional
+	ThvCABundlePath string `json:"thvCABundlePath,omitempty"`
+
+	// JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests
+	// The file must be mounted into the pod (e.g., via Secret volume)
+	// +optional
+	JWKSAuthTokenPath string `json:"jwksAuthTokenPath,omitempty"`
+
+	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+	// Use with caution - only enable for trusted internal IDPs
+	// +kubebuilder:default=false
+	// +optional
+	JWKSAllowPrivateIP bool `json:"jwksAllowPrivateIP"`
 }
 
 // AuthzConfigRef defines a reference to authorization configuration

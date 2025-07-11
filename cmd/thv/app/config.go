@@ -285,8 +285,11 @@ func setRegistryURLCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	if !allowPrivateRegistryIp {
-		registryClient := networking.GetHttpClient(false)
-		_, err := registryClient.Get(registryURL)
+		registryClient, err := networking.NewHttpClientBuilder().Build()
+		if err != nil {
+			return fmt.Errorf("failed to create HTTP client: %w", err)
+		}
+		_, err = registryClient.Get(registryURL)
 		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
 			return err
 		}

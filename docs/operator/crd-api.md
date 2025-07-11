@@ -76,6 +76,7 @@ EnvVar represents an environment variable in a container
 
 _Appears in:_
 - [MCPServerSpec](#mcpserverspec)
+- [ProxyDeploymentOverrides](#proxydeploymentoverrides)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -117,6 +118,9 @@ _Appears in:_
 | `audience` _string_ | Audience is the expected audience for the token |  |  |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  |  |
 | `clientId` _string_ | ClientID is deprecated and will be removed in a future release. |  |  |
+| `thvCABundlePath` _string_ | ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests<br />The file must be mounted into the pod (e.g., via ConfigMap or Secret volume) |  |  |
+| `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests<br />The file must be mounted into the pod (e.g., via Secret volume) |  |  |
+| `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Use with caution - only enable for trusted internal IDPs | false |  |
 
 
 #### KubernetesOIDCConfig
@@ -136,7 +140,8 @@ _Appears in:_
 | `namespace` _string_ | Namespace is the namespace of the service account<br />If empty, uses the MCPServer's namespace |  |  |
 | `audience` _string_ | Audience is the expected audience for the token | toolhive |  |
 | `issuer` _string_ | Issuer is the OIDC issuer URL | https://kubernetes.default.svc |  |
-| `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from | https://kubernetes.default.svc/openid/v1/jwks |  |
+| `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL |  |  |
+| `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication<br />Defaults to true if not specified |  |  |
 
 
 #### MCPServer
@@ -323,6 +328,24 @@ _Appears in:_
 
 
 
+#### ProxyDeploymentOverrides
+
+
+
+ProxyDeploymentOverrides defines overrides specific to the proxy deployment
+
+
+
+_Appears in:_
+- [ResourceOverrides](#resourceoverrides)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `annotations` _object (keys:string, values:string)_ | Annotations to add or override on the resource |  |  |
+| `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  |  |
+| `env` _[EnvVar](#envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages |  |  |
+
+
 #### ResourceList
 
 
@@ -349,6 +372,7 @@ ResourceMetadataOverrides defines metadata overrides for a resource
 
 
 _Appears in:_
+- [ProxyDeploymentOverrides](#proxydeploymentoverrides)
 - [ResourceOverrides](#resourceoverrides)
 
 | Field | Description | Default | Validation |
@@ -370,7 +394,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `proxyDeployment` _[ResourceMetadataOverrides](#resourcemetadataoverrides)_ | ProxyDeployment defines overrides for the Proxy Deployment resource (toolhive proxy) |  |  |
+| `proxyDeployment` _[ProxyDeploymentOverrides](#proxydeploymentoverrides)_ | ProxyDeployment defines overrides for the Proxy Deployment resource (toolhive proxy) |  |  |
 | `proxyService` _[ResourceMetadataOverrides](#resourcemetadataoverrides)_ | ProxyService defines overrides for the Proxy Service resource (points to the proxy deployment) |  |  |
 
 

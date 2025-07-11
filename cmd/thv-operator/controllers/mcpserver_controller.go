@@ -452,6 +452,16 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}
 
+	// Add user-specified proxy environment variables from ResourceOverrides
+	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
+		for _, envVar := range m.Spec.ResourceOverrides.ProxyDeployment.Env {
+			env = append(env, corev1.EnvVar{
+				Name:  envVar.Name,
+				Value: envVar.Value,
+			})
+		}
+	}
+
 	// Prepare container volume mounts
 	volumeMounts := []corev1.VolumeMount{}
 	volumes := []corev1.Volume{}
@@ -837,6 +847,20 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 			}
 		}
 
+		// Check if the proxy environment variables have changed
+		expectedProxyEnv := []corev1.EnvVar{}
+		if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
+			for _, envVar := range mcpServer.Spec.ResourceOverrides.ProxyDeployment.Env {
+				expectedProxyEnv = append(expectedProxyEnv, corev1.EnvVar{
+					Name:  envVar.Name,
+					Value: envVar.Value,
+				})
+			}
+		}
+		if !reflect.DeepEqual(container.Env, expectedProxyEnv) {
+			return true
+		}
+
 		// Check if the pod template spec has changed (including secrets)
 		expectedPodTemplateSpec := generateAndMergePodTemplateSpecs(mcpServer.Spec.Secrets, mcpServer.Spec.PodTemplateSpec)
 
@@ -1147,7 +1171,17 @@ func (*MCPServerReconciler) generateKubernetesOIDCArgs(m *mcpv1alpha1.MCPServer)
 
 	// Set defaults if config is nil
 	if config == nil {
-		config = &mcpv1alpha1.KubernetesOIDCConfig{}
+		logger.Infof("Kubernetes OIDCConfig is nil for MCPServer %s, using default configuration", m.Name)
+		defaultUseClusterAuth := true
+		config = &mcpv1alpha1.KubernetesOIDCConfig{
+			UseClusterAuth: &defaultUseClusterAuth, // Default to true
+		}
+	}
+
+	// Handle UseClusterAuth with default of true if nil
+	useClusterAuth := true // default value
+	if config.UseClusterAuth != nil {
+		useClusterAuth = *config.UseClusterAuth
 	}
 
 	// Issuer (default: https://kubernetes.default.svc)
@@ -1164,18 +1198,27 @@ func (*MCPServerReconciler) generateKubernetesOIDCArgs(m *mcpv1alpha1.MCPServer)
 	}
 	args = append(args, fmt.Sprintf("--oidc-audience=%s", audience))
 
-	// JWKS URL (default: https://kubernetes.default.svc/openid/v1/jwks)
+	// JWKS URL (optional - if empty, thv will use OIDC discovery)
 	jwksURL := config.JWKSURL
-	if jwksURL == "" {
-		jwksURL = "https://kubernetes.default.svc/openid/v1/jwks"
+	if jwksURL != "" {
+		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
 	}
-	args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
+
+	// Add cluster auth flags if enabled (default is true)
+	if useClusterAuth {
+		args = append(args, "--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+		args = append(args, "--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token")
+		args = append(args, "--jwks-allow-private-ip")
+	}
 
 	return args
 }
 
 // generateConfigMapOIDCArgs generates OIDC args for ConfigMap-based configuration
-func (r *MCPServerReconciler) generateConfigMapOIDCArgs(ctx context.Context, m *mcpv1alpha1.MCPServer) []string {
+func (r *MCPServerReconciler) generateConfigMapOIDCArgs( // nolint:gocyclo
+	ctx context.Context,
+	m *mcpv1alpha1.MCPServer,
+) []string {
 	var args []string
 	config := m.Spec.OIDCConfig.ConfigMap
 
@@ -1207,6 +1250,15 @@ func (r *MCPServerReconciler) generateConfigMapOIDCArgs(ctx context.Context, m *
 	if clientID, exists := configMap.Data["clientId"]; exists && clientID != "" {
 		args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
 	}
+	if thvCABundlePath, exists := configMap.Data["thvCABundlePath"]; exists && thvCABundlePath != "" {
+		args = append(args, fmt.Sprintf("--thv-ca-bundle=%s", thvCABundlePath))
+	}
+	if jwksAuthTokenPath, exists := configMap.Data["jwksAuthTokenPath"]; exists && jwksAuthTokenPath != "" {
+		args = append(args, fmt.Sprintf("--jwks-auth-token-file=%s", jwksAuthTokenPath))
+	}
+	if jwksAllowPrivateIP, exists := configMap.Data["jwksAllowPrivateIP"]; exists && jwksAllowPrivateIP == "true" {
+		args = append(args, "--jwks-allow-private-ip")
+	}
 
 	return args
 }
@@ -1233,6 +1285,21 @@ func (*MCPServerReconciler) generateInlineOIDCArgs(m *mcpv1alpha1.MCPServer) []s
 	// JWKS URL (optional)
 	if config.JWKSURL != "" {
 		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", config.JWKSURL))
+	}
+
+	// CA Bundle path (optional)
+	if config.ThvCABundlePath != "" {
+		args = append(args, fmt.Sprintf("--thv-ca-bundle=%s", config.ThvCABundlePath))
+	}
+
+	// Auth token path (optional)
+	if config.JWKSAuthTokenPath != "" {
+		args = append(args, fmt.Sprintf("--jwks-auth-token-file=%s", config.JWKSAuthTokenPath))
+	}
+
+	// Allow private IP access (optional)
+	if config.JWKSAllowPrivateIP {
+		args = append(args, "--jwks-allow-private-ip")
 	}
 
 	return args

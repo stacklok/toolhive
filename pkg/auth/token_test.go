@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -51,22 +53,8 @@ func TestTokenValidator(t *testing.T) {
 		t.Fatalf("Failed to add key to set: %v", err)
 	}
 
-	// Create a test JWKS server
-	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Marshal the key set to JSON
-		buf, err := json.Marshal(keySet)
-		if err != nil {
-			t.Fatalf("Failed to marshal key set: %v", err)
-		}
-
-		// Set the content type
-		w.Header().Set("Content-Type", "application/json")
-
-		// Write the response
-		if _, err := w.Write(buf); err != nil {
-			t.Fatalf("Failed to write response: %v", err)
-		}
-	}))
+	// Create a test JWKS server with TLS
+	jwksServer, caCertPath := createTestJWKSServer(t, keySet)
 	t.Cleanup(func() {
 		jwksServer.Close()
 	})
@@ -76,10 +64,12 @@ func TestTokenValidator(t *testing.T) {
 
 	// Create a JWT validator
 	validator, err := NewTokenValidator(ctx, TokenValidatorConfig{
-		Issuer:   "test-issuer",
-		Audience: "test-audience",
-		JWKSURL:  jwksServer.URL,
-		ClientID: "test-client",
+		Issuer:         "test-issuer",
+		Audience:       "test-audience",
+		JWKSURL:        jwksServer.URL,
+		ClientID:       "test-client",
+		CACertPath:     caCertPath,
+		AllowPrivateIP: true,
 	}, false)
 	if err != nil {
 		t.Fatalf("Failed to create token validator: %v", err)
@@ -205,22 +195,8 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 		t.Fatalf("Failed to add key to set: %v", err)
 	}
 
-	// Create a test JWKS server
-	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Marshal the key set to JSON
-		buf, err := json.Marshal(keySet)
-		if err != nil {
-			t.Fatalf("Failed to marshal key set: %v", err)
-		}
-
-		// Set the content type
-		w.Header().Set("Content-Type", "application/json")
-
-		// Write the response
-		if _, err := w.Write(buf); err != nil {
-			t.Fatalf("Failed to write response: %v", err)
-		}
-	}))
+	// Create a test JWKS server with TLS
+	jwksServer, caCertPath := createTestJWKSServer(t, keySet)
 	t.Cleanup(func() {
 		jwksServer.Close()
 	})
@@ -230,10 +206,12 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 
 	// Create a JWT validator
 	validator, err := NewTokenValidator(ctx, TokenValidatorConfig{
-		Issuer:   "test-issuer",
-		Audience: "test-audience",
-		JWKSURL:  jwksServer.URL,
-		ClientID: "test-client",
+		Issuer:         "test-issuer",
+		Audience:       "test-audience",
+		JWKSURL:        jwksServer.URL,
+		ClientID:       "test-client",
+		CACertPath:     caCertPath,
+		AllowPrivateIP: true,
 	}, false)
 	if err != nil {
 		t.Fatalf("Failed to create token validator: %v", err)
@@ -369,7 +347,7 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 
 // createTestOIDCServer creates a test OIDC discovery server that returns the given JWKS URL
 func createTestOIDCServer(_ *testing.T, jwksURL string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/openid-configuration" {
 			http.NotFound(w, r)
 			return
@@ -395,6 +373,66 @@ func createTestOIDCServer(_ *testing.T, jwksURL string) *httptest.Server {
 	}))
 }
 
+// writeTestServerCert extracts the TLS certificate from a test server and writes it to a temp file
+func writeTestServerCert(t *testing.T, server *httptest.Server) string {
+	t.Helper()
+
+	cert := server.Certificate()
+	if cert == nil {
+		t.Fatal("Test server has no certificate")
+	}
+
+	// Create temp file
+	tmpFile, err := os.CreateTemp("", "test-ca-*.crt")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Remove(tmpFile.Name())
+	})
+
+	// Write PEM encoded certificate
+	if err := pem.Encode(tmpFile, &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: cert.Raw,
+	}); err != nil {
+		t.Fatalf("Failed to write certificate: %v", err)
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		t.Fatalf("Failed to close temp file: %v", err)
+	}
+
+	return tmpFile.Name()
+}
+
+// createTestJWKSServer creates a test JWKS server with TLS and returns the server and CA cert path
+func createTestJWKSServer(t *testing.T, keySet jwk.Set) (*httptest.Server, string) {
+	t.Helper()
+
+	// Create a test JWKS server
+	jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Marshal the key set to JSON
+		buf, err := json.Marshal(keySet)
+		if err != nil {
+			t.Fatalf("Failed to marshal key set: %v", err)
+		}
+
+		// Set the content type
+		w.Header().Set("Content-Type", "application/json")
+
+		// Write the response
+		if _, err := w.Write(buf); err != nil {
+			t.Fatalf("Failed to write response: %v", err)
+		}
+	}))
+
+	// Extract the test server's certificate
+	caCertPath := writeTestServerCert(t, jwksServer)
+
+	return jwksServer, caCertPath
+}
+
 func TestDiscoverOIDCConfiguration(t *testing.T) {
 	t.Parallel()
 
@@ -404,11 +442,14 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 		oidcServer.Close()
 	})
 
+	// Extract the test server's certificate to a temp CA bundle file
+	caCertPath := writeTestServerCert(t, oidcServer)
+
 	ctx := context.Background()
 
 	t.Run("successful discovery", func(t *testing.T) {
 		t.Parallel()
-		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL)
+		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL, caCertPath, "", true)
 		if err != nil {
 			t.Fatalf("Expected no error but got %v", err)
 		}
@@ -425,7 +466,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("issuer with trailing slash", func(t *testing.T) {
 		t.Parallel()
-		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL+"/")
+		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL+"/", caCertPath, "", true)
 		if err != nil {
 			t.Fatalf("Expected no error but got %v", err)
 		}
@@ -437,7 +478,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("invalid issuer URL", func(t *testing.T) {
 		t.Parallel()
-		_, err := discoverOIDCConfiguration(ctx, "invalid-url")
+		_, err := discoverOIDCConfiguration(ctx, "invalid-url", "", "", false)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}
@@ -445,7 +486,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("non-existent endpoint", func(t *testing.T) {
 		t.Parallel()
-		_, err := discoverOIDCConfiguration(ctx, "https://non-existent-domain.example")
+		_, err := discoverOIDCConfiguration(ctx, "https://non-existent-domain.example", "", "", false)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}
@@ -486,7 +527,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 	}
 
 	// Create a test JWKS server
-	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	jwksServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/jwks" {
 			http.NotFound(w, r)
 			return
@@ -510,11 +551,17 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 		jwksServer.Close()
 	})
 
+	// Extract certificates from both servers
+	jwksCertPath := writeTestServerCert(t, jwksServer)
+
 	// Create a test OIDC discovery server
 	oidcServer := createTestOIDCServer(t, jwksServer.URL+"/jwks")
 	t.Cleanup(func() {
 		oidcServer.Close()
 	})
+
+	// Extract OIDC server certificate
+	oidcCertPath := writeTestServerCert(t, oidcServer)
 
 	ctx := context.Background()
 
@@ -524,7 +571,9 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			Issuer:   oidcServer.URL,
 			Audience: "test-audience",
 			// JWKSURL is intentionally omitted to test discovery
-			ClientID: "test-client",
+			ClientID:       "test-client",
+			CACertPath:     oidcCertPath,
+			AllowPrivateIP: true,
 		}
 
 		validator, err := NewTokenValidator(ctx, config, false)
@@ -577,10 +626,12 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 		t.Parallel()
 		explicitJWKSURL := jwksServer.URL + "/jwks"
 		config := TokenValidatorConfig{
-			Issuer:   oidcServer.URL,
-			Audience: "test-audience",
-			JWKSURL:  explicitJWKSURL, // Explicitly provided
-			ClientID: "test-client",
+			Issuer:         oidcServer.URL,
+			Audience:       "test-audience",
+			JWKSURL:        explicitJWKSURL, // Explicitly provided
+			ClientID:       "test-client",
+			CACertPath:     jwksCertPath,
+			AllowPrivateIP: true,
 		}
 
 		validator, err := NewTokenValidator(ctx, config, false)
@@ -599,7 +650,9 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 		config := TokenValidatorConfig{
 			Audience: "test-audience",
 			// Both Issuer and JWKSURL are missing
-			ClientID: "test-client",
+			ClientID:       "test-client",
+			CACertPath:     oidcCertPath,
+			AllowPrivateIP: true,
 		}
 
 		validator, err := NewTokenValidator(ctx, config, false)
@@ -617,6 +670,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			Issuer:   "https://non-existent-domain.example",
 			Audience: "test-audience",
 			ClientID: "test-client",
+			// No CA cert or AllowPrivateIP for this test - it should fail
 		}
 
 		validator, err := NewTokenValidator(ctx, config, false)

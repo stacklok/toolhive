@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/certs"
-	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -25,36 +24,6 @@ var listRegisteredClientsCmd = &cobra.Command{
 	Short: "List all registered MCP clients",
 	Long:  "List all clients that are registered for MCP server configuration.",
 	RunE:  listRegisteredClientsCmdFunc,
-}
-
-var registerClientCmd = &cobra.Command{
-	Use:   "register-client [client]",
-	Short: "Register a client for MCP server configuration",
-	Long: `Register a client for MCP server configuration.
-Valid clients are:
-  - claude-code: Claude Code CLI
-  - cline: Cline extension for VS Code
-  - cursor: Cursor editor
-  - roo-code: Roo Code extension for VS Code
-  - vscode: Visual Studio Code
-  - vscode-insider: Visual Studio Code Insiders edition`,
-	Args: cobra.ExactArgs(1),
-	RunE: registerClientCmdFunc,
-}
-
-var removeClientCmd = &cobra.Command{
-	Use:   "remove-client [client]",
-	Short: "Remove a client from MCP server configuration",
-	Long: `Remove a client from MCP server configuration.
-Valid clients are:
-  - claude-code: Claude Code CLI
-  - cline: Cline extension for VS Code
-  - cursor: Cursor editor
-  - roo-code: Roo Code extension for VS Code
-  - vscode: Visual Studio Code
-  - vscode-insider: Visual Studio Code Insiders edition`,
-	Args: cobra.ExactArgs(1),
-	RunE: removeClientCmdFunc,
 }
 
 var setCACertCmd = &cobra.Command{
@@ -118,8 +87,6 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 
 	// Add subcommands to config command
-	configCmd.AddCommand(registerClientCmd)
-	configCmd.AddCommand(removeClientCmd)
 	configCmd.AddCommand(listRegisteredClientsCmd)
 	configCmd.AddCommand(setCACertCmd)
 	configCmd.AddCommand(getCACertCmd)
@@ -137,74 +104,6 @@ func init() {
 
 	// Add OTEL parent command to config
 	configCmd.AddCommand(OtelCmd)
-}
-
-func registerClientCmdFunc(cmd *cobra.Command, args []string) error {
-	clientType := args[0]
-
-	// Validate the client type
-	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode":
-		// Valid client type
-	default:
-		return fmt.Errorf(
-			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider)",
-			clientType)
-	}
-
-	ctx := cmd.Context()
-
-	manager, err := client.NewManager(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create client manager: %w", err)
-	}
-
-	err = manager.RegisterClients(ctx, []client.Client{
-		{Name: client.MCPClient(clientType)},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to register client %s: %w", clientType, err)
-	}
-
-	return nil
-}
-
-func removeClientCmdFunc(_ *cobra.Command, args []string) error {
-	clientType := args[0]
-
-	// Validate the client type
-	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode":
-		// Valid client type
-	default:
-		return fmt.Errorf(
-			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider)",
-			clientType)
-	}
-
-	err := config.UpdateConfig(func(c *config.Config) {
-		// Find and remove the client from the registered clients list
-		found := false
-		for i, registeredClient := range c.Clients.RegisteredClients {
-			if registeredClient == clientType {
-				// Remove the client by appending the slice before and after the index
-				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
-				found = true
-				break
-			}
-		}
-		if found {
-			fmt.Printf("Client %s removed from registered clients.\n", clientType)
-		} else {
-			fmt.Printf("Client %s not found in registered clients.\n", clientType)
-		}
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
-	}
-
-	fmt.Printf("Successfully removed client: %s\n", clientType)
-	return nil
 }
 
 func setCACertCmdFunc(_ *cobra.Command, args []string) error {

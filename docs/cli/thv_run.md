@@ -71,7 +71,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --otel-insecure                         Disable TLS verification for OpenTelemetry endpoint
       --otel-sampling-rate float              OpenTelemetry trace sampling rate (0.0-1.0) (default 0.1)
       --otel-service-name string              OpenTelemetry service name (defaults to toolhive-mcp-proxy)
-      --permission-profile string             Permission profile to use (none, network, or path to JSON file) (default "network")
+      --permission-profile string             Permission profile to use (none, network, or path to JSON file)
       --proxy-mode string                     Proxy mode for stdio transport (sse or streamable-http) (default "sse")
       --proxy-port int                        Port for the HTTP proxy to listen on (host port)
       --secret stringArray                    Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)

@@ -92,6 +92,9 @@ var (
 
 	// Network isolation flag
 	runIsolateNetwork bool
+
+	// Tool filtering flag
+	runTools []string
 )
 
 func init() {
@@ -224,6 +227,10 @@ func init() {
 			"(comma-separated: ENV1,ENV2)")
 	runCmd.Flags().BoolVar(&runIsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
+
+	// Tool filtering flag
+	runCmd.Flags().StringArrayVar(&runTools, "tools", []string{},
+		"Comma-separated list of tools to enable (e.g., --tools=weather,calculator). If not specified, all tools are enabled.")
 
 }
 
@@ -383,6 +390,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runThvCABundle,
 		runJWKSAuthTokenFile,
 		runJWKSAllowPrivateIP,
+		runTools,
 		envVarValidator,
 		types.ProxyMode(runProxyMode),
 	)

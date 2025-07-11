@@ -119,6 +119,9 @@ type RunConfig struct {
 
 	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
 	JWKSAllowPrivateIP bool `json:"jwks_allow_private_ip,omitempty" yaml:"jwks_allow_private_ip,omitempty"`
+
+	// Tools is the list of tools to enable for this MCP server
+	Tools []string `json:"tools,omitempty" yaml:"tools,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -184,6 +187,7 @@ func NewRunConfigFromFlags(
 	thvCABundle string,
 	jwksAuthTokenFile string,
 	jwksAllowPrivateIP bool,
+	tools []string,
 	envVarValidator EnvVarValidator,
 	proxyMode types.ProxyMode,
 ) (*RunConfig, error) {
@@ -209,6 +213,7 @@ func NewRunConfigFromFlags(
 			thvCABundle, jwksAuthTokenFile, jwksAllowPrivateIP).
 		WithTelemetryConfig(otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
 			otelSamplingRate, otelHeaders, otelInsecure, otelEnvironmentVariables).
+		WithTools(tools).
 		Build(ctx, imageMetadata, envVars, envVarValidator)
 }
 

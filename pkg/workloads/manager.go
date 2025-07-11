@@ -94,7 +94,8 @@ func NewManager(ctx context.Context) (Manager, error) {
 // NewManagerFromRuntime creates a new container manager instance from an existing runtime.
 func NewManagerFromRuntime(runtime rt.Runtime) Manager {
 	return &defaultManager{
-		runtime: runtime,
+		runtime:  runtime,
+		statuses: NewStatusManagerFromRuntime(runtime),
 	}
 }
 

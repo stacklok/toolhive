@@ -111,7 +111,8 @@ tasks:
         --set operator.toolhiveRunnerImage={{.TOOLHIVE_IMAGE}} \
         --namespace toolhive-system \
         --create-namespace \
-        --kubeconfig kconfig.yaml
+        --kubeconfig kconfig.yaml \
+        {{ .CLI_ARGS }}
 
   operator-undeploy:
     desc: Undeploy operator from the K8s cluster
@@ -143,9 +144,12 @@ tasks:
   operator-e2e-test:
     desc: Run E2E tests for the operator
     cmds:
-      - chainsaw test --test-dir test/e2e/chainsaw/operator/setup
-      - chainsaw test --test-dir test/e2e/chainsaw/operator/test-scenarios
-      - chainsaw test --test-dir test/e2e/chainsaw/operator/cleanup
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/setup
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/test-scenarios
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/cleanup
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup
 
   crdref-install:
     desc: Install elastic/crd-ref-docs

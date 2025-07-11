@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-yardstick-proxy-lb
+  namespace: test-namespace
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: mcpserver
+    app.kubernetes.io/name: mcpserver
+    app.kubernetes.io/instance: yardstick

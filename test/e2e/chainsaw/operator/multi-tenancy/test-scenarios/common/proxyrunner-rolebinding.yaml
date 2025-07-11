@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: yardstick-proxy-runner
+  namespace: test-namespace
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: yardstick-proxy-runner
+subjects:
+- kind: ServiceAccount
+  name: yardstick-proxy-runner
+  namespace: test-namespace

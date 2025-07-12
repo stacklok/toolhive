@@ -800,8 +800,12 @@ golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56 h1:2dVuKD2vS7b0QIHQbpyTISPd0
 golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56/go.mod h1:M4RDyNAINzryxdtnbRXRL/OHtkFuWGRjvuhBJpk2IlY=
 golang.org/x/exp/event v0.0.0-20220217172124-1812c5b45e43 h1:Yn6OLQDombmcne/0Jf2GiY4qPS5ML2W4KYFyx2uYxGY=
 golang.org/x/exp/event v0.0.0-20220217172124-1812c5b45e43/go.mod h1:AVlZHjhWbW/3yOcmKMtJiObwBPJajBlUpQXRijFNrNc=
+golang.org/x/exp/event v0.0.0-20250620022241-b7579e27df2b h1:FtazvyyEtVgN+BG5aSkkjNGUWZu9Q/zS/iAco5uAiLc=
+golang.org/x/exp/event v0.0.0-20250620022241-b7579e27df2b/go.mod h1:udw/aN1bTuThf1ISB3S96VHoY1PwY5hrk/e7w5O5DRs=
 golang.org/x/exp/jsonrpc2 v0.0.0-20250620022241-b7579e27df2b h1:p03YisSs7BcE6DXAg5Mn3OM+UJ6XsnPW1eUzDOeZFiE=
 golang.org/x/exp/jsonrpc2 v0.0.0-20250620022241-b7579e27df2b/go.mod h1:nPUl66QnKRf99UZqZolP9+aV0hDQ39vdswdEZj6OKZA=
+golang.org/x/exp/jsonrpc2 v0.0.0-20250711185948-6ae5c78190dc h1:IwNUJv9An4Hf4ZiGGCBzriT1XbufCXNmXJvZdpuAKS0=
+golang.org/x/exp/jsonrpc2 v0.0.0-20250711185948-6ae5c78190dc/go.mod h1:8vPx7pTiZoPAeFCkpxohawtNPPpl8NAO70z3MTVo4Ho=
 golang.org/x/lint v0.0.0-20190930215403-16217165b5de/go.mod h1:6SW0HCj/g11FgYtHlgUYUwCkIfeOF89ocIRzGO/8vkc=
 golang.org/x/mod v0.0.0-20190513183733-4bf6d317e70e/go.mod h1:mXi4GBBbnImb6dmsKGUJ2LatrhH/nqhxcFungHvyanc=
 golang.org/x/mod v0.1.1-0.20191105210325-c90efee705ee/go.mod h1:QqPTAvyqsEbceGzBzNggFXnrqF1CaUcvgkdR5Ot7KZg=
@@ -920,6 +924,8 @@ golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543/go.mod h1:I/5z698sn9Ka8T
 golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
 golang.org/x/xerrors v0.0.0-20240716161551-93cc26a95ae9 h1:LLhsEBxRTBLuKlQxFBYUOU8xyFgXv6cOTp2HASDlsDk=
 golang.org/x/xerrors v0.0.0-20240716161551-93cc26a95ae9/go.mod h1:NDW/Ps6MPRej6fsCIbMTohpP40sJ/P/vI1MoTEGwX90=
+golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da h1:noIWHXmPHxILtqtCOPIhSt0ABwskkZKjD3bXGnZGpNY=
+golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da/go.mod h1:NDW/Ps6MPRej6fsCIbMTohpP40sJ/P/vI1MoTEGwX90=
 gomodules.xyz/jsonpatch/v2 v2.4.0 h1:Ci3iUJyx9UeRx7CeFN8ARgGbkESwJK+KB9lLcWxY/Zw=
 gomodules.xyz/jsonpatch/v2 v2.4.0/go.mod h1:AH3dM2RI6uoBZxn3LVrfvJ3E0/9dG4cSrbuBJT4moAY=
 google.golang.org/api v0.230.0 h1:2u1hni3E+UXAXrONrrkfWpi/V6cyKVAbfGVeGtC3OxM=

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/labels"
@@ -123,6 +124,20 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Add audit middleware to transport config
 		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
+	}
+
+	// Add tool filtering middleware if tools are configured
+	if len(r.Config.Tools) > 0 {
+		logger.Infof("Tool filtering enabled for transport with %d tools: %v", len(r.Config.Tools), r.Config.Tools)
+
+		// Create tool filtering authorizer with interpolated policy
+		toolFilteringAuthorizer, err := authz.CreateToolFilteringAuthorizer(r.Config.Tools)
+		if err != nil {
+			return fmt.Errorf("failed to create tool filtering authorizer: %v", err)
+		}
+
+		toolFilteringMiddleware := authz.ToolFilteringMiddleware(toolFilteringAuthorizer)
+		transportConfig.Middlewares = append(transportConfig.Middlewares, toolFilteringMiddleware)
 	}
 
 	// Set proxy mode for stdio transport

@@ -30,9 +30,8 @@ var MCPMethodToFeatureOperation = map[string]struct {
 	"initialize":      {Feature: "", Operation: ""}, // Always allowed
 }
 
-// shouldSkipInitialAuthorization checks if the request should skip authorization
-// before reading the request body.
-func shouldSkipInitialAuthorization(r *http.Request) bool {
+// shouldSkip checks if the request should skip authorization
+func shouldSkip(r *http.Request) bool {
 	// Skip authorization for non-POST requests and non-JSON content types
 	if r.Method != http.MethodPost || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		return true
@@ -138,7 +137,7 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if we should skip authorization before checking parsed data
-		if shouldSkipInitialAuthorization(r) {
+		if shouldSkip(r) {
 			next.ServeHTTP(w, r)
 			return
 		}

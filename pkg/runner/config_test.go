@@ -859,6 +859,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		"",    // thvCABundle
 		"",    // jwksAuthTokenFile
 		false, // jwksAllowPrivateIP
+		nil,   // tools
 		envVarValidator,
 		"sse",
 	)
@@ -1114,6 +1115,7 @@ func TestNewRunConfigFromFlags_MetadataOverrides(t *testing.T) {
 				"",    // thvCABundle
 				"",    // jwksAuthTokenFile
 				false, // jwksAllowPrivateIP
+				nil,   // tools
 				validator,
 				types.ProxyModeSSE,
 			)
@@ -1163,6 +1165,7 @@ func TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency(t *testing
 		"",    // thvCABundle
 		"",    // jwksAuthTokenFile
 		false, // jwksAllowPrivateIP
+		nil,   // tools
 		validator,
 		types.ProxyModeSSE,
 	)
@@ -1215,6 +1218,7 @@ func TestNewRunConfigFromFlags_CmdArgsMetadataPrepending(t *testing.T) {
 		"",    // thvCABundle
 		"",    // jwksAuthTokenFile
 		false, // jwksAllowPrivateIP
+		nil,   // tools
 		validator,
 		types.ProxyModeSSE,
 	)
@@ -1268,6 +1272,7 @@ func TestNewRunConfigFromFlags_VolumeProcessing(t *testing.T) {
 		"",    // thvCABundle
 		"",    // jwksAuthTokenFile
 		false, // jwksAllowPrivateIP
+		nil,   // tools
 		validator,
 		types.ProxyModeSSE,
 	)

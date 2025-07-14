@@ -225,12 +225,6 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Mimic behavior of the CLI by defaulting to the "network" permission profile.
-	// TODO: Consider moving this into the run config creation logic.
-	if req.PermissionProfile == nil {
-		req.PermissionProfile = permissions.BuiltinNetworkProfile()
-	}
-
 	// Fetch or build the requested image
 	// TODO: Make verification configurable and return errors over the API.
 	imageURL, imageMetadata, err := retriever.GetMCPServer(

@@ -277,6 +277,20 @@ func (c *RunConfig) WithEnvironmentVariables(envVarStrings []string) (*RunConfig
 	return c, nil
 }
 
+// ValidateSecrets checks if the secrets can be parsed and are valid
+func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.Provider) error {
+	if len(c.Secrets) == 0 {
+		return nil // No secrets to validate
+	}
+
+	_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+	if err != nil {
+		return fmt.Errorf("failed to get secrets: %v", err)
+	}
+
+	return nil
+}
+
 // WithSecrets processes secrets and adds them to environment variables
 func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provider) (*RunConfig, error) {
 	if len(c.Secrets) == 0 {

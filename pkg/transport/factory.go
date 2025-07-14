@@ -19,7 +19,9 @@ func NewFactory() *Factory {
 func (*Factory) Create(config types.Config) (types.Transport, error) {
 	switch config.Type {
 	case types.TransportTypeStdio:
-		tr := NewStdioTransport(config.Host, config.ProxyPort, config.Deployer, config.Debug, config.PrometheusHandler, config.Middlewares...)
+		tr := NewStdioTransport(
+			config.Host, config.ProxyPort, config.Deployer, config.Debug, config.PrometheusHandler, config.Middlewares...,
+		)
 		tr.SetProxyMode(config.ProxyMode)
 		return tr, nil
 	case types.TransportTypeSSE:

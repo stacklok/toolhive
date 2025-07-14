@@ -31,7 +31,7 @@ type HTTPTransport struct {
 	targetHost        string
 	containerID       string
 	containerName     string
-	runtime           rt.Runtime
+	runtime           rt.Deployer
 	debug             bool
 	middlewares       []types.Middleware
 	prometheusHandler http.Handler
@@ -56,7 +56,7 @@ func NewHTTPTransport(
 	host string,
 	proxyPort int,
 	targetPort int,
-	runtime rt.Runtime,
+	runtime rt.Deployer,
 	debug bool,
 	targetHost string,
 	prometheusHandler http.Handler,
@@ -101,7 +101,7 @@ var transportEnvMap = map[types.TransportType]string{
 }
 
 // Setup prepares the transport for use.
-func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, containerName string, image string, cmdArgs []string,
+func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containerName string, image string, cmdArgs []string,
 	envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
 	isolateNetwork bool) error {
 	t.mutex.Lock()

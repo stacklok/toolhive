@@ -102,7 +102,7 @@ type RunConfig struct {
 	K8sPodTemplatePatch string `json:"k8s_pod_template_patch,omitempty" yaml:"k8s_pod_template_patch,omitempty"`
 
 	// Runtime is the container runtime to use (not serialized)
-	Runtime rt.Runtime `json:"-" yaml:"-"`
+	Runtime rt.Deployer `json:"-" yaml:"-"`
 
 	// IsolateNetwork indicates whether to isolate the network for the container
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
@@ -148,7 +148,7 @@ func NewRunConfig() *RunConfig {
 // NewRunConfigFromFlags creates a new RunConfig with values from command-line flags
 func NewRunConfigFromFlags(
 	ctx context.Context,
-	runtime rt.Runtime,
+	runtime rt.Deployer,
 	cmdArgs []string,
 	name string,
 	imageURL string,

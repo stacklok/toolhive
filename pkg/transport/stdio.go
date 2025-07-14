@@ -30,7 +30,7 @@ type StdioTransport struct {
 	proxyPort         int
 	containerID       string
 	containerName     string
-	runtime           rt.Runtime
+	runtime           rt.Deployer
 	debug             bool
 	middlewares       []types.Middleware
 	prometheusHandler http.Handler
@@ -58,7 +58,7 @@ type StdioTransport struct {
 func NewStdioTransport(
 	host string,
 	proxyPort int,
-	runtime rt.Runtime,
+	runtime rt.Deployer,
 	debug bool,
 	prometheusHandler http.Handler,
 	middlewares ...types.Middleware,
@@ -93,7 +93,7 @@ func (t *StdioTransport) ProxyPort() int {
 // Setup prepares the transport for use.
 func (t *StdioTransport) Setup(
 	ctx context.Context,
-	runtime rt.Runtime,
+	runtime rt.Deployer,
 	containerName string,
 	image string,
 	cmdArgs []string,

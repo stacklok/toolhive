@@ -29,7 +29,7 @@ type Transport interface {
 	// The runtime parameter provides access to container operations.
 	// The permissionProfile is used to configure container permissions.
 	// The k8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template.
-	Setup(ctx context.Context, runtime rt.Runtime, containerName string, image string, cmdArgs []string,
+	Setup(ctx context.Context, runtime rt.Deployer, containerName string, image string, cmdArgs []string,
 		envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
 		isolateNetwork bool) error
 
@@ -123,7 +123,7 @@ type Config struct {
 
 	// Runtime is the container runtime to use.
 	// This is used for container operations like creating, starting, and attaching.
-	Runtime rt.Runtime
+	Runtime rt.Deployer
 
 	// Debug indicates whether debug mode is enabled.
 	// If debug mode is enabled, containers will not be removed when stopped.

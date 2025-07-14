@@ -260,7 +260,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// we set the below to empty values because they currently aren't used in kubernetes.
-	// we will remove the below completely when we have a kubernetes runner that doens't require these values.
+	// we will remove the below completely when we have a kubernetes runner that doesn't require these values.
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := "", 0.0, []string{}
 
 	// Create container runtime

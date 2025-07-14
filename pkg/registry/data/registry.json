@@ -534,7 +534,7 @@
       "tools": [
         "fetch"
       ],
-      "transport": "sse"
+      "transport": "streamable-http"
     },
     "filesystem": {
       "args": [],

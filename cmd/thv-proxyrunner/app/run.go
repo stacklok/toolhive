@@ -32,16 +32,6 @@ ToolHive supports three ways to run an MCP server:
    $ thv run ghcr.io/example/mcp-server:latest [-- args...]
    Runs the specified container image directly with the provided arguments
 
-3. Using a protocol scheme:
-   $ thv run uvx://package-name [-- args...]
-   $ thv run npx://package-name [-- args...]
-   $ thv run go://package-name [-- args...]
-   $ thv run go://./local-path [-- args...]
-   Automatically generates a container that runs the specified package
-   using either uvx (Python with uv package manager), npx (Node.js),
-   or go (Golang). For Go, you can also specify local paths starting
-   with './' or '../' to build and run local Go projects.
-
 The container will be started with the specified transport mode and
 permission profile. Additional configuration can be provided via flags.`,
 	Args: cobra.MinimumNArgs(1),
@@ -57,9 +47,7 @@ var (
 	runName               string
 	runHost               string
 	runPort               int
-	runProxyPort          int
 	runTargetPort         int
-	runTargetHost         string
 	runPermissionProfile  string
 	runEnv                []string
 	runVolumes            []string
@@ -72,47 +60,80 @@ var (
 	runJWKSAuthTokenFile  string
 	runJWKSAllowPrivateIP bool
 
+	oidcIssuer            string
+	oidcAudience          string
+	oidcJwksURL           string
+	oidcClientID          string
+	oidcAllowOpaqueTokens bool
+
 	// OpenTelemetry flags
-	runOtelEndpoint                    string
 	runOtelServiceName                 string
-	runOtelSamplingRate                float64
 	runOtelHeaders                     []string
 	runOtelInsecure                    bool
 	runOtelEnablePrometheusMetricsPath bool
-	runOtelEnvironmentVariables        []string
 
 	// Network isolation flag
 	runIsolateNetwork bool
 )
 
 func init() {
-	// runCmd.Flags().StringVar(&runTransport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
-	// runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
-	runCmd.Flags().IntVar(&runProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
-	// runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
-	// if err := runCmd.Flags().MarkDeprecated("port", "use --proxy-port instead"); err != nil {
-	// 	logger.Warnf("Error marking port flag as deprecated: %v", err)
-	// }
-	// runCmd.Flags().IntVar(&runTargetPort, "target-port", 0,
-	// 	"Port for the container to expose (only applicable to SSE or Streamable HTTP transport)")
+	runCmd.Flags().StringVar(&runTransport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
+	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
+	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
+	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
+	if err := runCmd.Flags().MarkDeprecated("port", "use --proxy-port instead"); err != nil {
+		logger.Warnf("Error marking port flag as deprecated: %v", err)
+	}
+	runCmd.Flags().IntVar(&runTargetPort, "target-port", 0,
+		"Port for the container to expose (only applicable to SSE or Streamable HTTP transport)")
 	runCmd.Flags().StringVar(
-		&runTargetHost,
-		"target-host",
-		transport.LocalhostIPv4,
-		"Host to forward traffic to (only applicable to SSE or Streamable HTTP transport)")
-	// runCmd.Flags().StringVar(
-	// 	&runPermissionProfile,
-	// 	"permission-profile",
-	// 	"",
-	// 	"Permission profile to use (none, network, or path to JSON file)",
-	// )
-	// runCmd.Flags().StringArrayVarP(
-	// 	&runEnv,
-	// 	"env",
-	// 	"e",
-	// 	[]string{},
-	// 	"Environment variables to pass to the MCP server (format: KEY=VALUE)",
-	// )
+		&runPermissionProfile,
+		"permission-profile",
+		"",
+		"Permission profile to use (none, network, or path to JSON file)",
+	)
+	runCmd.Flags().StringArrayVarP(
+		&runEnv,
+		"env",
+		"e",
+		[]string{},
+		"Environment variables to pass to the MCP server (format: KEY=VALUE)",
+	)
+	runCmd.Flags().StringVar(
+		&runK8sPodPatch,
+		"k8s-pod-patch",
+		"",
+		"JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)",
+	)
+	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
+	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
+		logger.Warnf("Error hiding flag: %v", err)
+	}
+	runCmd.Flags().StringVar(
+		&runThvCABundle,
+		"thv-ca-bundle",
+		"",
+		"Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)",
+	)
+	runCmd.Flags().StringVar(
+		&runJWKSAuthTokenFile,
+		"jwks-auth-token-file",
+		"",
+		"Path to file containing bearer token for authenticating JWKS/OIDC requests",
+	)
+	runCmd.Flags().BoolVar(
+		&runJWKSAllowPrivateIP,
+		"jwks-allow-private-ip",
+		false,
+		"Allow JWKS/OIDC endpoints on private IP addresses (use with caution)",
+	)
+	runCmd.Flags().StringVar(&oidcIssuer, "oidc-issuer", "", "OIDC issuer URL (e.g., https://accounts.google.com)")
+	runCmd.Flags().StringVar(&oidcAudience, "oidc-audience", "", "Expected audience for the token")
+	runCmd.Flags().StringVar(&oidcJwksURL, "oidc-jwks-url", "", "URL to fetch the JWKS from")
+	runCmd.Flags().StringVar(&oidcClientID, "oidc-client-id", "", "OIDC client ID")
+	runCmd.Flags().BoolVar(&oidcAllowOpaqueTokens, "oidc-skip-opaque-token-validation", false, "Allow skipping validation of opaque tokens")
+
+	// the below aren't used or set via the operator, so we need to see if lower level packages use their defaults
 	runCmd.Flags().StringArrayVarP(
 		&runVolumes,
 		"volume",
@@ -144,97 +165,26 @@ func init() {
 		false,
 		"Enable audit logging with default configuration",
 	)
-	// runCmd.Flags().StringVar(
-	// 	&runK8sPodPatch,
-	// 	"k8s-pod-patch",
-	// 	"",
-	// 	"JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)",
-	// )
-	// runCmd.Flags().StringVar(
-	// 	&runThvCABundle,
-	// 	"thv-ca-bundle",
-	// 	"",
-	// 	"Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)",
-	// )
-	// runCmd.Flags().StringVar(
-	// 	&runJWKSAuthTokenFile,
-	// 	"jwks-auth-token-file",
-	// 	"",
-	// 	"Path to file containing bearer token for authenticating JWKS/OIDC requests",
-	// )
-	// runCmd.Flags().BoolVar(
-	// 	&runJWKSAllowPrivateIP,
-	// 	"jwks-allow-private-ip",
-	// 	false,
-	// 	"Allow JWKS/OIDC endpoints on private IP addresses (use with caution)",
-	// )
-
-	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
-	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
-		logger.Warnf("Error hiding flag: %v", err)
-	}
-
-	// Add OIDC validation flags
-	AddOIDCFlags(runCmd)
 
 	// Add OpenTelemetry flags
-	runCmd.Flags().StringVar(&runOtelEndpoint, "otel-endpoint", "",
-		"OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)")
 	runCmd.Flags().StringVar(&runOtelServiceName, "otel-service-name", "",
 		"OpenTelemetry service name (defaults to toolhive-mcp-proxy)")
-	runCmd.Flags().Float64Var(&runOtelSamplingRate, "otel-sampling-rate", 0.1,
-		"OpenTelemetry trace sampling rate (0.0-1.0)")
 	runCmd.Flags().StringArrayVar(&runOtelHeaders, "otel-headers", nil,
 		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
 	runCmd.Flags().BoolVar(&runOtelInsecure, "otel-insecure", false,
 		"Disable TLS verification for OpenTelemetry endpoint")
 	runCmd.Flags().BoolVar(&runOtelEnablePrometheusMetricsPath, "otel-enable-prometheus-metrics-path", false,
 		"Enable Prometheus-style /metrics endpoint on the main transport port")
-	runCmd.Flags().StringArrayVar(&runOtelEnvironmentVariables, "otel-env-vars", nil,
-		"Environment variable names to include in OpenTelemetry spans "+
-			"(comma-separated: ENV1,ENV2)")
 	runCmd.Flags().BoolVar(&runIsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
 
-}
-
-// AddOIDCFlags adds OIDC validation flags to the provided command.
-func AddOIDCFlags(cmd *cobra.Command) {
-	// cmd.Flags().String("oidc-issuer", "", "OIDC issuer URL (e.g., https://accounts.google.com)")
-	// cmd.Flags().String("oidc-audience", "", "Expected audience for the token")
-	// cmd.Flags().String("oidc-jwks-url", "", "URL to fetch the JWKS from")
-	// cmd.Flags().String("oidc-client-id", "", "OIDC client ID")
-	cmd.Flags().Bool("oidc-skip-opaque-token-validation", false, "Allow skipping validation of opaque tokens")
-}
-
-// GetStringFlagOrEmpty tries to get the string value of the given flag.
-// If the flag doesn't exist or there's an error, it returns an empty string.
-func GetStringFlagOrEmpty(cmd *cobra.Command, flagName string) string {
-	value, err := cmd.Flags().GetString(flagName)
-	if err != nil {
-		return ""
-	}
-	return value
-}
-
-func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, bool, error) {
-	oidcIssuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
-	oidcAudience := GetStringFlagOrEmpty(cmd, "oidc-audience")
-	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
-	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
-	oidcAllowOpaqueTokens, err := cmd.Flags().GetBool("oidc-skip-opaque-token-validation")
-	if err != nil {
-		return "", "", "", "", false, fmt.Errorf("failed to get oidc-skip-opaque-token-validation flag: %v", err)
-	}
-
-	return oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, nil
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	// Validate the host flag and default resolving to IP in case hostname is provided
-	validatedHost, err := ValidateAndNormaliseHostFlag(transport.LocalhostIPv4)
+	validatedHost, err := ValidateAndNormaliseHostFlag(runHost)
 	if err != nil {
 		return fmt.Errorf("invalid host: %s", runHost)
 	}
@@ -242,7 +192,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Get the name of the MCP server to run.
 	// This may be a server name from the registry, a container image, or a protocol scheme.
-	serverOrImage := args[0]
+	mcpServerImage := args[0]
 
 	// Process command arguments using os.Args to find everything after --
 	cmdArgs := parseCommandArguments(os.Args)
@@ -253,12 +203,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
-	// Get OIDC flag values
-	oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, err := getOidcFromFlags(cmd)
-	if err != nil {
-		return fmt.Errorf("failed to get OIDC flags: %v", err)
-	}
-
 	// we set the below to empty values because they currently aren't used in kubernetes.
 	// we will remove the below completely when we have a kubernetes runner that doesn't require these values.
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := "", 0.0, []string{}
@@ -268,7 +212,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
-	workloadManager := workloads.NewManagerFromRuntime(rt)
 
 	// Select an env var validation strategy depending on how the CLI is run:
 	// If we have called the CLI directly, we use the CLIEnvVarValidator.
@@ -277,7 +220,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	envVarValidator := &runner.DetachedEnvVarValidator{}
 
 	var imageMetadata *registry.ImageMetadata
-	imageURL := serverOrImage
 
 	// Determine effective port value
 	effectivePort := 0
@@ -287,52 +229,77 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Initialize a new RunConfig with values from command-line flags
 	// TODO: As noted elsewhere, we should use the builder pattern here to make it more readable.
-	runConfig, err := runner.NewRunConfigFromFlags(
-		ctx,
-		rt,
-		cmdArgs,
-		runName,
-		imageURL,
-		imageMetadata,
-		runHost,
-		debugMode,
-		runVolumes,
-		runSecrets,
-		runAuthzConfig,
-		runAuditConfig,
-		runEnableAudit,
-		runPermissionProfile,
-		runTargetHost,
-		runTransport,
-		effectivePort,
-		runTargetPort,
-		runEnv,
-		oidcIssuer,
-		oidcAudience,
-		oidcJwksURL,
-		oidcClientID,
-		oidcAllowOpaqueTokens,
-		finalOtelEndpoint,
-		runOtelServiceName,
-		finalOtelSamplingRate,
-		runOtelHeaders,
-		runOtelInsecure,
-		runOtelEnablePrometheusMetricsPath,
-		finalOtelEnvironmentVariables,
-		runIsolateNetwork,
-		runK8sPodPatch,
-		runThvCABundle,
-		runJWKSAuthTokenFile,
-		runJWKSAllowPrivateIP,
-		envVarValidator,
-		types.ProxyMode("sse"),
-	)
+	runConfig, err := runner.NewRunConfigBuilder().
+		WithRuntime(rt).
+		WithCmdArgs(cmdArgs).
+		WithName(runName).
+		WithImage(mcpServerImage).
+		WithHost(runHost).
+		WithTargetHost(transport.LocalhostIPv4).
+		WithDebug(debugMode).
+		WithVolumes(runVolumes).
+		WithSecrets(runSecrets).
+		WithAuthzConfigPath(runAuthzConfig).
+		WithAuditConfigPath(runAuditConfig).
+		WithPermissionProfileNameOrPath(runPermissionProfile).
+		WithNetworkIsolation(runIsolateNetwork).
+		WithK8sPodPatch(runK8sPodPatch).
+		WithProxyMode(types.ProxyMode("sse")).
+		WithTransportAndPorts(runTransport, effectivePort, runTargetPort).
+		WithAuditEnabled(runEnableAudit, runAuditConfig).
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
+			runThvCABundle, runJWKSAuthTokenFile, runJWKSAllowPrivateIP).
+		WithTelemetryConfig(finalOtelEndpoint, runOtelEnablePrometheusMetricsPath, runOtelServiceName,
+			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
+		Build(ctx, imageMetadata, runEnv, envVarValidator)
+	// runConfig, err := runner.NewRunConfigFromFlags(
+	// 	ctx,
+	// 	rt,
+	// 	cmdArgs,
+	// 	runName,
+	// 	mcpServerImage,
+	// 	imageMetadata,
+	// 	runHost,
+	// 	debugMode,
+	// 	runVolumes,
+	// 	runSecrets,
+	// 	runAuthzConfig,
+	// 	runAuditConfig,
+	// 	runEnableAudit,
+	// 	runPermissionProfile,
+	// 	transport.LocalhostIPv4,
+	// 	runTransport,
+	// 	effectivePort,
+	// 	runTargetPort,
+	// 	runEnv,
+	// 	oidcIssuer,
+	// 	oidcAudience,
+	// 	oidcJwksURL,
+	// 	oidcClientID,
+	// 	oidcAllowOpaqueTokens,
+	// 	finalOtelEndpoint,
+	// 	runOtelServiceName,
+	// 	finalOtelSamplingRate,
+	// 	runOtelHeaders,
+	// 	runOtelInsecure,
+	// 	runOtelEnablePrometheusMetricsPath,
+	// 	finalOtelEnvironmentVariables,
+	// 	runIsolateNetwork,
+	// 	runK8sPodPatch,
+	// 	runThvCABundle,
+	// 	runJWKSAuthTokenFile,
+	// 	runJWKSAllowPrivateIP,
+	// 	envVarValidator,
+	// 	types.ProxyMode("sse"),
+	// )
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}
 
-	// Once we have built the RunConfig, start the MCP workload.
+	workloadManager := workloads.NewManagerFromRuntime(rt)
 	return workloadManager.RunWorkload(ctx, runConfig)
+	// mcpRunner := runner.NewRunner(runConfig)
+	// return mcpRunner.Run(ctx)
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator

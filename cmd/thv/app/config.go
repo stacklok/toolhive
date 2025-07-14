@@ -20,10 +20,11 @@ var configCmd = &cobra.Command{
 }
 
 var listRegisteredClientsCmd = &cobra.Command{
-	Use:   "list-registered-clients",
-	Short: "List all registered MCP clients",
-	Long:  "List all clients that are registered for MCP server configuration.",
-	RunE:  listRegisteredClientsCmdFunc,
+	Use:        "list-registered-clients",
+	Short:      "List all registered MCP clients",
+	Long:       "List all clients that are registered for MCP server configuration.",
+	RunE:       listRegisteredClientsCmdFunc,
+	Deprecated: "please use 'thv client list-registered' instead. This command will be removed in 2 weeks.",
 }
 
 var setCACertCmd = &cobra.Command{
@@ -89,10 +90,8 @@ Valid clients are:
   - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition`,
-	Args: cobra.ExactArgs(1),
-	RunE: func(_ *cobra.Command, _ []string) error {
-		return nil
-	},
+	Args:       cobra.ExactArgs(1),
+	RunE:       clientRegisterCmdFunc, // delegate to client command
 	Deprecated: "please use 'thv client register' instead. This command will be removed in 2 weeks.",
 }
 
@@ -107,10 +106,8 @@ Valid clients are:
   - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition`,
-	Args: cobra.ExactArgs(1),
-	RunE: func(_ *cobra.Command, _ []string) error {
-		return nil
-	},
+	Args:       cobra.ExactArgs(1),
+	RunE:       clientRemoveCmdFunc, // delegate to client command
 	Deprecated: "please use 'thv client remove' instead. This command will be removed in 2 weeks.",
 }
 
@@ -283,24 +280,5 @@ func unsetRegistryURLCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	fmt.Println("Successfully removed registry URL configuration. Will use built-in registry.")
-	return nil
-}
-
-func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
-	// Get the current config
-	cfg := config.GetConfig()
-
-	// Check if there are any registered clients
-	if len(cfg.Clients.RegisteredClients) == 0 {
-		fmt.Println("No clients are currently registered.")
-		return nil
-	}
-
-	// Print the list of registered clients
-	fmt.Println("Registered clients:")
-	for _, clientName := range cfg.Clients.RegisteredClients {
-		fmt.Printf("  - %s\n", clientName)
-	}
-
 	return nil
 }

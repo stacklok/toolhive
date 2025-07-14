@@ -7,6 +7,7 @@ import (
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/config"
 )
 
 var clientCmd = &cobra.Command{
@@ -59,6 +60,13 @@ Valid clients are:
 	RunE: clientRemoveCmdFunc,
 }
 
+var clientListRegisteredCmd = &cobra.Command{
+	Use:   "list-registered",
+	Short: "List all registered MCP clients",
+	Long:  "List all clients that are registered for MCP server configuration.",
+	RunE:  listRegisteredClientsCmdFunc,
+}
+
 func init() {
 	rootCmd.AddCommand(clientCmd)
 
@@ -66,6 +74,7 @@ func init() {
 	clientCmd.AddCommand(clientSetupCmd)
 	clientCmd.AddCommand(clientRegisterCmd)
 	clientCmd.AddCommand(clientRemoveCmd)
+	clientCmd.AddCommand(clientListRegisteredCmd)
 }
 
 func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
@@ -192,5 +201,18 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Successfully removed client: %s\n", clientType)
+	return nil
+}
+
+func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
+	cfg := config.GetConfig()
+	if len(cfg.Clients.RegisteredClients) == 0 {
+		fmt.Println("No clients are currently registered.")
+		return nil
+	}
+	fmt.Println("Registered clients:")
+	for _, clientName := range cfg.Clients.RegisteredClients {
+		fmt.Printf("  - %s\n", clientName)
+	}
 	return nil
 }

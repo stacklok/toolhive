@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -260,6 +262,29 @@ func getTelemetryFromFlags(cmd *cobra.Command, cfg *config.Config, runOtelEndpoi
 	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables
 }
 
+func validateWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
+	// if there are run secrets , validate them
+	if len(runConfig.Secrets) > 0 {
+		cfg := config.GetConfig()
+
+		providerType, err := cfg.Secrets.GetProviderType()
+		if err != nil {
+			return fmt.Errorf("error determining secrets provider type: %w", err)
+		}
+
+		secretManager, err := secrets.CreateSecretProvider(providerType)
+		if err != nil {
+			return fmt.Errorf("error instantiating secret manager %v", err)
+		}
+
+		_, err = runConfig.WithSecrets(ctx, secretManager)
+		if err != nil {
+			return fmt.Errorf("error processing secrets: %w", err)
+		}
+	}
+	return nil
+}
+
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
@@ -387,6 +412,12 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
+	}
+
+	// before running, validate the parameters for the workload
+	err = validateWorkload(ctx, runConfig)
+	if err != nil {
+		return fmt.Errorf("failed to validate workload parameters: %v", err)
 	}
 
 	// Once we have built the RunConfig, start the MCP workload.

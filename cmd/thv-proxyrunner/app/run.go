@@ -230,7 +230,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize a new RunConfig with values from command-line flags
-	// TODO: As noted elsewhere, we should use the builder pattern here to make it more readable.
 	runConfig, err := runner.NewRunConfigBuilder().
 		WithRuntime(rt).
 		WithCmdArgs(cmdArgs).
@@ -254,54 +253,12 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		WithTelemetryConfig(finalOtelEndpoint, runOtelEnablePrometheusMetricsPath, runOtelServiceName,
 			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
 		Build(ctx, imageMetadata, runEnv, envVarValidator)
-	// runConfig, err := runner.NewRunConfigFromFlags(
-	// 	ctx,
-	// 	rt,
-	// 	cmdArgs,
-	// 	runName,
-	// 	mcpServerImage,
-	// 	imageMetadata,
-	// 	runHost,
-	// 	debugMode,
-	// 	runVolumes,
-	// 	runSecrets,
-	// 	runAuthzConfig,
-	// 	runAuditConfig,
-	// 	runEnableAudit,
-	// 	runPermissionProfile,
-	// 	transport.LocalhostIPv4,
-	// 	runTransport,
-	// 	effectivePort,
-	// 	runTargetPort,
-	// 	runEnv,
-	// 	oidcIssuer,
-	// 	oidcAudience,
-	// 	oidcJwksURL,
-	// 	oidcClientID,
-	// 	oidcAllowOpaqueTokens,
-	// 	finalOtelEndpoint,
-	// 	runOtelServiceName,
-	// 	finalOtelSamplingRate,
-	// 	runOtelHeaders,
-	// 	runOtelInsecure,
-	// 	runOtelEnablePrometheusMetricsPath,
-	// 	finalOtelEnvironmentVariables,
-	// 	runIsolateNetwork,
-	// 	runK8sPodPatch,
-	// 	runThvCABundle,
-	// 	runJWKSAuthTokenFile,
-	// 	runJWKSAllowPrivateIP,
-	// 	envVarValidator,
-	// 	types.ProxyMode("sse"),
-	// )
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}
 
 	workloadManager := workloads.NewManagerFromRuntime(rt)
 	return workloadManager.RunWorkload(ctx, runConfig)
-	// mcpRunner := runner.NewRunner(runConfig)
-	// return mcpRunner.Run(ctx)
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator

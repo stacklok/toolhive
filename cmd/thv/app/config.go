@@ -90,7 +90,7 @@ Valid clients are:
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition`,
 	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		return nil
 	},
 	Deprecated: "please use 'thv client register' instead. This command will be removed in 2 weeks.",
@@ -108,7 +108,7 @@ Valid clients are:
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition`,
 	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		return nil
 	},
 	Deprecated: "please use 'thv client remove' instead. This command will be removed in 2 weeks.",

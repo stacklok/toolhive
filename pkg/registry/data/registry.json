@@ -439,6 +439,90 @@
       ],
       "transport": "stdio"
     },
+    "buildkite": {
+      "args": [
+        "stdio"
+      ],
+      "description": "Connect your Buildkite data (pipelines, builds, jobs, tests) to AI tooling and editors.",
+      "env_vars": [
+        {
+          "name": "BUILDKITE_API_TOKEN",
+          "description": "Your Buildkite API access token",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "JOB_LOG_TOKEN_THRESHOLD",
+          "description": "Token threshold for job logs. If exceeded, logs will be written to disk and returned by path (for local use only).",
+          "required": false
+        }
+      ],
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:latest",
+      "metadata": {
+        "last_updated": "2025-07-14T00:23:49Z",
+        "pulls": 0,
+        "stars": 0
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              ".buildkite.com"
+            ],
+            "allow_port": [
+              443
+            ],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [
+          "/tmp"
+        ],
+        "write": [
+          "/tmp"
+        ]
+      },
+      "repository_url": "https://github.com/buildkite/buildkite-mcp-server",
+      "status": "Active",
+      "tags": [
+        "buildkite",
+        "continuous-integration",
+        "continuous-delivery",
+        "pipelines",
+        "builds",
+        "jobs",
+        "devops",
+        "testing"
+      ],
+      "tier": "Official",
+      "tools": [
+        "get_cluster",
+        "list_clusters",
+        "get_cluster_queue",
+        "list_cluster_queues",
+        "get_pipeline",
+        "list_pipelines",
+        "create_pipeline",
+        "update_pipeline",
+        "list_builds",
+        "get_build",
+        "create_build",
+        "get_build_test_engine_runs",
+        "get_jobs",
+        "get_job_logs",
+        "list_artifacts",
+        "get_artifact",
+        "list_annotations",
+        "list_test_runs",
+        "get_test_run",
+        "get_failed_executions",
+        "get_test",
+        "access_token",
+        "current_user",
+        "user_token_organization"
+      ],
+      "transport": "stdio"
+    },
     "everything": {
       "args": [],
       "description": "This MCP server attempts to exercise all the features of the MCP protocol",

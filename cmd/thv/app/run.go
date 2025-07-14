@@ -392,7 +392,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Once we have built the RunConfig, start the MCP workload.
 	// If we are running the container in the foreground - call the RunWorkload method directly.
 	if runForeground {
-		return workloadManager.RunWorkload(ctx, runConfig) 
+		return workloadManager.RunWorkload(ctx, runConfig)
 	}
 	return workloadManager.RunWorkloadDetached(ctx, runConfig)
 }

@@ -102,9 +102,6 @@
             "allow_port": [
               443
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": false
           }
         },
@@ -225,9 +222,6 @@
             "allow_port": [
               443
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": false
           }
         },
@@ -278,7 +272,6 @@
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -335,9 +328,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -422,9 +412,6 @@
               443,
               9200
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": true
           }
         },
@@ -467,7 +454,6 @@
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -517,9 +503,6 @@
             "allow_port": [
               443
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": true
           }
         },
@@ -568,7 +551,6 @@
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -669,9 +651,6 @@
             "allow_port": [
               443
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": false
           }
         },
@@ -722,7 +701,6 @@
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -790,9 +768,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -884,9 +859,6 @@
             "allow_host": [],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": true
           }
@@ -985,9 +957,6 @@
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": true
           }
         },
@@ -1047,9 +1016,6 @@
             "allow_port": [
               443
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": true
           }
         },
@@ -1106,9 +1072,6 @@
             "allow_host": [],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -1216,9 +1179,6 @@
               27019,
               27020
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": true
           }
         },
@@ -1308,9 +1268,6 @@
             "allow_port": [
               443
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": true
           }
         },
@@ -1367,9 +1324,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -1442,9 +1396,6 @@
             "allow_port": [
               443
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": true
           }
         },
@@ -1498,9 +1449,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -1563,9 +1511,6 @@
             "allow_port": [
               443
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": false
           }
         },
@@ -1606,9 +1551,6 @@
             "allow_host": [],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": true
           }
@@ -1740,9 +1682,6 @@
               443,
               6379
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": true
           }
         },
@@ -1837,9 +1776,6 @@
             "allow_port": [
               443
             ],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": false
           }
         },
@@ -1887,7 +1823,6 @@
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -1931,7 +1866,6 @@
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -1974,9 +1908,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -2025,7 +1956,6 @@
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },

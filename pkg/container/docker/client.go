@@ -1386,8 +1386,11 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+
+	// If the network does not exist, return nil.
 	if len(networks) == 0 {
-		return fmt.Errorf("network %s not found", name)
+		logger.Debugf("network %s not found, nothing to delete", name)
+		return nil
 	}
 
 	if err := c.client.NetworkRemove(ctx, networks[0].ID); err != nil {

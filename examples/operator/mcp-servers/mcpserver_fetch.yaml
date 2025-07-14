@@ -5,7 +5,7 @@ metadata:
   namespace: toolhive-system
 spec:
   image: ghcr.io/stackloklabs/gofetch/server
-  transport: sse
+  transport: streamable-http
   port: 8080
   targetPort: 8080
   permissionProfile:

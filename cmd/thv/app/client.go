@@ -200,7 +200,6 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to remove client %s: %w", clientType, err)
 	}
 
-	fmt.Printf("Successfully removed client: %s\n", clientType)
 	return nil
 }
 

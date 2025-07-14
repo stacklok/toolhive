@@ -56,13 +56,6 @@ components:
             type: integer
           type: array
           uniqueItems: false
-        allow_transport:
-          description: AllowTransport is a list of allowed transport protocols (tcp,
-            udp)
-          items:
-            type: string
-          type: array
-          uniqueItems: false
         insecure_allow_all:
           description: InsecureAllowAll allows all outbound network connections
           type: boolean

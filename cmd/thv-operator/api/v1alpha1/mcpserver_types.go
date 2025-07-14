@@ -252,10 +252,6 @@ type OutboundNetworkPermissions struct {
 	// +optional
 	InsecureAllowAll bool `json:"insecureAllowAll,omitempty"`
 
-	// AllowTransport is a list of transport protocols to allow (e.g., "tcp", "udp")
-	// +optional
-	AllowTransport []string `json:"allowTransport,omitempty"`
-
 	// AllowHost is a list of hosts to allow connections to
 	// +optional
 	AllowHost []string `json:"allowHost,omitempty"`

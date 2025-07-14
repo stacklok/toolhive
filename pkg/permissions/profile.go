@@ -50,9 +50,6 @@ type OutboundNetworkPermissions struct {
 	// InsecureAllowAll allows all outbound network connections
 	InsecureAllowAll bool `json:"insecure_allow_all,omitempty"`
 
-	// AllowTransport is a list of allowed transport protocols (tcp, udp)
-	AllowTransport []string `json:"allow_transport,omitempty"`
-
 	// AllowHost is a list of allowed hosts
 	AllowHost []string `json:"allow_host,omitempty"`
 
@@ -69,7 +66,6 @@ func NewProfile() *Profile {
 		Network: &NetworkPermissions{
 			Outbound: &OutboundNetworkPermissions{
 				InsecureAllowAll: false,
-				AllowTransport:   []string{},
 				AllowHost:        []string{},
 				AllowPort:        []int{},
 			},
@@ -104,7 +100,6 @@ func BuiltinNoneProfile() *Profile {
 		Network: &NetworkPermissions{
 			Outbound: &OutboundNetworkPermissions{
 				InsecureAllowAll: false,
-				AllowTransport:   []string{},
 				AllowHost:        []string{},
 				AllowPort:        []int{},
 			},
@@ -121,7 +116,6 @@ func BuiltinNetworkProfile() *Profile {
 		Network: &NetworkPermissions{
 			Outbound: &OutboundNetworkPermissions{
 				InsecureAllowAll: true,
-				AllowTransport:   []string{},
 				AllowHost:        []string{},
 				AllowPort:        []int{},
 			},

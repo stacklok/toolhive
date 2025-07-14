@@ -243,10 +243,6 @@ func printTextServerInfo(name string, server *registry.ImageMetadata) {
 				fmt.Println("    Insecure Allow All: true")
 			}
 
-			if len(outbound.AllowTransport) > 0 {
-				fmt.Printf("    Allow Transport: %s\n", strings.Join(outbound.AllowTransport, ", "))
-			}
-
 			if len(outbound.AllowHost) > 0 {
 				fmt.Printf("    Allow Host: %s\n", strings.Join(outbound.AllowHost, ", "))
 			}

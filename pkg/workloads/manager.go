@@ -201,7 +201,7 @@ func validateWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
 
 		secretManager, err := secrets.CreateSecretProvider(providerType)
 		if err != nil {
-			return fmt.Errorf("error instantiating secret manager %v", err)
+			return fmt.Errorf("error instantiating secret manager: %w", err)
 		}
 
 		err = runConfig.ValidateSecrets(ctx, secretManager)

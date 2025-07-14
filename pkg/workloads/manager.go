@@ -190,7 +190,7 @@ func (d *defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 }
 
 func validateWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
-	// if there are run secrets , validate them
+	// If there are run secrets, validate them
 	if len(runConfig.Secrets) > 0 {
 		cfg := config.GetConfig()
 

@@ -352,7 +352,7 @@
       "transport": "stdio"
     },
     "elasticsearch": {
-      "args": [],
+      "args": ["http"],
       "description": "Connect to your Elasticsearch data directly from any MCP Client.",
       "env_vars": [
         {
@@ -430,14 +430,16 @@
         "metrics",
         "logs"
       ],
+      "target_port": 8080,
       "tier": "Official",
       "tools": [
+        "esql",
         "get_mappings",
         "get_shards",
         "list_indices",
         "search"
       ],
-      "transport": "stdio"
+      "transport": "streamable-http"
     },
     "everything": {
       "args": [],

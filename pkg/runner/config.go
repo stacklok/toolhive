@@ -285,7 +285,7 @@ func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.P
 
 	_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
 	if err != nil {
-		return fmt.Errorf("failed to get secrets: %v", err)
+		return fmt.Errorf("failed to get secrets: %w", err)
 	}
 
 	return nil

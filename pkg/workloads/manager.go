@@ -217,7 +217,7 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// before running, validate the parameters for the workload
 	err := validateWorkload(ctx, runConfig)
 	if err != nil {
-		return fmt.Errorf("failed to validate workload parameters: %v", err)
+		return fmt.Errorf("failed to validate workload parameters: %w", err)
 	}
 
 	// Get the current executable path

@@ -121,9 +121,9 @@ type Config struct {
 	// Host is the host to use for network transports.
 	Host string
 
-	// Runtime is the container runtime to use.
+	// Deployer is the container runtime to use.
 	// This is used for container operations like creating, starting, and attaching.
-	Runtime rt.Deployer
+	Deployer rt.Deployer
 
 	// Debug indicates whether debug mode is enabled.
 	// If debug mode is enabled, containers will not be removed when stopped.

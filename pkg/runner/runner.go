@@ -49,7 +49,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		TargetPort: r.Config.TargetPort,
 		Host:       r.Config.Host,
 		TargetHost: r.Config.TargetHost,
-		Runtime:    r.Config.Runtime,
+		Deployer:   r.Config.Deployer,
 		Debug:      r.Config.Debug,
 	}
 
@@ -163,7 +163,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)
 	if err := transportHandler.Setup(
-		ctx, r.Config.Runtime, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
+		ctx, r.Config.Deployer, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
 		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile, r.Config.K8sPodTemplatePatch,
 		r.Config.IsolateNetwork,
 	); err != nil {

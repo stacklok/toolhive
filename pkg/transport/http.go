@@ -31,7 +31,7 @@ type HTTPTransport struct {
 	targetHost        string
 	containerID       string
 	containerName     string
-	runtime           rt.Deployer
+	deployer          rt.Deployer
 	debug             bool
 	middlewares       []types.Middleware
 	prometheusHandler http.Handler
@@ -56,7 +56,7 @@ func NewHTTPTransport(
 	host string,
 	proxyPort int,
 	targetPort int,
-	runtime rt.Deployer,
+	deployer rt.Deployer,
 	debug bool,
 	targetHost string,
 	prometheusHandler http.Handler,
@@ -78,7 +78,7 @@ func NewHTTPTransport(
 		middlewares:       middlewares,
 		targetPort:        targetPort,
 		targetHost:        targetHost,
-		runtime:           runtime,
+		deployer:          deployer,
 		debug:             debug,
 		prometheusHandler: prometheusHandler,
 		shutdownCh:        make(chan struct{}),
@@ -107,7 +107,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containe
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	t.runtime = runtime
+	t.deployer = runtime
 	t.containerName = containerName
 
 	env, ok := transportEnvMap[t.transportType]
@@ -153,7 +153,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containe
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, exposedPort, err := t.runtime.DeployWorkload(
+	containerID, exposedPort, err := t.deployer.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -181,7 +181,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containe
 	}
 
 	// we don't want to override the targetPort in a Kubernetes deployment. Because
-	// by default the Kubernetes container runtime returns `0` for the exposedPort
+	// by default the Kubernetes container deployer returns `0` for the exposedPort
 	// therefore causing the "target port not set" error when it is assigned to the targetPort.
 	// Issues:
 	// - https://github.com/stacklok/toolhive/issues/902
@@ -208,8 +208,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return errors.ErrContainerNameNotSet
 	}
 
-	if t.runtime == nil {
-		return fmt.Errorf("container runtime not set")
+	if t.deployer == nil {
+		return fmt.Errorf("container deployer not set")
 	}
 
 	// Create and start the transparent proxy
@@ -277,9 +277,9 @@ func (t *HTTPTransport) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Stop the container if runtime is available
-	if t.runtime != nil && t.containerID != "" {
-		if err := t.runtime.StopWorkload(ctx, t.containerID); err != nil {
+	// Stop the container if deployer is available
+	if t.deployer != nil && t.containerID != "" {
+		if err := t.deployer.StopWorkload(ctx, t.containerID); err != nil {
 			return fmt.Errorf("failed to stop workload: %w", err)
 		}
 	}

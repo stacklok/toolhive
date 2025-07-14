@@ -702,7 +702,7 @@ func (d *defaultManager) loadRunnerFromState(ctx context.Context, baseName strin
 	}
 
 	// Update the runtime in the loaded configuration
-	r.Config.Runtime = d.runtime
+	r.Config.Deployer = d.runtime
 
 	return r, nil
 }

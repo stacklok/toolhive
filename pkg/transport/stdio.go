@@ -30,7 +30,7 @@ type StdioTransport struct {
 	proxyPort         int
 	containerID       string
 	containerName     string
-	runtime           rt.Deployer
+	deployer          rt.Deployer
 	debug             bool
 	middlewares       []types.Middleware
 	prometheusHandler http.Handler
@@ -58,7 +58,7 @@ type StdioTransport struct {
 func NewStdioTransport(
 	host string,
 	proxyPort int,
-	runtime rt.Deployer,
+	deployer rt.Deployer,
 	debug bool,
 	prometheusHandler http.Handler,
 	middlewares ...types.Middleware,
@@ -66,7 +66,7 @@ func NewStdioTransport(
 	return &StdioTransport{
 		host:              host,
 		proxyPort:         proxyPort,
-		runtime:           runtime,
+		deployer:          deployer,
 		debug:             debug,
 		middlewares:       middlewares,
 		prometheusHandler: prometheusHandler,
@@ -105,7 +105,7 @@ func (t *StdioTransport) Setup(
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	t.runtime = runtime
+	t.deployer = runtime
 	t.containerName = containerName
 
 	// Add transport-specific environment variables
@@ -118,7 +118,7 @@ func (t *StdioTransport) Setup(
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, _, err := t.runtime.DeployWorkload(
+	containerID, _, err := t.deployer.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -156,13 +156,13 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		return errors.ErrContainerNameNotSet
 	}
 
-	if t.runtime == nil {
-		return fmt.Errorf("container runtime not set")
+	if t.deployer == nil {
+		return fmt.Errorf("container deployer not set")
 	}
 
 	// Attach to the container
 	var err error
-	t.stdin, t.stdout, err = t.runtime.AttachToWorkload(ctx, t.containerID)
+	t.stdin, t.stdout, err = t.deployer.AttachToWorkload(ctx, t.containerID)
 	if err != nil {
 		return fmt.Errorf("failed to attach to container: %w", err)
 	}
@@ -255,16 +255,16 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 		t.stdin = nil
 	}
 
-	// Stop the container if runtime is available and we haven't already stopped it
-	if t.runtime != nil && t.containerID != "" {
+	// Stop the container if deployer is available and we haven't already stopped it
+	if t.deployer != nil && t.containerID != "" {
 		// Check if the workload is still running before trying to stop it
-		running, err := t.runtime.IsWorkloadRunning(ctx, t.containerID)
+		running, err := t.deployer.IsWorkloadRunning(ctx, t.containerID)
 		if err != nil {
 			// If there's an error checking the workload status, it might be gone already
 			logger.Warnf("Warning: Failed to check workload status: %v", err)
 		} else if running {
 			// Only try to stop the workload if it's still running
-			if err := t.runtime.StopWorkload(ctx, t.containerID); err != nil {
+			if err := t.deployer.StopWorkload(ctx, t.containerID); err != nil {
 				logger.Warnf("Warning: Failed to stop workload: %v", err)
 			}
 		}

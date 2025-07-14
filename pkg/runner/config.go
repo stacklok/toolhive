@@ -101,8 +101,8 @@ type RunConfig struct {
 	// Only applicable when using Kubernetes runtime
 	K8sPodTemplatePatch string `json:"k8s_pod_template_patch,omitempty" yaml:"k8s_pod_template_patch,omitempty"`
 
-	// Runtime is the container runtime to use (not serialized)
-	Runtime rt.Deployer `json:"-" yaml:"-"`
+	// Deployer is the container runtime to use (not serialized)
+	Deployer rt.Deployer `json:"-" yaml:"-"`
 
 	// IsolateNetwork indicates whether to isolate the network for the container
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`

@@ -189,7 +189,7 @@ func (d *defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 	return err
 }
 
-func validateWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
+func validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig) error {
 	// If there are run secrets, validate them
 	if len(runConfig.Secrets) > 0 {
 		cfg := config.GetConfig()
@@ -215,7 +215,7 @@ func validateWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
 //nolint:gocyclo // This function is complex but manageable
 func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *runner.RunConfig) error {
 	// before running, validate the parameters for the workload
-	err := validateWorkload(ctx, runConfig)
+	err := validateSecretParameters(ctx, runConfig)
 	if err != nil {
 		return fmt.Errorf("failed to validate workload parameters: %w", err)
 	}

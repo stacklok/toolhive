@@ -29,79 +29,96 @@ func NewMCPPinger(proxy *HTTPSSEProxy) healthcheck.MCPPinger {
 // Following the MCP ping specification:
 // https://modelcontextprotocol.io/specification/2025-03-26/basic/utilities/ping
 func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
-	if p.proxy == nil {
-		return 0, fmt.Errorf("proxy not available")
-	}
-	messageCh := p.proxy.GetMessageChannel()
-	if messageCh == nil {
-		return 0, fmt.Errorf("message channel not available")
+	if err := p.sendInitialize(ctx); err != nil {
+		return 0, err
 	}
 
-	// 1️⃣ Send initialize
-	initReq, err := jsonrpc2.NewCall(
-		jsonrpc2.StringID(fmt.Sprintf("init_%d", time.Now().UnixNano())),
-		"initialize",
-		json.RawMessage(`{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"toolhive-health","version":"1.0"}}`),
-	)
+	if err := wait(ctx, 2*time.Second); err != nil {
+		return 0, err
+	}
+
+	return p.sendPing(ctx)
+}
+
+// sendInitialize handles the initialize + initialized steps
+func (p *MCPPinger) sendInitialize(ctx context.Context) error {
+	if p.proxy == nil {
+		return fmt.Errorf("proxy not available")
+	}
+	msgCh := p.proxy.GetMessageChannel()
+	if msgCh == nil {
+		return fmt.Errorf("message channel not available")
+	}
+
+	// Send initialize
+	initID := fmt.Sprintf("init_%d", time.Now().UnixNano())
+	initReq, err := jsonrpc2.NewCall(jsonrpc2.StringID(initID), "initialize",
+		json.RawMessage(`{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"toolhive-health","version":"1.0"}}`))
 	if err != nil {
-		return 0, fmt.Errorf("failed to create initialize request: %w", err)
+		return fmt.Errorf("create initialize request: %w", err)
 	}
 	select {
-	case messageCh <- initReq:
+	case msgCh <- initReq:
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return ctx.Err()
 	}
 
-	// 2️⃣ Send initialized notification
+	// Send initialized notification
 	initNotif, err := jsonrpc2.NewNotification("notifications/initialized", nil)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create initialized notification: %w", err)
+		return fmt.Errorf("create initialized notification: %w", err)
 	}
 	select {
-	case messageCh <- initNotif:
+	case msgCh <- initNotif:
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return ctx.Err()
 	}
 
-	// 3️⃣ Wait for 2 seconds to allow server init
+	return nil
+}
+
+// wait pauses for a duration or returns an error if context is done
+func wait(ctx context.Context, d time.Duration) error {
 	select {
-	case <-time.After(2 * time.Second):
+	case <-time.After(d):
+		return nil
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return ctx.Err()
 	}
+}
 
-	// 4️⃣ Send ping request (same as before)
+// sendPing executes the ping request and waits for a response
+func (p *MCPPinger) sendPing(ctx context.Context) (time.Duration, error) {
+	msgCh := p.proxy.GetMessageChannel()
+
 	pingID := fmt.Sprintf("ping_%d", time.Now().UnixNano())
-	pingRequest, err := jsonrpc2.NewCall(jsonrpc2.StringID(pingID), "ping", json.RawMessage("{}"))
+	pingReq, err := jsonrpc2.NewCall(jsonrpc2.StringID(pingID), "ping", json.RawMessage(`{}`))
 	if err != nil {
-		return 0, fmt.Errorf("failed to create ping request: %w", err)
+		return 0, fmt.Errorf("create ping request: %w", err)
 	}
 
 	start := time.Now()
 	select {
-	case messageCh <- pingRequest:
-		logger.Debugf("Sent MCP ping request with ID: %s", pingID)
+	case msgCh <- pingReq:
+		logger.Debugf("Sent ping ID %s", pingID)
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	}
 
-	// 5️⃣ Wait for ping response with timeout
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(500 * time.Millisecond)
 	defer timer.Stop()
 
 	for {
 		select {
-		case raw := <-messageCh:
-			if resp, ok := raw.(*jsonrpc2.Response); ok && resp.ID == pingRequest.ID {
+		case raw := <-msgCh:
+			if resp, ok := raw.(*jsonrpc2.Response); ok && resp.ID == pingReq.ID {
 				if resp.Error != nil {
 					return 0, fmt.Errorf("ping failed: %v", resp.Error)
 				}
-				duration := time.Since(start)
-				logger.Debugf("MCP ping completed in %v", duration)
-				return duration, nil
+				return time.Since(start), nil
 			}
 		case <-timer.C:
-			return 0, fmt.Errorf("timeout waiting for ping response")
+			return 0, fmt.Errorf("timeout waiting for ping")
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}

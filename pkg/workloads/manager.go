@@ -189,8 +189,37 @@ func (d *defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 	return err
 }
 
+func validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig) error {
+	// If there are run secrets, validate them
+	if len(runConfig.Secrets) > 0 {
+		cfg := config.GetConfig()
+
+		providerType, err := cfg.Secrets.GetProviderType()
+		if err != nil {
+			return fmt.Errorf("error determining secrets provider type: %w", err)
+		}
+
+		secretManager, err := secrets.CreateSecretProvider(providerType)
+		if err != nil {
+			return fmt.Errorf("error instantiating secret manager: %w", err)
+		}
+
+		err = runConfig.ValidateSecrets(ctx, secretManager)
+		if err != nil {
+			return fmt.Errorf("error processing secrets: %w", err)
+		}
+	}
+	return nil
+}
+
 //nolint:gocyclo // This function is complex but manageable
 func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *runner.RunConfig) error {
+	// before running, validate the parameters for the workload
+	err := validateSecretParameters(ctx, runConfig)
+	if err != nil {
+		return fmt.Errorf("failed to validate workload parameters: %w", err)
+	}
+
 	// Get the current executable path
 	execPath, err := os.Executable()
 	if err != nil {

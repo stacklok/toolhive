@@ -19,15 +19,16 @@ type VersionClient interface {
 
 // NewVersionClient creates a new instance of VersionClient.
 func NewVersionClient() VersionClient {
-	return NewVersionClientForComponent("CLI", "")
+	return NewVersionClientForComponent("CLI", "", false)
 }
 
 // NewVersionClientForComponent creates a new instance of VersionClient for a specific component.
-func NewVersionClientForComponent(component, version string) VersionClient {
+func NewVersionClientForComponent(component, version string, uiReleaseBuild bool) VersionClient {
 	return &defaultVersionClient{
 		versionEndpoint: defaultVersionAPI,
 		component:       component,
 		customVersion:   version,
+		uiReleaseBuild:  uiReleaseBuild,
 	}
 }
 
@@ -35,6 +36,7 @@ type defaultVersionClient struct {
 	versionEndpoint string
 	component       string
 	customVersion   string
+	uiReleaseBuild  bool // For the UI component, tracks if the UI is calling from a release build, false otherwise
 }
 
 const (
@@ -42,6 +44,9 @@ const (
 	userAgentHeader   = "User-Agent"
 	defaultVersionAPI = "https://updates.codegate.ai/api/v1/version"
 	defaultTimeout    = 3 * time.Second
+
+	buildTypeRelease    = "release"
+	buildTypeLocalBuild = "local_build"
 )
 
 // GetLatestVersion sends a GET request to the update API endpoint and returns the version from the response.
@@ -66,9 +71,17 @@ func (d *defaultVersionClient) GetLatestVersion(instanceID string, currentVersio
 		version = "v" + version
 	}
 
-	buildType := "local_build"
-	if versions.BuildType == "release" {
-		buildType = "release"
+	buildType := buildTypeLocalBuild
+	if d.component == "UI" {
+		// For UI: only use "release" if both server and UI are release builds
+		if versions.BuildType == buildTypeRelease && d.uiReleaseBuild {
+			buildType = buildTypeRelease
+		}
+	} else {
+		// For other components: use server build type
+		if versions.BuildType == buildTypeRelease {
+			buildType = buildTypeRelease
+		}
 	}
 
 	// Get platform info as OperatingSystem/Architecture

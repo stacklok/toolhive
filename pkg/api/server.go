@@ -94,8 +94,8 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			go func() {
-				component, version := getComponentAndVersionFromRequest(r)
-				versionClient := updates.NewVersionClientForComponent(component, version)
+				component, version, uiReleaseBuild := getComponentAndVersionFromRequest(r)
+				versionClient := updates.NewVersionClientForComponent(component, version, uiReleaseBuild)
 
 				updateChecker, err := updates.NewUpdateChecker(versionClient)
 				if err != nil {
@@ -113,16 +113,18 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 	}
 }
 
-// getComponentAndVersionFromRequest determines the component name and version from the request
-func getComponentAndVersionFromRequest(r *http.Request) (string, string) {
+// getComponentAndVersionFromRequest determines the component name, version, and ui release build from the request
+func getComponentAndVersionFromRequest(r *http.Request) (string, string, bool) {
 	clientType := r.Header.Get("X-Client-Type")
 
 	if clientType == "toolhive-studio" {
 		version := r.Header.Get("X-Client-Version")
-		return "UI", version
+		// Checks if the UI is calling from an official release
+		uiReleaseBuild := r.Header.Get("X-Client-Release-Build") == "true"
+		return "UI", version, uiReleaseBuild
 	}
 
-	return "API", ""
+	return "API", "", false
 }
 
 // Serve starts the server on the given address and serves the API.

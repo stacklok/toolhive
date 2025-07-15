@@ -6,37 +6,48 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewVersionClientWithSuffix(t *testing.T) {
+func TestNewVersionClientForComponent(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		suffix   string
-		expected string
+		name      string
+		component string
+		version   string
+		expected  string
 	}{
 		{
-			name:     "no suffix",
-			suffix:   "",
-			expected: "",
+			name:      "CLI component",
+			component: "CLI",
+			version:   "",
+			expected:  "CLI",
 		},
 		{
-			name:     "operator suffix",
-			suffix:   "operator",
-			expected: "operator",
+			name:      "operator component",
+			component: "operator",
+			version:   "",
+			expected:  "operator",
 		},
 		{
-			name:     "custom suffix",
-			suffix:   "custom",
-			expected: "custom",
+			name:      "UI component with version",
+			component: "UI",
+			version:   "2.0.0",
+			expected:  "UI",
+		},
+		{
+			name:      "API component",
+			component: "API",
+			version:   "",
+			expected:  "API",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			client := NewVersionClientWithSuffix(tt.suffix)
+			client := NewVersionClientForComponent(tt.component, tt.version)
 			defaultClient, ok := client.(*defaultVersionClient)
 			assert.True(t, ok, "Expected defaultVersionClient type")
-			assert.Equal(t, tt.expected, defaultClient.userAgentSuffix)
+			assert.Equal(t, tt.expected, defaultClient.component)
+			assert.Equal(t, tt.version, defaultClient.customVersion)
 		})
 	}
 }

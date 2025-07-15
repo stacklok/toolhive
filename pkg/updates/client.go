@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -17,20 +19,22 @@ type VersionClient interface {
 
 // NewVersionClient creates a new instance of VersionClient.
 func NewVersionClient() VersionClient {
-	return NewVersionClientWithSuffix("")
+	return NewVersionClientForComponent("CLI", "")
 }
 
-// NewVersionClientWithSuffix creates a new instance of VersionClient with an optional user agent suffix.
-func NewVersionClientWithSuffix(suffix string) VersionClient {
+// NewVersionClientForComponent creates a new instance of VersionClient for a specific component.
+func NewVersionClientForComponent(component, version string) VersionClient {
 	return &defaultVersionClient{
 		versionEndpoint: defaultVersionAPI,
-		userAgentSuffix: suffix,
+		component:       component,
+		customVersion:   version,
 	}
 }
 
 type defaultVersionClient struct {
 	versionEndpoint string
-	userAgentSuffix string
+	component       string
+	customVersion   string
 }
 
 const (
@@ -49,19 +53,30 @@ func (d *defaultVersionClient) GetLatestVersion(instanceID string, currentVersio
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set headers
-	// Determine user agent based on build type
-	var userAgent string
-	if versions.BuildType == "release" {
-		userAgent = fmt.Sprintf("toolhive/%s", currentVersion)
-	} else {
-		userAgent = fmt.Sprintf("toolhive/development-%s", currentVersion)
+	// Generate user agent in format: toolhive/[component] [vXX] [release/local_build] ([operating_system])
+
+	// Use custom version if set, otherwise use the passed currentVersion
+	version := currentVersion
+	if d.customVersion != "" {
+		version = d.customVersion
 	}
 
-	// Add suffix
-	if d.userAgentSuffix != "" {
-		userAgent += " " + d.userAgentSuffix
+	// Format version with 'v' prefix if it doesn't start with 'v'
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
 	}
+
+	buildType := "local_build"
+	if versions.BuildType == "release" {
+		buildType = "release"
+	}
+
+	// Get platform info as OperatingSystem/Architecture
+	platform := fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
+
+	// Format: toolhive/[component] [vXX] [release/local_build] ([operating_system])
+	userAgent := fmt.Sprintf("toolhive/%s %s %s (%s)", d.component, version, buildType, platform)
+
 	req.Header.Set(instanceIDHeader, instanceID)
 	req.Header.Set(userAgentHeader, userAgent)
 

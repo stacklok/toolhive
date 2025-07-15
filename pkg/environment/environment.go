@@ -65,7 +65,7 @@ func SetTransportEnvironmentVariables(envVars map[string]string, transportType s
 	if port > 0 {
 		// Set transport-specific environment variables
 		switch transportType {
-		case "sse":
+		case "sse", "streamable-http":
 			envVars["MCP_PORT"] = fmt.Sprintf("%d", port)
 			envVars["FASTMCP_PORT"] = fmt.Sprintf("%d", port)
 		case "stdio":

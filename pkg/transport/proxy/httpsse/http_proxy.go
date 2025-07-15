@@ -347,8 +347,26 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Log the message
-	logger.Infof("Received JSON-RPC message: %T", msg)
+	switch resp := msg.(type) {
+	case *jsonrpc2.Response:
+		// Log the ID
+		logger.Infof("Response ID = %v", resp.ID)
+
+		// If there's an error, log it
+		if resp.Error != nil {
+			logger.Infof("Response error: %v", resp.Error)
+		}
+
+		// Print the raw JSON result
+		if raw := resp.Result; len(raw) > 0 {
+			logger.Infof("Response result: %s", string(raw))
+		} else {
+			logger.Infof("Response has no result payload")
+		}
+
+	default:
+		logger.Infof("Unexpected message type: %T", msg)
+	}
 
 	// Send the message to the destination
 	if err := p.SendMessageToDestination(msg); err != nil {

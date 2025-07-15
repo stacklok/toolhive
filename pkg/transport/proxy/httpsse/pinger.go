@@ -32,14 +32,45 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	if p.proxy == nil {
 		return 0, fmt.Errorf("proxy not available")
 	}
-
 	messageCh := p.proxy.GetMessageChannel()
 	if messageCh == nil {
 		return 0, fmt.Errorf("message channel not available")
 	}
 
-	// Create a ping request following MCP specification
-	// {"jsonrpc": "2.0", "id": "123", "method": "ping"}
+	// 1️⃣ Send initialize
+	initReq, err := jsonrpc2.NewCall(
+		jsonrpc2.StringID(fmt.Sprintf("init_%d", time.Now().UnixNano())),
+		"initialize",
+		json.RawMessage(`{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"toolhive-health","version":"1.0"}}`),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create initialize request: %w", err)
+	}
+	select {
+	case messageCh <- initReq:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+
+	// 2️⃣ Send initialized notification
+	initNotif, err := jsonrpc2.NewNotification("notifications/initialized", nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create initialized notification: %w", err)
+	}
+	select {
+	case messageCh <- initNotif:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+
+	// 3️⃣ Wait for 2 seconds to allow server init
+	select {
+	case <-time.After(2 * time.Second):
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+
+	// 4️⃣ Send ping request (same as before)
 	pingID := fmt.Sprintf("ping_%d", time.Now().UnixNano())
 	pingRequest, err := jsonrpc2.NewCall(jsonrpc2.StringID(pingID), "ping", json.RawMessage("{}"))
 	if err != nil {
@@ -47,23 +78,32 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	}
 
 	start := time.Now()
-
-	// Send the ping request
 	select {
 	case messageCh <- pingRequest:
 		logger.Debugf("Sent MCP ping request with ID: %s", pingID)
 	case <-ctx.Done():
 		return 0, ctx.Err()
-	default:
-		return 0, fmt.Errorf("message channel is full or closed")
 	}
 
-	// For HTTP SSE proxy, we don't have a direct response channel
-	// The response will be forwarded to SSE clients
-	// We'll measure the time it took to send the request
-	// In a real implementation, you might want to set up a response listener
-	duration := time.Since(start)
+	// 5️⃣ Wait for ping response with timeout
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
 
-	logger.Debugf("MCP ping request sent in %v", duration)
-	return duration, nil
+	for {
+		select {
+		case raw := <-messageCh:
+			if resp, ok := raw.(*jsonrpc2.Response); ok && resp.ID == pingRequest.ID {
+				if resp.Error != nil {
+					return 0, fmt.Errorf("ping failed: %v", resp.Error)
+				}
+				duration := time.Since(start)
+				logger.Debugf("MCP ping completed in %v", duration)
+				return duration, nil
+			}
+		case <-timer.C:
+			return 0, fmt.Errorf("timeout waiting for ping response")
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
 }

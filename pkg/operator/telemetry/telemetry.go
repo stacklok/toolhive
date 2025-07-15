@@ -84,7 +84,7 @@ func NewService(k8sClient client.Client, namespace string) *Service {
 	}
 	return &Service{
 		client:        k8sClient,
-		versionClient: updates.NewVersionClientWithSuffix("operator"),
+		versionClient: updates.NewVersionClientForComponent("operator", "", false),
 		namespace:     namespace,
 	}
 }

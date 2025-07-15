@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
-  "last_updated": "2025-07-14T00:23:51Z",
+  "last_updated": "2025-07-15T00:23:03Z",
   "servers": {
     "atlassian": {
       "args": [],
@@ -88,9 +88,9 @@
       ],
       "image": "ghcr.io/sooperset/mcp-atlassian:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:47Z",
-        "pulls": 9329,
-        "stars": 2400
+        "last_updated": "2025-07-15T00:22:58Z",
+        "pulls": 9439,
+        "stars": 2421
       },
       "permissions": {
         "network": {
@@ -205,9 +205,9 @@
       ],
       "image": "public.ecr.aws/f3y8w4n0/awslabs/cost-analysis-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:50Z",
-        "pulls": 5843,
-        "stars": 4616
+        "last_updated": "2025-07-15T00:23:01Z",
+        "pulls": 5923,
+        "stars": 4646
       },
       "permissions": {
         "network": {
@@ -263,9 +263,9 @@
       ],
       "image": "mcp/aws-diagram:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:51Z",
-        "pulls": 5662,
-        "stars": 4616
+        "last_updated": "2025-07-15T00:23:02Z",
+        "pulls": 5713,
+        "stars": 4646
       },
       "permissions": {
         "network": {
@@ -315,9 +315,9 @@
       ],
       "image": "mcp/aws-documentation:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:51Z",
-        "pulls": 6355,
-        "stars": 4616
+        "last_updated": "2025-07-15T00:23:02Z",
+        "pulls": 6483,
+        "stars": 4646
       },
       "permissions": {
         "network": {
@@ -351,94 +351,6 @@
       ],
       "transport": "stdio"
     },
-    "elasticsearch": {
-      "args": [],
-      "description": "Connect to your Elasticsearch data directly from any MCP Client.",
-      "env_vars": [
-        {
-          "description": "Your Elasticsearch instance URL",
-          "name": "ES_URL",
-          "required": true
-        },
-        {
-          "description": "Elasticsearch API key for authentication",
-          "name": "ES_API_KEY",
-          "required": false,
-          "secret": true
-        },
-        {
-          "description": "Elasticsearch username for basic authentication",
-          "name": "ES_USERNAME",
-          "required": false
-        },
-        {
-          "description": "Elasticsearch password for basic authentication",
-          "name": "ES_PASSWORD",
-          "required": false,
-          "secret": true
-        },
-        {
-          "description": "Path to custom CA certificate for Elasticsearch SSL/TLS",
-          "name": "ES_CA_CERT",
-          "required": false
-        },
-        {
-          "description": "Set to '1' or 'true' to skip SSL certificate verification",
-          "name": "ES_SSL_SKIP_VERIFY",
-          "required": false
-        },
-        {
-          "description": "Path prefix for Elasticsearch instance exposed at a non-root path",
-          "name": "ES_PATH_PREFIX",
-          "required": false
-        },
-        {
-          "description": "Server assumes Elasticsearch 9.x. Set to 8 target Elasticsearch 8.x",
-          "name": "ES_VERSION",
-          "required": false
-        }
-      ],
-      "image": "mcp/elasticsearch:latest",
-      "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 7123,
-        "stars": 342
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [],
-            "allow_port": [
-              443,
-              9200
-            ],
-            "insecure_allow_all": true
-          }
-        },
-        "read": [],
-        "write": []
-      },
-      "repository_url": "https://github.com/elastic/mcp-server-elasticsearch",
-      "status": "Active",
-      "tags": [
-        "elasticsearch",
-        "search",
-        "analytics",
-        "data",
-        "alerting",
-        "observability",
-        "metrics",
-        "logs"
-      ],
-      "tier": "Official",
-      "tools": [
-        "get_mappings",
-        "get_shards",
-        "list_indices",
-        "search"
-      ],
-      "transport": "stdio"
-    },
     "buildkite": {
       "args": [
         "stdio"
@@ -446,22 +358,22 @@
       "description": "Connect your Buildkite data (pipelines, builds, jobs, tests) to AI tooling and editors.",
       "env_vars": [
         {
-          "name": "BUILDKITE_API_TOKEN",
           "description": "Your Buildkite API access token",
+          "name": "BUILDKITE_API_TOKEN",
           "required": true,
           "secret": true
         },
         {
-          "name": "JOB_LOG_TOKEN_THRESHOLD",
           "description": "Token threshold for job logs. If exceeded, logs will be written to disk and returned by path (for local use only).",
+          "name": "JOB_LOG_TOKEN_THRESHOLD",
           "required": false
         }
       ],
       "image": "ghcr.io/buildkite/buildkite-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 0,
-        "stars": 0
+        "last_updated": "2025-07-15T00:23:01Z",
+        "pulls": 107,
+        "stars": 18
       },
       "permissions": {
         "network": {
@@ -523,15 +435,103 @@
       ],
       "transport": "stdio"
     },
+    "elasticsearch": {
+      "args": [],
+      "description": "Connect to your Elasticsearch data directly from any MCP Client.",
+      "env_vars": [
+        {
+          "description": "Your Elasticsearch instance URL",
+          "name": "ES_URL",
+          "required": true
+        },
+        {
+          "description": "Elasticsearch API key for authentication",
+          "name": "ES_API_KEY",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "Elasticsearch username for basic authentication",
+          "name": "ES_USERNAME",
+          "required": false
+        },
+        {
+          "description": "Elasticsearch password for basic authentication",
+          "name": "ES_PASSWORD",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "Path to custom CA certificate for Elasticsearch SSL/TLS",
+          "name": "ES_CA_CERT",
+          "required": false
+        },
+        {
+          "description": "Set to '1' or 'true' to skip SSL certificate verification",
+          "name": "ES_SSL_SKIP_VERIFY",
+          "required": false
+        },
+        {
+          "description": "Path prefix for Elasticsearch instance exposed at a non-root path",
+          "name": "ES_PATH_PREFIX",
+          "required": false
+        },
+        {
+          "description": "Server assumes Elasticsearch 9.x. Set to 8 target Elasticsearch 8.x",
+          "name": "ES_VERSION",
+          "required": false
+        }
+      ],
+      "image": "mcp/elasticsearch:latest",
+      "metadata": {
+        "last_updated": "2025-07-15T00:23:01Z",
+        "pulls": 7244,
+        "stars": 344
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [
+              443,
+              9200
+            ],
+            "insecure_allow_all": true
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/elastic/mcp-server-elasticsearch",
+      "status": "Active",
+      "tags": [
+        "elasticsearch",
+        "search",
+        "analytics",
+        "data",
+        "alerting",
+        "observability",
+        "metrics",
+        "logs"
+      ],
+      "tier": "Official",
+      "tools": [
+        "get_mappings",
+        "get_shards",
+        "list_indices",
+        "search"
+      ],
+      "transport": "stdio"
+    },
     "everything": {
       "args": [],
       "description": "This MCP server attempts to exercise all the features of the MCP protocol",
       "env_vars": [],
       "image": "mcp/everything:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:50Z",
-        "pulls": 12443,
-        "stars": 59315
+        "last_updated": "2025-07-15T00:23:01Z",
+        "pulls": 12586,
+        "stars": 59501
       },
       "permissions": {
         "network": {
@@ -576,9 +576,9 @@
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/gofetch/server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:50Z",
-        "pulls": 10086,
-        "stars": 3
+        "last_updated": "2025-07-15T00:23:02Z",
+        "pulls": 10158,
+        "stars": 4
       },
       "permissions": {
         "network": {
@@ -626,9 +626,9 @@
       "env_vars": [],
       "image": "mcp/filesystem:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 16043,
-        "stars": 59315
+        "last_updated": "2025-07-15T00:22:59Z",
+        "pulls": 16186,
+        "stars": 59501
       },
       "permissions": {
         "network": {
@@ -722,9 +722,9 @@
       ],
       "image": "mcp/firecrawl:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:47Z",
-        "pulls": 9156,
-        "stars": 3788
+        "last_updated": "2025-07-15T00:22:59Z",
+        "pulls": 9265,
+        "stars": 3795
       },
       "permissions": {
         "network": {
@@ -776,9 +776,9 @@
       "env_vars": [],
       "image": "mcp/git:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:51Z",
-        "pulls": 8036,
-        "stars": 59315
+        "last_updated": "2025-07-15T00:23:03Z",
+        "pulls": 8110,
+        "stars": 59501
       },
       "permissions": {
         "network": {
@@ -839,9 +839,9 @@
       ],
       "image": "ghcr.io/github/github-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
+        "last_updated": "2025-07-15T00:23:00Z",
         "pulls": 5000,
-        "stars": 17305
+        "stars": 17347
       },
       "permissions": {
         "network": {
@@ -933,9 +933,9 @@
       ],
       "image": "mcp/grafana:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:47Z",
-        "pulls": 5880,
-        "stars": 1141
+        "last_updated": "2025-07-15T00:22:59Z",
+        "pulls": 5950,
+        "stars": 1155
       },
       "permissions": {
         "network": {
@@ -1032,8 +1032,8 @@
       ],
       "image": "voska/hass-mcp:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:47Z",
-        "pulls": 12264,
+        "last_updated": "2025-07-15T00:22:58Z",
+        "pulls": 12410,
         "stars": 126
       },
       "permissions": {
@@ -1089,8 +1089,8 @@
       ],
       "image": "ghcr.io/stackloklabs/mkp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 9856,
+        "last_updated": "2025-07-15T00:22:59Z",
+        "pulls": 9984,
         "stars": 35
       },
       "permissions": {
@@ -1146,9 +1146,9 @@
       ],
       "image": "mcp/memory:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 12174,
-        "stars": 59315
+        "last_updated": "2025-07-15T00:23:00Z",
+        "pulls": 12289,
+        "stars": 59501
       },
       "permissions": {
         "network": {
@@ -1248,9 +1248,9 @@
       ],
       "image": "mongodb/mongodb-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:47Z",
-        "pulls": 2116,
-        "stars": 405
+        "last_updated": "2025-07-15T00:22:58Z",
+        "pulls": 2208,
+        "stars": 406
       },
       "permissions": {
         "network": {
@@ -1339,8 +1339,8 @@
       ],
       "image": "aantti/mcp-netbird:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 7896,
+        "last_updated": "2025-07-15T00:22:59Z",
+        "pulls": 7990,
         "stars": 35
       },
       "permissions": {
@@ -1396,9 +1396,9 @@
       ],
       "image": "mcp/notion:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:50Z",
-        "pulls": 2691,
-        "stars": 2594
+        "last_updated": "2025-07-15T00:23:02Z",
+        "pulls": 2804,
+        "stars": 2612
       },
       "permissions": {
         "network": {
@@ -1469,8 +1469,8 @@
       ],
       "image": "ghcr.io/stackloklabs/ocireg-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 4861,
+        "last_updated": "2025-07-15T00:23:00Z",
+        "pulls": 4960,
         "stars": 4
       },
       "permissions": {
@@ -1521,8 +1521,8 @@
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/osv-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 7310,
+        "last_updated": "2025-07-15T00:23:00Z",
+        "pulls": 7404,
         "stars": 7
       },
       "permissions": {
@@ -1582,9 +1582,9 @@
       ],
       "image": "mcp/perplexity-ask:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:51Z",
-        "pulls": 11220,
-        "stars": 1378
+        "last_updated": "2025-07-15T00:23:02Z",
+        "pulls": 11344,
+        "stars": 1380
       },
       "permissions": {
         "network": {
@@ -1625,9 +1625,9 @@
       "env_vars": [],
       "image": "mcr.microsoft.com/playwright/mcp",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:51Z",
-        "pulls": 18854,
-        "stars": 14595
+        "last_updated": "2025-07-15T00:23:02Z",
+        "pulls": 19003,
+        "stars": 14661
       },
       "permissions": {
         "network": {
@@ -1754,9 +1754,9 @@
       ],
       "image": "mcp/redis:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 7646,
-        "stars": 149
+        "last_updated": "2025-07-15T00:23:01Z",
+        "pulls": 7731,
+        "stars": 150
       },
       "permissions": {
         "network": {
@@ -1847,8 +1847,8 @@
       ],
       "image": "ghcr.io/semgrep/mcp:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 8820,
+        "last_updated": "2025-07-15T00:23:00Z",
+        "pulls": 8925,
         "stars": 220
       },
       "permissions": {
@@ -1898,9 +1898,9 @@
       "env_vars": [],
       "image": "mcp/sequentialthinking:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 11843,
-        "stars": 59315
+        "last_updated": "2025-07-15T00:23:00Z",
+        "pulls": 11936,
+        "stars": 59501
       },
       "permissions": {
         "network": {
@@ -1941,8 +1941,8 @@
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/sqlite-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 756,
+        "last_updated": "2025-07-15T00:22:59Z",
+        "pulls": 864,
         "stars": 1
       },
       "permissions": {
@@ -1980,9 +1980,9 @@
       "env_vars": [],
       "image": "hashicorp/terraform-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 5504,
-        "stars": 726
+        "last_updated": "2025-07-15T00:23:01Z",
+        "pulls": 5632,
+        "stars": 729
       },
       "permissions": {
         "network": {
@@ -2031,9 +2031,9 @@
       "env_vars": [],
       "image": "mcp/time:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:50Z",
-        "pulls": 8394,
-        "stars": 59315
+        "last_updated": "2025-07-15T00:23:02Z",
+        "pulls": 8475,
+        "stars": 59501
       },
       "permissions": {
         "network": {

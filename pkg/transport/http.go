@@ -26,7 +26,7 @@ const (
 type HTTPTransport struct {
 	transportType     types.TransportType
 	host              string
-	port              int
+	proxyPort         int
 	targetPort        int
 	targetHost        string
 	containerID       string
@@ -54,7 +54,7 @@ type HTTPTransport struct {
 func NewHTTPTransport(
 	transportType types.TransportType,
 	host string,
-	port int,
+	proxyPort int,
 	targetPort int,
 	runtime rt.Runtime,
 	debug bool,
@@ -74,7 +74,7 @@ func NewHTTPTransport(
 	return &HTTPTransport{
 		transportType:     transportType,
 		host:              host,
-		port:              port,
+		proxyPort:         proxyPort,
 		middlewares:       middlewares,
 		targetPort:        targetPort,
 		targetHost:        targetHost,
@@ -90,9 +90,9 @@ func (t *HTTPTransport) Mode() types.TransportType {
 	return t.transportType
 }
 
-// Port returns the port used by the transport.
+// Port returns the proxyPort used by the transport.
 func (t *HTTPTransport) Port() int {
-	return t.port
+	return t.proxyPort
 }
 
 var transportEnvMap = map[types.TransportType]string{
@@ -116,7 +116,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 	}
 	envVars["MCP_TRANSPORT"] = env
 
-	// Use the target port for the container's environment variables
+	// Use the target proxyPort for the container's environment variables
 	envVars["MCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
 	envVars["FASTMCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
 	envVars["MCP_HOST"] = t.targetHost
@@ -125,11 +125,11 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 	containerOptions := rt.NewDeployWorkloadOptions()
 	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
 
-	// Expose the target port in the container
+	// Expose the target proxyPort in the container
 	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)
 	containerOptions.ExposedPorts[containerPortStr] = struct{}{}
 
-	// Create host port bindings (configurable through the --host flag)
+	// Create host proxyPort bindings (configurable through the --host flag)
 	portBindings := []rt.PortBinding{
 		{
 			HostIP:   t.host,
@@ -145,7 +145,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 	//	})
 	//}
 
-	// Set the port bindings
+	// Set the proxyPort bindings
 	containerOptions.PortBindings[containerPortStr] = portBindings
 
 	// For SSE transport, we don't need to attach stdio
@@ -182,12 +182,12 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 
 	// we don't want to override the targetPort in a Kubernetes deployment. Because
 	// by default the Kubernetes container runtime returns `0` for the exposedPort
-	// therefore causing the "target port not set" error when it is assigned to the targetPort.
+	// therefore causing the "target proxyPort not set" error when it is assigned to the targetPort.
 	// Issues:
 	// - https://github.com/stacklok/toolhive/issues/902
 	// - https://github.com/stacklok/toolhive/issues/924
 	if !rt.IsKubernetesRuntime() {
-		// also override the exposed port, in case we need it via ingress
+		// also override the exposed proxyPort, in case we need it via ingress
 		t.targetPort = exposedPort
 	}
 
@@ -213,29 +213,29 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	}
 
 	// Create and start the transparent proxy
-	// The SSE transport forwards requests from the host port to the container's target port
+	// The SSE transport forwards requests from the host proxyPort to the container's target proxyPort
 	// In a Docker bridge network, we need to use the specified target host
 	// We ignore containerIP even if it's set, as it's not directly accessible from the host
 	targetHost := t.targetHost
 
-	// Check if target port is set
+	// Check if target proxyPort is set
 	if t.targetPort <= 0 {
-		return fmt.Errorf("target port not set for HTTP transport")
+		return fmt.Errorf("target proxyPort not set for HTTP transport")
 	}
 
-	// Use the target port for the container
+	// Use the target proxyPort for the container
 	containerPort := t.targetPort
 	targetURI := fmt.Sprintf("http://%s:%d", targetHost, containerPort)
-	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
-		t.port, targetURI)
+	logger.Infof("Setting up transparent proxy to forward from host proxyPort %d to %s",
+		t.proxyPort, targetURI)
 
 	// Create the transparent proxy with middlewares
-	t.proxy = transparent.NewTransparentProxy(t.host, t.port, t.containerName, targetURI, t.prometheusHandler, t.middlewares...)
+	t.proxy = transparent.NewTransparentProxy(t.host, t.proxyPort, t.containerName, targetURI, t.prometheusHandler, t.middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}
 
-	logger.Infof("HTTP transport started for container %s on port %d", t.containerName, t.port)
+	logger.Infof("HTTP transport started for container %s on proxyPort %d", t.containerName, t.proxyPort)
 
 	// Create a container monitor
 	monitorRuntime, err := container.NewFactory().Create(ctx)

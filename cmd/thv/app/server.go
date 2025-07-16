@@ -61,7 +61,7 @@ var serveCmd = &cobra.Command{
 
 func init() {
 	serveCmd.Flags().StringVar(&host, "host", "127.0.0.1", "Host address to bind the server to")
-	serveCmd.Flags().IntVar(&port, "port", 8080, "Port to bind the server to")
+	serveCmd.Flags().IntVar(&port, "port", 8080, "ProxyPort to bind the server to")
 	serveCmd.Flags().BoolVar(&enableDocs, "openapi", false,
 		"Enable OpenAPI documentation endpoints (/api/openapi.json and /api/doc)")
 	serveCmd.Flags().StringVar(&socketPath, "socket", "", "UNIX socket path to bind the "+

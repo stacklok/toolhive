@@ -106,7 +106,7 @@ const (
 
 func init() {
 	proxyCmd.Flags().StringVar(&proxyHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
-	proxyCmd.Flags().IntVar(&proxyPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
+	proxyCmd.Flags().IntVar(&proxyPort, "port", 0, "ProxyPort for the HTTP proxy to listen on (host port)")
 	proxyCmd.Flags().StringVar(
 		&proxyTargetURI,
 		"target-uri",
@@ -134,7 +134,7 @@ func init() {
 	proxyCmd.Flags().DurationVar(&remoteAuthTimeout, "remote-auth-timeout", 30*time.Second,
 		"Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s)")
 	proxyCmd.Flags().IntVar(&remoteAuthCallbackPort, "remote-auth-callback-port", 8666,
-		"Port for OAuth callback server during remote authentication (default: 8666)")
+		"ProxyPort for OAuth callback server during remote authentication (default: 8666)")
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {

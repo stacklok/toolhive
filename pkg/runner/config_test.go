@@ -134,9 +134,9 @@ func TestRunConfig_WithPorts(t *testing.T) {
 				assert.Equal(t, tc.config, result, "WithPorts should return the same config instance")
 
 				if tc.port == 0 {
-					assert.Greater(t, tc.config.Port, 0, "Port should be auto-selected")
+					assert.Greater(t, tc.config.Port, 0, "ProxyPort should be auto-selected")
 				} else {
-					assert.Equal(t, tc.port, tc.config.Port, "Port should be set correctly")
+					assert.Equal(t, tc.port, tc.config.Port, "ProxyPort should be set correctly")
 				}
 
 				if tc.config.Transport == types.TransportTypeSSE || tc.config.Transport == types.TransportTypeStreamableHTTP {
@@ -652,7 +652,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 
 	// Check transport settings
 	assert.Equal(t, types.TransportTypeSSE, config.Transport, "Transport should be set to SSE")
-	assert.Equal(t, port, config.Port, "Port should match")
+	assert.Equal(t, port, config.Port, "ProxyPort should match")
 	assert.Equal(t, targetPort, config.TargetPort, "TargetPort should match")
 
 	// Check OIDC config
@@ -705,7 +705,7 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 	assert.Equal(t, originalConfig.ContainerName, readConfig.ContainerName, "ContainerName should match")
 	assert.Equal(t, originalConfig.BaseName, readConfig.BaseName, "BaseName should match")
 	assert.Equal(t, originalConfig.Transport, readConfig.Transport, "Transport should match")
-	assert.Equal(t, originalConfig.Port, readConfig.Port, "Port should match")
+	assert.Equal(t, originalConfig.Port, readConfig.Port, "ProxyPort should match")
 	assert.Equal(t, originalConfig.TargetPort, readConfig.TargetPort, "TargetPort should match")
 	assert.Equal(t, originalConfig.Debug, readConfig.Debug, "Debug should match")
 	assert.Equal(t, originalConfig.ContainerLabels, readConfig.ContainerLabels, "ContainerLabels should match")

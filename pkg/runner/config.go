@@ -234,21 +234,35 @@ func (c *RunConfig) WithTransport(t string) (*RunConfig, error) {
 }
 
 // WithPorts configures the host and target ports
-func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
-	// Select a port for the HTTP proxy (host port)
-	selectedPort, err := networking.FindOrUsePort(port)
-	if err != nil {
-		return c, err
+func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
+	var selectedPort int
+	var err error
+
+	// If the user requested an explicit proxy port, check if it's available.
+	// If not available - treat as an error, since picking a random port here
+	// is going to lead to confusion.
+	if proxyPort != 0 {
+		if !networking.IsAvailable(proxyPort) {
+			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
+		}
+		logger.Debugf("Using requested proxyPort: %d", proxyPort)
+		selectedPort = proxyPort
+	} else {
+		// Otherwise - pick a random available port.
+		selectedPort, err = networking.FindOrUsePort(proxyPort)
+		if err != nil {
+			return c, err
+		}
 	}
 	c.Port = selectedPort
 
-	// Select a target port for the container if using SSE or Streamable HTTP transport
+	// Select a target proxyPort for the container if using SSE or Streamable HTTP transport
 	if c.Transport == types.TransportTypeSSE || c.Transport == types.TransportTypeStreamableHTTP {
 		selectedTargetPort, err := networking.FindOrUsePort(targetPort)
 		if err != nil {
-			return c, fmt.Errorf("target port error: %w", err)
+			return c, fmt.Errorf("target proxyPort error: %w", err)
 		}
-		logger.Infof("Using target port: %d", selectedTargetPort)
+		logger.Infof("Using target proxyPort: %d", selectedTargetPort)
 		c.TargetPort = selectedTargetPort
 	}
 

@@ -36,20 +36,16 @@ setup, no security headaches, no runtime hassles.
 
 ## Why ToolHive?
 
-- **Instant deployment:** Start any MCP server with one command, using Docker or
-  Kubernetes.
+- **Instant deployment:** Start any MCP server with one click or command, using
+  Docker or Kubernetes.
 - **Secure by default:** Every server runs in an isolated container with only
   the permissions it needs. Secrets are managed securely, never in plaintext.
-- **Works everywhere:** Use the CLI for local development, or the Kubernetes
-  Operator for production and scale.
+- **Works everywhere:** Use the UI and CLI for local development, or the
+  Kubernetes Operator for production and scale.
 - **Seamless integration:** ToolHive auto-configures popular clients like GitHub
   Copilot, Cursor, and more.
 
-## Quick links
-
-- 📚 [Documentation](https://docs.stacklok.com/toolhive/)
-- 🚀 [Quickstart guide](https://docs.stacklok.com/toolhive/quickstart)
-- 💬 [Discord](https://discord.gg/stacklok)
+ToolHive is available as a GUI desktop app, CLI, and Kubernetes Operator.
 
 <br>
 </td>
@@ -62,6 +58,15 @@ setup, no security headaches, no runtime hassles.
 </tr>
 </table>
 
+## Quick links
+
+- 📚 [Documentation](https://docs.stacklok.com/toolhive/)
+- 🚀 Quickstart guides:
+  - [Desktop app](https://docs.stacklok.com/toolhive/tutorials/quickstart-ui)
+  - [CLI](https://docs.stacklok.com/toolhive/tutorials/quickstart-cli)
+  - [Kubernetes Operator](https://docs.stacklok.com/toolhive/tutorials/quickstart-k8s)
+- 💬 [Discord](https://discord.gg/stacklok)
+
 ---
 
 ## Contributing
@@ -70,11 +75,22 @@ We welcome contributions and feedback from the community!
 
 - 🐛 [Report issues](https://github.com/stacklok/toolhive/issues)
 - 💬 [Join our Discord](https://discord.gg/stacklok)
-- 🤝 [Contributing guide](./CONTRIBUTING.md)
-- 📖 [Developer guide](./docs/README.md)
 
 If you have ideas, suggestions, or want to get involved, check out our
 contributing guide or open an issue. Join us in making ToolHive even better!
+
+Contribute to the CLI, API, and Kubernetes Operator:
+
+- 🤝 [Contributing guide](./CONTRIBUTING.md)
+- 📖 [Developer guide](./docs/README.md)
+
+Contribute to the desktop UI:
+
+- 🖥️ [Desktop UI repository](https://github.com/stacklok/toolhive-studio)
+
+Contribute to the documentation:
+
+- 📚 [Documentation repository](https://github.com/stacklok/docs-website)
 
 ---
 

@@ -91,6 +91,9 @@ var (
 
 	// Network isolation flag
 	runIsolateNetwork bool
+
+	// Labels flag
+	runLabels []string
 )
 
 func init() {
@@ -223,6 +226,13 @@ func init() {
 			"(comma-separated: ENV1,ENV2)")
 	runCmd.Flags().BoolVar(&runIsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
+	runCmd.Flags().StringArrayVarP(
+		&runLabels,
+		"label",
+		"l",
+		[]string{},
+		"Set labels on the container (format: key=value)",
+	)
 
 }
 
@@ -365,6 +375,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		effectivePort,
 		runTargetPort,
 		runEnv,
+		runLabels,
 		oidcIssuer,
 		oidcAudience,
 		oidcJwksURL,

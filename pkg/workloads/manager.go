@@ -310,6 +310,14 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 		detachedArgs = append(detachedArgs, "--volume", volume)
 	}
 
+	// Add labels if they were provided
+	for key, value := range runConfig.ContainerLabels {
+		// Skip standard ToolHive labels as they will be added automatically
+		if !labels.IsStandardToolHiveLabel(key) {
+			detachedArgs = append(detachedArgs, "--label", fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
 	// Add secrets if they were provided
 	for _, secret := range runConfig.Secrets {
 		detachedArgs = append(detachedArgs, "--secret", secret)

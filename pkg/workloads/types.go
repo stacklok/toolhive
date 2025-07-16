@@ -59,6 +59,8 @@ type Workload struct {
 	StatusContext string `json:"status_context,omitempty"`
 	// CreatedAt is the timestamp when the workload was created.
 	CreatedAt time.Time `json:"created_at"`
+	// Labels are the container labels (excluding standard ToolHive labels)
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // WorkloadFromContainerInfo creates a Workload struct from the runtime container info.
@@ -106,6 +108,14 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 		tType = types.TransportTypeSSE
 	}
 
+	// Filter out standard ToolHive labels to show only user-defined labels
+	userLabels := make(map[string]string)
+	for key, value := range container.Labels {
+		if !labels.IsStandardToolHiveLabel(key) {
+			userLabels[key] = value
+		}
+	}
+
 	// Translate to domain model.
 	return Workload{
 		Name: container.Name,
@@ -118,5 +128,6 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 		StatusContext: container.Status,
 		CreatedAt:     container.Created,
 		Port:          port,
+		Labels:        userLabels,
 	}, nil
 }

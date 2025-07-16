@@ -171,7 +171,7 @@ func printTextServerInfo(name string, server *registry.ImageMetadata) {
 	fmt.Printf("Status: %s\n", server.Status)
 	fmt.Printf("Transport: %s\n", server.Transport)
 	if (server.Transport == "sse" || server.Transport == "streamable-http") && server.TargetPort > 0 {
-		fmt.Printf("Target ProxyPort: %d\n", server.TargetPort)
+		fmt.Printf("Target Port: %d\n", server.TargetPort)
 	}
 	fmt.Printf("Repository URL: %s\n", server.RepositoryURL)
 	fmt.Printf("Has Provenance: %s\n", map[bool]string{true: "Yes", false: "No"}[server.Provenance != nil])
@@ -252,7 +252,7 @@ func printTextServerInfo(name string, server *registry.ImageMetadata) {
 				for i, port := range outbound.AllowPort {
 					ports[i] = fmt.Sprintf("%d", port)
 				}
-				fmt.Printf("    Allow ProxyPort: %s\n", strings.Join(ports, ", "))
+				fmt.Printf("    Allow Port: %s\n", strings.Join(ports, ", "))
 			}
 		}
 	}

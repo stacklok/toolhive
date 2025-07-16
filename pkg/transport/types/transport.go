@@ -23,7 +23,7 @@ type Transport interface {
 	Mode() TransportType
 
 	// Port returns the port used by the transport.
-	Port() int
+	ProxyPort() int
 
 	// Setup prepares the transport for use.
 	// The runtime parameter provides access to container operations.

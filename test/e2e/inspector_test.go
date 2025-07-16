@@ -261,7 +261,7 @@ func (h *inspectorTestHelper) verifyInspectorUIUnavailable() {
 	if response != nil {
 		response.Body.Close()
 	}
-	Expect(err).To(HaveOccurred(), "ProxyPort 6274 should no longer be accessible")
+	Expect(err).To(HaveOccurred(), "Port 6274 should no longer be accessible")
 }
 
 // waitForInspectorCompletion waits for the inspector process to complete or timeout

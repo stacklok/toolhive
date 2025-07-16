@@ -465,7 +465,7 @@ type createRequest struct {
 	Host string `json:"host"`
 	// Command arguments to pass to the container
 	CmdArguments []string `json:"cmd_arguments"`
-	// ProxyPort to expose from the container
+	// Port to expose from the container
 	TargetPort int `json:"target_port"`
 	// Environment variables to set in the container
 	EnvVars []string `json:"env_vars"`

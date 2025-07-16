@@ -37,8 +37,8 @@ func inspectorCommand() *cobra.Command {
 		},
 	}
 
-	inspectorCommand.Flags().IntVarP(&inspectorUIPort, "ui-port", "u", 6274, "ProxyPort to run the MCP Inspector UI on")
-	inspectorCommand.Flags().IntVarP(&inspectorMCPProxyPort, "mcp-proxy-port", "p", 6277, "ProxyPort to run the MCP Proxy on")
+	inspectorCommand.Flags().IntVarP(&inspectorUIPort, "ui-port", "u", 6274, "Port to run the MCP Inspector UI on")
+	inspectorCommand.Flags().IntVarP(&inspectorMCPProxyPort, "mcp-proxy-port", "p", 6277, "Port to run the MCP Proxy on")
 
 	return inspectorCommand
 }

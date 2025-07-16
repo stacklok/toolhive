@@ -245,7 +245,7 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 		if !networking.IsAvailable(proxyPort) {
 			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
 		}
-		logger.Debugf("Using requested proxyPort: %d", proxyPort)
+		logger.Debugf("Using requested port: %d", proxyPort)
 		selectedPort = proxyPort
 	} else {
 		// Otherwise - pick a random available port.
@@ -256,13 +256,13 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	}
 	c.Port = selectedPort
 
-	// Select a target proxyPort for the container if using SSE or Streamable HTTP transport
+	// Select a target port for the container if using SSE or Streamable HTTP transport
 	if c.Transport == types.TransportTypeSSE || c.Transport == types.TransportTypeStreamableHTTP {
 		selectedTargetPort, err := networking.FindOrUsePort(targetPort)
 		if err != nil {
-			return c, fmt.Errorf("target proxyPort error: %w", err)
+			return c, fmt.Errorf("target port error: %w", err)
 		}
-		logger.Infof("Using target proxyPort: %d", selectedTargetPort)
+		logger.Infof("Using target port: %d", selectedTargetPort)
 		c.TargetPort = selectedTargetPort
 	}
 

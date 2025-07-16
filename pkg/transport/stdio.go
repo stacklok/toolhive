@@ -85,8 +85,8 @@ func (*StdioTransport) Mode() types.TransportType {
 	return types.TransportTypeStdio
 }
 
-// Port returns the proxyPort used by the transport.
-func (t *StdioTransport) Port() int {
+// ProxyPort returns the proxy port used by the transport.
+func (t *StdioTransport) ProxyPort() int {
 	return t.proxyPort
 }
 

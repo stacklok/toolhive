@@ -261,7 +261,7 @@ func TestGetPort(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "ProxyPort label missing",
+			name:        "Port label missing",
 			labels:      map[string]string{},
 			expected:    0,
 			expectError: true,

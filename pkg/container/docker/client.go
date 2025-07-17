@@ -41,7 +41,7 @@ const (
 	LabelValueTrue                 = "true"
 )
 
-// Client implements the Runtime interface for Docker (and compatible runtimes)
+// Client implements the Deployer interface for Docker (and compatible runtimes)
 type Client struct {
 	runtimeType  runtime.Type
 	socketPath   string

@@ -42,7 +42,7 @@ const (
 	mcpContainerName = "mcp"
 )
 
-// Client implements the Runtime interface for container operations
+// Client implements the Deployer interface for container operations
 type Client struct {
 	runtimeType runtime.Type
 	client      kubernetes.Interface

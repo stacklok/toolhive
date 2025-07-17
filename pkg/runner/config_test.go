@@ -631,7 +631,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	require.NoError(t, err, "NewRunConfigFromFlags should not return an error")
 
 	assert.NotNil(t, config, "NewRunConfigFromFlags should return a non-nil config")
-	assert.Equal(t, runtime, config.Runtime, "Runtime should match")
+	assert.Equal(t, runtime, config.Deployer, "Deployer should match")
 	assert.Equal(t, targetHost, config.TargetHost, "TargetHost should match")
 	// The metadata args are appended to the command-line args
 	expectedCmdArgs := append([]string{}, cmdArgs...)

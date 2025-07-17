@@ -39,8 +39,8 @@ func NewRunConfigBuilder() *RunConfigBuilder {
 }
 
 // WithRuntime sets the container runtime
-func (b *RunConfigBuilder) WithRuntime(runtime rt.Runtime) *RunConfigBuilder {
-	b.config.Runtime = runtime
+func (b *RunConfigBuilder) WithRuntime(deployer rt.Deployer) *RunConfigBuilder {
+	b.config.Deployer = deployer
 	return b
 }
 

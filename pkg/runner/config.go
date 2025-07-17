@@ -166,6 +166,7 @@ func NewRunConfigFromFlags(
 	port int,
 	targetPort int,
 	envVars []string,
+	runLabels []string,
 	oidcIssuer string,
 	oidcAudience string,
 	oidcJwksURL string,
@@ -204,6 +205,7 @@ func NewRunConfigFromFlags(
 		WithProxyMode(proxyMode).
 		WithTransportAndPorts(mcpTransport, port, targetPort).
 		WithAuditEnabled(enableAudit, auditConfigPath).
+		WithLabels(runLabels).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
 			thvCABundle, jwksAuthTokenFile, jwksAllowPrivateIP).
 		WithTelemetryConfig(otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,

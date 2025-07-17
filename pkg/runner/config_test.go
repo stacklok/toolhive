@@ -607,6 +607,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		port,
 		targetPort,
 		envVars,
+		nil, // labels
 		oidcIssuer,
 		oidcAudience,
 		oidcJwksURL,
@@ -862,6 +863,7 @@ func TestNewRunConfigFromFlags_MetadataOverrides(t *testing.T) {
 				8080, // port
 				tt.userTargetPort,
 				nil, // envVars
+				nil, // labels
 				"",  // oidc params...
 				"",
 				"",
@@ -921,6 +923,7 @@ func TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency(t *testing
 		8080,
 		9000, // This should result in MCP_PORT=9000 in env vars
 		[]string{"USER_VAR=value"},
+		nil,                   // labels
 		"", "", "", "", false, // OIDC params
 		"", "", 0, nil, false, false, nil, // telemetry params
 		false,
@@ -973,6 +976,7 @@ func TestNewRunConfigFromFlags_CmdArgsMetadataPrepending(t *testing.T) {
 		8080,
 		0,
 		nil,
+		nil, // labels
 		"", "", "", "", false,
 		"", "", 0, nil, false, false, nil,
 		false,
@@ -1026,6 +1030,7 @@ func TestNewRunConfigFromFlags_VolumeProcessing(t *testing.T) {
 		8080,
 		0,
 		nil,
+		nil, // labels
 		"", "", "", "", false,
 		"", "", 0, nil, false, false, nil,
 		false,

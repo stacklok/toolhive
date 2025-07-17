@@ -20,13 +20,15 @@ var listCmd = &cobra.Command{
 }
 
 var (
-	listAll    bool
-	listFormat string
+	listAll         bool
+	listFormat      string
+	listLabelFilter []string
 )
 
 func init() {
 	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all workloads (default shows just running)")
 	listCmd.Flags().StringVar(&listFormat, "format", FormatText, "Output format (json, text, or mcpservers)")
+	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
 }
 
 func listCmdFunc(cmd *cobra.Command, _ []string) error {
@@ -38,7 +40,7 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to create status manager: %v", err)
 	}
 
-	workloadList, err := manager.ListWorkloads(ctx, listAll)
+	workloadList, err := manager.ListWorkloads(ctx, listAll, listLabelFilter...)
 	if err != nil {
 		return fmt.Errorf("failed to list workloads: %v", err)
 	}

@@ -22,9 +22,10 @@ thv list [flags]
 ### Options
 
 ```
-  -a, --all             Show all workloads (default shows just running)
-      --format string   Output format (json, text, or mcpservers) (default "text")
-  -h, --help            help for list
+  -a, --all                 Show all workloads (default shows just running)
+      --format string       Output format (json, text, or mcpservers) (default "text")
+  -h, --help                help for list
+  -l, --label stringArray   Filter workloads by labels (format: key=value)
 ```
 
 ### Options inherited from parent commands

@@ -58,6 +58,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --isolate-network                       Isolate the container network from the host (default: false)
       --jwks-allow-private-ip                 Allow JWKS/OIDC endpoints on private IP addresses (use with caution)
       --jwks-auth-token-file string           Path to file containing bearer token for authenticating JWKS/OIDC requests
+  -l, --label stringArray                     Set labels on the container (format: key=value)
       --name string                           Name of the MCP server (auto-generated from image if not provided)
       --oidc-audience string                  Expected audience for the token
       --oidc-client-id string                 OIDC client ID

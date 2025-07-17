@@ -84,7 +84,8 @@ func printMCPServersOutput(workloadList []workloads.Workload) error {
 	for _, c := range workloadList {
 		// Add the MCP server to the map
 		mcpServers[c.Name] = map[string]string{
-			"url": c.URL,
+			"url":  c.URL,
+			"type": c.TransportType.String(),
 		}
 	}
 

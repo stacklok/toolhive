@@ -46,7 +46,7 @@ var (
 	runTransport          string
 	runName               string
 	runHost               string
-	runProxyPort          int
+	runPort               int
 	runTargetPort         int
 	runPermissionProfile  string
 	runEnv                []string
@@ -79,7 +79,7 @@ var (
 func init() {
 	runCmd.Flags().StringVar(&runTransport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
-	runCmd.Flags().IntVar(&runProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
+	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
 	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	if err := runCmd.Flags().MarkDeprecated("port", "use --proxy-port instead"); err != nil {
 		logger.Warnf("Error marking port flag as deprecated: %v", err)
@@ -225,8 +225,8 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Determine effective port value
 	effectivePort := 0
-	if runProxyPort != 0 {
-		effectivePort = runProxyPort
+	if runPort != 0 {
+		effectivePort = runPort
 	}
 
 	// Initialize a new RunConfig with values from command-line flags

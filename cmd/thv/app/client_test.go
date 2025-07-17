@@ -40,6 +40,7 @@ func TestClientRegisterCmd(t *testing.T) {
 	assert.Contains(t, cfg.Clients.RegisteredClients, "vscode", "Client should be registered")
 }
 
+//nolint:paralleltest
 func TestClientRemoveCmd(t *testing.T) {
 	// This test is failing due to a race condition.
 	// We probably should refactor the code to accept a path instead of using the global config path.

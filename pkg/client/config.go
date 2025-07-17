@@ -411,6 +411,10 @@ func validateConfigFileFormat(cf *ConfigFile) error {
 		return fmt.Errorf("failed to read file %s: %w", cf.Path, err)
 	}
 
+	if len(data) == 0 {
+		data = []byte("{}") // Default to an empty JSON object if the file is empty
+	}
+
 	// Default to JSON
 	// we don't care about the contents of the file, we just want to validate that it's valid JSON
 	_, err = hujson.Parse(data)

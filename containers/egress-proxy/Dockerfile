@@ -1,5 +1,5 @@
 # Use Alpine Linux 3.22.0 for minimal footprint
-FROM alpine:3.22.0
+FROM alpine:3.22.1
 
 # Install squid and create necessary directories
 RUN apk add --no-cache squid \

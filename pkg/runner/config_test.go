@@ -134,9 +134,9 @@ func TestRunConfig_WithPorts(t *testing.T) {
 				assert.Equal(t, tc.config, result, "WithPorts should return the same config instance")
 
 				if tc.port == 0 {
-					assert.Greater(t, tc.config.Port, 0, "Port should be auto-selected")
+					assert.Greater(t, tc.config.Port, 0, "Proxy Port should be auto-selected")
 				} else {
-					assert.Equal(t, tc.port, tc.config.Port, "Port should be set correctly")
+					assert.Equal(t, tc.port, tc.config.Port, "Proxy Port should be set correctly")
 				}
 
 				if tc.config.Transport == types.TransportTypeSSE || tc.config.Transport == types.TransportTypeStreamableHTTP {
@@ -607,6 +607,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		port,
 		targetPort,
 		envVars,
+		nil, // labels
 		oidcIssuer,
 		oidcAudience,
 		oidcJwksURL,
@@ -630,7 +631,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	require.NoError(t, err, "NewRunConfigFromFlags should not return an error")
 
 	assert.NotNil(t, config, "NewRunConfigFromFlags should return a non-nil config")
-	assert.Equal(t, runtime, config.Runtime, "Runtime should match")
+	assert.Equal(t, runtime, config.Deployer, "Deployer should match")
 	assert.Equal(t, targetHost, config.TargetHost, "TargetHost should match")
 	// The metadata args are appended to the command-line args
 	expectedCmdArgs := append([]string{}, cmdArgs...)
@@ -652,7 +653,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 
 	// Check transport settings
 	assert.Equal(t, types.TransportTypeSSE, config.Transport, "Transport should be set to SSE")
-	assert.Equal(t, port, config.Port, "Port should match")
+	assert.Equal(t, port, config.Port, "ProxyPort should match")
 	assert.Equal(t, targetPort, config.TargetPort, "TargetPort should match")
 
 	// Check OIDC config
@@ -862,6 +863,7 @@ func TestNewRunConfigFromFlags_MetadataOverrides(t *testing.T) {
 				8080, // port
 				tt.userTargetPort,
 				nil, // envVars
+				nil, // labels
 				"",  // oidc params...
 				"",
 				"",
@@ -921,6 +923,7 @@ func TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency(t *testing
 		8080,
 		9000, // This should result in MCP_PORT=9000 in env vars
 		[]string{"USER_VAR=value"},
+		nil,                   // labels
 		"", "", "", "", false, // OIDC params
 		"", "", 0, nil, false, false, nil, // telemetry params
 		false,
@@ -973,6 +976,7 @@ func TestNewRunConfigFromFlags_CmdArgsMetadataPrepending(t *testing.T) {
 		8080,
 		0,
 		nil,
+		nil, // labels
 		"", "", "", "", false,
 		"", "", 0, nil, false, false, nil,
 		false,
@@ -1026,6 +1030,7 @@ func TestNewRunConfigFromFlags_VolumeProcessing(t *testing.T) {
 		8080,
 		0,
 		nil,
+		nil, // labels
 		"", "", "", "", false,
 		"", "", 0, nil, false, false, nil,
 		false,

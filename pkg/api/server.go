@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -88,6 +89,44 @@ func headersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// updateCheckMiddleware triggers update checks for API usage
+func updateCheckMiddleware() func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			go func() {
+				component, version, uiReleaseBuild := getComponentAndVersionFromRequest(r)
+				versionClient := updates.NewVersionClientForComponent(component, version, uiReleaseBuild)
+
+				updateChecker, err := updates.NewUpdateChecker(versionClient)
+				if err != nil {
+					logger.Warnf("unable to create update client for %s: %s", component, err)
+					return
+				}
+
+				err = updateChecker.CheckLatestVersion()
+				if err != nil {
+					logger.Warnf("could not check for updates for %s: %s", component, err)
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// getComponentAndVersionFromRequest determines the component name, version, and ui release build from the request
+func getComponentAndVersionFromRequest(r *http.Request) (string, string, bool) {
+	clientType := r.Header.Get("X-Client-Type")
+
+	if clientType == "toolhive-studio" {
+		version := r.Header.Get("X-Client-Version")
+		// Checks if the UI is calling from an official release
+		uiReleaseBuild := r.Header.Get("X-Client-Release-Build") == "true"
+		return "UI", version, uiReleaseBuild
+	}
+
+	return "API", "", false
+}
+
 // Serve starts the server on the given address and serves the API.
 // It is assumed that the caller sets up appropriate signal handling.
 // If isUnixSocket is true, address is treated as a UNIX socket path.
@@ -107,6 +146,9 @@ func Serve(
 		middleware.Timeout(middlewareTimeout),
 		headersMiddleware,
 	)
+
+	// Add update check middleware
+	r.Use(updateCheckMiddleware())
 
 	// Add authentication middleware
 	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, false)

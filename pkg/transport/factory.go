@@ -20,16 +20,17 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 	switch config.Type {
 	case types.TransportTypeStdio:
 		tr := NewStdioTransport(
-			config.Host, config.Port, config.Runtime, config.Debug, config.PrometheusHandler, config.Middlewares...)
+			config.Host, config.ProxyPort, config.Deployer, config.Debug, config.PrometheusHandler, config.Middlewares...,
+		)
 		tr.SetProxyMode(config.ProxyMode)
 		return tr, nil
 	case types.TransportTypeSSE:
 		return NewHTTPTransport(
 			types.TransportTypeSSE,
 			config.Host,
-			config.Port,
+			config.ProxyPort,
 			config.TargetPort,
-			config.Runtime,
+			config.Deployer,
 			config.Debug,
 			config.TargetHost,
 			config.PrometheusHandler,
@@ -39,9 +40,9 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 		return NewHTTPTransport(
 			types.TransportTypeStreamableHTTP,
 			config.Host,
-			config.Port,
+			config.ProxyPort,
 			config.TargetPort,
-			config.Runtime,
+			config.Deployer,
 			config.Debug,
 			config.TargetHost,
 			config.PrometheusHandler,

@@ -13,7 +13,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,15 +55,12 @@ type TransparentProxy struct {
 	// Optional Prometheus metrics handler
 	prometheusHandler http.Handler
 
-	// Sessions for managing client connections
-	sessions map[string]session.Session
+	// Sessions for tracking state
+	sessionManager *session.Manager
 
-	// mutex for protecting session access
-	sessionMutex sync.Mutex
+	// If mcp server has been initialized
+	IsServerInitialized bool
 }
-
-// TransparentProxySessionID is the session ID used for the transparent proxy.
-const TransparentProxySessionID = "transparent-proxy-session"
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
 func NewTransparentProxy(
@@ -83,30 +79,36 @@ func NewTransparentProxy(
 		middlewares:       middlewares,
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
-		sessions:          make(map[string]session.Session),
+		sessionManager:    session.NewManager(30 * time.Minute),
 	}
 
 	// Create MCP pinger and health checker
 	mcpPinger := NewMCPPinger(targetURI)
 	proxy.healthChecker = healthcheck.NewHealthChecker("sse", mcpPinger)
 
-	_, err := proxy.CreateSession(TransparentProxySessionID)
-	if err != nil {
-		logger.Errorf("Failed to create session for TransparentProxy: %v", err)
-		return nil
-	}
-
 	return proxy
 }
 
+var sessionIDRegex = regexp.MustCompile(`sessionId=([\w-]+)`)
+
 func (p *TransparentProxy) handleModifyResponse(res *http.Response) error {
-	// Log headers
 	if sid := res.Header.Get("Mcp-Session-Id"); sid != "" {
-		logger.Infof("🆔 Streamable session ID from header: %s", sid)
+		logger.Infof("Detected Mcp-Session-Id header: %s", sid)
+		if _, ok := p.sessionManager.Get(sid); !ok {
+			if _, err := p.sessionManager.AddWithID(sid); err != nil {
+				logger.Errorf("Failed to create session from header %s: %v", sid, err)
+			}
+		}
+		p.IsServerInitialized = true
 	}
 
 	// Handle streaming (SSE)
-	if ct, _, _ := mime.ParseMediaType(res.Header.Get("Content-Type")); ct == "text/event-stream" {
+	ct, _, err := mime.ParseMediaType(res.Header.Get("Content-Type"))
+	if err != nil {
+		logger.Errorf("Failed to parse Content-Type: %v", err)
+		return err
+	}
+	if ct == "text/event-stream" {
 		pr, pw := io.Pipe()
 		orig := res.Body
 		res.Body = pr
@@ -114,22 +116,21 @@ func (p *TransparentProxy) handleModifyResponse(res *http.Response) error {
 		go func() {
 			defer pw.Close()
 			scanner := bufio.NewScanner(orig)
-			re := regexp.MustCompile(`sessionId=([\w-]+)`) // Capture UUID-like IDs
-
 			for scanner.Scan() {
 				line := scanner.Text()
 
-				if matches := re.FindStringSubmatch(line); len(matches) == 2 {
+				if matches := sessionIDRegex.FindStringSubmatch(line); len(matches) == 2 {
 					sessionID := matches[1]
-
-					// set session id for proxy
-					extractedSession, ok := p.GetSession(TransparentProxySessionID)
+					_, ok := p.sessionManager.Get(sessionID)
 					if !ok {
-						logger.Errorf("Failed to get session for TransparentProxy")
-						continue
+						var err error
+						_, err = p.sessionManager.AddWithID(sessionID)
+						if err != nil {
+							logger.Errorf("Failed to create session %s: %v", sessionID, err)
+							continue
+						}
 					}
-					extractedSession.SetIsInitialized(true)
-					extractedSession.SetMCPSessionID(sessionID)
+					p.IsServerInitialized = true
 				}
 				_, err := pw.Write([]byte(line + "\n"))
 				if err != nil {
@@ -140,29 +141,6 @@ func (p *TransparentProxy) handleModifyResponse(res *http.Response) error {
 		return nil
 	}
 
-	// Handle non-streaming (JSON) bodies
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return err
-	}
-	err = res.Body.Close()
-	if err != nil {
-		logger.Errorf("Failed to close response body: %v", err)
-	}
-
-	text := string(body)
-	logger.Infof("HTTP response body: %s", text)
-
-	// Parse sessionId if embedded in JSON
-	rejson := regexp.MustCompile(`"sessionId"\s*:\s*"([\w-]+)"`)
-	if matches := rejson.FindStringSubmatch(text); len(matches) == 2 {
-		sessionID := matches[1]
-		logger.Infof("🆔 Captured sessionId from JSON: %s", sessionID)
-	}
-
-	res.Body = io.NopCloser(bytes.NewReader(body))
-	res.ContentLength = int64(len(body))
-	res.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	return nil
 }
 
@@ -176,13 +154,8 @@ func (p *TransparentProxy) handleAndDetectInitialize(w http.ResponseWriter, r *h
 			logger.Errorf("Error reading request body: %v", err)
 		} else {
 			if bytes.Contains(body, []byte(`"method":"initialize"`)) {
-				logger.Infof("🔧 Detected initialize request to %s", r.URL.Path)
-				extractedSession, ok := p.GetSession(TransparentProxySessionID)
-				if ok {
-					extractedSession.SetIsInitialized(true)
-				} else {
-					logger.Errorf("No session found to mark initialized")
-				}
+				logger.Infof("Detected initialize request to %s", r.URL.Path)
+				p.IsServerInitialized = true
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			r.ContentLength = int64(len(body))
@@ -278,13 +251,7 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			return
 		case <-ticker.C:
 			// Perform health check only if mcp server has been initialized
-			extractedSession, isSession := p.GetSession(TransparentProxySessionID)
-			if !isSession {
-				logger.Errorf("Failed to get session for health check")
-				return
-			}
-
-			if extractedSession.IsInitialized() {
+			if p.IsServerInitialized {
 				alive := p.healthChecker.CheckHealth(parentCtx)
 				if alive.Status != healthcheck.StatusHealthy {
 					logger.Infof("Health check failed for %s; initiating proxy shutdown", p.containerName)
@@ -294,7 +261,7 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 					return
 				}
 			} else {
-				logger.Infof("Session %s is not initialized, cannot start healthcheck", extractedSession.ID())
+				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.containerName)
 			}
 		}
 	}
@@ -346,33 +313,4 @@ func (*TransparentProxy) SendMessageToDestination(_ jsonrpc2.Message) error {
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
 func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.Message) error {
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
-}
-
-// CreateSession creates a new session for the transparent proxy.
-func (p *TransparentProxy) CreateSession(id string) (session.Session, error) {
-	logger.Infof("Creating session with ID: %s", id)
-	if id == "" {
-		return nil, fmt.Errorf("session ID cannot be empty")
-	}
-	p.sessionMutex.Lock()
-	defer p.sessionMutex.Unlock()
-	if _, found := p.sessions[id]; found {
-		return nil, fmt.Errorf("session %s exists", id)
-	}
-	s := &session.ProxySession{Id: id}
-	s.Init()
-	p.sessions[id] = s
-	return s, nil
-}
-
-// GetSession retrieves a session by ID.
-func (p *TransparentProxy) GetSession(id string) (session.Session, bool) {
-	logger.Infof("Retrieving session with ID: %s", id)
-	if id == "" {
-		return nil, false
-	}
-	p.sessionMutex.Lock()
-	defer p.sessionMutex.Unlock()
-	s, ok := p.sessions[id]
-	return s, ok
 }

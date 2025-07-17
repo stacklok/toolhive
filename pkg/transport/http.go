@@ -19,7 +19,8 @@ const (
 	// LocalhostName is the standard hostname for localhost
 	LocalhostName = "localhost"
 	// LocalhostIPv4 is the standard IPv4 address for localhost
-	LocalhostIPv4 = "127.0.0.1"
+	// We use 0.0.0.0 instead of 127.0.0.1 because 127.0.0.1 is not accessible from the host
+	LocalhostIPv4 = "0.0.0.0"
 )
 
 // HTTPTransport implements the Transport interface using Server-Sent/Streamable Events.

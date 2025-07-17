@@ -41,7 +41,9 @@ func TestClientRegisterCmd(t *testing.T) {
 }
 
 func TestClientRemoveCmd(t *testing.T) {
-	t.Parallel()
+	// This test is failing due to a race condition.
+	// We probably should refactor the code to accept a path instead of using the global config path.
+	//t.Parallel()
 	tempDir := t.TempDir()
 	os.Setenv("XDG_CONFIG_HOME", tempDir)
 

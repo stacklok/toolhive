@@ -100,13 +100,14 @@ func (p *TransparentProxy) handleModifyResponse(res *http.Response) error {
 			}
 		}
 		p.IsServerInitialized = true
+		return nil
 	}
 
 	// Handle streaming (SSE)
 	ct, _, err := mime.ParseMediaType(res.Header.Get("Content-Type"))
 	if err != nil {
-		logger.Errorf("Failed to parse Content-Type: %v", err)
-		return err
+		logger.Warnf("Invalid Content-Type header, defaulting behavior: %v", err)
+		ct = "" // or choose a fallback
 	}
 	if ct == "text/event-stream" {
 		pr, pw := io.Pipe()

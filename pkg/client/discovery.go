@@ -1,12 +1,11 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-
-	"github.com/stacklok/toolhive/pkg/config"
 )
 
 // MCPClientStatus represents the status of a supported MCP client
@@ -23,6 +22,18 @@ type MCPClientStatus struct {
 
 // GetClientStatus returns the installation status of all supported MCP clients
 func GetClientStatus() ([]MCPClientStatus, error) {
+	// Create a temporary manager to access config
+	ctx := context.Background()
+	manager, err := NewManager(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create manager: %w", err)
+	}
+
+	return GetClientStatusWithManager(manager)
+}
+
+// GetClientStatusWithManager returns the installation status of all supported MCP clients using the provided manager
+func GetClientStatusWithManager(manager Manager) ([]MCPClientStatus, error) {
 	var statuses []MCPClientStatus
 
 	// Get home directory
@@ -32,7 +43,11 @@ func GetClientStatus() ([]MCPClientStatus, error) {
 	}
 
 	// Get app configuration to check for registered clients
-	appConfig := config.GetConfig()
+	appConfig, err := manager.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config: %w", err)
+	}
+
 	registeredClients := make(map[string]bool)
 
 	// Create a map of registered clients for quick lookup

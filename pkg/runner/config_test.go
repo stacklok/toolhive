@@ -486,14 +486,14 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 				Name:            "test-server",
 				Image:           "test-image",
 				Transport:       types.TransportTypeSSE,
-				Port:            8080,
+				Port:            60000,
 				ContainerLabels: map[string]string{},
 			},
 			expected: map[string]string{
 				"toolhive":           "true",
 				"toolhive-name":      "test-server",
 				"toolhive-transport": "sse",
-				"toolhive-port":      "8080",
+				"toolhive-port":      "60000",
 				"toolhive-tool-type": "mcp",
 			},
 		},
@@ -575,7 +575,7 @@ func TestNewRunConfigFromFlags(t *testing.T) { //nolint:paralleltest
 	permissionProfile := permissions.ProfileNone
 	targetHost := "localhost"
 	mcpTransport := "sse"
-	port := 8080
+	proxyPort := 60000
 	targetPort := 9000
 	envVars := []string{"TEST_ENV=test_value"}
 	oidcIssuer := "https://issuer.example.com"
@@ -602,7 +602,7 @@ func TestNewRunConfigFromFlags(t *testing.T) { //nolint:paralleltest
 		permissionProfile,
 		targetHost,
 		mcpTransport,
-		port,
+		proxyPort,
 		targetPort,
 		envVars,
 		nil, // labels
@@ -651,7 +651,7 @@ func TestNewRunConfigFromFlags(t *testing.T) { //nolint:paralleltest
 
 	// Check transport settings
 	assert.Equal(t, types.TransportTypeSSE, config.Transport, "Transport should be set to SSE")
-	assert.Equal(t, port, config.Port, "ProxyPort should match")
+	assert.Equal(t, proxyPort, config.Port, "ProxyPort should match")
 	assert.Equal(t, targetPort, config.TargetPort, "TargetPort should match")
 
 	// Check OIDC config
@@ -675,7 +675,7 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 		ContainerName: "test-container",
 		BaseName:      "test-base",
 		Transport:     types.TransportTypeSSE,
-		Port:          8080,
+		Port:          60000,
 		TargetPort:    9000,
 		Debug:         true,
 		ContainerLabels: map[string]string{
@@ -918,7 +918,7 @@ func TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency(t *testing
 		permissions.ProfileNone,
 		"localhost",
 		"sse", // This should result in MCP_TRANSPORT=sse in env vars
-		8080,
+		0,
 		9000, // This should result in MCP_PORT=9000 in env vars
 		[]string{"USER_VAR=value"},
 		nil,                   // labels
@@ -971,7 +971,7 @@ func TestNewRunConfigFromFlags_CmdArgsMetadataPrepending(t *testing.T) {
 		permissions.ProfileNone,
 		"localhost",
 		"",
-		8080,
+		0,
 		0,
 		nil,
 		nil, // labels
@@ -1025,7 +1025,7 @@ func TestNewRunConfigFromFlags_VolumeProcessing(t *testing.T) {
 		permissions.ProfileNone, // Start with none profile
 		"localhost",
 		"",
-		8080,
+		0,
 		0,
 		nil,
 		nil, // labels

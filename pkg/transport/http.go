@@ -21,6 +21,8 @@ const (
 	LocalhostName = "localhost"
 	// LocalhostIPv4 is the standard IPv4 address for localhost
 	LocalhostIPv4 = "127.0.0.1"
+	// TargetHostIPv4 is the standard IPv4 address for the target host
+	TargetHostIPv4 = "0.0.0.0"
 )
 
 // HTTPTransport implements the Transport interface using Server-Sent/Streamable Events.
@@ -66,9 +68,9 @@ func NewHTTPTransport(
 		host = LocalhostIPv4
 	}
 
-	// If targetHost is not specified, default to localhost
+	// If targetHost is not specified, default to bind to all interfaces
 	if targetHost == "" {
-		targetHost = LocalhostIPv4
+		targetHost = TargetHostIPv4
 	}
 
 	return &HTTPTransport{

@@ -95,7 +95,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(
 		&config.TargetHost,
 		"target-host",
-		transport.LocalhostIPv4,
+		transport.TargetHostIPv4,
 		"Host to forward traffic to (only applicable to SSE or Streamable HTTP transport)")
 	cmd.Flags().StringVar(
 		&config.PermissionProfile,

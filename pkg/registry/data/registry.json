@@ -4,7 +4,7 @@
   "servers": {
     "atlassian": {
       "args": [],
-      "description": "Model Context Protocol (MCP) server for Atlassian products (Confluence and Jira). This integration supports both Confluence \u0026 Jira Cloud and Server/Data Center deployments.",
+      "description": "Connect to Atlassian products like Confluence, Jira Cloud and Server/Data deployments.",
       "env_vars": [
         {
           "description": "Confluence URL (e.g., https://your-domain.atlassian.net/wiki)",
@@ -439,7 +439,7 @@
       "args": [
         "http"
       ],
-      "description": "Connect to your Elasticsearch data directly from any MCP Client.",
+      "description": "Connect to your Elasticsearch data.",
       "env_vars": [
         {
           "description": "Your Elasticsearch instance URL",
@@ -576,7 +576,7 @@
     },
     "fetch": {
       "args": [],
-      "description": "A Model Context Protocol server that provides web content fetching capabilities",
+      "description": "Allows you to fetch content from the web",
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/gofetch/server:latest",
       "metadata": {
@@ -626,7 +626,7 @@
     },
     "filesystem": {
       "args": [],
-      "description": "Node.js server implementing Model Context Protocol (MCP) for filesystem operations.",
+      "description": "Allows you to do filesystem operations.",
       "env_vars": [],
       "image": "mcp/filesystem:latest",
       "metadata": {
@@ -776,7 +776,7 @@
     },
     "git": {
       "args": [],
-      "description": "A Model Context Protocol server for Git repository interaction and automation",
+      "description": "Provides support for interacting with Git repositories",
       "env_vars": [],
       "image": "mcp/git:latest",
       "metadata": {
@@ -827,7 +827,7 @@
     },
     "github": {
       "args": [],
-      "description": "The GitHub MCP Server provides seamless integration with GitHub APIs, enabling advanced automation and interaction capabilities for developers and tools",
+      "description": "Provides integration with GitHub's APIs",
       "env_vars": [
         {
           "description": "GitHub personal access token with appropriate permissions",
@@ -921,7 +921,7 @@
     },
     "grafana": {
       "args": [],
-      "description": "A Model Context Protocol (MCP) server for Grafana that provides access to your Grafana instance and the surrounding ecosystem, enabling dashboard search, datasource queries, alerting management, incident response, and Sift investigations.",
+      "description": "Provides access to your Grafana instance and the surrounding ecosystem, enabling dashboard search, datasource queries, alerting management, incident response, and Sift investigations.",
       "env_vars": [
         {
           "description": "URL of the Grafana instance to connect to",
@@ -1020,7 +1020,7 @@
     },
     "hass-mcp": {
       "args": [],
-      "description": "A Model Context Protocol (MCP) server for Home Assistant integration with Claude and other LLMs, enabling direct interaction with smart home devices, sensors, and automations.",
+      "description": "Integrates Home Assistant with LLM applications, enabling direct interaction with smart home devices, sensors, and automations.",
       "env_vars": [
         {
           "description": "Home Assistant instance URL (e.g. http://homeassistant.local:8123)",
@@ -1083,7 +1083,7 @@
     },
     "k8s": {
       "args": [],
-      "description": "MKP is a Model Context Protocol (MCP) server for Kubernetes that allows LLM-powered applications to interact with Kubernetes clusters.",
+      "description": "Allows LLM-powered applications to interact with Kubernetes clusters.",
       "env_vars": [
         {
           "description": "Path to the kubeconfig file for Kubernetes API authentication (mounted into the container with --volume)",
@@ -1140,7 +1140,7 @@
     },
     "memory": {
       "args": [],
-      "description": "A basic implementation of persistent memory using a local knowledge graph. This lets Claude remember information about the user across chats.",
+      "description": "Provides persistent memory to an LLMs application for storing information about the user across chats. Implemented using a local knowledge graph.",
       "env_vars": [
         {
           "description": "Path to the memory storage JSON file (default: memory.json in the server directory)",
@@ -1194,7 +1194,7 @@
     },
     "mongodb": {
       "args": [],
-      "description": "A Model Context Protocol server for interacting with MongoDB Databases and MongoDB Atlas.",
+      "description": "Provides support for interacting with MongoDB Databases and MongoDB Atlas.",
       "env_vars": [
         {
           "description": "MongoDB connection string for direct database connections (optional, if not set, you'll need to call the connect tool before interacting with MongoDB data)",
@@ -1327,7 +1327,7 @@
         "--sse-address",
         ":8001"
       ],
-      "description": "A Model Context Protocol server for NetBird, enabling management of your NetBird network.",
+      "description": "Enables management of an NetBird network.",
       "env_vars": [
         {
           "description": "NetBird API token for authentication",
@@ -1389,7 +1389,7 @@
     },
     "notion": {
       "args": [],
-      "description": "Official Notion MCP server.",
+      "description": "Provides integration with Notion.",
       "env_vars": [
         {
           "description": "HTTP headers for Notion API requests in JSON format. Example: {\"Authorization\":\"Bearer ntn_****\",\"Notion-Version\":\"2022-06-28\"}",
@@ -1451,7 +1451,7 @@
     },
     "oci-registry": {
       "args": [],
-      "description": "The OCI Registry MCP Server enables secure and seamless querying of OCI container registries, providing tools for image introspection, tag discovery, and manifest/config retrieval.",
+      "description": "Enables secure and seamless querying of OCI container registries, providing tools for image introspection, tag discovery, and manifest/config retrieval.",
       "env_vars": [
         {
           "description": "Bearer token for OCI registry authentication",
@@ -1521,7 +1521,7 @@
     },
     "osv": {
       "args": [],
-      "description": "An MCP (Model Context Protocol) server that provides access to the OSV (Open Source Vulnerabilities) database. This server allows LLM-powered applications to query the OSV database for vulnerability information about packages and commits.",
+      "description": "Provides access to the OSV (Open Source Vulnerabilities) database. Allows LLM-powered applications to query the OSV database for vulnerability information about packages and commits.",
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/osv-mcp/server:latest",
       "metadata": {
@@ -1575,7 +1575,7 @@
     },
     "perplexity-ask": {
       "args": [],
-      "description": "An MCP server implementation that integrates Perplexity AI's Sonar API for live web searches, in-depth research, and reasoning tasks.",
+      "description": "Integrates Perplexity AI's Sonar API for live web searches, in-depth research, and reasoning tasks.",
       "env_vars": [
         {
           "description": "Perplexity API key",
@@ -1625,7 +1625,7 @@
         "--port",
         "8931"
       ],
-      "description": "A Model Context Protocol (MCP) server that provides browser automation capabilities using Playwright",
+      "description": "Provides browser automation capabilities using Playwright",
       "env_vars": [],
       "image": "mcr.microsoft.com/playwright/mcp",
       "metadata": {
@@ -1687,7 +1687,7 @@
     },
     "redis": {
       "args": [],
-      "description": "A Model Context Protocol server that provides access to Redis databases. This server enables LLMs to interact with Redis key-value stores through a set of standardized tools.",
+      "description": "Enables LLMs to interact with Redis key-value databases through a set of standardized tools.",
       "env_vars": [
         {
           "description": "Redis IP or hostname (default \"127.0.0.1\")",
@@ -1840,7 +1840,7 @@
         "--transport",
         "sse"
       ],
-      "description": "An MCP server for using Semgrep to scan code for security vulnerabilities. Semgrep is a fast, deterministic static analysis tool that semantically understands many languages and comes with over 5,000 rules.",
+      "description": "Allows you to scan code for security vulnerabilities using Semgrep, a fast, deterministic static analysis tool that semantically understands many languages and comes with over 5,000 rules.",
       "env_vars": [
         {
           "description": "Token for connecting to Semgrep AppSec Platform",
@@ -1898,7 +1898,7 @@
     },
     "sequentialthinking": {
       "args": [],
-      "description": "MCP server enabling dynamic problem-solving with a structured, reflective approach that can adapt and evolve as understanding deepens.",
+      "description": "Enables dynamic problem-solving with a structured, reflective approach that can adapt and evolve as understanding deepens.",
       "env_vars": [],
       "image": "mcp/sequentialthinking:latest",
       "metadata": {
@@ -1980,7 +1980,7 @@
     },
     "terraform": {
       "args": [],
-      "description": "MCP Server for providing seamless integration with Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.",
+      "description": "Provides integration with the Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.",
       "env_vars": [],
       "image": "hashicorp/terraform-mcp-server:latest",
       "metadata": {
@@ -2031,7 +2031,7 @@
     },
     "time": {
       "args": [],
-      "description": "MCP server for time info and IANA timezone conversions with auto system timezone detection.",
+      "description": "Provides time information and IANA timezone conversions with auto system timezone detection.",
       "env_vars": [],
       "image": "mcp/time:latest",
       "metadata": {

@@ -9,61 +9,76 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
-const (
-	// defaultSecretsProviderName is the name of the default secrets provider
-	defaultSecretsProviderName = "default"
-)
+const defaultSecretsProviderName = "default"
 
-// SecretsRoutes defines the routes for the secrets API.
-type SecretsRoutes struct{}
+// SecretsRoutes handles secrets-related HTTP routes
+type SecretsRoutes struct {
+	manager client.Manager
+}
 
-// SecretsRouter creates a new router for the secrets API.
+// NewSecretsRoutes creates a new SecretsRoutes instance with a manager
+func NewSecretsRoutes(manager client.Manager) *SecretsRoutes {
+	return &SecretsRoutes{
+		manager: manager,
+	}
+}
+
+// SecretsRouter creates a new HTTP router for secrets endpoints
 func SecretsRouter() http.Handler {
-	routes := SecretsRoutes{}
+	// Create a manager for the API routes
+	manager, err := client.NewManager(context.Background())
+	if err != nil {
+		// If we can't create a manager, we'll use a fallback approach
+		// This maintains backward compatibility
+		return createSecretsRouterWithFallback()
+	}
 
+	return createSecretsRouter(NewSecretsRoutes(manager))
+}
+
+// createSecretsRouterWithFallback creates a router that uses direct config access as fallback
+func createSecretsRouterWithFallback() http.Handler {
+	// This maintains backward compatibility by using direct config access
+	// TODO: Remove this once all code is migrated to manager pattern
+	return createSecretsRouter(&SecretsRoutes{manager: nil})
+}
+
+// createSecretsRouter creates the actual router with the given secrets routes
+func createSecretsRouter(s *SecretsRoutes) http.Handler {
 	r := chi.NewRouter()
 
-	// Setup secrets provider
-	r.Post("/", routes.setupSecretsProvider)
-
-	// Default provider routes
-	r.Route("/default", func(r chi.Router) {
-		r.Get("/", routes.getSecretsProvider)
-		r.Route("/keys", func(r chi.Router) {
-			r.Get("/", routes.listSecrets)
-			r.Post("/", routes.createSecret)
-			r.Put("/{key}", routes.updateSecret)
-			r.Delete("/{key}", routes.deleteSecret)
-		})
-	})
+	r.Post("/", s.setupSecretsProvider)
+	r.Get("/", s.getSecretsProvider)
+	r.Get("/keys", s.listSecrets)
+	r.Post("/keys", s.createSecret)
+	r.Put("/keys/{key}", s.updateSecret)
+	r.Delete("/keys/{key}", s.deleteSecret)
 
 	return r
 }
 
-// nolint:gocyclo //TODO refactor this method to use common Secrets management functions
 // setupSecretsProvider
 //
-//	@Summary		Setup or reconfigure secrets provider
-//	@Description	Setup the secrets provider with the specified type and configuration.
-//	Can be used to initially configure or reconfigure an existing provider.
+//	@Summary		Setup secrets provider
+//	@Description	Initialize a secrets provider (encrypted, 1password, or none)
 //	@Tags			secrets
 //	@Accept			json
 //	@Produce		json
-//	@Param			request	body		setupSecretsRequest	true	"Setup secrets provider request"
+//	@Param			request	body		setupSecretsRequest	true	"Secrets provider setup request"
 //	@Success		201		{object}	setupSecretsResponse
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		500		{string}	string	"Internal Server Error"
-//	@Router			/api/v1beta/secrets [post]
-func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Request) {
+//	@Router			/api/v1beta/secrets/default [post]
+func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Request) {
 	var req setupSecretsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logger.Errorf("Failed to decode request body: %v", err)
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
 
@@ -87,7 +102,20 @@ func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Check current secrets provider configuration for appropriate messaging
-	cfg := config.GetConfig()
+	var cfg *config.Config
+	var err error
+	if s.manager != nil {
+		cfg, err = s.manager.GetConfig()
+		if err != nil {
+			logger.Errorf("Failed to get configuration: %v", err)
+			http.Error(w, "Failed to get configuration", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Fallback to direct config access for backward compatibility
+		cfg = config.GetConfig()
+	}
+
 	isReconfiguration := false
 	isInitialSetup := !cfg.Secrets.SetupCompleted
 	if cfg.Secrets.SetupCompleted {
@@ -157,10 +185,18 @@ func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Update the secrets provider type and mark setup as completed
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.Secrets.ProviderType = string(providerType)
-		c.Secrets.SetupCompleted = true
-	})
+	if s.manager != nil {
+		err = s.manager.UpdateSecretsConfig(func(secrets *config.Secrets) {
+			secrets.ProviderType = string(providerType)
+			secrets.SetupCompleted = true
+		})
+	} else {
+		// Fallback to direct config update for backward compatibility
+		err = config.UpdateConfig(func(c *config.Config) {
+			c.Secrets.ProviderType = string(providerType)
+			c.Secrets.SetupCompleted = true
+		})
+	}
 	if err != nil {
 		logger.Errorf("Failed to update configuration: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to update configuration: %v", err), http.StatusInternalServerError)
@@ -199,7 +235,19 @@ func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Reques
 //	@Failure		500	{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets/default [get]
 func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, _ *http.Request) {
-	cfg := config.GetConfig()
+	var cfg *config.Config
+	var err error
+	if s.manager != nil {
+		cfg, err = s.manager.GetConfig()
+		if err != nil {
+			logger.Errorf("Failed to get configuration: %v", err)
+			http.Error(w, "Failed to get configuration", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Fallback to direct config access for backward compatibility
+		cfg = config.GetConfig()
+	}
 
 	// Check if secrets provider is setup
 	if !cfg.Secrets.SetupCompleted {
@@ -500,8 +548,18 @@ func (s *SecretsRoutes) deleteSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 // getSecretsManager is a helper function to get the secrets manager
-func (*SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
-	cfg := config.GetConfig()
+func (s *SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
+	var cfg *config.Config
+	var err error
+	if s.manager != nil {
+		cfg, err = s.manager.GetConfig()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Fallback to direct config access for backward compatibility
+		cfg = config.GetConfig()
+	}
 
 	// Check if secrets setup has been completed
 	if !cfg.Secrets.SetupCompleted {

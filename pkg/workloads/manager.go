@@ -18,7 +18,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/client"
-	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
@@ -59,6 +58,7 @@ type Manager interface {
 type defaultManager struct {
 	runtime  rt.Runtime
 	statuses StatusManager
+	manager  client.Manager
 }
 
 // ErrWorkloadNotFound is returned when a container cannot be found by name.
@@ -79,24 +79,59 @@ const (
 // characters, hyphens, underscores, and dots.
 var workloadNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
-// NewManager creates a new container manager instance.
+// noopStatusManager is a no-op implementation of StatusManager for fallback cases
+type noopStatusManager struct{}
+
+func (*noopStatusManager) CreateWorkloadStatus(_ context.Context, _ string) error { return nil }
+func (*noopStatusManager) GetWorkloadStatus(_ context.Context, _ string) (*WorkloadStatus, string, error) {
+	return nil, "", nil
+}
+func (*noopStatusManager) SetWorkloadStatus(_ context.Context, _ string, _ WorkloadStatus, _ string) {
+}
+func (*noopStatusManager) DeleteWorkloadStatus(_ context.Context, _ string) error { return nil }
+
+// NewManager creates a new workload manager
 func NewManager(ctx context.Context) (Manager, error) {
+	// Create a manager for config access
+	manager, err := client.NewManager(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create client manager: %w", err)
+	}
+
 	runtime, err := ct.NewFactory().Create(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create runtime: %w", err)
 	}
+
+	statuses := NewStatusManagerFromRuntime(runtime)
 
 	return &defaultManager{
 		runtime:  runtime,
-		statuses: NewStatusManagerFromRuntime(runtime),
+		statuses: statuses,
+		manager:  manager,
 	}, nil
 }
 
-// NewManagerFromRuntime creates a new container manager instance from an existing runtime.
+// NewManagerFromRuntime creates a new workload manager from an existing runtime
 func NewManagerFromRuntime(runtime rt.Runtime) Manager {
+	// Create a manager for config access
+	manager, err := client.NewManager(context.Background())
+	if err != nil {
+		// If we can't create a manager, we'll use a fallback approach
+		// This maintains backward compatibility
+		return &defaultManager{
+			runtime:  runtime,
+			statuses: &noopStatusManager{},
+			manager:  nil,
+		}
+	}
+
+	statuses := NewStatusManagerFromRuntime(runtime)
+
 	return &defaultManager{
 		runtime:  runtime,
-		statuses: NewStatusManagerFromRuntime(runtime),
+		statuses: statuses,
+		manager:  manager,
 	}
 }
 
@@ -235,7 +270,16 @@ func (d *defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 func validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig) error {
 	// If there are run secrets, validate them
 	if len(runConfig.Secrets) > 0 {
-		cfg := config.GetConfig()
+		// Create a manager for config access
+		manager, err := client.NewManager(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to create client manager: %w", err)
+		}
+
+		cfg, err := manager.GetConfig()
+		if err != nil {
+			return fmt.Errorf("failed to get configuration: %w", err)
+		}
 
 		providerType, err := cfg.Secrets.GetProviderType()
 		if err != nil {
@@ -708,8 +752,21 @@ func (d *defaultManager) findContainerByName(ctx context.Context, name string) (
 }
 
 func shouldRemoveClientConfig() bool {
-	c := config.GetConfig()
-	return len(c.Clients.RegisteredClients) > 0
+	// Create a manager for config access
+	manager, err := client.NewManager(context.Background())
+	if err != nil {
+		// If we can't create a manager, assume we should remove config
+		// This maintains backward compatibility
+		return true
+	}
+
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		// If we can't get config, assume we should remove config
+		return true
+	}
+
+	return len(cfg.Clients.RegisteredClients) > 0
 }
 
 // TODO: Move to dedicated config management interface.
@@ -764,8 +821,23 @@ func needSecretsPassword(secretOptions []string) bool {
 	if len(secretOptions) == 0 {
 		return false
 	}
+
+	// Create a manager for config access
+	manager, err := client.NewManager(context.Background())
+	if err != nil {
+		// If we can't create a manager, assume encrypted type
+		// This maintains backward compatibility
+		return true
+	}
+
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		// If we can't get config, assume encrypted type
+		return true
+	}
+
 	// Ignore err - if the flag is not set, it's not needed.
-	providerType, _ := config.GetConfig().Secrets.GetProviderType()
+	providerType, _ := cfg.Secrets.GetProviderType()
 	return providerType == secrets.EncryptedType
 }
 

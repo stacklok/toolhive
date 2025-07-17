@@ -8,7 +8,7 @@ import (
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
-	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -147,7 +147,20 @@ func resolveCACertPath(flagValue string) string {
 	}
 
 	// Otherwise, check configuration
-	cfg := config.GetConfig()
+	// Create a manager for config access
+	manager, err := client.NewManager(context.Background())
+	if err != nil {
+		// If we can't create a manager, return empty string
+		// This maintains backward compatibility
+		return ""
+	}
+
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		// If we can't get config, return empty string
+		return ""
+	}
+
 	if cfg.CACertificatePath != "" {
 		logger.Debugf("Using configured CA certificate: %s", cfg.CACertificatePath)
 		return cfg.CACertificatePath

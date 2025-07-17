@@ -14,23 +14,41 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport"
 )
 
+// ClientStatus represents the status of a client
+type ClientStatus struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	ConfigPath string `json:"config_path,omitempty"`
+}
+
 // Client represents a registered ToolHive client.
 type Client struct {
 	Name MCPClient `json:"name"`
 }
 
-// Manager is the interface for managing registered ToolHive clients.
+// Manager defines the interface for managing MCP clients
 type Manager interface {
-	// ListClients returns a list of all registered.
-	ListClients() ([]Client, error)
-	// RegisterClients registers multiple clients with ToolHive.
-	RegisterClients(ctx context.Context, clients []Client) error
-	// UnregisterClients unregisters multiple clients from ToolHive.
-	UnregisterClients(ctx context.Context, clients []Client) error
-	// GetConfig returns a copy of the current configuration
+	// GetConfig returns the current configuration
 	GetConfig() (*config.Config, error)
-	// SetConfig updates the configuration with the provided config
+	// SetConfig updates the configuration and persists it to disk
 	SetConfig(cfg *config.Config) error
+
+	// Config update methods for specific sections
+	UpdateConfig(updateFn func(*config.Config)) error
+	UpdateOtelConfig(updateFn func(*config.OpenTelemetryConfig)) error
+	UpdateSecretsConfig(updateFn func(*config.Secrets)) error
+	UpdateClientsConfig(updateFn func(*config.Clients)) error
+
+	// Client management methods
+	ListClients() ([]Client, error)
+	RegisterClients(ctx context.Context, clients []Client) error
+	UnregisterClients(ctx context.Context, clients []Client) error
+	ListRegisteredClients(ctx context.Context) ([]string, error)
+	GetClientStatus(ctx context.Context, clientType string) (*ClientStatus, error)
+	SetupClient(ctx context.Context, clientType string) error
+
+	// ConfigPath returns the config path used by the manager (for debugging)
+	ConfigPath() string
 }
 
 type defaultManager struct {
@@ -281,6 +299,73 @@ func (m *defaultManager) removeMCPsFromClient(ctx context.Context, clientType MC
 	}
 
 	return nil
+}
+
+// UpdateConfig updates the configuration using the provided function
+func (m *defaultManager) UpdateConfig(updateFn func(*config.Config)) error {
+	if m.configPath != "" {
+		return config.UpdateConfigAtPath(m.configPath, updateFn)
+	}
+	return config.UpdateConfig(updateFn)
+}
+
+// UpdateOtelConfig updates the OpenTelemetry configuration
+func (m *defaultManager) UpdateOtelConfig(updateFn func(*config.OpenTelemetryConfig)) error {
+	return m.UpdateConfig(func(cfg *config.Config) {
+		updateFn(&cfg.OTEL)
+	})
+}
+
+// UpdateSecretsConfig updates the secrets configuration
+func (m *defaultManager) UpdateSecretsConfig(updateFn func(*config.Secrets)) error {
+	return m.UpdateConfig(func(cfg *config.Config) {
+		updateFn(&cfg.Secrets)
+	})
+}
+
+// UpdateClientsConfig updates the clients configuration
+func (m *defaultManager) UpdateClientsConfig(updateFn func(*config.Clients)) error {
+	return m.UpdateConfig(func(cfg *config.Config) {
+		updateFn(&cfg.Clients)
+	})
+}
+
+// ListRegisteredClients returns a list of registered client names
+func (m *defaultManager) ListRegisteredClients(ctx context.Context) ([]string, error) {
+	cfg, err := m.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+	return cfg.Clients.RegisteredClients, nil
+}
+
+// GetClientStatus returns the status of a specific client
+func (m *defaultManager) GetClientStatus(ctx context.Context, clientType string) (*ClientStatus, error) {
+	cfg, err := m.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if client is registered
+	status := "unregistered"
+	for _, registeredClient := range cfg.Clients.RegisteredClients {
+		if registeredClient == clientType {
+			status = "registered"
+			break
+		}
+	}
+
+	return &ClientStatus{
+		Name:       clientType,
+		Status:     status,
+		ConfigPath: m.configPath,
+	}, nil
+}
+
+// SetupClient sets up a client (placeholder implementation)
+func (m *defaultManager) SetupClient(ctx context.Context, clientType string) error {
+	// This is a placeholder - actual implementation would depend on client-specific setup
+	return fmt.Errorf("client setup not implemented for %s", clientType)
 }
 
 // ConfigPath returns the config path used by the manager (for debugging)

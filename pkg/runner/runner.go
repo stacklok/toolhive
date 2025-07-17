@@ -11,7 +11,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
-	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
@@ -142,7 +141,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	// NOTE: This MUST happen after we save the run config to avoid storing
 	// the secrets in the state store.
 	if len(r.Config.Secrets) > 0 {
-		cfg := config.GetConfig()
+		// Create a manager for config access
+		manager, err := client.NewManager(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to create client manager: %w", err)
+		}
+
+		cfg, err := manager.GetConfig()
+		if err != nil {
+			return fmt.Errorf("failed to get configuration: %w", err)
+		}
 
 		providerType, err := cfg.Secrets.GetProviderType()
 		if err != nil {

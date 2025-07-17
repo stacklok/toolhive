@@ -80,11 +80,15 @@ func (m *defaultManager) SetConfig(cfg *config.Config) error {
 	// Update the in-memory config
 	m.config = cfg
 
-	// Persist to disk
+	// Persist to disk using the locking mechanism
 	if m.configPath != "" {
-		return cfg.SaveToPath(m.configPath)
+		return config.UpdateConfigAtPath(m.configPath, func(c *config.Config) {
+			*c = *cfg
+		})
 	}
-	return cfg.Save()
+	return config.UpdateConfig(func(c *config.Config) {
+		*c = *cfg
+	})
 }
 
 func (m *defaultManager) ListClients() ([]Client, error) {

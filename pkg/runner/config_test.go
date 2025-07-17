@@ -554,7 +554,9 @@ func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadat
 	return suppliedEnvVars, nil
 }
 
-func TestNewRunConfigFromFlags(t *testing.T) { //nolint:paralleltest
+func TestNewRunConfigFromFlags(t *testing.T) {
+	t.Parallel()
+
 	// Needed to prevent a nil pointer dereference in the logger.
 	logger.Initialize()
 	runtime := &mocks.MockRuntime{}

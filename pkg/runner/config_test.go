@@ -858,7 +858,7 @@ func TestNewRunConfigFromFlags_MetadataOverrides(t *testing.T) {
 				permissions.ProfileNone,
 				"localhost",
 				tt.userTransport,
-				8080, // port
+				0, // port
 				tt.userTargetPort,
 				nil, // envVars
 				nil, // labels

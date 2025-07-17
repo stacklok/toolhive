@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -41,18 +40,9 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to create status manager: %v", err)
 	}
 
-	workloadList, err := manager.ListWorkloads(ctx, listAll)
+	workloadList, err := manager.ListWorkloads(ctx, listAll, listLabelFilter...)
 	if err != nil {
 		return fmt.Errorf("failed to list workloads: %v", err)
-	}
-
-	// Filter workloads by labels if specified
-	if len(listLabelFilter) > 0 {
-		filteredList, err := filterWorkloadsByLabels(workloadList, listLabelFilter)
-		if err != nil {
-			return fmt.Errorf("failed to filter workloads by labels: %v", err)
-		}
-		workloadList = filteredList
 	}
 
 	if len(workloadList) == 0 {
@@ -135,39 +125,4 @@ func printTextOutput(workloadList []workloads.Workload) {
 	if err := w.Flush(); err != nil {
 		logger.Errorf("Warning: Failed to flush tabwriter: %v", err)
 	}
-}
-
-// filterWorkloadsByLabels filters workloads based on label selectors
-// TODO: Move this filtering to the server side (runtime layer) for better performance
-func filterWorkloadsByLabels(workloadList []workloads.Workload, labelFilters []string) ([]workloads.Workload, error) {
-	// Parse label filters
-	filters := make(map[string]string)
-	for _, filter := range labelFilters {
-		key, value, err := labels.ParseLabel(filter)
-		if err != nil {
-			return nil, fmt.Errorf("invalid label filter '%s': %v", filter, err)
-		}
-		filters[key] = value
-	}
-
-	// Filter workloads
-	var filtered []workloads.Workload
-	for _, workload := range workloadList {
-		if matchesLabelFilters(workload.Labels, filters) {
-			filtered = append(filtered, workload)
-		}
-	}
-
-	return filtered, nil
-}
-
-// matchesLabelFilters checks if workload labels match all the specified filters
-func matchesLabelFilters(workloadLabels, filters map[string]string) bool {
-	for filterKey, filterValue := range filters {
-		workloadValue, exists := workloadLabels[filterKey]
-		if !exists || workloadValue != filterValue {
-			return false
-		}
-	}
-	return true
 }

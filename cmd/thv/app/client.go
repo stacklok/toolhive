@@ -7,7 +7,6 @@ import (
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 	"github.com/stacklok/toolhive/pkg/client"
-	"github.com/stacklok/toolhive/pkg/config"
 )
 
 var clientCmd = &cobra.Command{
@@ -67,7 +66,8 @@ var clientListRegisteredCmd = &cobra.Command{
 	RunE:  listRegisteredClientsCmdFunc,
 }
 
-func init() {
+// initClientCmds registers the client commands on the given root command
+func initClientCmds(rootCmd *cobra.Command) {
 	rootCmd.AddCommand(clientCmd)
 
 	clientCmd.AddCommand(clientStatusCmd)
@@ -77,8 +77,23 @@ func init() {
 	clientCmd.AddCommand(clientListRegisteredCmd)
 }
 
-func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
-	clientStatuses, err := client.GetClientStatus()
+func getConfigPathFromCmd(cmd *cobra.Command) string {
+	flag := cmd.Flag("config")
+	if flag != nil && flag.Value.String() != "" {
+		return flag.Value.String()
+	}
+	return ""
+}
+
+func clientStatusCmdFunc(cmd *cobra.Command, _ []string) error {
+	ctx := cmd.Context()
+	configPath := getConfigPathFromCmd(cmd)
+	manager, err := client.NewManagerWithConfigPath(ctx, configPath)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	clientStatuses, err := client.GetClientStatusWithManager(manager)
 	if err != nil {
 		return fmt.Errorf("failed to get client status: %w", err)
 	}
@@ -86,7 +101,14 @@ func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
-	clientStatuses, err := client.GetClientStatus()
+	ctx := cmd.Context()
+	configPath := getConfigPathFromCmd(cmd)
+	manager, err := client.NewManagerWithConfigPath(ctx, configPath)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	clientStatuses, err := client.GetClientStatusWithManager(manager)
 	if err != nil {
 		return fmt.Errorf("failed to get client status: %w", err)
 	}
@@ -124,8 +146,8 @@ func getAvailableClients(statuses []client.MCPClientStatus) []client.MCPClientSt
 // Helper to register selected clients
 func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.MCPClientStatus) error {
 	ctx := cmd.Context()
-
-	manager, err := client.NewManager(ctx)
+	configPath := getConfigPathFromCmd(cmd)
+	manager, err := client.NewManagerWithConfigPath(ctx, configPath)
 	if err != nil {
 		return fmt.Errorf("failed to create client manager: %w", err)
 	}
@@ -157,8 +179,8 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	ctx := cmd.Context()
-
-	manager, err := client.NewManager(ctx)
+	configPath := getConfigPathFromCmd(cmd)
+	manager, err := client.NewManagerWithConfigPath(ctx, configPath)
 	if err != nil {
 		return fmt.Errorf("failed to create client manager: %w", err)
 	}
@@ -187,8 +209,8 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	ctx := cmd.Context()
-
-	manager, err := client.NewManager(ctx)
+	configPath := getConfigPathFromCmd(cmd)
+	manager, err := client.NewManagerWithConfigPath(ctx, configPath)
 	if err != nil {
 		return fmt.Errorf("failed to create client manager: %w", err)
 	}
@@ -203,8 +225,19 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+func listRegisteredClientsCmdFunc(cmd *cobra.Command, _ []string) error {
+	ctx := cmd.Context()
+	configPath := getConfigPathFromCmd(cmd)
+	manager, err := client.NewManagerWithConfigPath(ctx, configPath)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
 	if len(cfg.Clients.RegisteredClients) == 0 {
 		fmt.Println("No clients are currently registered.")
 		return nil

@@ -19,7 +19,8 @@ func main() {
 	client.CheckAndPerformAutoDiscoveryMigration()
 
 	// Skip update check for completion command or if we are running in kubernetes
-	if err := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !runtime.IsKubernetesRuntime()).Execute(); err != nil {
+	rootCmd := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !runtime.IsKubernetesRuntime())
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }

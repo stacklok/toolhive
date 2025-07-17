@@ -117,7 +117,8 @@ var (
 
 func init() {
 	// Add config command to root command
-	rootCmd.AddCommand(configCmd)
+	// Remove any global rootCmd.AddCommand(configCmd) from this file.
+	// All config command registration is now handled via initConfigCmds in commands.go.
 
 	// Add subcommands to config command
 	configCmd.AddCommand(listRegisteredClientsCmd)
@@ -139,6 +140,11 @@ func init() {
 
 	// Add OTEL parent command to config
 	configCmd.AddCommand(OtelCmd)
+}
+
+// initConfigCmds registers the config commands on the given root command
+func initConfigCmds(rootCmd *cobra.Command) {
+	rootCmd.AddCommand(configCmd)
 }
 
 func setCACertCmdFunc(_ *cobra.Command, args []string) error {

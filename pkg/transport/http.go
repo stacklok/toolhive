@@ -26,7 +26,7 @@ const (
 type HTTPTransport struct {
 	transportType     types.TransportType
 	host              string
-	port              int
+	proxyPort         int
 	targetPort        int
 	targetHost        string
 	containerID       string
@@ -54,7 +54,7 @@ type HTTPTransport struct {
 func NewHTTPTransport(
 	transportType types.TransportType,
 	host string,
-	port int,
+	proxyPort int,
 	targetPort int,
 	runtime rt.Runtime,
 	debug bool,
@@ -74,7 +74,7 @@ func NewHTTPTransport(
 	return &HTTPTransport{
 		transportType:     transportType,
 		host:              host,
-		port:              port,
+		proxyPort:         proxyPort,
 		middlewares:       middlewares,
 		targetPort:        targetPort,
 		targetHost:        targetHost,
@@ -90,9 +90,9 @@ func (t *HTTPTransport) Mode() types.TransportType {
 	return t.transportType
 }
 
-// Port returns the port used by the transport.
-func (t *HTTPTransport) Port() int {
-	return t.port
+// ProxyPort returns the proxy port used by the transport.
+func (t *HTTPTransport) ProxyPort() int {
+	return t.proxyPort
 }
 
 var transportEnvMap = map[types.TransportType]string{
@@ -227,15 +227,15 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	containerPort := t.targetPort
 	targetURI := fmt.Sprintf("http://%s:%d", targetHost, containerPort)
 	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
-		t.port, targetURI)
+		t.proxyPort, targetURI)
 
 	// Create the transparent proxy with middlewares
-	t.proxy = transparent.NewTransparentProxy(t.host, t.port, t.containerName, targetURI, t.prometheusHandler, t.middlewares...)
+	t.proxy = transparent.NewTransparentProxy(t.host, t.proxyPort, t.containerName, targetURI, t.prometheusHandler, t.middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}
 
-	logger.Infof("HTTP transport started for container %s on port %d", t.containerName, t.port)
+	logger.Infof("HTTP transport started for container %s on port %d", t.containerName, t.proxyPort)
 
 	// Create a container monitor
 	monitorRuntime, err := container.NewFactory().Create(ctx)

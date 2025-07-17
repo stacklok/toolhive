@@ -23,7 +23,7 @@ type Transport interface {
 	Mode() TransportType
 
 	// Port returns the port used by the transport.
-	Port() int
+	ProxyPort() int
 
 	// Setup prepares the transport for use.
 	// The runtime parameter provides access to container operations.
@@ -107,8 +107,8 @@ type Config struct {
 	// Type is the type of transport to use.
 	Type TransportType
 
-	// Port is the port to use for network transports (host port).
-	Port int
+	// ProxyPort is the port to use for network transports (host port).
+	ProxyPort int
 
 	// TargetPort is the port that the container will expose (container port).
 	// This is only applicable to SSE transport.

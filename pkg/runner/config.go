@@ -234,11 +234,25 @@ func (c *RunConfig) WithTransport(t string) (*RunConfig, error) {
 }
 
 // WithPorts configures the host and target ports
-func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
-	// Select a port for the HTTP proxy (host port)
-	selectedPort, err := networking.FindOrUsePort(port)
-	if err != nil {
-		return c, err
+func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
+	var selectedPort int
+	var err error
+
+	// If the user requested an explicit proxy port, check if it's available.
+	// If not available - treat as an error, since picking a random port here
+	// is going to lead to confusion.
+	if proxyPort != 0 {
+		if !networking.IsAvailable(proxyPort) {
+			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
+		}
+		logger.Debugf("Using requested port: %d", proxyPort)
+		selectedPort = proxyPort
+	} else {
+		// Otherwise - pick a random available port.
+		selectedPort, err = networking.FindOrUsePort(proxyPort)
+		if err != nil {
+			return c, err
+		}
 	}
 	c.Port = selectedPort
 

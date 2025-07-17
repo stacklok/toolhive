@@ -27,7 +27,7 @@ import (
 // It acts as a proxy between the MCP client and the container's stdin/stdout.
 type StdioTransport struct {
 	host              string
-	port              int
+	proxyPort         int
 	containerID       string
 	containerName     string
 	runtime           rt.Runtime
@@ -57,7 +57,7 @@ type StdioTransport struct {
 // NewStdioTransport creates a new stdio transport.
 func NewStdioTransport(
 	host string,
-	port int,
+	proxyPort int,
 	runtime rt.Runtime,
 	debug bool,
 	prometheusHandler http.Handler,
@@ -65,7 +65,7 @@ func NewStdioTransport(
 ) *StdioTransport {
 	return &StdioTransport{
 		host:              host,
-		port:              port,
+		proxyPort:         proxyPort,
 		runtime:           runtime,
 		debug:             debug,
 		middlewares:       middlewares,
@@ -85,9 +85,9 @@ func (*StdioTransport) Mode() types.TransportType {
 	return types.TransportTypeStdio
 }
 
-// Port returns the port used by the transport.
-func (t *StdioTransport) Port() int {
-	return t.port
+// ProxyPort returns the proxy port used by the transport.
+func (t *StdioTransport) ProxyPort() int {
+	return t.proxyPort
 }
 
 // Setup prepares the transport for use.
@@ -170,13 +170,13 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	// Create and start the correct proxy with middlewares
 	switch t.proxyMode {
 	case types.ProxyModeStreamableHTTP:
-		t.httpProxy = streamable.NewHTTPProxy(t.host, t.port, t.containerName, t.prometheusHandler, t.middlewares...)
+		t.httpProxy = streamable.NewHTTPProxy(t.host, t.proxyPort, t.containerName, t.prometheusHandler, t.middlewares...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
 		logger.Info("Streamable HTTP proxy started, processing messages...")
 	case types.ProxyModeSSE:
-		t.httpProxy = httpsse.NewHTTPSSEProxy(t.host, t.port, t.containerName, t.prometheusHandler, t.middlewares...)
+		t.httpProxy = httpsse.NewHTTPSSEProxy(t.host, t.proxyPort, t.containerName, t.prometheusHandler, t.middlewares...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}

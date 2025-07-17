@@ -134,9 +134,9 @@ func TestRunConfig_WithPorts(t *testing.T) {
 				assert.Equal(t, tc.config, result, "WithPorts should return the same config instance")
 
 				if tc.port == 0 {
-					assert.Greater(t, tc.config.Port, 0, "Port should be auto-selected")
+					assert.Greater(t, tc.config.Port, 0, "Proxy Port should be auto-selected")
 				} else {
-					assert.Equal(t, tc.port, tc.config.Port, "Port should be set correctly")
+					assert.Equal(t, tc.port, tc.config.Port, "Proxy Port should be set correctly")
 				}
 
 				if tc.config.Transport == types.TransportTypeSSE || tc.config.Transport == types.TransportTypeStreamableHTTP {
@@ -652,7 +652,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 
 	// Check transport settings
 	assert.Equal(t, types.TransportTypeSSE, config.Transport, "Transport should be set to SSE")
-	assert.Equal(t, port, config.Port, "Port should match")
+	assert.Equal(t, port, config.Port, "ProxyPort should match")
 	assert.Equal(t, targetPort, config.TargetPort, "TargetPort should match")
 
 	// Check OIDC config

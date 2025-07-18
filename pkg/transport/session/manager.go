@@ -49,21 +49,21 @@ func (m *Manager) cleanupRoutine() {
 
 // AddWithID creates (and adds) a new session with the provided ID.
 // Returns error if ID is empty or already exists.
-func (m *Manager) AddWithID(id string) (Session, error) {
+func (m *Manager) AddWithID(id string) error {
 	if id == "" {
-		return nil, fmt.Errorf("session ID cannot be empty")
+		return fmt.Errorf("session ID cannot be empty")
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if _, exists := m.sessions[id]; exists {
-		return nil, fmt.Errorf("session ID %q already exists", id)
+		return fmt.Errorf("session ID %q already exists", id)
 	}
 
 	s := NewProxySession(id)
 	m.sessions[id] = s
-	return s, nil
+	return nil
 }
 
 // Get retrieves a session by ID. Returns (session, true) if found,

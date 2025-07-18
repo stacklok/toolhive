@@ -126,14 +126,13 @@ func (t *tracingTransport) watchEventStream(r io.Reader, w *io.PipeWriter) {
 			if sid == "" {
 				sid = m[2]
 			}
-
+			t.setServerInitialized()
 			if _, ok := t.p.sessionManager.Get(sid); !ok {
-				_, err := t.p.sessionManager.AddWithID(sid)
+				err := t.p.sessionManager.AddWithID(sid)
 				if err != nil {
 					logger.Errorf("Failed to create session from event stream: %v", err)
 				}
 			}
-			t.setServerInitialized()
 		}
 	}
 
@@ -167,7 +166,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		if ct != "" {
 			logger.Infof("Detected Mcp-Session-Id header: %s", ct)
 			if _, ok := t.p.sessionManager.Get(ct); !ok {
-				if _, err := t.p.sessionManager.AddWithID(ct); err != nil {
+				if err := t.p.sessionManager.AddWithID(ct); err != nil {
 					logger.Errorf("Failed to create session from header %s: %v", ct, err)
 				}
 			}

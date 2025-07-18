@@ -58,6 +58,11 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 		logger.Errorf("Failed to read file: %v", err)
 	}
 
+	if len(content) == 0 {
+		// If the file is empty, we need to initialize it with an empty JSON object
+		content = []byte("{}")
+	}
+
 	content = ensurePathExists(content, jcu.MCPServersPathPrefix)
 
 	v, _ := hujson.Parse(content)
@@ -110,6 +115,11 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 	content, err := os.ReadFile(jcu.Path)
 	if err != nil {
 		logger.Errorf("Failed to read file: %v", err)
+	}
+
+	if len(content) == 0 {
+		// If the file is empty, there is nothing to remove.
+		return nil
 	}
 
 	v, _ := hujson.Parse(content)

@@ -111,7 +111,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 	{
 		ClientType:   VSCodeInsider,
 		Description:  "Visual Studio Code Insiders",
-		SettingsFile: "settings.json",
+		SettingsFile: "mcp.json",
 		RelPath: []string{
 			"Code - Insiders", "User",
 		},
@@ -120,7 +120,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"darwin":  {"Library", "Application Support"},
 			"windows": {"AppData", "Roaming"},
 		},
-		MCPServersPathPrefix: "/mcp/servers",
+		MCPServersPathPrefix: "/servers",
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
 			types.TransportTypeStdio:          "sse",
@@ -132,11 +132,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 	{
 		ClientType:   VSCode,
 		Description:  "Visual Studio Code",
-		SettingsFile: "settings.json",
+		SettingsFile: "mcp.json",
 		RelPath: []string{
 			"Code", "User",
 		},
-		MCPServersPathPrefix: "/mcp/servers",
+		MCPServersPathPrefix: "/servers",
 		PlatformPrefix: map[string][]string{
 			"linux":   {".config"},
 			"darwin":  {"Library", "Application Support"},
@@ -409,6 +409,10 @@ func validateConfigFileFormat(cf *ConfigFile) error {
 	data, err := os.ReadFile(cf.Path)
 	if err != nil {
 		return fmt.Errorf("failed to read file %s: %w", cf.Path, err)
+	}
+
+	if len(data) == 0 {
+		data = []byte("{}") // Default to an empty JSON object if the file is empty
 	}
 
 	// Default to JSON

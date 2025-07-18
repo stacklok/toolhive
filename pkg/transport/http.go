@@ -68,7 +68,7 @@ func NewHTTPTransport(
 		host = LocalhostIPv4
 	}
 
-	// If targetHost is not specified, default to localhost
+	// If targetHost is not specified, default to bind to all interfaces
 	if targetHost == "" {
 		targetHost = TargetHostIPv4
 	}

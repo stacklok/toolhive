@@ -814,7 +814,7 @@
       ],
       "tier": "Official",
       "tools": [
-        "set_during_runtime",
+        "set_during_runtime"
       ],
       "transport": "sse"
     },

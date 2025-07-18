@@ -11,7 +11,6 @@ import (
 // Group represents a logical grouping of MCP servers.
 type Group struct {
 	Name string `json:"name"`
-	// MCP servers will be added in a followup story.
 }
 
 // WriteJSON serializes the Group to JSON and writes it to the provided writer

@@ -15,5 +15,6 @@
       ],
       "matchFileNames": ["deploy/charts/operator/**"]
     }
-  ]
+  ],
+ "postUpdateOptions": ["gomodTidy"]
 }

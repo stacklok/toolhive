@@ -774,6 +774,50 @@
       ],
       "transport": "stdio"
     },
+    "genai-toolbox": {
+      "args": [],
+      "description": "A comprehensive MCP server for database operations that provides tools for connecting to and interacting with various database systems with advanced features like connection pooling, authentication, and observability. Mount and configured via tools.yaml",
+      "env_vars": [],
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:latest",
+      "metadata": {
+        "last_updated": "2025-07-17T00:23:12Z",
+        "pulls": 0,
+        "stars": 7152
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [],
+            "insecure_allow_all": true
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/googleapis/genai-toolbox",
+      "status": "Active",
+      "tags": [
+        "database",
+        "sql",
+        "postgresql",
+        "mysql",
+        "sqlite",
+        "mongodb",
+        "redis",
+        "connection-pooling",
+        "authentication",
+        "observability",
+        "toolbox",
+        "genai",
+        "mcp-server"
+      ],
+      "tier": "Official",
+      "tools": [
+        "set_during_runtime"
+      ],
+      "transport": "sse"
+    },
     "git": {
       "args": [],
       "description": "Provides support for interacting with Git repositories",

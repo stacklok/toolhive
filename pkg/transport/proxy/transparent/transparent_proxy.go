@@ -3,11 +3,18 @@
 package transparent
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +22,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -47,6 +55,12 @@ type TransparentProxy struct {
 
 	// Optional Prometheus metrics handler
 	prometheusHandler http.Handler
+
+	// Sessions for tracking state
+	sessionManager *session.Manager
+
+	// If mcp server has been initialized
+	IsServerInitialized bool
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -66,6 +80,7 @@ func NewTransparentProxy(
 		middlewares:       middlewares,
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
+		sessionManager:    session.NewManager(30 * time.Minute),
 	}
 
 	// Create MCP pinger and health checker
@@ -73,6 +88,138 @@ func NewTransparentProxy(
 	proxy.healthChecker = healthcheck.NewHealthChecker("sse", mcpPinger)
 
 	return proxy
+}
+
+type tracingTransport struct {
+	base http.RoundTripper
+	p    *TransparentProxy
+}
+
+func (t *tracingTransport) setServerInitialized() {
+	if !t.p.IsServerInitialized {
+		t.p.mutex.Lock()
+		t.p.IsServerInitialized = true
+		t.p.mutex.Unlock()
+		logger.Infof("Server was initialized successfully for %s", t.p.containerName)
+	}
+}
+
+func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
+	tr := t.base
+	if tr == nil {
+		tr = http.DefaultTransport
+	}
+	return tr.RoundTrip(req)
+}
+
+func (t *tracingTransport) watchEventStream(r io.Reader, w *io.PipeWriter) {
+	defer w.Close()
+
+	scanner := bufio.NewScanner(r)
+	sessionRe := regexp.MustCompile(`sessionId=([0-9a-fA-F-]+)|\"sessionId\"\s*:\s*\"([^\"]+)\"`)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if m := sessionRe.FindStringSubmatch(line); m != nil {
+			sid := m[1]
+			if sid == "" {
+				sid = m[2]
+			}
+			t.setServerInitialized()
+			if _, ok := t.p.sessionManager.Get(sid); !ok {
+				err := t.p.sessionManager.AddWithID(sid)
+				if err != nil {
+					logger.Errorf("Failed to create session from event stream: %v", err)
+				}
+			}
+		}
+	}
+
+	_, err := io.Copy(io.Discard, r)
+	if err != nil {
+		logger.Errorf("Failed to copy event stream: %v", err)
+	}
+}
+
+func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	reqBody := readRequestBody(req)
+
+	path := req.URL.Path
+	isMCP := strings.HasPrefix(path, "/mcp")
+	isJSON := strings.Contains(req.Header.Get("Content-Type"), "application/json")
+	sawInitialize := false
+
+	if isMCP && isJSON && len(reqBody) > 0 {
+		sawInitialize = t.detectInitialize(reqBody)
+	}
+
+	resp, err := t.forward(req)
+	if err != nil {
+		logger.Errorf("Failed to forward request: %v", err)
+		return nil, err
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		// check if we saw a valid mcp header
+		ct := resp.Header.Get("Mcp-Session-Id")
+		if ct != "" {
+			logger.Infof("Detected Mcp-Session-Id header: %s", ct)
+			if _, ok := t.p.sessionManager.Get(ct); !ok {
+				if err := t.p.sessionManager.AddWithID(ct); err != nil {
+					logger.Errorf("Failed to create session from header %s: %v", ct, err)
+				}
+			}
+			t.setServerInitialized()
+			return resp, nil
+		}
+		// status was ok and we saw an initialize call
+		if sawInitialize && !t.p.IsServerInitialized {
+			t.setServerInitialized()
+			return resp, nil
+		}
+		ct = resp.Header.Get("Content-Type")
+		mediaType, _, _ := mime.ParseMediaType(ct)
+		if mediaType == "text/event-stream" {
+			originalBody := resp.Body
+			pr, pw := io.Pipe()
+			tee := io.TeeReader(originalBody, pw)
+			resp.Body = pr
+
+			go t.watchEventStream(tee, pw)
+		}
+	}
+
+	return resp, nil
+}
+
+func readRequestBody(req *http.Request) []byte {
+	reqBody := []byte{}
+	if req.Body != nil {
+		buf, err := io.ReadAll(req.Body)
+		if err != nil {
+			logger.Errorf("Failed to read request body: %v", err)
+		} else {
+			reqBody = buf
+		}
+		req.Body = io.NopCloser(bytes.NewReader(reqBody))
+	}
+	return reqBody
+}
+
+func (t *tracingTransport) detectInitialize(body []byte) bool {
+	var rpc struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(body, &rpc); err != nil {
+		logger.Errorf("Failed to parse JSON-RPC body: %v", err)
+		return false
+	}
+	if rpc.Method == "initialize" {
+		logger.Infof("Detected initialize method call for %s", t.p.containerName)
+		return true
+	}
+	return false
 }
 
 // Start starts the transparent proxy.
@@ -88,6 +235,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 
 	// Create a reverse proxy
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
 
 	// Create a handler that logs requests
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -160,13 +308,18 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			logger.Infof("Shutdown initiated, stopping health monitor for %s", p.containerName)
 			return
 		case <-ticker.C:
-			alive := p.healthChecker.CheckHealth(parentCtx)
-			if alive.Status != healthcheck.StatusHealthy {
-				logger.Infof("Health check failed for %s; initiating proxy shutdown", p.containerName)
-				if err := p.Stop(parentCtx); err != nil {
-					logger.Errorf("Failed to stop proxy for %s: %v", p.containerName, err)
+			// Perform health check only if mcp server has been initialized
+			if p.IsServerInitialized {
+				alive := p.healthChecker.CheckHealth(parentCtx)
+				if alive.Status != healthcheck.StatusHealthy {
+					logger.Infof("Health check failed for %s; initiating proxy shutdown", p.containerName)
+					if err := p.Stop(parentCtx); err != nil {
+						logger.Errorf("Failed to stop proxy for %s: %v", p.containerName, err)
+					}
+					return
 				}
-				return
+			} else {
+				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.containerName)
 			}
 		}
 	}

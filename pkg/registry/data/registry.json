@@ -1138,6 +1138,66 @@
       ],
       "transport": "sse"
     },
+    "kyverno": {
+      "args": [],
+      "description": "Provides Kyverno policy management capabilities enabling AI assistants to interact with Kyverno policies in Kubernetes clusters for comprehensive policy management, security assessment, and compliance monitoring.",
+      "env_vars": [
+        {
+          "description": "Path to the kubeconfig file for Kubernetes API authentication (mounted into the container with --volume)",
+          "name": "KUBECONFIG",
+          "required": false
+        }
+      ],
+      "image": "ghcr.io/nirmata/kyverno-mcp:latest",
+      "metadata": {
+        "last_updated": "2025-01-18T00:00:00Z",
+        "pulls": 1250,
+        "stars": 42
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [
+              443
+            ],
+            "insecure_allow_all": true
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/nirmata/kyverno-mcp",
+      "status": "Active",
+      "tags": [
+        "kyverno",
+        "kubernetes",
+        "policy-management",
+        "security",
+        "compliance",
+        "governance",
+        "policy-as-code",
+        "nirmata",
+        "admission-control",
+        "validation",
+        "mutation",
+        "generation",
+        "policy-violations",
+        "security-assessment",
+        "rbac",
+        "pod-security",
+        "best-practices"
+      ],
+      "tier": "Official",
+      "tools": [
+        "list_contexts",
+        "switch_context",
+        "apply_policies",
+        "show_violations",
+        "help"
+      ],
+      "transport": "stdio"
+    },
     "memory": {
       "args": [],
       "description": "Provides persistent memory to an LLMs application for storing information about the user across chats. Implemented using a local knowledge graph.",

@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -89,81 +90,137 @@ func NewTransparentProxy(
 	return proxy
 }
 
-var sessionIDRegex = regexp.MustCompile(`sessionId=([\w-]+)`)
-
-func (p *TransparentProxy) handleModifyResponse(res *http.Response) error {
-	if sid := res.Header.Get("Mcp-Session-Id"); sid != "" {
-		logger.Infof("Detected Mcp-Session-Id header: %s", sid)
-		if _, ok := p.sessionManager.Get(sid); !ok {
-			if _, err := p.sessionManager.AddWithID(sid); err != nil {
-				logger.Errorf("Failed to create session from header %s: %v", sid, err)
-			}
-		}
-		p.IsServerInitialized = true
-		return nil
-	}
-
-	// Handle streaming (SSE)
-	ct, _, err := mime.ParseMediaType(res.Header.Get("Content-Type"))
-	if err != nil {
-		logger.Warnf("Invalid Content-Type header, defaulting behavior: %v", err)
-		ct = "" // or choose a fallback
-	}
-	if ct == "text/event-stream" {
-		pr, pw := io.Pipe()
-		orig := res.Body
-		res.Body = pr
-
-		go func() {
-			defer pw.Close()
-			scanner := bufio.NewScanner(orig)
-			for scanner.Scan() {
-				line := scanner.Text()
-
-				if matches := sessionIDRegex.FindStringSubmatch(line); len(matches) == 2 {
-					sessionID := matches[1]
-					_, ok := p.sessionManager.Get(sessionID)
-					if !ok {
-						var err error
-						_, err = p.sessionManager.AddWithID(sessionID)
-						if err != nil {
-							logger.Errorf("Failed to create session %s: %v", sessionID, err)
-							continue
-						}
-					}
-					p.IsServerInitialized = true
-				}
-				_, err := pw.Write([]byte(line + "\n"))
-				if err != nil {
-					logger.Errorf("Failed to write to pipe: %v", err)
-				}
-			}
-		}()
-		return nil
-	}
-
-	return nil
+type tracingTransport struct {
+	base http.RoundTripper
+	p    *TransparentProxy
 }
 
-func (p *TransparentProxy) handleAndDetectInitialize(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseProxy) {
-	logger.Infof("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, p.targetURI)
+func (t *tracingTransport) setServerInitialized() {
+	if !t.p.IsServerInitialized {
+		t.p.mutex.Lock()
+		t.p.IsServerInitialized = true
+		t.p.mutex.Unlock()
+		logger.Infof("Server was initialized successfully for %s", t.p.containerName)
+	}
+}
 
-	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/mcp") {
-		// Read the body for inspection without consuming it
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			logger.Errorf("Error reading request body: %v", err)
-		} else {
-			if bytes.Contains(body, []byte(`"method":"initialize"`)) {
-				logger.Infof("Detected initialize request to %s", r.URL.Path)
-				p.IsServerInitialized = true
+func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
+	tr := t.base
+	if tr == nil {
+		tr = http.DefaultTransport
+	}
+	return tr.RoundTrip(req)
+}
+
+func (t *tracingTransport) watchEventStream(r io.Reader, w *io.PipeWriter) {
+	defer w.Close()
+
+	scanner := bufio.NewScanner(r)
+	sessionRe := regexp.MustCompile(`sessionId=([0-9a-fA-F-]+)|\"sessionId\"\s*:\s*\"([^\"]+)\"`)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if m := sessionRe.FindStringSubmatch(line); m != nil {
+			sid := m[1]
+			if sid == "" {
+				sid = m[2]
 			}
-			r.Body = io.NopCloser(bytes.NewReader(body))
-			r.ContentLength = int64(len(body))
+
+			if _, ok := t.p.sessionManager.Get(sid); !ok {
+				_, err := t.p.sessionManager.AddWithID(sid)
+				if err != nil {
+					logger.Errorf("Failed to create session from event stream: %v", err)
+				}
+			}
+			t.setServerInitialized()
 		}
 	}
 
-	proxy.ServeHTTP(w, r)
+	_, err := io.Copy(io.Discard, r)
+	if err != nil {
+		logger.Errorf("Failed to copy event stream: %v", err)
+	}
+}
+
+func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	reqBody := readRequestBody(req)
+
+	path := req.URL.Path
+	isMCP := strings.HasPrefix(path, "/mcp")
+	isJSON := strings.Contains(req.Header.Get("Content-Type"), "application/json")
+	sawInitialize := false
+
+	if isMCP && isJSON && len(reqBody) > 0 {
+		sawInitialize = t.detectInitialize(reqBody)
+	}
+
+	resp, err := t.forward(req)
+	if err != nil {
+		logger.Errorf("Failed to forward request: %v", err)
+		return nil, err
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		// check if we saw a valid mcp header
+		ct := resp.Header.Get("Mcp-Session-Id")
+		if ct != "" {
+			logger.Infof("Detected Mcp-Session-Id header: %s", ct)
+			if _, ok := t.p.sessionManager.Get(ct); !ok {
+				if _, err := t.p.sessionManager.AddWithID(ct); err != nil {
+					logger.Errorf("Failed to create session from header %s: %v", ct, err)
+				}
+			}
+			t.setServerInitialized()
+			return resp, nil
+		}
+		// status was ok and we saw an initialize call
+		if sawInitialize && !t.p.IsServerInitialized {
+			t.setServerInitialized()
+			return resp, nil
+		}
+		ct = resp.Header.Get("Content-Type")
+		mediaType, _, _ := mime.ParseMediaType(ct)
+		if mediaType == "text/event-stream" {
+			originalBody := resp.Body
+			pr, pw := io.Pipe()
+			tee := io.TeeReader(originalBody, pw)
+			resp.Body = pr
+
+			go t.watchEventStream(tee, pw)
+		}
+	}
+
+	return resp, nil
+}
+
+func readRequestBody(req *http.Request) []byte {
+	reqBody := []byte{}
+	if req.Body != nil {
+		buf, err := io.ReadAll(req.Body)
+		if err != nil {
+			logger.Errorf("Failed to read request body: %v", err)
+		} else {
+			reqBody = buf
+		}
+		req.Body = io.NopCloser(bytes.NewReader(reqBody))
+	}
+	return reqBody
+}
+
+func (t *tracingTransport) detectInitialize(body []byte) bool {
+	var rpc struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(body, &rpc); err != nil {
+		logger.Errorf("Failed to parse JSON-RPC body: %v", err)
+		return false
+	}
+	if rpc.Method == "initialize" {
+		logger.Infof("Detected initialize method call for %s", t.p.containerName)
+		return true
+	}
+	return false
 }
 
 // Start starts the transparent proxy.
@@ -179,11 +236,12 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 
 	// Create a reverse proxy
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	proxy.ModifyResponse = p.handleModifyResponse
+	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
 
 	// Create a handler that logs requests
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.handleAndDetectInitialize(w, r, proxy)
+		logger.Infof("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, targetURL)
+		proxy.ServeHTTP(w, r)
 	})
 
 	// Create a mux to handle both proxy and health endpoints

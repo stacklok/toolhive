@@ -71,13 +71,13 @@ func (m *Manager) AddWithID(id string) (Session, error) {
 func (m *Manager) Get(id string) (Session, bool) {
 	m.mu.RLock()
 	s, ok := m.sessions[id]
-	m.mu.RUnlock()
-
 	if !ok {
 		return nil, false
 	}
 
 	s.Touch()
+	m.mu.RUnlock()
+
 	return s, true
 }
 

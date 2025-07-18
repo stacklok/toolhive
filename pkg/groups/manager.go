@@ -25,6 +25,11 @@ func NewManager() (Manager, error) {
 
 // Create creates a new group with the given name
 func (m *manager) Create(ctx context.Context, name string) error {
+	// Validate group name
+	if name == "" {
+		return fmt.Errorf("group name cannot be empty")
+	}
+
 	// Check if group already exists
 	exists, err := m.store.Exists(ctx, name)
 	if err != nil {

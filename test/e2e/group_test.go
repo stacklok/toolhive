@@ -100,7 +100,7 @@ var _ = Describe("Group", func() {
 				cmd := exec.Command(thvBinary, "group", "create", "")
 				output, err := cmd.CombinedOutput()
 				Expect(err).To(HaveOccurred(), "Should fail with empty group name")
-				Expect(string(output)).To(ContainSubstring("already exists"))
+				Expect(string(output)).To(ContainSubstring("group name cannot be empty"))
 			})
 		})
 

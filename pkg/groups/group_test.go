@@ -76,6 +76,15 @@ func TestManager_Create(t *testing.T) {
 			expectError: true,
 			errorMsg:    "failed to get writer for group",
 		},
+		{
+			name:      "empty group name",
+			groupName: "",
+			setupMock: func(_ *mocks.MockStore) {
+				// No expectations since validation happens before store calls
+			},
+			expectError: true,
+			errorMsg:    "group name cannot be empty",
+		},
 	}
 
 	for _, tt := range tests {

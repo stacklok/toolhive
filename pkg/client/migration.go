@@ -1,10 +1,10 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
-	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -15,17 +15,29 @@ var migrationOnce sync.Once
 // This is called once at application startup
 func CheckAndPerformAutoDiscoveryMigration() {
 	migrationOnce.Do(func() {
-		appConfig := config.GetConfig()
+		// Create a temporary manager to access config
+		ctx := context.Background()
+		manager, err := NewManager(ctx)
+		if err != nil {
+			logger.Errorf("Error creating manager for migration: %v", err)
+			return
+		}
+
+		appConfig, err := manager.GetConfig()
+		if err != nil {
+			logger.Errorf("Error getting config for migration: %v", err)
+			return
+		}
 
 		// Check if auto-discovery flag is set to true, use of deprecated object is expected here
 		if appConfig.Clients.AutoDiscovery {
-			performAutoDiscoveryMigration()
+			performAutoDiscoveryMigration(manager)
 		}
 	})
 }
 
 // performAutoDiscoveryMigration discovers and registers all installed clients
-func performAutoDiscoveryMigration() {
+func performAutoDiscoveryMigration(manager Manager) {
 	fmt.Println("Migrating from deprecated auto-discovery to manual client registration...")
 	fmt.Println()
 
@@ -37,7 +49,11 @@ func performAutoDiscoveryMigration() {
 	}
 
 	// Get current config to see what's already registered
-	appConfig := config.GetConfig()
+	appConfig, err := manager.GetConfig()
+	if err != nil {
+		logger.Errorf("Error getting config during migration: %v", err)
+		return
+	}
 
 	var clientsToRegister []string
 	var alreadyRegistered = appConfig.Clients.RegisteredClients
@@ -50,28 +66,25 @@ func performAutoDiscoveryMigration() {
 		}
 	}
 
-	// Register new clients and remove the auto-discovery flag
-	err = config.UpdateConfig(func(c *config.Config) {
-		for _, clientName := range clientsToRegister {
-			// Double-check if not already registered (safety check)
-			found := false
-			for _, registered := range c.Clients.RegisteredClients {
-				if registered == clientName {
-					found = true
-					break
-				}
-			}
-
-			if !found {
-				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, clientName)
+	// Update config with new clients and remove auto-discovery flag
+	appConfig.Clients.AutoDiscovery = false
+	for _, clientName := range clientsToRegister {
+		// Double-check if not already registered (safety check)
+		found := false
+		for _, registered := range appConfig.Clients.RegisteredClients {
+			if registered == clientName {
+				found = true
+				break
 			}
 		}
 
-		// Remove the auto-discovery flag during the same config update
-		c.Clients.AutoDiscovery = false
-	})
+		if !found {
+			appConfig.Clients.RegisteredClients = append(appConfig.Clients.RegisteredClients, clientName)
+		}
+	}
 
-	if err != nil {
+	// Save the updated config
+	if err := manager.SetConfig(appConfig); err != nil {
 		logger.Errorf("Error updating config during migration: %v", err)
 		return
 	}

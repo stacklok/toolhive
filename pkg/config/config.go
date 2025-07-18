@@ -14,6 +14,7 @@ import (
 	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 
+	"github.com/spf13/viper"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -84,6 +85,17 @@ var defaultPathGenerator = func() (string, error) {
 // getConfigPath is the current path generator, can be replaced in tests
 var getConfigPath = defaultPathGenerator
 
+// getConfigPathWithOverride gets the config path, checking for viper override first
+func getConfigPathWithOverride() (string, error) {
+	// Check if config path is set via viper (from CLI flag)
+	if configPath := viper.GetString("config"); configPath != "" {
+		return configPath, nil
+	}
+
+	// Fall back to default path
+	return getConfigPath()
+}
+
 // createNewConfigWithDefaults creates a new config with default values
 func createNewConfigWithDefaults() Config {
 	return Config{
@@ -141,7 +153,7 @@ func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
 	var err error
 
 	if configPath == "" {
-		configPath, err = getConfigPath()
+		configPath, err = getConfigPathWithOverride()
 		if err != nil {
 			return nil, fmt.Errorf("unable to fetch config path: %w", err)
 		}
@@ -197,12 +209,17 @@ func (c *Config) save() error {
 	return c.saveToPath("")
 }
 
+// Save serializes the config struct and writes it to disk.
+func (c *Config) Save() error {
+	return c.saveToPath("")
+}
+
 // saveToPath serializes the config struct and writes it to a specific path.
 // If configPath is empty, it uses the default path.
 func (c *Config) saveToPath(configPath string) error {
 	if configPath == "" {
 		var err error
-		configPath, err = getConfigPath()
+		configPath, err = getConfigPathWithOverride()
 		if err != nil {
 			return fmt.Errorf("unable to fetch config path: %w", err)
 		}
@@ -220,6 +237,12 @@ func (c *Config) saveToPath(configPath string) error {
 	return nil
 }
 
+// SaveToPath serializes the config struct and writes it to a specific path.
+// If configPath is empty, it uses the default path.
+func (c *Config) SaveToPath(configPath string) error {
+	return c.saveToPath(configPath)
+}
+
 // UpdateConfig locks a separate lock file, reads from disk, applies the changes
 // from the anonymous function, writes to disk and unlocks the file.
 func UpdateConfig(updateFn func(*Config)) error {
@@ -232,7 +255,7 @@ func UpdateConfig(updateFn func(*Config)) error {
 func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 	if configPath == "" {
 		var err error
-		configPath, err = getConfigPath()
+		configPath, err = getConfigPathWithOverride()
 		if err != nil {
 			return fmt.Errorf("unable to fetch config path: %w", err)
 		}
@@ -278,4 +301,17 @@ type OpenTelemetryConfig struct {
 	Endpoint     string   `yaml:"endpoint,omitempty"`
 	SamplingRate float64  `yaml:"sampling-rate,omitempty"`
 	EnvVars      []string `yaml:"env-vars,omitempty"`
+}
+
+// GetConfig is a temporary function to maintain backward compatibility
+// This should be removed once all code is refactored to use the manager pattern
+func GetConfig() *Config {
+	cfg, err := LoadOrCreateConfig()
+	if err != nil {
+		logger.Errorf("error loading configuration: %v", err)
+		// Return a default config to prevent crashes
+		defaultCfg := createNewConfigWithDefaults()
+		return &defaultCfg
+	}
+	return cfg
 }

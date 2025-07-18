@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -300,7 +301,14 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get OTEL flag values with config fallbacks
-	cfg := config.GetConfig()
+	manager, err := client.NewManager(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(cmd, cfg,
 		runOtelEndpoint, runOtelSamplingRate, runOtelEnvironmentVariables)
 

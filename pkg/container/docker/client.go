@@ -41,7 +41,7 @@ const (
 	LabelValueTrue                 = "true"
 )
 
-// Client implements the Runtime interface for Docker (and compatible runtimes)
+// Client implements the Deployer interface for Docker (and compatible runtimes)
 type Client struct {
 	runtimeType  runtime.Type
 	socketPath   string
@@ -724,9 +724,15 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 	} else {
 		labels = make(map[string]string)
 	}
-	err = c.removeWorkloadContainers(ctx, containerName, workloadID, labels)
+	err = c.removeContainer(ctx, workloadID)
 	if err != nil {
-		return err // removeWorkloadContainers already wraps the error with context.
+		return err // removeContainer already wraps the error with context.
+	}
+
+	// Clean up any proxy containers associated with this workload.
+	err = c.removeProxyContainers(ctx, containerName, labels)
+	if err != nil {
+		return err // removeProxyContainers already wraps the error with context.
 	}
 
 	// Clear up any networks associated with this workload.
@@ -1328,16 +1334,9 @@ func (c *Client) handleExistingContainer(
 	}
 
 	// Configurations don't match, we need to recreate the container.
-	// Remove the existing container and any of the proxy containers.
-	// Note that we do not use the RemoveWorkload method because that
-	// will delete networks - which we do not want to do here.
-	var labels map[string]string
-	if info.Config != nil {
-		labels = info.Config.Labels
-	} else {
-		labels = make(map[string]string)
-	}
-	if err := c.removeWorkloadContainers(ctx, info.Name, containerID, labels); err != nil {
+	// Remove only this container, leave any associated networks and containers intact
+	// Any proxy containers (like ingress/egress) will have already recreated themselves at this point
+	if err := c.removeContainer(ctx, containerID); err != nil {
 		return false, err
 	}
 
@@ -1399,17 +1398,9 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 	return nil
 }
 
-// removeWorkloadContainers removes the MCP server container and any proxy containers.
-func (c *Client) removeWorkloadContainers(
-	ctx context.Context,
-	containerName string,
-	workloadID string,
-	workloadLabels map[string]string,
-) error {
-	// remove the / if it starts with it
-	containerName = strings.TrimPrefix(containerName, "/")
-
-	err := c.client.ContainerRemove(ctx, workloadID, container.RemoveOptions{
+// removeContainer removes a container by ID, without removing any associated networks or proxy containers.
+func (c *Client) removeContainer(ctx context.Context, containerID string) error {
+	err := c.client.ContainerRemove(ctx, containerID, container.RemoveOptions{
 		Force: true,
 	})
 	if err != nil {
@@ -1417,8 +1408,20 @@ func (c *Client) removeWorkloadContainers(
 		if errdefs.IsNotFound(err) {
 			return nil
 		}
-		return NewContainerError(err, workloadID, fmt.Sprintf("failed to remove workload: %v", err))
+		return NewContainerError(err, containerID, fmt.Sprintf("failed to remove container: %v", err))
 	}
+
+	return nil
+}
+
+// removeProxyContainers removes the MCP server container and any proxy containers.
+func (c *Client) removeProxyContainers(
+	ctx context.Context,
+	containerName string,
+	workloadLabels map[string]string,
+) error {
+	// remove the / if it starts with it
+	containerName = strings.TrimPrefix(containerName, "/")
 
 	// If network isolation is not enabled, then there is nothing else to do.
 	// NOTE: This check treats all workloads created before the introduction of

@@ -26,12 +26,12 @@ const (
 type HTTPTransport struct {
 	transportType     types.TransportType
 	host              string
-	port              int
+	proxyPort         int
 	targetPort        int
 	targetHost        string
 	containerID       string
 	containerName     string
-	runtime           rt.Runtime
+	deployer          rt.Deployer
 	debug             bool
 	middlewares       []types.Middleware
 	prometheusHandler http.Handler
@@ -54,9 +54,9 @@ type HTTPTransport struct {
 func NewHTTPTransport(
 	transportType types.TransportType,
 	host string,
-	port int,
+	proxyPort int,
 	targetPort int,
-	runtime rt.Runtime,
+	deployer rt.Deployer,
 	debug bool,
 	targetHost string,
 	prometheusHandler http.Handler,
@@ -74,11 +74,11 @@ func NewHTTPTransport(
 	return &HTTPTransport{
 		transportType:     transportType,
 		host:              host,
-		port:              port,
+		proxyPort:         proxyPort,
 		middlewares:       middlewares,
 		targetPort:        targetPort,
 		targetHost:        targetHost,
-		runtime:           runtime,
+		deployer:          deployer,
 		debug:             debug,
 		prometheusHandler: prometheusHandler,
 		shutdownCh:        make(chan struct{}),
@@ -90,9 +90,9 @@ func (t *HTTPTransport) Mode() types.TransportType {
 	return t.transportType
 }
 
-// Port returns the port used by the transport.
-func (t *HTTPTransport) Port() int {
-	return t.port
+// ProxyPort returns the proxy port used by the transport.
+func (t *HTTPTransport) ProxyPort() int {
+	return t.proxyPort
 }
 
 var transportEnvMap = map[types.TransportType]string{
@@ -101,13 +101,13 @@ var transportEnvMap = map[types.TransportType]string{
 }
 
 // Setup prepares the transport for use.
-func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, containerName string, image string, cmdArgs []string,
+func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containerName string, image string, cmdArgs []string,
 	envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
 	isolateNetwork bool) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	t.runtime = runtime
+	t.deployer = runtime
 	t.containerName = containerName
 
 	env, ok := transportEnvMap[t.transportType]
@@ -153,7 +153,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, exposedPort, err := t.runtime.DeployWorkload(
+	containerID, exposedPort, err := t.deployer.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -181,7 +181,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Runtime, container
 	}
 
 	// we don't want to override the targetPort in a Kubernetes deployment. Because
-	// by default the Kubernetes container runtime returns `0` for the exposedPort
+	// by default the Kubernetes container deployer returns `0` for the exposedPort
 	// therefore causing the "target port not set" error when it is assigned to the targetPort.
 	// Issues:
 	// - https://github.com/stacklok/toolhive/issues/902
@@ -208,8 +208,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return errors.ErrContainerNameNotSet
 	}
 
-	if t.runtime == nil {
-		return fmt.Errorf("container runtime not set")
+	if t.deployer == nil {
+		return fmt.Errorf("container deployer not set")
 	}
 
 	// Create and start the transparent proxy
@@ -227,15 +227,15 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	containerPort := t.targetPort
 	targetURI := fmt.Sprintf("http://%s:%d", targetHost, containerPort)
 	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
-		t.port, targetURI)
+		t.proxyPort, targetURI)
 
 	// Create the transparent proxy with middlewares
-	t.proxy = transparent.NewTransparentProxy(t.host, t.port, t.containerName, targetURI, t.prometheusHandler, t.middlewares...)
+	t.proxy = transparent.NewTransparentProxy(t.host, t.proxyPort, t.containerName, targetURI, t.prometheusHandler, t.middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}
 
-	logger.Infof("HTTP transport started for container %s on port %d", t.containerName, t.port)
+	logger.Infof("HTTP transport started for container %s on port %d", t.containerName, t.proxyPort)
 
 	// Create a container monitor
 	monitorRuntime, err := container.NewFactory().Create(ctx)
@@ -277,9 +277,9 @@ func (t *HTTPTransport) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Stop the container if runtime is available
-	if t.runtime != nil && t.containerID != "" {
-		if err := t.runtime.StopWorkload(ctx, t.containerID); err != nil {
+	// Stop the container if deployer is available
+	if t.deployer != nil && t.containerID != "" {
+		if err := t.deployer.StopWorkload(ctx, t.containerID); err != nil {
 			return fmt.Errorf("failed to stop workload: %w", err)
 		}
 	}

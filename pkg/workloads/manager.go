@@ -37,7 +37,8 @@ type Manager interface {
 	GetWorkload(ctx context.Context, workloadName string) (Workload, error)
 	// ListWorkloads retrieves the states of all workloads.
 	// The `listAll` parameter determines whether to include workloads that are not running.
-	ListWorkloads(ctx context.Context, listAll bool) ([]Workload, error)
+	// The optional `labelFilters` parameter allows filtering workloads by labels (format: key=value).
+	ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error)
 	// DeleteWorkloads deletes the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
@@ -114,7 +115,7 @@ func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (
 	return WorkloadFromContainerInfo(container)
 }
 
-func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool) ([]Workload, error) {
+func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error) {
 	// List containers
 	containers, err := d.runtime.ListWorkloads(ctx)
 	if err != nil {
@@ -134,7 +135,49 @@ func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool) ([]Wor
 		}
 	}
 
+	// Apply label filtering if specified
+	if len(labelFilters) > 0 {
+		workloads, err = d.filterWorkloadsByLabels(workloads, labelFilters)
+		if err != nil {
+			return nil, fmt.Errorf("failed to filter workloads by labels: %v", err)
+		}
+	}
+
 	return workloads, nil
+}
+
+// filterWorkloadsByLabels filters workloads based on label selectors
+func (d *defaultManager) filterWorkloadsByLabels(workloadList []Workload, labelFilters []string) ([]Workload, error) {
+	// Parse label filters
+	filters := make(map[string]string)
+	for _, filter := range labelFilters {
+		key, value, err := labels.ParseLabel(filter)
+		if err != nil {
+			return nil, fmt.Errorf("invalid label filter '%s': %v", filter, err)
+		}
+		filters[key] = value
+	}
+
+	// Filter workloads
+	var filtered []Workload
+	for _, workload := range workloadList {
+		if d.matchesLabelFilters(workload.Labels, filters) {
+			filtered = append(filtered, workload)
+		}
+	}
+
+	return filtered, nil
+}
+
+// matchesLabelFilters checks if workload labels match all the specified filters
+func (*defaultManager) matchesLabelFilters(workloadLabels, filters map[string]string) bool {
+	for filterKey, filterValue := range filters {
+		workloadValue, exists := workloadLabels[filterKey]
+		if !exists || workloadValue != filterValue {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
@@ -189,8 +232,37 @@ func (d *defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 	return err
 }
 
+func validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig) error {
+	// If there are run secrets, validate them
+	if len(runConfig.Secrets) > 0 {
+		cfg := config.GetConfig()
+
+		providerType, err := cfg.Secrets.GetProviderType()
+		if err != nil {
+			return fmt.Errorf("error determining secrets provider type: %w", err)
+		}
+
+		secretManager, err := secrets.CreateSecretProvider(providerType)
+		if err != nil {
+			return fmt.Errorf("error instantiating secret manager: %w", err)
+		}
+
+		err = runConfig.ValidateSecrets(ctx, secretManager)
+		if err != nil {
+			return fmt.Errorf("error processing secrets: %w", err)
+		}
+	}
+	return nil
+}
+
 //nolint:gocyclo // This function is complex but manageable
 func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *runner.RunConfig) error {
+	// before running, validate the parameters for the workload
+	err := validateSecretParameters(ctx, runConfig)
+	if err != nil {
+		return fmt.Errorf("failed to validate workload parameters: %w", err)
+	}
+
 	// Get the current executable path
 	execPath, err := os.Executable()
 	if err != nil {
@@ -279,6 +351,14 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// Add volume mounts if they were provided
 	for _, volume := range runConfig.Volumes {
 		detachedArgs = append(detachedArgs, "--volume", volume)
+	}
+
+	// Add labels if they were provided
+	for key, value := range runConfig.ContainerLabels {
+		// Skip standard ToolHive labels as they will be added automatically
+		if !labels.IsStandardToolHiveLabel(key) {
+			detachedArgs = append(detachedArgs, "--label", fmt.Sprintf("%s=%s", key, value))
+		}
 	}
 
 	// Add secrets if they were provided
@@ -673,7 +753,7 @@ func (d *defaultManager) loadRunnerFromState(ctx context.Context, baseName strin
 	}
 
 	// Update the runtime in the loaded configuration
-	r.Config.Runtime = d.runtime
+	r.Config.Deployer = d.runtime
 
 	return r, nil
 }

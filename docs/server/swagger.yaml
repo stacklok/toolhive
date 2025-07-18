@@ -56,13 +56,6 @@ components:
             type: integer
           type: array
           uniqueItems: false
-        allow_transport:
-          description: AllowTransport is a list of allowed transport protocols (tcp,
-            udp)
-          items:
-            type: string
-          type: array
-          uniqueItems: false
         insecure_allow_all:
           description: InsecureAllowAll allows all outbound network connections
           type: boolean
@@ -605,6 +598,12 @@ components:
         created_at:
           description: CreatedAt is the timestamp when the workload was created.
           type: string
+        labels:
+          additionalProperties:
+            type: string
+          description: Labels are the container labels (excluding standard ToolHive
+            labels)
+          type: object
         name:
           description: |-
             Name is the name of the workload.

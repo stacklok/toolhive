@@ -303,7 +303,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `insecureAllowAll` _boolean_ | InsecureAllowAll allows all outbound network connections (not recommended) | false |  |
-| `allowTransport` _string array_ | AllowTransport is a list of transport protocols to allow (e.g., "tcp", "udp") |  |  |
 | `allowHost` _string array_ | AllowHost is a list of hosts to allow connections to |  |  |
 | `allowPort` _integer array_ | AllowPort is a list of ports to allow connections to |  |  |
 

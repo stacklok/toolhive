@@ -73,6 +73,7 @@ tasks:
       - mkdir -p bin
       - go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/thv ./cmd/thv
 
+
   install:
     desc: Install the thv binary to GOPATH/bin
     vars:

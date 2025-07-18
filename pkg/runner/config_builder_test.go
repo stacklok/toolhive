@@ -35,7 +35,6 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 			Network: &permissions.NetworkPermissions{
 				Outbound: &permissions.OutboundNetworkPermissions{
 					InsecureAllowAll: true,
-					AllowTransport:   []string{"http", "https"},
 				},
 			},
 			Read:  []permissions.MountDeclaration{permissions.MountDeclaration("/test/read")},
@@ -49,7 +48,6 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 				InsecureAllowAll: false,
 				AllowHost:        []string{"localhost"},
 				AllowPort:        []int{8080},
-				AllowTransport:   []string{"http", "https"},
 			},
 		},
 		Read:  []permissions.MountDeclaration{permissions.MountDeclaration("file:///tmp/test-read")},
@@ -138,7 +136,6 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 				Network: &permissions.NetworkPermissions{
 					Outbound: &permissions.OutboundNetworkPermissions{
 						InsecureAllowAll: true,
-						AllowTransport:   []string{"http", "https"},
 					},
 				},
 				Read:  []permissions.MountDeclaration{permissions.MountDeclaration("/test/read")},
@@ -209,12 +206,6 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 			if tc.name == "None profile by name" || tc.name == "Stdio profile by name" {
 				assert.False(t, config.PermissionProfile.Network.Outbound.InsecureAllowAll,
 					"None/Stdio profile should not allow all outbound network connections")
-			}
-
-			if tc.expectedPermissionProfile.Network.Outbound.AllowTransport != nil {
-				assert.Equal(t, tc.expectedPermissionProfile.Network.Outbound.AllowTransport,
-					config.PermissionProfile.Network.Outbound.AllowTransport,
-					"Network outbound allowed transports should match in built config")
 			}
 
 			if tc.expectedPermissionProfile.Network.Outbound.AllowHost != nil {

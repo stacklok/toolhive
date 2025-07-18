@@ -101,8 +101,8 @@ type RunConfig struct {
 	// Only applicable when using Kubernetes runtime
 	K8sPodTemplatePatch string `json:"k8s_pod_template_patch,omitempty" yaml:"k8s_pod_template_patch,omitempty"`
 
-	// Runtime is the container runtime to use (not serialized)
-	Runtime rt.Runtime `json:"-" yaml:"-"`
+	// Deployer is the container runtime to use (not serialized)
+	Deployer rt.Deployer `json:"-" yaml:"-"`
 
 	// IsolateNetwork indicates whether to isolate the network for the container
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
@@ -148,7 +148,7 @@ func NewRunConfig() *RunConfig {
 // NewRunConfigFromFlags creates a new RunConfig with values from command-line flags
 func NewRunConfigFromFlags(
 	ctx context.Context,
-	runtime rt.Runtime,
+	runtime rt.Deployer,
 	cmdArgs []string,
 	name string,
 	imageURL string,
@@ -166,6 +166,7 @@ func NewRunConfigFromFlags(
 	port int,
 	targetPort int,
 	envVars []string,
+	runLabels []string,
 	oidcIssuer string,
 	oidcAudience string,
 	oidcJwksURL string,
@@ -204,6 +205,7 @@ func NewRunConfigFromFlags(
 		WithProxyMode(proxyMode).
 		WithTransportAndPorts(mcpTransport, port, targetPort).
 		WithAuditEnabled(enableAudit, auditConfigPath).
+		WithLabels(runLabels).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
 			thvCABundle, jwksAuthTokenFile, jwksAllowPrivateIP).
 		WithTelemetryConfig(otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
@@ -234,11 +236,25 @@ func (c *RunConfig) WithTransport(t string) (*RunConfig, error) {
 }
 
 // WithPorts configures the host and target ports
-func (c *RunConfig) WithPorts(port, targetPort int) (*RunConfig, error) {
-	// Select a port for the HTTP proxy (host port)
-	selectedPort, err := networking.FindOrUsePort(port)
-	if err != nil {
-		return c, err
+func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
+	var selectedPort int
+	var err error
+
+	// If the user requested an explicit proxy port, check if it's available.
+	// If not available - treat as an error, since picking a random port here
+	// is going to lead to confusion.
+	if proxyPort != 0 {
+		if !networking.IsAvailable(proxyPort) {
+			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
+		}
+		logger.Debugf("Using requested port: %d", proxyPort)
+		selectedPort = proxyPort
+	} else {
+		// Otherwise - pick a random available port.
+		selectedPort, err = networking.FindOrUsePort(proxyPort)
+		if err != nil {
+			return c, err
+		}
 	}
 	c.Port = selectedPort
 
@@ -275,6 +291,20 @@ func (c *RunConfig) WithEnvironmentVariables(envVarStrings []string) (*RunConfig
 	// Set transport-specific environment variables
 	environment.SetTransportEnvironmentVariables(c.EnvVars, string(c.Transport), c.TargetPort)
 	return c, nil
+}
+
+// ValidateSecrets checks if the secrets can be parsed and are valid
+func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.Provider) error {
+	if len(c.Secrets) == 0 {
+		return nil // No secrets to validate
+	}
+
+	_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+	if err != nil {
+		return fmt.Errorf("failed to get secrets: %w", err)
+	}
+
+	return nil
 }
 
 // WithSecrets processes secrets and adds them to environment variables

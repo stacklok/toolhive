@@ -1,10 +1,10 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
-  "last_updated": "2025-07-14T00:23:51Z",
+  "last_updated": "2025-07-18T00:22:42Z",
   "servers": {
     "atlassian": {
       "args": [],
-      "description": "Model Context Protocol (MCP) server for Atlassian products (Confluence and Jira). This integration supports both Confluence \u0026 Jira Cloud and Server/Data Center deployments.",
+      "description": "Connect to Atlassian products like Confluence, Jira Cloud and Server/Data deployments.",
       "env_vars": [
         {
           "description": "Confluence URL (e.g., https://your-domain.atlassian.net/wiki)",
@@ -88,9 +88,9 @@
       ],
       "image": "ghcr.io/sooperset/mcp-atlassian:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:47Z",
-        "pulls": 9329,
-        "stars": 2400
+        "last_updated": "2025-07-18T00:22:36Z",
+        "pulls": 9769,
+        "stars": 2469
       },
       "permissions": {
         "network": {
@@ -101,9 +101,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -208,9 +205,9 @@
       ],
       "image": "public.ecr.aws/f3y8w4n0/awslabs/cost-analysis-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:50Z",
-        "pulls": 5843,
-        "stars": 4616
+        "last_updated": "2025-07-18T00:22:41Z",
+        "pulls": 6163,
+        "stars": 4768
       },
       "permissions": {
         "network": {
@@ -224,9 +221,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -269,16 +263,15 @@
       ],
       "image": "mcp/aws-diagram:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:51Z",
-        "pulls": 5662,
-        "stars": 4616
+        "last_updated": "2025-07-18T00:22:41Z",
+        "pulls": 5866,
+        "stars": 4768
       },
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -322,9 +315,9 @@
       ],
       "image": "mcp/aws-documentation:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:51Z",
-        "pulls": 6355,
-        "stars": 4616
+        "last_updated": "2025-07-18T00:22:42Z",
+        "pulls": 6867,
+        "stars": 4768
       },
       "permissions": {
         "network": {
@@ -335,9 +328,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -361,9 +351,95 @@
       ],
       "transport": "stdio"
     },
+    "buildkite": {
+      "args": [
+        "stdio"
+      ],
+      "description": "Connect your Buildkite data (pipelines, builds, jobs, tests) to AI tooling and editors.",
+      "env_vars": [
+        {
+          "description": "Your Buildkite API access token",
+          "name": "BUILDKITE_API_TOKEN",
+          "required": true,
+          "secret": true
+        },
+        {
+          "description": "Token threshold for job logs. If exceeded, logs will be written to disk and returned by path (for local use only).",
+          "name": "JOB_LOG_TOKEN_THRESHOLD",
+          "required": false
+        }
+      ],
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:latest",
+      "metadata": {
+        "last_updated": "2025-07-18T00:22:39Z",
+        "pulls": 428,
+        "stars": 18
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              ".buildkite.com"
+            ],
+            "allow_port": [
+              443
+            ],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [
+          "/tmp"
+        ],
+        "write": [
+          "/tmp"
+        ]
+      },
+      "repository_url": "https://github.com/buildkite/buildkite-mcp-server",
+      "status": "Active",
+      "tags": [
+        "buildkite",
+        "continuous-integration",
+        "continuous-delivery",
+        "pipelines",
+        "builds",
+        "jobs",
+        "devops",
+        "testing"
+      ],
+      "tier": "Official",
+      "tools": [
+        "get_cluster",
+        "list_clusters",
+        "get_cluster_queue",
+        "list_cluster_queues",
+        "get_pipeline",
+        "list_pipelines",
+        "create_pipeline",
+        "update_pipeline",
+        "list_builds",
+        "get_build",
+        "create_build",
+        "get_build_test_engine_runs",
+        "get_jobs",
+        "get_job_logs",
+        "list_artifacts",
+        "get_artifact",
+        "list_annotations",
+        "list_test_runs",
+        "get_test_run",
+        "get_failed_executions",
+        "get_test",
+        "access_token",
+        "current_user",
+        "user_token_organization"
+      ],
+      "transport": "stdio"
+    },
     "elasticsearch": {
-      "args": [],
-      "description": "Connect to your Elasticsearch data directly from any MCP Client.",
+      "args": [
+        "http"
+      ],
+      "description": "Connect to your Elasticsearch data.",
       "env_vars": [
         {
           "description": "Your Elasticsearch instance URL",
@@ -410,9 +486,9 @@
       ],
       "image": "mcp/elasticsearch:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 7123,
-        "stars": 342
+        "last_updated": "2025-07-18T00:22:38Z",
+        "pulls": 7607,
+        "stars": 355
       },
       "permissions": {
         "network": {
@@ -421,9 +497,6 @@
             "allow_port": [
               443,
               9200
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": true
           }
@@ -443,14 +516,16 @@
         "metrics",
         "logs"
       ],
+      "target_port": 8080,
       "tier": "Official",
       "tools": [
+        "esql",
         "get_mappings",
         "get_shards",
         "list_indices",
         "search"
       ],
-      "transport": "stdio"
+      "transport": "streamable-http"
     },
     "everything": {
       "args": [],
@@ -458,16 +533,15 @@
       "env_vars": [],
       "image": "mcp/everything:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:50Z",
-        "pulls": 12443,
-        "stars": 59315
+        "last_updated": "2025-07-18T00:22:40Z",
+        "pulls": 13015,
+        "stars": 60147
       },
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -502,13 +576,13 @@
     },
     "fetch": {
       "args": [],
-      "description": "A Model Context Protocol server that provides web content fetching capabilities",
+      "description": "Allows you to fetch content from the web",
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/gofetch/server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:50Z",
-        "pulls": 10086,
-        "stars": 3
+        "last_updated": "2025-07-18T00:22:42Z",
+        "pulls": 10374,
+        "stars": 13
       },
       "permissions": {
         "network": {
@@ -516,9 +590,6 @@
             "allow_host": [],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": true
           }
@@ -551,24 +622,23 @@
       "tools": [
         "fetch"
       ],
-      "transport": "sse"
+      "transport": "streamable-http"
     },
     "filesystem": {
       "args": [],
-      "description": "Node.js server implementing Model Context Protocol (MCP) for filesystem operations.",
+      "description": "Allows you to do filesystem operations.",
       "env_vars": [],
       "image": "mcp/filesystem:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 16043,
-        "stars": 59315
+        "last_updated": "2025-07-18T00:22:38Z",
+        "pulls": 16615,
+        "stars": 60147
       },
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -656,9 +726,9 @@
       ],
       "image": "mcp/firecrawl:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:47Z",
-        "pulls": 9156,
-        "stars": 3788
+        "last_updated": "2025-07-18T00:22:38Z",
+        "pulls": 9592,
+        "stars": 3829
       },
       "permissions": {
         "network": {
@@ -668,9 +738,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -709,20 +776,19 @@
     },
     "git": {
       "args": [],
-      "description": "A Model Context Protocol server for Git repository interaction and automation",
+      "description": "Provides support for interacting with Git repositories",
       "env_vars": [],
       "image": "mcp/git:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:51Z",
-        "pulls": 8036,
-        "stars": 59315
+        "last_updated": "2025-07-18T00:22:42Z",
+        "pulls": 8332,
+        "stars": 60147
       },
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -761,7 +827,7 @@
     },
     "github": {
       "args": [],
-      "description": "The GitHub MCP Server provides seamless integration with GitHub APIs, enabling advanced automation and interaction capabilities for developers and tools",
+      "description": "Provides integration with GitHub's APIs",
       "env_vars": [
         {
           "description": "GitHub personal access token with appropriate permissions",
@@ -777,9 +843,9 @@
       ],
       "image": "ghcr.io/github/github-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
+        "last_updated": "2025-07-18T00:22:37Z",
         "pulls": 5000,
-        "stars": 17305
+        "stars": 17475
       },
       "permissions": {
         "network": {
@@ -790,9 +856,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -858,7 +921,7 @@
     },
     "grafana": {
       "args": [],
-      "description": "A Model Context Protocol (MCP) server for Grafana that provides access to your Grafana instance and the surrounding ecosystem, enabling dashboard search, datasource queries, alerting management, incident response, and Sift investigations.",
+      "description": "Provides access to your Grafana instance and the surrounding ecosystem, enabling dashboard search, datasource queries, alerting management, incident response, and Sift investigations.",
       "env_vars": [
         {
           "description": "URL of the Grafana instance to connect to",
@@ -874,9 +937,9 @@
       ],
       "image": "mcp/grafana:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:47Z",
-        "pulls": 5880,
-        "stars": 1141
+        "last_updated": "2025-07-18T00:22:37Z",
+        "pulls": 6160,
+        "stars": 1179
       },
       "permissions": {
         "network": {
@@ -884,9 +947,6 @@
             "allow_host": [],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": true
           }
@@ -960,7 +1020,7 @@
     },
     "hass-mcp": {
       "args": [],
-      "description": "A Model Context Protocol (MCP) server for Home Assistant integration with Claude and other LLMs, enabling direct interaction with smart home devices, sensors, and automations.",
+      "description": "Integrates Home Assistant with LLM applications, enabling direct interaction with smart home devices, sensors, and automations.",
       "env_vars": [
         {
           "description": "Home Assistant instance URL (e.g. http://homeassistant.local:8123)",
@@ -976,18 +1036,15 @@
       ],
       "image": "voska/hass-mcp:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:47Z",
-        "pulls": 12264,
-        "stars": 126
+        "last_updated": "2025-07-18T00:22:41Z",
+        "pulls": 12994,
+        "stars": 128
       },
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [
-              "tcp"
-            ],
             "insecure_allow_all": true
           }
         },
@@ -1026,7 +1083,7 @@
     },
     "k8s": {
       "args": [],
-      "description": "MKP is a Model Context Protocol (MCP) server for Kubernetes that allows LLM-powered applications to interact with Kubernetes clusters.",
+      "description": "Allows LLM-powered applications to interact with Kubernetes clusters.",
       "env_vars": [
         {
           "description": "Path to the kubeconfig file for Kubernetes API authentication (mounted into the container with --volume)",
@@ -1036,9 +1093,9 @@
       ],
       "image": "ghcr.io/stackloklabs/mkp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 9856,
-        "stars": 35
+        "last_updated": "2025-07-18T00:22:39Z",
+        "pulls": 10368,
+        "stars": 42
       },
       "permissions": {
         "network": {
@@ -1046,9 +1103,6 @@
             "allow_host": [],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": true
           }
@@ -1084,9 +1138,69 @@
       ],
       "transport": "sse"
     },
+    "kyverno": {
+      "args": [],
+      "description": "Provides Kyverno policy management capabilities enabling AI assistants to interact with Kyverno policies in Kubernetes clusters for comprehensive policy management, security assessment, and compliance monitoring.",
+      "env_vars": [
+        {
+          "description": "Path to the kubeconfig file for Kubernetes API authentication (mounted into the container with --volume)",
+          "name": "KUBECONFIG",
+          "required": false
+        }
+      ],
+      "image": "ghcr.io/nirmata/kyverno-mcp:latest",
+      "metadata": {
+        "last_updated": "2025-01-18T00:00:00Z",
+        "pulls": 1250,
+        "stars": 42
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [
+              443
+            ],
+            "insecure_allow_all": true
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/nirmata/kyverno-mcp",
+      "status": "Active",
+      "tags": [
+        "kyverno",
+        "kubernetes",
+        "policy-management",
+        "security",
+        "compliance",
+        "governance",
+        "policy-as-code",
+        "nirmata",
+        "admission-control",
+        "validation",
+        "mutation",
+        "generation",
+        "policy-violations",
+        "security-assessment",
+        "rbac",
+        "pod-security",
+        "best-practices"
+      ],
+      "tier": "Official",
+      "tools": [
+        "list_contexts",
+        "switch_context",
+        "apply_policies",
+        "show_violations",
+        "help"
+      ],
+      "transport": "stdio"
+    },
     "memory": {
       "args": [],
-      "description": "A basic implementation of persistent memory using a local knowledge graph. This lets Claude remember information about the user across chats.",
+      "description": "Provides persistent memory to an LLMs application for storing information about the user across chats. Implemented using a local knowledge graph.",
       "env_vars": [
         {
           "description": "Path to the memory storage JSON file (default: memory.json in the server directory)",
@@ -1096,9 +1210,9 @@
       ],
       "image": "mcp/memory:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 12174,
-        "stars": 59315
+        "last_updated": "2025-07-18T00:22:39Z",
+        "pulls": 12634,
+        "stars": 60147
       },
       "permissions": {
         "network": {
@@ -1106,9 +1220,6 @@
             "allow_host": [],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -1143,7 +1254,7 @@
     },
     "mongodb": {
       "args": [],
-      "description": "A Model Context Protocol server for interacting with MongoDB Databases and MongoDB Atlas.",
+      "description": "Provides support for interacting with MongoDB Databases and MongoDB Atlas.",
       "env_vars": [
         {
           "description": "MongoDB connection string for direct database connections (optional, if not set, you'll need to call the connect tool before interacting with MongoDB data)",
@@ -1201,9 +1312,9 @@
       ],
       "image": "mongodb/mongodb-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:47Z",
-        "pulls": 2116,
-        "stars": 405
+        "last_updated": "2025-07-18T00:22:37Z",
+        "pulls": 2484,
+        "stars": 418
       },
       "permissions": {
         "network": {
@@ -1215,9 +1326,6 @@
               27018,
               27019,
               27020
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": true
           }
@@ -1279,7 +1387,7 @@
         "--sse-address",
         ":8001"
       ],
-      "description": "A Model Context Protocol server for NetBird, enabling management of your NetBird network.",
+      "description": "Enables management of an NetBird network.",
       "env_vars": [
         {
           "description": "NetBird API token for authentication",
@@ -1295,8 +1403,8 @@
       ],
       "image": "aantti/mcp-netbird:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 7896,
+        "last_updated": "2025-07-18T00:22:39Z",
+        "pulls": 8272,
         "stars": 35
       },
       "permissions": {
@@ -1307,9 +1415,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": true
           }
@@ -1344,7 +1449,7 @@
     },
     "notion": {
       "args": [],
-      "description": "Official Notion MCP server.",
+      "description": "Provides integration with Notion.",
       "env_vars": [
         {
           "description": "HTTP headers for Notion API requests in JSON format. Example: {\"Authorization\":\"Bearer ntn_****\",\"Notion-Version\":\"2022-06-28\"}",
@@ -1355,9 +1460,9 @@
       ],
       "image": "mcp/notion:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:50Z",
-        "pulls": 2691,
-        "stars": 2594
+        "last_updated": "2025-07-18T00:22:39Z",
+        "pulls": 3143,
+        "stars": 2677
       },
       "permissions": {
         "network": {
@@ -1367,9 +1472,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -1409,7 +1511,7 @@
     },
     "oci-registry": {
       "args": [],
-      "description": "The OCI Registry MCP Server enables secure and seamless querying of OCI container registries, providing tools for image introspection, tag discovery, and manifest/config retrieval.",
+      "description": "Enables secure and seamless querying of OCI container registries, providing tools for image introspection, tag discovery, and manifest/config retrieval.",
       "env_vars": [
         {
           "description": "Bearer token for OCI registry authentication",
@@ -1431,9 +1533,9 @@
       ],
       "image": "ghcr.io/stackloklabs/ocireg-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 4861,
-        "stars": 4
+        "last_updated": "2025-07-18T00:22:40Z",
+        "pulls": 5257,
+        "stars": 9
       },
       "permissions": {
         "network": {
@@ -1441,9 +1543,6 @@
             "allow_host": [],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": true
           }
@@ -1482,13 +1581,13 @@
     },
     "osv": {
       "args": [],
-      "description": "An MCP (Model Context Protocol) server that provides access to the OSV (Open Source Vulnerabilities) database. This server allows LLM-powered applications to query the OSV database for vulnerability information about packages and commits.",
+      "description": "Provides access to the OSV (Open Source Vulnerabilities) database. Allows LLM-powered applications to query the OSV database for vulnerability information about packages and commits.",
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/osv-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 7310,
-        "stars": 7
+        "last_updated": "2025-07-18T00:22:37Z",
+        "pulls": 7686,
+        "stars": 14
       },
       "permissions": {
         "network": {
@@ -1498,9 +1597,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -1539,7 +1635,7 @@
     },
     "perplexity-ask": {
       "args": [],
-      "description": "An MCP server implementation that integrates Perplexity AI's Sonar API for live web searches, in-depth research, and reasoning tasks.",
+      "description": "Integrates Perplexity AI's Sonar API for live web searches, in-depth research, and reasoning tasks.",
       "env_vars": [
         {
           "description": "Perplexity API key",
@@ -1550,9 +1646,9 @@
       ],
       "image": "mcp/perplexity-ask:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:51Z",
-        "pulls": 11220,
-        "stars": 1378
+        "last_updated": "2025-07-18T00:22:41Z",
+        "pulls": 11716,
+        "stars": 1401
       },
       "permissions": {
         "network": {
@@ -1562,9 +1658,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -1592,13 +1685,13 @@
         "--port",
         "8931"
       ],
-      "description": "A Model Context Protocol (MCP) server that provides browser automation capabilities using Playwright",
+      "description": "Provides browser automation capabilities using Playwright",
       "env_vars": [],
       "image": "mcr.microsoft.com/playwright/mcp",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:51Z",
-        "pulls": 18854,
-        "stars": 14595
+        "last_updated": "2025-07-18T00:22:42Z",
+        "pulls": 19450,
+        "stars": 14891
       },
       "permissions": {
         "network": {
@@ -1606,9 +1699,6 @@
             "allow_host": [],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": true
           }
@@ -1657,7 +1747,7 @@
     },
     "redis": {
       "args": [],
-      "description": "A Model Context Protocol server that provides access to Redis databases. This server enables LLMs to interact with Redis key-value stores through a set of standardized tools.",
+      "description": "Enables LLMs to interact with Redis key-value databases through a set of standardized tools.",
       "env_vars": [
         {
           "description": "Redis IP or hostname (default \"127.0.0.1\")",
@@ -1728,9 +1818,9 @@
       ],
       "image": "mcp/redis:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 7646,
-        "stars": 149
+        "last_updated": "2025-07-18T00:22:40Z",
+        "pulls": 7986,
+        "stars": 156
       },
       "permissions": {
         "network": {
@@ -1739,9 +1829,6 @@
             "allow_port": [
               443,
               6379
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": true
           }
@@ -1813,7 +1900,7 @@
         "--transport",
         "sse"
       ],
-      "description": "An MCP server for using Semgrep to scan code for security vulnerabilities. Semgrep is a fast, deterministic static analysis tool that semantically understands many languages and comes with over 5,000 rules.",
+      "description": "Allows you to scan code for security vulnerabilities using Semgrep, a fast, deterministic static analysis tool that semantically understands many languages and comes with over 5,000 rules.",
       "env_vars": [
         {
           "description": "Token for connecting to Semgrep AppSec Platform",
@@ -1824,9 +1911,9 @@
       ],
       "image": "ghcr.io/semgrep/mcp:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 8820,
-        "stars": 220
+        "last_updated": "2025-07-18T00:22:37Z",
+        "pulls": 9240,
+        "stars": 224
       },
       "permissions": {
         "network": {
@@ -1836,9 +1923,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -1874,20 +1958,19 @@
     },
     "sequentialthinking": {
       "args": [],
-      "description": "MCP server enabling dynamic problem-solving with a structured, reflective approach that can adapt and evolve as understanding deepens.",
+      "description": "Enables dynamic problem-solving with a structured, reflective approach that can adapt and evolve as understanding deepens.",
       "env_vars": [],
       "image": "mcp/sequentialthinking:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 11843,
-        "stars": 59315
+        "last_updated": "2025-07-18T00:22:38Z",
+        "pulls": 12215,
+        "stars": 60147
       },
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -1922,16 +2005,15 @@
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/sqlite-mcp/server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:48Z",
-        "pulls": 756,
-        "stars": 1
+        "last_updated": "2025-07-18T00:22:38Z",
+        "pulls": 1188,
+        "stars": 7
       },
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },
@@ -1958,13 +2040,13 @@
     },
     "terraform": {
       "args": [],
-      "description": "MCP Server for providing seamless integration with Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.",
+      "description": "Provides integration with the Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.",
       "env_vars": [],
       "image": "hashicorp/terraform-mcp-server:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:49Z",
-        "pulls": 5504,
-        "stars": 726
+        "last_updated": "2025-07-18T00:22:41Z",
+        "pulls": 6016,
+        "stars": 737
       },
       "permissions": {
         "network": {
@@ -1974,9 +2056,6 @@
             ],
             "allow_port": [
               443
-            ],
-            "allow_transport": [
-              "tcp"
             ],
             "insecure_allow_all": false
           }
@@ -2012,20 +2091,19 @@
     },
     "time": {
       "args": [],
-      "description": "MCP server for time info and IANA timezone conversions with auto system timezone detection.",
+      "description": "Provides time information and IANA timezone conversions with auto system timezone detection.",
       "env_vars": [],
       "image": "mcp/time:latest",
       "metadata": {
-        "last_updated": "2025-07-14T00:23:50Z",
-        "pulls": 8394,
-        "stars": 59315
+        "last_updated": "2025-07-18T00:22:40Z",
+        "pulls": 8718,
+        "stars": 60147
       },
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [],
             "allow_port": [],
-            "allow_transport": [],
             "insecure_allow_all": false
           }
         },

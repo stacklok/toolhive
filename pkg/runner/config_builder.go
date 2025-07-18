@@ -9,6 +9,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -38,8 +39,8 @@ func NewRunConfigBuilder() *RunConfigBuilder {
 }
 
 // WithRuntime sets the container runtime
-func (b *RunConfigBuilder) WithRuntime(runtime rt.Runtime) *RunConfigBuilder {
-	b.config.Runtime = runtime
+func (b *RunConfigBuilder) WithRuntime(deployer rt.Deployer) *RunConfigBuilder {
+	b.config.Deployer = deployer
 	return b
 }
 
@@ -142,6 +143,30 @@ func (b *RunConfigBuilder) WithK8sPodPatch(patch string) *RunConfigBuilder {
 // WithProxyMode sets the proxy mode
 func (b *RunConfigBuilder) WithProxyMode(mode types.ProxyMode) *RunConfigBuilder {
 	b.config.ProxyMode = mode
+	return b
+}
+
+// WithLabels sets custom labels from command-line flags
+func (b *RunConfigBuilder) WithLabels(labelStrings []string) *RunConfigBuilder {
+	if len(labelStrings) == 0 {
+		return b
+	}
+
+	// Initialize ContainerLabels if it's nil
+	if b.config.ContainerLabels == nil {
+		b.config.ContainerLabels = make(map[string]string)
+	}
+
+	// Parse and add each label
+	for _, labelString := range labelStrings {
+		key, value, err := labels.ParseLabelWithValidation(labelString)
+		if err != nil {
+			logger.Warnf("Skipping invalid label: %s (%v)", labelString, err)
+			continue
+		}
+		b.config.ContainerLabels[key] = value
+	}
+
 	return b
 }
 

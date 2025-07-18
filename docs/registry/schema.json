@@ -254,16 +254,6 @@
           "uniqueItems": true,
           "default": []
         },
-        "allow_transport": {
-          "type": "array",
-          "description": "Allowed transport protocols for outbound connections",
-          "items": {
-            "type": "string",
-            "enum": ["tcp", "udp"]
-          },
-          "uniqueItems": true,
-          "default": []
-        },
         "insecure_allow_all": {
           "type": "boolean",
           "description": "Whether to allow all outbound connections (insecure, use with caution)",

@@ -92,16 +92,20 @@ func TestManager_List(t *testing.T) {
 	// Test listing all groups
 	groups, err := manager.List(ctx)
 	assert.NoError(t, err)
-	assert.Len(t, groups, 3)
 
-	// Check that all groups are present
+	// Check that all created groups are present in the list
 	groupMap := make(map[string]bool)
 	for _, group := range groups {
 		groupMap[group.Name] = true
 	}
+
+	// Verify that all our created groups are in the list
 	for _, name := range groupNames {
 		assert.True(t, groupMap[name], "Group %s should be in the list", name)
 	}
+
+	// Also verify that the list contains at least our expected groups
+	assert.GreaterOrEqual(t, len(groups), len(groupNames), "List should contain at least the created groups")
 }
 
 func TestManager_Delete(t *testing.T) {

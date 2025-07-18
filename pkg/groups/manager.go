@@ -83,6 +83,67 @@ func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
 	return m.store.Exists(ctx, name)
 }
 
+// AddWorkloadToGroup adds a workload to a group
+func (m *manager) AddWorkloadToGroup(ctx context.Context, groupName, workloadName string) error {
+	// Get the group
+	group, err := m.Get(ctx, groupName)
+	if err != nil {
+		return fmt.Errorf("failed to get group '%s': %w", groupName, err)
+	}
+
+	// Check if workload is already in the group
+	if group.HasWorkload(workloadName) {
+		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, groupName)
+	}
+
+	// Check if workload is already in another group
+	existingGroup, err := m.GetWorkloadGroup(ctx, workloadName)
+	if err != nil {
+		return fmt.Errorf("failed to check workload group membership: %w", err)
+	}
+	if existingGroup != nil {
+		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, existingGroup.Name)
+	}
+
+	// Add the workload to the group
+	group.AddWorkload(workloadName)
+	return m.saveGroup(ctx, group)
+}
+
+// RemoveWorkloadFromGroup removes a workload from a group
+func (m *manager) RemoveWorkloadFromGroup(ctx context.Context, groupName, workloadName string) error {
+	// Get the group
+	group, err := m.Get(ctx, groupName)
+	if err != nil {
+		return fmt.Errorf("failed to get group '%s': %w", groupName, err)
+	}
+
+	// Remove the workload from the group
+	if !group.RemoveWorkload(workloadName) {
+		return fmt.Errorf("workload '%s' is not in group '%s'", workloadName, groupName)
+	}
+
+	return m.saveGroup(ctx, group)
+}
+
+// GetWorkloadGroup returns the group that a workload belongs to, if any
+func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error) {
+	// List all groups
+	groups, err := m.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list groups: %w", err)
+	}
+
+	// Find the group that contains the workload
+	for _, group := range groups {
+		if group.HasWorkload(workloadName) {
+			return group, nil
+		}
+	}
+
+	return nil, nil // Workload is not in any group
+}
+
 // saveGroup saves the group to the group state store
 func (m *manager) saveGroup(ctx context.Context, group *Group) error {
 	writer, err := m.store.GetWriter(ctx, group.Name)

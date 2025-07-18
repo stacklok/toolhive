@@ -49,6 +49,9 @@ type Manager interface {
 	RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error
 	// RunWorkloadDetached runs a container in the background.
 	RunWorkloadDetached(ctx context.Context, runConfig *runner.RunConfig) error
+	// CreateWorkload creates a workload configuration without starting it.
+	// The workload will be in "Stopped" state initially.
+	CreateWorkload(ctx context.Context, runConfig *runner.RunConfig) error
 	// RestartWorkloads restarts the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
@@ -676,6 +679,32 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string) (
 	}
 
 	return group, nil
+}
+
+func (d *defaultManager) CreateWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
+	// Validate workload name to prevent path traversal attacks
+	if err := validateWorkloadName(runConfig.BaseName); err != nil {
+		return fmt.Errorf("invalid workload name '%s': %w", runConfig.BaseName, err)
+	}
+
+	// Ensure that the workload has a status entry before starting the process.
+	if err := d.statuses.CreateWorkloadStatus(ctx, runConfig.BaseName); err != nil {
+		// Failure to create the initial state is a fatal error.
+		return fmt.Errorf("failed to create workload status: %v", err)
+	}
+
+	// Save the run configuration to state so it can be started later
+	mcpRunner := runner.NewRunner(runConfig)
+	if err := mcpRunner.SaveState(ctx); err != nil {
+		return fmt.Errorf("failed to save workload state: %v", err)
+	}
+
+	// Set the status to stopped since we're not starting it immediately
+	d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, WorkloadStatusStopped, "")
+
+	logger.Infof("Workload %s created in 'Stopped' state.", runConfig.BaseName)
+
+	return nil
 }
 
 func (d *defaultManager) findContainerByName(ctx context.Context, name string) (*rt.ContainerInfo, error) {

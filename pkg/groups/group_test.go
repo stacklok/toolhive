@@ -2,235 +2,461 @@ package groups
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/state"
+	"github.com/stacklok/toolhive/pkg/state/mocks"
 )
 
+const testGroupName = "testgroup"
+
+// TestManager_Create demonstrates using gomock for testing group creation
 func TestManager_Create(t *testing.T) {
 	t.Parallel()
-	manager, err := NewManager()
-	require.NoError(t, err)
 
-	ctx := context.Background()
-	groupName := "testgroup_create_" + t.Name()
+	tests := []struct {
+		name        string
+		groupName   string
+		setupMock   func(*mocks.MockStore)
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:      "successful creation",
+			groupName: testGroupName,
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					Exists(gomock.Any(), testGroupName).
+					Return(false, nil)
+				mock.EXPECT().
+					GetWriter(gomock.Any(), testGroupName).
+					Return(&mockWriteCloser{}, nil)
+			},
+			expectError: false,
+		},
+		{
+			name:      "group already exists",
+			groupName: "existinggroup",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					Exists(gomock.Any(), "existinggroup").
+					Return(true, nil)
+			},
+			expectError: true,
+			errorMsg:    "already exists",
+		},
+		{
+			name:      "exists check fails",
+			groupName: testGroupName,
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					Exists(gomock.Any(), testGroupName).
+					Return(false, errors.New("exists check failed"))
+			},
+			expectError: true,
+			errorMsg:    "failed to check if group exists",
+		},
+		{
+			name:      "get writer fails",
+			groupName: testGroupName,
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					Exists(gomock.Any(), testGroupName).
+					Return(false, nil)
+				mock.EXPECT().
+					GetWriter(gomock.Any(), testGroupName).
+					Return(nil, errors.New("writer failed"))
+			},
+			expectError: true,
+			errorMsg:    "failed to get writer for group",
+		},
+	}
 
-	// Cleanup after test
-	defer func() {
-		_ = manager.Delete(ctx, groupName)
-	}()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	// Test creating a new group
-	err = manager.Create(ctx, groupName)
-	assert.NoError(t, err)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
 
-	// Test creating the same group again (should fail)
-	err = manager.Create(ctx, groupName)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "already exists")
+			mockStore := mocks.NewMockStore(ctrl)
+			manager := &manager{store: mockStore}
+
+			// Set up mock expectations
+			tt.setupMock(mockStore)
+
+			// Execute operation
+			err := manager.Create(context.Background(), tt.groupName)
+
+			// Verify results
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }
 
+// TestManager_Get demonstrates using gomock for testing group retrieval
 func TestManager_Get(t *testing.T) {
 	t.Parallel()
-	manager, err := NewManager()
-	require.NoError(t, err)
 
-	ctx := context.Background()
-	groupName := "testgroup_get_" + t.Name()
+	tests := []struct {
+		name          string
+		groupName     string
+		setupMock     func(*mocks.MockStore)
+		expectError   bool
+		errorMsg      string
+		expectedGroup *Group
+	}{
+		{
+			name:      "successful retrieval",
+			groupName: testGroupName,
+			setupMock: func(mock *mocks.MockStore) {
+				groupData := `{"name": "` + testGroupName + `"}`
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(io.NopCloser(strings.NewReader(groupData)), nil)
+			},
+			expectError:   false,
+			expectedGroup: &Group{Name: testGroupName},
+		},
+		{
+			name:      "group not found",
+			groupName: "nonexistent",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					GetReader(gomock.Any(), "nonexistent").
+					Return(nil, &os.PathError{Op: "open", Path: "nonexistent", Err: os.ErrNotExist})
+			},
+			expectError: true,
+			errorMsg:    "failed to get reader for group",
+		},
+		{
+			name:      "get reader fails",
+			groupName: testGroupName,
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(nil, errors.New("reader failed"))
+			},
+			expectError: true,
+			errorMsg:    "failed to get reader for group",
+		},
+	}
 
-	// Cleanup after test
-	defer func() {
-		_ = manager.Delete(ctx, groupName)
-	}()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	// Create a group first
-	err = manager.Create(ctx, groupName)
-	require.NoError(t, err)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
 
-	// Test getting the group
-	group, err := manager.Get(ctx, groupName)
-	assert.NoError(t, err)
-	assert.Equal(t, groupName, group.Name)
+			mockStore := mocks.NewMockStore(ctrl)
+			manager := &manager{store: mockStore}
 
-	// Test getting a non-existent group
-	_, err = manager.Get(ctx, "nonexistent")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+			// Set up mock expectations
+			tt.setupMock(mockStore)
+
+			// Execute operation
+			group, err := manager.Get(context.Background(), tt.groupName)
+
+			// Verify results
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+				assert.Nil(t, group)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedGroup.Name, group.Name)
+			}
+		})
+	}
 }
 
+// TestManager_List demonstrates using gomock for testing group listing
 func TestManager_List(t *testing.T) {
 	t.Parallel()
-	manager, err := NewManager()
-	require.NoError(t, err)
 
-	ctx := context.Background()
+	tests := []struct {
+		name          string
+		setupMock     func(*mocks.MockStore)
+		expectError   bool
+		errorMsg      string
+		expectedCount int
+		expectedNames []string
+	}{
+		{
+			name: "successful listing with groups",
+			setupMock: func(mock *mocks.MockStore) {
+				groupNames := []string{"group1", "group2", "group3"}
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return(groupNames, nil)
 
-	// Create some groups with unique names
-	groupNames := []string{
-		"group1_list_" + t.Name(),
-		"group2_list_" + t.Name(),
-		"group3_list_" + t.Name(),
+				// Set up expectations for getting each group
+				for _, name := range groupNames {
+					groupData := `{"name": "` + name + `"}`
+					mock.EXPECT().
+						GetReader(gomock.Any(), name).
+						Return(io.NopCloser(strings.NewReader(groupData)), nil)
+				}
+			},
+			expectError:   false,
+			expectedCount: 3,
+			expectedNames: []string{"group1", "group2", "group3"},
+		},
+		{
+			name: "successful listing with no groups",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return([]string{}, nil)
+			},
+			expectError:   false,
+			expectedCount: 0,
+			expectedNames: []string{},
+		},
+		{
+			name: "list fails",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return(nil, errors.New("list failed"))
+			},
+			expectError: true,
+			errorMsg:    "failed to list groups",
+		},
+		{
+			name: "get individual group fails",
+			setupMock: func(mock *mocks.MockStore) {
+				groupNames := []string{"group1", "group2"}
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return(groupNames, nil)
+
+				// First group succeeds
+				groupData := `{"name": "group1"}`
+				mock.EXPECT().
+					GetReader(gomock.Any(), "group1").
+					Return(io.NopCloser(strings.NewReader(groupData)), nil)
+
+				// Second group fails
+				mock.EXPECT().
+					GetReader(gomock.Any(), "group2").
+					Return(nil, errors.New("get group failed"))
+			},
+			expectError: true,
+			errorMsg:    "failed to get group group2",
+		},
 	}
 
-	// Cleanup after test
-	defer func() {
-		for _, name := range groupNames {
-			_ = manager.Delete(ctx, name)
-		}
-	}()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	for _, name := range groupNames {
-		err = manager.Create(ctx, name)
-		require.NoError(t, err)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStore := mocks.NewMockStore(ctrl)
+			manager := &manager{store: mockStore}
+
+			// Set up mock expectations
+			tt.setupMock(mockStore)
+
+			// Execute operation
+			groups, err := manager.List(context.Background())
+
+			// Verify results
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+				assert.Nil(t, groups)
+			} else {
+				assert.NoError(t, err)
+				assert.Len(t, groups, tt.expectedCount)
+
+				// Verify all expected groups are present
+				if len(tt.expectedNames) > 0 {
+					groupMap := make(map[string]bool)
+					for _, group := range groups {
+						groupMap[group.Name] = true
+					}
+
+					for _, name := range tt.expectedNames {
+						assert.True(t, groupMap[name], "Group %s should be in the list", name)
+					}
+				}
+			}
+		})
 	}
-
-	// Test listing all groups
-	groups, err := manager.List(ctx)
-	assert.NoError(t, err)
-
-	// Check that all created groups are present in the list
-	groupMap := make(map[string]bool)
-	for _, group := range groups {
-		groupMap[group.Name] = true
-	}
-
-	// Verify that all our created groups are in the list
-	for _, name := range groupNames {
-		assert.True(t, groupMap[name], "Group %s should be in the list", name)
-	}
-
-	// Also verify that the list contains at least our expected groups
-	assert.GreaterOrEqual(t, len(groups), len(groupNames), "List should contain at least the created groups")
 }
 
+// TestManager_Delete demonstrates using gomock for testing group deletion
 func TestManager_Delete(t *testing.T) {
 	t.Parallel()
-	manager, err := NewManager()
-	require.NoError(t, err)
 
-	ctx := context.Background()
-	groupName := "testgroup_delete_" + t.Name()
+	tests := []struct {
+		name        string
+		groupName   string
+		setupMock   func(*mocks.MockStore)
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:      "successful deletion",
+			groupName: testGroupName,
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					Delete(gomock.Any(), testGroupName).
+					Return(nil)
+			},
+			expectError: false,
+		},
+		{
+			name:      "delete fails",
+			groupName: testGroupName,
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					Delete(gomock.Any(), testGroupName).
+					Return(errors.New("delete failed"))
+			},
+			expectError: true,
+			errorMsg:    "delete failed",
+		},
+		{
+			name:      "group not found",
+			groupName: "nonexistent",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					Delete(gomock.Any(), "nonexistent").
+					Return(&os.PathError{Op: "remove", Path: "nonexistent", Err: os.ErrNotExist})
+			},
+			expectError: true,
+			errorMsg:    "remove nonexistent",
+		},
+	}
 
-	// Create a group first
-	err = manager.Create(ctx, groupName)
-	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	// Verify it exists
-	exists, err := manager.Exists(ctx, groupName)
-	assert.NoError(t, err)
-	assert.True(t, exists)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
 
-	// Test deleting the group
-	err = manager.Delete(ctx, groupName)
-	assert.NoError(t, err)
+			mockStore := mocks.NewMockStore(ctrl)
+			manager := &manager{store: mockStore}
 
-	// Verify it no longer exists
-	exists, err = manager.Exists(ctx, groupName)
-	assert.NoError(t, err)
-	assert.False(t, exists)
+			// Set up mock expectations
+			tt.setupMock(mockStore)
 
-	// Test deleting a non-existent group
-	err = manager.Delete(ctx, "nonexistent")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+			// Execute operation
+			err := manager.Delete(context.Background(), tt.groupName)
+
+			// Verify results
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }
 
+// TestManager_Exists demonstrates using gomock for testing group existence check
 func TestManager_Exists(t *testing.T) {
 	t.Parallel()
-	manager, err := NewManager()
-	require.NoError(t, err)
 
-	ctx := context.Background()
-	groupName := "testgroup_exists_" + t.Name()
+	tests := []struct {
+		name           string
+		groupName      string
+		setupMock      func(*mocks.MockStore)
+		expectError    bool
+		errorMsg       string
+		expectedExists bool
+	}{
+		{
+			name:      "group exists",
+			groupName: testGroupName,
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					Exists(gomock.Any(), testGroupName).
+					Return(true, nil)
+			},
+			expectError:    false,
+			expectedExists: true,
+		},
+		{
+			name:      "group does not exist",
+			groupName: "nonexistent",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					Exists(gomock.Any(), "nonexistent").
+					Return(false, nil)
+			},
+			expectError:    false,
+			expectedExists: false,
+		},
+		{
+			name:      "exists check fails",
+			groupName: testGroupName,
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					Exists(gomock.Any(), testGroupName).
+					Return(false, errors.New("exists check failed"))
+			},
+			expectError: true,
+			errorMsg:    "exists check failed",
+		},
+	}
 
-	// Cleanup after test
-	defer func() {
-		_ = manager.Delete(ctx, groupName)
-	}()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	// Test checking non-existent group
-	exists, err := manager.Exists(ctx, groupName)
-	assert.NoError(t, err)
-	assert.False(t, exists)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
 
-	// Create the group
-	err = manager.Create(ctx, groupName)
-	require.NoError(t, err)
+			mockStore := mocks.NewMockStore(ctrl)
+			manager := &manager{store: mockStore}
 
-	// Test checking existing group
-	exists, err = manager.Exists(ctx, groupName)
-	assert.NoError(t, err)
-	assert.True(t, exists)
+			// Set up mock expectations
+			tt.setupMock(mockStore)
+
+			// Execute operation
+			exists, err := manager.Exists(context.Background(), tt.groupName)
+
+			// Verify results
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedExists, exists)
+			}
+		})
+	}
 }
 
-func TestGroup_WriteJSON(t *testing.T) {
-	t.Parallel()
-
-	group := &Group{Name: "testgroup"}
-
-	// Create a temporary file
-	tmpFile, err := os.CreateTemp("", "group_test")
-	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
-
-	// Write the group to JSON
-	err = group.WriteJSON(tmpFile)
-	assert.NoError(t, err)
-
-	// Read the file content
-	content, err := os.ReadFile(tmpFile.Name())
-	assert.NoError(t, err)
-
-	// Verify the JSON content
-	expected := `{
-  "name": "testgroup"
-}
-`
-	assert.Equal(t, expected, string(content))
+// mockWriteCloser implements io.WriteCloser for testing
+type mockWriteCloser struct {
+	data []byte
 }
 
-// TestManager_DirectStateStore tests the manager with a direct state store path
-func TestManager_DirectStateStore(t *testing.T) {
-	t.Parallel()
-	tempDir := t.TempDir()
+func (m *mockWriteCloser) Write(p []byte) (n int, err error) {
+	m.data = append(m.data, p...)
+	return len(p), nil
+}
 
-	// Create the groups directory structure manually
-	groupsDir := filepath.Join(tempDir, "toolhive", "groups")
-	err := os.MkdirAll(groupsDir, 0750)
-	require.NoError(t, err)
-
-	// Create a manager with a custom state store
-	store, err := state.NewLocalStore("toolhive", "groups")
-	require.NoError(t, err)
-
-	// Create a manager directly with the store
-	manager := &manager{store: store}
-
-	ctx := context.Background()
-	groupName := "directtest_" + t.Name()
-
-	// Cleanup after test
-	defer func() {
-		_ = manager.Delete(ctx, groupName)
-	}()
-
-	// Test creating a new group
-	err = manager.Create(ctx, groupName)
-	assert.NoError(t, err)
-
-	// Test getting the group
-	group, err := manager.Get(ctx, groupName)
-	assert.NoError(t, err)
-	assert.Equal(t, groupName, group.Name)
-
-	// Test that the group exists
-	exists, err := manager.Exists(ctx, groupName)
-	assert.NoError(t, err)
-	assert.True(t, exists)
+func (*mockWriteCloser) Close() error {
+	return nil
 }

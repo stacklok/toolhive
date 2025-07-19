@@ -7,6 +7,8 @@ import (
 	"io"
 )
 
+//go:generate mockgen -destination=mocks/mock_store.go -package=mocks -source=interface.go Store
+
 // Store defines the interface for runner state storage operations
 type Store interface {
 	// Save stores the data for the given name from the provided reader

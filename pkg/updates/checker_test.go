@@ -19,6 +19,7 @@ const (
 	testCurrentVersion = "1.0.0"
 	testLatestVersion  = "1.1.0"
 	testOldVersion     = "1.0.5"
+	testComponentCLI   = "CLI"
 )
 
 // MockVersionClient is a mock implementation of the VersionClient interface
@@ -65,7 +66,7 @@ func TestCheckLatestVersion(t *testing.T) {
 		// Setup
 		mockClient := setupMockVersionClient(t)
 		latestVersion := testLatestVersion
-		componentName := "CLI"
+		componentName := testComponentCLI
 
 		// Create unique temp file path to avoid test interference
 		tempDir, err := os.MkdirTemp("", "toolhive-test-*")
@@ -95,9 +96,10 @@ func TestCheckLatestVersion(t *testing.T) {
 
 	t.Run("different components share same file but have independent throttling", func(t *testing.T) {
 		t.Parallel()
-		components := []string{"CLI", "API", "UI"}
+		components := []string{testComponentCLI, "API", "UI"}
 
 		for _, component := range components {
+			//nolint:paralleltest // Intentionally not parallel due to shared test setup
 			t.Run(component, func(t *testing.T) {
 				// Setup
 				mockClient := setupMockVersionClient(t)
@@ -219,7 +221,7 @@ func TestCheckLatestVersion(t *testing.T) {
 		t.Parallel()
 		// Setup
 		mockClient := setupMockVersionClient(t)
-		componentName := "CLI"
+		componentName := testComponentCLI
 		newVersion := testLatestVersion
 
 		// Create old format file (missing Components field)
@@ -264,7 +266,7 @@ func TestCheckLatestVersion(t *testing.T) {
 		// Setup
 		mockClient := setupMockVersionClient(t)
 		expectedError := errors.New("API error")
-		componentName := "CLI"
+		componentName := testComponentCLI
 
 		// Create existing file with stale component data to force API call
 		existingFile := updateFile{

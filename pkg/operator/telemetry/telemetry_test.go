@@ -29,7 +29,7 @@ func (m *mockVersionClient) GetLatestVersion(_ string, _ string) (string, error)
 	return m.version, nil
 }
 
-func (m *mockVersionClient) GetComponent() string {
+func (_ *mockVersionClient) GetComponent() string {
 	return "operator"
 }
 

@@ -387,12 +387,8 @@
             "insecure_allow_all": false
           }
         },
-        "read": [
-          "/tmp"
-        ],
-        "write": [
-          "/tmp"
-        ]
+        "read": [],
+        "write": []
       },
       "repository_url": "https://github.com/buildkite/buildkite-mcp-server",
       "status": "Active",
@@ -625,8 +621,10 @@
       "transport": "streamable-http"
     },
     "filesystem": {
-      "args": [],
-      "description": "Allows you to do filesystem operations.",
+      "args": [
+        "/projects"
+      ],
+      "description": "Allows you to do filesystem operations. Mount paths under /projects using --volume.",
       "env_vars": [],
       "image": "mcp/filesystem:latest",
       "metadata": {
@@ -642,12 +640,8 @@
             "insecure_allow_all": false
           }
         },
-        "read": [
-          "/tmp"
-        ],
-        "write": [
-          "/tmp"
-        ]
+        "read": [],
+        "write": []
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "status": "Active",
@@ -671,6 +665,7 @@
         "edit_file",
         "create_directory",
         "list_directory",
+        "directory_tree",
         "move_file",
         "search_files",
         "get_file_info",

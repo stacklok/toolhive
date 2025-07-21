@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -14,9 +13,6 @@ import (
 type RemoteRegistryProvider struct {
 	registryURL    string
 	allowPrivateIp bool
-	registry       *Registry
-	registryOnce   sync.Once
-	registryErr    error
 }
 
 // NewRemoteRegistryProvider creates a new remote registry provider
@@ -29,46 +25,41 @@ func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) *RemoteR
 
 // GetRegistry returns the remote registry data
 func (p *RemoteRegistryProvider) GetRegistry() (*Registry, error) {
-	p.registryOnce.Do(func() {
-		client, err := networking.NewHttpClientBuilder().
-			WithPrivateIPs(p.allowPrivateIp).
-			Build()
-		if err != nil {
-			p.registryErr = fmt.Errorf("failed to build http client: %w", err)
-			return
-		}
-		resp, err := client.Get(p.registryURL)
-		if err != nil {
-			p.registryErr = fmt.Errorf("failed to fetch registry data from URL %s: %w", p.registryURL, err)
-			return
-		}
-		defer resp.Body.Close()
+	client, err := networking.NewHttpClientBuilder().
+		WithPrivateIPs(p.allowPrivateIp).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build http client: %w", err)
+	}
 
-		// Check if the response status code is OK
-		if resp.StatusCode != http.StatusOK {
-			p.registryErr = fmt.Errorf("response status code from URL %s not OK: status code %d", p.registryURL, resp.StatusCode)
-			return
-		}
+	resp, err := client.Get(p.registryURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch registry data from URL %s: %w", p.registryURL, err)
+	}
+	defer resp.Body.Close()
 
-		// Read the response body
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
-			p.registryErr = fmt.Errorf("failed to read registry data from response body: %w", err)
-			return
-		}
+	// Check if the response status code is OK
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("response status code from URL %s not OK: status code %d", p.registryURL, resp.StatusCode)
+	}
 
-		p.registry, p.registryErr = parseRegistryData(data)
-		if p.registryErr != nil {
-			return
-		}
+	// Read the response body
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read registry data from response body: %w", err)
+	}
 
-		// Set name field on each server based on map key
-		for name, server := range p.registry.Servers {
-			server.Name = name
-		}
-	})
+	registry, err := parseRegistryData(data)
+	if err != nil {
+		return nil, err
+	}
 
-	return p.registry, p.registryErr
+	// Set name field on each server based on map key
+	for name, server := range registry.Servers {
+		server.Name = name
+	}
+
+	return registry, nil
 }
 
 // GetServer returns a specific server by name

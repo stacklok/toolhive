@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 )
 
 //go:embed data/registry.json
@@ -13,9 +12,6 @@ var embeddedRegistryFS embed.FS
 
 // EmbeddedRegistryProvider provides registry data from embedded JSON files
 type EmbeddedRegistryProvider struct {
-	registry     *Registry
-	registryOnce sync.Once
-	registryErr  error
 }
 
 // NewEmbeddedRegistryProvider creates a new embedded registry provider
@@ -24,26 +20,23 @@ func NewEmbeddedRegistryProvider() *EmbeddedRegistryProvider {
 }
 
 // GetRegistry returns the embedded registry data
-func (p *EmbeddedRegistryProvider) GetRegistry() (*Registry, error) {
-	p.registryOnce.Do(func() {
-		data, err := embeddedRegistryFS.ReadFile("data/registry.json")
-		if err != nil {
-			p.registryErr = fmt.Errorf("failed to read embedded registry data: %w", err)
-			return
-		}
+func (*EmbeddedRegistryProvider) GetRegistry() (*Registry, error) {
+	data, err := embeddedRegistryFS.ReadFile("data/registry.json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read embedded registry data: %w", err)
+	}
 
-		p.registry, p.registryErr = parseRegistryData(data)
-		if p.registryErr != nil {
-			return
-		}
+	registry, err := parseRegistryData(data)
+	if err != nil {
+		return nil, err
+	}
 
-		// Set name field on each server based on map key
-		for name, server := range p.registry.Servers {
-			server.Name = name
-		}
-	})
+	// Set name field on each server based on map key
+	for name, server := range registry.Servers {
+		server.Name = name
+	}
 
-	return p.registry, p.registryErr
+	return registry, nil
 }
 
 // GetServer returns a specific server by name

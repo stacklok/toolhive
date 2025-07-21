@@ -9,6 +9,8 @@ import (
 )
 
 func TestAddAndGetWithStubSession(t *testing.T) {
+	t.Parallel()
+
 	orig := NewProxySession
 	NewProxySession = func(id string) *ProxySession {
 		ts := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -27,6 +29,8 @@ func TestAddAndGetWithStubSession(t *testing.T) {
 }
 
 func TestAddDuplicate(t *testing.T) {
+	t.Parallel()
+
 	m := NewManager(time.Hour)
 	defer m.Stop()
 
@@ -39,6 +43,8 @@ func TestAddDuplicate(t *testing.T) {
 }
 
 func TestDeleteSession(t *testing.T) {
+	t.Parallel()
+
 	m := NewManager(time.Hour)
 	defer m.Stop()
 
@@ -50,6 +56,8 @@ func TestDeleteSession(t *testing.T) {
 }
 
 func TestGetUpdatesTimestamp(t *testing.T) {
+	t.Parallel()
+
 	orig := NewProxySession
 	NewProxySession = func(id string) *ProxySession {
 		ts := time.Now().Add(-1 * time.Minute)
@@ -72,6 +80,8 @@ func TestGetUpdatesTimestamp(t *testing.T) {
 }
 
 func TestCleanupExpired(t *testing.T) {
+	t.Parallel()
+
 	ttl := 50 * time.Millisecond
 	orig := NewProxySession
 	NewProxySession = func(id string) *ProxySession {
@@ -99,6 +109,8 @@ func TestCleanupExpired(t *testing.T) {
 }
 
 func TestStopDisablesCleanup(t *testing.T) {
+	t.Parallel()
+
 	ttl := 50 * time.Millisecond
 	m := NewManager(ttl)
 	m.Stop() // stop cleanup upfront

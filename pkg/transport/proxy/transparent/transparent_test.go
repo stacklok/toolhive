@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 func init() {
@@ -18,8 +19,9 @@ func init() {
 }
 
 func TestStreamingSessionIDDetection(t *testing.T) {
+	t.Parallel()
 	proxy := NewTransparentProxy("127.0.0.1", 0, "test", "http://example.com", nil)
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(200)
 
@@ -73,9 +75,11 @@ func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.Reverse
 }
 
 func TestNoSessionIDInNonSSE(t *testing.T) {
+	t.Parallel()
+
 	p := NewTransparentProxy("127.0.0.1", 0, "test", "", nil)
 
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
@@ -96,9 +100,11 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 }
 
 func TestHeaderBasedSessionInitialization(t *testing.T) {
+	t.Parallel()
+
 	p := NewTransparentProxy("127.0.0.1", 0, "test", "", nil)
 
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Mcp-Session-Id", "XYZ789")

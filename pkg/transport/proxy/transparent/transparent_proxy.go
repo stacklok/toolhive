@@ -80,7 +80,7 @@ func NewTransparentProxy(
 		middlewares:       middlewares,
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
-		sessionManager:    session.NewManager(30 * time.Minute),
+		sessionManager:    session.NewManager(30*time.Minute, session.NewProxySession),
 	}
 
 	// Create MCP pinger and health checker
@@ -95,12 +95,12 @@ type tracingTransport struct {
 	p    *TransparentProxy
 }
 
-func (t *tracingTransport) setServerInitialized() {
-	if !t.p.IsServerInitialized {
-		t.p.mutex.Lock()
-		t.p.IsServerInitialized = true
-		t.p.mutex.Unlock()
-		logger.Infof("Server was initialized successfully for %s", t.p.containerName)
+func (p *TransparentProxy) setServerInitialized() {
+	if !p.IsServerInitialized {
+		p.mutex.Lock()
+		p.IsServerInitialized = true
+		p.mutex.Unlock()
+		logger.Infof("Server was initialized successfully for %s", p.containerName)
 	}
 }
 
@@ -136,21 +136,16 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		if ct != "" {
 			logger.Infof("Detected Mcp-Session-Id header: %s", ct)
 			if _, ok := t.p.sessionManager.Get(ct); !ok {
-				fmt.Println("i get session id")
 				if err := t.p.sessionManager.AddWithID(ct); err != nil {
-					fmt.Println("i add session")
 					logger.Errorf("Failed to create session from header %s: %v", ct, err)
 				}
-				fmt.Println("i set server initialized")
 			}
-			fmt.Println("i set server initialized")
-			t.setServerInitialized()
+			t.p.setServerInitialized()
 			return resp, nil
 		}
 		// status was ok and we saw an initialize call
 		if sawInitialize && !t.p.IsServerInitialized {
-			fmt.Println("here")
-			t.setServerInitialized()
+			t.p.setServerInitialized()
 			return resp, nil
 		}
 	}
@@ -212,7 +207,7 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 					if sid == "" {
 						sid = string(m[2])
 					}
-					p.IsServerInitialized = true
+					p.setServerInitialized()
 					err := p.sessionManager.AddWithID(sid)
 					if err != nil {
 						logger.Errorf("Failed to create session from SSE line: %v", err)

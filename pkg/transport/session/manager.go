@@ -20,13 +20,19 @@ type Manager struct {
 	sessions sync.Map
 	ttl      time.Duration
 	stopCh   chan struct{}
+	factory  Factory
 }
 
+// Factory defines a function type for creating new sessions.
+type Factory func(id string) *ProxySession
+
 // NewManager creates a session manager with TTL and starts cleanup worker.
-func NewManager(ttl time.Duration) *Manager {
+func NewManager(ttl time.Duration, factory Factory) *Manager {
 	m := &Manager{
-		ttl:    ttl,
-		stopCh: make(chan struct{}),
+		sessions: sync.Map{},
+		ttl:      ttl,
+		stopCh:   make(chan struct{}),
+		factory:  factory,
 	}
 	go m.cleanupRoutine()
 	return m
@@ -40,7 +46,11 @@ func (m *Manager) cleanupRoutine() {
 		case <-ticker.C:
 			cutoff := time.Now().Add(-m.ttl)
 			m.sessions.Range(func(key, val any) bool {
-				sess := val.(Session)
+				sess, ok := val.(Session)
+				if !ok {
+					// Skip invalid value
+					return true
+				}
 				if sess.UpdatedAt().Before(cutoff) {
 					m.sessions.Delete(key)
 				}
@@ -59,7 +69,8 @@ func (m *Manager) AddWithID(id string) error {
 		return fmt.Errorf("session ID cannot be empty")
 	}
 	// Use LoadOrStore: returns existing if already present
-	_, loaded := m.sessions.LoadOrStore(id, NewProxySession(id))
+	session := m.factory(id)
+	_, loaded := m.sessions.LoadOrStore(id, session)
 	if loaded {
 		return fmt.Errorf("session ID %q already exists", id)
 	}
@@ -73,7 +84,11 @@ func (m *Manager) Get(id string) (Session, bool) {
 	if !ok {
 		return nil, false
 	}
-	sess := v.(Session)
+	sess, ok := v.(Session)
+	if !ok {
+		return nil, false // Invalid session type
+	}
+
 	sess.Touch()
 	return sess, true
 }
@@ -86,4 +101,15 @@ func (m *Manager) Delete(id string) {
 // Stop stops the cleanup worker.
 func (m *Manager) Stop() {
 	close(m.stopCh)
+}
+
+func (m *Manager) cleanupExpiredOnce() {
+	cutoff := time.Now().Add(-m.ttl)
+	m.sessions.Range(func(key, val any) bool {
+		sess := val.(Session)
+		if sess.UpdatedAt().Before(cutoff) {
+			m.sessions.Delete(key)
+		}
+		return true
+	})
 }

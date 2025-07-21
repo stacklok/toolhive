@@ -56,6 +56,8 @@ type ImageMetadata struct {
 	DockerTags []string `json:"docker_tags,omitempty"`
 	// Provenance contains verification and signing metadata
 	Provenance *Provenance `json:"provenance,omitempty"`
+	// CustomMetadata allows for additional user-defined metadata
+	CustomMetadata map[string]any `json:"custom_metadata,omitempty"`
 }
 
 // Provenance contains metadata about the image's provenance and signing status

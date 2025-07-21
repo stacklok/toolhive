@@ -112,36 +112,6 @@ func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
 	return tr.RoundTrip(req)
 }
 
-func (t *tracingTransport) watchEventStream(r io.Reader, w *io.PipeWriter) {
-	defer w.Close()
-
-	scanner := bufio.NewScanner(r)
-	sessionRe := regexp.MustCompile(`sessionId=([0-9a-fA-F-]+)|\"sessionId\"\s*:\s*\"([^\"]+)\"`)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if m := sessionRe.FindStringSubmatch(line); m != nil {
-			sid := m[1]
-			if sid == "" {
-				sid = m[2]
-			}
-			t.setServerInitialized()
-			if _, ok := t.p.sessionManager.Get(sid); !ok {
-				err := t.p.sessionManager.AddWithID(sid)
-				if err != nil {
-					logger.Errorf("Failed to create session from event stream: %v", err)
-				}
-			}
-		}
-	}
-
-	_, err := io.Copy(io.Discard, r)
-	if err != nil {
-		logger.Errorf("Failed to copy event stream: %v", err)
-	}
-}
-
 func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	reqBody := readRequestBody(req)
 
@@ -166,27 +136,22 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		if ct != "" {
 			logger.Infof("Detected Mcp-Session-Id header: %s", ct)
 			if _, ok := t.p.sessionManager.Get(ct); !ok {
+				fmt.Println("i get session id")
 				if err := t.p.sessionManager.AddWithID(ct); err != nil {
+					fmt.Println("i add session")
 					logger.Errorf("Failed to create session from header %s: %v", ct, err)
 				}
+				fmt.Println("i set server initialized")
 			}
+			fmt.Println("i set server initialized")
 			t.setServerInitialized()
 			return resp, nil
 		}
 		// status was ok and we saw an initialize call
 		if sawInitialize && !t.p.IsServerInitialized {
+			fmt.Println("here")
 			t.setServerInitialized()
 			return resp, nil
-		}
-		ct = resp.Header.Get("Content-Type")
-		mediaType, _, _ := mime.ParseMediaType(ct)
-		if mediaType == "text/event-stream" {
-			originalBody := resp.Body
-			pr, pw := io.Pipe()
-			tee := io.TeeReader(originalBody, pw)
-			resp.Body = pr
-
-			go t.watchEventStream(tee, pw)
 		}
 	}
 
@@ -222,6 +187,52 @@ func (t *tracingTransport) detectInitialize(body []byte) bool {
 	return false
 }
 
+var sessionRe = regexp.MustCompile(`sessionId=([0-9A-Fa-f-]+)|"sessionId"\s*:\s*"([^"]+)"`)
+
+func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
+	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if mediaType != "text/event-stream" {
+		return nil
+	}
+
+	pr, pw := io.Pipe()
+	originalBody := resp.Body
+	resp.Body = pr
+
+	go func() {
+		defer pw.Close()
+		scanner := bufio.NewScanner(originalBody)
+		found := false
+
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if !found {
+				if m := sessionRe.FindSubmatch(line); m != nil {
+					sid := string(m[1])
+					if sid == "" {
+						sid = string(m[2])
+					}
+					p.IsServerInitialized = true
+					err := p.sessionManager.AddWithID(sid)
+					if err != nil {
+						logger.Errorf("Failed to create session from SSE line: %v", err)
+					}
+					found = true
+				}
+			}
+			if _, err := pw.Write(append(line, '\n')); err != nil {
+				return
+			}
+		}
+		_, err := io.Copy(pw, originalBody)
+		if err != nil && err != io.EOF {
+			logger.Errorf("Failed to copy response body: %v", err)
+		}
+	}()
+
+	return nil
+}
+
 // Start starts the transparent proxy.
 func (p *TransparentProxy) Start(ctx context.Context) error {
 	p.mutex.Lock()
@@ -235,7 +246,11 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 
 	// Create a reverse proxy
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	proxy.FlushInterval = -1
 	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		return p.modifyForSessionID(resp)
+	}
 
 	// Create a handler that logs requests
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

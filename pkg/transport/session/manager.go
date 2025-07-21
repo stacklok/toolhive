@@ -17,8 +17,7 @@ type Session interface {
 
 // Manager holds sessions with TTL cleanup.
 type Manager struct {
-	sessions map[string]Session
-	mu       sync.RWMutex
+	sessions sync.Map
 	ttl      time.Duration
 	stopCh   chan struct{}
 }
@@ -26,9 +25,8 @@ type Manager struct {
 // NewManager creates a session manager with TTL and starts cleanup worker.
 func NewManager(ttl time.Duration) *Manager {
 	m := &Manager{
-		sessions: make(map[string]Session),
-		ttl:      ttl,
-		stopCh:   make(chan struct{}),
+		ttl:    ttl,
+		stopCh: make(chan struct{}),
 	}
 	go m.cleanupRoutine()
 	return m
@@ -40,7 +38,14 @@ func (m *Manager) cleanupRoutine() {
 	for {
 		select {
 		case <-ticker.C:
-			m.CleanupExpired()
+			cutoff := time.Now().Add(-m.ttl)
+			m.sessions.Range(func(key, val any) bool {
+				sess := val.(Session)
+				if sess.UpdatedAt().Before(cutoff) {
+					m.sessions.Delete(key)
+				}
+				return true
+			})
 		case <-m.stopCh:
 			return
 		}
@@ -53,51 +58,29 @@ func (m *Manager) AddWithID(id string) error {
 	if id == "" {
 		return fmt.Errorf("session ID cannot be empty")
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if _, exists := m.sessions[id]; exists {
+	// Use LoadOrStore: returns existing if already present
+	_, loaded := m.sessions.LoadOrStore(id, NewProxySession(id))
+	if loaded {
 		return fmt.Errorf("session ID %q already exists", id)
 	}
-
-	s := NewProxySession(id)
-	m.sessions[id] = s
 	return nil
 }
 
 // Get retrieves a session by ID. Returns (session, true) if found,
 // and also updates its UpdatedAt timestamp.
 func (m *Manager) Get(id string) (Session, bool) {
-	m.mu.RLock()
-	s, ok := m.sessions[id]
+	v, ok := m.sessions.Load(id)
 	if !ok {
 		return nil, false
 	}
-
-	s.Touch()
-	m.mu.RUnlock()
-
-	return s, true
+	sess := v.(Session)
+	sess.Touch()
+	return sess, true
 }
 
 // Delete removes a session by ID.
 func (m *Manager) Delete(id string) {
-	m.mu.Lock()
-	delete(m.sessions, id)
-	m.mu.Unlock()
-}
-
-// CleanupExpired removes sessions that have not been updated within the TTL.
-func (m *Manager) CleanupExpired() {
-	cutoff := time.Now().Add(-m.ttl)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for id, s := range m.sessions {
-		if s.UpdatedAt().Before(cutoff) {
-			delete(m.sessions, id)
-		}
-	}
+	m.sessions.Delete(id)
 }
 
 // Stop stops the cleanup worker.

@@ -41,7 +41,8 @@ const (
 )
 
 // AddStandardLabelsWithGroup adds standard labels to a container, including group if provided
-func AddStandardLabelsWithGroup(labels map[string]string, containerName, containerBaseName, transportType string, port int, groupName string) {
+func AddStandardLabelsWithGroup(labels map[string]string, containerName, containerBaseName, transportType string,
+	port int, groupName string) {
 	labels[LabelToolHive] = LabelToolHiveValue
 	labels[LabelName] = containerName
 	labels[LabelBaseName] = containerBaseName

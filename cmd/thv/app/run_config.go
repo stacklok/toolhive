@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/config"
+	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -229,7 +229,14 @@ func AddRunFlags(cmd *cobra.Command, config *RunConfig) {
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration
-func BuildRunnerConfig(ctx context.Context, runConfig *RunConfig, serverOrImage string, cmdArgs []string, debugMode bool) (*runner.RunConfig, error) {
+func BuildRunnerConfig(
+	ctx context.Context,
+	runConfig *RunConfig,
+	serverOrImage string,
+	cmdArgs []string,
+	debugMode bool,
+) (*runner.RunConfig, error) {
+
 	// Validate the host flag and default resolving to IP in case hostname is provided
 	validatedHost, err := ValidateAndNormaliseHostFlag(runConfig.Host)
 	if err != nil {
@@ -237,14 +244,15 @@ func BuildRunnerConfig(ctx context.Context, runConfig *RunConfig, serverOrImage 
 	}
 
 	// Get OIDC flag values
-	oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, err := getOidcFromFlags(nil) // We'll get these from config later
+	// We'll get these from config later
+	oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, err := getOidcFromFlags(nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OIDC flags: %v", err)
 	}
 
 	// Get OTEL flag values with config fallbacks
-	cfg := config.GetConfig()
-	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(nil, cfg,
+	config := cfg.GetConfig()
+	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(nil, config,
 		runConfig.OtelEndpoint, runConfig.OtelSamplingRate, runConfig.OtelEnvironmentVariables)
 
 	// Create container runtime
@@ -346,29 +354,29 @@ func BuildRunnerConfig(ctx context.Context, runConfig *RunConfig, serverOrImage 
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags
-func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, bool, error) {
+func getOidcFromFlags(_ *cobra.Command) (string, string, string, string, bool, error) {
 	// For now, return empty values since we're not using OIDC in the shared config
 	// This can be enhanced later if needed
 	return "", "", "", "", false, nil
 }
 
 // getTelemetryFromFlags extracts telemetry configuration from command flags
-func getTelemetryFromFlags(cmd *cobra.Command, cfg *config.Config, otelEndpoint string, otelSamplingRate float64,
+func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint string, otelSamplingRate float64,
 	otelEnvironmentVariables []string) (string, float64, []string) {
 	// Use config values as fallbacks for OTEL flags if not explicitly set
 	finalOtelEndpoint := otelEndpoint
-	if cmd != nil && !cmd.Flags().Changed("otel-endpoint") && cfg.OTEL.Endpoint != "" {
-		finalOtelEndpoint = cfg.OTEL.Endpoint
+	if cmd != nil && !cmd.Flags().Changed("otel-endpoint") && config.OTEL.Endpoint != "" {
+		finalOtelEndpoint = config.OTEL.Endpoint
 	}
 
 	finalOtelSamplingRate := otelSamplingRate
-	if cmd != nil && !cmd.Flags().Changed("otel-sampling-rate") && cfg.OTEL.SamplingRate != 0.0 {
-		finalOtelSamplingRate = cfg.OTEL.SamplingRate
+	if cmd != nil && !cmd.Flags().Changed("otel-sampling-rate") && config.OTEL.SamplingRate != 0.0 {
+		finalOtelSamplingRate = config.OTEL.SamplingRate
 	}
 
 	finalOtelEnvironmentVariables := otelEnvironmentVariables
-	if cmd != nil && !cmd.Flags().Changed("otel-env-vars") && len(cfg.OTEL.EnvVars) > 0 {
-		finalOtelEnvironmentVariables = cfg.OTEL.EnvVars
+	if cmd != nil && !cmd.Flags().Changed("otel-env-vars") && len(config.OTEL.EnvVars) > 0 {
+		finalOtelEnvironmentVariables = config.OTEL.EnvVars
 	}
 
 	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables

@@ -118,6 +118,11 @@ func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (
 	return WorkloadFromContainerInfo(container)
 }
 
+// ListWorkloads retrieves the states of all workloads.
+// The `listAll` parameter determines whether to include workloads that are not running.
+// The optional `labelFilters` parameter allows filtering workloads by labels (format: key=value).
+//
+//nolint:gocyclo // Complex function due to multiple scenarios: running containers, stopped workloads, and label filtering
 func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error) {
 	// List containers
 	containers, err := d.runtime.ListWorkloads(ctx)
@@ -564,6 +569,10 @@ func (d *defaultManager) GetLogs(ctx context.Context, containerName string, foll
 }
 
 // DeleteWorkloads deletes the specified workloads by name.
+// It is implemented as an asynchronous operation which returns an errgroup.Group
+// and extensive error handling
+//
+//nolint:gocyclo // Complex function due to multiple scenarios: running containers, stopped workloads,
 func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
 	// Validate all workload names to prevent path traversal attacks
 	for _, name := range names {

@@ -31,7 +31,7 @@ func (p *RemoteRegistryProvider) GetRegistry() (*Registry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build http client: %w", err)
 	}
-	
+
 	resp, err := client.Get(p.registryURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch registry data from URL %s: %w", p.registryURL, err)

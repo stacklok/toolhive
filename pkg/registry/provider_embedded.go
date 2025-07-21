@@ -20,7 +20,7 @@ func NewEmbeddedRegistryProvider() *EmbeddedRegistryProvider {
 }
 
 // GetRegistry returns the embedded registry data
-func (p *EmbeddedRegistryProvider) GetRegistry() (*Registry, error) {
+func (*EmbeddedRegistryProvider) GetRegistry() (*Registry, error) {
 	data, err := embeddedRegistryFS.ReadFile("data/registry.json")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read embedded registry data: %w", err)

@@ -288,14 +288,18 @@ func TestResourceOverrides(t *testing.T) {
 				var expectedEnvVars map[string]string
 				if tt.name == "with proxy environment variables" {
 					expectedEnvVars = map[string]string{
-						"HTTP_PROXY": "http://proxy.example.com:8080",
-						"NO_PROXY":   "localhost,127.0.0.1",
-						"CUSTOM_ENV": "custom-value",
+						"HTTP_PROXY":      "http://proxy.example.com:8080",
+						"NO_PROXY":        "localhost,127.0.0.1",
+						"CUSTOM_ENV":      "custom-value",
+						"XDG_CONFIG_HOME": "/tmp",
+						"HOME":            "/tmp",
 					}
 				} else {
 					expectedEnvVars = map[string]string{
 						"LOG_LEVEL":       "debug",
 						"METRICS_ENABLED": "true",
+						"XDG_CONFIG_HOME": "/tmp",
+						"HOME":            "/tmp",
 					}
 				}
 
@@ -374,8 +378,9 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			Image: "test-image",
-			Port:  8080,
+			Image:     "test-image",
+			Port:      8080,
+			Transport: "stdio",
 		},
 	}
 
@@ -634,6 +639,7 @@ func TestDeploymentNeedsUpdateToolsFilter(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:       "test-image",
 					Port:        8080,
+					Transport:   "stdio",
 					ToolsFilter: tt.initialToolsFilter,
 				},
 			}

@@ -124,6 +124,10 @@ components:
             type: string
           type: array
           uniqueItems: false
+        custom_metadata:
+          additionalProperties: {}
+          description: CustomMetadata allows for additional user-defined metadata
+          type: object
         description:
           description: Description is a human-readable description of the server's
             purpose and functionality

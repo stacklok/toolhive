@@ -40,9 +40,8 @@ const (
 	LabelToolHiveValue = "true"
 )
 
-// AddStandardLabels adds standard labels to a container
-func AddStandardLabels(labels map[string]string, containerName, containerBaseName, transportType string, port int) {
-	// Add standard labels
+// AddStandardLabelsWithGroup adds standard labels to a container, including group if provided
+func AddStandardLabelsWithGroup(labels map[string]string, containerName, containerBaseName, transportType string, port int, groupName string) {
 	labels[LabelToolHive] = LabelToolHiveValue
 	labels[LabelName] = containerName
 	labels[LabelBaseName] = containerBaseName
@@ -51,6 +50,14 @@ func AddStandardLabels(labels map[string]string, containerName, containerBaseNam
 
 	// TODO: In the future, we'll support different tool types beyond just "mcp"
 	labels[LabelToolType] = "mcp"
+	if groupName != "" {
+		labels[LabelGroup] = groupName
+	}
+}
+
+// AddStandardLabels adds standard labels to a container (without group)
+func AddStandardLabels(labels map[string]string, containerName, containerBaseName, transportType string, port int) {
+	AddStandardLabelsWithGroup(labels, containerName, containerBaseName, transportType, port, "")
 }
 
 // AddNetworkLabels adds network-related labels to a network

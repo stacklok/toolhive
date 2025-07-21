@@ -146,6 +146,12 @@ func (b *RunConfigBuilder) WithProxyMode(mode types.ProxyMode) *RunConfigBuilder
 	return b
 }
 
+// WithGroup sets the group name for the workload
+func (b *RunConfigBuilder) WithGroup(groupName string) *RunConfigBuilder {
+	b.config.Group = groupName
+	return b
+}
+
 // WithLabels sets custom labels from command-line flags
 func (b *RunConfigBuilder) WithLabels(labelStrings []string) *RunConfigBuilder {
 	if len(labelStrings) == 0 {

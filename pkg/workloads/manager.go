@@ -138,6 +138,58 @@ func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelF
 		}
 	}
 
+	// If listAll is true, also include saved run configurations that don't have containers yet
+	if listAll {
+		savedConfigs, err := runner.ListSavedConfigs(ctx)
+		if err != nil {
+			// Log the error but don't fail the entire operation
+			logger.Warnf("Warning: Failed to list saved configurations: %v", err)
+		} else {
+			// Create a map of existing container names for quick lookup
+			existingContainers := make(map[string]bool)
+			for _, workload := range workloads {
+				existingContainers[workload.Name] = true
+			}
+
+			// Add saved configurations that don't have containers yet
+			for _, configName := range savedConfigs {
+				if !existingContainers[configName] {
+					// Load the saved configuration to get its details
+					savedRunner, err := d.loadRunnerFromState(ctx, configName)
+					if err != nil {
+						// Log the error but continue with other configurations
+						logger.Warnf("Warning: Failed to load saved configuration for %s: %v", configName, err)
+						continue
+					}
+
+					// Create a Workload from the saved configuration
+					workload := Workload{
+						Name:          configName,
+						Package:       savedRunner.Config.Image,
+						URL:           "", // No URL since it's not running
+						Port:          savedRunner.Config.Port,
+						ToolType:      "mcp",
+						TransportType: savedRunner.Config.Transport,
+						Status:        WorkloadStatusStopped,
+						StatusContext: "Stopped",
+						CreatedAt:     time.Now(), // We don't have the exact creation time from saved config
+						Labels:        make(map[string]string),
+						Group:         labels.GetGroup(savedRunner.Config.ContainerLabels),
+					}
+
+					// Add user-defined labels (excluding standard ToolHive labels)
+					for key, value := range savedRunner.Config.ContainerLabels {
+						if !labels.IsStandardToolHiveLabel(key) {
+							workload.Labels[key] = value
+						}
+					}
+
+					workloads = append(workloads, workload)
+				}
+			}
+		}
+	}
+
 	// Apply label filtering if specified
 	if len(labelFilters) > 0 {
 		workloads, err = d.filterWorkloadsByLabels(workloads, labelFilters)
@@ -316,6 +368,11 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// Use ContainerName if available
 	if runConfig.ContainerName != "" {
 		detachedArgs = append(detachedArgs, "--name", runConfig.ContainerName)
+	}
+
+	// Add group if specified
+	if runConfig.Group != "" {
+		detachedArgs = append(detachedArgs, "--group", runConfig.Group)
 	}
 
 	if runConfig.Host != "" {
@@ -527,8 +584,26 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 			container, err := d.findContainerByName(childCtx, name)
 			if err != nil {
 				if errors.Is(err, ErrWorkloadNotFound) {
-					// Log but don't fail the entire operation for not found containers
-					logger.Warnf("Warning: Failed to delete workload %s: %v", name, err)
+					// Container doesn't exist, check if it's a saved run configuration
+					logger.Debugf("Container not found for %s, checking for saved run configuration", name)
+
+					// Try to delete the saved run configuration
+					if err := runner.DeleteSavedConfig(childCtx, name); err != nil {
+						logger.Warnf("Warning: Failed to delete saved run configuration for %s: %v", name, err)
+						return fmt.Errorf("workload not found: %s", name)
+					}
+
+					// Clean up temporary permission profile if it exists
+					if err := d.cleanupTempPermissionProfile(childCtx, name); err != nil {
+						logger.Warnf("Warning: Failed to cleanup temporary permission profile for %s: %v", name, err)
+					}
+
+					// Remove the workload status from the status store
+					if err = d.statuses.DeleteWorkloadStatus(ctx, name); err != nil {
+						logger.Warnf("failed to delete workload status for %s: %v", name, err)
+					}
+
+					logger.Infof("Saved run configuration for %s removed", name)
 					return nil
 				}
 				d.statuses.SetWorkloadStatus(ctx, name, WorkloadStatusError, err.Error())

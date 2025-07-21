@@ -60,6 +60,7 @@ var (
 	runTransport          string
 	runProxyMode          string
 	runName               string
+	runGroup              string
 	runHost               string
 	runPort               int
 	runProxyPort          int
@@ -100,6 +101,7 @@ func init() {
 	runCmd.Flags().StringVar(&runTransport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
 	runCmd.Flags().StringVar(&runProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
+	runCmd.Flags().StringVar(&runGroup, "group", "", "Name of the group this workload belongs to")
 	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	runCmd.Flags().IntVar(&runProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
 	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
@@ -395,6 +397,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runJWKSAllowPrivateIP,
 		envVarValidator,
 		types.ProxyMode(runProxyMode),
+		runGroup, // groupName - empty for regular run command
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig: %v", err)

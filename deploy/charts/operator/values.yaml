@@ -42,13 +42,14 @@ operator:
   # -- Pod security context settings
   podSecurityContext:
     runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
 
   # -- Container security context settings for the operator
   containerSecurityContext:
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
     runAsNonRoot: true
-    runAsUser: 1000
     capabilities:
       drop:
       - ALL
@@ -85,10 +86,10 @@ operator:
   resources:
     limits:
       cpu: 500m
-      memory: 128Mi
+      memory: 384Mi
     requests:
       cpu: 10m
-      memory: 64Mi
+      memory: 192Mi
 
   # -- RBAC configuration for the operator
   rbac:

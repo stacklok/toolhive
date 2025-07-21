@@ -346,7 +346,7 @@ func TestEnsurePodTemplateConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			// Call the function
-			result := ensurePodTemplateConfig(tc.podTemplateSpec, tc.containerLabels)
+			result := ensurePodTemplateConfig(tc.podTemplateSpec, tc.containerLabels, false)
 
 			// Check the result
 			assert.NotNil(t, result)
@@ -521,6 +521,7 @@ func TestConfigureMCPContainer(t *testing.T) {
 				tc.envVars,
 				tc.transportType,
 				tc.options,
+				false,
 			)
 
 			// Check that there was no error

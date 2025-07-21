@@ -218,7 +218,7 @@ func init() {
 	runCmd.Flags().StringArrayVar(&runOtelHeaders, "otel-headers", nil,
 		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
 	runCmd.Flags().BoolVar(&runOtelInsecure, "otel-insecure", false,
-		"Disable TLS verification for OpenTelemetry endpoint")
+		"Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS")
 	runCmd.Flags().BoolVar(&runOtelEnablePrometheusMetricsPath, "otel-enable-prometheus-metrics-path", false,
 		"Enable Prometheus-style /metrics endpoint on the main transport port")
 	runCmd.Flags().StringArrayVar(&runOtelEnvironmentVariables, "otel-env-vars", nil,

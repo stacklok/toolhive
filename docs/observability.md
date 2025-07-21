@@ -73,7 +73,7 @@ thv run \
 | `--otel-service-name` | Service name for telemetry | `toolhive-mcp-proxy` |
 | `--otel-sampling-rate` | Trace sampling rate (0.0-1.0) | `0.1` (10%) |
 | `--otel-headers` | Authentication headers (key=value format) | None |
-| `--otel-insecure` | Disable TLS verification | `false` |
+| `--otel-insecure` | Connect using HTTP instead of HTTPS | `false` |
 | `--otel-enable-prometheus-metrics-path` | Enable Prometheus `/metrics` endpoint on main transport port | `false` (disabled) |
 | `--otel-env-vars` | Environment variable names to include as span attributes (comma-separated) | None |
 
@@ -497,7 +497,6 @@ Control trace volume and costs with sampling:
 - Verify OTLP endpoint URL and authentication headers
 - Check network connectivity to the endpoint
 - Ensure sampling rate is not too low
-- Verify TLS configuration with `--otel-insecure` for testing
 
 **Prometheus metrics not available**:
 - Confirm `--otel-enable-prometheus-metrics-path` is set

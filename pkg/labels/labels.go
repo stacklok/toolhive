@@ -56,7 +56,7 @@ func AddStandardLabelsWithGroup(labels map[string]string, containerName, contain
 	}
 }
 
-// AddStandardLabels adds standard labels to a container (without group)
+// AddStandardLabels adds standard labels to a container
 func AddStandardLabels(labels map[string]string, containerName, containerBaseName, transportType string, port int) {
 	AddStandardLabelsWithGroup(labels, containerName, containerBaseName, transportType, port, "")
 }

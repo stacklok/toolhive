@@ -119,10 +119,6 @@ func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (
 }
 
 // ListWorkloads retrieves the states of all workloads.
-// The `listAll` parameter determines whether to include workloads that are not running.
-// The optional `labelFilters` parameter allows filtering workloads by labels (format: key=value).
-//
-//nolint:gocyclo // Complex function due to multiple scenarios: running containers, stopped workloads, and label filtering
 func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error) {
 	// List containers
 	containers, err := d.runtime.ListWorkloads(ctx)
@@ -145,53 +141,12 @@ func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelF
 
 	// If listAll is true, also include saved run configurations that don't have containers yet
 	if listAll {
-		savedConfigs, err := runner.ListSavedConfigs(ctx)
+		savedWorkloads, err := d.addSavedConfigurations(ctx, workloads)
 		if err != nil {
 			// Log the error but don't fail the entire operation
-			logger.Warnf("Warning: Failed to list saved configurations: %v", err)
+			logger.Warnf("Warning: Failed to add saved configurations: %v", err)
 		} else {
-			// Create a map of existing container names for quick lookup
-			existingContainers := make(map[string]bool)
-			for _, workload := range workloads {
-				existingContainers[workload.Name] = true
-			}
-
-			// Add saved configurations that don't have containers yet
-			for _, configName := range savedConfigs {
-				if !existingContainers[configName] {
-					// Load the saved configuration to get its details
-					savedRunner, err := d.loadRunnerFromState(ctx, configName)
-					if err != nil {
-						// Log the error but continue with other configurations
-						logger.Warnf("Warning: Failed to load saved configuration for %s: %v", configName, err)
-						continue
-					}
-
-					// Create a Workload from the saved configuration
-					workload := Workload{
-						Name:          configName,
-						Package:       savedRunner.Config.Image,
-						URL:           "", // No URL since it's not running
-						Port:          savedRunner.Config.Port,
-						ToolType:      "mcp",
-						TransportType: savedRunner.Config.Transport,
-						Status:        WorkloadStatusStopped,
-						StatusContext: "Stopped",
-						CreatedAt:     time.Now(), // We don't have the exact creation time from saved config
-						Labels:        make(map[string]string),
-						Group:         labels.GetGroup(savedRunner.Config.ContainerLabels),
-					}
-
-					// Add user-defined labels (excluding standard ToolHive labels)
-					for key, value := range savedRunner.Config.ContainerLabels {
-						if !labels.IsStandardToolHiveLabel(key) {
-							workload.Labels[key] = value
-						}
-					}
-
-					workloads = append(workloads, workload)
-				}
-			}
+			workloads = append(workloads, savedWorkloads...)
 		}
 	}
 
@@ -204,6 +159,61 @@ func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelF
 	}
 
 	return workloads, nil
+}
+
+// addSavedConfigurations adds saved run configurations that don't have containers yet
+func (d *defaultManager) addSavedConfigurations(ctx context.Context, existingWorkloads []Workload) ([]Workload, error) {
+	savedConfigs, err := runner.ListSavedConfigs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list saved configurations: %w", err)
+	}
+
+	// Create a map of existing container names for quick lookup
+	existingContainers := make(map[string]bool)
+	for _, workload := range existingWorkloads {
+		existingContainers[workload.Name] = true
+	}
+
+	var savedWorkloads []Workload
+
+	// Add saved configurations that don't have containers yet
+	for _, configName := range savedConfigs {
+		if !existingContainers[configName] {
+			// Load the saved configuration to get its details
+			savedRunner, err := d.loadRunnerFromState(ctx, configName)
+			if err != nil {
+				// Log the error but continue with other configurations
+				logger.Warnf("Warning: Failed to load saved configuration for %s: %v", configName, err)
+				continue
+			}
+
+			// Create a Workload from the saved configuration
+			workload := Workload{
+				Name:          configName,
+				Package:       savedRunner.Config.Image,
+				URL:           "", // No URL since it's not running
+				Port:          savedRunner.Config.Port,
+				ToolType:      "mcp",
+				TransportType: savedRunner.Config.Transport,
+				Status:        WorkloadStatusStopped,
+				StatusContext: "Stopped",
+				CreatedAt:     time.Now(), // We don't have the exact creation time from saved config
+				Labels:        make(map[string]string),
+				Group:         labels.GetGroup(savedRunner.Config.ContainerLabels),
+			}
+
+			// Add user-defined labels (excluding standard ToolHive labels)
+			for key, value := range savedRunner.Config.ContainerLabels {
+				if !labels.IsStandardToolHiveLabel(key) {
+					workload.Labels[key] = value
+				}
+			}
+
+			savedWorkloads = append(savedWorkloads, workload)
+		}
+	}
+
+	return savedWorkloads, nil
 }
 
 // filterWorkloadsByLabels filters workloads based on label selectors

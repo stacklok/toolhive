@@ -52,26 +52,23 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --enable-audit                          Enable audit logging with default configuration
   -e, --env stringArray                       Environment variables to pass to the MCP server (format: KEY=VALUE)
   -f, --foreground                            Run in foreground mode (block until container exits)
+      --group string                          Name of the group this workload belongs to
   -h, --help                                  help for run
       --host string                           Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --image-verification string             Set image verification mode (warn, enabled, disabled) (default "warn")
-      --isolate-network                       Isolate the container network from the host (default: false)
-      --jwks-allow-private-ip                 Allow JWKS/OIDC endpoints on private IP addresses (use with caution)
+      --isolate-network                       Isolate the network for the container
+      --jwks-allow-private-ip                 Allow JWKS/OIDC endpoints on private IP addresses
       --jwks-auth-token-file string           Path to file containing bearer token for authenticating JWKS/OIDC requests
-  -l, --label stringArray                     Set labels on the container (format: key=value)
+      --k8s-pod-patch string                  JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)
+      --label stringArray                     Add labels to the container (format: KEY=VALUE)
       --name string                           Name of the MCP server (auto-generated from image if not provided)
-      --oidc-audience string                  Expected audience for the token
-      --oidc-client-id string                 OIDC client ID
-      --oidc-issuer string                    OIDC issuer URL (e.g., https://accounts.google.com)
-      --oidc-jwks-url string                  URL to fetch the JWKS from
-      --oidc-skip-opaque-token-validation     Allow skipping validation of opaque tokens
-      --otel-enable-prometheus-metrics-path   Enable Prometheus-style /metrics endpoint on the main transport port
-      --otel-endpoint string                  OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
-      --otel-env-vars stringArray             Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)
-      --otel-headers stringArray              OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)
-      --otel-insecure                         Disable TLS verification for OpenTelemetry endpoint
-      --otel-sampling-rate float              OpenTelemetry trace sampling rate (0.0-1.0) (default 0.1)
-      --otel-service-name string              OpenTelemetry service name (defaults to toolhive-mcp-proxy)
+      --otel-enable-prometheus-metrics-path   Enable Prometheus metrics endpoint
+      --otel-endpoint string                  OpenTelemetry endpoint for metrics and traces
+      --otel-env stringArray                  OpenTelemetry environment variables (format: KEY=VALUE)
+      --otel-headers stringArray              OpenTelemetry headers (format: KEY=VALUE)
+      --otel-insecure                         Use insecure connection for OpenTelemetry
+      --otel-sampling-rate float              OpenTelemetry sampling rate (0.0 to 1.0) (default 0.1)
+      --otel-service-name string              OpenTelemetry service name
       --permission-profile string             Permission profile to use (none, network, or path to JSON file)
       --proxy-mode string                     Proxy mode for stdio transport (sse or streamable-http) (default "sse")
       --proxy-port int                        Port for the HTTP proxy to listen on (host port)

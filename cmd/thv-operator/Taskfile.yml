@@ -151,6 +151,11 @@ tasks:
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup
 
+  operator-run:
+    desc: Run the operator controller locally
+    cmds:
+      - go run ./cmd/thv-operator
+
   crdref-install:
     desc: Install elastic/crd-ref-docs
     cmds:

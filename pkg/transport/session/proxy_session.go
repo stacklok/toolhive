@@ -10,7 +10,7 @@ type ProxySession struct {
 }
 
 // NewProxySession creates a new ProxySession with the given ID.
-var NewProxySession = func(id string) *ProxySession {
+func NewProxySession(id string) *ProxySession {
 	now := time.Now()
 	return &ProxySession{id: id, created: now, updated: now}
 }

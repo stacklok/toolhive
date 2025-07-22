@@ -102,10 +102,6 @@ func init() {
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	runCmd.Flags().IntVar(&runProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
-	runCmd.Flags().IntVar(&runPort, "port", 0, "Port for the HTTP proxy to listen on (host port)")
-	if err := runCmd.Flags().MarkDeprecated("port", "use --proxy-port instead"); err != nil {
-		logger.Warnf("Error marking port flag as deprecated: %v", err)
-	}
 	runCmd.Flags().IntVar(&runTargetPort, "target-port", 0,
 		"Port for the container to expose (only applicable to SSE or Streamable HTTP transport)")
 	runCmd.Flags().StringVar(

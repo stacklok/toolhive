@@ -5,7 +5,8 @@
       "Bash(task test)",
       "Bash(task lint)",
       "Bash(golangci-lint run:*)",
-      "Bash(go doc:*)"
+      "Bash(go doc:*)",
+      "WebFetch(domain:modelcontextprotocol.io)"
     ],
     "deny": []
   }

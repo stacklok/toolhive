@@ -86,7 +86,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
 	// Build the run configuration using shared logic
-	runnerConfig, err := BuildRunnerConfig(ctx, &runConfig, serverOrImage, cmdArgs, debugMode)
+	runnerConfig, err := BuildRunnerConfig(ctx, &runConfig, serverOrImage, cmdArgs, debugMode, cmd)
 	if err != nil {
 		return err
 	}
@@ -145,5 +145,5 @@ func ValidateAndNormaliseHostFlag(host string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no IPv4 address found for host: %s", host)
+	return "", fmt.Errorf("could not resolve host: %s", host)
 }

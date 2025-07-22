@@ -113,7 +113,7 @@ func groupAddCmdFunc(cmd *cobra.Command, args []string) error {
 	groupAddConfig.Labels = groupLabels
 
 	// Build the run configuration using shared logic
-	runnerConfig, err := BuildRunnerConfig(ctx, &groupAddConfig, serverOrImage, cmdArgs, debugMode)
+	runnerConfig, err := BuildRunnerConfig(ctx, &groupAddConfig, serverOrImage, cmdArgs, debugMode, cmd)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}

@@ -59,7 +59,7 @@ type RunConfig struct {
 	OtelHeaders                     []string
 	OtelInsecure                    bool
 	OtelEnablePrometheusMetricsPath bool
-	OtelEnvironmentVariables        []string
+	OtelEnvironmentVariables        []string // renamed binding to otel-env-vars
 
 	// Network isolation
 	IsolateNetwork bool
@@ -113,119 +113,30 @@ func AddRunFlags(cmd *cobra.Command, config *RunConfig) {
 		[]string{},
 		"Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)",
 	)
-	cmd.Flags().StringVar(
-		&config.AuthzConfig,
-		"authz-config",
-		"",
-		"Path to the authorization configuration file",
-	)
-	cmd.Flags().StringVar(
-		&config.AuditConfig,
-		"audit-config",
-		"",
-		"Path to the audit configuration file",
-	)
-	cmd.Flags().BoolVar(
-		&config.EnableAudit,
-		"enable-audit",
-		false,
-		"Enable audit logging with default configuration",
-	)
-	cmd.Flags().StringVar(
-		&config.K8sPodPatch,
-		"k8s-pod-patch",
-		"",
-		"JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)",
-	)
-	cmd.Flags().StringVar(
-		&config.CACertPath,
-		"ca-cert",
-		"",
-		"Path to a custom CA certificate file to use for container builds",
-	)
-	cmd.Flags().StringVar(
-		&config.VerifyImage,
-		"image-verification",
-		retriever.VerifyImageWarn,
-		fmt.Sprintf(
-			"Set image verification mode (%s, %s, %s)",
-			retriever.VerifyImageWarn,
-			retriever.VerifyImageEnabled,
-			retriever.VerifyImageDisabled,
-		),
-	)
-	cmd.Flags().StringVar(
-		&config.ThvCABundle,
-		"thv-ca-bundle",
-		"",
-		"Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)",
-	)
-	cmd.Flags().StringVar(
-		&config.JWKSAuthTokenFile,
-		"jwks-auth-token-file",
-		"",
-		"Path to file containing bearer token for authenticating JWKS/OIDC requests",
-	)
-	cmd.Flags().BoolVar(
-		&config.JWKSAllowPrivateIP,
-		"jwks-allow-private-ip",
-		false,
-		"Allow JWKS/OIDC endpoints on private IP addresses",
-	)
-	cmd.Flags().StringVar(
-		&config.OtelEndpoint,
-		"otel-endpoint",
-		"",
-		"OpenTelemetry endpoint for metrics and traces",
-	)
-	cmd.Flags().StringVar(
-		&config.OtelServiceName,
-		"otel-service-name",
-		"",
-		"OpenTelemetry service name",
-	)
-	cmd.Flags().Float64Var(
-		&config.OtelSamplingRate,
-		"otel-sampling-rate",
-		0.1,
-		"OpenTelemetry sampling rate (0.0 to 1.0)",
-	)
-	cmd.Flags().StringArrayVar(
-		&config.OtelHeaders,
-		"otel-headers",
-		[]string{},
-		"OpenTelemetry headers (format: KEY=VALUE)",
-	)
-	cmd.Flags().BoolVar(
-		&config.OtelInsecure,
-		"otel-insecure",
-		false,
-		"Use insecure connection for OpenTelemetry",
-	)
-	cmd.Flags().BoolVar(
-		&config.OtelEnablePrometheusMetricsPath,
-		"otel-enable-prometheus-metrics-path",
-		false,
-		"Enable Prometheus metrics endpoint",
-	)
-	cmd.Flags().StringArrayVar(
-		&config.OtelEnvironmentVariables,
-		"otel-env",
-		[]string{},
-		"OpenTelemetry environment variables (format: KEY=VALUE)",
-	)
-	cmd.Flags().BoolVar(
-		&config.IsolateNetwork,
-		"isolate-network",
-		false,
-		"Isolate the network for the container",
-	)
-	cmd.Flags().StringArrayVar(
-		&config.Labels,
-		"label",
-		[]string{},
-		"Add labels to the container (format: KEY=VALUE)",
-	)
+	cmd.Flags().StringVar(&config.AuthzConfig, "authz-config", "", "Path to the authorization configuration file")
+	cmd.Flags().StringVar(&config.AuditConfig, "audit-config", "", "Path to the audit configuration file")
+	cmd.Flags().BoolVar(&config.EnableAudit, "enable-audit", false, "Enable audit logging with default configuration")
+	cmd.Flags().StringVar(&config.K8sPodPatch, "k8s-pod-patch", "", "JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)")
+	cmd.Flags().StringVar(&config.CACertPath, "ca-cert", "", "Path to a custom CA certificate file to use for container builds")
+	cmd.Flags().StringVar(&config.VerifyImage, "image-verification", retriever.VerifyImageWarn,
+		fmt.Sprintf("Set image verification mode (%s, %s, %s)", retriever.VerifyImageWarn, retriever.VerifyImageEnabled, retriever.VerifyImageDisabled))
+	cmd.Flags().StringVar(&config.ThvCABundle, "thv-ca-bundle", "", "Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.")
+	cmd.Flags().StringVar(&config.JWKSAuthTokenFile, "jwks-auth-token-file", "", "Path to file containing bearer token for authenticating JWKS/OIDC requests")
+	cmd.Flags().BoolVar(&config.JWKSAllowPrivateIP, "jwks-allow-private-ip", false, "Allow JWKS/OIDC endpoints on private IP addresses (use with caution)")
+
+	// OpenTelemetry flags updated per origin/main
+	cmd.Flags().StringVar(&config.OtelEndpoint, "otel-endpoint", "", "OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)")
+	cmd.Flags().StringVar(&config.OtelServiceName, "otel-service-name", "", "OpenTelemetry service name (defaults to toolhive-mcp-proxy)")
+	cmd.Flags().Float64Var(&config.OtelSamplingRate, "otel-sampling-rate", 0.1, "OpenTelemetry trace sampling rate (0.0-1.0)")
+	cmd.Flags().StringArrayVar(&config.OtelHeaders, "otel-headers", nil, "OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
+	cmd.Flags().BoolVar(&config.OtelInsecure, "otel-insecure", false, "Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS")
+	cmd.Flags().BoolVar(&config.OtelEnablePrometheusMetricsPath, "otel-enable-prometheus-metrics-path", false,
+		"Enable Prometheus-style /metrics endpoint on the main transport port")
+	cmd.Flags().StringArrayVar(&config.OtelEnvironmentVariables, "otel-env-vars", nil,
+		"Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)")
+
+	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false, "Isolate the container network from the host (default: false)")
+	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration
@@ -235,17 +146,16 @@ func BuildRunnerConfig(
 	serverOrImage string,
 	cmdArgs []string,
 	debugMode bool,
+	cmd *cobra.Command,
 ) (*runner.RunConfig, error) {
-
-	// Validate the host flag and default resolving to IP in case hostname is provided
+	// Validate the host flag
 	validatedHost, err := ValidateAndNormaliseHostFlag(runConfig.Host)
 	if err != nil {
 		return nil, fmt.Errorf("invalid host: %s", runConfig.Host)
 	}
 
-	// Get OIDC flag values
-	// We'll get these from config later
-	oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, err := getOidcFromFlags(nil)
+	// Get OIDC flags
+	oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, err := getOidcFromFlags(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OIDC flags: %v", err)
 	}
@@ -272,9 +182,9 @@ func BuildRunnerConfig(
 		envVarValidator = &runner.CLIEnvVarValidator{}
 	}
 
+	// Image retrieval
 	var imageMetadata *registry.ImageMetadata
 	imageURL := serverOrImage
-
 	// Only pull image if we are not running in Kubernetes mode.
 	// This split will go away if we implement a separate command or binary
 	// for running MCP servers in Kubernetes.
@@ -304,13 +214,11 @@ func BuildRunnerConfig(
 	}
 
 	// Initialize a new RunConfig with values from command-line flags
-	runnerConfig, err := runner.NewRunConfigFromFlags(
-		ctx,
-		rt,
-		cmdArgs,
+	// TODO: As noted elsewhere, we should use the builder pattern here to make it more readable.
+	return runner.NewRunConfigFromFlags(
+		ctx, rt, cmdArgs,
 		runConfig.Name,
-		imageURL,
-		imageMetadata,
+		imageURL, imageMetadata,
 		validatedHost,
 		debugMode,
 		runConfig.Volumes,
@@ -325,11 +233,7 @@ func BuildRunnerConfig(
 		runConfig.TargetPort,
 		runConfig.Env,
 		runConfig.Labels,
-		oidcIssuer,
-		oidcAudience,
-		oidcJwksURL,
-		oidcClientID,
-		oidcAllowOpaqueTokens,
+		oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
 		finalOtelEndpoint,
 		runConfig.OtelServiceName,
 		finalOtelSamplingRate,
@@ -346,18 +250,20 @@ func BuildRunnerConfig(
 		types.ProxyMode(runConfig.ProxyMode),
 		runConfig.Group,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create RunConfig: %v", err)
-	}
-
-	return runnerConfig, nil
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags
-func getOidcFromFlags(_ *cobra.Command) (string, string, string, string, bool, error) {
-	// For now, return empty values since we're not using OIDC in the shared config
-	// This can be enhanced later if needed
-	return "", "", "", "", false, nil
+func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, bool, error) {
+	oidcIssuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
+	oidcAudience := GetStringFlagOrEmpty(cmd, "oidc-audience")
+	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
+	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
+	oidcAllowOpaqueTokens, err := cmd.Flags().GetBool("oidc-skip-opaque-token-validation")
+	if err != nil {
+		return "", "", "", "", false, fmt.Errorf("failed to get oidc-skip-opaque-token-validation flag: %v", err)
+	}
+
+	return oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, nil
 }
 
 // getTelemetryFromFlags extracts telemetry configuration from command flags

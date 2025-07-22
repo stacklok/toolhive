@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ToolHive is a lightweight, secure manager for MCP (Model Context Protocol) servers written in Go. It provides three main components:
+ToolHive is a lightweight, secure manager for MCP (Model Context Protocol: https://modelcontextprotocol.io) servers written in Go. It provides three main components:
 
 - **CLI (`thv`)**: Main command-line interface for managing MCP servers locally
 - **Kubernetes Operator (`thv-operator`)**: Manages MCP servers in Kubernetes clusters
 - **Proxy Runner (`thv-proxyrunner`)**: Handles proxy functionality for MCP server communication
 
-The application acts as a thin client for Docker/Podman Unix socket API, providing container-based isolation for running MCP servers securely.
+The application acts as a thin client for Docker/Podman Unix socket API, providing container-based isolation for running MCP servers securely. It also builds on top of the MCP Specification: https://modelcontextprotocol.io/specification.
 
 ## Build and Development Commands
 
@@ -97,7 +97,7 @@ The test framework uses Ginkgo and Gomega for BDD-style testing.
 
 ### Transport Types
 
-ToolHive supports multiple MCP transport protocols:
+ToolHive supports multiple MCP transport protocols (https://modelcontextprotocol.io/specification/2025-06-18/basic/transports):
 - **stdio**: Standard input/output
 - **HTTP**: Traditional HTTP requests
 - **SSE**: Server-Sent Events for streaming
@@ -188,3 +188,4 @@ Follow conventional commit format:
 - Capitalize subject line
 - Do not end subject line with period
 - Use body to explain what and why vs. how
+

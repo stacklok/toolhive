@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // manager implements the Manager interface
 type manager struct {
-	store state.Store
+	store           state.Store
+	workloadManager workloads.Manager
 }
 
 // NewManager creates a new group manager
@@ -20,7 +23,24 @@ func NewManager() (Manager, error) {
 		return nil, fmt.Errorf("failed to create group state store: %w", err)
 	}
 
-	return &manager{store: store}, nil
+	// Create a real workload manager
+	workloadManager, err := workloads.NewManager(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create workload manager: %w", err)
+	}
+
+	return &manager{store: store, workloadManager: workloadManager}, nil
+}
+
+// NewManagerWithWorkloadManager creates a new group manager with a custom workload manager
+// This is useful for testing with mocks
+func NewManagerWithWorkloadManager(workloadManager workloads.Manager) (Manager, error) {
+	store, err := state.NewGroupConfigStore("toolhive")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create group state store: %w", err)
+	}
+
+	return &manager{store: store, workloadManager: workloadManager}, nil
 }
 
 // Create creates a new group with the given name
@@ -98,7 +118,8 @@ func (m *manager) AddWorkloadToGroup(ctx context.Context, groupName, workloadNam
 
 	// Check if workload is already in the group
 	if group.HasWorkload(workloadName) {
-		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, groupName)
+		logger.Infof("workload '%s' is already in group '%s'", workloadName, groupName)
+		return nil
 	}
 
 	// Check if workload is already in another group
@@ -133,20 +154,22 @@ func (m *manager) RemoveWorkloadFromGroup(ctx context.Context, groupName, worklo
 
 // GetWorkloadGroup returns the group that a workload belongs to, if any
 func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error) {
-	// List all groups
-	groups, err := m.List(ctx)
+	// Use the workload manager to get the workload and check its group label
+
+	// Get the workload details
+	workload, err := m.workloadManager.GetWorkload(ctx, workloadName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list groups: %w", err)
+		// If workload not found, it's not in any group
+		return nil, nil
 	}
 
-	// Find the group that contains the workload
-	for _, group := range groups {
-		if group.HasWorkload(workloadName) {
-			return group, nil
-		}
+	// Check if the workload has a group
+	if workload.Group == "" {
+		return nil, nil // Workload is not in any group
 	}
 
-	return nil, nil // Workload is not in any group
+	// Get the group details
+	return m.Get(ctx, workload.Group)
 }
 
 // saveGroup saves the group to the group state store

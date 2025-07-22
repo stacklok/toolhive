@@ -164,7 +164,7 @@ var _ = Describe("Group", func() {
 		})
 	})
 
-	Describe("Adding workloads to groups", func() {
+	Describe("Running workloads with groups", func() {
 		BeforeEach(func() {
 			By("Creating a test group")
 			cmd := exec.Command(thvBinary, "group", "create", groupName)
@@ -172,11 +172,11 @@ var _ = Describe("Group", func() {
 			Expect(err).ToNot(HaveOccurred(), "Failed to create test group: %s", string(output))
 		})
 
-		Context("when adding a workload to a group", func() {
+		Context("when running a workload with a group", func() {
 			It("should successfully add a workload from registry", func() {
 				By("Adding a workload from registry")
 				workloadName := "test-workload-" + fmt.Sprintf("%d", GinkgoRandomSeed())
-				cmd := exec.Command(thvBinary, "group", "add", groupName, "fetch", "--name", workloadName)
+				cmd := exec.Command(thvBinary, "run", "fetch", "--group", groupName, "--name", workloadName)
 				output, err := cmd.CombinedOutput()
 				Expect(err).ToNot(HaveOccurred(), "Failed to add workload: %s", string(output))
 
@@ -190,6 +190,8 @@ var _ = Describe("Group", func() {
 				Expect(group.HasWorkload(workloadName)).To(BeTrue(), "Workload should be in group")
 
 				By("Verifying the workload appears in the list")
+				// Add a small delay to ensure the workload is fully registered
+				time.Sleep(2 * time.Second)
 				listCmd := exec.Command(thvBinary, "list", "--all")
 				listOutput, err := listCmd.CombinedOutput()
 				Expect(err).ToNot(HaveOccurred())
@@ -200,10 +202,11 @@ var _ = Describe("Group", func() {
 			It("should successfully add a workload with custom flags", func() {
 				By("Adding a workload with custom flags")
 				workloadName := "test-workload-flags-" + fmt.Sprintf("%d", GinkgoRandomSeed())
-				cmd := exec.Command(thvBinary, "group", "add", groupName, "fetch",
+				cmd := exec.Command(thvBinary, "run", "fetch",
+					"--group", groupName,
 					"--name", workloadName,
 					"--transport", "sse",
-					"--proxy-port", "8080",
+					"--proxy-port", "8081",
 					"--env", "TEST=value",
 					"--label", "custom=label")
 				output, err := cmd.CombinedOutput()
@@ -220,26 +223,10 @@ var _ = Describe("Group", func() {
 			})
 		})
 
-		Context("when adding workloads with invalid arguments", func() {
-			It("should fail when no arguments are provided", func() {
-				By("Attempting to add workload without arguments")
-				cmd := exec.Command(thvBinary, "group", "add")
-				output, err := cmd.CombinedOutput()
-				Expect(err).To(HaveOccurred(), "Should fail when no arguments provided")
-				Expect(string(output)).To(ContainSubstring("requires at least 2 arg(s)"))
-			})
-
-			It("should fail when only group name is provided", func() {
-				By("Attempting to add workload with only group name")
-				cmd := exec.Command(thvBinary, "group", "add", groupName)
-				output, err := cmd.CombinedOutput()
-				Expect(err).To(HaveOccurred(), "Should fail when only group name provided")
-				Expect(string(output)).To(ContainSubstring("requires at least 2 arg(s)"))
-			})
-
+		Context("when running workloads with invalid arguments", func() {
 			It("should fail when group does not exist", func() {
 				By("Attempting to add workload to non-existent group")
-				cmd := exec.Command(thvBinary, "group", "add", "nonexistent-group", "fetch")
+				cmd := exec.Command(thvBinary, "run", "fetch", "--group", "nonexistent-group", "--name", "test-workload")
 				output, err := cmd.CombinedOutput()
 				Expect(err).To(HaveOccurred(), "Should fail when group does not exist")
 				Expect(string(output)).To(ContainSubstring("does not exist"))
@@ -247,34 +234,34 @@ var _ = Describe("Group", func() {
 
 			It("should fail when server/image does not exist", func() {
 				By("Attempting to add non-existent server")
-				cmd := exec.Command(thvBinary, "group", "add", groupName, "nonexistent-server")
+				cmd := exec.Command(thvBinary, "run", "nonexistent-server", "--group", groupName, "--name", "test-workload")
 				output, err := cmd.CombinedOutput()
 				Expect(err).To(HaveOccurred(), "Should fail when server does not exist")
 				Expect(string(output)).To(ContainSubstring("image not found"))
 			})
 		})
 
-		Context("when adding duplicate workloads", func() {
+		Context("when running duplicate workloads", func() {
 			var workloadName string
 
 			BeforeEach(func() {
 				workloadName = "test-duplicate-" + fmt.Sprintf("%d", GinkgoRandomSeed())
 				By("Adding initial workload")
-				cmd := exec.Command(thvBinary, "group", "add", groupName, "fetch", "--name", workloadName)
+				cmd := exec.Command(thvBinary, "run", "fetch", "--group", groupName, "--name", workloadName)
 				output, err := cmd.CombinedOutput()
 				Expect(err).ToNot(HaveOccurred(), "Failed to add initial workload: %s", string(output))
 			})
 
 			It("should fail when adding the same workload again", func() {
 				By("Attempting to add the same workload again")
-				cmd := exec.Command(thvBinary, "group", "add", groupName, "fetch", "--name", workloadName)
+				cmd := exec.Command(thvBinary, "run", "fetch", "--group", groupName, "--name", workloadName)
 				output, err := cmd.CombinedOutput()
 				Expect(err).To(HaveOccurred(), "Should fail when adding duplicate workload")
 				Expect(string(output)).To(ContainSubstring("already in group"))
 			})
 		})
 
-		Context("when adding workload to multiple groups", func() {
+		Context("when running workload with multiple groups", func() {
 			var workloadName string
 			var secondGroupName string
 
@@ -288,7 +275,7 @@ var _ = Describe("Group", func() {
 				Expect(err).ToNot(HaveOccurred(), "Failed to create second group: %s", string(output))
 
 				By("Adding workload to first group")
-				cmd = exec.Command(thvBinary, "group", "add", groupName, "fetch", "--name", workloadName)
+				cmd = exec.Command(thvBinary, "run", "fetch", "--group", groupName, "--name", workloadName)
 				output, err = cmd.CombinedOutput()
 				Expect(err).ToNot(HaveOccurred(), "Failed to add workload to first group: %s", string(output))
 			})
@@ -305,18 +292,19 @@ var _ = Describe("Group", func() {
 
 			It("should fail when adding workload to second group", func() {
 				By("Attempting to add workload to second group")
-				cmd := exec.Command(thvBinary, "group", "add", secondGroupName, "fetch", "--name", workloadName)
+				cmd := exec.Command(thvBinary, "run", "fetch", "--group", secondGroupName, "--name", workloadName)
 				output, err := cmd.CombinedOutput()
 				Expect(err).To(HaveOccurred(), "Should fail when adding workload to second group")
 				Expect(string(output)).To(ContainSubstring("already in group"))
 			})
 		})
 
-		Context("when adding workload with invalid flags", func() {
+		Context("when running workload with invalid flags", func() {
 			It("should fail with invalid port number", func() {
 				By("Attempting to add workload with invalid port")
 				workloadName := "test-invalid-port-" + fmt.Sprintf("%d", GinkgoRandomSeed())
-				cmd := exec.Command(thvBinary, "group", "add", groupName, "fetch",
+				cmd := exec.Command(thvBinary, "run", "fetch",
+					"--group", groupName,
 					"--name", workloadName,
 					"--proxy-port", "99999")
 				output, err := cmd.CombinedOutput()
@@ -327,7 +315,8 @@ var _ = Describe("Group", func() {
 			It("should fail with invalid transport", func() {
 				By("Attempting to add workload with invalid transport")
 				workloadName := "test-invalid-transport-" + fmt.Sprintf("%d", GinkgoRandomSeed())
-				cmd := exec.Command(thvBinary, "group", "add", groupName, "fetch",
+				cmd := exec.Command(thvBinary, "run", "fetch",
+					"--group", groupName,
 					"--name", workloadName,
 					"--transport", "invalid-transport")
 				output, err := cmd.CombinedOutput()
@@ -336,11 +325,12 @@ var _ = Describe("Group", func() {
 			})
 		})
 
-		Context("when adding workload with command arguments", func() {
+		Context("when running workload with command arguments", func() {
 			It("should successfully add workload with arguments after --", func() {
 				By("Adding workload with arguments")
 				workloadName := "test-with-args-" + fmt.Sprintf("%d", GinkgoRandomSeed())
-				cmd := exec.Command(thvBinary, "group", "add", groupName, "fetch",
+				cmd := exec.Command(thvBinary, "run", "fetch",
+					"--group", groupName,
 					"--name", workloadName,
 					"--", "--help")
 				output, err := cmd.CombinedOutput()
@@ -365,7 +355,6 @@ var _ = Describe("Group", func() {
 			output, err := cmd.CombinedOutput()
 			Expect(err).ToNot(HaveOccurred())
 			Expect(string(output)).To(ContainSubstring("manage logical groupings of MCP servers"))
-			Expect(string(output)).To(ContainSubstring("add"))
 			Expect(string(output)).To(ContainSubstring("create"))
 		})
 
@@ -377,12 +366,12 @@ var _ = Describe("Group", func() {
 			Expect(string(output)).To(ContainSubstring("Create a new logical group of MCP servers"))
 		})
 
-		It("should display help for group add command", func() {
-			By("Getting group add command help")
-			cmd := exec.Command(thvBinary, "group", "add", "--help")
+		It("should display help for run command with group flag", func() {
+			By("Getting run command help")
+			cmd := exec.Command(thvBinary, "run", "--help")
 			output, err := cmd.CombinedOutput()
 			Expect(err).ToNot(HaveOccurred())
-			Expect(string(output)).To(ContainSubstring("Add an MCP server to a logical group"))
+			Expect(string(output)).To(ContainSubstring("--group"))
 			Expect(string(output)).To(ContainSubstring("--transport"))
 			Expect(string(output)).To(ContainSubstring("--name"))
 		})
@@ -399,11 +388,13 @@ var _ = Describe("Group", func() {
 		It("should show workloads in groups when listing", func() {
 			By("Adding a workload to the group")
 			workloadName := "test-list-integration-" + fmt.Sprintf("%d", GinkgoRandomSeed())
-			cmd := exec.Command(thvBinary, "group", "add", groupName, "fetch", "--name", workloadName)
+			cmd := exec.Command(thvBinary, "run", "fetch", "--group", groupName, "--name", workloadName)
 			output, err := cmd.CombinedOutput()
 			Expect(err).ToNot(HaveOccurred(), "Failed to add workload: %s", string(output))
 
 			By("Listing all workloads")
+			// Add a small delay to ensure the workload is fully registered
+			time.Sleep(2 * time.Second)
 			listCmd := exec.Command(thvBinary, "list", "--all")
 			listOutput, err := listCmd.CombinedOutput()
 			Expect(err).ToNot(HaveOccurred())

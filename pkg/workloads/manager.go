@@ -32,6 +32,8 @@ import (
 // Manager is responsible for managing the state of ToolHive-managed containers.
 // NOTE: This interface may be split up in future PRs, in particular, operations
 // which are only relevant to the CLI/API use case will be split out.
+//
+//go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=manager.go Manager
 type Manager interface {
 	// GetWorkload retrieves details of the named workload including its status.
 	GetWorkload(ctx context.Context, workloadName string) (Workload, error)

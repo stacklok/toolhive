@@ -66,6 +66,9 @@ type RunConfig struct {
 
 	// Labels
 	Labels []string
+
+	// Execution mode
+	Foreground bool
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -147,6 +150,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunConfig) {
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
+	cmd.Flags().BoolVarP(&config.Foreground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration

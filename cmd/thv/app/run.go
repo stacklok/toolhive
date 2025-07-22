@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -48,17 +49,11 @@ permission profile. Additional configuration can be provided via flags.`,
 	},
 }
 
-var (
-	runForeground bool
-	runConfig     RunConfig
-)
+var runConfig RunConfig
 
 func init() {
 	// Add run flags
 	AddRunFlags(runCmd, &runConfig)
-
-	// Add run-specific flags that are not in AddRunFlags
-	runCmd.Flags().BoolVarP(&runForeground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
 
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
 	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
@@ -91,6 +86,31 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Validate group if specified and add group label
+	if runConfig.Group != "" {
+		// Validate that the group exists
+		groupManager, err := groups.NewManager()
+		if err != nil {
+			return fmt.Errorf("failed to create group manager: %v", err)
+		}
+
+		group, err := groupManager.GetWorkloadGroup(ctx, runConfig.Name)
+		if err != nil {
+			return fmt.Errorf("failed to get workload group: %v", err)
+		}
+		if group != nil {
+			return fmt.Errorf("workload '%s' is already in group '%s'", runConfig.Name, group.Name)
+		}
+
+		exists, err := groupManager.Exists(ctx, runConfig.Group)
+		if err != nil {
+			return fmt.Errorf("failed to check if group exists: %v", err)
+		}
+		if !exists {
+			return fmt.Errorf("group '%s' does not exist", runConfig.Group)
+		}
+	}
+
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
@@ -99,11 +119,33 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	workloadManager := workloads.NewManagerFromRuntime(rt)
 
 	// Once we have built the RunConfig, start the MCP workload.
-	// If we are running the container in the foreground - call the RunWorkload method directly.
-	if runForeground {
+	// If we are running the container in the foreground - call the RunWorkload method directly
+	// Do not add the workload to a group in foreground mode
+	if runConfig.Foreground {
 		return workloadManager.RunWorkload(ctx, runnerConfig)
 	}
-	return workloadManager.RunWorkloadDetached(ctx, runnerConfig)
+
+	// Run the workload in detached mode
+	err = workloadManager.RunWorkloadDetached(ctx, runnerConfig)
+	if err != nil {
+		return err
+	}
+
+	// Register workload with group if specified (only for detached mode)
+	if runConfig.Group != "" {
+		groupManager, err := groups.NewManager()
+		if err != nil {
+			return fmt.Errorf("failed to create group manager: %v", err)
+		}
+
+		// Add the workload to the group and return an error if the workload is already in the group
+		if err := groupManager.AddWorkloadToGroup(ctx, runConfig.Group, runnerConfig.BaseName); err != nil {
+			return fmt.Errorf("failed to add workload to group: %v", err)
+		}
+	}
+
+	return nil
+
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator

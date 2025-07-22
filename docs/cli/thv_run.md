@@ -69,7 +69,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --otel-endpoint string                  OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
       --otel-env-vars stringArray             Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)
       --otel-headers stringArray              OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)
-      --otel-insecure                         Disable TLS verification for OpenTelemetry endpoint
+      --otel-insecure                         Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS
       --otel-sampling-rate float              OpenTelemetry trace sampling rate (0.0-1.0) (default 0.1)
       --otel-service-name string              OpenTelemetry service name (defaults to toolhive-mcp-proxy)
       --permission-profile string             Permission profile to use (none, network, or path to JSON file)

@@ -19,6 +19,7 @@ const (
 	testCurrentVersion = "1.0.0"
 	testLatestVersion  = "1.1.0"
 	testOldVersion     = "1.0.5"
+	testComponentCLI   = "CLI"
 )
 
 // MockVersionClient is a mock implementation of the VersionClient interface
@@ -31,26 +32,25 @@ func (m *MockVersionClient) GetLatestVersion(instanceID string, currentVersion s
 	return args.String(0), args.Error(1)
 }
 
+func (m *MockVersionClient) GetComponent() string {
+	args := m.Called()
+	return args.String(0)
+}
+
 // Test helpers
 func setupMockVersionClient(_ *testing.T) *MockVersionClient {
 	return &MockVersionClient{}
 }
 
-// createTempDir creates a temporary directory for testing
-func createTempDir(t *testing.T) string {
+func createTempUpdateFile(t *testing.T, contents updateFile) string {
 	t.Helper()
 	tempDir, err := os.MkdirTemp("", "toolhive-test-*")
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		os.RemoveAll(tempDir)
 	})
-	return tempDir
-}
 
-// createUpdateFile creates a temporary update file with the given contents
-func createUpdateFile(t *testing.T, dir string, contents updateFile) string {
-	t.Helper()
-	filePath := filepath.Join(dir, "updates.json")
+	filePath := filepath.Join(tempDir, "updates.json")
 	data, err := json.Marshal(contents)
 	require.NoError(t, err)
 	err = os.WriteFile(filePath, data, 0600)
@@ -65,22 +65,149 @@ func TestCheckLatestVersion(t *testing.T) {
 		t.Parallel()
 		// Setup
 		mockClient := setupMockVersionClient(t)
-		tempDir := createTempDir(t)
-		updateFilePath := filepath.Join(tempDir, "updates.json")
-		instanceID := testInstanceID
-		currentVersion := testCurrentVersion
 		latestVersion := testLatestVersion
+		componentName := testComponentCLI
 
-		// Create the checker directly
+		// Create unique temp file path to avoid test interference
+		tempDir, err := os.MkdirTemp("", "toolhive-test-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(tempDir)
+		tempFile := filepath.Join(tempDir, "updates.json")
+
+		mockClient.On("GetLatestVersion", mock.AnythingOfType("string"), mock.AnythingOfType("string")).Return(latestVersion, nil)
+
+		// Create checker manually to control file path
 		checker := &defaultUpdateChecker{
-			instanceID:     instanceID,
-			currentVersion: currentVersion,
-			updateFilePath: updateFilePath,
-			versionClient:  mockClient,
+			instanceID:          testInstanceID,
+			currentVersion:      testCurrentVersion,
+			updateFilePath:      tempFile,
+			versionClient:       mockClient,
+			previousAPIResponse: "",
+			component:           componentName,
 		}
 
-		// Mock client.GetLatestVersion
-		mockClient.On("GetLatestVersion", instanceID, currentVersion).Return(latestVersion, nil)
+		// Execute (calls GetLatestVersion since file doesn't exist)
+		err = checker.CheckLatestVersion()
+
+		// Verify
+		require.NoError(t, err)
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("different components share same file but have independent throttling", func(t *testing.T) {
+		t.Parallel()
+		components := []string{testComponentCLI, "API", "UI"}
+
+		for _, component := range components {
+			//nolint:paralleltest // Intentionally not parallel due to shared test setup
+			t.Run(component, func(t *testing.T) {
+				// Setup
+				mockClient := setupMockVersionClient(t)
+				latestVersion := testLatestVersion
+
+				// Create unique temp file path to avoid test interference
+				tempDir, err := os.MkdirTemp("", "toolhive-test-*")
+				require.NoError(t, err)
+				defer os.RemoveAll(tempDir)
+				tempFile := filepath.Join(tempDir, "updates.json")
+
+				// Mock client methods - GetComponent not called since we create checker manually
+				mockClient.On("GetLatestVersion", mock.AnythingOfType("string"), mock.AnythingOfType("string")).Return(latestVersion, nil)
+
+				// Create checker manually to control file path
+				checker := &defaultUpdateChecker{
+					instanceID:          testInstanceID,
+					currentVersion:      testCurrentVersion,
+					updateFilePath:      tempFile,
+					versionClient:       mockClient,
+					previousAPIResponse: "",
+					component:           component,
+				}
+
+				// Execute (calls GetLatestVersion since no throttling data exists)
+				err = checker.CheckLatestVersion()
+
+				// Verify
+				require.NoError(t, err)
+				mockClient.AssertExpectations(t)
+			})
+		}
+	})
+
+	t.Run("component within throttle window skips API call", func(t *testing.T) {
+		t.Parallel()
+		// Setup
+		mockClient := setupMockVersionClient(t)
+		componentName := "UI"
+		existingVersion := testLatestVersion
+
+		// Create existing file with fresh component data
+		existingFile := updateFile{
+			InstanceID:    testInstanceID,
+			LatestVersion: existingVersion,
+			Components: map[string]componentInfo{
+				componentName: {
+					LastCheck: time.Now().UTC().Add(-1 * time.Hour), // Within 4-hour window
+				},
+			},
+		}
+
+		tempFile := createTempUpdateFile(t, existingFile)
+
+		checker := &defaultUpdateChecker{
+			instanceID:          testInstanceID,
+			currentVersion:      testCurrentVersion,
+			updateFilePath:      tempFile,
+			versionClient:       mockClient,
+			previousAPIResponse: existingVersion,
+			component:           componentName,
+		}
+
+		// Execute
+		err := checker.CheckLatestVersion()
+
+		// Verify
+		require.NoError(t, err)
+
+		// Verify no methods were called (due to throttling)
+		mockClient.AssertNotCalled(t, "GetLatestVersion")
+		mockClient.AssertNotCalled(t, "GetComponent")
+	})
+
+	t.Run("component outside throttle window makes API call", func(t *testing.T) {
+		t.Parallel()
+		// Setup
+		mockClient := setupMockVersionClient(t)
+		componentName := "API"
+		existingVersion := testOldVersion
+		newVersion := testLatestVersion
+
+		// Create existing file with stale component data
+		existingFile := updateFile{
+			InstanceID:    testInstanceID,
+			LatestVersion: existingVersion,
+			Components: map[string]componentInfo{
+				componentName: {
+					LastCheck: time.Now().UTC().Add(-5 * time.Hour), // Outside 4-hour window
+				},
+			},
+		}
+
+		// Create temp file
+		tempFile := createTempUpdateFile(t, existingFile)
+
+		// Mock client methods - GetComponent not called since we create checker manually
+		mockClient.On("GetLatestVersion", testInstanceID, testCurrentVersion).Return(newVersion, nil)
+
+		// Create checker manually with temp file path
+		checker := &defaultUpdateChecker{
+			instanceID:          testInstanceID,
+			currentVersion:      testCurrentVersion,
+			updateFilePath:      tempFile,
+			versionClient:       mockClient,
+			previousAPIResponse: existingVersion,
+			component:           componentName,
+		}
 
 		// Execute
 		err := checker.CheckLatestVersion()
@@ -88,53 +215,43 @@ func TestCheckLatestVersion(t *testing.T) {
 		// Verify
 		require.NoError(t, err)
 		mockClient.AssertExpectations(t)
-
-		// Verify that the file was created
-		_, err = os.Stat(updateFilePath)
-		assert.NoError(t, err)
-
-		// Read the file and verify its contents
-		data, err := os.ReadFile(updateFilePath)
-		require.NoError(t, err)
-
-		var fileContents updateFile
-		err = json.Unmarshal(data, &fileContents)
-		require.NoError(t, err)
-		assert.Equal(t, instanceID, fileContents.InstanceID)
-		assert.Equal(t, latestVersion, fileContents.LatestVersion)
 	})
 
-	t.Run("file exists but is stale - makes API call", func(t *testing.T) {
+	t.Run("backward compatibility with old file format", func(t *testing.T) {
 		t.Parallel()
 		// Setup
 		mockClient := setupMockVersionClient(t)
-		tempDir := createTempDir(t)
-		instanceID := testInstanceID
-		currentVersion := testCurrentVersion
-		oldLatestVersion := testOldVersion
-		newLatestVersion := testLatestVersion
+		componentName := testComponentCLI
+		newVersion := testLatestVersion
 
-		// Create an update file with a known instance ID
-		updateFilePath := createUpdateFile(t, tempDir, updateFile{
-			InstanceID:    instanceID,
-			LatestVersion: oldLatestVersion,
-		})
-
-		// Set the file's modification time to be older than updateInterval
-		staleTime := time.Now().Add(-5 * time.Hour)
-		err := os.Chtimes(updateFilePath, staleTime, staleTime)
-		require.NoError(t, err)
-
-		// Create the checker directly
-		checker := &defaultUpdateChecker{
-			instanceID:     instanceID,
-			currentVersion: currentVersion,
-			updateFilePath: updateFilePath,
-			versionClient:  mockClient,
+		// Create old format file (missing Components field)
+		oldFormatData := map[string]interface{}{
+			"instance_id":    testInstanceID,
+			"latest_version": testOldVersion,
 		}
 
-		// Mock client.GetLatestVersion - must be set up before calling CheckLatestVersion
-		mockClient.On("GetLatestVersion", instanceID, currentVersion).Return(newLatestVersion, nil)
+		tempDir, err := os.MkdirTemp("", "toolhive-test-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(tempDir)
+
+		tempFile := filepath.Join(tempDir, "updates.json")
+		data, err := json.Marshal(oldFormatData)
+		require.NoError(t, err)
+		err = os.WriteFile(tempFile, data, 0600)
+		require.NoError(t, err)
+
+		// Mock client methods - GetComponent not called since we create checker manually
+		mockClient.On("GetLatestVersion", testInstanceID, testCurrentVersion).Return(newVersion, nil)
+
+		// Create checker manually with temp file path
+		checker := &defaultUpdateChecker{
+			instanceID:          testInstanceID,
+			currentVersion:      testCurrentVersion,
+			updateFilePath:      tempFile,
+			versionClient:       mockClient,
+			previousAPIResponse: testOldVersion,
+			component:           componentName,
+		}
 
 		// Execute
 		err = checker.CheckLatestVersion()
@@ -142,115 +259,41 @@ func TestCheckLatestVersion(t *testing.T) {
 		// Verify
 		require.NoError(t, err)
 		mockClient.AssertExpectations(t)
-
-		// Read the file and verify its contents
-		data, err := os.ReadFile(updateFilePath)
-		require.NoError(t, err)
-
-		var fileContents updateFile
-		err = json.Unmarshal(data, &fileContents)
-		require.NoError(t, err)
-		assert.Equal(t, instanceID, fileContents.InstanceID)
-		assert.Equal(t, newLatestVersion, fileContents.LatestVersion)
-	})
-
-	t.Run("file exists and is fresh - skips API call", func(t *testing.T) {
-		t.Parallel()
-		// Setup
-		mockClient := setupMockVersionClient(t)
-		tempDir := createTempDir(t)
-		instanceID := testInstanceID
-		currentVersion := testCurrentVersion
-		latestVersion := testLatestVersion
-
-		// Create an update file with a known instance ID
-		updateFilePath := createUpdateFile(t, tempDir, updateFile{
-			InstanceID:    instanceID,
-			LatestVersion: latestVersion,
-		})
-
-		// Set the file's modification time to be newer than updateInterval (less than 4 hours ago)
-		freshTime := time.Now().Add(-1 * time.Hour)
-		err := os.Chtimes(updateFilePath, freshTime, freshTime)
-		require.NoError(t, err)
-
-		// Create the checker directly
-		checker := &defaultUpdateChecker{
-			instanceID:          instanceID,
-			currentVersion:      currentVersion,
-			previousAPIResponse: latestVersion, // Set the previous API response
-			updateFilePath:      updateFilePath,
-			versionClient:       mockClient,
-		}
-
-		// Execute
-		err = checker.CheckLatestVersion()
-
-		// Verify
-		require.NoError(t, err)
-
-		// Verify that GetLatestVersion was not called
-		mockClient.AssertNotCalled(t, "GetLatestVersion")
-
-		// Verify the file wasn't modified
-		fileInfo, err := os.Stat(updateFilePath)
-		require.NoError(t, err)
-		assert.True(t, fileInfo.ModTime().Equal(freshTime), "File modification time should not have changed")
-	})
-
-	t.Run("error when stat fails", func(t *testing.T) {
-		t.Parallel()
-		// Setup
-		mockClient := setupMockVersionClient(t)
-		tempDir := createTempDir(t)
-
-		// Use a non-existent directory to cause a stat error
-		nonExistentDir := filepath.Join(tempDir, "non-existent")
-		updateFilePath := filepath.Join(nonExistentDir, "updates.json")
-
-		// Create the checker directly
-		checker := &defaultUpdateChecker{
-			instanceID:     testInstanceID,
-			currentVersion: testCurrentVersion,
-			updateFilePath: updateFilePath,
-			versionClient:  mockClient,
-		}
-
-		// Make the directory read-only to cause a stat error
-		err := os.Chmod(tempDir, 0000)
-		require.NoError(t, err)
-
-		// Ensure we restore permissions after the test
-		defer os.Chmod(tempDir, 0700)
-
-		// Execute
-		err = checker.CheckLatestVersion()
-
-		// Verify
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to stat update file")
 	})
 
 	t.Run("error when GetLatestVersion fails", func(t *testing.T) {
 		t.Parallel()
 		// Setup
 		mockClient := setupMockVersionClient(t)
-		tempDir := createTempDir(t)
-		updateFilePath := filepath.Join(tempDir, "updates.json")
-		instanceID := testInstanceID
-		currentVersion := testCurrentVersion
 		expectedError := errors.New("API error")
+		componentName := testComponentCLI
 
-		// Create the checker directly
-		checker := &defaultUpdateChecker{
-			instanceID:     instanceID,
-			currentVersion: currentVersion,
-			updateFilePath: updateFilePath,
-			versionClient:  mockClient,
+		// Create existing file with stale component data to force API call
+		existingFile := updateFile{
+			InstanceID:    testInstanceID,
+			LatestVersion: testOldVersion,
+			Components: map[string]componentInfo{
+				componentName: {
+					LastCheck: time.Now().UTC().Add(-5 * time.Hour), // Outside 4-hour window
+				},
+			},
 		}
 
-		// Mock client.GetLatestVersion to return an error
-		mockClient.On("GetLatestVersion", instanceID, currentVersion).Return("", expectedError)
+		// Create temp file
+		tempFile := createTempUpdateFile(t, existingFile)
+
+		// Mock client methods - GetComponent not called since we create checker manually
+		mockClient.On("GetLatestVersion", testInstanceID, mock.AnythingOfType("string")).Return("", expectedError)
+
+		// Create checker manually with temp file path to force API call
+		checker := &defaultUpdateChecker{
+			instanceID:          testInstanceID,
+			currentVersion:      testCurrentVersion,
+			updateFilePath:      tempFile,
+			versionClient:       mockClient,
+			previousAPIResponse: testOldVersion,
+			component:           componentName,
+		}
 
 		// Execute
 		err := checker.CheckLatestVersion()

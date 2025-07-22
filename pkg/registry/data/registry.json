@@ -170,7 +170,7 @@
     },
     "aws-cost-analysis": {
       "args": [],
-      "description": "Generate upfront AWS service cost estimates and cost insights.",
+      "description": "Generate upfront AWS service cost estimates and cost insights. This server is deprecated, use aws-pricing instead.",
       "env_vars": [
         {
           "description": "AWS access key ID with access to the AWS Pricing API",

@@ -29,6 +29,10 @@ func (m *mockVersionClient) GetLatestVersion(_ string, _ string) (string, error)
 	return m.version, nil
 }
 
+func (*mockVersionClient) GetComponent() string {
+	return "operator"
+}
+
 func TestService_CheckForUpdates(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()

@@ -29,7 +29,10 @@ func NewUpdateChecker(versionClient VersionClient) (UpdateChecker, error) {
 		return nil, fmt.Errorf("unable to access update file path %w", err)
 	}
 
-	// Check to see if the file already exists. Read the instance ID from the
+	// Get component name for component-specific data
+	component := getComponentFromVersionClient(versionClient)
+
+	// Check to see if the file already exists. Read the instance ID and component-specific data from the
 	// file if it does. If it doesn't exist, create a new instance ID.
 	var instanceID, previousVersion string
 	// #nosec G304: File path is not configurable at this time.
@@ -56,6 +59,7 @@ func NewUpdateChecker(versionClient VersionClient) (UpdateChecker, error) {
 		updateFilePath:      path,
 		versionClient:       versionClient,
 		previousAPIResponse: previousVersion,
+		component:           component,
 	}, nil
 }
 
@@ -64,10 +68,16 @@ const (
 	updateInterval       = 4 * time.Hour
 )
 
+// componentInfo represents component-specific update timing information.
+type componentInfo struct {
+	LastCheck time.Time `json:"last_check"`
+}
+
 // updateFile represents the structure of the update file.
 type updateFile struct {
-	InstanceID    string `json:"instance_id"`
-	LatestVersion string `json:"latest_version"`
+	InstanceID    string                   `json:"instance_id"`
+	LatestVersion string                   `json:"latest_version"`
+	Components    map[string]componentInfo `json:"components"`
 }
 
 type defaultUpdateChecker struct {
@@ -76,43 +86,67 @@ type defaultUpdateChecker struct {
 	previousAPIResponse string
 	updateFilePath      string
 	versionClient       VersionClient
+	component           string
 }
 
 func (d *defaultUpdateChecker) CheckLatestVersion() error {
-	// Check if the update file exists.
-	// Ignore the error if the file doesn't exist - we'll create it later.
-	fileInfo, err := os.Stat(d.updateFilePath)
+	// Read the current update file to get component-specific data
+	var currentFile updateFile
+	// #nosec G304: File path is not configurable at this time.
+	rawContents, err := os.ReadFile(d.updateFilePath)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to stat update file: %w", err)
+		return fmt.Errorf("failed to read update file: %w", err)
 	}
 
-	// Check if we need to make an API request based on file modification time.
-	if fileInfo != nil && time.Since(fileInfo.ModTime()) < updateInterval {
-		// If it is too soon - notify the user if we already know there is
-		// an update, then exit.
-		notifyIfUpdateAvailable(d.currentVersion, d.previousAPIResponse)
-		return nil
+	// Initialize file structure if it doesn't exist or is empty
+	if os.IsNotExist(err) || len(rawContents) == 0 {
+		currentFile = updateFile{
+			InstanceID: d.instanceID,
+			Components: make(map[string]componentInfo),
+		}
+	} else {
+		if err := json.Unmarshal(rawContents, &currentFile); err != nil {
+			return fmt.Errorf("failed to deserialize update file: %w", err)
+		}
+
+		// Initialize components map if it doesn't exist (for backward compatibility)
+		if currentFile.Components == nil {
+			currentFile.Components = make(map[string]componentInfo)
+		}
+
+		// Use the instance ID from file, but fallback to the one we generated
+		if currentFile.InstanceID == "" {
+			currentFile.InstanceID = d.instanceID
+		}
 	}
 
-	// If the update file is stale or does not exist - get the latest version
+	// Check component-specific timing
+	if componentData, exists := currentFile.Components[d.component]; exists {
+		if time.Since(componentData.LastCheck) < updateInterval {
+			// If it is too soon - notify the user if we already know there is
+			// an update, then exit.
+			notifyIfUpdateAvailable(d.currentVersion, currentFile.LatestVersion)
+			return nil
+		}
+	}
+
+	// If the component data is stale or does not exist - get the latest version
 	// from the API.
-	latestVersion, err := d.versionClient.GetLatestVersion(d.instanceID, d.currentVersion)
+	latestVersion, err := d.versionClient.GetLatestVersion(currentFile.InstanceID, d.currentVersion)
 	if err != nil {
 		return fmt.Errorf("failed to check for updates: %w", err)
 	}
 
 	notifyIfUpdateAvailable(d.currentVersion, latestVersion)
 
-	// Rewrite the update file with the latest result.
-	// If we really wanted to optimize this, we could skip updating the file
-	// if the version is the same as the current version, but update the
-	// modification time.
-	newFileContents := updateFile{
-		InstanceID:    d.instanceID,
-		LatestVersion: latestVersion,
+	// Update shared latest version and component-specific timing
+	currentFile.LatestVersion = latestVersion
+	currentFile.Components[d.component] = componentInfo{
+		LastCheck: time.Now().UTC(),
 	}
 
-	updatedData, err := json.Marshal(newFileContents)
+	// Write the updated file
+	updatedData, err := json.Marshal(currentFile)
 	if err != nil {
 		return fmt.Errorf("failed to marshal updated data: %w", err)
 	}
@@ -122,6 +156,11 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 	}
 
 	return nil
+}
+
+// getComponentFromVersionClient extracts the component name from a VersionClient.
+func getComponentFromVersionClient(versionClient VersionClient) string {
+	return versionClient.GetComponent()
 }
 
 func notifyIfUpdateAvailable(current, latest string) {

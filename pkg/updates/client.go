@@ -15,6 +15,7 @@ import (
 // VersionClient is an interface for calling the update service API.
 type VersionClient interface {
 	GetLatestVersion(instanceID string, currentVersion string) (string, error)
+	GetComponent() string
 }
 
 // NewVersionClient creates a new instance of VersionClient.
@@ -123,4 +124,9 @@ func (d *defaultVersionClient) GetLatestVersion(instanceID string, currentVersio
 	}
 
 	return response.Version, nil
+}
+
+// GetComponent returns the component name for this version client.
+func (d *defaultVersionClient) GetComponent() string {
+	return d.component
 }

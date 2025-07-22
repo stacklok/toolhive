@@ -130,6 +130,11 @@ func groupAddCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create workload: %v", err)
 	}
 
+	// Add the workload to the group
+	if err := groupManager.AddWorkloadToGroup(ctx, groupName, runnerConfig.BaseName); err != nil {
+		return fmt.Errorf("failed to add workload to group: %v", err)
+	}
+
 	fmt.Printf("MCP server '%s' added to group '%s' in 'Stopped' state.\n", runnerConfig.BaseName, groupName)
 	fmt.Printf("Use 'thv start %s' to start the server.\n", runnerConfig.BaseName)
 

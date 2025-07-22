@@ -456,6 +456,545 @@ func TestManager_Exists(t *testing.T) {
 	}
 }
 
+// TestManager_AddWorkloadToGroup tests the AddWorkloadToGroup method
+func TestManager_AddWorkloadToGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		groupName    string
+		workloadName string
+		setupMock    func(*mocks.MockStore)
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "successful addition",
+			groupName:    testGroupName,
+			workloadName: "test-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				// Mock GetReader for the group
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":[]}`}, nil)
+
+				// Mock List for GetWorkloadGroup to return empty list
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return([]string{}, nil)
+
+				// Mock GetWriter for saving the updated group
+				mock.EXPECT().
+					GetWriter(gomock.Any(), testGroupName).
+					Return(&mockWriteCloser{}, nil)
+			},
+			expectError: false,
+		},
+		{
+			name:         "group does not exist",
+			groupName:    "nonexistent-group",
+			workloadName: "test-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					GetReader(gomock.Any(), "nonexistent-group").
+					Return(nil, errors.New("group not found"))
+			},
+			expectError: true,
+			errorMsg:    "failed to get group",
+		},
+		{
+			name:         "workload already in group",
+			groupName:    testGroupName,
+			workloadName: "existing-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":["existing-workload"]}`}, nil)
+			},
+			expectError: true,
+			errorMsg:    "already in group",
+		},
+		{
+			name:         "workload already in another group",
+			groupName:    testGroupName,
+			workloadName: "workload-in-other-group",
+			setupMock: func(mock *mocks.MockStore) {
+				// Mock GetReader for the target group
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":[]}`}, nil)
+
+				// Mock List for GetWorkloadGroup to return another group
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return([]string{"other-group"}, nil)
+
+				// Mock GetReader for the other group
+				mock.EXPECT().
+					GetReader(gomock.Any(), "other-group").
+					Return(&mockReadCloser{data: `{"name":"other-group","workloads":["workload-in-other-group"]}`}, nil)
+			},
+			expectError: true,
+			errorMsg:    "already in group",
+		},
+		{
+			name:         "failed to check workload group membership",
+			groupName:    testGroupName,
+			workloadName: "test-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				// Mock GetReader for the group
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":[]}`}, nil)
+
+				// Mock List to fail
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return(nil, errors.New("list failed"))
+			},
+			expectError: true,
+			errorMsg:    "failed to check workload group membership",
+		},
+		{
+			name:         "failed to save group",
+			groupName:    testGroupName,
+			workloadName: "test-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				// Mock GetReader for the group
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":[]}`}, nil)
+
+				// Mock List to return empty list (workload not in any group)
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return([]string{}, nil)
+
+				// Mock GetWriter to fail
+				mock.EXPECT().
+					GetWriter(gomock.Any(), testGroupName).
+					Return(nil, errors.New("writer failed"))
+			},
+			expectError: true,
+			errorMsg:    "failed to get writer for group",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStore := mocks.NewMockStore(ctrl)
+			manager := &manager{store: mockStore}
+
+			// Set up mock expectations
+			tt.setupMock(mockStore)
+
+			// Call the method
+			err := manager.AddWorkloadToGroup(context.Background(), tt.groupName, tt.workloadName)
+
+			// Assert results
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestManager_RemoveWorkloadFromGroup tests the RemoveWorkloadFromGroup method
+func TestManager_RemoveWorkloadFromGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		groupName    string
+		workloadName string
+		setupMock    func(*mocks.MockStore)
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "successful removal",
+			groupName:    testGroupName,
+			workloadName: "test-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				// Mock GetReader for the group
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":["test-workload"]}`}, nil)
+
+				// Mock GetWriter for saving the updated group
+				mock.EXPECT().
+					GetWriter(gomock.Any(), testGroupName).
+					Return(&mockWriteCloser{}, nil)
+			},
+			expectError: false,
+		},
+		{
+			name:         "group does not exist",
+			groupName:    "nonexistent-group",
+			workloadName: "test-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					GetReader(gomock.Any(), "nonexistent-group").
+					Return(nil, errors.New("group not found"))
+			},
+			expectError: true,
+			errorMsg:    "failed to get group",
+		},
+		{
+			name:         "workload not in group",
+			groupName:    testGroupName,
+			workloadName: "nonexistent-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":["other-workload"]}`}, nil)
+			},
+			expectError: true,
+			errorMsg:    "is not in group",
+		},
+		{
+			name:         "failed to save group",
+			groupName:    testGroupName,
+			workloadName: "test-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				// Mock GetReader for the group
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":["test-workload"]}`}, nil)
+
+				// Mock GetWriter to fail
+				mock.EXPECT().
+					GetWriter(gomock.Any(), testGroupName).
+					Return(nil, errors.New("writer failed"))
+			},
+			expectError: true,
+			errorMsg:    "failed to get writer for group",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStore := mocks.NewMockStore(ctrl)
+			manager := &manager{store: mockStore}
+
+			// Set up mock expectations
+			tt.setupMock(mockStore)
+
+			// Call the method
+			err := manager.RemoveWorkloadFromGroup(context.Background(), tt.groupName, tt.workloadName)
+
+			// Assert results
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestManager_GetWorkloadGroup tests the GetWorkloadGroup method
+func TestManager_GetWorkloadGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		workloadName  string
+		setupMock     func(*mocks.MockStore)
+		expectError   bool
+		expectedGroup *Group
+		errorMsg      string
+	}{
+		{
+			name:         "workload found in group",
+			workloadName: "test-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				// Mock List to return group names
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return([]string{testGroupName}, nil)
+
+				// Mock GetReader for the group
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":["test-workload"]}`}, nil)
+			},
+			expectError:   false,
+			expectedGroup: &Group{Name: testGroupName, Workloads: []string{"test-workload"}},
+		},
+		{
+			name:         "workload not found in any group",
+			workloadName: "nonexistent-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				// Mock List to return group names
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return([]string{testGroupName}, nil)
+
+				// Mock GetReader for the group
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":["other-workload"]}`}, nil)
+			},
+			expectError:   false,
+			expectedGroup: nil,
+		},
+		{
+			name:         "failed to list groups",
+			workloadName: "test-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return(nil, errors.New("list failed"))
+			},
+			expectError: true,
+			errorMsg:    "failed to list groups",
+		},
+		{
+			name:         "workload found in multiple groups (should return first)",
+			workloadName: "test-workload",
+			setupMock: func(mock *mocks.MockStore) {
+				// Mock List to return group names
+				mock.EXPECT().
+					List(gomock.Any()).
+					Return([]string{"first-group", "second-group"}, nil)
+
+				// Mock GetReader for the first group (this should be returned)
+				mock.EXPECT().
+					GetReader(gomock.Any(), "first-group").
+					Return(&mockReadCloser{data: `{"name":"first-group","workloads":["test-workload"]}`}, nil)
+
+				// Mock GetReader for the second group (should not be called since first group has the workload)
+				// But we need to mock it in case the implementation changes
+				mock.EXPECT().
+					GetReader(gomock.Any(), "second-group").
+					Return(&mockReadCloser{data: `{"name":"second-group","workloads":["test-workload"]}`}, nil).
+					AnyTimes()
+			},
+			expectError:   false,
+			expectedGroup: &Group{Name: "first-group", Workloads: []string{"test-workload"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStore := mocks.NewMockStore(ctrl)
+			manager := &manager{store: mockStore}
+
+			// Set up mock expectations
+			tt.setupMock(mockStore)
+
+			// Call the method
+			group, err := manager.GetWorkloadGroup(context.Background(), tt.workloadName)
+
+			// Assert results
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+				if tt.expectedGroup != nil {
+					assert.Equal(t, tt.expectedGroup.Name, group.Name)
+					assert.Equal(t, tt.expectedGroup.Workloads, group.Workloads)
+				} else {
+					assert.Nil(t, group)
+				}
+			}
+		})
+	}
+}
+
+// TestGroup_AddWorkload tests the Group.AddWorkload method
+func TestGroup_AddWorkload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		initialGroup  *Group
+		workloadName  string
+		expectedAdded bool
+		expectedGroup *Group
+	}{
+		{
+			name:          "add new workload to empty group",
+			initialGroup:  &Group{Name: "test", Workloads: []string{}},
+			workloadName:  "new-workload",
+			expectedAdded: true,
+			expectedGroup: &Group{Name: "test", Workloads: []string{"new-workload"}},
+		},
+		{
+			name:          "add new workload to existing group",
+			initialGroup:  &Group{Name: "test", Workloads: []string{"existing-workload"}},
+			workloadName:  "new-workload",
+			expectedAdded: true,
+			expectedGroup: &Group{Name: "test", Workloads: []string{"existing-workload", "new-workload"}},
+		},
+		{
+			name:          "add existing workload",
+			initialGroup:  &Group{Name: "test", Workloads: []string{"existing-workload"}},
+			workloadName:  "existing-workload",
+			expectedAdded: false,
+			expectedGroup: &Group{Name: "test", Workloads: []string{"existing-workload"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create a copy of the initial group
+			group := &Group{
+				Name:      tt.initialGroup.Name,
+				Workloads: make([]string, len(tt.initialGroup.Workloads)),
+			}
+			copy(group.Workloads, tt.initialGroup.Workloads)
+
+			// Call the method
+			added := group.AddWorkload(tt.workloadName)
+
+			// Assert results
+			assert.Equal(t, tt.expectedAdded, added)
+			assert.Equal(t, tt.expectedGroup.Workloads, group.Workloads)
+		})
+	}
+}
+
+// TestGroup_RemoveWorkload tests the Group.RemoveWorkload method
+func TestGroup_RemoveWorkload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		initialGroup    *Group
+		workloadName    string
+		expectedRemoved bool
+		expectedGroup   *Group
+	}{
+		{
+			name:            "remove existing workload",
+			initialGroup:    &Group{Name: "test", Workloads: []string{"workload1", "workload2", "workload3"}},
+			workloadName:    "workload2",
+			expectedRemoved: true,
+			expectedGroup:   &Group{Name: "test", Workloads: []string{"workload1", "workload3"}},
+		},
+		{
+			name:            "remove workload from single workload group",
+			initialGroup:    &Group{Name: "test", Workloads: []string{"workload1"}},
+			workloadName:    "workload1",
+			expectedRemoved: true,
+			expectedGroup:   &Group{Name: "test", Workloads: []string{}},
+		},
+		{
+			name:            "remove non-existent workload",
+			initialGroup:    &Group{Name: "test", Workloads: []string{"workload1", "workload2"}},
+			workloadName:    "nonexistent-workload",
+			expectedRemoved: false,
+			expectedGroup:   &Group{Name: "test", Workloads: []string{"workload1", "workload2"}},
+		},
+		{
+			name:            "remove from empty group",
+			initialGroup:    &Group{Name: "test", Workloads: []string{}},
+			workloadName:    "any-workload",
+			expectedRemoved: false,
+			expectedGroup:   &Group{Name: "test", Workloads: []string{}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create a copy of the initial group
+			group := &Group{
+				Name:      tt.initialGroup.Name,
+				Workloads: make([]string, len(tt.initialGroup.Workloads)),
+			}
+			copy(group.Workloads, tt.initialGroup.Workloads)
+
+			// Call the method
+			removed := group.RemoveWorkload(tt.workloadName)
+
+			// Assert results
+			assert.Equal(t, tt.expectedRemoved, removed)
+			assert.Equal(t, tt.expectedGroup.Workloads, group.Workloads)
+		})
+	}
+}
+
+// TestGroup_HasWorkload tests the Group.HasWorkload method
+func TestGroup_HasWorkload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		group         *Group
+		workloadName  string
+		expectedFound bool
+	}{
+		{
+			name:          "workload exists in group",
+			group:         &Group{Name: "test", Workloads: []string{"workload1", "workload2", "workload3"}},
+			workloadName:  "workload2",
+			expectedFound: true,
+		},
+		{
+			name:          "workload does not exist in group",
+			group:         &Group{Name: "test", Workloads: []string{"workload1", "workload2"}},
+			workloadName:  "nonexistent-workload",
+			expectedFound: false,
+		},
+		{
+			name:          "empty group",
+			group:         &Group{Name: "test", Workloads: []string{}},
+			workloadName:  "any-workload",
+			expectedFound: false,
+		},
+		{
+			name:          "case sensitive matching",
+			group:         &Group{Name: "test", Workloads: []string{"Workload1", "workload2"}},
+			workloadName:  "workload1",
+			expectedFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Call the method
+			found := tt.group.HasWorkload(tt.workloadName)
+
+			// Assert results
+			assert.Equal(t, tt.expectedFound, found)
+		})
+	}
+}
+
 // mockWriteCloser implements io.WriteCloser for testing
 type mockWriteCloser struct {
 	data []byte
@@ -467,5 +1006,24 @@ func (m *mockWriteCloser) Write(p []byte) (n int, err error) {
 }
 
 func (*mockWriteCloser) Close() error {
+	return nil
+}
+
+// mockReadCloser implements io.ReadCloser for testing
+type mockReadCloser struct {
+	data string
+	pos  int
+}
+
+func (m *mockReadCloser) Read(p []byte) (n int, err error) {
+	if m.pos >= len(m.data) {
+		return 0, io.EOF
+	}
+	n = copy(p, m.data[m.pos:])
+	m.pos += n
+	return n, nil
+}
+
+func (*mockReadCloser) Close() error {
 	return nil
 }

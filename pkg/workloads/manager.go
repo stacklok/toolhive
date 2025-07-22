@@ -51,9 +51,6 @@ type Manager interface {
 	RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error
 	// RunWorkloadDetached runs a container in the background.
 	RunWorkloadDetached(ctx context.Context, runConfig *runner.RunConfig) error
-	// CreateWorkload creates a workload configuration without starting it.
-	// The workload will be in "Stopped" state initially.
-	CreateWorkload(ctx context.Context, runConfig *runner.RunConfig) error
 	// RestartWorkloads restarts the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
@@ -141,17 +138,6 @@ func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelF
 		}
 	}
 
-	// If listAll is true, also include saved run configurations that don't have containers yet
-	if listAll {
-		savedWorkloads, err := d.addSavedConfigurations(ctx, workloads)
-		if err != nil {
-			// Log the error but don't fail the entire operation
-			logger.Warnf("Warning: Failed to add saved configurations: %v", err)
-		} else {
-			workloads = append(workloads, savedWorkloads...)
-		}
-	}
-
 	// Apply label filtering if specified
 	if len(labelFilters) > 0 {
 		workloads, err = d.filterWorkloadsByLabels(workloads, labelFilters)
@@ -161,61 +147,6 @@ func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelF
 	}
 
 	return workloads, nil
-}
-
-// addSavedConfigurations adds saved run configurations that don't have containers yet
-func (d *defaultManager) addSavedConfigurations(ctx context.Context, existingWorkloads []Workload) ([]Workload, error) {
-	savedConfigs, err := runner.ListSavedConfigs(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list saved configurations: %w", err)
-	}
-
-	// Create a map of existing container names for quick lookup
-	existingContainers := make(map[string]bool)
-	for _, workload := range existingWorkloads {
-		existingContainers[workload.Name] = true
-	}
-
-	var savedWorkloads []Workload
-
-	// Add saved configurations that don't have containers yet
-	for _, configName := range savedConfigs {
-		if !existingContainers[configName] {
-			// Load the saved configuration to get its details
-			savedRunner, err := d.loadRunnerFromState(ctx, configName)
-			if err != nil {
-				// Log the error but continue with other configurations
-				logger.Warnf("Warning: Failed to load saved configuration for %s: %v", configName, err)
-				continue
-			}
-
-			// Create a Workload from the saved configuration
-			workload := Workload{
-				Name:          configName,
-				Package:       savedRunner.Config.Image,
-				URL:           "", // No URL since it's not running
-				Port:          savedRunner.Config.Port,
-				ToolType:      "mcp",
-				TransportType: savedRunner.Config.Transport,
-				Status:        WorkloadStatusStopped,
-				StatusContext: "Stopped",
-				CreatedAt:     time.Now(), // We don't have the exact creation time from saved config
-				Labels:        make(map[string]string),
-				Group:         labels.GetGroup(savedRunner.Config.ContainerLabels),
-			}
-
-			// Add user-defined labels (excluding standard ToolHive labels)
-			for key, value := range savedRunner.Config.ContainerLabels {
-				if !labels.IsStandardToolHiveLabel(key) {
-					workload.Labels[key] = value
-				}
-			}
-
-			savedWorkloads = append(savedWorkloads, workload)
-		}
-	}
-
-	return savedWorkloads, nil
 }
 
 // filterWorkloadsByLabels filters workloads based on label selectors
@@ -605,26 +536,8 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 			container, err := d.findContainerByName(childCtx, name)
 			if err != nil {
 				if errors.Is(err, ErrWorkloadNotFound) {
-					// Container doesn't exist, check if it's a saved run configuration
-					logger.Debugf("Container not found for %s, checking for saved run configuration", name)
-
-					// Try to delete the saved run configuration
-					if err := runner.DeleteSavedConfig(childCtx, name); err != nil {
-						logger.Warnf("Warning: Failed to delete saved run configuration for %s: %v", name, err)
-						return fmt.Errorf("workload not found: %s", name)
-					}
-
-					// Clean up temporary permission profile if it exists
-					if err := d.cleanupTempPermissionProfile(childCtx, name); err != nil {
-						logger.Warnf("Warning: Failed to cleanup temporary permission profile for %s: %v", name, err)
-					}
-
-					// Remove the workload status from the status store
-					if err = d.statuses.DeleteWorkloadStatus(ctx, name); err != nil {
-						logger.Warnf("failed to delete workload status for %s: %v", name, err)
-					}
-
-					logger.Infof("Saved run configuration for %s removed", name)
+					// Log but don't fail the entire operation for not found containers
+					logger.Warnf("Warning: Failed to delete workload %s: %v", name, err)
 					return nil
 				}
 				d.statuses.SetWorkloadStatus(ctx, name, WorkloadStatusError, err.Error())
@@ -775,32 +688,6 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string) (
 	}
 
 	return group, nil
-}
-
-func (d *defaultManager) CreateWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
-	// Validate workload name to prevent path traversal attacks
-	if err := validateWorkloadName(runConfig.BaseName); err != nil {
-		return fmt.Errorf("invalid workload name '%s': %w", runConfig.BaseName, err)
-	}
-
-	// Ensure that the workload has a status entry before starting the process.
-	if err := d.statuses.CreateWorkloadStatus(ctx, runConfig.BaseName); err != nil {
-		// Failure to create the initial state is a fatal error.
-		return fmt.Errorf("failed to create workload status: %v", err)
-	}
-
-	// Save the run configuration to state so it can be started later
-	mcpRunner := runner.NewRunner(runConfig)
-	if err := mcpRunner.SaveState(ctx); err != nil {
-		return fmt.Errorf("failed to save workload state: %v", err)
-	}
-
-	// Set the status to stopped since we're not starting it immediately
-	d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, WorkloadStatusStopped, "")
-
-	logger.Infof("Workload %s created in 'Stopped' state.", runConfig.BaseName)
-
-	return nil
 }
 
 func (d *defaultManager) findContainerByName(ctx context.Context, name string) (*rt.ContainerInfo, error) {

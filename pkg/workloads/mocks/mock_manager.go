@@ -43,20 +43,6 @@ func (m *MockManager) EXPECT() *MockManagerMockRecorder {
 	return m.recorder
 }
 
-// CreateWorkload mocks base method.
-func (m *MockManager) CreateWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CreateWorkload", ctx, runConfig)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// CreateWorkload indicates an expected call of CreateWorkload.
-func (mr *MockManagerMockRecorder) CreateWorkload(ctx, runConfig any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateWorkload", reflect.TypeOf((*MockManager)(nil).CreateWorkload), ctx, runConfig)
-}
-
 // DeleteWorkloads mocks base method.
 func (m *MockManager) DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
 	m.ctrl.T.Helper()

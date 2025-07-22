@@ -9,6 +9,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 )
@@ -31,7 +32,7 @@ type Transport interface {
 	// The k8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template.
 	Setup(ctx context.Context, runtime rt.Deployer, containerName string, image string, cmdArgs []string,
 		envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
-		isolateNetwork bool) error
+		isolateNetwork bool, ignoreConfig *ignore.Config) error
 
 	// Start initializes the transport and begins processing messages.
 	// The transport is responsible for container operations like attaching to stdin/stdout if needed.

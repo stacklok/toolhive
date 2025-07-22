@@ -15,6 +15,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
@@ -101,6 +102,7 @@ func (t *StdioTransport) Setup(
 	permissionProfile *permissions.Profile,
 	k8sPodTemplatePatch string,
 	isolateNetwork bool,
+	ignoreConfig *ignore.Config,
 ) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -115,6 +117,7 @@ func (t *StdioTransport) Setup(
 	containerOptions := rt.NewDeployWorkloadOptions()
 	containerOptions.AttachStdio = true
 	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
+	containerOptions.IgnoreConfig = ignoreConfig
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)

@@ -26,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/docker/sdk"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/ignore"
 	lb "github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -83,12 +84,21 @@ func convertEnvVars(envVars map[string]string) []string {
 func convertMounts(mounts []runtime.Mount) []mount.Mount {
 	result := make([]mount.Mount, 0, len(mounts))
 	for _, m := range mounts {
-		result = append(result, mount.Mount{
-			Type:     mount.TypeBind,
-			Source:   m.Source,
-			Target:   m.Target,
-			ReadOnly: m.ReadOnly,
-		})
+		if m.Type == runtime.MountTypeTmpfs {
+			// Create tmpfs mount to mask/hide sensitive directories
+			result = append(result, mount.Mount{
+				Type:   mount.TypeTmpfs,
+				Target: m.Target,
+				// No TmpfsOptions needed - default size is sufficient for masking
+			})
+		} else {
+			result = append(result, mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   m.Source,
+				Target:   m.Target,
+				ReadOnly: m.ReadOnly,
+			})
+		}
 	}
 	return result
 }
@@ -432,6 +442,8 @@ func generatePortBindings(labels map[string]string,
 // DeployWorkload creates and starts a workload.
 // It configures the workload based on the provided permission profile and transport type.
 // If options is nil, default options will be used.
+//
+//nolint:gocyclo // This function has high complexity due to comprehensive workload setup
 func (c *Client) DeployWorkload(
 	ctx context.Context,
 	image,
@@ -445,7 +457,11 @@ func (c *Client) DeployWorkload(
 	isolateNetwork bool,
 ) (string, int, error) {
 	// Get permission config from profile
-	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType)
+	var ignoreConfig *ignore.Config
+	if options != nil {
+		ignoreConfig = options.IgnoreConfig
+	}
+	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType, ignoreConfig)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to get permission config: %w", err)
 	}
@@ -894,7 +910,11 @@ func (c *Client) IsRunning(ctx context.Context) error {
 // getPermissionConfigFromProfile converts a permission profile to a container permission config
 // with transport-specific settings (internal function)
 // addReadOnlyMounts adds read-only mounts to the permission config
-func (*Client) addReadOnlyMounts(config *runtime.PermissionConfig, mounts []permissions.MountDeclaration) {
+func (*Client) addReadOnlyMounts(
+	config *runtime.PermissionConfig,
+	mounts []permissions.MountDeclaration,
+	ignoreConfig *ignore.Config,
+) {
 	for _, mountDecl := range mounts {
 		source, target, err := mountDecl.Parse()
 		if err != nil {
@@ -919,12 +939,20 @@ func (*Client) addReadOnlyMounts(config *runtime.PermissionConfig, mounts []perm
 			Source:   absPath,
 			Target:   target,
 			ReadOnly: true,
+			Type:     runtime.MountTypeBind,
 		})
+
+		// Process ignore patterns and add tmpfs overlays
+		addIgnoreOverlays(config, absPath, target, ignoreConfig)
 	}
 }
 
 // addReadWriteMounts adds read-write mounts to the permission config
-func (*Client) addReadWriteMounts(config *runtime.PermissionConfig, mounts []permissions.MountDeclaration) {
+func (*Client) addReadWriteMounts(
+	config *runtime.PermissionConfig,
+	mounts []permissions.MountDeclaration,
+	ignoreConfig *ignore.Config,
+) {
 	for _, mountDecl := range mounts {
 		source, target, err := mountDecl.Parse()
 		if err != nil {
@@ -962,8 +990,62 @@ func (*Client) addReadWriteMounts(config *runtime.PermissionConfig, mounts []per
 				Source:   absPath,
 				Target:   target,
 				ReadOnly: false,
+				Type:     runtime.MountTypeBind,
 			})
 		}
+
+		// Process ignore patterns and add tmpfs overlays
+		addIgnoreOverlays(config, absPath, target, ignoreConfig)
+	}
+}
+
+// addIgnoreOverlays processes ignore patterns for a mount and adds overlay mounts
+func addIgnoreOverlays(config *runtime.PermissionConfig, sourceDir, containerPath string, ignoreConfig *ignore.Config) {
+	// Skip if no ignore configuration is provided
+	if ignoreConfig == nil {
+		return
+	}
+
+	// Create ignore processor with configuration
+	ignoreProcessor := ignore.NewProcessor(ignoreConfig)
+
+	// Load global ignore patterns if enabled
+	if ignoreConfig.LoadGlobal {
+		if err := ignoreProcessor.LoadGlobal(); err != nil {
+			logger.Debugf("Failed to load global ignore patterns: %v", err)
+			// Continue without global patterns
+		}
+	}
+
+	// Load local ignore patterns from the source directory
+	if err := ignoreProcessor.LoadLocal(sourceDir); err != nil {
+		logger.Debugf("Failed to load local ignore patterns from %s: %v", sourceDir, err)
+		// Continue without local patterns
+	}
+
+	// Get overlay mounts (both tmpfs for directories and bind for files)
+	overlayMounts := ignoreProcessor.GetOverlayMounts(sourceDir, containerPath)
+
+	// Add overlay mounts to the configuration
+	for _, overlayMount := range overlayMounts {
+		var mountType runtime.MountType
+		var source string
+
+		if overlayMount.Type == "tmpfs" {
+			mountType = runtime.MountTypeTmpfs
+			source = "" // No source for tmpfs
+		} else {
+			mountType = runtime.MountTypeBind
+			source = overlayMount.HostPath
+		}
+
+		config.Mounts = append(config.Mounts, runtime.Mount{
+			Source:   source,
+			Target:   overlayMount.ContainerPath,
+			ReadOnly: false,
+			Type:     mountType,
+		})
+		logger.Debugf("Added %s overlay for ignored path: %s -> %s", overlayMount.Type, source, overlayMount.ContainerPath)
 	}
 }
 
@@ -992,6 +1074,7 @@ func convertRelativePathToAbsolute(source string, mountDecl permissions.MountDec
 func (c *Client) getPermissionConfigFromProfile(
 	profile *permissions.Profile,
 	transportType string,
+	ignoreConfig *ignore.Config,
 ) (*runtime.PermissionConfig, error) {
 	// Start with a default permission config
 	config := &runtime.PermissionConfig{
@@ -1003,8 +1086,8 @@ func (c *Client) getPermissionConfigFromProfile(
 	}
 
 	// Add mounts
-	c.addReadOnlyMounts(config, profile.Read)
-	c.addReadWriteMounts(config, profile.Write)
+	c.addReadOnlyMounts(config, profile.Read, ignoreConfig)
+	c.addReadWriteMounts(config, profile.Write, ignoreConfig)
 
 	// Validate transport type
 	switch transportType {

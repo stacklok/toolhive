@@ -10,6 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -269,6 +270,12 @@ func (b *RunConfigBuilder) WithTelemetryConfig(otelEndpoint string, otelEnablePr
 // WithToolsFilter sets the tools filter
 func (b *RunConfigBuilder) WithToolsFilter(toolsFilter []string) *RunConfigBuilder {
 	b.config.ToolsFilter = toolsFilter
+	return b
+}
+
+// WithIgnoreConfig sets the ignore configuration
+func (b *RunConfigBuilder) WithIgnoreConfig(ignoreConfig *ignore.Config) *RunConfigBuilder {
+	b.config.IgnoreConfig = ignoreConfig
 	return b
 }
 

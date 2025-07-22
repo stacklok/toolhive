@@ -8,6 +8,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
@@ -103,7 +104,7 @@ var transportEnvMap = map[types.TransportType]string{
 // Setup prepares the transport for use.
 func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containerName string, image string, cmdArgs []string,
 	envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
-	isolateNetwork bool) error {
+	isolateNetwork bool, ignoreConfig *ignore.Config) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -124,6 +125,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containe
 	// Create workload options
 	containerOptions := rt.NewDeployWorkloadOptions()
 	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
+	containerOptions.IgnoreConfig = ignoreConfig
 
 	// Expose the target port in the container
 	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)

@@ -61,7 +61,6 @@ var (
 	runProxyMode          string
 	runName               string
 	runHost               string
-	runPort               int
 	runProxyPort          int
 	runTargetPort         int
 	runTargetHost         string
@@ -343,12 +342,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Determine effective port value - prefer --proxy-port over --port for backwards compatibility
-	effectivePort := runProxyPort
-	if effectivePort == 0 && runPort != 0 {
-		effectivePort = runPort
-	}
-
 	// Initialize a new RunConfig with values from command-line flags
 	// TODO: As noted elsewhere, we should use the builder pattern here to make it more readable.
 	runConfig, err := runner.NewRunConfigFromFlags(
@@ -368,7 +361,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		runPermissionProfile,
 		runTargetHost,
 		runTransport,
-		effectivePort,
+		runProxyPort,
 		runTargetPort,
 		runEnv,
 		runLabels,

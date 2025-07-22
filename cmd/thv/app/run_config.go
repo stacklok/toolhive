@@ -116,26 +116,36 @@ func AddRunFlags(cmd *cobra.Command, config *RunConfig) {
 	cmd.Flags().StringVar(&config.AuthzConfig, "authz-config", "", "Path to the authorization configuration file")
 	cmd.Flags().StringVar(&config.AuditConfig, "audit-config", "", "Path to the audit configuration file")
 	cmd.Flags().BoolVar(&config.EnableAudit, "enable-audit", false, "Enable audit logging with default configuration")
-	cmd.Flags().StringVar(&config.K8sPodPatch, "k8s-pod-patch", "", "JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)")
+	cmd.Flags().StringVar(&config.K8sPodPatch, "k8s-pod-patch", "",
+		"JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)")
 	cmd.Flags().StringVar(&config.CACertPath, "ca-cert", "", "Path to a custom CA certificate file to use for container builds")
 	cmd.Flags().StringVar(&config.VerifyImage, "image-verification", retriever.VerifyImageWarn,
-		fmt.Sprintf("Set image verification mode (%s, %s, %s)", retriever.VerifyImageWarn, retriever.VerifyImageEnabled, retriever.VerifyImageDisabled))
-	cmd.Flags().StringVar(&config.ThvCABundle, "thv-ca-bundle", "", "Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.")
-	cmd.Flags().StringVar(&config.JWKSAuthTokenFile, "jwks-auth-token-file", "", "Path to file containing bearer token for authenticating JWKS/OIDC requests")
-	cmd.Flags().BoolVar(&config.JWKSAllowPrivateIP, "jwks-allow-private-ip", false, "Allow JWKS/OIDC endpoints on private IP addresses (use with caution)")
+		fmt.Sprintf("Set image verification mode (%s, %s, %s)",
+			retriever.VerifyImageWarn, retriever.VerifyImageEnabled, retriever.VerifyImageDisabled))
+	cmd.Flags().StringVar(&config.ThvCABundle, "thv-ca-bundle", "",
+		"Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)")
+	cmd.Flags().StringVar(&config.JWKSAuthTokenFile, "jwks-auth-token-file", "",
+		"Path to file containing bearer token for authenticating JWKS/OIDC requests")
+	cmd.Flags().BoolVar(&config.JWKSAllowPrivateIP, "jwks-allow-private-ip", false,
+		"Allow JWKS/OIDC endpoints on private IP addresses (use with caution)")
 
 	// OpenTelemetry flags updated per origin/main
-	cmd.Flags().StringVar(&config.OtelEndpoint, "otel-endpoint", "", "OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)")
-	cmd.Flags().StringVar(&config.OtelServiceName, "otel-service-name", "", "OpenTelemetry service name (defaults to toolhive-mcp-proxy)")
+	cmd.Flags().StringVar(&config.OtelEndpoint, "otel-endpoint", "",
+		"OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)")
+	cmd.Flags().StringVar(&config.OtelServiceName, "otel-service-name", "",
+		"OpenTelemetry service name (defaults to toolhive-mcp-proxy)")
 	cmd.Flags().Float64Var(&config.OtelSamplingRate, "otel-sampling-rate", 0.1, "OpenTelemetry trace sampling rate (0.0-1.0)")
-	cmd.Flags().StringArrayVar(&config.OtelHeaders, "otel-headers", nil, "OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
-	cmd.Flags().BoolVar(&config.OtelInsecure, "otel-insecure", false, "Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS")
+	cmd.Flags().StringArrayVar(&config.OtelHeaders, "otel-headers", nil,
+		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
+	cmd.Flags().BoolVar(&config.OtelInsecure, "otel-insecure", false,
+		"Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS")
 	cmd.Flags().BoolVar(&config.OtelEnablePrometheusMetricsPath, "otel-enable-prometheus-metrics-path", false,
 		"Enable Prometheus-style /metrics endpoint on the main transport port")
 	cmd.Flags().StringArrayVar(&config.OtelEnvironmentVariables, "otel-env-vars", nil,
 		"Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)")
 
-	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false, "Isolate the container network from the host (default: false)")
+	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
+		"Isolate the container network from the host (default: false)")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
 }
 

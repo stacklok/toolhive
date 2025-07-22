@@ -188,6 +188,10 @@ func (f *fileStatusManager) ensureBaseDir() error {
 
 // withFileLock executes the provided function while holding a write lock on the workload's lock file.
 func (f *fileStatusManager) withFileLock(ctx context.Context, workloadName string, fn func(string) error) error {
+	// Validate workload name
+	if strings.Contains(workloadName, "..") || strings.ContainsAny(workloadName, "/\\") {
+		return fmt.Errorf("invalid workload name '%s': contains forbidden characters", workloadName)
+	}
 	if err := f.ensureBaseDir(); err != nil {
 		return fmt.Errorf("failed to create base directory: %w", err)
 	}

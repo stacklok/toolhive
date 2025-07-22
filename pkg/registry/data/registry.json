@@ -170,7 +170,7 @@
     },
     "aws-cost-analysis": {
       "args": [],
-      "description": "Generate upfront AWS service cost estimates and cost insights.",
+      "description": "Generate upfront AWS service cost estimates and cost insights. This server is deprecated, use aws-pricing instead.",
       "env_vars": [
         {
           "description": "AWS access key ID with access to the AWS Pricing API",
@@ -203,7 +203,7 @@
           "required": false
         }
       ],
-      "image": "public.ecr.aws/f3y8w4n0/awslabs/cost-analysis-mcp-server:latest",
+      "image": "public.ecr.aws/f3y8w4n0/awslabs/cost-analysis-mcp-server:1.0.4",
       "metadata": {
         "last_updated": "2025-07-21T00:24:44Z",
         "pulls": 6403,
@@ -229,7 +229,7 @@
         "write": []
       },
       "repository_url": "https://github.com/awslabs/mcp",
-      "status": "Active",
+      "status": "Deprecated",
       "tags": [
         "aws",
         "cost-analysis",
@@ -348,6 +348,91 @@
         "read_documentation",
         "recommend",
         "search_documentation"
+      ],
+      "transport": "stdio"
+    },
+    "aws-pricing": {
+      "args": [],
+      "description": "Generate upfront AWS service cost estimates and cost insights.",
+      "env_vars": [
+        {
+          "description": "AWS access key ID with access to the AWS Pricing API",
+          "name": "AWS_ACCESS_KEY_ID",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "AWS secret access key",
+          "name": "AWS_SECRET_ACCESS_KEY",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "AWS sesison token for temporary credentials",
+          "name": "AWS_SESSION_TOKEN",
+          "required": false,
+          "secret": true
+        },
+        {
+          "default": "us-east-1",
+          "description": "AWS region for the Pricing API endpoint (us-east-1, eu-central-1, ap-southeast-1)",
+          "name": "AWS_REGION",
+          "required": false
+        },
+        {
+          "default": "ERROR",
+          "description": "Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+          "name": "FASTMCP_LOG_LEVEL",
+          "required": false
+        }
+      ],
+      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:latest",
+      "metadata": {
+        "last_updated": "2025-07-21T00:24:44Z",
+        "pulls": 6403,
+        "stars": 4839
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              "aws.amazon.com",
+              "pricing.us-east-1.amazonaws.com",
+              "api.pricing.us-east-1.amazonaws.com",
+              "api.pricing.eu-central-1.amazonaws.com",
+              "api.pricing.ap-southeast-1.amazonaws.com"
+            ],
+            "allow_port": [
+              443
+            ],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/awslabs/mcp",
+      "status": "Active",
+      "tags": [
+        "aws",
+        "cost-analysis",
+        "pricing",
+        "estimates",
+        "cost-insights",
+        "aws-costs",
+        "aws-pricing"
+      ],
+      "tier": "Official",
+      "tools": [
+        "analyze_cdk_project",
+        "analyze_terraform_project",
+        "get_pricing",
+        "get_bedrock_patterns",
+        "generate_cost_report",
+        "get_pricing_service_codes",
+        "get_pricing_service_attributes",
+        "get_pricing_attribute_values",
+        "get_price_list_urls"
       ],
       "transport": "stdio"
     },

@@ -52,7 +52,6 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --enable-audit                          Enable audit logging with default configuration
   -e, --env stringArray                       Environment variables to pass to the MCP server (format: KEY=VALUE)
   -f, --foreground                            Run in foreground mode (block until container exits)
-      --group string                          Name of the group this workload belongs to
   -h, --help                                  help for run
       --host string                           Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --image-verification string             Set image verification mode (warn, enabled, disabled) (default "warn")

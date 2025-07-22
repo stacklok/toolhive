@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -23,7 +22,6 @@ func NewManager() (Manager, error) {
 		return nil, fmt.Errorf("failed to create group state store: %w", err)
 	}
 
-	// Create a real workload manager
 	workloadManager, err := workloads.NewManager(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workload manager: %w", err)
@@ -116,13 +114,7 @@ func (m *manager) AddWorkloadToGroup(ctx context.Context, groupName, workloadNam
 		return fmt.Errorf("failed to get group '%s': %w", groupName, err)
 	}
 
-	// Check if workload is already in the group
-	if group.HasWorkload(workloadName) {
-		logger.Infof("workload '%s' is already in group '%s'", workloadName, groupName)
-		return nil
-	}
-
-	// Check if workload is already in another group
+	// Check if workload is already in any group
 	existingGroup, err := m.GetWorkloadGroup(ctx, workloadName)
 	if err != nil {
 		return fmt.Errorf("failed to check workload group membership: %w", err)
@@ -133,22 +125,6 @@ func (m *manager) AddWorkloadToGroup(ctx context.Context, groupName, workloadNam
 
 	// Add the workload to the group
 	group.AddWorkload(workloadName)
-	return m.saveGroup(ctx, group)
-}
-
-// RemoveWorkloadFromGroup removes a workload from a group
-func (m *manager) RemoveWorkloadFromGroup(ctx context.Context, groupName, workloadName string) error {
-	// Get the group
-	group, err := m.Get(ctx, groupName)
-	if err != nil {
-		return fmt.Errorf("failed to get group '%s': %w", groupName, err)
-	}
-
-	// Remove the workload from the group
-	if !group.RemoveWorkload(workloadName) {
-		return fmt.Errorf("workload '%s' is not in group '%s'", workloadName, groupName)
-	}
-
 	return m.saveGroup(ctx, group)
 }
 

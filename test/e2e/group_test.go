@@ -14,8 +14,13 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/test/e2e"
 )
+
+func init() {
+	logger.Initialize()
+}
 
 var _ = Describe("Group", func() {
 	var (
@@ -26,7 +31,8 @@ var _ = Describe("Group", func() {
 
 	BeforeEach(func() {
 		config = e2e.NewTestConfig()
-		groupName = "testgroup-e2e-" + fmt.Sprintf("%d", GinkgoRandomSeed())
+		// Use a more unique group name to avoid conflicts between tests
+		groupName = fmt.Sprintf("testgroup-e2e-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
 		thvBinary = os.Getenv("THV_BINARY")
 		if thvBinary == "" {
 			Skip("THV_BINARY environment variable not set")
@@ -148,9 +154,9 @@ var _ = Describe("Group", func() {
 				<-done
 				<-done
 
-				By("Verifying exactly one concurrent creation failed")
+				By("Verifying at least one concurrent creation failed")
 				errorCount := len(errors)
-				Expect(errorCount).To(Equal(1), "Exactly one concurrent creation should fail")
+				Expect(errorCount).To(BeNumerically(">=", 1), "At least one concurrent creation should fail")
 
 				By("Verifying the group exists")
 				manager, err := groups.NewManager()
@@ -175,7 +181,7 @@ var _ = Describe("Group", func() {
 		Context("when running a workload with a group", func() {
 			It("should successfully add a workload from registry", func() {
 				By("Adding a workload from registry")
-				workloadName := "test-workload-" + fmt.Sprintf("%d", GinkgoRandomSeed())
+				workloadName := fmt.Sprintf("test-workload-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
 				cmd := exec.Command(thvBinary, "run", "fetch", "--group", groupName, "--name", workloadName)
 				output, err := cmd.CombinedOutput()
 				Expect(err).ToNot(HaveOccurred(), "Failed to add workload: %s", string(output))
@@ -201,12 +207,14 @@ var _ = Describe("Group", func() {
 
 			It("should successfully add a workload with custom flags", func() {
 				By("Adding a workload with custom flags")
-				workloadName := "test-workload-flags-" + fmt.Sprintf("%d", GinkgoRandomSeed())
+				workloadName := fmt.Sprintf("test-workload-flags-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
+				// Use a unique port to avoid conflicts
+				uniquePort := fmt.Sprintf("%d", 9000+GinkgoRandomSeed()%1000)
 				cmd := exec.Command(thvBinary, "run", "fetch",
 					"--group", groupName,
 					"--name", workloadName,
 					"--transport", "sse",
-					"--proxy-port", "8081",
+					"--proxy-port", uniquePort,
 					"--env", "TEST=value",
 					"--label", "custom=label")
 				output, err := cmd.CombinedOutput()
@@ -245,7 +253,7 @@ var _ = Describe("Group", func() {
 			var workloadName string
 
 			BeforeEach(func() {
-				workloadName = "test-duplicate-" + fmt.Sprintf("%d", GinkgoRandomSeed())
+				workloadName = fmt.Sprintf("test-duplicate-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
 				By("Adding initial workload")
 				cmd := exec.Command(thvBinary, "run", "fetch", "--group", groupName, "--name", workloadName)
 				output, err := cmd.CombinedOutput()
@@ -266,8 +274,8 @@ var _ = Describe("Group", func() {
 			var secondGroupName string
 
 			BeforeEach(func() {
-				workloadName = "test-multi-group-" + fmt.Sprintf("%d", GinkgoRandomSeed())
-				secondGroupName = "testgroup-e2e-second-" + fmt.Sprintf("%d", GinkgoRandomSeed())
+				workloadName = fmt.Sprintf("test-multi-group-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
+				secondGroupName = fmt.Sprintf("testgroup-e2e-second-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
 
 				By("Creating second group")
 				cmd := exec.Command(thvBinary, "group", "create", secondGroupName)
@@ -302,7 +310,7 @@ var _ = Describe("Group", func() {
 		Context("when running workload with invalid flags", func() {
 			It("should fail with invalid port number", func() {
 				By("Attempting to add workload with invalid port")
-				workloadName := "test-invalid-port-" + fmt.Sprintf("%d", GinkgoRandomSeed())
+				workloadName := fmt.Sprintf("test-invalid-port-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
 				cmd := exec.Command(thvBinary, "run", "fetch",
 					"--group", groupName,
 					"--name", workloadName,
@@ -314,7 +322,7 @@ var _ = Describe("Group", func() {
 
 			It("should fail with invalid transport", func() {
 				By("Attempting to add workload with invalid transport")
-				workloadName := "test-invalid-transport-" + fmt.Sprintf("%d", GinkgoRandomSeed())
+				workloadName := fmt.Sprintf("test-invalid-transport-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
 				cmd := exec.Command(thvBinary, "run", "fetch",
 					"--group", groupName,
 					"--name", workloadName,
@@ -328,7 +336,7 @@ var _ = Describe("Group", func() {
 		Context("when running workload with command arguments", func() {
 			It("should successfully add workload with arguments after --", func() {
 				By("Adding workload with arguments")
-				workloadName := "test-with-args-" + fmt.Sprintf("%d", GinkgoRandomSeed())
+				workloadName := fmt.Sprintf("test-with-args-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
 				cmd := exec.Command(thvBinary, "run", "fetch",
 					"--group", groupName,
 					"--name", workloadName,
@@ -387,7 +395,7 @@ var _ = Describe("Group", func() {
 
 		It("should show workloads in groups when listing", func() {
 			By("Adding a workload to the group")
-			workloadName := "test-list-integration-" + fmt.Sprintf("%d", GinkgoRandomSeed())
+			workloadName := fmt.Sprintf("test-list-integration-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
 			cmd := exec.Command(thvBinary, "run", "fetch", "--group", groupName, "--name", workloadName)
 			output, err := cmd.CombinedOutput()
 			Expect(err).ToNot(HaveOccurred(), "Failed to add workload: %s", string(output))

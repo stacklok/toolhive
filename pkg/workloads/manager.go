@@ -117,7 +117,6 @@ func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (
 	return WorkloadFromContainerInfo(container)
 }
 
-// ListWorkloads retrieves the states of all workloads.
 func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error) {
 	// List containers
 	containers, err := d.runtime.ListWorkloads(ctx)

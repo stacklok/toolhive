@@ -79,10 +79,6 @@ type Manager interface {
 	// Returns an error if the group does not exist or the workload is already in the group.
 	AddWorkloadToGroup(ctx context.Context, groupName, workloadName string) error
 
-	// RemoveWorkloadFromGroup removes a workload from a group.
-	// Returns an error if the group does not exist.
-	RemoveWorkloadFromGroup(ctx context.Context, groupName, workloadName string) error
-
 	// GetWorkloadGroup returns the group that a workload belongs to, if any.
 	// Returns nil if the workload is not in any group.
 	GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error)

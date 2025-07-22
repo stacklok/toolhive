@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var proxyCmd = &cobra.Command{
@@ -234,6 +235,17 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	// Stop the proxy
 	if err := proxy.Stop(ctx); err != nil {
 		logger.Warnf("Warning: Failed to stop proxy: %v", err)
+	}
+
+	workloadsManager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
+	// Stop the workload if it was created
+	if _, err := workloadsManager.StopWorkloads(ctx, []string{serverName}); err != nil {
+		logger.Warnf("Warning: Failed to stop workload %s: %v", serverName, err)
+	} else {
+		logger.Infof("Workload %s stopped successfully", serverName)
 	}
 
 	logger.Infof("Proxy for server %s stopped", serverName)

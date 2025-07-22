@@ -511,11 +511,6 @@ func (d *defaultManager) GetLogs(ctx context.Context, containerName string, foll
 	return logs, nil
 }
 
-// DeleteWorkloads deletes the specified workloads by name.
-// It is implemented as an asynchronous operation which returns an errgroup.Group
-// and extensive error handling
-//
-//nolint:gocyclo // Complex function due to multiple scenarios: running containers, stopped workloads,
 func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
 	// Validate all workload names to prevent path traversal attacks
 	for _, name := range names {

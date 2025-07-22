@@ -229,8 +229,9 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
 		t.proxyPort, targetURI)
 
-	// Create the transparent proxy with middlewares
-	t.proxy = transparent.NewTransparentProxy(t.host, t.proxyPort, t.containerName, targetURI, t.prometheusHandler, t.middlewares...)
+	// Create the transparent proxy with middlewares (enable healthcheck for MCP servers)
+	t.proxy = transparent.NewTransparentProxy(
+		t.host, t.proxyPort, t.containerName, targetURI, t.prometheusHandler, true, t.middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}

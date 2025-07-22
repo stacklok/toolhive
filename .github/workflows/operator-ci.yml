@@ -193,7 +193,7 @@ jobs:
         release: v0.2.12
 
     - name: Create KIND Cluster
-      uses: helm/kind-action@d4887be296b90d45c7a7aaf1379c0ebd88c8aa31 # pin@v1.12.0
+      uses: helm/kind-action@b72c923563e6e80ea66e8e8c810798cc73e97e5e # pin@v1.12.0
       with:
         cluster_name: toolhive
         version: v0.29.0

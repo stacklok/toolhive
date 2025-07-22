@@ -214,7 +214,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		port, proxyTargetURI)
 
 	// Create the transparent proxy with middlewares
-	proxy := transparent.NewTransparentProxy(proxyHost, port, serverName, proxyTargetURI, nil, middlewares...)
+	proxy := transparent.NewTransparentProxy(proxyHost, port, serverName, proxyTargetURI, nil, false, middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %v", err)
 	}

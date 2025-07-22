@@ -153,16 +153,8 @@ func (f *fileStatusManager) SetWorkloadStatus(
 // DeleteWorkloadStatus removes the status of a workload by its name.
 func (f *fileStatusManager) DeleteWorkloadStatus(ctx context.Context, workloadName string) error {
 	return f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
-		// Check if file exists
-		if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
-			// File doesn't exist, consider this success
-			return nil
-		} else if err != nil {
-			return fmt.Errorf("failed to check status file for workload %s: %w", workloadName, err)
-		}
-
 		// Remove status file
-		if err := os.Remove(statusFilePath); err != nil {
+		if err := os.Remove(statusFilePath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to delete status file for workload %s: %w", workloadName, err)
 		}
 

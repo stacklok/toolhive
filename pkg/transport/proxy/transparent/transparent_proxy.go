@@ -70,6 +70,7 @@ func NewTransparentProxy(
 	containerName string,
 	targetURI string,
 	prometheusHandler http.Handler,
+	enableHealthCheck bool,
 	middlewares ...types.Middleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
@@ -83,9 +84,11 @@ func NewTransparentProxy(
 		sessionManager:    session.NewManager(30*time.Minute, session.NewProxySession),
 	}
 
-	// Create MCP pinger and health checker
-	mcpPinger := NewMCPPinger(targetURI)
-	proxy.healthChecker = healthcheck.NewHealthChecker("sse", mcpPinger)
+	// Create MCP pinger and health checker only if enabled
+	if enableHealthCheck {
+		mcpPinger := NewMCPPinger(targetURI)
+		proxy.healthChecker = healthcheck.NewHealthChecker("sse", mcpPinger)
+	}
 
 	return proxy
 }
@@ -273,8 +276,10 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		finalHandler.ServeHTTP(w, r)
 	})
 
-	// Add health check endpoint (no middlewares)
-	mux.Handle("/health", p.healthChecker)
+	// Add health check endpoint (no middlewares) only if health checker is enabled
+	if p.healthChecker != nil {
+		mux.Handle("/health", p.healthChecker)
+	}
 
 	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
 	if p.prometheusHandler != nil {
@@ -299,8 +304,10 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		}
 	}()
 
-	// Start health-check monitoring
-	go p.monitorHealth(ctx)
+	// Start health-check monitoring only if health checker is enabled
+	if p.healthChecker != nil {
+		go p.monitorHealth(ctx)
+	}
 
 	return nil
 }

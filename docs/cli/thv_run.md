@@ -62,13 +62,18 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --k8s-pod-patch string                  JSON string to patch the Kubernetes pod template (only applicable when using Kubernetes runtime)
       --label stringArray                     Add labels to the container (format: KEY=VALUE)
       --name string                           Name of the MCP server (auto-generated from image if not provided)
-      --otel-enable-prometheus-metrics-path   Enable Prometheus metrics endpoint
-      --otel-endpoint string                  OpenTelemetry endpoint for metrics and traces
-      --otel-env stringArray                  OpenTelemetry environment variables (format: KEY=VALUE)
-      --otel-headers stringArray              OpenTelemetry headers (format: KEY=VALUE)
-      --otel-insecure                         Use insecure connection for OpenTelemetry
-      --otel-sampling-rate float              OpenTelemetry sampling rate (0.0 to 1.0) (default 0.1)
-      --otel-service-name string              OpenTelemetry service name
+      --oidc-audience string                  Expected audience for the token
+      --oidc-client-id string                 OIDC client ID
+      --oidc-issuer string                    OIDC issuer URL (e.g., https://accounts.google.com)
+      --oidc-jwks-url string                  URL to fetch the JWKS from
+      --oidc-skip-opaque-token-validation     Allow skipping validation of opaque tokens
+      --otel-enable-prometheus-metrics-path   Enable Prometheus-style /metrics endpoint on the main transport port
+      --otel-endpoint string                  OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
+      --otel-env-vars stringArray             Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)
+      --otel-headers stringArray              OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)
+      --otel-insecure                         Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS
+      --otel-sampling-rate float              OpenTelemetry trace sampling rate (0.0-1.0) (default 0.1)
+      --otel-service-name string              OpenTelemetry service name (defaults to toolhive-mcp-proxy)
       --permission-profile string             Permission profile to use (none, network, or path to JSON file)
       --proxy-mode string                     Proxy mode for stdio transport (sse or streamable-http) (default "sse")
       --proxy-port int                        Port for the HTTP proxy to listen on (host port)

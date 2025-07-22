@@ -57,8 +57,16 @@ func init() {
 	// Add run flags
 	AddRunFlags(runCmd, &runConfig)
 
-	// Add run-specific flags
+	// Add run-specific flags that are not in AddRunFlags
 	runCmd.Flags().BoolVarP(&runForeground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
+
+	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
+	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
+		logger.Warnf("Error hiding flag: %v", err)
+	}
+
+	// Add OIDC validation flags
+	AddOIDCFlags(runCmd)
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {

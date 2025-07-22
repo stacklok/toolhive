@@ -265,6 +265,12 @@ func (b *RunConfigBuilder) WithTelemetryConfig(otelEndpoint string, otelEnablePr
 	return b
 }
 
+// WithToolsFilter sets the tools filter
+func (b *RunConfigBuilder) WithToolsFilter(toolsFilter []string) *RunConfigBuilder {
+	b.config.ToolsFilter = toolsFilter
+	return b
+}
+
 // Build creates the final RunConfig instance with validation and processing
 func (b *RunConfigBuilder) Build(ctx context.Context, imageMetadata *registry.ImageMetadata,
 	envVars []string, envVarValidator EnvVarValidator) (*RunConfig, error) {

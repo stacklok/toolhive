@@ -37,6 +37,10 @@ const (
 	VSCode MCPClient = "vscode"
 	// ClaudeCode represents the Claude Code CLI.
 	ClaudeCode MCPClient = "claude-code"
+	// Windsurf represents the Windsurf IDE.
+	Windsurf MCPClient = "windsurf"
+	// WindsurfIntelliJ represents the Windsurf plugin for IntelliJ.
+	WindsurfIntelliJ MCPClient = "windsurf-intellij"
 )
 
 // Extension is extension of the client config file.
@@ -179,6 +183,34 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		IsTransportTypeFieldSupported: true,
 	},
+	{
+		ClientType:           Windsurf,
+		Description:          "Windsurf IDE",
+		SettingsFile:         "mcp_config.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".codeium", "windsurf"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+	},
+	{
+		ClientType:           WindsurfIntelliJ,
+		Description:          "Windsurf plugin for IntelliJ",
+		SettingsFile:         "mcp_config.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".codeium"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+	},
 }
 
 // ConfigFile represents a client configuration file
@@ -288,6 +320,16 @@ func Upsert(cf ConfigFile, name string, url string, transportType string) error 
 			continue
 		}
 		mappedTransportType, ok := supportedClientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
+
+		// Special handling for Windsurf clients with SSE transport
+		if (cf.ClientType == Windsurf || cf.ClientType == WindsurfIntelliJ) && mappedTransportType == "sse" {
+			if supportedClientIntegrations[i].IsTransportTypeFieldSupported && ok {
+				return cf.ConfigUpdater.Upsert(name, WindsurfSSEServer{ServerUrl: url, Type: mappedTransportType})
+			}
+			return cf.ConfigUpdater.Upsert(name, WindsurfSSEServer{ServerUrl: url})
+		}
+
+		// Default handling for all other clients
 		if supportedClientIntegrations[i].IsTransportTypeFieldSupported && ok {
 			return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: mappedTransportType})
 		}

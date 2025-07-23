@@ -106,28 +106,6 @@ func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
 	return m.store.Exists(ctx, name)
 }
 
-// AddWorkloadToGroup adds a workload to a group
-func (m *manager) AddWorkloadToGroup(ctx context.Context, groupName, workloadName string) error {
-	// Get the group
-	group, err := m.Get(ctx, groupName)
-	if err != nil {
-		return fmt.Errorf("failed to get group '%s': %w", groupName, err)
-	}
-
-	// Check if workload is already in any group
-	existingGroup, err := m.GetWorkloadGroup(ctx, workloadName)
-	if err != nil {
-		return fmt.Errorf("failed to check workload group membership: %w", err)
-	}
-	if existingGroup != nil {
-		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, existingGroup.Name)
-	}
-
-	// Add the workload to the group
-	group.AddWorkload(workloadName)
-	return m.saveGroup(ctx, group)
-}
-
 // GetWorkloadGroup returns the group that a workload belongs to, if any
 func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error) {
 	// Use the workload manager to get the workload and check its group label

@@ -464,185 +464,6 @@ func TestManager_Exists(t *testing.T) {
 	}
 }
 
-// TestManager_AddWorkloadToGroup tests the AddWorkloadToGroup method
-func TestManager_AddWorkloadToGroup(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name                 string
-		groupName            string
-		workloadName         string
-		setupMock            func(*mocks.MockStore)
-		setupWorkloadManager func(*workloadmocks.MockManager)
-		expectError          bool
-		errorMsg             string
-	}{
-		{
-			name:         "successful addition",
-			groupName:    testGroupName,
-			workloadName: "test-workload",
-			setupMock: func(mock *mocks.MockStore) {
-				// Mock GetReader for the group
-				mock.EXPECT().
-					GetReader(gomock.Any(), testGroupName).
-					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":[]}`}, nil)
-
-				// Mock GetWriter for saving the updated group
-				mock.EXPECT().
-					GetWriter(gomock.Any(), testGroupName).
-					Return(&mockWriteCloser{}, nil)
-			},
-			setupWorkloadManager: func(mock *workloadmocks.MockManager) {
-				// Mock GetWorkload to return a workload with no group
-				mock.EXPECT().
-					GetWorkload(gomock.Any(), "test-workload").
-					Return(workloads.Workload{Name: "test-workload", Group: ""}, nil)
-			},
-			expectError: false,
-		},
-		{
-			name:         "group does not exist",
-			groupName:    "nonexistent-group",
-			workloadName: "test-workload",
-			setupMock: func(mock *mocks.MockStore) {
-				mock.EXPECT().
-					GetReader(gomock.Any(), "nonexistent-group").
-					Return(nil, errors.New("group not found"))
-			},
-			setupWorkloadManager: func(_ *workloadmocks.MockManager) {
-				// No workload manager expectations needed since group doesn't exist
-			},
-			expectError: true,
-			errorMsg:    "failed to get group",
-		},
-		{
-			name:         "workload already in group",
-			groupName:    testGroupName,
-			workloadName: "existing-workload",
-			setupMock: func(mock *mocks.MockStore) {
-				// Mock GetReader for the target group
-				mock.EXPECT().
-					GetReader(gomock.Any(), testGroupName).
-					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":["existing-workload"]}`}, nil)
-
-				// Mock GetReader for the target group again (when GetWorkloadGroup calls m.Get)
-				mock.EXPECT().
-					GetReader(gomock.Any(), testGroupName).
-					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":["existing-workload"]}`}, nil)
-			},
-			setupWorkloadManager: func(mock *workloadmocks.MockManager) {
-				// Mock GetWorkload to return a workload in the target group
-				mock.EXPECT().
-					GetWorkload(gomock.Any(), "existing-workload").
-					Return(workloads.Workload{Name: "existing-workload", Group: testGroupName}, nil)
-			},
-			expectError: true,
-			errorMsg:    "already in group",
-		},
-		{
-			name:         "workload already in another group",
-			groupName:    testGroupName,
-			workloadName: "workload-in-other-group",
-			setupMock: func(mock *mocks.MockStore) {
-				// Mock GetReader for the target group
-				mock.EXPECT().
-					GetReader(gomock.Any(), testGroupName).
-					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":[]}`}, nil)
-
-				// Mock GetReader for the other group (when GetWorkloadGroup calls m.Get)
-				mock.EXPECT().
-					GetReader(gomock.Any(), "other-group").
-					Return(&mockReadCloser{data: `{"name":"other-group","workloads":["workload-in-other-group"]}`}, nil)
-			},
-			setupWorkloadManager: func(mock *workloadmocks.MockManager) {
-				// Mock GetWorkload to return a workload in another group
-				mock.EXPECT().
-					GetWorkload(gomock.Any(), "workload-in-other-group").
-					Return(workloads.Workload{Name: "workload-in-other-group", Group: "other-group"}, nil)
-			},
-			expectError: true,
-			errorMsg:    "already in group",
-		},
-		{
-			name:         "workload manager failure treated as workload not found",
-			groupName:    testGroupName,
-			workloadName: "test-workload",
-			setupMock: func(mock *mocks.MockStore) {
-				// Mock GetReader for the group
-				mock.EXPECT().
-					GetReader(gomock.Any(), testGroupName).
-					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":[]}`}, nil)
-
-				// Mock GetWriter for saving the updated group
-				mock.EXPECT().
-					GetWriter(gomock.Any(), testGroupName).
-					Return(&mockWriteCloser{}, nil)
-			},
-			setupWorkloadManager: func(mock *workloadmocks.MockManager) {
-				// Mock GetWorkload to return a workload with no group
-				mock.EXPECT().
-					GetWorkload(gomock.Any(), "test-workload").
-					Return(workloads.Workload{Name: "test-workload", Group: ""}, nil)
-			},
-			expectError: false, // Workload manager failure is treated as "workload not found"
-		},
-		{
-			name:         "failed to save group",
-			groupName:    testGroupName,
-			workloadName: "test-workload",
-			setupMock: func(mock *mocks.MockStore) {
-				// Mock GetReader for the group
-				mock.EXPECT().
-					GetReader(gomock.Any(), testGroupName).
-					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":[]}`}, nil)
-
-				// Mock GetWriter to fail
-				mock.EXPECT().
-					GetWriter(gomock.Any(), testGroupName).
-					Return(nil, errors.New("writer failed"))
-			},
-			setupWorkloadManager: func(mock *workloadmocks.MockManager) {
-				// Mock GetWorkload to return a workload with no group
-				mock.EXPECT().
-					GetWorkload(gomock.Any(), "test-workload").
-					Return(workloads.Workload{Name: "test-workload", Group: ""}, nil)
-			},
-			expectError: true,
-			errorMsg:    "failed to get writer for group",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-
-			mockStore := mocks.NewMockStore(ctrl)
-			mockWorkloadManager := workloadmocks.NewMockManager(ctrl)
-			manager := &manager{store: mockStore, workloadManager: mockWorkloadManager}
-
-			// Set up mock expectations
-			tt.setupMock(mockStore)
-			tt.setupWorkloadManager(mockWorkloadManager)
-
-			// Call the method
-			err := manager.AddWorkloadToGroup(context.Background(), tt.groupName, tt.workloadName)
-
-			// Assert results
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorMsg != "" {
-					assert.Contains(t, err.Error(), tt.errorMsg)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
 // TestManager_GetWorkloadGroup tests the GetWorkloadGroup method
 func TestManager_GetWorkloadGroup(t *testing.T) {
 	t.Parallel()
@@ -665,7 +486,7 @@ func TestManager_GetWorkloadGroup(t *testing.T) {
 				// Mock GetReader for the group
 				mock.EXPECT().
 					GetReader(gomock.Any(), testGroupName).
-					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `","workloads":["test-workload"]}`}, nil)
+					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `"}`}, nil)
 			},
 			setupWorkloadManager: func(mock *workloadmocks.MockManager) {
 				// Mock GetWorkload to return a workload in a group
@@ -674,7 +495,7 @@ func TestManager_GetWorkloadGroup(t *testing.T) {
 					Return(workloads.Workload{Name: "test-workload", Group: testGroupName}, nil)
 			},
 			expectError:   false,
-			expectedGroup: &Group{Name: testGroupName, Workloads: []string{"test-workload"}},
+			expectedGroup: &Group{Name: testGroupName},
 		},
 		{
 			name:          "workload not found in any group",
@@ -738,115 +559,10 @@ func TestManager_GetWorkloadGroup(t *testing.T) {
 				assert.NoError(t, err)
 				if tt.expectedGroup != nil {
 					assert.Equal(t, tt.expectedGroup.Name, group.Name)
-					assert.Equal(t, tt.expectedGroup.Workloads, group.Workloads)
 				} else {
 					assert.Nil(t, group)
 				}
 			}
-		})
-	}
-}
-
-// TestGroup_AddWorkload tests the Group.AddWorkload method
-func TestGroup_AddWorkload(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		initialGroup  *Group
-		workloadName  string
-		expectedAdded bool
-		expectedGroup *Group
-	}{
-		{
-			name:          "add new workload to empty group",
-			initialGroup:  &Group{Name: "test", Workloads: []string{}},
-			workloadName:  "new-workload",
-			expectedAdded: true,
-			expectedGroup: &Group{Name: "test", Workloads: []string{"new-workload"}},
-		},
-		{
-			name:          "add new workload to existing group",
-			initialGroup:  &Group{Name: "test", Workloads: []string{"existing-workload"}},
-			workloadName:  "new-workload",
-			expectedAdded: true,
-			expectedGroup: &Group{Name: "test", Workloads: []string{"existing-workload", "new-workload"}},
-		},
-		{
-			name:          "add existing workload",
-			initialGroup:  &Group{Name: "test", Workloads: []string{"existing-workload"}},
-			workloadName:  "existing-workload",
-			expectedAdded: false,
-			expectedGroup: &Group{Name: "test", Workloads: []string{"existing-workload"}},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Create a copy of the initial group
-			group := &Group{
-				Name:      tt.initialGroup.Name,
-				Workloads: make([]string, len(tt.initialGroup.Workloads)),
-			}
-			copy(group.Workloads, tt.initialGroup.Workloads)
-
-			// Call the method
-			added := group.AddWorkload(tt.workloadName)
-
-			// Assert results
-			assert.Equal(t, tt.expectedAdded, added)
-			assert.Equal(t, tt.expectedGroup.Workloads, group.Workloads)
-		})
-	}
-}
-
-// TestGroup_HasWorkload tests the Group.HasWorkload method
-func TestGroup_HasWorkload(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		group         *Group
-		workloadName  string
-		expectedFound bool
-	}{
-		{
-			name:          "workload exists in group",
-			group:         &Group{Name: "test", Workloads: []string{"workload1", "workload2", "workload3"}},
-			workloadName:  "workload2",
-			expectedFound: true,
-		},
-		{
-			name:          "workload does not exist in group",
-			group:         &Group{Name: "test", Workloads: []string{"workload1", "workload2"}},
-			workloadName:  "nonexistent-workload",
-			expectedFound: false,
-		},
-		{
-			name:          "empty group",
-			group:         &Group{Name: "test", Workloads: []string{}},
-			workloadName:  "any-workload",
-			expectedFound: false,
-		},
-		{
-			name:          "case sensitive matching",
-			group:         &Group{Name: "test", Workloads: []string{"Workload1", "workload2"}},
-			workloadName:  "workload1",
-			expectedFound: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Call the method
-			found := tt.group.HasWorkload(tt.workloadName)
-
-			// Assert results
-			assert.Equal(t, tt.expectedFound, found)
 		})
 	}
 }

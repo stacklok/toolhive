@@ -128,18 +128,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Register workload with group if specified
-	if runConfig.Group != "" {
-		groupManager, err := groups.NewManager()
-		if err != nil {
-			return fmt.Errorf("failed to create group manager: %v", err)
-		}
-
-		if err := groupManager.AddWorkloadToGroup(ctx, runConfig.Group, runnerConfig.BaseName); err != nil {
-			return fmt.Errorf("failed to add workload to group: %v", err)
-		}
-	}
-
 	return nil
 
 }

@@ -17,8 +17,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
-// RunConfig holds the configuration for running MCP servers
-type RunConfig struct {
+// RunFlags holds the configuration for running MCP servers
+type RunFlags struct {
 	// Transport and proxy settings
 	Transport  string
 	ProxyMode  string
@@ -70,7 +70,7 @@ type RunConfig struct {
 }
 
 // AddRunFlags adds all the run flags to a command
-func AddRunFlags(cmd *cobra.Command, config *RunConfig) {
+func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
 	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
@@ -151,7 +151,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunConfig) {
 // BuildRunnerConfig creates a runner.RunConfig from the configuration
 func BuildRunnerConfig(
 	ctx context.Context,
-	runConfig *RunConfig,
+	runConfig *RunFlags,
 	serverOrImage string,
 	cmdArgs []string,
 	debugMode bool,

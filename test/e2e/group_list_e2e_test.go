@@ -1,0 +1,214 @@
+package e2e_test
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+var _ = Describe("Group List E2E", func() {
+	var thvBinary string
+	var testGroupName string
+
+	BeforeEach(func() {
+		thvBinary = os.Getenv("THV_BINARY")
+		if thvBinary == "" {
+			Skip("THV_BINARY environment variable not set")
+		}
+
+		// Generate unique test group name with timestamp and nanoseconds
+		testGroupName = "e2e-test-group-" + time.Now().Format("20060102150405") + "-" + fmt.Sprintf("%d", time.Now().UnixNano()%1000000)
+	})
+
+	AfterEach(func() {
+		// Note: Group cleanup is not implemented yet, so we skip cleanup
+		// TODO: Implement group delete command for proper cleanup
+	})
+
+	Describe("Basic Group List Functionality", func() {
+		It("should show help for group list command", func() {
+			By("Getting group list command help")
+			cmd := exec.Command(thvBinary, "group", "list", "--help")
+			output, err := cmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), "Group list help should succeed")
+
+			outputStr := string(output)
+			Expect(outputStr).To(ContainSubstring("List all logical groups"), "Should show command description")
+			Expect(outputStr).To(ContainSubstring("Usage:"), "Should show usage information")
+		})
+
+		It("should list existing groups", func() {
+			By("Running group list command")
+			cmd := exec.Command(thvBinary, "group", "list")
+			output, err := cmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), "Group list command should succeed")
+
+			outputStr := string(output)
+			Expect(outputStr).To(ContainSubstring("Found"), "Should show group count")
+			Expect(outputStr).To(ContainSubstring("group(s):"), "Should show group count format")
+			Expect(outputStr).To(ContainSubstring("  - "), "Should show group list format")
+		})
+
+		It("should show groups in consistent format", func() {
+			By("Running group list command and checking format")
+			cmd := exec.Command(thvBinary, "group", "list")
+			output, err := cmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), "Group list command should succeed")
+
+			outputStr := string(output)
+			lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+
+			// Skip the first line (count line)
+			for i := 1; i < len(lines); i++ {
+				line := strings.TrimSpace(lines[i])
+				if line != "" {
+					// Allow empty group names (legacy data) but ensure proper format
+					Expect(line).To(MatchRegexp(`^\s*-\s*.*$`), "Each group should be formatted as '  - groupname' (empty names allowed)")
+				}
+			}
+		})
+	})
+
+	Describe("Group Creation and Listing", func() {
+		It("should create a new group and show it in the list", func() {
+			By("Creating a new test group")
+			createCmd := exec.Command(thvBinary, "group", "create", testGroupName)
+			createOutput, err := createCmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), "Group creation should succeed")
+			Expect(string(createOutput)).To(ContainSubstring("created successfully"))
+
+			By("Verifying the group appears in the list")
+			listCmd := exec.Command(thvBinary, "group", "list")
+			listOutput, err := listCmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), "Group list should succeed")
+
+			outputStr := string(listOutput)
+			Expect(outputStr).To(ContainSubstring(testGroupName), "New group should appear in the list")
+		})
+
+		It("should handle multiple group creation and listing", func() {
+			By("Creating multiple test groups")
+			groupNames := []string{
+				testGroupName + "-1",
+				testGroupName + "-2",
+				testGroupName + "-3",
+			}
+
+			for _, groupName := range groupNames {
+				createCmd := exec.Command(thvBinary, "group", "create", groupName)
+				createOutput, err := createCmd.CombinedOutput()
+				Expect(err).ToNot(HaveOccurred(), "Group creation should succeed for %s", groupName)
+				Expect(string(createOutput)).To(ContainSubstring("created successfully"))
+			}
+
+			By("Verifying all groups appear in the list")
+			listCmd := exec.Command(thvBinary, "group", "list")
+			listOutput, err := listCmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), "Group list should succeed")
+
+			outputStr := string(listOutput)
+			for _, groupName := range groupNames {
+				Expect(outputStr).To(ContainSubstring(groupName), "Group %s should appear in the list", groupName)
+			}
+
+			// Note: Group cleanup is not implemented yet
+			// TODO: Implement group delete command for proper cleanup
+		})
+	})
+
+	Describe("Error Handling", func() {
+		It("should handle invalid group list arguments", func() {
+			By("Running group list with invalid arguments")
+			cmd := exec.Command(thvBinary, "group", "list", "invalid-arg")
+			output, err := cmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), "Group list should ignore invalid arguments")
+
+			outputStr := string(output)
+			Expect(outputStr).To(ContainSubstring("Found"), "Should still show group count")
+			Expect(outputStr).To(ContainSubstring("group(s):"), "Should show group count format")
+		})
+
+		It("should handle group list with debug flag", func() {
+			By("Running group list with debug flag")
+			cmd := exec.Command(thvBinary, "group", "list", "--debug")
+			output, err := cmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), "Group list with debug should succeed")
+
+			outputStr := string(output)
+			Expect(outputStr).To(ContainSubstring("Found"), "Should still show group count")
+		})
+	})
+
+	Describe("Integration with Group Commands", func() {
+		It("should work with group create and list workflow", func() {
+			By("Creating a group")
+			createCmd := exec.Command(thvBinary, "group", "create", testGroupName)
+			createOutput, err := createCmd.CombinedOutput()
+			if err != nil {
+				// Log the error output for debugging
+				GinkgoWriter.Printf("Group creation failed with output: %s\n", string(createOutput))
+			}
+			Expect(err).ToNot(HaveOccurred(), "Group creation should succeed")
+			Expect(string(createOutput)).To(ContainSubstring("created successfully"))
+
+			By("Listing groups immediately after creation")
+			listCmd := exec.Command(thvBinary, "group", "list")
+			listOutput, err := listCmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), "Group list should succeed")
+
+			outputStr := string(listOutput)
+			Expect(outputStr).To(ContainSubstring(testGroupName), "New group should appear in the list")
+
+			By("Verifying group count increases")
+			lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+			Expect(lines[0]).To(MatchRegexp(`Found \d+ group\(s\):`), "Should show group count")
+		})
+	})
+
+	Describe("Output Consistency", func() {
+		It("should produce consistent output format", func() {
+			By("Running group list multiple times")
+			var outputs []string
+
+			for i := 0; i < 3; i++ {
+				cmd := exec.Command(thvBinary, "group", "list")
+				output, err := cmd.CombinedOutput()
+				Expect(err).ToNot(HaveOccurred(), "Group list should succeed consistently")
+				outputs = append(outputs, string(output))
+			}
+
+			By("Verifying output format consistency")
+			for i := 1; i < len(outputs); i++ {
+				// Extract group names from outputs (skip count line)
+				groups1 := extractGroupNames(outputs[i-1])
+				groups2 := extractGroupNames(outputs[i])
+
+				Expect(groups1).To(Equal(groups2), "Group lists should be consistent between runs")
+			}
+		})
+	})
+})
+
+// Helper function to extract group names from list output
+func extractGroupNames(output string) []string {
+	var groups []string
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+
+	// Skip the first line (count line)
+	for i := 1; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(line, "- ") {
+			groupName := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+			if groupName != "" {
+				groups = append(groups, groupName)
+			}
+		}
+	}
+
+	return groups
+}

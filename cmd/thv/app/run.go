@@ -49,7 +49,7 @@ permission profile. Additional configuration can be provided via flags.`,
 	},
 }
 
-var runConfig RunConfig
+var runConfig RunFlags
 
 func init() {
 	// Add run flags

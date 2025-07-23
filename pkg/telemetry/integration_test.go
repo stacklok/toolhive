@@ -151,7 +151,7 @@ func TestTelemetryIntegration_EndToEnd(t *testing.T) {
 
 		// If we have custom metrics, verify them
 		if strings.Contains(metricsBody, "toolhive_mcp") {
-			assert.Contains(t, metricsBody, "toolhive_mcp_requests_total")
+			assert.Contains(t, metricsBody, "toolhive_mcp_requests")
 			assert.Contains(t, metricsBody, "toolhive_mcp_request_duration")
 			assert.Contains(t, metricsBody, "toolhive_mcp_active_connections")
 		}
@@ -259,7 +259,7 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	for _, sm := range rm.ScopeMetrics {
 		for _, metric := range sm.Metrics {
 			switch metric.Name {
-			case "toolhive_mcp_requests_total":
+			case "toolhive_mcp_requests":
 				foundRequestCounter = true
 				// Verify metric has expected attributes
 				if sum, ok := metric.Data.(metricdata.Sum[int64]); ok {
@@ -404,7 +404,7 @@ func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
 	var foundToolCounter bool
 	for _, sm := range rm.ScopeMetrics {
 		for _, metric := range sm.Metrics {
-			if metric.Name == "toolhive_mcp_tool_calls_total" {
+			if metric.Name == "toolhive_mcp_tool_calls" {
 				foundToolCounter = true
 				if sum, ok := metric.Data.(metricdata.Sum[int64]); ok {
 					assert.NotEmpty(t, sum.DataPoints)
@@ -480,6 +480,6 @@ func TestTelemetryIntegration_MultipleRequests(t *testing.T) {
 
 	// The exact count format depends on Prometheus exposition format
 	// We just verify the metrics are present and contain our server name
-	assert.Contains(t, metricsBody, "toolhive_mcp_requests_total")
+	assert.Contains(t, metricsBody, "toolhive_mcp_requests")
 	assert.Contains(t, metricsBody, `server="multi-test"`)
 }

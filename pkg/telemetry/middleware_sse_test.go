@@ -118,7 +118,7 @@ func TestHTTPMiddleware_RecordSSEConnection(t *testing.T) {
 	meter := meterProvider.Meter(instrumentationName)
 
 	requestCounter, _ := meter.Int64Counter(
-		"toolhive_mcp_requests_total",
+		"toolhive_mcp_requests",
 		metric.WithDescription("Total number of MCP requests"),
 	)
 

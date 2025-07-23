@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/audit"
@@ -386,6 +387,15 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	if imageMetadata != nil && len(imageMetadata.Args) > 0 {
 		logger.Debugf("Prepending registry args: %v", imageMetadata.Args)
 		c.CmdArgs = append(c.CmdArgs, imageMetadata.Args...)
+	}
+
+	if c.ToolsFilter != nil && imageMetadata != nil && imageMetadata.Tools != nil {
+		logger.Debugf("Using tools filter: %v", c.ToolsFilter)
+		for _, tool := range c.ToolsFilter {
+			if !slices.Contains(imageMetadata.Tools, tool) {
+				return fmt.Errorf("tool %s not found in registry", tool)
+			}
+		}
 	}
 
 	return nil

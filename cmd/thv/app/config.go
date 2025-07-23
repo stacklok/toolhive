@@ -19,14 +19,6 @@ var configCmd = &cobra.Command{
 	Long:  "The config command provides subcommands to manage application configuration settings.",
 }
 
-var listRegisteredClientsCmd = &cobra.Command{
-	Use:        "list-registered-clients",
-	Short:      "List all registered MCP clients",
-	Long:       "List all clients that are registered for MCP server configuration.",
-	RunE:       listRegisteredClientsCmdFunc,
-	Deprecated: "please use 'thv client list-registered' instead. This command will be removed in 2 weeks.",
-}
-
 var setCACertCmd = &cobra.Command{
 	Use:   "set-ca-cert <path>",
 	Short: "Set the default CA certificate for container builds",
@@ -79,38 +71,6 @@ var unsetRegistryURLCmd = &cobra.Command{
 	RunE:  unsetRegistryURLCmdFunc,
 }
 
-var registerClientCmd = &cobra.Command{
-	Use:   "register-client [client]",
-	Short: "Register a client for MCP server configuration",
-	Long: `Register a client for MCP server configuration.
-Valid clients are:
-  - claude-code: Claude Code CLI
-  - cline: Cline extension for VS Code
-  - cursor: Cursor editor
-  - roo-code: Roo Code extension for VS Code
-  - vscode: Visual Studio Code
-  - vscode-insider: Visual Studio Code Insiders edition`,
-	Args:       cobra.ExactArgs(1),
-	RunE:       clientRegisterCmdFunc, // delegate to client command
-	Deprecated: "please use 'thv client register' instead. This command will be removed in 2 weeks.",
-}
-
-var removeClientCmd = &cobra.Command{
-	Use:   "remove-client [client]",
-	Short: "Remove a client from MCP server configuration",
-	Long: `Remove a client from MCP server configuration.
-Valid clients are:
-  - claude-code: Claude Code CLI
-  - cline: Cline extension for VS Code
-  - cursor: Cursor editor
-  - roo-code: Roo Code extension for VS Code
-  - vscode: Visual Studio Code
-  - vscode-insider: Visual Studio Code Insiders edition`,
-	Args:       cobra.ExactArgs(1),
-	RunE:       clientRemoveCmdFunc, // delegate to client command
-	Deprecated: "please use 'thv client remove' instead. This command will be removed in 2 weeks.",
-}
-
 var (
 	allowPrivateRegistryIp bool
 )
@@ -120,7 +80,6 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 
 	// Add subcommands to config command
-	configCmd.AddCommand(listRegisteredClientsCmd)
 	configCmd.AddCommand(setCACertCmd)
 	configCmd.AddCommand(getCACertCmd)
 	configCmd.AddCommand(unsetCACertCmd)
@@ -134,8 +93,6 @@ func init() {
 	)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
-	configCmd.AddCommand(registerClientCmd)
-	configCmd.AddCommand(removeClientCmd)
 
 	// Add OTEL parent command to config
 	configCmd.AddCommand(OtelCmd)

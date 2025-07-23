@@ -9,7 +9,6 @@ import (
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -25,7 +24,6 @@ type RunConfig struct {
 	ProxyMode  string
 	Host       string
 	ProxyPort  int
-	Port       int
 	TargetPort int
 	TargetHost string
 
@@ -80,10 +78,6 @@ func AddRunFlags(cmd *cobra.Command, config *RunConfig) {
 	// cmd.Flags().StringVar(&config.Group, "group", "", "Name of the group this workload belongs to")
 	cmd.Flags().StringVar(&config.Host, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	cmd.Flags().IntVar(&config.ProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
-	cmd.Flags().IntVar(&config.Port, "port", 0, "Port for the HTTP proxy to listen on (host port)")
-	if err := cmd.Flags().MarkDeprecated("port", "use --proxy-port instead"); err != nil {
-		logger.Warnf("Error marking port flag as deprecated: %v", err)
-	}
 	cmd.Flags().IntVar(&config.TargetPort, "target-port", 0,
 		"Port for the container to expose (only applicable to SSE or Streamable HTTP transport)")
 	cmd.Flags().StringVar(
@@ -222,12 +216,6 @@ func BuildRunnerConfig(
 		}
 	}
 
-	// Determine effective port value - prefer --proxy-port over --port for backwards compatibility
-	effectivePort := runConfig.ProxyPort
-	if effectivePort == 0 && runConfig.Port != 0 {
-		effectivePort = runConfig.Port
-	}
-
 	// Initialize a new RunConfig with values from command-line flags
 	// TODO: As noted elsewhere, we should use the builder pattern here to make it more readable.
 	return runner.NewRunConfigFromFlags(
@@ -244,7 +232,7 @@ func BuildRunnerConfig(
 		runConfig.PermissionProfile,
 		runConfig.TargetHost,
 		runConfig.Transport,
-		effectivePort,
+		runConfig.ProxyPort,
 		runConfig.TargetPort,
 		runConfig.Env,
 		runConfig.Labels,

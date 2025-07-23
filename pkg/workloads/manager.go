@@ -320,7 +320,7 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	}
 
 	if runConfig.Port != 0 {
-		detachedArgs = append(detachedArgs, "--port", strconv.Itoa(runConfig.Port))
+		detachedArgs = append(detachedArgs, "--proxy-port", strconv.Itoa(runConfig.Port))
 	}
 
 	if runConfig.TargetPort != 0 {

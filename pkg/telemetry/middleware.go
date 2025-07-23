@@ -58,7 +58,7 @@ func NewHTTPMiddleware(
 	)
 
 	requestDuration, _ := meter.Float64Histogram(
-		"toolhive_mcp_request_duration_seconds",
+		"toolhive_mcp_request_duration", // The exporter adds the _seconds suffix automatically
 		metric.WithDescription("Duration of MCP requests in seconds"),
 		metric.WithUnit("s"),
 	)

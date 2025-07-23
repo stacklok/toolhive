@@ -152,7 +152,7 @@ func TestTelemetryIntegration_EndToEnd(t *testing.T) {
 		// If we have custom metrics, verify them
 		if strings.Contains(metricsBody, "toolhive_mcp") {
 			assert.Contains(t, metricsBody, "toolhive_mcp_requests_total")
-			assert.Contains(t, metricsBody, "toolhive_mcp_request_duration_seconds")
+			assert.Contains(t, metricsBody, "toolhive_mcp_request_duration")
 			assert.Contains(t, metricsBody, "toolhive_mcp_active_connections")
 		}
 	} else {
@@ -281,7 +281,7 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 						assert.True(t, hasMethod, "Request counter should have mcp_method attribute")
 					}
 				}
-			case "toolhive_mcp_request_duration_seconds":
+			case "toolhive_mcp_request_duration":
 				foundDurationHistogram = true
 			case "toolhive_mcp_active_connections":
 				foundActiveConnections = true

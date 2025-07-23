@@ -97,7 +97,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to get workload group: %v", err)
 		}
-		if group != nil {
+		if group != nil && group.Name != runConfig.Group {
 			return fmt.Errorf("workload '%s' is already in group '%s'", runConfig.Name, group.Name)
 		}
 

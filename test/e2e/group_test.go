@@ -257,23 +257,33 @@ var _ = Describe("Group", func() {
 			})
 		})
 
-		Context("when running duplicate workloads", func() {
+		Context("when running workloads with group constraints", func() {
 			var workloadName string
 
 			BeforeEach(func() {
-				workloadName = fmt.Sprintf("test-duplicate-%d-%d", GinkgoRandomSeed(), sharedTimestamp)
+				workloadName = fmt.Sprintf("test-group-constraint-%d-%d", GinkgoRandomSeed(), sharedTimestamp)
 				By("Adding initial workload")
 				cmd := exec.Command(thvBinary, "run", "fetch", "--group", groupName, "--name", workloadName)
 				output, err := cmd.CombinedOutput()
 				Expect(err).ToNot(HaveOccurred(), "Failed to add initial workload: %s", string(output))
 			})
 
-			It("should fail when adding the same workload again", func() {
-				By("Attempting to add the same workload again")
+			It("should allow re-running the same workload in the same group", func() {
+				By("Re-running the same workload in the same group")
 				cmd := exec.Command(thvBinary, "run", "fetch", "--group", groupName, "--name", workloadName)
 				output, err := cmd.CombinedOutput()
-				Expect(err).To(HaveOccurred(), "Should fail when adding duplicate workload")
-				Expect(string(output)).To(ContainSubstring("already in group"))
+				Expect(err).ToNot(HaveOccurred(), "Should allow re-running workload in same group: %s", string(output))
+
+				By("Verifying the workload is still in the correct group")
+				time.Sleep(3 * time.Second)
+				manager, err := groups.NewManager()
+				Expect(err).ToNot(HaveOccurred())
+
+				ctx := context.Background()
+				workloadGroup, err := manager.GetWorkloadGroup(ctx, workloadName)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(workloadGroup).ToNot(BeNil(), "Workload should still be in a group")
+				Expect(workloadGroup.Name).To(Equal(groupName), "Workload should still be in the correct group")
 			})
 		})
 
@@ -306,12 +316,13 @@ var _ = Describe("Group", func() {
 				}
 			})
 
-			It("should fail when adding workload to second group", func() {
-				By("Attempting to add workload to second group")
+			It("should fail when attempting to run workload in a different group", func() {
+				By("Attempting to run workload in a different group")
 				cmd := exec.Command(thvBinary, "run", "fetch", "--group", secondGroupName, "--name", workloadName)
 				output, err := cmd.CombinedOutput()
-				Expect(err).To(HaveOccurred(), "Should fail when adding workload to second group")
+				Expect(err).To(HaveOccurred(), "Should fail when attempting to run workload in different group")
 				Expect(string(output)).To(ContainSubstring("already in group"))
+				Expect(string(output)).To(ContainSubstring(groupName), "Error should mention the original group name")
 			})
 		})
 

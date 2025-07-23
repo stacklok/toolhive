@@ -139,6 +139,8 @@ The project uses `go.uber.org/mock` for generating mocks. Mock files are located
 - Use interfaces for testability and runtime abstraction
 - Separate business logic from transport/protocol concerns
 - Keep packages focused on single responsibilities
+- In Go codefiles, keep public methods to the top half of the file, and private
+  methods to the bottom half of the file.
 
 ### Operator Development
 
@@ -189,3 +191,7 @@ Follow conventional commit format:
 - Do not end subject line with period
 - Use body to explain what and why vs. how
 
+## Development Best Practices
+
+- **Linting**: 
+  - Prefer `lint-fix` to `lint` since `lint-fix` will fix problems automatically.

@@ -18,7 +18,8 @@ var errToolNotInFilter = errors.New("tool not in filter")
 var errBug = errors.New("there's a bug")
 
 // NewToolFilterMiddleware creates an HTTP middleware that parses SSE responses
-// to extract tool names from JSON-RPC messages containing tool lists.
+// and plain JSON objects to extract tool names from JSON-RPC messages containing
+// tool lists or tool calls.
 //
 // The middleware looks for SSE events with:
 // - event: message
@@ -27,17 +28,33 @@ var errBug = errors.New("there's a bug")
 // When it finds such messages, it prints the name of each tool in the list.
 // If filterTools is provided, only tools in that list will be logged.
 // If filterTools is nil or empty, all tools will be logged.
+//
+// This middleware is designed to be used ONLY when tool filtering is enabled,
+// and expects the list of tools to be "correct" (i.e. not empty and not
+// containing nonexisting tools).
 func NewToolFilterMiddleware(filterTools []string) (types.Middleware, error) {
 	if len(filterTools) == 0 {
 		return nil, fmt.Errorf("tools list for filtering is empty")
 	}
 
+	toolsMap := make(map[string]struct{})
+	for _, tool := range filterTools {
+		toolsMap[tool] = struct{}{}
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Create a response writer that captures SSE responses
+			// NOTE: this middleware only checks the response body, whose
+			// format at this point is not yet known and might be either a
+			// JSON payload or an SSE stream.
+			//
+			// The way this is implemented is that we wrap the response writer
+			// in order to buffer the response body. Once Flush() is called, we
+			// process the buffer according to its content type and possibly
+			// modify it before returning it to the client.
 			rw := &toolFilterWriter{
 				ResponseWriter: w,
-				filterTools:    filterTools,
+				filterTools:    toolsMap,
 			}
 
 			// Call the next handler
@@ -46,11 +63,81 @@ func NewToolFilterMiddleware(filterTools []string) (types.Middleware, error) {
 	}, nil
 }
 
+// NewToolCallFilterMiddleware creates an HTTP middleware that parses tool call
+// requests and filters out tools that are not in the filter list.
+//
+// The middleware looks for JSON-RPC messages with:
+// - method: tool/call
+// - params: {"name": "tool_name"}
+//
+// This middleware is designed to be used ONLY when tool filtering is enabled,
+// and expects the list of tools to be "correct" (i.e. not empty and not
+// containing nonexisting tools).
+func NewToolCallFilterMiddleware(filterTools []string) (types.Middleware, error) {
+	if len(filterTools) == 0 {
+		return nil, fmt.Errorf("tools list for filtering is empty")
+	}
+
+	toolsMap := make(map[string]struct{})
+	for _, tool := range filterTools {
+		toolsMap[tool] = struct{}{}
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Read the request body
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				// If we can't read the body, let the next handler deal with it
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Restore the request body for downstream handlers
+			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+			// Try to parse the request as a tool call request. If it succeeds,
+			// check if the tool is in the filter. If it is not a tool call request,
+			// just pass it through.
+			var toolCallRequest toolCallRequest
+			err = json.Unmarshal(bodyBytes, &toolCallRequest)
+			if err == nil && toolCallRequest.Params != nil && toolCallRequest.Method == "tools/call" {
+				err = processToolCallRequest(toolsMap, toolCallRequest)
+
+				// NOTE: ideally, trying to call that was filtered out by config should be
+				// equivalent to calling a nonexisting tool; in such cases and when the SSE
+				// transport is used, the behaviour of the official Python SDK is to return
+				// a 202 Accepted to THIS call and return an success message in the SSE
+				// stream saying that the tool does not exist.
+				//
+				// It basically fails successfully.
+				//
+				// Unfortunately, implementing this behaviour is not trivial and requires
+				// session management, as the SSE stream is managed by the proxy in an entirely
+				// different thread of execution. As a consequence, the best thing we can
+				// do that is still compliant with the spec is to return a 400 Bad Request
+				// to the client.
+				if errors.Is(err, errToolNotInFilter) {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if err != nil {
+					logger.Errorf("Error processing tool call of a filtered tool: %v", err)
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}, nil
+}
+
 // toolFilterWriter wraps http.ResponseWriter to capture and process SSE responses
 type toolFilterWriter struct {
 	http.ResponseWriter
 	buffer      []byte
-	filterTools []string
+	filterTools map[string]struct{}
 }
 
 // WriteHeader captures the status code
@@ -110,7 +197,7 @@ type toolCallRequest struct {
 }
 
 // processSSEBuffer processes any complete SSE events in the buffer
-func processBuffer(filterTools []string, buffer []byte, mimeType string, w io.Writer) error {
+func processBuffer(filterTools map[string]struct{}, buffer []byte, mimeType string, w io.Writer) error {
 	if len(buffer) == 0 {
 		return nil
 	}
@@ -118,18 +205,20 @@ func processBuffer(filterTools []string, buffer []byte, mimeType string, w io.Wr
 	switch mimeType {
 	case "application/json":
 		var toolsListResponse toolsListResponse
-		if err := json.Unmarshal(buffer, &toolsListResponse); err == nil && toolsListResponse.Result.Tools != nil {
+		err := json.Unmarshal(buffer, &toolsListResponse)
+		if err == nil && toolsListResponse.Result.Tools != nil {
 			return processToolsListResponse(filterTools, toolsListResponse, w)
-		}
-		var toolCallRequest toolCallRequest
-		if err := json.Unmarshal(buffer, &toolCallRequest); err == nil && toolCallRequest.Params != nil {
-			if toolCallRequest.Method == "tool/call" {
-				return processToolCallRequest(filterTools, toolCallRequest, w)
-			}
 		}
 	case "text/event-stream":
 		return processSSEEvents(filterTools, buffer, w)
 	default:
+		// NOTE: Content-Type header is mandatory in the spec, and as of the
+		// time of this writing, the only allowed content types are
+		// * application/json, and
+		// * text/event-stream
+		//
+		// As a result, we should never get here and it is safe to return an
+		// error.
 		return fmt.Errorf("unsupported mime type: %s", mimeType)
 	}
 
@@ -137,7 +226,7 @@ func processBuffer(filterTools []string, buffer []byte, mimeType string, w io.Wr
 }
 
 //nolint:gocyclo
-func processSSEEvents(filterTools []string, buffer []byte, w io.Writer) error {
+func processSSEEvents(filterTools map[string]struct{}, buffer []byte, w io.Writer) error {
 	var linesep []byte
 	if bytes.Contains(buffer, []byte("\r\n")) {
 		linesep = []byte("\r\n")
@@ -166,15 +255,6 @@ func processSSEEvents(filterTools []string, buffer []byte, w io.Writer) error {
 				}
 				written = true
 			}
-			var toolCallRequest toolCallRequest
-			if err := json.Unmarshal(data, &toolCallRequest); err == nil && toolCallRequest.Params != nil {
-				if toolCallRequest.Method == "tool/call" {
-					if err := processToolCallRequest(filterTools, toolCallRequest, w); err != nil {
-						return err
-					}
-					written = true
-				}
-			}
 		}
 
 		if !written {
@@ -191,6 +271,8 @@ func processSSEEvents(filterTools []string, buffer []byte, w io.Writer) error {
 		linesepCount++
 	}
 
+	// This ensures we don't send too few line separators, which might break
+	// SSE parsing.
 	if linesepCount < linesepTotal {
 		_, err := w.Write(linesep)
 		if err != nil {
@@ -201,7 +283,9 @@ func processSSEEvents(filterTools []string, buffer []byte, w io.Writer) error {
 	return nil
 }
 
-func processToolsListResponse(filterTools []string, toolsListResponse toolsListResponse, w io.Writer) error {
+// processToolsListResponse processes a tools list response filtering out
+// tools that are not in the filter list.
+func processToolsListResponse(filterTools map[string]struct{}, toolsListResponse toolsListResponse, w io.Writer) error {
 	filteredTools := []map[string]any{}
 	for _, tool := range *toolsListResponse.Result.Tools {
 		toolName, ok := tool["name"].(string)
@@ -222,28 +306,23 @@ func processToolsListResponse(filterTools []string, toolsListResponse toolsListR
 	return nil
 }
 
-func processToolCallRequest(filterTools []string, toolCallRequest toolCallRequest, w io.Writer) error {
+// processToolCallRequest processes a tool call request checking if the tool
+// is in the filter list.
+func processToolCallRequest(filterTools map[string]struct{}, toolCallRequest toolCallRequest) error {
 	toolName, ok := (*toolCallRequest.Params)["name"].(string)
 	if !ok {
 		return errToolNameNotFound
 	}
 
 	if isToolInFilter(filterTools, toolName) {
-		if err := json.NewEncoder(w).Encode(toolCallRequest); err != nil {
-			return fmt.Errorf("%w: %v", errBug, err)
-		}
 		return nil
 	}
 
 	return errToolNotInFilter
 }
 
-// isToolInFilter checks if a tool name is in the filter list
-func isToolInFilter(filterTools []string, toolName string) bool {
-	for _, filterTool := range filterTools {
-		if filterTool == toolName {
-			return true
-		}
-	}
-	return false
+// isToolInFilter checks if a tool name is in the filter
+func isToolInFilter(filterTools map[string]struct{}, toolName string) bool {
+	_, ok := filterTools[toolName]
+	return ok
 }

@@ -59,6 +59,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("failed to create tools filter middleware: %v", err)
 		}
 		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsFilterMiddleware)
+
+		toolsCallFilterMiddleware, err := mcp.NewToolCallFilterMiddleware(r.Config.ToolsFilter)
+		if err != nil {
+			return fmt.Errorf("failed to create tools call filter middleware: %v", err)
+		}
+		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsCallFilterMiddleware)
 	}
 
 	// Get authentication middleware

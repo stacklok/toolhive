@@ -48,6 +48,11 @@
           },
           "default": []
         },
+        "custom_metadata": {
+          "type": "object",
+          "description": "Custom user-defined metadata for the MCP server, primarily for custom registries",
+          "additionalProperties": true
+        },
         "description": {
           "type": "string",
           "description": "Human-readable description of the server's purpose and functionality",

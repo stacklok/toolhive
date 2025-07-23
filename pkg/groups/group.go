@@ -32,18 +32,6 @@ func (g *Group) AddWorkload(workloadName string) bool {
 	return true
 }
 
-// RemoveWorkload removes a workload from the group
-func (g *Group) RemoveWorkload(workloadName string) bool {
-	for i, existing := range g.Workloads {
-		if existing == workloadName {
-			// Remove the workload by slicing
-			g.Workloads = append(g.Workloads[:i], g.Workloads[i+1:]...)
-			return true
-		}
-	}
-	return false
-}
-
 // HasWorkload checks if a workload is in the group
 func (g *Group) HasWorkload(workloadName string) bool {
 	for _, existing := range g.Workloads {

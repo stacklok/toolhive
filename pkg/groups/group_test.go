@@ -802,68 +802,6 @@ func TestGroup_AddWorkload(t *testing.T) {
 	}
 }
 
-// TestGroup_RemoveWorkload tests the Group.RemoveWorkload method
-func TestGroup_RemoveWorkload(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name            string
-		initialGroup    *Group
-		workloadName    string
-		expectedRemoved bool
-		expectedGroup   *Group
-	}{
-		{
-			name:            "remove existing workload",
-			initialGroup:    &Group{Name: "test", Workloads: []string{"workload1", "workload2", "workload3"}},
-			workloadName:    "workload2",
-			expectedRemoved: true,
-			expectedGroup:   &Group{Name: "test", Workloads: []string{"workload1", "workload3"}},
-		},
-		{
-			name:            "remove workload from single workload group",
-			initialGroup:    &Group{Name: "test", Workloads: []string{"workload1"}},
-			workloadName:    "workload1",
-			expectedRemoved: true,
-			expectedGroup:   &Group{Name: "test", Workloads: []string{}},
-		},
-		{
-			name:            "remove non-existent workload",
-			initialGroup:    &Group{Name: "test", Workloads: []string{"workload1", "workload2"}},
-			workloadName:    "nonexistent-workload",
-			expectedRemoved: false,
-			expectedGroup:   &Group{Name: "test", Workloads: []string{"workload1", "workload2"}},
-		},
-		{
-			name:            "remove from empty group",
-			initialGroup:    &Group{Name: "test", Workloads: []string{}},
-			workloadName:    "any-workload",
-			expectedRemoved: false,
-			expectedGroup:   &Group{Name: "test", Workloads: []string{}},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Create a copy of the initial group
-			group := &Group{
-				Name:      tt.initialGroup.Name,
-				Workloads: make([]string, len(tt.initialGroup.Workloads)),
-			}
-			copy(group.Workloads, tt.initialGroup.Workloads)
-
-			// Call the method
-			removed := group.RemoveWorkload(tt.workloadName)
-
-			// Assert results
-			assert.Equal(t, tt.expectedRemoved, removed)
-			assert.Equal(t, tt.expectedGroup.Workloads, group.Workloads)
-		})
-	}
-}
-
 // TestGroup_HasWorkload tests the Group.HasWorkload method
 func TestGroup_HasWorkload(t *testing.T) {
 	t.Parallel()

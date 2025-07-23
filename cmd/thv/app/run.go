@@ -80,7 +80,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
-	// Build the run configuration using shared logic
+	// Build the run configuration
 	runnerConfig, err := BuildRunnerConfig(ctx, &runConfig, serverOrImage, cmdArgs, debugMode, cmd)
 	if err != nil {
 		return err

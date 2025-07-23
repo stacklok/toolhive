@@ -106,7 +106,7 @@ func init() {
 	runCmd.Flags().StringVar(
 		&runTargetHost,
 		"target-host",
-		transport.LocalhostIPv4,
+		transport.TargetHostIPv4,
 		"Host to forward traffic to (only applicable to SSE or Streamable HTTP transport)")
 	runCmd.Flags().StringVar(
 		&runPermissionProfile,

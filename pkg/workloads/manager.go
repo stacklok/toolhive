@@ -188,6 +188,10 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 		if err := validateWorkloadName(name); err != nil {
 			return nil, fmt.Errorf("invalid workload name '%s': %w", name, err)
 		}
+		// Ensure workload name does not contain path traversal or separators
+		if strings.Contains(name, "..") || strings.ContainsAny(name, "/\\") {
+			return nil, fmt.Errorf("invalid workload name '%s': contains forbidden characters", name)
+		}
 	}
 
 	// Find all containers first

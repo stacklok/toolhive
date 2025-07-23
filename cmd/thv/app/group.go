@@ -2,6 +2,8 @@ package app
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -22,6 +24,13 @@ var groupCreateCmd = &cobra.Command{
 	RunE:  groupCreateCmdFunc,
 }
 
+var groupListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all groups",
+	Long:  `List all logical groups of MCP servers.`,
+	RunE:  groupListCmdFunc,
+}
+
 func groupCreateCmdFunc(cmd *cobra.Command, args []string) error {
 	groupName := args[0]
 	ctx := cmd.Context()
@@ -39,6 +48,38 @@ func groupCreateCmdFunc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func groupListCmdFunc(cmd *cobra.Command, _ []string) error {
+	ctx := cmd.Context()
+
+	manager, err := groups.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create group manager: %w", err)
+	}
+
+	allGroups, err := manager.List(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list groups: %w", err)
+	}
+
+	// Sort groups alphanumerically by name (handles mixed characters, numbers, etc.)
+	sort.Slice(allGroups, func(i, j int) bool {
+		return strings.Compare(allGroups[i].Name, allGroups[j].Name) < 0
+	})
+
+	if len(allGroups) == 0 {
+		fmt.Println("No groups found.")
+		return nil
+	}
+
+	fmt.Printf("Found %d group(s):\n", len(allGroups))
+	for _, group := range allGroups {
+		fmt.Printf("  - %s\n", group.Name)
+	}
+
+	return nil
+}
+
 func init() {
 	groupCmd.AddCommand(groupCreateCmd)
+	groupCmd.AddCommand(groupListCmd)
 }

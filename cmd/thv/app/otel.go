@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 )
 
@@ -109,7 +110,7 @@ func init() {
 	OtelCmd.AddCommand(unsetOtelEnvVarsCmd)
 }
 
-func setOtelEndpointCmdFunc(_ *cobra.Command, args []string) error {
+func setOtelEndpointCmdFunc(cmd *cobra.Command, args []string) error {
 	endpoint := args[0]
 
 	// The endpoint should not start with http:// or https://
@@ -117,9 +118,16 @@ func setOtelEndpointCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("endpoint URL should not start with http:// or https://")
 	}
 
-	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.OTEL.Endpoint = endpoint
+	// Get manager instance
+	ctx := cmd.Context()
+	manager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	// Update the configuration using manager
+	err = manager.UpdateOtelConfig(func(otel *config.OpenTelemetryConfig) {
+		otel.Endpoint = endpoint
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -129,8 +137,18 @@ func setOtelEndpointCmdFunc(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func getOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+func getOtelEndpointCmdFunc(cmd *cobra.Command, _ []string) error {
+	// Get manager instance
+	ctx := cmd.Context()
+	manager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
 
 	if cfg.OTEL.Endpoint == "" {
 		fmt.Println("No OpenTelemetry endpoint is currently configured.")
@@ -141,17 +159,27 @@ func getOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func unsetOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+func unsetOtelEndpointCmdFunc(cmd *cobra.Command, _ []string) error {
+	// Get manager instance
+	ctx := cmd.Context()
+	manager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
 
 	if cfg.OTEL.Endpoint == "" {
 		fmt.Println("No OpenTelemetry endpoint is currently configured.")
 		return nil
 	}
 
-	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.OTEL.Endpoint = ""
+	// Update the configuration using manager
+	err = manager.UpdateOtelConfig(func(otel *config.OpenTelemetryConfig) {
+		otel.Endpoint = ""
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -161,7 +189,7 @@ func unsetOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func setOtelSamplingRateCmdFunc(_ *cobra.Command, args []string) error {
+func setOtelSamplingRateCmdFunc(cmd *cobra.Command, args []string) error {
 	rate, err := strconv.ParseFloat(args[0], 64)
 	if err != nil {
 		return fmt.Errorf("invalid sampling rate format: %w", err)
@@ -172,9 +200,16 @@ func setOtelSamplingRateCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("sampling rate must be between 0.0 and 1.0")
 	}
 
-	// Update the configuration
-	err = config.UpdateConfig(func(c *config.Config) {
-		c.OTEL.SamplingRate = rate
+	// Get manager instance
+	ctx := cmd.Context()
+	manager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	// Update the configuration using manager
+	err = manager.UpdateOtelConfig(func(otel *config.OpenTelemetryConfig) {
+		otel.SamplingRate = rate
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -184,8 +219,18 @@ func setOtelSamplingRateCmdFunc(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func getOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+func getOtelSamplingRateCmdFunc(cmd *cobra.Command, _ []string) error {
+	// Get manager instance
+	ctx := cmd.Context()
+	manager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
 
 	if cfg.OTEL.SamplingRate == 0.0 {
 		fmt.Println("No OpenTelemetry sampling rate is currently configured.")
@@ -196,17 +241,27 @@ func getOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func unsetOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+func unsetOtelSamplingRateCmdFunc(cmd *cobra.Command, _ []string) error {
+	// Get manager instance
+	ctx := cmd.Context()
+	manager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
 
 	if cfg.OTEL.SamplingRate == 0.0 {
 		fmt.Println("No OpenTelemetry sampling rate is currently configured.")
 		return nil
 	}
 
-	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.OTEL.SamplingRate = 0.0
+	// Update the configuration using manager
+	err = manager.UpdateOtelConfig(func(otel *config.OpenTelemetryConfig) {
+		otel.SamplingRate = 0.0
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -216,7 +271,7 @@ func unsetOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func setOtelEnvVarsCmdFunc(_ *cobra.Command, args []string) error {
+func setOtelEnvVarsCmdFunc(cmd *cobra.Command, args []string) error {
 	vars := strings.Split(args[0], ",")
 
 	// Trim whitespace from each variable name
@@ -224,9 +279,16 @@ func setOtelEnvVarsCmdFunc(_ *cobra.Command, args []string) error {
 		vars[i] = strings.TrimSpace(varName)
 	}
 
-	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.OTEL.EnvVars = vars
+	// Get manager instance
+	ctx := cmd.Context()
+	manager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	// Update the configuration using manager
+	err = manager.UpdateOtelConfig(func(otel *config.OpenTelemetryConfig) {
+		otel.EnvVars = vars
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
@@ -236,8 +298,18 @@ func setOtelEnvVarsCmdFunc(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func getOtelEnvVarsCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+func getOtelEnvVarsCmdFunc(cmd *cobra.Command, _ []string) error {
+	// Get manager instance
+	ctx := cmd.Context()
+	manager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
 
 	if len(cfg.OTEL.EnvVars) == 0 {
 		fmt.Println("No OpenTelemetry environment variables are currently configured.")
@@ -248,17 +320,27 @@ func getOtelEnvVarsCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func unsetOtelEnvVarsCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+func unsetOtelEnvVarsCmdFunc(cmd *cobra.Command, _ []string) error {
+	// Get manager instance
+	ctx := cmd.Context()
+	manager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
 
 	if len(cfg.OTEL.EnvVars) == 0 {
 		fmt.Println("No OpenTelemetry environment variables are currently configured.")
 		return nil
 	}
 
-	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.OTEL.EnvVars = []string{}
+	// Update the configuration using manager
+	err = manager.UpdateOtelConfig(func(otel *config.OpenTelemetryConfig) {
+		otel.EnvVars = []string{}
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)

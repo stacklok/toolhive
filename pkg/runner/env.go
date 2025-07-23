@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -225,7 +225,16 @@ func initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secret
 // Duplicated from cmd/thv/app/app.go
 // It may be possible to de-duplicate this in future.
 func getSecretsManager() (secrets.Provider, error) {
-	cfg := config.GetConfig()
+	// Create a manager for config access
+	clientManager, err := client.NewManager(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	cfg, err := clientManager.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get configuration: %w", err)
+	}
 
 	// Check if secrets setup has been completed
 	if !cfg.Secrets.SetupCompleted {
@@ -237,12 +246,12 @@ func getSecretsManager() (secrets.Provider, error) {
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateSecretProvider(providerType)
+	secretsManager, err := secrets.CreateSecretProvider(providerType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets manager: %w", err)
 	}
 
-	return manager, nil
+	return secretsManager, nil
 }
 
 // Shared Logic follows

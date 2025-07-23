@@ -41,7 +41,8 @@ var (
 
 func init() {
 	// Add registry command to root command
-	rootCmd.AddCommand(registryCmd)
+	// Remove any global rootCmd.AddCommand(registryCmd) from this file.
+	// All registry command registration is now handled via initRegistryCmds in commands.go.
 
 	// Add subcommands to registry command
 	registryCmd.AddCommand(registryListCmd)
@@ -268,4 +269,9 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// initRegistryCmds registers the registry commands on the given root command
+func initRegistryCmds(rootCmd *cobra.Command) {
+	rootCmd.AddCommand(registryCmd)
 }

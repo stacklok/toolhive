@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/certs"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -77,7 +78,8 @@ var (
 
 func init() {
 	// Add config command to root command
-	rootCmd.AddCommand(configCmd)
+	// Remove any global rootCmd.AddCommand(configCmd) from this file.
+	// All config command registration is now handled via initConfigCmds in commands.go.
 
 	// Add subcommands to config command
 	configCmd.AddCommand(setCACertCmd)
@@ -98,7 +100,12 @@ func init() {
 	configCmd.AddCommand(OtelCmd)
 }
 
-func setCACertCmdFunc(_ *cobra.Command, args []string) error {
+// initConfigCmds registers the config commands on the given root command
+func initConfigCmds(rootCmd *cobra.Command) {
+	rootCmd.AddCommand(configCmd)
+}
+
+func setCACertCmdFunc(cmd *cobra.Command, args []string) error {
 	certPath := filepath.Clean(args[0])
 
 	// Validate that the file exists and is readable
@@ -117,8 +124,13 @@ func setCACertCmdFunc(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid CA certificate: %w", err)
 	}
 
+	manager, err := client.NewManager(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
 	// Update the configuration
-	err = config.UpdateConfig(func(c *config.Config) {
+	err = manager.UpdateConfig(func(c *config.Config) {
 		c.CACertificatePath = certPath
 	})
 	if err != nil {
@@ -129,8 +141,15 @@ func setCACertCmdFunc(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func getCACertCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+func getCACertCmdFunc(cmd *cobra.Command, _ []string) error {
+	manager, err := client.NewManager(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
 
 	if cfg.CACertificatePath == "" {
 		fmt.Println("No CA certificate is currently configured.")
@@ -147,8 +166,15 @@ func getCACertCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+func unsetCACertCmdFunc(cmd *cobra.Command, _ []string) error {
+	manager, err := client.NewManager(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
 
 	if cfg.CACertificatePath == "" {
 		fmt.Println("No CA certificate is currently configured.")
@@ -156,7 +182,7 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err = manager.UpdateConfig(func(c *config.Config) {
 		c.CACertificatePath = ""
 	})
 	if err != nil {
@@ -167,7 +193,7 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func setRegistryURLCmdFunc(_ *cobra.Command, args []string) error {
+func setRegistryURLCmdFunc(cmd *cobra.Command, args []string) error {
 	registryURL := args[0]
 
 	// Basic URL validation - check if it starts with http:// or https://
@@ -186,8 +212,13 @@ func setRegistryURLCmdFunc(_ *cobra.Command, args []string) error {
 		}
 	}
 
+	manager, err := client.NewManager(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err = manager.UpdateConfig(func(c *config.Config) {
 		c.RegistryUrl = registryURL
 		c.AllowPrivateRegistryIp = allowPrivateRegistryIp
 	})
@@ -208,8 +239,15 @@ func setRegistryURLCmdFunc(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func getRegistryURLCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+func getRegistryURLCmdFunc(cmd *cobra.Command, _ []string) error {
+	manager, err := client.NewManager(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
 
 	if cfg.RegistryUrl == "" {
 		fmt.Println("No custom registry URL is currently configured. Using built-in registry.")
@@ -220,8 +258,15 @@ func getRegistryURLCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func unsetRegistryURLCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+func unsetRegistryURLCmdFunc(cmd *cobra.Command, _ []string) error {
+	manager, err := client.NewManager(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get configuration: %w", err)
+	}
 
 	if cfg.RegistryUrl == "" {
 		fmt.Println("No custom registry URL is currently configured.")
@@ -229,7 +274,7 @@ func unsetRegistryURLCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
+	err = manager.UpdateConfig(func(c *config.Config) {
 		c.RegistryUrl = ""
 	})
 	if err != nil {

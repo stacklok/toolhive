@@ -26,7 +26,8 @@ var (
 
 func init() {
 	// Add search command to root command
-	rootCmd.AddCommand(searchCmd)
+	// Remove any global rootCmd.AddCommand(searchCmd) from this file.
+	// All search command registration is now handled via initSearchCmds in commands.go.
 
 	// Add flags for search command
 	searchCmd.Flags().StringVar(&searchFormat, "format", FormatText, "Output format (json or text)")
@@ -105,4 +106,9 @@ func printTextSearchResults(servers []*registry.ImageMetadata) {
 // truncateSearchString truncates a string to the specified length and adds "..." if truncated
 func truncateSearchString(s string, maxLen int) string {
 	return truncateString(s, maxLen)
+}
+
+// initSearchCmds registers the search commands on the given root command
+func initSearchCmds(rootCmd *cobra.Command) {
+	rootCmd.AddCommand(searchCmd)
 }

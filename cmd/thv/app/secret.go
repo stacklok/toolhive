@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -83,7 +83,7 @@ Input Methods:
 		  Examples:
 		    echo "my-secret-value" | thv secret set my-secret
 		    cat secret-file.txt | thv secret set my-secret
-		
+	
 		- Interactive Input: If no data is piped, you will be prompted to enter the secret value securely
 		  (input will be hidden).
 		  Example:
@@ -139,20 +139,27 @@ The secret will be stored securely using the configured secrets provider.`,
 				return
 			}
 
-			manager, err := getSecretsManager()
+			manager, err := client.NewManager(ctx)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to create client manager: %v\n", err)
+				return
+			}
+
+			secretsManager, err := getSecretsManager(manager)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
 			}
 
 			// Check if the provider supports writing secrets
-			if !manager.Capabilities().CanWrite {
-				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+			cfg, _ := manager.GetConfig()
+			if !secretsManager.Capabilities().CanWrite {
+				providerType, _ := cfg.Secrets.GetProviderType()
 				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support setting secrets (read-only)\n", providerType)
 				return
 			}
 
-			err = manager.SetSecret(ctx, name, value)
+			err = secretsManager.SetSecret(ctx, name, value)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to set secret %s: %v\n", name, err)
 				return
@@ -177,13 +184,19 @@ func newSecretGetCommand() *cobra.Command {
 				return
 			}
 
-			manager, err := getSecretsManager()
+			manager, err := client.NewManager(ctx)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to create client manager: %v\n", err)
+				return
+			}
+
+			secretsManager, err := getSecretsManager(manager)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
 			}
 
-			value, err := manager.GetSecret(ctx, name)
+			value, err := secretsManager.GetSecret(ctx, name)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to get secret %s: %v\n", name, err)
 				return
@@ -208,20 +221,27 @@ func newSecretDeleteCommand() *cobra.Command {
 				return
 			}
 
-			manager, err := getSecretsManager()
+			manager, err := client.NewManager(ctx)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to create client manager: %v\n", err)
+				return
+			}
+
+			secretsManager, err := getSecretsManager(manager)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
 			}
 
+			cfg, _ := manager.GetConfig()
 			// Check if the provider supports deleting secrets
-			if !manager.Capabilities().CanDelete {
-				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+			if !secretsManager.Capabilities().CanDelete {
+				providerType, _ := cfg.Secrets.GetProviderType()
 				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support deleting secrets\n", providerType)
 				return
 			}
 
-			err = manager.DeleteSecret(ctx, name)
+			err = secretsManager.DeleteSecret(ctx, name)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to delete secret %s: %v\n", name, err)
 				return
@@ -238,20 +258,27 @@ func newSecretListCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
 			ctx := cmd.Context()
-			manager, err := getSecretsManager()
+			manager, err := client.NewManager(ctx)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to create client manager: %v\n", err)
+				return
+			}
+
+			secretsManager, err := getSecretsManager(manager)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create secrets manager: %v\n", err)
 				return
 			}
 
+			cfg, _ := manager.GetConfig()
 			// Check if the provider supports listing secrets
-			if !manager.Capabilities().CanList {
-				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+			if !secretsManager.Capabilities().CanList {
+				providerType, _ := cfg.Secrets.GetProviderType()
 				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support listing secrets\n", providerType)
 				return
 			}
 
-			secrets, err := manager.ListSecrets(ctx)
+			secrets, err := secretsManager.ListSecrets(ctx)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to list secrets: %v\n", err)
 				return
@@ -290,8 +317,12 @@ func newSecretResetKeyringCommand() *cobra.Command {
 	}
 }
 
-func getSecretsManager() (secrets.Provider, error) {
-	cfg := config.GetConfig()
+// getSecretsManager now takes a manager
+func getSecretsManager(manager client.Manager) (secrets.Provider, error) {
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		return nil, err
+	}
 
 	// Check if secrets setup has been completed
 	if !cfg.Secrets.SetupCompleted {
@@ -303,12 +334,12 @@ func getSecretsManager() (secrets.Provider, error) {
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateSecretProvider(providerType)
+	managerInstance, err := secrets.CreateSecretProvider(providerType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets manager: %w", err)
 	}
 
-	return manager, nil
+	return managerInstance, nil
 }
 
 func runSecretsSetup(_ *cobra.Command, _ []string) error {

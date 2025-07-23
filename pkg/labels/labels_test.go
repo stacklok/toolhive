@@ -12,6 +12,7 @@ func TestAddStandardLabels(t *testing.T) {
 		containerBaseName string
 		transportType     string
 		port              int
+		groupName         string
 		expected          map[string]string
 	}{
 		{
@@ -20,6 +21,7 @@ func TestAddStandardLabels(t *testing.T) {
 			containerBaseName: "test-base",
 			transportType:     "http",
 			port:              8080,
+			groupName:         "",
 			expected: map[string]string{
 				LabelToolHive:  "true",
 				LabelName:      "test-container",
@@ -35,6 +37,7 @@ func TestAddStandardLabels(t *testing.T) {
 			containerBaseName: "another-base",
 			transportType:     "https",
 			port:              9090,
+			groupName:         "",
 			expected: map[string]string{
 				LabelToolHive:  "true",
 				LabelName:      "another-container",
@@ -44,13 +47,34 @@ func TestAddStandardLabels(t *testing.T) {
 				LabelToolType:  "mcp",
 			},
 		},
+		{
+			name:              "With group",
+			containerName:     "group-container",
+			containerBaseName: "group-base",
+			transportType:     "sse",
+			port:              7070,
+			groupName:         "testgroup",
+			expected: map[string]string{
+				LabelToolHive:  "true",
+				LabelName:      "group-container",
+				LabelBaseName:  "group-base",
+				LabelTransport: "sse",
+				LabelPort:      "7070",
+				LabelToolType:  "mcp",
+				LabelGroup:     "testgroup",
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			labels := make(map[string]string)
-			AddStandardLabels(labels, tc.containerName, tc.containerBaseName, tc.transportType, tc.port)
+			if tc.groupName != "" {
+				AddStandardLabelsWithGroup(labels, tc.containerName, tc.containerBaseName, tc.transportType, tc.port, tc.groupName)
+			} else {
+				AddStandardLabels(labels, tc.containerName, tc.containerBaseName, tc.transportType, tc.port)
+			}
 
 			// Verify all expected labels are present with correct values
 			for key, expectedValue := range tc.expected {

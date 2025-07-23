@@ -32,6 +32,8 @@ import (
 // Manager is responsible for managing the state of ToolHive-managed containers.
 // NOTE: This interface may be split up in future PRs, in particular, operations
 // which are only relevant to the CLI/API use case will be split out.
+//
+//go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=manager.go Manager
 type Manager interface {
 	// GetWorkload retrieves details of the named workload including its status.
 	GetWorkload(ctx context.Context, workloadName string) (Workload, error)
@@ -319,6 +321,11 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 		detachedArgs = append(detachedArgs, "--name", runConfig.ContainerName)
 	}
 
+	// Add group if specified
+	if runConfig.Group != "" {
+		detachedArgs = append(detachedArgs, "--group", runConfig.Group)
+	}
+
 	if runConfig.Host != "" {
 		detachedArgs = append(detachedArgs, "--host", runConfig.Host)
 	}
@@ -507,7 +514,6 @@ func (d *defaultManager) GetLogs(ctx context.Context, containerName string, foll
 	return logs, nil
 }
 
-// DeleteWorkloads deletes the specified workloads by name.
 func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
 	// Validate all workload names to prevent path traversal attacks
 	for _, name := range names {

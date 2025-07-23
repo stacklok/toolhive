@@ -33,13 +33,16 @@ const (
 	// LabelNetworkIsolation indicates that the network isolation functionality is enabled.
 	LabelNetworkIsolation = "toolhive-network-isolation"
 
+	// LabelGroup is the label that contains the group name
+	LabelGroup = "toolhive-group"
+
 	// LabelToolHiveValue is the value for the LabelToolHive label
 	LabelToolHiveValue = "true"
 )
 
-// AddStandardLabels adds standard labels to a container
-func AddStandardLabels(labels map[string]string, containerName, containerBaseName, transportType string, port int) {
-	// Add standard labels
+// AddStandardLabelsWithGroup adds standard labels to a container, including group if provided
+func AddStandardLabelsWithGroup(labels map[string]string, containerName, containerBaseName, transportType string,
+	port int, groupName string) {
 	labels[LabelToolHive] = LabelToolHiveValue
 	labels[LabelName] = containerName
 	labels[LabelBaseName] = containerBaseName
@@ -48,6 +51,14 @@ func AddStandardLabels(labels map[string]string, containerName, containerBaseNam
 
 	// TODO: In the future, we'll support different tool types beyond just "mcp"
 	labels[LabelToolType] = "mcp"
+	if groupName != "" {
+		labels[LabelGroup] = groupName
+	}
+}
+
+// AddStandardLabels adds standard labels to a container
+func AddStandardLabels(labels map[string]string, containerName, containerBaseName, transportType string, port int) {
+	AddStandardLabelsWithGroup(labels, containerName, containerBaseName, transportType, port, "")
 }
 
 // AddNetworkLabels adds network-related labels to a network
@@ -116,6 +127,16 @@ func GetToolType(labels map[string]string) string {
 	return labels[LabelToolType]
 }
 
+// GetGroup gets the group name from labels
+func GetGroup(labels map[string]string) string {
+	return labels[LabelGroup]
+}
+
+// SetGroup sets the group name in labels
+func SetGroup(labels map[string]string, groupName string) {
+	labels[LabelGroup] = groupName
+}
+
 // IsStandardToolHiveLabel checks if a label key is a standard ToolHive label
 // that should not be passed through from user input or displayed to users
 func IsStandardToolHiveLabel(key string) bool {
@@ -127,6 +148,7 @@ func IsStandardToolHiveLabel(key string) bool {
 		LabelPort,
 		LabelToolType,
 		LabelNetworkIsolation,
+		LabelGroup,
 	}
 
 	for _, standardLabel := range standardLabels {

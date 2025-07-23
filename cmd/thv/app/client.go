@@ -36,6 +36,7 @@ var clientRegisterCmd = &cobra.Command{
 	Long: `Register a client for MCP server configuration.
 Valid clients are:
   - claude-code: Claude Code CLI
+  - claude-desktop: Claude Desktop app
   - cline: Cline extension for VS Code
   - cursor: Cursor editor
   - roo-code: Roo Code extension for VS Code
@@ -51,6 +52,7 @@ var clientRemoveCmd = &cobra.Command{
 	Long: `Remove a client from MCP server configuration.
 Valid clients are:
   - claude-code: Claude Code CLI
+  - claude-desktop: Claude Desktop app
   - cline: Cline extension for VS Code
   - cursor: Cursor editor
   - roo-code: Roo Code extension for VS Code
@@ -148,11 +150,11 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode":
+	case "roo-code", "cline", "cursor", "claude-code", "claude-desktop", "vscode-insider", "vscode":
 		// Valid client type
 	default:
 		return fmt.Errorf(
-			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider)",
+			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, claude-desktop, vscode, vscode-insider)",
 			clientType)
 	}
 
@@ -178,11 +180,11 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode":
+	case "roo-code", "cline", "cursor", "claude-code", "claude-desktop", "vscode-insider", "vscode":
 		// Valid client type
 	default:
 		return fmt.Errorf(
-			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider)",
+			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, claude-desktop, vscode, vscode-insider)",
 			clientType)
 	}
 

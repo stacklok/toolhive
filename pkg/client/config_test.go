@@ -53,6 +53,14 @@ func createMockClientConfigs() []mcpClientConfig {
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		},
+		{
+			ClientType:           ClaudeDesktop,
+			Description:          "Claude Desktop (Mock)",
+			RelPath:              []string{"mock_claude_desktop"},
+			SettingsFile:         "claude_desktop_config.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
 	}
 }
 
@@ -259,6 +267,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(Cursor),
 					string(RooCode),
 					string(ClaudeCode),
+					string(ClaudeDesktop),
 					string(Cline),
 				},
 			},
@@ -309,6 +318,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case ClaudeCode:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"ClaudeCode config should contain mcpServers key")
+			case ClaudeDesktop:
+				assert.Contains(t, string(content), `"mcpServers":`,
+					"ClaudeDesktop config should contain mcpServers key")
 			case Cline:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"Cline config should contain mcpServers key")
@@ -337,7 +349,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case VSCode, VSCodeInsider:
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
-			case Cursor, RooCode, ClaudeCode, Cline:
+			case Cursor, RooCode, ClaudeCode, ClaudeDesktop, Cline:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}

@@ -38,6 +38,8 @@ const (
 	VSCode MCPClient = "vscode"
 	// ClaudeCode represents the Claude Code CLI.
 	ClaudeCode MCPClient = "claude-code"
+	// ClaudeDesktop represents the Claude Desktop app.
+	ClaudeDesktop MCPClient = "claude-desktop"
 )
 
 // Extension is extension of the client config file.
@@ -179,6 +181,23 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+	},
+	{
+		ClientType:   ClaudeDesktop,
+		Description:  "Claude Desktop app",
+		SettingsFile: "claude_desktop_config.json",
+		RelPath:      []string{"Claude"},
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {"Library", "Application Support"},
+			"windows": {"AppData", "Roaming"},
+		},
+		MCPServersPathPrefix: "/mcpServers",
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio: "stdio",
+		},
+		IsTransportTypeFieldSupported: false,
 	},
 }
 
@@ -326,6 +345,9 @@ func Upsert(cf ConfigFile, name string, url string, transportType string) error 
 		mappedTransportType, ok := supportedClientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
 		if supportedClientIntegrations[i].IsTransportTypeFieldSupported && ok {
 			return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: mappedTransportType})
+		}
+		if mappedTransportType == types.TransportTypeStdio.String() && ok {
+			return cf.ConfigUpdater.Upsert(name, MCPServer{Command: "npx", Args: []string{"mcp-remote", url, "--transport", "sse"}})
 		}
 		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})
 	}

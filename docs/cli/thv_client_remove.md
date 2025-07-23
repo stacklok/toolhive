@@ -16,6 +16,7 @@ Remove a client from MCP server configuration
 Remove a client from MCP server configuration.
 Valid clients are:
   - claude-code: Claude Code CLI
+  - claude-desktop: Claude Desktop app
   - cline: Cline extension for VS Code
   - cursor: Cursor editor
   - roo-code: Roo Code extension for VS Code

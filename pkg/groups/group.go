@@ -40,4 +40,8 @@ type Manager interface {
 
 	// Exists checks if a group with the specified name exists.
 	Exists(ctx context.Context, name string) (bool, error)
+
+	// GetWorkloadGroup returns the group that a workload belongs to, if any.
+	// Returns nil if the workload is not in any group.
+	GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error)
 }

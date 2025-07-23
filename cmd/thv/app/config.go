@@ -19,14 +19,6 @@ var configCmd = &cobra.Command{
 	Long:  "The config command provides subcommands to manage application configuration settings.",
 }
 
-var listRegisteredClientsCmd = &cobra.Command{
-	Use:        "list-registered-clients",
-	Short:      "List all registered MCP clients",
-	Long:       "List all clients that are registered for MCP server configuration.",
-	RunE:       listRegisteredClientsCmdFunc,
-	Deprecated: "please use 'thv client list-registered' instead. This command will be removed in 2 weeks.",
-}
-
 var setCACertCmd = &cobra.Command{
 	Use:   "set-ca-cert <path>",
 	Short: "Set the default CA certificate for container builds",
@@ -122,7 +114,6 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 
 	// Add subcommands to config command
-	configCmd.AddCommand(listRegisteredClientsCmd)
 	configCmd.AddCommand(setCACertCmd)
 	configCmd.AddCommand(getCACertCmd)
 	configCmd.AddCommand(unsetCACertCmd)
@@ -136,8 +127,6 @@ func init() {
 	)
 	configCmd.AddCommand(getRegistryURLCmd)
 	configCmd.AddCommand(unsetRegistryURLCmd)
-	configCmd.AddCommand(registerClientCmd)
-	configCmd.AddCommand(removeClientCmd)
 
 	// Add OTEL parent command to config
 	configCmd.AddCommand(OtelCmd)

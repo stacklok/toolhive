@@ -55,7 +55,18 @@ echo ""
 
 # Run the tests
 cd "$(dirname "$0")"
-if ginkgo run --timeout="$TEST_TIMEOUT" --vv --show-node-events --trace .; then
+
+# Build ginkgo command with conditional GitHub output flag
+GINKGO_CMD="ginkgo run --timeout=\"$TEST_TIMEOUT\""
+if [ -n "$GITHUB_ACTIONS" ]; then
+    echo -e "${GREEN}✓${NC} GitHub Actions detected, enabling GitHub output format"
+    GINKGO_CMD="$GINKGO_CMD --github-output"
+else
+    GINKGO_CMD="$GINKGO_CMD --vv --show-node-events --trace"
+fi
+GINKGO_CMD="$GINKGO_CMD ."
+
+if eval "$GINKGO_CMD"; then
     echo ""
     echo -e "${GREEN}✓ All E2E tests passed!${NC}"
     exit 0

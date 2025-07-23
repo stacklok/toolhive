@@ -106,18 +106,19 @@ func printMCPServersOutput(workloadList []workloads.Workload) error {
 func printTextOutput(workloadList []workloads.Workload) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tTOOL TYPE\tCREATED AT")
+	fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tTOOL TYPE\tGROUP\tCREATED AT")
 
 	// Print workload information
 	for _, c := range workloadList {
 		// Print workload information
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 			c.Name,
 			c.Package,
 			c.Status,
 			c.URL,
 			c.Port,
 			c.ToolType,
+			c.Group,
 			c.CreatedAt,
 		)
 	}

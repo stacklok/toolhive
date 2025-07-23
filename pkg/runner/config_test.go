@@ -627,6 +627,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		false, // jwksAllowPrivateIP
 		envVarValidator,
 		"sse",
+		"", // groupName
 	)
 	require.NoError(t, err, "NewRunConfigFromFlags should not return an error")
 
@@ -883,6 +884,7 @@ func TestNewRunConfigFromFlags_MetadataOverrides(t *testing.T) {
 				false, // jwksAllowPrivateIP
 				validator,
 				types.ProxyModeSSE,
+				"", // groupName
 			)
 
 			require.NoError(t, err)
@@ -933,6 +935,7 @@ func TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency(t *testing
 		false, // jwksAllowPrivateIP
 		validator,
 		types.ProxyModeSSE,
+		"", // groupName
 	)
 
 	require.NoError(t, err)
@@ -986,6 +989,7 @@ func TestNewRunConfigFromFlags_CmdArgsMetadataPrepending(t *testing.T) {
 		false, // jwksAllowPrivateIP
 		validator,
 		types.ProxyModeSSE,
+		"", // groupName
 	)
 
 	require.NoError(t, err)
@@ -1040,6 +1044,7 @@ func TestNewRunConfigFromFlags_VolumeProcessing(t *testing.T) {
 		false, // jwksAllowPrivateIP
 		validator,
 		types.ProxyModeSSE,
+		"", // groupName
 	)
 
 	require.NoError(t, err)

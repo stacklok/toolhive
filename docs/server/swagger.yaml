@@ -602,6 +602,10 @@ components:
         created_at:
           description: CreatedAt is the timestamp when the workload was created.
           type: string
+        group:
+          description: Group is the name of the group this workload belongs to, if
+            any.
+          type: string
         labels:
           additionalProperties:
             type: string

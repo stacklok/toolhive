@@ -61,6 +61,8 @@ type Workload struct {
 	CreatedAt time.Time `json:"created_at"`
 	// Labels are the container labels (excluding standard ToolHive labels)
 	Labels map[string]string `json:"labels,omitempty"`
+	// Group is the name of the group this workload belongs to, if any.
+	Group string `json:"group,omitempty"`
 }
 
 // WorkloadFromContainerInfo creates a Workload struct from the runtime container info.
@@ -116,6 +118,9 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 		}
 	}
 
+	// Get group information from labels
+	groupName := labels.GetGroup(container.Labels)
+
 	// Translate to domain model.
 	return Workload{
 		Name: container.Name,
@@ -129,5 +134,6 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 		CreatedAt:     container.Created,
 		Port:          port,
 		Labels:        userLabels,
+		Group:         groupName,
 	}, nil
 }

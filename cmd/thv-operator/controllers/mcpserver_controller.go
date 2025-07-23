@@ -387,7 +387,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 	// Prepare container args
 	args := []string{"run", "--foreground=true"}
-	args = append(args, fmt.Sprintf("--port=%d", m.Spec.Port))
+	args = append(args, fmt.Sprintf("--proxy-port=%d", m.Spec.Port))
 	args = append(args, fmt.Sprintf("--name=%s", m.Name))
 	args = append(args, fmt.Sprintf("--transport=%s", m.Spec.Transport))
 	args = append(args, fmt.Sprintf("--host=%s", getProxyHost()))
@@ -780,7 +780,7 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 		}
 
 		// Check if the port has changed
-		portArg := fmt.Sprintf("--port=%d", mcpServer.Spec.Port)
+		portArg := fmt.Sprintf("--proxy-port=%d", mcpServer.Spec.Port)
 		found = false
 		for _, arg := range container.Args {
 			if arg == portArg {

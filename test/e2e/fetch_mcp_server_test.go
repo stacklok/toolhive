@@ -85,6 +85,31 @@ var _ = Describe("FetchMcpServer", func() {
 			})
 		})
 
+		Context("when starting the server from registry with tools filter", func() {
+			It("should start when filters are correct", func() {
+				By("Starting the fetch MCP server")
+				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools", "fetch").ExpectSuccess()
+
+				// The command should indicate success
+				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
+
+				By("Waiting for the server to be running")
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				Expect(err).ToNot(HaveOccurred(), "Server should be running within 30 seconds")
+
+				By("Verifying the server appears in the list")
+				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
+				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
+			})
+
+			It("should not start when filters are incorrect", func() {
+				By("Starting the fetch MCP server")
+				_, _, err := e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools", "wrong-tool").ExpectFailure()
+				Expect(err).To(HaveOccurred(), "Should fail with non-existent server")
+			})
+		})
+
 		Context("when managing the server lifecycle", func() {
 			BeforeEach(func() {
 				// Start a server for lifecycle tests

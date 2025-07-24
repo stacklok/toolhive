@@ -17,7 +17,7 @@ import (
 
 // ConfigUpdater defines the interface for types which can edit MCP client config files.
 type ConfigUpdater interface {
-	Upsert(serverName string, data interface{}) error
+	Upsert(serverName string, data MCPServer) error
 	Remove(serverName string) error
 }
 
@@ -36,7 +36,7 @@ type JSONConfigUpdater struct {
 }
 
 // Upsert inserts or updates an MCP server in the MCP client config file
-func (jcu *JSONConfigUpdater) Upsert(serverName string, data interface{}) error {
+func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 	// Create a lock file
 	fileLock := flock.New(jcu.Path + ".lock")
 

@@ -97,7 +97,7 @@ func pingRuntime(ctx context.Context, rt runtime.Runtime) error {
 
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("ping timeout: %w", ctx.Err())
+		return ctx.Err()
 	case err := <-done:
 		return err
 	}

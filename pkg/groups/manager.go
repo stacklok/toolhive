@@ -126,6 +126,25 @@ func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*G
 	return m.Get(ctx, workload.Group)
 }
 
+// ListWorkloadsInGroup returns all workloads that belong to the specified group
+func (m *manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]workloads.Workload, error) {
+	// Get all workloads
+	allWorkloads, err := m.workloadManager.ListWorkloads(ctx, true) // listAll = true to get all workloads
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workloads: %w", err)
+	}
+
+	// Filter workloads that belong to the specified group
+	var groupWorkloads []workloads.Workload
+	for _, workload := range allWorkloads {
+		if workload.Group == groupName {
+			groupWorkloads = append(groupWorkloads, workload)
+		}
+	}
+
+	return groupWorkloads, nil
+}
+
 // saveGroup saves the group to the group state store
 func (m *manager) saveGroup(ctx context.Context, group *Group) error {
 	writer, err := m.store.GetWriter(ctx, group.Name)

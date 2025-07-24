@@ -108,6 +108,20 @@ func (mr *MockManagerMockRecorder) ListWorkloads(ctx, listAll any, labelFilters 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloads", reflect.TypeOf((*MockManager)(nil).ListWorkloads), varargs...)
 }
 
+// RemoveFromGroup mocks base method.
+func (m *MockManager) RemoveFromGroup(ctx context.Context, workloadNames []string, groupName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RemoveFromGroup", ctx, workloadNames, groupName)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RemoveFromGroup indicates an expected call of RemoveFromGroup.
+func (mr *MockManagerMockRecorder) RemoveFromGroup(ctx, workloadNames, groupName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveFromGroup", reflect.TypeOf((*MockManager)(nil).RemoveFromGroup), ctx, workloadNames, groupName)
+}
+
 // RestartWorkloads mocks base method.
 func (m *MockManager) RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
 	m.ctrl.T.Helper()

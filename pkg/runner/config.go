@@ -367,6 +367,6 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 		transportLabel = types.TransportTypeStreamableHTTP.String()
 	}
 	// Use the Group field from the RunConfig
-	labels.AddStandardLabelsWithGroup(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port, c.Group)
+	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port)
 	return c
 }

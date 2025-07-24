@@ -242,7 +242,8 @@ var _ = Describe("Group", func() {
 		Context("when running workloads with invalid arguments", func() {
 			It("should fail when group does not exist", func() {
 				By("Attempting to add workload to non-existent group")
-				cmd := exec.Command(thvBinary, "run", "fetch", "--group", "nonexistent-group", "--name", "test-workload")
+				workloadName := fmt.Sprintf("test-nonexistent-group-%d-%d", GinkgoRandomSeed(), sharedTimestamp)
+				cmd := exec.Command(thvBinary, "run", "fetch", "--group", "nonexistent-group", "--name", workloadName)
 				output, err := cmd.CombinedOutput()
 				Expect(err).To(HaveOccurred(), "Should fail when group does not exist")
 				Expect(string(output)).To(ContainSubstring("does not exist"))
@@ -250,7 +251,8 @@ var _ = Describe("Group", func() {
 
 			It("should fail when server/image does not exist", func() {
 				By("Attempting to add non-existent server")
-				cmd := exec.Command(thvBinary, "run", "nonexistent-server", "--group", groupName, "--name", "test-workload")
+				workloadName := fmt.Sprintf("test-nonexistent-server-%d-%d", GinkgoRandomSeed(), sharedTimestamp)
+				cmd := exec.Command(thvBinary, "run", "nonexistent-server", "--group", groupName, "--name", workloadName)
 				output, err := cmd.CombinedOutput()
 				Expect(err).To(HaveOccurred(), "Should fail when server does not exist")
 				Expect(string(output)).To(ContainSubstring("image not found"))
@@ -317,6 +319,17 @@ var _ = Describe("Group", func() {
 			})
 
 			It("should fail when attempting to run workload in a different group", func() {
+				By("Verifying the workload is in the first group")
+				time.Sleep(3 * time.Second) // Give time for the workload to be fully registered
+				manager, err := groups.NewManager()
+				Expect(err).ToNot(HaveOccurred())
+
+				ctx := context.Background()
+				workloadGroup, err := manager.GetWorkloadGroup(ctx, workloadName)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(workloadGroup).ToNot(BeNil(), "Workload should be in the first group")
+				Expect(workloadGroup.Name).To(Equal(groupName), "Workload should be in the correct group")
+
 				By("Attempting to run workload in a different group")
 				cmd := exec.Command(thvBinary, "run", "fetch", "--group", secondGroupName, "--name", workloadName)
 				output, err := cmd.CombinedOutput()

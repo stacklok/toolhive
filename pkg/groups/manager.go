@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/state"
-	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // manager implements the Manager interface
 type manager struct {
-	store           state.Store
-	workloadManager workloads.Manager
+	store state.Store
 }
 
 // NewManager creates a new group manager
@@ -22,23 +22,7 @@ func NewManager() (Manager, error) {
 		return nil, fmt.Errorf("failed to create group state store: %w", err)
 	}
 
-	workloadManager, err := workloads.NewManager(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("failed to create workload manager: %w", err)
-	}
-
-	return &manager{store: store, workloadManager: workloadManager}, nil
-}
-
-// NewManagerWithWorkloadManager creates a new group manager with a custom workload manager
-// This is useful for testing with mocks
-func NewManagerWithWorkloadManager(workloadManager workloads.Manager) (Manager, error) {
-	store, err := state.NewGroupConfigStore("toolhive")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create group state store: %w", err)
-	}
-
-	return &manager{store: store, workloadManager: workloadManager}, nil
+	return &manager{store: store}, nil
 }
 
 // Create creates a new group with the given name
@@ -108,22 +92,21 @@ func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
 
 // GetWorkloadGroup returns the group that a workload belongs to, if any
 func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error) {
-	// Use the workload manager to get the workload and check its group label
-
-	// Get the workload details
-	workload, err := m.workloadManager.GetWorkload(ctx, workloadName)
+	runner, err := runner.LoadState(ctx, workloadName)
 	if err != nil {
-		// If workload not found, it's not in any group
+		if errors.IsRunConfigNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	// If the workload has no group, return nil
+	if runner.Config.Group == "" {
 		return nil, nil
 	}
 
-	// Check if the workload has a group
-	if workload.Group == "" {
-		return nil, nil // Workload is not in any group
-	}
-
 	// Get the group details
-	return m.Get(ctx, workload.Group)
+	return m.Get(ctx, runner.Config.Group)
 }
 
 // saveGroup saves the group to the group state store

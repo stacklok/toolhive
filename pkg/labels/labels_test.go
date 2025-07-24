@@ -61,7 +61,6 @@ func TestAddStandardLabels(t *testing.T) {
 				LabelTransport: "sse",
 				LabelPort:      "7070",
 				LabelToolType:  "mcp",
-				LabelGroup:     "testgroup",
 			},
 		},
 	}

@@ -217,7 +217,7 @@ func Serve(
 		return err
 	}
 
-	logger.Infof("starting %s server", addrType, address)
+	logger.Infof("starting %s server at %s", addrType, address)
 
 	// Start server.
 	go func() {

@@ -152,7 +152,8 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 		// Valid client type
 	default:
 		return fmt.Errorf(
-			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, windsurf, windsurf-intellij)",
+			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, "+
+				"vscode-insider, windsurf, windsurf-intellij)",
 			clientType)
 	}
 
@@ -182,7 +183,8 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 		// Valid client type
 	default:
 		return fmt.Errorf(
-			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, windsurf, windsurf-intellij)",
+			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, "+
+				"vscode-insider, windsurf, windsurf-intellij)",
 			clientType)
 	}
 

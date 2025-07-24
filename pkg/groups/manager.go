@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -126,11 +127,12 @@ func (*manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]*
 
 	// Filter runconfigs that belong to the specified group
 	var groupWorkloads []*workloads.Workload
+
 	for _, runConfigName := range runConfigNames {
 		// Load the runconfig
 		runnerInstance, err := runner.LoadState(ctx, runConfigName)
 		if err != nil {
-			// Skip runconfigs that can't be loaded
+			logger.Warnf("Failed to load runconfig %s: %v", runConfigName, err)
 			continue
 		}
 

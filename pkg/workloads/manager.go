@@ -56,7 +56,7 @@ type Manager interface {
 	RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
 	// GetLogs retrieves the logs of a container.
 	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
-	// RemoveFromGroup removes the specified workloads from the given group by removing the group label.
+	// RemoveFromGroup removes the specified workloads from the given group by updating the runconfig.
 	RemoveFromGroup(ctx context.Context, workloadNames []string, groupName string) error
 }
 
@@ -886,7 +886,7 @@ func validateWorkloadName(name string) error {
 	return nil
 }
 
-// RemoveFromGroup removes the specified workloads from the given group by removing the group label.
+// RemoveFromGroup removes the specified workloads from the given group by updating the runconfig.
 func (d *defaultManager) RemoveFromGroup(ctx context.Context, workloadNames []string, groupName string) error {
 	for _, workloadName := range workloadNames {
 		// Validate workload name
@@ -894,23 +894,17 @@ func (d *defaultManager) RemoveFromGroup(ctx context.Context, workloadNames []st
 			return fmt.Errorf("invalid workload name %s: %w", workloadName, err)
 		}
 
-		// Find the container
-		container, err := d.findContainerByName(ctx, workloadName)
-		if err != nil {
-			return fmt.Errorf("failed to find container for workload %s: %w", workloadName, err)
-		}
-
-		// Check if the container has the group label
-		groupLabel := labels.LabelGroup
-		if _, exists := container.Labels[groupLabel]; !exists {
-			logger.Debugf("Workload %s is not in group %s, skipping", workloadName, groupName)
-			continue
-		}
-
-		// Load the runner state to update the configuration
+		// Load the runner state to check and update the configuration
 		runnerInstance, err := d.loadRunnerFromState(ctx, workloadName)
 		if err != nil {
 			return fmt.Errorf("failed to load runner state for workload %s: %w", workloadName, err)
+		}
+
+		// Check if the workload is actually in the specified group
+		if runnerInstance.Config.Group != groupName {
+			logger.Debugf("Workload %s is not in group %s (current group: %s), skipping",
+				workloadName, groupName, runnerInstance.Config.Group)
+			continue
 		}
 
 		// Remove the group from the configuration
@@ -919,48 +913,6 @@ func (d *defaultManager) RemoveFromGroup(ctx context.Context, workloadNames []st
 		// Save the updated configuration
 		if err := runnerInstance.SaveState(ctx); err != nil {
 			return fmt.Errorf("failed to save updated configuration for workload %s: %w", workloadName, err)
-		}
-
-		// Stop the workload to apply the new configuration
-		logger.Infof("Stopping workload %s to apply group removal", workloadName)
-		stopGroup := errgroup.Group{}
-		stopGroup.Go(func() error {
-			childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
-			defer cancel()
-
-			name := labels.GetContainerBaseName(container.Labels)
-			// Stop the proxy process
-			proxy.StopProcess(name)
-
-			logger.Infof("Stopping containers for %s...", name)
-			// Stop the container
-			if err := d.runtime.StopWorkload(childCtx, container.ID); err != nil {
-				d.statuses.SetWorkloadStatus(ctx, name, WorkloadStatusError, err.Error())
-				return fmt.Errorf("failed to stop container: %w", err)
-			}
-
-			if shouldRemoveClientConfig() {
-				if err := removeClientConfigurations(name); err != nil {
-					logger.Warnf("Warning: Failed to remove client configurations: %v", err)
-				} else {
-					logger.Infof("Client configurations for %s removed", name)
-				}
-			}
-
-			d.statuses.SetWorkloadStatus(ctx, name, WorkloadStatusStopped, "")
-			logger.Infof("Successfully stopped %s...", name)
-			return nil
-		})
-
-		// Wait for the stop operation to complete
-		if err := stopGroup.Wait(); err != nil {
-			return fmt.Errorf("failed to stop workload %s: %w", workloadName, err)
-		}
-
-		// Restart the workload with the updated configuration (without group)
-		logger.Infof("Restarting workload %s with updated configuration", workloadName)
-		if err := d.RunWorkloadDetached(ctx, runnerInstance.Config); err != nil {
-			return fmt.Errorf("failed to restart workload %s: %w", workloadName, err)
 		}
 
 		logger.Infof("Removed workload %s from group %s", workloadName, groupName)

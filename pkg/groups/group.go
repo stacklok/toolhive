@@ -48,5 +48,5 @@ type Manager interface {
 	GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error)
 
 	// ListWorkloadsInGroup returns all workloads that belong to the specified group.
-	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]workloads.Workload, error)
+	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]*workloads.Workload, error)
 }

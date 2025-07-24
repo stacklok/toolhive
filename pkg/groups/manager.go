@@ -8,6 +8,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/state"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // manager implements the Manager interface
@@ -110,17 +111,36 @@ func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*G
 }
 
 // ListWorkloadsInGroup returns all workloads that belong to the specified group
-func (m *manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]workloads.Workload, error) {
-	// Get all workloads
-	allWorkloads, err := m.workloadManager.ListWorkloads(ctx, true) // listAll = true to get all workloads
+func (*manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]*workloads.Workload, error) {
+	// Create a runconfig store to list all runconfigs
+	runConfigStore, err := state.NewRunConfigStore("toolhive")
 	if err != nil {
-		return nil, fmt.Errorf("failed to list workloads: %w", err)
+		return nil, fmt.Errorf("failed to create runconfig store: %w", err)
 	}
 
-	// Filter workloads that belong to the specified group
-	var groupWorkloads []workloads.Workload
-	for _, workload := range allWorkloads {
-		if workload.Group == groupName {
+	// List all runconfig names
+	runConfigNames, err := runConfigStore.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list runconfigs: %w", err)
+	}
+
+	// Filter runconfigs that belong to the specified group
+	var groupWorkloads []*workloads.Workload
+	for _, runConfigName := range runConfigNames {
+		// Load the runconfig
+		runnerInstance, err := runner.LoadState(ctx, runConfigName)
+		if err != nil {
+			// Skip runconfigs that can't be loaded
+			continue
+		}
+
+		// Check if this runconfig belongs to the specified group
+		if runnerInstance.Config.Group == groupName {
+			// Create a minimal Workload struct
+			workload := &workloads.Workload{
+				Name:  runConfigName,
+				Group: groupName,
+			}
 			groupWorkloads = append(groupWorkloads, workload)
 		}
 	}

@@ -32,10 +32,10 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 
 	if groupName != "" {
 		// Remove all workloads in the specified group
-		return removeWorkloadsInGroup(ctx, groupName)
+		return deleteAllWorkloadsInGroup(ctx, groupName)
 	}
 
-	// Original behavior: remove specific workload
+	// Remove specific workload
 	if len(args) == 0 {
 		return fmt.Errorf("workload name is required when not using --group flag")
 	}
@@ -63,7 +63,7 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func removeWorkloadsInGroup(ctx context.Context, groupName string) error {
+func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 	// Create group manager
 	groupManager, err := groups.NewManager()
 	if err != nil {

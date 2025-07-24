@@ -139,16 +139,19 @@ func groupDeleteCmdFunc(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Handle workloads if any exist
 	if len(workloadsInGroup) > 0 {
-		// Handle workloads based on flag
 		if withWorkloadsFlag {
-			return deleteWorkloadsInGroup(ctx, workloadsInGroup, groupName)
+			err = deleteWorkloadsInGroup(ctx, workloadsInGroup, groupName)
+		} else {
+			err = removeWorkloadsMembershipFromGroup(ctx, workloadsInGroup, groupName)
 		}
-		return removeWorkloadsMembershipFromGroup(ctx, workloadsInGroup, groupName)
+	}
+	if err != nil {
+		return err
 	}
 
-	// Delete the group itself
-	if err := groupManager.Delete(ctx, groupName); err != nil {
+	if err = groupManager.Delete(ctx, groupName); err != nil {
 		return fmt.Errorf("failed to delete group: %w", err)
 	}
 
@@ -156,7 +159,7 @@ func groupDeleteCmdFunc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func showWarningAndGetConfirmation(groupName string, workloadsInGroup []workloads.Workload) (bool, error) {
+func showWarningAndGetConfirmation(groupName string, workloadsInGroup []*workloads.Workload) (bool, error) {
 	// Show warning and get user confirmation
 	if withWorkloadsFlag {
 		fmt.Printf("⚠️  WARNING: This will delete group '%s' and DELETE all workloads belonging to it.\n", groupName)
@@ -201,7 +204,7 @@ func showWarningAndGetConfirmation(groupName string, workloadsInGroup []workload
 	return true, nil
 }
 
-func deleteWorkloadsInGroup(ctx context.Context, workloadsInGroup []workloads.Workload, groupName string) error {
+func deleteWorkloadsInGroup(ctx context.Context, workloadsInGroup []*workloads.Workload, groupName string) error {
 	// Delete workloads
 	workloadManager, err := workloads.NewManager(ctx)
 	if err != nil {
@@ -231,7 +234,7 @@ func deleteWorkloadsInGroup(ctx context.Context, workloadsInGroup []workloads.Wo
 
 // removeWorkloadsFromGroup removes the group membership from the workloads
 // in the group.
-func removeWorkloadsMembershipFromGroup(ctx context.Context, workloadsInGroup []workloads.Workload, groupName string) error {
+func removeWorkloadsMembershipFromGroup(ctx context.Context, workloadsInGroup []*workloads.Workload, groupName string) error {
 	workloadManager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)

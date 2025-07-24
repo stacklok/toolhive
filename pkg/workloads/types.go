@@ -66,6 +66,8 @@ type Workload struct {
 	Labels map[string]string `json:"labels,omitempty"`
 	// Group is the name of the group this workload belongs to, if any.
 	Group string `json:"group,omitempty"`
+	// ToolsFilter is the filter on tools applied to the workload.
+	ToolsFilter []string `json:"tools,omitempty"`
 }
 
 // loadGroupFromRunConfig attempts to load group information from the runconfig

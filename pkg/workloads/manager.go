@@ -435,16 +435,16 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 		detachedArgs = append(detachedArgs, "--enable-audit")
 	}
 
+	if runConfig.ToolsFilter != nil {
+		toolsFilter := strings.Join(runConfig.ToolsFilter, ",")
+		detachedArgs = append(detachedArgs, "--tools", toolsFilter)
+	}
+
 	// Add the image and any arguments
 	detachedArgs = append(detachedArgs, runConfig.Image)
 	if len(runConfig.CmdArgs) > 0 {
 		detachedArgs = append(detachedArgs, "--")
 		detachedArgs = append(detachedArgs, runConfig.CmdArgs...)
-	}
-
-	if runConfig.ToolsFilter != nil {
-		toolsFilter := strings.Join(runConfig.ToolsFilter, ",")
-		detachedArgs = append(detachedArgs, "--tools", toolsFilter)
 	}
 
 	// Create a new command

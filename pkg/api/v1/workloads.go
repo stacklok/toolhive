@@ -265,6 +265,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID, req.OIDC.AllowOpaqueTokens,
 										"", "", false). // JWKS auth parameters not exposed through API yet
 		WithTelemetryConfig("", false, "", 0.0, nil, false, nil). // Not exposed through API yet.
+		WithToolsFilter(req.ToolsFilter).
 		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
 	if err != nil {
 		logger.Errorf("Failed to create run config: %v", err)
@@ -485,6 +486,8 @@ type createRequest struct {
 	ProxyMode string `json:"proxy_mode"`
 	// Whether network isolation is turned on. This applies the rules in the permission profile.
 	NetworkIsolation bool `json:"network_isolation"`
+	// Tools filter
+	ToolsFilter []string `json:"tools"`
 }
 
 // oidcOptions represents OIDC configuration options

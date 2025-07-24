@@ -27,4 +27,5 @@ Commands related to the container runtime
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
 * [thv runtime check](thv_runtime_check.md)	 - Ping the container runtime
+* [thv runtime check](thv_runtime_check.md)	 - Ping the container runtime
 

@@ -22,7 +22,8 @@ thv runtime check [flags]
 ### Options
 
 ```
-  -h, --help   help for check
+  -h, --help          help for check
+      --timeout int   Timeout in seconds for runtime checks (default: 30 seconds) (default 30)
 ```
 
 ### Options inherited from parent commands

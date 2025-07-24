@@ -26,7 +26,14 @@ var runtimeCheckCmd = &cobra.Command{
 	RunE:  runtimeCheckCmdFunc,
 }
 
-const runtimeCheckTimeout = 30
+var runtimeCheckTimeout int
+
+func init() {
+	rootCmd.AddCommand(runtimeCmd)
+	runtimeCmd.AddCommand(runtimeCheckCmd)
+	runtimeCheckCmd.Flags().IntVar(&runtimeCheckTimeout, "timeout", 30,
+		"Timeout in seconds for runtime checks (default: 30 seconds)")
+}
 
 func init() {
 	rootCmd.AddCommand(runtimeCmd)
@@ -37,7 +44,7 @@ func runtimeCheckCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 
 	// Create runtime with timeout
-	createCtx, cancelCreate := context.WithTimeout(ctx, runtimeCheckTimeout*time.Second)
+	createCtx, cancelCreate := context.WithTimeout(ctx, time.Duration(runtimeCheckTimeout)*time.Second)
 	defer cancelCreate()
 	rt, err := createWithTimeout(createCtx)
 	if err != nil {
@@ -48,7 +55,7 @@ func runtimeCheckCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Ping with separate timeout
-	pingCtx, cancelPing := context.WithTimeout(ctx, runtimeCheckTimeout*time.Second)
+	pingCtx, cancelPing := context.WithTimeout(ctx, time.Duration(runtimeCheckTimeout)*time.Second)
 	defer cancelPing()
 	if err := pingRuntime(pingCtx, rt); err != nil {
 		if pingCtx.Err() == context.DeadlineExceeded {

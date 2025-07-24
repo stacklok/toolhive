@@ -92,7 +92,7 @@ func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
 
 // GetWorkloadGroup returns the group that a workload belongs to, if any
 func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error) {
-	runner, err := runner.LoadState(ctx, workloadName)
+	runnerInstance, err := runner.LoadState(ctx, workloadName)
 	if err != nil {
 		if errors.IsRunConfigNotFound(err) {
 			return nil, nil
@@ -101,12 +101,12 @@ func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*G
 	}
 
 	// If the workload has no group, return nil
-	if runner.Config.Group == "" {
+	if runnerInstance.Config.Group == "" {
 		return nil, nil
 	}
 
 	// Get the group details
-	return m.Get(ctx, runner.Config.Group)
+	return m.Get(ctx, runnerInstance.Config.Group)
 }
 
 // saveGroup saves the group to the group state store

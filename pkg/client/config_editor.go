@@ -23,13 +23,7 @@ type ConfigUpdater interface {
 
 // MCPServer represents an MCP server in a MCP client config file
 type MCPServer struct {
-	Url  string `json:"url,omitempty"`
-	Type string `json:"type,omitempty"`
-}
-
-// WindsurfSSEServer represents an MCP server in Windsurf config file for SSE transport
-// Windsurf uses "serverUrl" instead of "url" for SSE servers
-type WindsurfSSEServer struct {
+	Url       string `json:"url,omitempty"`
 	ServerUrl string `json:"serverUrl,omitempty"`
 	Type      string `json:"type,omitempty"`
 }

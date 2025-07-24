@@ -191,9 +191,8 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{".codeium", "windsurf"},
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: "http",
+			types.TransportTypeStdio: "sse",
+			types.TransportTypeSSE:   "sse",
 		},
 		IsTransportTypeFieldSupported: true,
 	},
@@ -205,9 +204,8 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{".codeium"},
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: "http",
+			types.TransportTypeStdio: "sse",
+			types.TransportTypeSSE:   "sse",
 		},
 		IsTransportTypeFieldSupported: true,
 	},
@@ -320,18 +318,14 @@ func Upsert(cf ConfigFile, name string, url string, transportType string) error 
 			continue
 		}
 		mappedTransportType, ok := supportedClientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
-
-		// Special handling for Windsurf clients with SSE transport
-		if (cf.ClientType == Windsurf || cf.ClientType == WindsurfIntelliJ) && mappedTransportType == "sse" {
-			if supportedClientIntegrations[i].IsTransportTypeFieldSupported && ok {
-				return cf.ConfigUpdater.Upsert(name, WindsurfSSEServer{ServerUrl: url, Type: mappedTransportType})
-			}
-			return cf.ConfigUpdater.Upsert(name, WindsurfSSEServer{ServerUrl: url})
-		}
-
-		// Default handling for all other clients
 		if supportedClientIntegrations[i].IsTransportTypeFieldSupported && ok {
-			return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: mappedTransportType})
+			var mcp_server MCPServer
+			if cf.ClientType == Windsurf || cf.ClientType == WindsurfIntelliJ {
+				mcp_server = MCPServer{ServerUrl: url, Type: mappedTransportType}
+			} else {
+				mcp_server = MCPServer{Url: url, Type: mappedTransportType}
+			}
+			return cf.ConfigUpdater.Upsert(name, mcp_server)
 		}
 		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})
 	}

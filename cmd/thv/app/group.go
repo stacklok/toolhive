@@ -2,8 +2,10 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -67,13 +69,22 @@ func groupListCmdFunc(cmd *cobra.Command, _ []string) error {
 	})
 
 	if len(allGroups) == 0 {
-		fmt.Println("No groups found.")
+		fmt.Println("No groups configured.")
 		return nil
 	}
 
-	fmt.Printf("Found %d group(s):\n", len(allGroups))
+	// Create a tabwriter for table output
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "NAME")
+
+	// Print group names in table format
 	for _, group := range allGroups {
-		fmt.Printf("  - %s\n", group.Name)
+		fmt.Fprintf(w, "%s\n", group.Name)
+	}
+
+	// Flush the tabwriter
+	if err := w.Flush(); err != nil {
+		return fmt.Errorf("failed to flush tabwriter: %w", err)
 	}
 
 	return nil

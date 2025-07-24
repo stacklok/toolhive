@@ -51,9 +51,9 @@ var _ = Describe("Group List E2E", func() {
 			Expect(err).ToNot(HaveOccurred(), "Group list command should succeed")
 
 			outputStr := string(output)
-			Expect(outputStr).To(ContainSubstring("Found"), "Should show group count")
-			Expect(outputStr).To(ContainSubstring("group(s):"), "Should show group count format")
-			Expect(outputStr).To(ContainSubstring("  - "), "Should show group list format")
+			Expect(outputStr).To(ContainSubstring("NAME"), "Should show table header")
+			Expect(outputStr).To(Not(ContainSubstring("Found")), "Should not show old format")
+			Expect(outputStr).To(Not(ContainSubstring("  - ")), "Should not show bullet point format")
 		})
 
 		It("should show groups in consistent format", func() {
@@ -65,12 +65,15 @@ var _ = Describe("Group List E2E", func() {
 			outputStr := string(output)
 			lines := strings.Split(strings.TrimSpace(outputStr), "\n")
 
-			// Skip the first line (count line)
+			// First line should be the header
+			Expect(lines[0]).To(Equal("NAME"), "First line should be table header")
+
+			// Check that subsequent lines are group names (not empty and not bullet points)
 			for i := 1; i < len(lines); i++ {
 				line := strings.TrimSpace(lines[i])
 				if line != "" {
-					// Allow empty group names (legacy data) but ensure proper format
-					Expect(line).To(MatchRegexp(`^\s*-\s*.*$`), "Each group should be formatted as '  - groupname' (empty names allowed)")
+					Expect(line).To(Not(MatchRegexp(`^\s*-\s*.*$`)), "Groups should not be formatted as bullet points")
+					Expect(line).To(Not(BeEmpty()), "Group names should not be empty")
 				}
 			}
 		})
@@ -131,8 +134,8 @@ var _ = Describe("Group List E2E", func() {
 			Expect(err).ToNot(HaveOccurred(), "Group list should ignore invalid arguments")
 
 			outputStr := string(output)
-			Expect(outputStr).To(ContainSubstring("Found"), "Should still show group count")
-			Expect(outputStr).To(ContainSubstring("group(s):"), "Should show group count format")
+			Expect(outputStr).To(ContainSubstring("NAME"), "Should still show table header")
+			Expect(outputStr).To(Not(ContainSubstring("Found")), "Should not show old format")
 		})
 
 		It("should handle group list with debug flag", func() {
@@ -142,7 +145,7 @@ var _ = Describe("Group List E2E", func() {
 			Expect(err).ToNot(HaveOccurred(), "Group list with debug should succeed")
 
 			outputStr := string(output)
-			Expect(outputStr).To(ContainSubstring("Found"), "Should still show group count")
+			Expect(outputStr).To(ContainSubstring("NAME"), "Should still show table header")
 		})
 	})
 
@@ -168,7 +171,7 @@ var _ = Describe("Group List E2E", func() {
 
 			By("Verifying group count increases")
 			lines := strings.Split(strings.TrimSpace(outputStr), "\n")
-			Expect(lines[0]).To(MatchRegexp(`Found \d+ group\(s\):`), "Should show group count")
+			Expect(lines[0]).To(Equal("NAME"), "Should show table header")
 		})
 	})
 
@@ -276,14 +279,11 @@ func extractGroupNames(output string) []string {
 	var groups []string
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 
-	// Skip the first line (count line)
+	// Skip the first line (header line)
 	for i := 1; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(line, "- ") {
-			groupName := strings.TrimSpace(strings.TrimPrefix(line, "- "))
-			if groupName != "" {
-				groups = append(groups, groupName)
-			}
+		if line != "" && line != "NAME" {
+			groups = append(groups, line)
 		}
 	}
 

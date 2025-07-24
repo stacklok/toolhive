@@ -49,11 +49,11 @@ permission profile. Additional configuration can be provided via flags.`,
 	},
 }
 
-var runConfig RunFlags
+var runFlags RunFlags
 
 func init() {
 	// Add run flags
-	AddRunFlags(runCmd, &runConfig)
+	AddRunFlags(runCmd, &runFlags)
 
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
 	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
@@ -81,33 +81,33 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
 	// Build the run configuration
-	runnerConfig, err := BuildRunnerConfig(ctx, &runConfig, serverOrImage, cmdArgs, debugMode, cmd)
+	runnerConfig, err := BuildRunnerConfig(ctx, &runFlags, serverOrImage, cmdArgs, debugMode, cmd)
 	if err != nil {
 		return err
 	}
 
-	if runConfig.Group != "" {
+	if runFlags.Group != "" {
 		groupManager, err := groups.NewManager()
 		if err != nil {
 			return fmt.Errorf("failed to create group manager: %v", err)
 		}
 
 		// Check if the workload is already in a group
-		group, err := groupManager.GetWorkloadGroup(ctx, runConfig.Name)
+		group, err := groupManager.GetWorkloadGroup(ctx, runFlags.Name)
 		if err != nil {
 			return fmt.Errorf("failed to get workload group: %v", err)
 		}
-		if group != nil && group.Name != runConfig.Group {
-			return fmt.Errorf("workload '%s' is already in group '%s'", runConfig.Name, group.Name)
+		if group != nil && group.Name != runFlags.Group {
+			return fmt.Errorf("workload '%s' is already in group '%s'", runFlags.Name, group.Name)
 		}
 
 		// Validate that the group specified exists
-		exists, err := groupManager.Exists(ctx, runConfig.Group)
+		exists, err := groupManager.Exists(ctx, runFlags.Group)
 		if err != nil {
 			return fmt.Errorf("failed to check if group exists: %v", err)
 		}
 		if !exists {
-			return fmt.Errorf("group '%s' does not exist", runConfig.Group)
+			return fmt.Errorf("group '%s' does not exist", runFlags.Group)
 		}
 	}
 
@@ -118,7 +118,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	workloadManager := workloads.NewManagerFromRuntime(rt)
 
-	if runConfig.Foreground {
+	if runFlags.Foreground {
 		err = workloadManager.RunWorkload(ctx, runnerConfig)
 	} else {
 		// Run the workload in detached mode

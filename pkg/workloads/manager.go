@@ -440,6 +440,11 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 		detachedArgs = append(detachedArgs, runConfig.CmdArgs...)
 	}
 
+	if runConfig.ToolsFilter != nil {
+		toolsFilter := strings.Join(runConfig.ToolsFilter, ",")
+		detachedArgs = append(detachedArgs, "--tools", toolsFilter)
+	}
+
 	// Create a new command
 	// #nosec G204 - This is safe as execPath is the path to the current binary
 	detachedCmd := exec.Command(execPath, detachedArgs...)

@@ -80,10 +80,9 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
-	// Build the run configuration
-	runnerConfig, err := BuildRunnerConfig(ctx, &runFlags, serverOrImage, cmdArgs, debugMode, cmd)
-	if err != nil {
-		return err
+	workloadName := runFlags.Name
+	if workloadName == "" {
+		workloadName = serverOrImage
 	}
 
 	if runFlags.Group != "" {
@@ -93,12 +92,12 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 
 		// Check if the workload is already in a group
-		group, err := groupManager.GetWorkloadGroup(ctx, runFlags.Name)
+		group, err := groupManager.GetWorkloadGroup(ctx, workloadName)
 		if err != nil {
 			return fmt.Errorf("failed to get workload group: %v", err)
 		}
 		if group != nil && group.Name != runFlags.Group {
-			return fmt.Errorf("workload '%s' is already in group '%s'", runFlags.Name, group.Name)
+			return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, group.Name)
 		}
 
 		// Validate that the group specified exists
@@ -109,6 +108,12 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		if !exists {
 			return fmt.Errorf("group '%s' does not exist", runFlags.Group)
 		}
+	}
+
+	// Build the run configuration
+	runnerConfig, err := BuildRunnerConfig(ctx, &runFlags, serverOrImage, cmdArgs, debugMode, cmd)
+	if err != nil {
+		return err
 	}
 
 	// Create container runtime

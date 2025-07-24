@@ -67,6 +67,9 @@ type RunFlags struct {
 
 	// Execution mode
 	Foreground bool
+
+	// Tools filter
+	ToolsFilter []string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -146,6 +149,12 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Isolate the container network from the host (default: false)")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
 	cmd.Flags().BoolVarP(&config.Foreground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
+	cmd.Flags().StringArrayVar(
+		&config.ToolsFilter,
+		"tools",
+		nil,
+		"Filter MCP server tools (comma-separated list of tool names)",
+	)
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration
@@ -252,6 +261,7 @@ func BuildRunnerConfig(
 		envVarValidator,
 		types.ProxyMode(runConfig.ProxyMode),
 		runConfig.Group,
+		runConfig.ToolsFilter,
 	)
 }
 

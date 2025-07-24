@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/audit"
@@ -265,6 +266,12 @@ func (b *RunConfigBuilder) WithTelemetryConfig(otelEndpoint string, otelEnablePr
 	return b
 }
 
+// WithToolsFilter sets the tools filter
+func (b *RunConfigBuilder) WithToolsFilter(toolsFilter []string) *RunConfigBuilder {
+	b.config.ToolsFilter = toolsFilter
+	return b
+}
+
 // Build creates the final RunConfig instance with validation and processing
 func (b *RunConfigBuilder) Build(ctx context.Context, imageMetadata *registry.ImageMetadata,
 	envVars []string, envVarValidator EnvVarValidator) (*RunConfig, error) {
@@ -380,6 +387,15 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	if imageMetadata != nil && len(imageMetadata.Args) > 0 {
 		logger.Debugf("Prepending registry args: %v", imageMetadata.Args)
 		c.CmdArgs = append(c.CmdArgs, imageMetadata.Args...)
+	}
+
+	if c.ToolsFilter != nil && imageMetadata != nil && imageMetadata.Tools != nil {
+		logger.Debugf("Using tools filter: %v", c.ToolsFilter)
+		for _, tool := range c.ToolsFilter {
+			if !slices.Contains(imageMetadata.Tools, tool) {
+				return fmt.Errorf("tool %s not found in registry", tool)
+			}
+		}
 	}
 
 	return nil

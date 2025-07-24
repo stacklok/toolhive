@@ -49,6 +49,30 @@ func (d *DockerImageManager) ImageExists(ctx context.Context, imageName string) 
 
 // BuildImage builds a Docker image from a Dockerfile in the specified context directory
 func (d *DockerImageManager) BuildImage(ctx context.Context, contextDir, imageName string) error {
+	return buildDockerImage(ctx, d.client, contextDir, imageName)
+}
+
+// PullImage pulls an image from a registry
+func (d *DockerImageManager) PullImage(ctx context.Context, imageName string) error {
+	logger.Infof("Pulling image: %s", imageName)
+
+	// Pull the image
+	reader, err := d.client.ImagePull(ctx, imageName, dockerimage.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to pull image: %v", err)
+	}
+	defer reader.Close()
+
+	// Parse and filter the pull output
+	if err := parsePullOutput(reader, os.Stdout); err != nil {
+		return fmt.Errorf("failed to process pull output: %v", err)
+	}
+
+	return nil
+}
+
+// buildDockerImage builds a Docker image using the Docker client API
+func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextDir, imageName string) error {
 	logger.Infof("Building image %s from context directory %s", imageName, contextDir)
 
 	// Create a tar archive of the context directory
@@ -76,7 +100,7 @@ func (d *DockerImageManager) BuildImage(ctx context.Context, contextDir, imageNa
 		Remove:     true,
 	}
 
-	response, err := d.client.ImageBuild(ctx, tarFile, buildOptions)
+	response, err := dockerClient.ImageBuild(ctx, tarFile, buildOptions)
 	if err != nil {
 		return fmt.Errorf("failed to build image: %v", err)
 	}
@@ -85,25 +109,6 @@ func (d *DockerImageManager) BuildImage(ctx context.Context, contextDir, imageNa
 	// Parse and log the build output
 	if err := parseBuildOutput(response.Body, os.Stdout); err != nil {
 		return fmt.Errorf("failed to process build output: %v", err)
-	}
-
-	return nil
-}
-
-// PullImage pulls an image from a registry
-func (d *DockerImageManager) PullImage(ctx context.Context, imageName string) error {
-	logger.Infof("Pulling image: %s", imageName)
-
-	// Pull the image
-	reader, err := d.client.ImagePull(ctx, imageName, dockerimage.PullOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to pull image: %v", err)
-	}
-	defer reader.Close()
-
-	// Parse and filter the pull output
-	if err := parsePullOutput(reader, os.Stdout); err != nil {
-		return fmt.Errorf("failed to process pull output: %v", err)
 	}
 
 	return nil

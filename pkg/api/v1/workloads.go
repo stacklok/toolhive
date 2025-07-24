@@ -15,12 +15,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // WorkloadRoutes defines the routes for workload management.
 type WorkloadRoutes struct {
-	manager          workloads.Manager
+	workloadManager  workloads.Manager
 	containerRuntime runtime.Runtime
 	debugMode        bool
 }
@@ -33,12 +34,12 @@ type WorkloadRoutes struct {
 
 // WorkloadRouter creates a new WorkloadRoutes instance.
 func WorkloadRouter(
-	manager workloads.Manager,
+	workloadManager workloads.Manager,
 	containerRuntime runtime.Runtime,
 	debugMode bool,
 ) http.Handler {
 	routes := WorkloadRoutes{
-		manager:          manager,
+		workloadManager:  workloadManager,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 	}
@@ -69,7 +70,7 @@ func WorkloadRouter(
 func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	listAll := r.URL.Query().Get("all") == "true"
-	workloadList, err := s.manager.ListWorkloads(ctx, listAll)
+	workloadList, err := s.workloadManager.ListWorkloads(ctx, listAll)
 	if err != nil {
 		logger.Errorf("Failed to list workloads: %v", err)
 		http.Error(w, "Failed to list workloads", http.StatusInternalServerError)
@@ -98,9 +99,9 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
-	workload, err := s.manager.GetWorkload(ctx, name)
+	workload, err := s.workloadManager.GetWorkload(ctx, name)
 	if err != nil {
-		if errors.Is(err, workloads.ErrContainerNotFound) {
+		if errors.Is(err, workloads.ErrWorkloadNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)
 			return
 		} else if errors.Is(err, workloads.ErrInvalidWorkloadName) {
@@ -135,7 +136,7 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.manager.StopWorkloads(ctx, []string{name})
+	_, err := s.workloadManager.StopWorkloads(ctx, []string{name})
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -163,7 +164,7 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.manager.RestartWorkloads(ctx, []string{name})
+	_, err := s.workloadManager.RestartWorkloads(ctx, []string{name})
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -191,7 +192,7 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.manager.DeleteWorkloads(ctx, []string{name})
+	_, err := s.workloadManager.DeleteWorkloads(ctx, []string{name})
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -224,12 +225,6 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Mimic behavior of the CLI by defaulting to the "network" permission profile.
-	// TODO: Consider moving this into the run config creation logic.
-	if req.PermissionProfile == "" {
-		req.PermissionProfile = permissions.ProfileNetwork
-	}
-
 	// Fetch or build the requested image
 	// TODO: Make verification configurable and return errors over the API.
 	imageURL, imageMetadata, err := retriever.GetMCPServer(
@@ -249,41 +244,29 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 
 	// NOTE: None of the k8s-related config logic is included here.
 	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
-	runConfig, err := runner.NewRunConfigFromFlags(
-		ctx,
-		s.containerRuntime,
-		req.CmdArguments,
-		req.Name,
-		imageURL,
-		imageMetadata,
-		req.Host,
-		s.debugMode,
-		req.Volumes,
-		runSecrets,
-		req.AuthzConfig,
-		"",    // req.AuditConfig not set - auditing not exposed through API yet.
-		false, // req.EnableAudit not set - auditing not exposed through API yet.
-		req.PermissionProfile,
-		transport.LocalhostIPv4, // Seems like a reasonable default for now.
-		req.Transport,
-		0, // Let the manager figure out which port to use.
-		req.TargetPort,
-		req.EnvVars,
-		req.OIDC.Issuer,
-		req.OIDC.Audience,
-		req.OIDC.JwksURL,
-		req.OIDC.ClientID,
-		"",    // otelEndpoint - not exposed through API yet
-		"",    // otelServiceName - not exposed through API yet
-		0.0,   // otelSamplingRate - default value
-		nil,   // otelHeaders - not exposed through API yet
-		false, // otelInsecure - not exposed through API yet
-		false, // otelEnablePrometheusMetricsPath - not exposed through API yet
-		nil,   // otelEnvironmentVariables - not exposed through API yet
-		false, // isolateNetwork - not exposed through API yet
-		"",    // k8s patch - not relevant here.
-		&runner.DetachedEnvVarValidator{},
-	)
+	runConfig, err := runner.NewRunConfigBuilder().
+		WithRuntime(s.containerRuntime).
+		WithCmdArgs(req.CmdArguments).
+		WithName(req.Name).
+		WithImage(imageURL).
+		WithHost(req.Host).
+		WithTargetHost(transport.LocalhostIPv4).
+		WithDebug(s.debugMode).
+		WithVolumes(req.Volumes).
+		WithSecrets(runSecrets).
+		WithAuthzConfigPath(req.AuthzConfig).
+		WithAuditConfigPath("").
+		WithPermissionProfile(req.PermissionProfile).
+		WithNetworkIsolation(req.NetworkIsolation).
+		WithK8sPodPatch("").
+		WithProxyMode(types.ProxyMode(req.ProxyMode)).
+		WithTransportAndPorts(req.Transport, 0, req.TargetPort).
+		WithAuditEnabled(false, "").
+		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID, req.OIDC.AllowOpaqueTokens,
+										"", "", false). // JWKS auth parameters not exposed through API yet
+		WithTelemetryConfig("", false, "", 0.0, nil, false, nil). // Not exposed through API yet.
+		WithToolsFilter(req.ToolsFilter).
+		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
 	if err != nil {
 		logger.Errorf("Failed to create run config: %v", err)
 		http.Error(w, "Failed to create run config", http.StatusBadRequest)
@@ -291,7 +274,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Start workload with specified RunConfig.
-	err = s.manager.RunWorkloadDetached(runConfig)
+	err = s.workloadManager.RunWorkloadDetached(ctx, runConfig)
 	if err != nil {
 		logger.Errorf("Failed to start workload: %v", err)
 		http.Error(w, "Failed to start workload", http.StatusInternalServerError)
@@ -337,7 +320,7 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err := s.manager.StopWorkloads(ctx, req.Names)
+	_, err := s.workloadManager.StopWorkloads(ctx, req.Names)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -376,7 +359,7 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err := s.manager.RestartWorkloads(ctx, req.Names)
+	_, err := s.workloadManager.RestartWorkloads(ctx, req.Names)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -415,7 +398,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err := s.manager.DeleteWorkloads(ctx, req.Names)
+	_, err := s.workloadManager.DeleteWorkloads(ctx, req.Names)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -442,9 +425,9 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
-	logs, err := s.manager.GetLogs(ctx, name, false)
+	logs, err := s.workloadManager.GetLogs(ctx, name, false)
 	if err != nil {
-		if errors.Is(err, workloads.ErrContainerNotFound) {
+		if errors.Is(err, workloads.ErrWorkloadNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)
 			return
 		}
@@ -498,7 +481,13 @@ type createRequest struct {
 	// OIDC configuration options
 	OIDC oidcOptions `json:"oidc"`
 	// Permission profile to apply
-	PermissionProfile string `json:"permission_profile"`
+	PermissionProfile *permissions.Profile `json:"permission_profile"`
+	// Proxy mode to use
+	ProxyMode string `json:"proxy_mode"`
+	// Whether network isolation is turned on. This applies the rules in the permission profile.
+	NetworkIsolation bool `json:"network_isolation"`
+	// Tools filter
+	ToolsFilter []string `json:"tools"`
 }
 
 // oidcOptions represents OIDC configuration options
@@ -513,6 +502,8 @@ type oidcOptions struct {
 	JwksURL string `json:"jwks_url"`
 	// OAuth2 client ID
 	ClientID string `json:"client_id"`
+	// Allow opaque tokens (non-JWT) for OIDC validation
+	AllowOpaqueTokens bool `json:"allow_opaque_tokens"`
 }
 
 // createWorkloadResponse represents the response for workload creation

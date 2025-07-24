@@ -56,20 +56,12 @@ components:
             type: integer
           type: array
           uniqueItems: false
-        allow_transport:
-          description: AllowTransport is a list of allowed transport protocols (tcp,
-            udp)
-          items:
-            type: string
-          type: array
-          uniqueItems: false
         insecure_allow_all:
           description: InsecureAllowAll allows all outbound network connections
           type: boolean
       type: object
     permissions.Profile:
-      description: Permissions defines the security profile and access permissions
-        for the server
+      description: Permission profile to apply
       properties:
         name:
           description: Name is the name of the profile
@@ -132,6 +124,10 @@ components:
             type: string
           type: array
           uniqueItems: false
+        custom_metadata:
+          additionalProperties: {}
+          description: CustomMetadata allows for additional user-defined metadata
+          type: object
         description:
           description: Description is a human-readable description of the server's
             purpose and functionality
@@ -357,10 +353,16 @@ components:
         name:
           description: Name of the workload
           type: string
+        network_isolation:
+          description: Whether network isolation is turned on. This applies the rules
+            in the permission profile.
+          type: boolean
         oidc:
           $ref: '#/components/schemas/v1.oidcOptions'
         permission_profile:
-          description: Permission profile to apply
+          $ref: '#/components/schemas/permissions.Profile'
+        proxy_mode:
+          description: Proxy mode to use
           type: string
         secrets:
           description: Secret parameters to inject
@@ -371,6 +373,12 @@ components:
         target_port:
           description: Port to expose from the container
           type: integer
+        tools:
+          description: Tools filter
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         transport:
           description: Transport configuration
           type: string
@@ -470,6 +478,9 @@ components:
     v1.oidcOptions:
       description: OIDC configuration options
       properties:
+        allow_opaque_tokens:
+          description: Allow opaque tokens (non-JWT) for OIDC validation
+          type: boolean
         audience:
           description: Expected audience
           type: string
@@ -597,6 +608,16 @@ components:
         created_at:
           description: CreatedAt is the timestamp when the workload was created.
           type: string
+        group:
+          description: Group is the name of the group this workload belongs to, if
+            any.
+          type: string
+        labels:
+          additionalProperties:
+            type: string
+          description: Labels are the container labels (excluding standard ToolHive
+            labels)
+          type: object
         name:
           description: |-
             Name is the name of the workload.
@@ -623,6 +644,12 @@ components:
             ToolType is the type of tool this workload represents.
             For now, it will always be "mcp" - representing an MCP server.
           type: string
+        tools:
+          description: ToolsFilter is the filter on tools applied to the workload.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         transport_type:
           $ref: '#/components/schemas/types.TransportType'
         url:
@@ -637,6 +664,9 @@ components:
       - WorkloadStatusStopped
       - WorkloadStatusError
       - WorkloadStatusStarting
+      - WorkloadStatusStopping
+      - WorkloadStatusUnhealthy
+      - WorkloadStatusRemoving
       - WorkloadStatusUnknown
 externalDocs:
   description: ""

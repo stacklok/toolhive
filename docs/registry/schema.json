@@ -48,6 +48,11 @@
           },
           "default": []
         },
+        "custom_metadata": {
+          "type": "object",
+          "description": "Custom user-defined metadata for the MCP server, primarily for custom registries",
+          "additionalProperties": true
+        },
         "description": {
           "type": "string",
           "description": "Human-readable description of the server's purpose and functionality",
@@ -250,16 +255,6 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 65535
-          },
-          "uniqueItems": true,
-          "default": []
-        },
-        "allow_transport": {
-          "type": "array",
-          "description": "Allowed transport protocols for outbound connections",
-          "items": {
-            "type": "string",
-            "enum": ["tcp", "udp"]
           },
           "uniqueItems": true,
           "default": []

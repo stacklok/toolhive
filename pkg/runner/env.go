@@ -20,13 +20,13 @@ import (
 // is different for the CLI vs the API and k8s.
 type EnvVarValidator interface {
 	// Validate checks that all required environment variables and secrets are provided
-	// and applies them to the RunConfig supplied.
+	// and returns the processed environment variables to be set.
 	Validate(
 		ctx context.Context,
 		metadata *registry.ImageMetadata,
 		runConfig *RunConfig,
 		suppliedEnvVars []string,
-	) error
+	) ([]string, error)
 }
 
 // DetachedEnvVarValidator implements the EnvVarValidator interface for
@@ -35,13 +35,13 @@ type EnvVarValidator interface {
 type DetachedEnvVarValidator struct{}
 
 // Validate checks that all required environment variables and secrets are provided
-// and applies them to the RunConfig supplied.
+// and returns the processed environment variables to be set.
 func (*DetachedEnvVarValidator) Validate(
 	_ context.Context,
 	metadata *registry.ImageMetadata,
 	runConfig *RunConfig,
 	suppliedEnvVars []string,
-) error {
+) ([]string, error) {
 	// Check variables in metadata if we are processing an image from our registry.
 	if metadata != nil {
 		secretsList := runConfig.Secrets
@@ -50,19 +50,16 @@ func (*DetachedEnvVarValidator) Validate(
 			if isEnvVarProvided(envVar.Name, suppliedEnvVars, secretsList) {
 				continue
 			} else if envVar.Required {
-				return fmt.Errorf("missing required environment variable: %s", envVar.Name)
+				return nil, fmt.Errorf("missing required environment variable: %s", envVar.Name)
 			} else if envVar.Secret {
-				return fmt.Errorf("missing required secret environment variable: %s", envVar.Name)
+				return nil, fmt.Errorf("missing required secret environment variable: %s", envVar.Name)
 			} else if envVar.Default != "" {
 				addAsEnvironmentVariable(envVar, envVar.Default, &suppliedEnvVars)
 			}
 		}
 	}
 
-	if _, err := runConfig.WithEnvironmentVariables(suppliedEnvVars); err != nil {
-		return err
-	}
-	return nil
+	return suppliedEnvVars, nil
 }
 
 // CLIEnvVarValidator implements the EnvVarValidator interface for
@@ -71,13 +68,13 @@ func (*DetachedEnvVarValidator) Validate(
 type CLIEnvVarValidator struct{}
 
 // Validate checks that all required environment variables and secrets are provided
-// and applies them to the RunConfig supplied.
+// and returns the processed environment variables to be set.
 func (*CLIEnvVarValidator) Validate(
 	ctx context.Context,
 	metadata *registry.ImageMetadata,
 	runConfig *RunConfig,
 	suppliedEnvVars []string,
-) error {
+) ([]string, error) {
 	envVars := suppliedEnvVars
 
 	// If we are processing an image from our registry, we need to check the
@@ -120,11 +117,7 @@ func (*CLIEnvVarValidator) Validate(
 		runConfig.Secrets = secretsList
 	}
 
-	// Update the run config with the env vars and secrets we added.
-	if _, err := runConfig.WithEnvironmentVariables(envVars); err != nil {
-		return err
-	}
-	return nil
+	return envVars, nil
 }
 
 // promptForEnvironmentVariable prompts the user for an environment variable value

@@ -31,7 +31,7 @@ go.work
 .roo/
 ^thv$
 
-.claude/
+.claude/settings.local.json
 kconfig.yaml
 
 .DS_Store

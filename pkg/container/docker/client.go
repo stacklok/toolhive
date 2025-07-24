@@ -5,6 +5,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -40,7 +41,7 @@ const (
 	LabelValueTrue                 = "true"
 )
 
-// Client implements the Runtime interface for container operations
+// Client implements the Deployer interface for Docker (and compatible runtimes)
 type Client struct {
 	runtimeType  runtime.Type
 	socketPath   string
@@ -55,7 +56,7 @@ func NewClient(ctx context.Context) (*Client, error) {
 		return nil, err // there is already enough context in the error.
 	}
 
-	imageManager := images.NewDockerImageManager(dockerClient)
+	imageManager := images.NewRegistryImageManager(dockerClient)
 
 	c := &Client{
 		runtimeType:  runtimeType,
@@ -381,19 +382,51 @@ func extractFirstPort(options *runtime.DeployWorkloadOptions) (int, error) {
 	return firstPortInt, nil
 }
 
-func extractFirstPortBinding(portBindings map[string][]runtime.PortBinding) (int, error) {
-	var firstHostPort string
-	for _, bindings := range portBindings {
-		if len(bindings) > 0 {
-			firstHostPort = bindings[0].HostPort
-			break // we only want the first item in the map
+func (c *Client) createExternalNetworks(ctx context.Context) error {
+	externalNetworkLabels := map[string]string{}
+	lb.AddNetworkLabels(externalNetworkLabels, "toolhive-external")
+	err := c.createNetwork(ctx, "toolhive-external", externalNetworkLabels, false)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func generatePortBindings(labels map[string]string,
+	portBindings map[string][]runtime.PortBinding) (map[string][]runtime.PortBinding, int, error) {
+	var hostPort int
+	// check if we need to map to a random port of not
+	if _, ok := labels["toolhive-auxiliary"]; ok && labels["toolhive-auxiliary"] == "true" {
+		// find first port
+		var err error
+		for _, bindings := range portBindings {
+			if len(bindings) > 0 {
+				hostPortStr := bindings[0].HostPort
+				hostPort, err = strconv.Atoi(hostPortStr)
+				if err != nil {
+					return nil, 0, fmt.Errorf("failed to convert host port %s to int: %v", hostPortStr, err)
+				}
+				break
+			}
+		}
+	} else {
+		// bind to a random host port
+		hostPort = networking.FindAvailable()
+		if hostPort == 0 {
+			return nil, 0, fmt.Errorf("could not find an available port")
+		}
+
+		// first port binding needs to map to the host port
+		for key, bindings := range portBindings {
+			if len(bindings) > 0 {
+				bindings[0].HostPort = fmt.Sprintf("%d", hostPort)
+				portBindings[key] = bindings
+				break
+			}
 		}
 	}
-	hostPortInt, err := strconv.Atoi(firstHostPort)
-	if err != nil {
-		return 0, fmt.Errorf("failed to convert host port %s to int: %v", firstHostPort, err)
-	}
-	return hostPortInt, nil
+
+	return portBindings, hostPort, nil
 }
 
 // DeployWorkload creates and starts a workload.
@@ -428,15 +461,15 @@ func (c *Client) DeployWorkload(
 		"toolhive-external": {},
 	}
 
-	externalNetworkLabels := map[string]string{}
-	lb.AddNetworkLabels(externalNetworkLabels, "toolhive-external")
-	err = c.createNetwork(ctx, "toolhive-external", externalNetworkLabels, false)
+	err = c.createExternalNetworks(ctx)
 	if err != nil {
-		// just log the error and continue
-		logger.Warnf("failed to create external network %q: %v", "toolhive-external", err)
+		return "", 0, fmt.Errorf("failed to create external networks: %v", err)
 	}
 
+	networkIsolation := false
 	if isolateNetwork {
+		networkIsolation = true
+
 		internalNetworkLabels := map[string]string{}
 		lb.AddNetworkLabels(internalNetworkLabels, networkName)
 		err := c.createNetwork(ctx, networkName, internalNetworkLabels, true)
@@ -475,6 +508,17 @@ func (c *Client) DeployWorkload(
 		networkName = ""
 	}
 
+	// only remap if is not an auxiliary tool
+	newPortBindings, hostPort, err := generatePortBindings(labels, options.PortBindings)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to generate port bindings: %v", err)
+	}
+
+	// Add a label to the MCP server indicating network isolation.
+	// This allows other methods to determine whether it needs to care
+	// about ingress/egress/dns containers.
+	lb.AddNetworkIsolationLabel(labels, networkIsolation)
+
 	containerId, err := c.createMcpContainer(
 		ctx,
 		name,
@@ -487,7 +531,7 @@ func (c *Client) DeployWorkload(
 		permissionConfig,
 		additionalDNS,
 		options.ExposedPorts,
-		options.PortBindings,
+		newPortBindings,
 		isolateNetwork,
 	)
 	if err != nil {
@@ -499,24 +543,19 @@ func (c *Client) DeployWorkload(
 		return containerId, 0, nil
 	}
 
-	// extract the first port binding
-	firstHostPort, err := extractFirstPortBinding(options.PortBindings)
-	if err != nil {
-		return "", 0, err
-	}
 	if isolateNetwork {
 		// just extract the first exposed port
 		firstPortInt, err := extractFirstPort(options)
 		if err != nil {
 			return "", 0, err // extractFirstPort already wraps the error with context.
 		}
-		firstHostPort, err = c.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
+		hostPort, err = c.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
 		if err != nil {
 			return "", 0, fmt.Errorf("failed to create ingress container: %v", err)
 		}
 	}
 
-	return containerId, firstHostPort, nil
+	return containerId, hostPort, nil
 }
 
 // ListWorkloads lists workloads
@@ -581,17 +620,17 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 // If the workload is already stopped, it returns success
 func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 	// Check if the workload is running
-	running, err := c.IsWorkloadRunning(ctx, workloadID)
+	info, err := c.GetWorkloadInfo(ctx, workloadID)
 	if err != nil {
 		// If the container doesn't exist, that's fine - it's already "stopped"
-		if err, ok := err.(*ContainerError); ok && err.Err == ErrContainerNotFound {
+		if errors.Is(err, ErrContainerNotFound) {
 			return nil
 		}
 		return err
 	}
 
 	// If the container is not running, return success
-	if !running {
+	if info.State != container.StateRunning {
 		return nil
 	}
 
@@ -602,50 +641,40 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 		return NewContainerError(err, workloadID, fmt.Sprintf("failed to stop workload: %v", err))
 	}
 
-	// stop egress and dns containers
-	containerResponse, err := c.client.ContainerInspect(ctx, workloadID)
-	if err != nil {
-		logger.Warnf("Failed to inspect container %s: %v", workloadID, err)
-	} else {
-		// remove / from container name
-		containerName := strings.TrimPrefix(containerResponse.Name, "/")
-		egressContainerName := fmt.Sprintf("%s-egress", containerName)
-		ingressContainerName := fmt.Sprintf("%s-ingress", containerName)
-		dnsContainerName := fmt.Sprintf("%s-dns", containerName)
+	// If network isolation is not enabled, then there is nothing else to do.
+	// NOTE: This check treats all workloads created before the introduction of
+	// this label as having network isolation enabled. This is to ensure that they
+	// get cleaned up properly during stop/rm.
+	if !lb.HasNetworkIsolation(info.Labels) {
+		return nil
+	}
 
-		// find the egress container by name
-		egressContainerId, err := c.findExistingContainer(ctx, egressContainerName)
-		if err != nil {
-			logger.Warnf("Failed to find egress container %s: %v", egressContainerName, err)
-		} else {
-			err = c.client.ContainerStop(ctx, egressContainerId, container.StopOptions{Timeout: &timeoutSeconds})
-			if err != nil {
-				logger.Warnf("Failed to stop egress container %s: %v", egressContainerName, err)
-			}
-		}
+	// remove / from container name
+	containerName := strings.TrimPrefix(info.Name, "/")
+	egressContainerName := fmt.Sprintf("%s-egress", containerName)
+	ingressContainerName := fmt.Sprintf("%s-ingress", containerName)
+	dnsContainerName := fmt.Sprintf("%s-dns", containerName)
 
-		ingressContainerId, err := c.findExistingContainer(ctx, ingressContainerName)
-		if err != nil {
-			logger.Warnf("Failed to find ingress container %s: %v", ingressContainerName, err)
-		} else {
-			err = c.client.ContainerStop(ctx, ingressContainerId, container.StopOptions{Timeout: &timeoutSeconds})
-			if err != nil {
-				logger.Warnf("Failed to stop ingress container %s: %v", ingressContainerName, err)
-			}
-		}
-
-		dnsContainerId, err := c.findExistingContainer(ctx, dnsContainerName)
-		if err != nil {
-			logger.Warnf("Failed to find dns container %s: %v", dnsContainerName, err)
-		} else {
-			err = c.client.ContainerStop(ctx, dnsContainerId, container.StopOptions{Timeout: &timeoutSeconds})
-			if err != nil {
-				logger.Warnf("Failed to stop dns container %s: %v", dnsContainerName, err)
-			}
-		}
+	// Attempt to stop each auxiliary container gracefully.
+	// Treat any errors as non-fatal and log them.
+	proxyContainers := []string{egressContainerName, ingressContainerName, dnsContainerName}
+	for _, name := range proxyContainers {
+		c.stopProxyContainer(ctx, name, timeoutSeconds)
 	}
 
 	return nil
+}
+
+func (c *Client) stopProxyContainer(ctx context.Context, containerName string, timeoutSeconds int) {
+	containerId, err := c.findExistingContainer(ctx, containerName)
+	if err != nil {
+		logger.Debugf("Failed to find internal container %s: %v", containerName, err)
+	} else {
+		err = c.client.ContainerStop(ctx, containerId, container.StopOptions{Timeout: &timeoutSeconds})
+		if err != nil {
+			logger.Debugf("Failed to stop internal container %s: %v", containerName, err)
+		}
+	}
 }
 
 func (c *Client) deleteNetworks(ctx context.Context, containerName string) error {
@@ -688,42 +717,26 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 	containerName := containerResponse.Name
 	containerName = strings.TrimPrefix(containerName, "/")
 
-	err = c.client.ContainerRemove(ctx, workloadID, container.RemoveOptions{
-		Force: true,
-	})
+	// remove the workload containers
+	var labels map[string]string
+	if containerResponse.Config != nil {
+		labels = containerResponse.Config.Labels
+	} else {
+		labels = make(map[string]string)
+	}
+	err = c.removeContainer(ctx, workloadID)
 	if err != nil {
-		// If the workload doesn't exist, that's fine - it's already removed
-		if errdefs.IsNotFound(err) {
-			return nil
-		}
-		return NewContainerError(err, workloadID, fmt.Sprintf("failed to remove workload: %v", err))
+		return err // removeContainer already wraps the error with context.
 	}
 
-	// remove egress, ingress, and dns containers
-	suffixes := []string{"egress", "ingress", "dns"}
-
-	for _, suffix := range suffixes {
-		containerName := fmt.Sprintf("%s-%s", containerName, suffix)
-		containerId, err := c.findExistingContainer(ctx, containerName)
-		if err != nil {
-			logger.Warnf("Failed to find %s container %s: %v", suffix, containerName, err)
-			continue
-		}
-		if containerId == "" {
-			continue
-		}
-
-		err = c.client.ContainerRemove(ctx, containerId, container.RemoveOptions{
-			Force: true,
-		})
-		if err != nil {
-			if errdefs.IsNotFound(err) {
-				continue
-			}
-			return NewContainerError(err, containerId, fmt.Sprintf("failed to remove %s container: %v", suffix, err))
-		}
+	// Clean up any proxy containers associated with this workload.
+	err = c.removeProxyContainers(ctx, containerName, labels)
+	if err != nil {
+		return err // removeProxyContainers already wraps the error with context.
 	}
 
+	// Clear up any networks associated with this workload.
+	// This also deletes the external network if no other workloads are using it.
 	err = c.deleteNetworks(ctx, containerName)
 	if err != nil {
 		logger.Warnf("Failed to delete networks for container %s: %v", containerName, err)
@@ -828,20 +841,6 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtim
 	}, nil
 }
 
-// readCloserWrapper wraps an io.Reader to implement io.ReadCloser
-type readCloserWrapper struct {
-	reader io.Reader
-}
-
-func (r *readCloserWrapper) Read(p []byte) (n int, err error) {
-	return r.reader.Read(p)
-}
-
-func (*readCloserWrapper) Close() error {
-	// No-op close for readers that don't need closing
-	return nil
-}
-
 // AttachToWorkload attaches to a workload
 func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error) {
 	// Check if workload exists and is running
@@ -864,10 +863,20 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.Wr
 		return nil, nil, NewContainerError(ErrAttachFailed, workloadID, fmt.Sprintf("failed to attach to workload: %v", err))
 	}
 
-	// Wrap the reader in a ReadCloser
-	readCloser := &readCloserWrapper{reader: resp.Reader}
+	stdoutReader, stdoutWriter := io.Pipe()
 
-	return resp.Conn, readCloser, nil
+	go func() {
+		defer stdoutWriter.Close()
+		defer resp.Close()
+
+		// Use stdcopy to demultiplex the container streams
+		_, err := stdcopy.StdCopy(stdoutWriter, io.Discard, resp.Reader)
+		if err != nil && err != io.EOF {
+			logger.Errorf("Error demultiplexing container streams: %v", err)
+		}
+	}()
+
+	return resp.Conn, stdoutReader, nil
 }
 
 // IsRunning checks the health of the container runtime.
@@ -1324,14 +1333,10 @@ func (c *Client) handleExistingContainer(
 		return true, nil
 	}
 
-	// Configurations don't match, need to recreate the container
-	// Stop the workload
-	if err := c.StopWorkload(ctx, containerID); err != nil {
-		return false, err
-	}
-
-	// Remove the workload
-	if err := c.RemoveWorkload(ctx, containerID); err != nil {
+	// Configurations don't match, we need to recreate the container.
+	// Remove only this container, leave any associated networks and containers intact
+	// Any proxy containers (like ingress/egress) will have already recreated themselves at this point
+	if err := c.removeContainer(ctx, containerID); err != nil {
 		return false, err
 	}
 
@@ -1380,12 +1385,77 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+
+	// If the network does not exist, there is nothing to do here.
 	if len(networks) == 0 {
-		return fmt.Errorf("network %s not found", name)
+		logger.Debugf("network %s not found, nothing to delete", name)
+		return nil
 	}
 
 	if err := c.client.NetworkRemove(ctx, networks[0].ID); err != nil {
 		return fmt.Errorf("failed to remove network %s: %w", name, err)
 	}
+	return nil
+}
+
+// removeContainer removes a container by ID, without removing any associated networks or proxy containers.
+func (c *Client) removeContainer(ctx context.Context, containerID string) error {
+	err := c.client.ContainerRemove(ctx, containerID, container.RemoveOptions{
+		Force: true,
+	})
+	if err != nil {
+		// If the workload doesn't exist, that's fine - it's already removed
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return NewContainerError(err, containerID, fmt.Sprintf("failed to remove container: %v", err))
+	}
+
+	return nil
+}
+
+// removeProxyContainers removes the MCP server container and any proxy containers.
+func (c *Client) removeProxyContainers(
+	ctx context.Context,
+	containerName string,
+	workloadLabels map[string]string,
+) error {
+	// remove the / if it starts with it
+	containerName = strings.TrimPrefix(containerName, "/")
+
+	// If network isolation is not enabled, then there is nothing else to do.
+	// NOTE: This check treats all workloads created before the introduction of
+	// this label as having network isolation enabled. This is to ensure that they
+	// get cleaned up properly during stop/rm. There may be some spurious warnings
+	// from the following code, but they can be ignored.
+	if !lb.HasNetworkIsolation(workloadLabels) {
+		return nil
+	}
+
+	// remove egress, ingress, and dns containers
+	suffixes := []string{"egress", "ingress", "dns"}
+
+	for _, suffix := range suffixes {
+		containerName := fmt.Sprintf("%s-%s", containerName, suffix)
+		containerId, err := c.findExistingContainer(ctx, containerName)
+		if err != nil {
+			logger.Debugf("Failed to find %s container %s: %v", suffix, containerName, err)
+			continue
+		}
+		if containerId == "" {
+			continue
+		}
+
+		err = c.client.ContainerRemove(ctx, containerId, container.RemoveOptions{
+			Force: true,
+		})
+		if err != nil {
+			if errdefs.IsNotFound(err) {
+				continue
+			}
+			return NewContainerError(err, containerId, fmt.Sprintf("failed to remove %s container: %v", suffix, err))
+		}
+	}
+
 	return nil
 }

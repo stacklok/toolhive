@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -135,9 +134,9 @@ func TestRunConfig_WithPorts(t *testing.T) {
 				assert.Equal(t, tc.config, result, "WithPorts should return the same config instance")
 
 				if tc.port == 0 {
-					assert.Greater(t, tc.config.Port, 0, "Port should be auto-selected")
+					assert.Greater(t, tc.config.Port, 0, "Proxy Port should be auto-selected")
 				} else {
-					assert.Equal(t, tc.port, tc.config.Port, "Port should be set correctly")
+					assert.Equal(t, tc.port, tc.config.Port, "Proxy Port should be set correctly")
 				}
 
 				if tc.config.Transport == types.TransportTypeSSE || tc.config.Transport == types.TransportTypeStreamableHTTP {
@@ -148,240 +147,6 @@ func TestRunConfig_WithPorts(t *testing.T) {
 					}
 				} else {
 					assert.Zero(t, tc.config.TargetPort, "TargetPort should not be set for stdio")
-				}
-			}
-		})
-	}
-}
-
-func TestRunConfig_ParsePermissionProfile(t *testing.T) {
-	t.Parallel()
-	testCases := []struct {
-		name                   string
-		profileNameOrPath      string
-		expectError            bool
-		expectedProfileType    string
-		createTempProfileFile  bool
-		tempProfileFileContent string
-	}{
-		{
-			name:              "Empty profile name",
-			profileNameOrPath: "",
-			expectError:       true,
-		},
-		{
-			name:                "None built-in profile",
-			profileNameOrPath:   permissions.ProfileNone,
-			expectError:         false,
-			expectedProfileType: "none",
-		},
-		{
-			name:                "Network built-in profile",
-			profileNameOrPath:   permissions.ProfileNetwork,
-			expectError:         false,
-			expectedProfileType: "network",
-		},
-		{
-			name:                  "Custom profile from file",
-			profileNameOrPath:     "custom-profile.json", // Will be replaced with temp file path
-			expectError:           false,
-			expectedProfileType:   "custom",
-			createTempProfileFile: true,
-			tempProfileFileContent: `{
-				"read": ["file:///tmp/test-read"],
-				"write": ["file:///tmp/test-write"],
-				"network": {
-					"outbound": {
-						"insecure_allow_all": false,
-						"allow_host": ["localhost"],
-						"allow_port": [8080]
-					}
-				}
-			}`,
-		},
-		{
-			name:              "Non-existent profile file",
-			profileNameOrPath: "/non/existent/file.json",
-			expectError:       true,
-		},
-		{
-			name:                  "Invalid JSON in profile file",
-			profileNameOrPath:     "invalid-json.json", // Will be replaced with temp file path
-			expectError:           true,
-			createTempProfileFile: true,
-			tempProfileFileContent: `{
-				"read": ["file:///tmp/test-read"],
-				"write": ["file:///tmp/test-write"],
-				"network": "invalid-network-format"
-			}`,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			config := NewRunConfig()
-
-			// Create a temporary profile file if needed
-			if tc.createTempProfileFile {
-				tempFile, err := os.CreateTemp("", "profile-*.json")
-				require.NoError(t, err, "Failed to create temporary file")
-				defer os.Remove(tempFile.Name())
-
-				_, err = tempFile.WriteString(tc.tempProfileFileContent)
-				require.NoError(t, err, "Failed to write to temporary file")
-				tempFile.Close()
-
-				// Replace the profile path with the actual temp file path
-				config.PermissionProfileNameOrPath = tempFile.Name()
-			} else {
-				config.PermissionProfileNameOrPath = tc.profileNameOrPath
-			}
-
-			result, err := config.ParsePermissionProfile()
-
-			if tc.expectError {
-				assert.Error(t, err, "ParsePermissionProfile should return an error")
-			} else {
-				assert.NoError(t, err, "ParsePermissionProfile should not return an error")
-				assert.Equal(t, config, result, "ParsePermissionProfile should return the same config instance")
-				assert.NotNil(t, config.PermissionProfile, "PermissionProfile should be set")
-
-				switch tc.expectedProfileType {
-				case "none":
-					// For none profile, check that network outbound is not allowed
-					assert.False(t, config.PermissionProfile.Network.Outbound.InsecureAllowAll,
-						"None profile should not allow all outbound network connections")
-				case "network":
-					// For network profile, check that network outbound is allowed
-					assert.True(t, config.PermissionProfile.Network.Outbound.InsecureAllowAll,
-						"Network profile should allow all outbound network connections")
-				case "custom":
-					// For custom profile, check that it has the expected read/write mounts
-					assert.Len(t, config.PermissionProfile.Read, 1, "Custom profile should have 1 read mount")
-					assert.Len(t, config.PermissionProfile.Write, 1, "Custom profile should have 1 write mount")
-					assert.False(t, config.PermissionProfile.Network.Outbound.InsecureAllowAll,
-						"Custom profile should not allow all outbound network connections")
-					assert.Contains(t, config.PermissionProfile.Network.Outbound.AllowHost, "localhost",
-						"Custom profile should allow localhost")
-					assert.Contains(t, config.PermissionProfile.Network.Outbound.AllowPort, 8080,
-						"Custom profile should allow port 8080")
-				}
-			}
-		})
-	}
-}
-
-func TestRunConfig_ProcessVolumeMounts(t *testing.T) {
-	t.Parallel()
-
-	// Initialize logger to prevent nil pointer dereference when ProcessVolumeMounts logs
-	logger.Initialize()
-
-	testCases := []struct {
-		name                string
-		config              *RunConfig
-		expectError         bool
-		expectedReadMounts  int
-		expectedWriteMounts int
-	}{
-		{
-			name: "No volumes",
-			config: &RunConfig{
-				Volumes: []string{},
-			},
-			expectError:         false,
-			expectedReadMounts:  0,
-			expectedWriteMounts: 0,
-		},
-		{
-			name: "Volumes without permission profile and without profile name",
-			config: &RunConfig{
-				Volumes: []string{"/host:/container"},
-			},
-			expectError: true,
-		},
-		{
-			name: "Volumes without permission profile but with profile name",
-			config: &RunConfig{
-				Volumes:                     []string{"/host:/container"},
-				PermissionProfileNameOrPath: permissions.ProfileNone,
-			},
-			expectError:         false,
-			expectedReadMounts:  0,
-			expectedWriteMounts: 1,
-		},
-		{
-			name: "Read-only volume with existing profile",
-			config: &RunConfig{
-				Volumes:           []string{"/host:/container:ro"},
-				PermissionProfile: permissions.BuiltinNoneProfile(),
-			},
-			expectError:         false,
-			expectedReadMounts:  1,
-			expectedWriteMounts: 0,
-		},
-		{
-			name: "Read-write volume with existing profile",
-			config: &RunConfig{
-				Volumes:           []string{"/host:/container"},
-				PermissionProfile: permissions.BuiltinNoneProfile(),
-			},
-			expectError:         false,
-			expectedReadMounts:  0,
-			expectedWriteMounts: 1,
-		},
-		{
-			name: "Multiple volumes with existing profile",
-			config: &RunConfig{
-				Volumes: []string{
-					"/host1:/container1:ro",
-					"/host2:/container2",
-					"/host3:/container3:ro",
-				},
-				PermissionProfile: permissions.BuiltinNoneProfile(),
-			},
-			expectError:         false,
-			expectedReadMounts:  2,
-			expectedWriteMounts: 1,
-		},
-		{
-			name: "Invalid volume format",
-			config: &RunConfig{
-				Volumes:           []string{"invalid:format:with:too:many:colons"},
-				PermissionProfile: permissions.BuiltinNoneProfile(),
-			},
-			expectError: true,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			// Save original read/write mounts count
-			var originalReadMounts, originalWriteMounts int
-			if tc.config.PermissionProfile != nil {
-				originalReadMounts = len(tc.config.PermissionProfile.Read)
-				originalWriteMounts = len(tc.config.PermissionProfile.Write)
-			}
-
-			err := tc.config.ProcessVolumeMounts()
-
-			if tc.expectError {
-				assert.Error(t, err, "ProcessVolumeMounts should return an error")
-			} else {
-				assert.NoError(t, err, "ProcessVolumeMounts should not return an error")
-
-				// For the "No volumes" case, we don't need to check the PermissionProfile
-				if len(tc.config.Volumes) > 0 {
-					assert.NotNil(t, tc.config.PermissionProfile, "PermissionProfile should be set")
-					// Check read mounts
-					assert.Equal(t, tc.expectedReadMounts, len(tc.config.PermissionProfile.Read)-originalReadMounts,
-						"Number of read mounts should match expected")
-
-					// Check write mounts
-					assert.Equal(t, tc.expectedWriteMounts, len(tc.config.PermissionProfile.Write)-originalWriteMounts,
-						"Number of write mounts should match expected")
 				}
 			}
 		})
@@ -721,14 +486,14 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 				Name:            "test-server",
 				Image:           "test-image",
 				Transport:       types.TransportTypeSSE,
-				Port:            8080,
+				Port:            60000,
 				ContainerLabels: map[string]string{},
 			},
 			expected: map[string]string{
 				"toolhive":           "true",
 				"toolhive-name":      "test-server",
 				"toolhive-transport": "sse",
-				"toolhive-port":      "8080",
+				"toolhive-port":      "60000",
 				"toolhive-tool-type": "mcp",
 			},
 		},
@@ -784,14 +549,9 @@ func TestRunConfig_WithAuthz(t *testing.T) {
 // mockEnvVarValidator implements the EnvVarValidator interface for testing
 type mockEnvVarValidator struct{}
 
-func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadata, config *RunConfig, envVars []string) error {
-	// For testing, just set the environment variables directly
-	if len(envVars) > 0 {
-		var err error
-		_, err = config.WithEnvironmentVariables(envVars)
-		return err
-	}
-	return nil
+func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadata, _ *RunConfig, suppliedEnvVars []string) ([]string, error) {
+	// For testing, just return the supplied environment variables as-is
+	return suppliedEnvVars, nil
 }
 
 func TestNewRunConfigFromFlags(t *testing.T) {
@@ -817,7 +577,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	permissionProfile := permissions.ProfileNone
 	targetHost := "localhost"
 	mcpTransport := "sse"
-	port := 8080
+	proxyPort := 60000
 	targetPort := 9000
 	envVars := []string{"TEST_ENV=test_value"}
 	oidcIssuer := "https://issuer.example.com"
@@ -844,13 +604,15 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		permissionProfile,
 		targetHost,
 		mcpTransport,
-		port,
+		proxyPort,
 		targetPort,
 		envVars,
+		nil, // labels
 		oidcIssuer,
 		oidcAudience,
 		oidcJwksURL,
 		oidcClientID,
+		false,
 		"",    // otelEndpoint
 		"",    // otelServiceName
 		0.1,   // otelSamplingRate
@@ -860,12 +622,18 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		nil,   // otelEnvironmentVariables
 		false, // isolateNetwork
 		k8sPodPatch,
+		"",    // thvCABundle
+		"",    // jwksAuthTokenFile
+		false, // jwksAllowPrivateIP
 		envVarValidator,
+		"sse",
+		"", // groupName
+		nil,
 	)
 	require.NoError(t, err, "NewRunConfigFromFlags should not return an error")
 
 	assert.NotNil(t, config, "NewRunConfigFromFlags should return a non-nil config")
-	assert.Equal(t, runtime, config.Runtime, "Runtime should match")
+	assert.Equal(t, runtime, config.Deployer, "Deployer should match")
 	assert.Equal(t, targetHost, config.TargetHost, "TargetHost should match")
 	// The metadata args are appended to the command-line args
 	expectedCmdArgs := append([]string{}, cmdArgs...)
@@ -887,7 +655,7 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 
 	// Check transport settings
 	assert.Equal(t, types.TransportTypeSSE, config.Transport, "Transport should be set to SSE")
-	assert.Equal(t, port, config.Port, "Port should match")
+	assert.Equal(t, proxyPort, config.Port, "ProxyPort should match")
 	assert.Equal(t, targetPort, config.TargetPort, "TargetPort should match")
 
 	// Check OIDC config
@@ -911,7 +679,7 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 		ContainerName: "test-container",
 		BaseName:      "test-base",
 		Transport:     types.TransportTypeSSE,
-		Port:          8080,
+		Port:          60000,
 		TargetPort:    9000,
 		Debug:         true,
 		ContainerLabels: map[string]string{
@@ -1010,4 +778,302 @@ func TestCommaSeparatedEnvVars(t *testing.T) {
 			assert.Equal(t, tt.expected, processedEnvVars)
 		})
 	}
+}
+
+// TestNewRunConfigFromFlags_MetadataOverrides ensures metadata is applied correctly
+func TestNewRunConfigFromFlags_MetadataOverrides(t *testing.T) {
+	t.Parallel()
+
+	// Needed to prevent a nil pointer dereference in the logger.
+	logger.Initialize()
+
+	tests := []struct {
+		name               string
+		userTransport      string
+		userTargetPort     int
+		metadata           *registry.ImageMetadata
+		expectedTransport  types.TransportType
+		expectedTargetPort int
+	}{
+		{
+			name:           "Metadata transport used when user doesn't specify",
+			userTransport:  "",
+			userTargetPort: 0,
+			metadata: &registry.ImageMetadata{
+				Transport:  "streamable-http",
+				TargetPort: 3000,
+			},
+			expectedTransport:  types.TransportTypeStreamableHTTP,
+			expectedTargetPort: 3000,
+		},
+		{
+			name:           "User transport overrides metadata",
+			userTransport:  "stdio",
+			userTargetPort: 0,
+			metadata: &registry.ImageMetadata{
+				Transport:  "sse",
+				TargetPort: 3000,
+			},
+			expectedTransport:  types.TransportTypeStdio,
+			expectedTargetPort: 0, // stdio doesn't use target port
+		},
+		{
+			name:           "User target port overrides metadata",
+			userTransport:  "sse",
+			userTargetPort: 4000,
+			metadata: &registry.ImageMetadata{
+				Transport:  "sse",
+				TargetPort: 3000,
+			},
+			expectedTransport:  types.TransportTypeSSE,
+			expectedTargetPort: 4000,
+		},
+		{
+			name:               "Default to stdio when no metadata and no user input",
+			userTransport:      "",
+			userTargetPort:     0,
+			metadata:           nil,
+			expectedTransport:  types.TransportTypeStdio,
+			expectedTargetPort: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runtime := &mocks.MockRuntime{}
+			validator := &mockEnvVarValidator{}
+
+			config, err := NewRunConfigFromFlags(
+				context.Background(),
+				runtime,
+				nil, // cmdArgs
+				"test-server",
+				"test-image",
+				tt.metadata,
+				"localhost",
+				false, // debug
+				nil,   // volumes
+				nil,   // secrets
+				"",    // authzConfigPath
+				"",    // auditConfigPath
+				false, // enableAudit
+				permissions.ProfileNone,
+				"localhost",
+				tt.userTransport,
+				0, // port
+				tt.userTargetPort,
+				nil, // envVars
+				nil, // labels
+				"",  // oidc params...
+				"",
+				"",
+				"",
+				false,
+				"", // telemetry params...
+				"",
+				0,
+				nil,
+				false,
+				false,
+				nil,
+				false, // isolateNetwork
+				"",    // k8sPodPatch
+				"",    // thvCABundle
+				"",    // jwksAuthTokenFile
+				false, // jwksAllowPrivateIP
+				validator,
+				types.ProxyModeSSE,
+				"", // groupName
+				nil,
+			)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedTransport, config.Transport)
+			assert.Equal(t, tt.expectedTargetPort, config.TargetPort)
+		})
+	}
+}
+
+// TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency ensures that
+// environment variables set by WithEnvironmentVariables have access to the
+// correct transport and port values
+func TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency(t *testing.T) {
+	t.Parallel()
+
+	// Needed to prevent a nil pointer dereference in the logger.
+	logger.Initialize()
+	runtime := &mocks.MockRuntime{}
+	validator := &mockEnvVarValidator{}
+
+	config, err := NewRunConfigFromFlags(
+		context.Background(),
+		runtime,
+		nil,
+		"test-server",
+		"test-image",
+		nil,
+		"localhost",
+		false,
+		nil,
+		nil,
+		"",
+		"",
+		false,
+		permissions.ProfileNone,
+		"localhost",
+		"sse", // This should result in MCP_TRANSPORT=sse in env vars
+		0,
+		9000, // This should result in MCP_PORT=9000 in env vars
+		[]string{"USER_VAR=value"},
+		nil,                   // labels
+		"", "", "", "", false, // OIDC params
+		"", "", 0, nil, false, false, nil, // telemetry params
+		false,
+		"",
+		"",    // thvCABundle
+		"",    // jwksAuthTokenFile
+		false, // jwksAllowPrivateIP
+		validator,
+		types.ProxyModeSSE,
+		"", // groupName
+		nil,
+	)
+
+	require.NoError(t, err)
+
+	// Verify that transport-specific environment variables were set correctly
+	assert.Equal(t, "sse", config.EnvVars["MCP_TRANSPORT"])
+	assert.Equal(t, "9000", config.EnvVars["MCP_PORT"])
+	assert.Equal(t, "value", config.EnvVars["USER_VAR"])
+}
+
+// TestNewRunConfigFromFlags_CmdArgsMetadataPrepending ensures that metadata args
+// are prepended to user args
+func TestNewRunConfigFromFlags_CmdArgsMetadataPrepending(t *testing.T) {
+	t.Parallel()
+
+	runtime := &mocks.MockRuntime{}
+	validator := &mockEnvVarValidator{}
+
+	userArgs := []string{"--user-arg1", "--user-arg2"}
+	metadata := &registry.ImageMetadata{
+		Args: []string{"--metadata-arg1", "--metadata-arg2"},
+	}
+
+	config, err := NewRunConfigFromFlags(
+		context.Background(),
+		runtime,
+		userArgs,
+		"test-server",
+		"test-image",
+		metadata,
+		"localhost",
+		false,
+		nil,
+		nil,
+		"",
+		"",
+		false,
+		permissions.ProfileNone,
+		"localhost",
+		"",
+		0,
+		0,
+		nil,
+		nil, // labels
+		"", "", "", "", false,
+		"", "", 0, nil, false, false, nil,
+		false,
+		"",
+		"",    // thvCABundle
+		"",    // jwksAuthTokenFile
+		false, // jwksAllowPrivateIP
+		validator,
+		types.ProxyModeSSE,
+		"", // groupName
+		nil,
+	)
+
+	require.NoError(t, err)
+
+	// Metadata args should be appended to user args (not prepended despite the log message)
+	expectedArgs := []string{"--user-arg1", "--user-arg2", "--metadata-arg1", "--metadata-arg2"}
+	assert.Equal(t, expectedArgs, config.CmdArgs)
+}
+
+// TestNewRunConfigFromFlags_VolumeProcessing ensures volumes are processed
+// correctly and added to the permission profile
+func TestNewRunConfigFromFlags_VolumeProcessing(t *testing.T) {
+	t.Parallel()
+
+	// Needed to prevent a nil pointer dereference in the logger.
+	logger.Initialize()
+	runtime := &mocks.MockRuntime{}
+	validator := &mockEnvVarValidator{}
+
+	volumes := []string{
+		"/host/read:/container/read:ro",
+		"/host/write:/container/write",
+	}
+
+	config, err := NewRunConfigFromFlags(
+		context.Background(),
+		runtime,
+		nil,
+		"test-server",
+		"test-image",
+		nil,
+		"localhost",
+		false,
+		volumes,
+		nil,
+		"",
+		"",
+		false,
+		permissions.ProfileNone, // Start with none profile
+		"localhost",
+		"",
+		0,
+		0,
+		nil,
+		nil, // labels
+		"", "", "", "", false,
+		"", "", 0, nil, false, false, nil,
+		false,
+		"",
+		"",    // thvCABundle
+		"",    // jwksAuthTokenFile
+		false, // jwksAllowPrivateIP
+		validator,
+		types.ProxyModeSSE,
+		"", // groupName
+		nil,
+	)
+
+	require.NoError(t, err)
+
+	// Verify volumes were processed and added to permission profile
+	assert.NotNil(t, config.PermissionProfile)
+
+	// Should have 1 read mount
+	readMountFound := false
+	for _, mount := range config.PermissionProfile.Read {
+		if strings.Contains(string(mount), "/container/read") {
+			readMountFound = true
+			break
+		}
+	}
+	assert.True(t, readMountFound, "Read-only volume should be in permission profile")
+
+	// Should have 1 write mount
+	writeMountFound := false
+	for _, mount := range config.PermissionProfile.Write {
+		if strings.Contains(string(mount), "/container/write") {
+			writeMountFound = true
+			break
+		}
+	}
+	assert.True(t, writeMountFound, "Read-write volume should be in permission profile")
 }

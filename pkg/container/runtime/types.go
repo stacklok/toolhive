@@ -5,6 +5,7 @@ package runtime
 import (
 	"context"
 	"io"
+	"os"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -40,22 +41,10 @@ type PortMapping struct {
 	Protocol string
 }
 
-// Runtime defines the interface for container runtimes that manage workloads.
-//
-// A workload in ToolHive represents a complete deployment unit that may consist of:
-// - Primary MCP server container
-// - Sidecar containers (for logging, monitoring, proxying, etc.)
-// - Network configurations and port mappings
-// - Volume mounts and storage
-// - Service discovery and load balancing components
-// - Security policies and permission profiles
-//
-// This is a departure from simple container management, as modern deployments
-// often require orchestrating multiple interconnected components that work
-// together to provide a complete service.
-//
-//go:generate mockgen -destination=mocks/mock_runtime.go -package=mocks -source=types.go Runtime
-type Runtime interface {
+// Deployer contains the methods to start and stop a workload.
+// This is intended as a subset of the Runtime interface for
+// the runner code.
+type Deployer interface {
 	// DeployWorkload creates and starts a complete workload deployment.
 	// This includes the primary container, any required sidecars, networking setup,
 	// volume mounts, and service configuration. The workload is started as part
@@ -85,15 +74,44 @@ type Runtime interface {
 		isolateNetwork bool,
 	) (string, int, error)
 
-	// ListWorkloads lists all deployed workloads managed by this runtime.
-	// Returns information about each workload including its components,
-	// status, and resource usage.
-	ListWorkloads(ctx context.Context) ([]ContainerInfo, error)
-
 	// StopWorkload gracefully stops a running workload and all its components.
 	// This includes stopping the primary container, sidecars, and cleaning up
 	// any associated network resources. The workload remains available for restart.
 	StopWorkload(ctx context.Context, workloadID string) error
+
+	// AttachToWorkload establishes a direct connection to the primary container
+	// of the workload for interactive communication. This is typically used
+	// for stdio transport where direct input/output streaming is required.
+	AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error)
+
+	// IsWorkloadRunning checks if a workload is currently running and healthy.
+	// This verifies that the primary container is running and that any
+	// required sidecars are also operational.
+	IsWorkloadRunning(ctx context.Context, workloadID string) (bool, error)
+}
+
+// Runtime defines the interface for container runtimes that manage workloads.
+//
+// A workload in ToolHive represents a complete deployment unit that may consist of:
+// - Primary MCP server container
+// - Sidecar containers (for logging, monitoring, proxying, etc.)
+// - Network configurations and port mappings
+// - Volume mounts and storage
+// - Service discovery and load balancing components
+// - Security policies and permission profiles
+//
+// This is a departure from simple container management, as modern deployments
+// often require orchestrating multiple interconnected components that work
+// together to provide a complete service.
+//
+//go:generate mockgen -destination=mocks/mock_runtime.go -package=mocks -source=types.go Runtime
+type Runtime interface {
+	Deployer
+
+	// ListWorkloads lists all deployed workloads managed by this runtime.
+	// Returns information about each workload including its components,
+	// status, and resource usage.
+	ListWorkloads(ctx context.Context) ([]ContainerInfo, error)
 
 	// RemoveWorkload completely removes a workload and all its components.
 	// This includes removing containers, cleaning up networks, volumes,
@@ -107,20 +125,10 @@ type Runtime interface {
 	// main MCP server container.
 	GetWorkloadLogs(ctx context.Context, workloadID string, follow bool) (string, error)
 
-	// IsWorkloadRunning checks if a workload is currently running and healthy.
-	// This verifies that the primary container is running and that any
-	// required sidecars are also operational.
-	IsWorkloadRunning(ctx context.Context, workloadID string) (bool, error)
-
 	// GetWorkloadInfo retrieves detailed information about a workload.
 	// This includes status, resource usage, network configuration,
 	// and metadata about all components in the workload.
 	GetWorkloadInfo(ctx context.Context, workloadID string) (ContainerInfo, error)
-
-	// AttachToWorkload establishes a direct connection to the primary container
-	// of the workload for interactive communication. This is typically used
-	// for stdio transport where direct input/output streaming is required.
-	AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error)
 
 	// IsRunning checks the health of the container runtime.
 	// This is used to verify that the runtime is operational and can manage workloads.
@@ -218,4 +226,10 @@ type Mount struct {
 	Target string
 	// ReadOnly indicates if the mount is read-only
 	ReadOnly bool
+}
+
+// IsKubernetesRuntime returns true if the runtime is Kubernetes
+// isn't the best way to do this, but for now it's good enough
+func IsKubernetesRuntime() bool {
+	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
 }

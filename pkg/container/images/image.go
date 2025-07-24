@@ -5,6 +5,7 @@ import (
 	"context"
 
 	"github.com/stacklok/toolhive/pkg/container/docker/sdk"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -26,15 +27,20 @@ type ImageManager interface {
 // NewImageManager creates an instance of ImageManager appropriate
 // for the current environment, or returns an error if it is not supported.
 func NewImageManager(ctx context.Context) ImageManager {
-	// ASSUMPTION: This only works for the Docker runtime.
-	// Otherwise, return a no-op implementation.
+	// Check if we are running in a Kubernetes environment
+	if runtime.IsKubernetesRuntime() {
+		logger.Debug("running in Kubernetes environment, using no-op image manager")
+		return &NoopImageManager{}
+	}
+
+	// Check if we are running in a Docker or compatible environment
 	dockerClient, _, _, err := sdk.NewDockerClient(ctx)
 	if err != nil {
 		logger.Debug("no docker runtime found, using no-op image manager")
 		return &NoopImageManager{}
 	}
 
-	return NewDockerImageManager(dockerClient)
+	return NewRegistryImageManager(dockerClient)
 }
 
 // NoopImageManager is a no-op implementation of ImageManager.

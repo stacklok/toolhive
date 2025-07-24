@@ -53,12 +53,12 @@ func NewHTTPMiddleware(
 
 	// Initialize metrics
 	requestCounter, _ := meter.Int64Counter(
-		"toolhive_mcp_requests_total",
+		"toolhive_mcp_requests", // The exporter adds the _total suffix automatically
 		metric.WithDescription("Total number of MCP requests"),
 	)
 
 	requestDuration, _ := meter.Float64Histogram(
-		"toolhive_mcp_request_duration_seconds",
+		"toolhive_mcp_request_duration", // The exporter adds the _seconds suffix automatically
 		metric.WithDescription("Duration of MCP requests in seconds"),
 		metric.WithUnit("s"),
 	)
@@ -449,7 +449,7 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 
 			// Record tool-specific counter
 			if toolCounter, err := m.meter.Int64Counter(
-				"toolhive_mcp_tool_calls_total",
+				"toolhive_mcp_tool_calls", // The exporter adds the _total suffix automatically
 				metric.WithDescription("Total number of MCP tool calls"),
 			); err == nil {
 				toolCounter.Add(ctx, 1, toolAttrs)

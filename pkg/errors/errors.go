@@ -25,6 +25,9 @@ const (
 	// ErrContainerAlreadyRunning is returned when a container is already running
 	ErrContainerAlreadyRunning = "container_already_running"
 
+	// ErrRunConfigNotFound is returned when a run configuration is not found
+	ErrRunConfigNotFound = "run_config_not_found"
+
 	// ErrTransport is returned when there is an error with the transport
 	ErrTransport = "transport"
 
@@ -99,6 +102,11 @@ func NewContainerAlreadyRunningError(message string, cause error) *Error {
 	return NewError(ErrContainerAlreadyRunning, message, cause)
 }
 
+// NewRunConfigNotFoundError creates a new run configuration not found error
+func NewRunConfigNotFoundError(message string, cause error) *Error {
+	return NewError(ErrRunConfigNotFound, message, cause)
+}
+
 // NewTransportError creates a new transport error
 func NewTransportError(message string, cause error) *Error {
 	return NewError(ErrTransport, message, cause)
@@ -148,6 +156,12 @@ func IsContainerNotRunning(err error) bool {
 func IsContainerAlreadyRunning(err error) bool {
 	e, ok := err.(*Error)
 	return ok && e.Type == ErrContainerAlreadyRunning
+}
+
+// IsRunConfigNotFound checks if the error is a run configuration not found error
+func IsRunConfigNotFound(err error) bool {
+	e, ok := err.(*Error)
+	return ok && e.Type == ErrRunConfigNotFound
 }
 
 // IsTransport checks if the error is a transport error

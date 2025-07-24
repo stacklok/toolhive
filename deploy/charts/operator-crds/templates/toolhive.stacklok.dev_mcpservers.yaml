@@ -54,6 +54,55 @@ spec:
                 items:
                   type: string
                 type: array
+              authzConfig:
+                description: AuthzConfig defines authorization policy configuration
+                  for the MCP server
+                properties:
+                  configMap:
+                    description: |-
+                      ConfigMap references a ConfigMap containing authorization configuration
+                      Only used when Type is "configMap"
+                    properties:
+                      key:
+                        default: authz.json
+                        description: Key is the key in the ConfigMap that contains
+                          the authorization configuration
+                        type: string
+                      name:
+                        description: Name is the name of the ConfigMap
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  inline:
+                    description: |-
+                      Inline contains direct authorization configuration
+                      Only used when Type is "inline"
+                    properties:
+                      entitiesJson:
+                        default: '[]'
+                        description: EntitiesJSON is a JSON string representing Cedar
+                          entities
+                        type: string
+                      policies:
+                        description: Policies is a list of Cedar policy strings
+                        items:
+                          type: string
+                        minItems: 1
+                        type: array
+                    required:
+                    - policies
+                    type: object
+                  type:
+                    default: configMap
+                    description: Type is the type of authorization configuration
+                    enum:
+                    - configMap
+                    - inline
+                    type: string
+                required:
+                - type
+                type: object
               env:
                 description: Env are environment variables to set in the MCP server
                   container
@@ -103,13 +152,30 @@ spec:
                         description: Audience is the expected audience for the token
                         type: string
                       clientId:
-                        description: ClientID is the OIDC client ID
+                        description: ClientID is deprecated and will be removed in
+                          a future release.
                         type: string
                       issuer:
                         description: Issuer is the OIDC issuer URL
                         type: string
+                      jwksAllowPrivateIP:
+                        default: false
+                        description: |-
+                          JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+                          Use with caution - only enable for trusted internal IDPs
+                        type: boolean
+                      jwksAuthTokenPath:
+                        description: |-
+                          JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests
+                          The file must be mounted into the pod (e.g., via Secret volume)
+                        type: string
                       jwksUrl:
                         description: JWKSURL is the URL to fetch the JWKS from
+                        type: string
+                      thvCABundlePath:
+                        description: |-
+                          ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
+                          The file must be mounted into the pod (e.g., via ConfigMap or Secret volume)
                         type: string
                     required:
                     - issuer
@@ -128,8 +194,9 @@ spec:
                         description: Issuer is the OIDC issuer URL
                         type: string
                       jwksUrl:
-                        default: https://kubernetes.default.svc/openid/v1/jwks
-                        description: JWKSURL is the URL to fetch the JWKS from
+                        description: |-
+                          JWKSURL is the URL to fetch the JWKS from
+                          If empty, OIDC discovery will be used to automatically determine the JWKS URL
                         type: string
                       namespace:
                         description: |-
@@ -137,17 +204,23 @@ spec:
                           If empty, uses the MCPServer's namespace
                         type: string
                       serviceAccount:
-                        description: |-
-                          ServiceAccount is the name of the service account to validate tokens for
-                          If empty, uses the pod's service account
+                        description: ServiceAccount is deprecated and will be removed
+                          in a future release.
                         type: string
+                      useClusterAuth:
+                        description: |-
+                          UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token
+                          When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification
+                          and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication
+                          Defaults to true if not specified
+                        type: boolean
                     type: object
                   type:
                     default: kubernetes
                     description: Type is the type of OIDC configuration
                     enum:
                     - kubernetes
-                    - configmap
+                    - configMap
                     - inline
                     type: string
                 required:
@@ -8232,6 +8305,25 @@ spec:
                           type: string
                         description: Annotations to add or override on the resource
                         type: object
+                      env:
+                        description: |-
+                          Env are environment variables to set in the proxy container (thv run process)
+                          These affect the toolhive proxy itself, not the MCP server it manages
+                        items:
+                          description: EnvVar represents an environment variable in
+                            a container
+                          properties:
+                            name:
+                              description: Name of the environment variable
+                              type: string
+                            value:
+                              description: Value of the environment variable
+                              type: string
+                          required:
+                          - name
+                          - value
+                          type: object
+                        type: array
                       labels:
                         additionalProperties:
                           type: string

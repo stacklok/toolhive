@@ -51,6 +51,8 @@ func NewRootCmd(enableUpdates bool) *cobra.Command {
 	rootCmd.AddCommand(logsCommand())
 	rootCmd.AddCommand(newSecretCommand())
 	rootCmd.AddCommand(inspectorCommand())
+	rootCmd.AddCommand(newMCPCommand())
+	// rootCmd.AddCommand(groupCmd) // TODO: add back in once we have a working group command, and update the docs
 
 	// Silence printing the usage on error
 	rootCmd.SilenceUsage = true

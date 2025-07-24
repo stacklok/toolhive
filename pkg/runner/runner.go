@@ -45,16 +45,34 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:       r.Config.Transport,
-		Port:       r.Config.Port,
+		ProxyPort:  r.Config.Port,
 		TargetPort: r.Config.TargetPort,
 		Host:       r.Config.Host,
 		TargetHost: r.Config.TargetHost,
-		Runtime:    r.Config.Runtime,
+		Deployer:   r.Config.Deployer,
 		Debug:      r.Config.Debug,
 	}
 
+	if len(r.Config.ToolsFilter) > 0 {
+		toolsFilterMiddleware, err := mcp.NewToolFilterMiddleware(r.Config.ToolsFilter)
+		if err != nil {
+			return fmt.Errorf("failed to create tools filter middleware: %v", err)
+		}
+		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsFilterMiddleware)
+
+		toolsCallFilterMiddleware, err := mcp.NewToolCallFilterMiddleware(r.Config.ToolsFilter)
+		if err != nil {
+			return fmt.Errorf("failed to create tools call filter middleware: %v", err)
+		}
+		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsCallFilterMiddleware)
+	}
+
 	// Get authentication middleware
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
+	allowOpaqueTokens := false
+	if r.Config.OIDCConfig != nil && r.Config.OIDCConfig.AllowOpaqueTokens {
+		allowOpaqueTokens = r.Config.OIDCConfig.AllowOpaqueTokens
+	}
+	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig, allowOpaqueTokens)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
@@ -121,6 +139,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
 	}
 
+	// Set proxy mode for stdio transport
+	transportConfig.ProxyMode = r.Config.ProxyMode
+
 	transportHandler, err := transport.NewFactory().Create(transportConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create transport: %v", err)
@@ -156,7 +177,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)
 	if err := transportHandler.Setup(
-		ctx, r.Config.Runtime, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
+		ctx, r.Config.Deployer, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
 		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile, r.Config.K8sPodTemplatePatch,
 		r.Config.IsolateNetwork,
 	); err != nil {
@@ -280,9 +301,14 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 }
 
 // updateClientConfigurations updates client configuration files with the MCP server URL
-func updateClientConfigurations(containerName string, containerLabels map[string]string, host string, port int) error {
+func updateClientConfigurations(
+	containerName string,
+	containerLabels map[string]string,
+	host string,
+	proxyPort int,
+) error {
 	// Find client configuration files
-	clientConfigs, err := client.FindClientConfigs()
+	clientConfigs, err := client.FindRegisteredClientConfigs()
 	if err != nil {
 		return fmt.Errorf("failed to find client configurations: %w", err)
 	}
@@ -294,7 +320,7 @@ func updateClientConfigurations(containerName string, containerLabels map[string
 
 	// Generate the URL for the MCP server
 	transportType := labels.GetTransportType(containerLabels)
-	url := client.GenerateMCPServerURL(transportType, host, port, containerName)
+	url := client.GenerateMCPServerURL(transportType, host, proxyPort, containerName)
 
 	// Update each configuration file
 	for _, clientConfig := range clientConfigs {

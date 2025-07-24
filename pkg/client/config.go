@@ -3,6 +3,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -114,7 +115,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 	{
 		ClientType:   VSCodeInsider,
 		Description:  "Visual Studio Code Insiders",
-		SettingsFile: "settings.json",
+		SettingsFile: "mcp.json",
 		RelPath: []string{
 			"Code - Insiders", "User",
 		},
@@ -123,7 +124,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"darwin":  {"Library", "Application Support"},
 			"windows": {"AppData", "Roaming"},
 		},
-		MCPServersPathPrefix: "/mcp/servers",
+		MCPServersPathPrefix: "/servers",
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
 			types.TransportTypeStdio:          "sse",
@@ -135,11 +136,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 	{
 		ClientType:   VSCode,
 		Description:  "Visual Studio Code",
-		SettingsFile: "settings.json",
+		SettingsFile: "mcp.json",
 		RelPath: []string{
 			"Code", "User",
 		},
-		MCPServersPathPrefix: "/mcp/servers",
+		MCPServersPathPrefix: "/servers",
 		PlatformPrefix: map[string][]string{
 			"linux":   {".config"},
 			"darwin":  {"Library", "Application Support"},
@@ -231,7 +232,7 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	if err != nil {
 		if errors.Is(err, ErrConfigFileNotFound) {
 			// Propagate the error if the file is not found
-			return nil, fmt.Errorf("%w: for client %s", ErrConfigFileNotFound, clientType)
+			return nil, fmt.Errorf("%w for client %s", ErrConfigFileNotFound, clientType)
 		}
 		return nil, err
 	}
@@ -244,8 +245,32 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	return configFile, nil
 }
 
-// FindClientConfigs searches for client configuration files in standard locations
-func FindClientConfigs() ([]ConfigFile, error) {
+// ensureClientConfigWithRunningMCPs expects the client config file to not exist, and creates it with
+// the running MCPs for the given client type.
+func ensureClientConfigWithRunningMCPs(clientType MCPClient) (*ConfigFile, error) {
+	ctx := context.Background()
+	mgrIface, mgrErr := NewManager(ctx)
+	if mgrErr != nil {
+		return nil, fmt.Errorf("unable to create manager for %s: %w", clientType, mgrErr)
+	}
+	mgr, ok := mgrIface.(*defaultManager)
+	if !ok {
+		return nil, fmt.Errorf("manager is not of type *defaultManager for %s", clientType)
+	}
+	// Add the running MCPs to the client config file by creating it if it doesn't exist
+	if err := mgr.addRunningMCPsToClient(ctx, clientType); err != nil {
+		return nil, fmt.Errorf("unable to add running MCPs to client config for %s: %w", clientType, err)
+	}
+	cf, err := FindClientConfig(clientType)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load client config for %s after creation: %w", clientType, err)
+	}
+	return cf, nil
+}
+
+// FindRegisteredClientConfigs finds all registered client configs and creates them if they don't exist
+// and ensures they are populated with the running MCPs.
+func FindRegisteredClientConfigs() ([]ConfigFile, error) {
 	clientStatuses, err := GetClientStatus()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client status: %w", err)
@@ -253,12 +278,23 @@ func FindClientConfigs() ([]ConfigFile, error) {
 
 	var configFiles []ConfigFile
 	for _, clientStatus := range clientStatuses {
-		if !clientStatus.Installed {
+		if !clientStatus.Installed || !clientStatus.Registered {
 			continue
 		}
 		cf, err := FindClientConfig(clientStatus.ClientType)
 		if err != nil {
-			return nil, fmt.Errorf("failed to find client config for %s: %w", clientStatus.ClientType, err)
+			if errors.Is(err, ErrConfigFileNotFound) {
+				logger.Infof("Client config file not found for %s, creating it and adding running MCPs...", clientStatus.ClientType)
+				cf, err = ensureClientConfigWithRunningMCPs(clientStatus.ClientType)
+				if err != nil {
+					logger.Warnf("Unable to create and populate client config for %s: %v", clientStatus.ClientType, err)
+					continue
+				}
+				logger.Infof("Successfully created and populated client config file for %s", clientStatus.ClientType)
+			} else {
+				logger.Warnf("Unable to process client config for %s: %v", clientStatus.ClientType, err)
+				continue
+			}
 		}
 		configFiles = append(configFiles, *cf)
 	}
@@ -409,6 +445,10 @@ func validateConfigFileFormat(cf *ConfigFile) error {
 	data, err := os.ReadFile(cf.Path)
 	if err != nil {
 		return fmt.Errorf("failed to read file %s: %w", cf.Path, err)
+	}
+
+	if len(data) == 0 {
+		data = []byte("{}") // Default to an empty JSON object if the file is empty
 	}
 
 	// Default to JSON

@@ -27,7 +27,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
+
+func init() {
+	// Initialize logger for tests
+	logger.Initialize()
+}
 
 func TestGenerateOIDCArgs(t *testing.T) {
 	t.Parallel()
@@ -73,8 +79,9 @@ func TestGenerateOIDCArgs(t *testing.T) {
 			expectedArgs: []string{
 				"--oidc-issuer=https://kubernetes.default.svc",
 				"--oidc-audience=toolhive",
-				"--oidc-jwks-url=https://kubernetes.default.svc/openid/v1/jwks",
-				"--oidc-client-id=default.test-namespace.svc.cluster.local",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 		{
@@ -89,11 +96,10 @@ func TestGenerateOIDCArgs(t *testing.T) {
 					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
 						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
-							ServiceAccount: "custom-sa",
-							Namespace:      "custom-namespace",
-							Audience:       "custom-audience",
-							Issuer:         "https://custom.issuer.com",
-							JWKSURL:        "https://custom.issuer.com/jwks",
+							Namespace: "custom-namespace",
+							Audience:  "custom-audience",
+							Issuer:    "https://custom.issuer.com",
+							JWKSURL:   "https://custom.issuer.com/jwks",
 						},
 					},
 				},
@@ -102,7 +108,9 @@ func TestGenerateOIDCArgs(t *testing.T) {
 				"--oidc-issuer=https://custom.issuer.com",
 				"--oidc-audience=custom-audience",
 				"--oidc-jwks-url=https://custom.issuer.com/jwks",
-				"--oidc-client-id=custom-sa.custom-namespace.svc.cluster.local",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 		{
@@ -120,7 +128,6 @@ func TestGenerateOIDCArgs(t *testing.T) {
 							Issuer:   "https://accounts.google.com",
 							Audience: "my-google-client",
 							JWKSURL:  "https://www.googleapis.com/oauth2/v3/certs",
-							ClientID: "my-client-id",
 						},
 					},
 				},
@@ -129,7 +136,6 @@ func TestGenerateOIDCArgs(t *testing.T) {
 				"--oidc-issuer=https://accounts.google.com",
 				"--oidc-audience=my-google-client",
 				"--oidc-jwks-url=https://www.googleapis.com/oauth2/v3/certs",
-				"--oidc-client-id=my-client-id",
 			},
 		},
 		{
@@ -263,8 +269,9 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 			expectedArgs: []string{
 				"--oidc-issuer=https://kubernetes.default.svc",
 				"--oidc-audience=toolhive",
-				"--oidc-jwks-url=https://kubernetes.default.svc/openid/v1/jwks",
-				"--oidc-client-id=default.test-namespace.svc.cluster.local",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 		{
@@ -284,8 +291,9 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 			expectedArgs: []string{
 				"--oidc-issuer=https://kubernetes.default.svc",
 				"--oidc-audience=toolhive",
-				"--oidc-jwks-url=https://kubernetes.default.svc/openid/v1/jwks",
-				"--oidc-client-id=default.test-namespace.svc.cluster.local",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 		{
@@ -297,18 +305,17 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
-						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
-							ServiceAccount: "my-service-account",
-						},
+						Type:       mcpv1alpha1.OIDCConfigTypeKubernetes,
+						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{},
 					},
 				},
 			},
 			expectedArgs: []string{
 				"--oidc-issuer=https://kubernetes.default.svc",
 				"--oidc-audience=toolhive",
-				"--oidc-jwks-url=https://kubernetes.default.svc/openid/v1/jwks",
-				"--oidc-client-id=my-service-account.test-namespace.svc.cluster.local",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 		{
@@ -330,8 +337,9 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 			expectedArgs: []string{
 				"--oidc-issuer=https://kubernetes.default.svc",
 				"--oidc-audience=toolhive",
-				"--oidc-jwks-url=https://kubernetes.default.svc/openid/v1/jwks",
-				"--oidc-client-id=default.my-namespace.svc.cluster.local",
+				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+				"--jwks-allow-private-ip",
 			},
 		},
 	}
@@ -406,7 +414,6 @@ func TestGenerateInlineOIDCArgs(t *testing.T) {
 							Issuer:   "https://accounts.google.com",
 							Audience: "my-audience",
 							JWKSURL:  "https://www.googleapis.com/oauth2/v3/certs",
-							ClientID: "my-client-id",
 						},
 					},
 				},
@@ -415,7 +422,6 @@ func TestGenerateInlineOIDCArgs(t *testing.T) {
 				"--oidc-issuer=https://accounts.google.com",
 				"--oidc-audience=my-audience",
 				"--oidc-jwks-url=https://www.googleapis.com/oauth2/v3/certs",
-				"--oidc-client-id=my-client-id",
 			},
 		},
 	}

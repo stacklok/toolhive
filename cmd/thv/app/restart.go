@@ -15,11 +15,12 @@ var (
 )
 
 var restartCmd = &cobra.Command{
-	Use:   "restart [container-name]",
-	Short: "Restart a tooling server",
-	Long:  `Restart a running tooling server managed by ToolHive. If the server is not running, it will be started.`,
-	Args:  cobra.RangeArgs(0, 1),
-	RunE:  restartCmdFunc,
+	Use:               "restart [workload-name]",
+	Short:             "Restart a tooling server",
+	Long:              `Restart a running tooling server managed by ToolHive. If the server is not running, it will be started.`,
+	Args:              cobra.RangeArgs(0, 1),
+	RunE:              restartCmdFunc,
+	ValidArgsFunction: completeMCPServerNames,
 }
 
 func init() {
@@ -31,46 +32,46 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate arguments
 	if restartAll && len(args) > 0 {
-		return fmt.Errorf("cannot specify both --all flag and container name")
+		return fmt.Errorf("cannot specify both --all flag and workload name")
 	}
 	if !restartAll && len(args) == 0 {
-		return fmt.Errorf("must specify either --all flag or container name")
+		return fmt.Errorf("must specify either --all flag or workload name")
 	}
 
-	// Create lifecycle manager.
-	manager, err := workloads.NewManager(ctx)
+	// Create workload managers.
+	workloadManager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create lifecycle manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
 	if restartAll {
-		return restartAllContainers(ctx, manager)
+		return restartAllContainers(ctx, workloadManager)
 	}
 
-	// Restart single container
-	containerName := args[0]
-	restartGroup, err := manager.RestartWorkloads(ctx, []string{containerName})
+	// Restart single workload
+	workloadName := args[0]
+	restartGroup, err := workloadManager.RestartWorkloads(ctx, []string{workloadName})
 	if err != nil {
 		return err
 	}
 
 	// Wait for the restart group to complete
 	if err := restartGroup.Wait(); err != nil {
-		return fmt.Errorf("failed to restart container %s: %v", containerName, err)
+		return fmt.Errorf("failed to restart workload %s: %v", workloadName, err)
 	}
 
-	fmt.Printf("Container %s restarted successfully\n", containerName)
+	fmt.Printf("Container %s restarted successfully\n", workloadName)
 	return nil
 }
 
-func restartAllContainers(ctx context.Context, manager workloads.Manager) error {
+func restartAllContainers(ctx context.Context, workloadManager workloads.Manager) error {
 	// Get all containers (including stopped ones since restart can start stopped containers)
-	containers, err := manager.ListWorkloads(ctx, true)
+	allWorkloads, err := workloadManager.ListWorkloads(ctx, true)
 	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
+		return fmt.Errorf("failed to list allWorkloads: %v", err)
 	}
 
-	if len(containers) == 0 {
+	if len(allWorkloads) == 0 {
 		fmt.Println("No MCP servers found to restart")
 		return nil
 	}
@@ -79,18 +80,18 @@ func restartAllContainers(ctx context.Context, manager workloads.Manager) error 
 	var failedCount int
 	var errors []string
 
-	fmt.Printf("Restarting %d MCP server(s)...\n", len(containers))
+	fmt.Printf("Restarting %d MCP server(s)...\n", len(allWorkloads))
 
 	var restartRequests []*errgroup.Group
 	// First, trigger the restarts concurrently.
-	for _, container := range containers {
-		containerName := container.Name
-		fmt.Printf("Restarting %s...", containerName)
-		restart, err := manager.RestartWorkloads(ctx, []string{containerName})
+	for _, workload := range allWorkloads {
+		workloadName := workload.Name
+		fmt.Printf("Restarting %s...", workloadName)
+		restart, err := workloadManager.RestartWorkloads(ctx, []string{workloadName})
 		if err != nil {
 			fmt.Printf(" failed: %v\n", err)
 			failedCount++
-			errors = append(errors, fmt.Sprintf("%s: %v", containerName, err))
+			errors = append(errors, fmt.Sprintf("%s: %v", workloadName, err))
 		} else {
 			// If it didn't fail during the synchronous part of the operation,
 			// append to the list of restart requests in flight.
@@ -104,8 +105,8 @@ func restartAllContainers(ctx context.Context, manager workloads.Manager) error 
 		if err != nil {
 			fmt.Printf(" failed: %v\n", err)
 			failedCount++
-			// Unfortunately we don't have the container name here, so we just log a generic error.
-			errors = append(errors, fmt.Sprintf("Error restarting container: %v", err))
+			// Unfortunately we don't have the workload name here, so we just log a generic error.
+			errors = append(errors, fmt.Sprintf("Error restarting workload: %v", err))
 		} else {
 			fmt.Printf(" success\n")
 			restartedCount++
@@ -120,7 +121,7 @@ func restartAllContainers(ctx context.Context, manager workloads.Manager) error 
 		for _, errMsg := range errors {
 			fmt.Printf("  - %s\n", errMsg)
 		}
-		return fmt.Errorf("%d container(s) failed to restart", failedCount)
+		return fmt.Errorf("%d workload(s) failed to restart", failedCount)
 	}
 
 	return nil

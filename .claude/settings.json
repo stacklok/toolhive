@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go test:*)",
+      "Bash(task test)",
+      "Bash(task lint)",
+      "Bash(golangci-lint run:*)",
+      "Bash(go doc:*)",
+      "WebFetch(domain:modelcontextprotocol.io)"
+    ],
+    "deny": []
+  }
+}

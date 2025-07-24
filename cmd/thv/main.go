@@ -6,7 +6,7 @@ import (
 
 	"github.com/stacklok/toolhive/cmd/thv/app"
 	"github.com/stacklok/toolhive/pkg/client"
-	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -19,7 +19,7 @@ func main() {
 	client.CheckAndPerformAutoDiscoveryMigration()
 
 	// Skip update check for completion command or if we are running in kubernetes
-	if err := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !container.IsKubernetesRuntime()).Execute(); err != nil {
+	if err := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !runtime.IsKubernetesRuntime()).Execute(); err != nil {
 		os.Exit(1)
 	}
 }

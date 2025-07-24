@@ -99,7 +99,7 @@ tasks:
       OPERATOR_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
       TOOLHIVE_IMAGE:
-        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv | tail -n 1
+        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1
     cmds:
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
@@ -111,12 +111,13 @@ tasks:
         --set operator.toolhiveRunnerImage={{.TOOLHIVE_IMAGE}} \
         --namespace toolhive-system \
         --create-namespace \
-        --kubeconfig kconfig.yaml
+        --kubeconfig kconfig.yaml \
+        {{ .CLI_ARGS }}
 
   operator-undeploy:
     desc: Undeploy operator from the K8s cluster
     cmds:
-      - helm uninstall toolhive-operator --kubeconfig kconfig.yaml
+      - helm uninstall toolhive-operator --kubeconfig kconfig.yaml --namespace toolhive-system
 
   # Kubebuilder tasks
   operator-generate:
@@ -139,6 +140,21 @@ tasks:
     cmds:
       - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
       - KUBEBUILDER_ASSETS="$(shell setup-envtest use 1.28.0 -p path)" go test ./cmd/thv-operator/... -coverprofile cover.out
+
+  operator-e2e-test:
+    desc: Run E2E tests for the operator
+    cmds:
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/setup
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/test-scenarios
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/cleanup
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios
+      - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup
+
+  operator-run:
+    desc: Run the operator controller locally
+    cmds:
+      - go run ./cmd/thv-operator
 
   crdref-install:
     desc: Install elastic/crd-ref-docs

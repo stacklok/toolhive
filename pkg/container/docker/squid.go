@@ -223,16 +223,6 @@ func writeOutboundACLs(sb *strings.Builder, outbound *permissions.OutboundNetwor
 		}
 		sb.WriteString("\n")
 	}
-
-	if len(outbound.AllowTransport) > 0 {
-		sb.WriteString("# Define allowed methods\nacl allowed_methods method")
-		for _, method := range outbound.AllowTransport {
-			if strings.ToUpper(method) == "TCP" {
-				sb.WriteString(" CONNECT GET POST HEAD")
-			}
-			sb.WriteString(" " + strings.ToUpper(method))
-		}
-	}
 }
 
 func writeHttpAccessRules(sb *strings.Builder, outbound *permissions.OutboundNetworkPermissions) {
@@ -242,9 +232,6 @@ func writeHttpAccessRules(sb *strings.Builder, outbound *permissions.OutboundNet
 	}
 	if len(outbound.AllowHost) > 0 {
 		conditions = append(conditions, "allowed_dsts")
-	}
-	if len(outbound.AllowTransport) > 0 {
-		conditions = append(conditions, "allowed_methods")
 	}
 	if len(conditions) > 0 {
 		sb.WriteString("\n# Define http_access rules\n")

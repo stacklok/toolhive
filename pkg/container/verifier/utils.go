@@ -8,7 +8,6 @@ import (
 	"path"
 
 	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
@@ -112,14 +111,14 @@ func embeddedRootJson(tufRootURL string) ([]byte, error) {
 // getSigstoreBundles returns the sigstore bundles, either through the OCI registry or the GitHub attestation endpoint
 func getSigstoreBundles(
 	imageRef string,
+	keychain authn.Keychain,
 ) ([]sigstoreBundle, error) {
-	auth := authn.Anonymous
 	// Try to build a bundle from a Sigstore signed image
-	bundles, err := bundleFromSigstoreSignedImage(imageRef, auth)
+	bundles, err := bundleFromSigstoreSignedImage(imageRef, keychain)
 	if errors.Is(err, ErrProvenanceNotFoundOrIncomplete) {
 		// If we get this error, it means that the image is not signed
 		// or the signature is incomplete. Let's try to see if we can find attestation for the image.
-		return bundleFromAttestation(imageRef, auth, []remote.Option{})
+		return bundleFromAttestation(imageRef, keychain)
 	} else if err != nil {
 		return nil, err
 	}

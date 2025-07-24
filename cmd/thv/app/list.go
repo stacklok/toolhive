@@ -20,31 +20,32 @@ var listCmd = &cobra.Command{
 }
 
 var (
-	listAll    bool
-	listFormat string
+	listAll         bool
+	listFormat      string
+	listLabelFilter []string
 )
 
 func init() {
-	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all containers (default shows just running)")
+	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all workloads (default shows just running)")
 	listCmd.Flags().StringVar(&listFormat, "format", FormatText, "Output format (json, text, or mcpservers)")
+	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
 }
 
 func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 
-	// Instantiate the container manager.
+	// Instantiate the status manager.
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create container manager: %v", err)
+		return fmt.Errorf("failed to create status manager: %v", err)
 	}
 
-	// Create container runtime
-	toolHiveContainers, err := manager.ListWorkloads(ctx, listAll)
+	workloadList, err := manager.ListWorkloads(ctx, listAll, listLabelFilter...)
 	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
+		return fmt.Errorf("failed to list workloads: %v", err)
 	}
 
-	if len(toolHiveContainers) == 0 {
+	if len(workloadList) == 0 {
 		fmt.Println("No MCP servers found")
 		return nil
 	}
@@ -52,19 +53,19 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	// Output based on format
 	switch listFormat {
 	case FormatJSON:
-		return printJSONOutput(toolHiveContainers)
+		return printJSONOutput(workloadList)
 	case "mcpservers":
-		return printMCPServersOutput(toolHiveContainers)
+		return printMCPServersOutput(workloadList)
 	default:
-		printTextOutput(toolHiveContainers)
+		printTextOutput(workloadList)
 		return nil
 	}
 }
 
-// printJSONOutput prints container information in JSON format
-func printJSONOutput(containers []workloads.Workload) error {
+// printJSONOutput prints workload information in JSON format
+func printJSONOutput(workloadList []workloads.Workload) error {
 	// Marshal to JSON
-	jsonData, err := json.MarshalIndent(containers, "", "  ")
+	jsonData, err := json.MarshalIndent(workloadList, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}
@@ -76,14 +77,15 @@ func printJSONOutput(containers []workloads.Workload) error {
 
 // printMCPServersOutput prints MCP servers configuration in JSON format
 // This format is compatible with client configuration files
-func printMCPServersOutput(containers []workloads.Workload) error {
+func printMCPServersOutput(workloadList []workloads.Workload) error {
 	// Create a map to hold the MCP servers configuration
 	mcpServers := make(map[string]map[string]string)
 
-	for _, c := range containers {
+	for _, c := range workloadList {
 		// Add the MCP server to the map
 		mcpServers[c.Name] = map[string]string{
-			"url": c.URL,
+			"url":  c.URL,
+			"type": c.TransportType.String(),
 		}
 	}
 
@@ -100,22 +102,23 @@ func printMCPServersOutput(containers []workloads.Workload) error {
 	return nil
 }
 
-// printTextOutput prints container information in text format
-func printTextOutput(containers []workloads.Workload) {
+// printTextOutput prints workload information in text format
+func printTextOutput(workloadList []workloads.Workload) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tTOOL TYPE\tCREATED AT")
+	fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tTOOL TYPE\tGROUP\tCREATED AT")
 
-	// Print container information
-	for _, c := range containers {
-		// Print container information
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+	// Print workload information
+	for _, c := range workloadList {
+		// Print workload information
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 			c.Name,
 			c.Package,
 			c.Status,
 			c.URL,
 			c.Port,
 			c.ToolType,
+			c.Group,
 			c.CreatedAt,
 		)
 	}

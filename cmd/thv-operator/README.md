@@ -238,12 +238,12 @@ kubebuilder create api --group toolhive --version v1alpha1 --kind MCPServer
 
 Update CRD manifests after changing API types:
 ```bash
-make manifests
+task operator-manifests
 ```
 
 Run the controller locally:
 ```bash
-make run
+task operator-run
 ```
 
 #### Project Structure

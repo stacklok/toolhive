@@ -13,7 +13,7 @@ var (
 	ErrTransportNotStarted  = errors.New("transport not started")
 	ErrTransportClosed      = errors.New("transport closed")
 	ErrInvalidMessage       = errors.New("invalid message")
-	ErrRuntimeNotSet        = errors.New("container runtime not set")
+	ErrRuntimeNotSet        = errors.New("container deployer not set")
 	ErrContainerIDNotSet    = errors.New("container ID not set")
 	ErrContainerNameNotSet  = errors.New("container name not set")
 )

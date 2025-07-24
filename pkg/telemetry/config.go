@@ -45,7 +45,7 @@ type Config struct {
 	// Headers contains authentication headers for the OTLP endpoint
 	Headers map[string]string
 
-	// Insecure indicates whether to disable TLS verification
+	// Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint
 	Insecure bool
 
 	// EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint

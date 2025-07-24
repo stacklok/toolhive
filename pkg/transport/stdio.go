@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/httpsse"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/streamable"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -26,10 +27,10 @@ import (
 // It acts as a proxy between the MCP client and the container's stdin/stdout.
 type StdioTransport struct {
 	host              string
-	port              int
+	proxyPort         int
 	containerID       string
 	containerName     string
-	runtime           rt.Runtime
+	deployer          rt.Deployer
 	debug             bool
 	middlewares       []types.Middleware
 	prometheusHandler http.Handler
@@ -41,8 +42,9 @@ type StdioTransport struct {
 	shutdownCh chan struct{}
 	errorCh    <-chan error
 
-	// HTTP SSE proxy
+	// Proxy (SSE or Streamable HTTP)
 	httpProxy types.Proxy
+	proxyMode types.ProxyMode
 
 	// Container I/O
 	stdin  io.WriteCloser
@@ -55,21 +57,27 @@ type StdioTransport struct {
 // NewStdioTransport creates a new stdio transport.
 func NewStdioTransport(
 	host string,
-	port int,
-	runtime rt.Runtime,
+	proxyPort int,
+	deployer rt.Deployer,
 	debug bool,
 	prometheusHandler http.Handler,
 	middlewares ...types.Middleware,
 ) *StdioTransport {
 	return &StdioTransport{
 		host:              host,
-		port:              port,
-		runtime:           runtime,
+		proxyPort:         proxyPort,
+		deployer:          deployer,
 		debug:             debug,
 		middlewares:       middlewares,
 		prometheusHandler: prometheusHandler,
 		shutdownCh:        make(chan struct{}),
+		proxyMode:         types.ProxyModeSSE, // default to SSE for backward compatibility
 	}
+}
+
+// SetProxyMode allows configuring the proxy mode (SSE or Streamable HTTP)
+func (t *StdioTransport) SetProxyMode(mode types.ProxyMode) {
+	t.proxyMode = mode
 }
 
 // Mode returns the transport mode.
@@ -77,15 +85,15 @@ func (*StdioTransport) Mode() types.TransportType {
 	return types.TransportTypeStdio
 }
 
-// Port returns the port used by the transport.
-func (t *StdioTransport) Port() int {
-	return t.port
+// ProxyPort returns the proxy port used by the transport.
+func (t *StdioTransport) ProxyPort() int {
+	return t.proxyPort
 }
 
 // Setup prepares the transport for use.
 func (t *StdioTransport) Setup(
 	ctx context.Context,
-	runtime rt.Runtime,
+	runtime rt.Deployer,
 	containerName string,
 	image string,
 	cmdArgs []string,
@@ -97,7 +105,7 @@ func (t *StdioTransport) Setup(
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	t.runtime = runtime
+	t.deployer = runtime
 	t.containerName = containerName
 
 	// Add transport-specific environment variables
@@ -110,7 +118,7 @@ func (t *StdioTransport) Setup(
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, _, err := t.runtime.DeployWorkload(
+	containerID, _, err := t.deployer.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -137,6 +145,9 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
+	// logger.Infof("Starting stdio transport with proxy mode: %s", t.proxyMode)
+	fmt.Printf("DEBUG: Starting stdio transport with proxy mode: %s\n", t.proxyMode)
+
 	if t.containerID == "" {
 		return errors.ErrContainerIDNotSet
 	}
@@ -145,23 +156,34 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		return errors.ErrContainerNameNotSet
 	}
 
-	if t.runtime == nil {
-		return fmt.Errorf("container runtime not set")
+	if t.deployer == nil {
+		return fmt.Errorf("container deployer not set")
 	}
 
 	// Attach to the container
 	var err error
-	t.stdin, t.stdout, err = t.runtime.AttachToWorkload(ctx, t.containerID)
+	t.stdin, t.stdout, err = t.deployer.AttachToWorkload(ctx, t.containerID)
 	if err != nil {
 		return fmt.Errorf("failed to attach to container: %w", err)
 	}
 
-	// Create and start the HTTP SSE proxy with middlewares
-	t.httpProxy = httpsse.NewHTTPSSEProxy(t.host, t.port, t.containerName, t.prometheusHandler, t.middlewares...)
-	if err := t.httpProxy.Start(ctx); err != nil {
-		return err
+	// Create and start the correct proxy with middlewares
+	switch t.proxyMode {
+	case types.ProxyModeStreamableHTTP:
+		t.httpProxy = streamable.NewHTTPProxy(t.host, t.proxyPort, t.containerName, t.prometheusHandler, t.middlewares...)
+		if err := t.httpProxy.Start(ctx); err != nil {
+			return err
+		}
+		logger.Info("Streamable HTTP proxy started, processing messages...")
+	case types.ProxyModeSSE:
+		t.httpProxy = httpsse.NewHTTPSSEProxy(t.host, t.proxyPort, t.containerName, t.prometheusHandler, t.middlewares...)
+		if err := t.httpProxy.Start(ctx); err != nil {
+			return err
+		}
+		logger.Info("HTTP SSE proxy started, processing messages...")
+	default:
+		return fmt.Errorf("unsupported proxy mode: %v", t.proxyMode)
 	}
-	logger.Info("HTTP SSE proxy started, processing messages...")
 
 	// Start processing messages in a goroutine
 	go t.processMessages(ctx, t.stdin, t.stdout)
@@ -233,16 +255,16 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 		t.stdin = nil
 	}
 
-	// Stop the container if runtime is available and we haven't already stopped it
-	if t.runtime != nil && t.containerID != "" {
+	// Stop the container if deployer is available and we haven't already stopped it
+	if t.deployer != nil && t.containerID != "" {
 		// Check if the workload is still running before trying to stop it
-		running, err := t.runtime.IsWorkloadRunning(ctx, t.containerID)
+		running, err := t.deployer.IsWorkloadRunning(ctx, t.containerID)
 		if err != nil {
 			// If there's an error checking the workload status, it might be gone already
 			logger.Warnf("Warning: Failed to check workload status: %v", err)
 		} else if running {
 			// Only try to stop the workload if it's still running
-			if err := t.runtime.StopWorkload(ctx, t.containerID); err != nil {
+			if err := t.deployer.StopWorkload(ctx, t.containerID); err != nil {
 				logger.Warnf("Warning: Failed to stop workload: %v", err)
 			}
 		}
@@ -420,9 +442,12 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	// Log the message
 	logger.Infof("Received JSON-RPC message: %T", msg)
 
-	// Forward to SSE clients via the HTTP proxy
 	if err := t.httpProxy.ForwardResponseToClients(ctx, msg); err != nil {
-		logger.Errorf("Error forwarding to SSE clients: %v", err)
+		if t.proxyMode == types.ProxyModeStreamableHTTP {
+			logger.Errorf("Error forwarding to streamable-http client: %v", err)
+		} else {
+			logger.Errorf("Error forwarding to SSE clients: %v", err)
+		}
 	}
 }
 

@@ -23,13 +23,13 @@ type Transport interface {
 	Mode() TransportType
 
 	// Port returns the port used by the transport.
-	Port() int
+	ProxyPort() int
 
 	// Setup prepares the transport for use.
 	// The runtime parameter provides access to container operations.
 	// The permissionProfile is used to configure container permissions.
 	// The k8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template.
-	Setup(ctx context.Context, runtime rt.Runtime, containerName string, image string, cmdArgs []string,
+	Setup(ctx context.Context, runtime rt.Deployer, containerName string, image string, cmdArgs []string,
 		envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
 		isolateNetwork bool) error
 
@@ -107,8 +107,8 @@ type Config struct {
 	// Type is the type of transport to use.
 	Type TransportType
 
-	// Port is the port to use for network transports (host port).
-	Port int
+	// ProxyPort is the port to use for network transports (host port).
+	ProxyPort int
 
 	// TargetPort is the port that the container will expose (container port).
 	// This is only applicable to SSE transport.
@@ -121,9 +121,9 @@ type Config struct {
 	// Host is the host to use for network transports.
 	Host string
 
-	// Runtime is the container runtime to use.
+	// Deployer is the container runtime to use.
 	// This is used for container operations like creating, starting, and attaching.
-	Runtime rt.Runtime
+	Deployer rt.Deployer
 
 	// Debug indicates whether debug mode is enabled.
 	// If debug mode is enabled, containers will not be removed when stopped.
@@ -136,4 +136,26 @@ type Config struct {
 	// PrometheusHandler is an optional HTTP handler for Prometheus metrics endpoint.
 	// If provided, it will be exposed at /metrics on the transport's HTTP server.
 	PrometheusHandler http.Handler
+
+	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+	ProxyMode ProxyMode
+}
+
+// ProxyMode represents the proxy mode for stdio transport.
+type ProxyMode string
+
+const (
+	// ProxyModeSSE is the proxy mode for SSE.
+	ProxyModeSSE ProxyMode = "sse"
+	// ProxyModeStreamableHTTP is the proxy mode for streamable HTTP.
+	ProxyModeStreamableHTTP ProxyMode = "streamable-http"
+)
+
+// IsValidProxyMode returns true if the given mode is a valid ProxyMode.
+func IsValidProxyMode(mode string) bool {
+	return mode == ProxyModeSSE.String() || mode == ProxyModeStreamableHTTP.String()
+}
+
+func (p ProxyMode) String() string {
+	return string(p)
 }

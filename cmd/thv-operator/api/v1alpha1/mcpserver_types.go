@@ -66,17 +66,32 @@ type MCPServerSpec struct {
 	// OIDCConfig defines OIDC authentication configuration for the MCP server
 	// +optional
 	OIDCConfig *OIDCConfigRef `json:"oidcConfig,omitempty"`
+
+	// AuthzConfig defines authorization policy configuration for the MCP server
+	// +optional
+	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
 type ResourceOverrides struct {
 	// ProxyDeployment defines overrides for the Proxy Deployment resource (toolhive proxy)
 	// +optional
-	ProxyDeployment *ResourceMetadataOverrides `json:"proxyDeployment,omitempty"`
+	ProxyDeployment *ProxyDeploymentOverrides `json:"proxyDeployment,omitempty"`
 
 	// ProxyService defines overrides for the Proxy Service resource (points to the proxy deployment)
 	// +optional
 	ProxyService *ResourceMetadataOverrides `json:"proxyService,omitempty"`
+}
+
+// ProxyDeploymentOverrides defines overrides specific to the proxy deployment
+type ProxyDeploymentOverrides struct {
+	// ResourceMetadataOverrides is embedded to inherit annotations and labels fields
+	ResourceMetadataOverrides `json:",inline"` // nolint:revive
+
+	// Env are environment variables to set in the proxy container (thv run process)
+	// These affect the toolhive proxy itself, not the MCP server it manages
+	// +optional
+	Env []EnvVar `json:"env,omitempty"`
 }
 
 // ResourceMetadataOverrides defines metadata overrides for a resource
@@ -174,10 +189,19 @@ const (
 	OIDCConfigTypeKubernetes = "kubernetes"
 
 	// OIDCConfigTypeConfigMap is the type for OIDC configuration stored in ConfigMaps
-	OIDCConfigTypeConfigMap = "configmap"
+	OIDCConfigTypeConfigMap = "configMap"
 
 	// OIDCConfigTypeInline is the type for inline OIDC configuration
 	OIDCConfigTypeInline = "inline"
+)
+
+// Authorization configuration types
+const (
+	// AuthzConfigTypeConfigMap is the type for authorization configuration stored in ConfigMaps
+	AuthzConfigTypeConfigMap = "configMap"
+
+	// AuthzConfigTypeInline is the type for inline authorization configuration
+	AuthzConfigTypeInline = "inline"
 )
 
 // PermissionProfileRef defines a reference to a permission profile
@@ -228,10 +252,6 @@ type OutboundNetworkPermissions struct {
 	// +optional
 	InsecureAllowAll bool `json:"insecureAllowAll,omitempty"`
 
-	// AllowTransport is a list of transport protocols to allow (e.g., "tcp", "udp")
-	// +optional
-	AllowTransport []string `json:"allowTransport,omitempty"`
-
 	// AllowHost is a list of hosts to allow connections to
 	// +optional
 	AllowHost []string `json:"allowHost,omitempty"`
@@ -244,7 +264,7 @@ type OutboundNetworkPermissions struct {
 // OIDCConfigRef defines a reference to OIDC configuration
 type OIDCConfigRef struct {
 	// Type is the type of OIDC configuration
-	// +kubebuilder:validation:Enum=kubernetes;configmap;inline
+	// +kubebuilder:validation:Enum=kubernetes;configMap;inline
 	// +kubebuilder:default=kubernetes
 	Type string `json:"type"`
 
@@ -266,8 +286,7 @@ type OIDCConfigRef struct {
 
 // KubernetesOIDCConfig configures OIDC for Kubernetes service account token validation
 type KubernetesOIDCConfig struct {
-	// ServiceAccount is the name of the service account to validate tokens for
-	// If empty, uses the pod's service account
+	// ServiceAccount is deprecated and will be removed in a future release.
 	// +optional
 	ServiceAccount string `json:"serviceAccount,omitempty"`
 
@@ -287,9 +306,16 @@ type KubernetesOIDCConfig struct {
 	Issuer string `json:"issuer,omitempty"`
 
 	// JWKSURL is the URL to fetch the JWKS from
-	// +kubebuilder:default="https://kubernetes.default.svc/openid/v1/jwks"
+	// If empty, OIDC discovery will be used to automatically determine the JWKS URL
 	// +optional
 	JWKSURL string `json:"jwksUrl,omitempty"`
+
+	// UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token
+	// When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification
+	// and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication
+	// Defaults to true if not specified
+	// +optional
+	UseClusterAuth *bool `json:"useClusterAuth"`
 }
 
 // ConfigMapOIDCRef references a ConfigMap containing OIDC configuration
@@ -318,9 +344,68 @@ type InlineOIDCConfig struct {
 	// +optional
 	JWKSURL string `json:"jwksUrl,omitempty"`
 
-	// ClientID is the OIDC client ID
+	// ClientID is deprecated and will be removed in a future release.
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
+
+	// ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
+	// The file must be mounted into the pod (e.g., via ConfigMap or Secret volume)
+	// +optional
+	ThvCABundlePath string `json:"thvCABundlePath,omitempty"`
+
+	// JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests
+	// The file must be mounted into the pod (e.g., via Secret volume)
+	// +optional
+	JWKSAuthTokenPath string `json:"jwksAuthTokenPath,omitempty"`
+
+	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+	// Use with caution - only enable for trusted internal IDPs
+	// +kubebuilder:default=false
+	// +optional
+	JWKSAllowPrivateIP bool `json:"jwksAllowPrivateIP"`
+}
+
+// AuthzConfigRef defines a reference to authorization configuration
+type AuthzConfigRef struct {
+	// Type is the type of authorization configuration
+	// +kubebuilder:validation:Enum=configMap;inline
+	// +kubebuilder:default=configMap
+	Type string `json:"type"`
+
+	// ConfigMap references a ConfigMap containing authorization configuration
+	// Only used when Type is "configMap"
+	// +optional
+	ConfigMap *ConfigMapAuthzRef `json:"configMap,omitempty"`
+
+	// Inline contains direct authorization configuration
+	// Only used when Type is "inline"
+	// +optional
+	Inline *InlineAuthzConfig `json:"inline,omitempty"`
+}
+
+// ConfigMapAuthzRef references a ConfigMap containing authorization configuration
+type ConfigMapAuthzRef struct {
+	// Name is the name of the ConfigMap
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Key is the key in the ConfigMap that contains the authorization configuration
+	// +kubebuilder:default=authz.json
+	// +optional
+	Key string `json:"key,omitempty"`
+}
+
+// InlineAuthzConfig contains direct authorization configuration
+type InlineAuthzConfig struct {
+	// Policies is a list of Cedar policy strings
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	Policies []string `json:"policies"`
+
+	// EntitiesJSON is a JSON string representing Cedar entities
+	// +kubebuilder:default="[]"
+	// +optional
+	EntitiesJSON string `json:"entitiesJson,omitempty"`
 }
 
 // MCPServerStatus defines the observed state of MCPServer

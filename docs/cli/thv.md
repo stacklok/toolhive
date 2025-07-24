@@ -44,6 +44,8 @@ thv [flags]
 * [thv restart](thv_restart.md)	 - Restart a tooling server
 * [thv rm](thv_rm.md)	 - Remove an MCP server
 * [thv run](thv_run.md)	 - Run an MCP server
+* [thv runtime](thv_runtime.md)	 - Commands related to the container runtime
+* [thv runtime](thv_runtime.md)	 - Commands related to the container runtime
 * [thv search](thv_search.md)	 - Search for MCP servers
 * [thv secret](thv_secret.md)	 - Manage secrets
 * [thv serve](thv_serve.md)	 - Start the ToolHive API server

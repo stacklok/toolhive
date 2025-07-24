@@ -1,11 +1,14 @@
 package workloads
 
 import (
+	"context"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -65,6 +68,22 @@ type Workload struct {
 	Group string `json:"group,omitempty"`
 }
 
+// loadGroupFromRunConfig attempts to load group information from the runconfig
+// Returns empty string if runconfig doesn't exist or doesn't have group info
+func loadGroupFromRunConfig(ctx context.Context, name string) (string, error) {
+	// Try to load the runconfig
+	runnerInstance, err := runner.LoadState(ctx, name)
+	if err != nil {
+		if errors.IsRunConfigNotFound(err) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	// Return the group from the runconfig
+	return runnerInstance.Config.Group, nil
+}
+
 // WorkloadFromContainerInfo creates a Workload struct from the runtime container info.
 func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, error) {
 	// Get container name from labels
@@ -118,8 +137,11 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 		}
 	}
 
-	// Get group information from labels
-	groupName := labels.GetGroup(container.Labels)
+	ctx := context.Background()
+	groupName, err := loadGroupFromRunConfig(ctx, name)
+	if err != nil {
+		return Workload{}, err
+	}
 
 	// Translate to domain model.
 	return Workload{

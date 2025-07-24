@@ -13,8 +13,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state/mocks"
-	"github.com/stacklok/toolhive/pkg/workloads"
-	workloadmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
 func init() {
@@ -103,7 +101,7 @@ func TestManager_Create(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{store: mockStore, workloadManager: nil}
+			manager := &manager{store: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -178,7 +176,7 @@ func TestManager_Get(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{store: mockStore, workloadManager: nil}
+			manager := &manager{store: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -284,7 +282,7 @@ func TestManager_List(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{store: mockStore, workloadManager: nil}
+			manager := &manager{store: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -370,7 +368,7 @@ func TestManager_Delete(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{store: mockStore, workloadManager: nil}
+			manager := &manager{store: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -444,7 +442,7 @@ func TestManager_Exists(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{store: mockStore, workloadManager: nil}
+			manager := &manager{store: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -469,65 +467,17 @@ func TestManager_GetWorkloadGroup(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                 string
-		workloadName         string
-		setupMock            func(*mocks.MockStore)
-		setupWorkloadManager func(*workloadmocks.MockManager)
-		workloadGroup        string // The group the workload belongs to (empty if none)
-		expectError          bool
-		expectedGroup        *Group
-		errorMsg             string
+		name          string
+		workloadName  string
+		expectError   bool
+		expectedGroup *Group
+		errorMsg      string
 	}{
 		{
-			name:          "workload found in group",
-			workloadName:  "test-workload",
-			workloadGroup: testGroupName,
-			setupMock: func(mock *mocks.MockStore) {
-				// Mock GetReader for the group
-				mock.EXPECT().
-					GetReader(gomock.Any(), testGroupName).
-					Return(&mockReadCloser{data: `{"name":"` + testGroupName + `"}`}, nil)
-			},
-			setupWorkloadManager: func(mock *workloadmocks.MockManager) {
-				// Mock GetWorkload to return a workload in a group
-				mock.EXPECT().
-					GetWorkload(gomock.Any(), "test-workload").
-					Return(workloads.Workload{Name: "test-workload", Group: testGroupName}, nil)
-			},
-			expectError:   false,
-			expectedGroup: &Group{Name: testGroupName},
-		},
-		{
-			name:          "workload not found in any group",
+			name:          "workload not found",
 			workloadName:  "nonexistent-workload",
-			workloadGroup: "",
-			setupMock: func(_ *mocks.MockStore) {
-				// No mock expectations needed since workload has no group
-			},
-			setupWorkloadManager: func(mock *workloadmocks.MockManager) {
-				// Mock GetWorkload to return a workload with no group
-				mock.EXPECT().
-					GetWorkload(gomock.Any(), "nonexistent-workload").
-					Return(workloads.Workload{Name: "nonexistent-workload", Group: ""}, nil)
-			},
 			expectError:   false,
 			expectedGroup: nil,
-		},
-		{
-			name:          "workload manager fails to get workload",
-			workloadName:  "test-workload",
-			workloadGroup: "",
-			setupMock: func(_ *mocks.MockStore) {
-				// No mock expectations needed since workload manager will fail
-			},
-			setupWorkloadManager: func(mock *workloadmocks.MockManager) {
-				// Mock GetWorkload to fail
-				mock.EXPECT().
-					GetWorkload(gomock.Any(), "test-workload").
-					Return(workloads.Workload{}, errors.New("workload not found"))
-			},
-			expectError:   false,
-			expectedGroup: nil, // When workload manager fails, we return nil (not in any group)
 		},
 	}
 
@@ -539,12 +489,7 @@ func TestManager_GetWorkloadGroup(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			mockWorkloadManager := workloadmocks.NewMockManager(ctrl)
-			manager := &manager{store: mockStore, workloadManager: mockWorkloadManager}
-
-			// Set up mock expectations
-			tt.setupMock(mockStore)
-			tt.setupWorkloadManager(mockWorkloadManager)
+			manager := &manager{store: mockStore}
 
 			// Call the method
 			group, err := manager.GetWorkloadGroup(context.Background(), tt.workloadName)
@@ -578,24 +523,5 @@ func (m *mockWriteCloser) Write(p []byte) (n int, err error) {
 }
 
 func (*mockWriteCloser) Close() error {
-	return nil
-}
-
-// mockReadCloser implements io.ReadCloser for testing
-type mockReadCloser struct {
-	data string
-	pos  int
-}
-
-func (m *mockReadCloser) Read(p []byte) (n int, err error) {
-	if m.pos >= len(m.data) {
-		return 0, io.EOF
-	}
-	n = copy(p, m.data[m.pos:])
-	m.pos += n
-	return n, nil
-}
-
-func (*mockReadCloser) Close() error {
 	return nil
 }

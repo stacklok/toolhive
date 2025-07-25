@@ -16,9 +16,10 @@ import (
 
 // Processor handles loading and processing ignore patterns
 type Processor struct {
-	GlobalPatterns []string
-	LocalPatterns  []string
-	Config         *Config
+	GlobalPatterns  []string
+	LocalPatterns   []string
+	Config          *Config
+	sharedEmptyFile string // Cached path to a single shared empty file
 }
 
 // Config holds configuration for ignore processing
@@ -84,7 +85,7 @@ func (p *Processor) LoadLocal(sourceDir string) error {
 		return fmt.Errorf("failed to load local ignore file: %w", err)
 	}
 
-	p.LocalPatterns = patterns
+	p.LocalPatterns = append(p.LocalPatterns, patterns...)
 	logger.Debugf("Loaded %d local ignore patterns from %s", len(patterns), localIgnoreFile)
 	return nil
 }
@@ -224,16 +225,45 @@ func (p *Processor) printOverlays(overlayMounts []OverlayMount, bindMount, conta
 	}
 }
 
-// createEmptyFile creates a temporary empty file for bind mounting
-func (*Processor) createEmptyFile() (string, error) {
-	tmpFile, err := os.CreateTemp("", "thvignore-empty-*")
+// createEmptyFile returns a path to a shared empty file for bind mounting
+func (p *Processor) createEmptyFile() (string, error) {
+	// Return cached shared empty file if it exists
+	if p.sharedEmptyFile != "" {
+		// Verify the file still exists
+		if _, err := os.Stat(p.sharedEmptyFile); err == nil {
+			return p.sharedEmptyFile, nil
+		}
+		// File was deleted, clear the cache
+		p.sharedEmptyFile = ""
+	}
+
+	// Create a new shared empty file
+	tmpFile, err := os.CreateTemp("", "thvignore-shared-empty-*")
 	if err != nil {
-		return "", fmt.Errorf("failed to create temporary empty file: %w", err)
+		return "", fmt.Errorf("failed to create shared empty file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
-		return "", fmt.Errorf("failed to close temporary file: %w", err)
+		return "", fmt.Errorf("failed to close shared empty file: %w", err)
 	}
-	return tmpFile.Name(), nil
+
+	// Cache the path for reuse
+	p.sharedEmptyFile = tmpFile.Name()
+	logger.Debugf("Created shared empty file for bind mounting: %s", p.sharedEmptyFile)
+
+	return p.sharedEmptyFile, nil
+}
+
+// Cleanup removes the shared empty file if it exists
+func (p *Processor) Cleanup() error {
+	if p.sharedEmptyFile != "" {
+		if err := os.Remove(p.sharedEmptyFile); err != nil && !os.IsNotExist(err) {
+			logger.Debugf("Failed to remove shared empty file %s: %v", p.sharedEmptyFile, err)
+			return fmt.Errorf("failed to remove shared empty file: %w", err)
+		}
+		logger.Debugf("Cleaned up shared empty file: %s", p.sharedEmptyFile)
+		p.sharedEmptyFile = ""
+	}
+	return nil
 }
 
 // GetOverlayPaths returns container paths that should be overlaid

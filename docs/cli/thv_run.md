@@ -59,7 +59,6 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --from-config string                    Load configuration from exported file
   -h, --help                                  help for run
       --host string                           Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
-      --ignore-file string                    Name of the ignore file to look for in source directories (default ".thvignore")
       --ignore-globally                       Load global ignore patterns from ~/.config/toolhive/thvignore (default true)
       --image-verification string             Set image verification mode (warn, enabled, disabled) (default "warn")
       --isolate-network                       Isolate the container network from the host (default: false)

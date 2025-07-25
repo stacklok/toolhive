@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -77,8 +80,35 @@ func init() {
 	AddOIDCFlags(runCmd)
 }
 
+func cleanupAndWait(workloadManager workloads.Manager, name string, cancel context.CancelFunc, errCh <-chan error) {
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cleanupCancel()
+
+	group, err := workloadManager.DeleteWorkloads(cleanupCtx, []string{name})
+	if err != nil {
+		logger.Warnf("Failed to delete workload %q: %v", name, err)
+	} else if group != nil {
+		if err := group.Wait(); err != nil {
+			logger.Warnf("DeleteWorkloads group error for %q: %v", name, err)
+		}
+	}
+
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		logger.Warnf("Timeout waiting for workload to stop")
+	}
+}
+
 func runCmdFunc(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
+
+	// Set up signal handler
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
 	// Check if we should load configuration from a file
 	if runFlags.FromConfig != "" {
@@ -146,17 +176,24 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	workloadManager := workloads.NewManagerFromRuntime(rt)
 
 	if runFlags.Foreground {
-		err = workloadManager.RunWorkload(ctx, runnerConfig)
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- workloadManager.RunWorkload(ctx, runnerConfig)
+		}()
+
+		select {
+		case sig := <-sigCh:
+			logger.Infof("Received signal: %v, stopping server %q", sig, runnerConfig.BaseName)
+			cleanupAndWait(workloadManager, runnerConfig.BaseName, cancel, errCh)
+			return nil
+		case err := <-errCh:
+			return err
+		}
 	} else {
-		// Run the workload in detached mode
-		err = workloadManager.RunWorkloadDetached(ctx, runnerConfig)
-	}
-	if err != nil {
+		// Detached mode: just start and return
+		err := workloadManager.RunWorkloadDetached(ctx, runnerConfig)
 		return err
 	}
-
-	return nil
-
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator

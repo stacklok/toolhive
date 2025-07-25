@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -440,6 +441,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))
 	}
 
+	// Add tools filter args
+	if len(m.Spec.ToolsFilter) > 0 {
+		slices.Sort(m.Spec.ToolsFilter)
+		args = append(args, fmt.Sprintf("--tools=%s", strings.Join(m.Spec.ToolsFilter, ",")))
+	}
+
 	// Add the image
 	args = append(args, m.Spec.Image)
 
@@ -803,6 +810,22 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 		}
 		if !found {
 			return true
+		}
+
+		// Check if the tools filter has changed
+		if mcpServer.Spec.ToolsFilter == nil {
+			for _, arg := range container.Args {
+				if strings.HasPrefix(arg, "--tools=") {
+					return true
+				}
+			}
+		} else {
+			slices.Sort(mcpServer.Spec.ToolsFilter)
+			toolsFilterArg := fmt.Sprintf("--tools=%s", strings.Join(mcpServer.Spec.ToolsFilter, ","))
+			found = slices.Contains(container.Args, toolsFilterArg)
+			if !found {
+				return true
+			}
 		}
 
 		// Check if the pod template spec has changed

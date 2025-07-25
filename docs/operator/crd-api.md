@@ -233,6 +233,7 @@ _Appears in:_
 | `resourceOverrides` _[ResourceOverrides](#resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
 | `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the MCP server |  |  |
 | `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  |  |
+| `tools` _string array_ | ToolsFilter is the filter on tools applied to the MCP server |  |  |
 
 
 #### MCPServerStatus

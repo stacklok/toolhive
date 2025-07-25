@@ -231,8 +231,8 @@ func removeWorkloadsMembershipFromGroup(ctx context.Context, groupWorkloads []st
 	}
 
 	// Remove group membership from all workloads
-	if err := workloadManager.RemoveFromGroup(ctx, groupWorkloads, groupName); err != nil {
-		return fmt.Errorf("failed to remove workloads from group: %w", err)
+	if err := workloadManager.MoveToDefaultGroup(ctx, groupWorkloads, groupName); err != nil {
+		return fmt.Errorf("failed to move workloads to default group: %w", err)
 	}
 
 	fmt.Printf("Removed %d workload(s) from group '%s'\n", len(groupWorkloads), groupName)

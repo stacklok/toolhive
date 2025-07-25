@@ -108,18 +108,18 @@ func (mr *MockManagerMockRecorder) ListWorkloads(ctx, listAll any, labelFilters 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloads", reflect.TypeOf((*MockManager)(nil).ListWorkloads), varargs...)
 }
 
-// RemoveFromGroup mocks base method.
-func (m *MockManager) RemoveFromGroup(ctx context.Context, workloadNames []string, groupName string) error {
+// MoveToDefaultGroup mocks base method.
+func (m *MockManager) MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RemoveFromGroup", ctx, workloadNames, groupName)
+	ret := m.ctrl.Call(m, "MoveToDefaultGroup", ctx, workloadNames, groupName)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// RemoveFromGroup indicates an expected call of RemoveFromGroup.
-func (mr *MockManagerMockRecorder) RemoveFromGroup(ctx, workloadNames, groupName any) *gomock.Call {
+// MoveToDefaultGroup indicates an expected call of MoveToDefaultGroup.
+func (mr *MockManagerMockRecorder) MoveToDefaultGroup(ctx, workloadNames, groupName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveFromGroup", reflect.TypeOf((*MockManager)(nil).RemoveFromGroup), ctx, workloadNames, groupName)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MoveToDefaultGroup", reflect.TypeOf((*MockManager)(nil).MoveToDefaultGroup), ctx, workloadNames, groupName)
 }
 
 // RestartWorkloads mocks base method.

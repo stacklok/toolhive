@@ -8,6 +8,9 @@ import (
 	"os"
 )
 
+// DefaultGroup is the name of the default group for workloads
+const DefaultGroup = "default"
+
 // Group represents a logical grouping of MCP servers.
 type Group struct {
 	Name string `json:"name"`

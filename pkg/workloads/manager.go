@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
@@ -56,8 +57,8 @@ type Manager interface {
 	RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
 	// GetLogs retrieves the logs of a container.
 	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
-	// RemoveFromGroup removes the specified workloads from the given group by updating the runconfig.
-	RemoveFromGroup(ctx context.Context, workloadNames []string, groupName string) error
+	// MoveToDefaultGroup moves the specified workloads to the default group by updating the runconfig.
+	MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error
 }
 
 type defaultManager struct {
@@ -887,7 +888,7 @@ func validateWorkloadName(name string) error {
 }
 
 // RemoveFromGroup removes the specified workloads from the given group by updating the runconfig.
-func (d *defaultManager) RemoveFromGroup(ctx context.Context, workloadNames []string, groupName string) error {
+func (d *defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error {
 	for _, workloadName := range workloadNames {
 		// Validate workload name
 		if err := validateWorkloadName(workloadName); err != nil {
@@ -907,15 +908,15 @@ func (d *defaultManager) RemoveFromGroup(ctx context.Context, workloadNames []st
 			continue
 		}
 
-		// Remove the group from the configuration
-		runnerInstance.Config.Group = ""
+		// Move the workload to the default group
+		runnerInstance.Config.Group = groups.DefaultGroup
 
 		// Save the updated configuration
 		if err := runnerInstance.SaveState(ctx); err != nil {
 			return fmt.Errorf("failed to save updated configuration for workload %s: %w", workloadName, err)
 		}
 
-		logger.Infof("Removed workload %s from group %s", workloadName, groupName)
+		logger.Infof("Moved workload %s to default group", workloadName)
 	}
 
 	return nil

@@ -102,13 +102,7 @@ func cleanupAndWait(workloadManager workloads.Manager, name string, cancel conte
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
-	ctx, cancel := context.WithCancel(cmd.Context())
-	defer cancel()
-
-	// Set up signal handler
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
+	baseCtx := cmd.Context()
 
 	// Check if we should load configuration from a file
 	if runFlags.FromConfig != "" {
@@ -137,6 +131,8 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		workloadName = serverOrImage
 	}
 
+	isForeground := runFlags.Foreground
+
 	if runFlags.Group != "" {
 		groupManager, err := groups.NewManager()
 		if err != nil {
@@ -144,7 +140,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 
 		// Check if the workload is already in a group
-		group, err := groupManager.GetWorkloadGroup(ctx, workloadName)
+		group, err := groupManager.GetWorkloadGroup(baseCtx, workloadName)
 		if err != nil {
 			return fmt.Errorf("failed to get workload group: %v", err)
 		}
@@ -153,7 +149,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 
 		// Validate that the group specified exists
-		exists, err := groupManager.Exists(ctx, runFlags.Group)
+		exists, err := groupManager.Exists(baseCtx, runFlags.Group)
 		if err != nil {
 			return fmt.Errorf("failed to check if group exists: %v", err)
 		}
@@ -163,37 +159,46 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build the run configuration
-	runnerConfig, err := BuildRunnerConfig(ctx, &runFlags, serverOrImage, cmdArgs, debugMode, cmd)
+	runnerConfig, err := BuildRunnerConfig(baseCtx, &runFlags, serverOrImage, cmdArgs, debugMode, cmd)
 	if err != nil {
 		return err
 	}
 
 	// Create container runtime
-	rt, err := container.NewFactory().Create(ctx)
+	rt, err := container.NewFactory().Create(baseCtx)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 	workloadManager := workloads.NewManagerFromRuntime(rt)
 
-	if runFlags.Foreground {
-		errCh := make(chan error, 1)
-		go func() {
-			errCh <- workloadManager.RunWorkload(ctx, runnerConfig)
-		}()
+	if isForeground {
+		return runForeground(baseCtx, workloadManager, runnerConfig)
+	}
+	return workloadManager.RunWorkloadDetached(baseCtx, runnerConfig)
+}
 
-		select {
-		case sig := <-sigCh:
-			logger.Infof("Received signal: %v, stopping server %q", sig, runnerConfig.BaseName)
-			cleanupAndWait(workloadManager, runnerConfig.BaseName, cancel, errCh)
-			return nil
-		case err := <-errCh:
-			return err
-		}
-	} else {
-		// Detached mode: just start and return
-		err := workloadManager.RunWorkloadDetached(ctx, runnerConfig)
+func runForeground(ctx context.Context, workloadManager workloads.Manager, runnerConfig *runner.RunConfig) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- workloadManager.RunWorkload(ctx, runnerConfig)
+	}()
+
+	select {
+	case sig := <-sigCh:
+		logger.Infof("Received signal: %v, stopping server %q", sig, runnerConfig.BaseName)
+		cleanupAndWait(workloadManager, runnerConfig.BaseName, cancel, errCh)
+		return nil
+	case err := <-errCh:
 		return err
 	}
+
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator

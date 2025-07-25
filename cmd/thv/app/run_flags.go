@@ -81,7 +81,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	// TODO: Re-enable when group functionality is complete
-	// cmd.Flags().StringVar(&config.Group, "group", "",
+	// cmd.Flags().StringVar(&config.Group, "group", "default",
 	//	"Name of the group this workload belongs to (defaults to 'default' if not specified)")
 	cmd.Flags().StringVar(&config.Host, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	cmd.Flags().IntVar(&config.ProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")

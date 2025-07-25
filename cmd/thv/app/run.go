@@ -113,11 +113,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create group manager: %v", err)
 	}
 
-	// Set default group if no group is specified
-	if runFlags.Group == "" {
-		runFlags.Group = groups.DefaultGroupName
-	}
-
 	// Check if the workload is already in a group
 	group, err := groupManager.GetWorkloadGroup(ctx, workloadName)
 	if err != nil {

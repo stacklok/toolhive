@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -190,15 +191,17 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 		errCh <- workloadManager.RunWorkload(ctx, runnerConfig)
 	}()
 
+	internal := os.Getenv(process.ToolHiveDetachedEnv) == process.ToolHiveDetachedValue
 	select {
 	case sig := <-sigCh:
-		logger.Infof("Received signal: %v, stopping server %q", sig, runnerConfig.BaseName)
-		cleanupAndWait(workloadManager, runnerConfig.BaseName, cancel, errCh)
+		if !internal {
+			logger.Infof("Received signal: %v, stopping server %q", sig, runnerConfig.BaseName)
+			cleanupAndWait(workloadManager, runnerConfig.BaseName, cancel, errCh)
+		}
 		return nil
 	case err := <-errCh:
 		return err
 	}
-
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator

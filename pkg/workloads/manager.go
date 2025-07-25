@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -449,11 +448,6 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// Create a new command
 	// #nosec G204 - This is safe as execPath is the path to the current binary
 	detachedCmd := exec.Command(execPath, detachedArgs...)
-	// Prevent the detached child process from inheriting the CLI's signal group
-	detachedCmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-		Pgid:    0, // sets new PGID equal to new PID
-	}
 
 	// Set environment variables for the detached process
 	detachedCmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s", process.ToolHiveDetachedEnv, process.ToolHiveDetachedValue))

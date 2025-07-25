@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -13,6 +15,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/transport/streamable"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -20,6 +25,7 @@ var (
 	mcpServerURL string
 	mcpFormat    string
 	mcpTimeout   time.Duration
+	mcpTransport string
 )
 
 func newMCPCommand() *cobra.Command {
@@ -80,6 +86,7 @@ func addMCPFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&mcpServerURL, "server", "", "MCP server URL (required)")
 	cmd.Flags().StringVar(&mcpFormat, "format", FormatText, "Output format (json or text)")
 	cmd.Flags().DurationVar(&mcpTimeout, "timeout", 30*time.Second, "Connection timeout")
+	cmd.Flags().StringVar(&mcpTransport, "transport", "auto", "Transport type (auto, sse, streamable-http)")
 	_ = cmd.MarkFlagRequired("server")
 }
 
@@ -197,15 +204,67 @@ func mcpListPromptsCmdFunc(cmd *cobra.Command, _ []string) error {
 	return outputMCPData(map[string]interface{}{"prompts": result.Prompts}, mcpFormat)
 }
 
-// createMCPClient creates an MCP client based on the server URL
+// createMCPClient creates an MCP client based on the server URL and transport type
 func createMCPClient() (*client.Client, error) {
-	// For now, we'll use SSE client as the default
-	// In the future, we could auto-detect or allow specifying the transport type
-	mcpClient, err := client.NewSSEMCPClient(mcpServerURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create MCP client: %w", err)
+	transportType := determineTransportType(mcpServerURL, mcpTransport)
+
+	switch transportType {
+	case types.TransportTypeSSE:
+		mcpClient, err := client.NewSSEMCPClient(mcpServerURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create SSE MCP client: %w", err)
+		}
+		return mcpClient, nil
+	case types.TransportTypeStreamableHTTP:
+		mcpClient, err := client.NewStreamableHttpClient(mcpServerURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Streamable HTTP MCP client: %w", err)
+		}
+		return mcpClient, nil
+	case types.TransportTypeStdio:
+		return nil, fmt.Errorf("stdio transport is not supported for MCP client connections")
+	case types.TransportTypeInspector:
+		return nil, fmt.Errorf("inspector transport is not supported for MCP client connections")
+	default:
+		return nil, fmt.Errorf("unsupported transport type: %s", transportType)
 	}
-	return mcpClient, nil
+}
+
+// determineTransportType determines the transport type based on URL path and user preference
+func determineTransportType(serverURL, transportFlag string) types.TransportType {
+	// If user explicitly specified a transport type, use it (unless it's "auto")
+	if transportFlag != "auto" {
+		switch transportFlag {
+		case string(types.TransportTypeSSE):
+			return types.TransportTypeSSE
+		case string(types.TransportTypeStreamableHTTP):
+			return types.TransportTypeStreamableHTTP
+		}
+	}
+
+	// Auto-detect based on URL path
+	parsedURL, err := url.Parse(serverURL)
+	if err != nil {
+		// If we can't parse the URL, default to SSE for backward compatibility
+		logger.Warnf("Failed to parse server URL %s, defaulting to SSE transport: %v", serverURL, err)
+		return types.TransportTypeSSE
+	}
+
+	path := parsedURL.Path
+
+	// Check for streamable HTTP endpoint (/mcp)
+	if strings.HasSuffix(path, "/"+streamable.HTTPStreamableHTTPEndpoint) ||
+		strings.HasSuffix(path, streamable.HTTPStreamableHTTPEndpoint) {
+		return types.TransportTypeStreamableHTTP
+	}
+
+	// Check for SSE endpoint (/sse)
+	if strings.HasSuffix(path, ssecommon.HTTPSSEEndpoint) {
+		return types.TransportTypeSSE
+	}
+
+	// Default to SSE for backward compatibility
+	return types.TransportTypeSSE
 }
 
 // initializeMCPClient initializes the MCP client connection

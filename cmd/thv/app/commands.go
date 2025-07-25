@@ -47,6 +47,7 @@ func NewRootCmd(enableUpdates bool) *cobra.Command {
 	rootCmd.AddCommand(proxyCmd)
 	rootCmd.AddCommand(restartCmd)
 	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(newExportCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(logsCommand())
 	rootCmd.AddCommand(newSecretCommand())

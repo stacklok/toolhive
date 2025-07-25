@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -18,7 +20,7 @@ var runCmd = &cobra.Command{
 	Short: "Run an MCP server",
 	Long: `Run an MCP server with the specified name, image, or protocol scheme.
 
-ToolHive supports three ways to run an MCP server:
+ToolHive supports four ways to run an MCP server:
 
 1. From the registry:
    $ thv run server-name [-- args...]
@@ -39,9 +41,20 @@ ToolHive supports three ways to run an MCP server:
    or go (Golang). For Go, you can also specify local paths starting
    with './' or '../' to build and run local Go projects.
 
+4. From an exported configuration:
+   $ thv run --from-config <path>
+   Runs an MCP server using a previously exported configuration file.
+
 The container will be started with the specified transport mode and
 permission profile. Additional configuration can be provided via flags.`,
-	Args: cobra.MinimumNArgs(1),
+	Args: func(cmd *cobra.Command, args []string) error {
+		// If --from-config is provided, no args are required
+		if runFlags.FromConfig != "" {
+			return nil
+		}
+		// Otherwise, require at least 1 argument
+		return cobra.MinimumNArgs(1)(cmd, args)
+	},
 	RunE: runCmdFunc,
 	// Ignore unknown flags to allow passing flags to the MCP server
 	FParseErrWhitelist: cobra.FParseErrWhitelist{
@@ -67,9 +80,18 @@ func init() {
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
+	// Check if we should load configuration from a file
+	if runFlags.FromConfig != "" {
+		return runFromConfigFile(ctx)
+	}
+
 	// Get the name of the MCP server to run.
 	// This may be a server name from the registry, a container image, or a protocol scheme.
-	serverOrImage := args[0]
+	// When using --from-config, no args are required
+	var serverOrImage string
+	if len(args) > 0 {
+		serverOrImage = args[0]
+	}
 
 	// Process command arguments using os.Args to find everything after --
 	cmdArgs := parseCommandArguments(os.Args)
@@ -181,4 +203,44 @@ func ValidateAndNormaliseHostFlag(host string) (string, error) {
 	}
 
 	return "", fmt.Errorf("could not resolve host: %s", host)
+}
+
+// runFromConfigFile loads a run configuration from a file and executes it
+func runFromConfigFile(ctx context.Context) error {
+	// Open and read the configuration file
+	configFile, err := os.Open(runFlags.FromConfig)
+	if err != nil {
+		return fmt.Errorf("failed to open configuration file '%s': %w", runFlags.FromConfig, err)
+	}
+	defer configFile.Close()
+
+	// Deserialize the configuration
+	runConfig, err := runner.ReadJSON(configFile)
+	if err != nil {
+		return fmt.Errorf("failed to parse configuration file: %w", err)
+	}
+
+	// Create container runtime
+	rt, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container runtime: %v", err)
+	}
+
+	// Set the runtime in the config
+	runConfig.Deployer = rt
+
+	// Create workload manager
+	workloadManager := workloads.NewManagerFromRuntime(rt)
+
+	// Run the workload based on foreground flag
+	if runFlags.Foreground {
+		err = workloadManager.RunWorkload(ctx, runConfig)
+	} else {
+		err = workloadManager.RunWorkloadDetached(ctx, runConfig)
+	}
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

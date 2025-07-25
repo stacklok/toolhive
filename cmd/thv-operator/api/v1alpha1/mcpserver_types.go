@@ -70,6 +70,10 @@ type MCPServerSpec struct {
 	// AuthzConfig defines authorization policy configuration for the MCP server
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
+
+	// ToolsFilter is the filter on tools applied to the MCP server
+	// +optional
+	ToolsFilter []string `json:"tools,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources

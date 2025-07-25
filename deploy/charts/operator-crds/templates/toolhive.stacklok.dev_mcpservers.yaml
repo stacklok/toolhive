@@ -8405,6 +8405,12 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              tools:
+                description: ToolsFilter is the filter on tools applied to the MCP
+                  server
+                items:
+                  type: string
+                type: array
               transport:
                 default: stdio
                 description: Transport is the transport method for the MCP server

@@ -10,7 +10,7 @@
       "groupName": "toolhive images",
       "matchDatasources": ["docker"],
       "matchPackageNames": [
-        "ghcr.io/stacklok/toolhive",
+        "ghcr.io/stacklok/toolhive/proxyrunner",
         "ghcr.io/stacklok/toolhive/operator"
       ],
       "matchFileNames": ["deploy/charts/operator/**"]

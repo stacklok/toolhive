@@ -81,12 +81,12 @@ func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 	}
 
 	// Get all workloads in the group
-	workloadsInGroup, err := groupManager.ListWorkloadsInGroup(ctx, groupName)
+	groupWorkloads, err := groupManager.ListWorkloadsInGroup(ctx, groupName)
 	if err != nil {
 		return fmt.Errorf("failed to list workloads in group: %v", err)
 	}
 
-	if len(workloadsInGroup) == 0 {
+	if len(groupWorkloads) == 0 {
 		fmt.Printf("No workloads found in group '%s'\n", groupName)
 		return nil
 	}
@@ -97,14 +97,8 @@ func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
-	// Extract workload names
-	var workloadNames []string
-	for _, workload := range workloadsInGroup {
-		workloadNames = append(workloadNames, workload.Name)
-	}
-
 	// Delete all workloads in the group
-	group, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
+	group, err := workloadManager.DeleteWorkloads(ctx, groupWorkloads)
 	if err != nil {
 		return fmt.Errorf("failed to delete workloads in group: %v", err)
 	}
@@ -114,6 +108,6 @@ func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 		return fmt.Errorf("failed to delete workloads in group: %v", err)
 	}
 
-	fmt.Printf("Successfully removed %d workload(s) from group '%s'\n", len(workloadNames), groupName)
+	fmt.Printf("Successfully removed %d workload(s) from group '%s'\n", len(groupWorkloads), groupName)
 	return nil
 }

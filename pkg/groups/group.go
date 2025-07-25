@@ -6,8 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-
-	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // Group represents a logical grouping of MCP servers.
@@ -47,6 +45,6 @@ type Manager interface {
 	// Returns nil if the workload is not in any group.
 	GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error)
 
-	// ListWorkloadsInGroup returns all workloads that belong to the specified group.
-	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]*workloads.Workload, error)
+	// ListWorkloadsInGroup returns all workload names that belong to the specified group.
+	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error)
 }

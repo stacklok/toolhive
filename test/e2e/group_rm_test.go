@@ -12,7 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Group Delete E2E Tests", func() {
+var _ = Describe("Group RM E2E Tests", func() {
 	var config *TestConfig
 
 	BeforeEach(func() {
@@ -23,31 +23,31 @@ var _ = Describe("Group Delete E2E Tests", func() {
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
 	})
 
-	Describe("thv group delete command", func() {
-		It("should show help for group delete command", func() {
-			stdout, stderr := NewTHVCommand(config, "group", "delete", "--help").ExpectSuccess()
+	Describe("thv group rm command", func() {
+		It("should show help for group rm command", func() {
+			stdout, stderr := NewTHVCommand(config, "group", "rm", "--help").ExpectSuccess()
 			output := stdout + stderr
-			Expect(output).To(ContainSubstring("Delete a group and remove all MCP servers from it"))
+			Expect(output).To(ContainSubstring("Remove a group and remove all MCP servers from it"))
 			Expect(output).To(ContainSubstring("By default, this only removes the group membership from workloads without deleting them"))
 			Expect(output).To(ContainSubstring("Use --with-workloads to also delete the workloads"))
 			Expect(output).To(ContainSubstring("The command will show a warning and require user confirmation"))
 			Expect(output).To(ContainSubstring("Usage:"))
-			Expect(output).To(ContainSubstring("thv group delete [group-name]"))
+			Expect(output).To(ContainSubstring("thv group rm [group-name]"))
 		})
 
 		It("should return error when group does not exist", func() {
-			groupName := fmt.Sprintf("group-delete-non-existent-group-%d", time.Now().UnixNano())
-			_, stderr, err := NewTHVCommand(config, "group", "delete", groupName).ExpectFailure()
+			groupName := fmt.Sprintf("group-rm-non-existent-group-%d", time.Now().UnixNano())
+			_, stderr, err := NewTHVCommand(config, "group", "rm", groupName).ExpectFailure()
 			Expect(err).To(HaveOccurred())
 			Expect(stderr).To(ContainSubstring("does not exist"))
 		})
 
 		It("should cancel deletion when user does not confirm", func() {
-			groupName := fmt.Sprintf("group-delete-cancel-group-%d", time.Now().UnixNano())
+			groupName := fmt.Sprintf("group-rm-cancel-group-%d", time.Now().UnixNano())
 			createGroup(config, groupName)
 
 			// Try to delete the group but provide 'n' for no
-			cmd := exec.Command(config.THVBinary, "group", "delete", groupName)
+			cmd := exec.Command(config.THVBinary, "group", "rm", groupName)
 			cmd.Stdin = strings.NewReader("n\n")
 			output, err := cmd.CombinedOutput()
 			Expect(err).NotTo(HaveOccurred())
@@ -60,7 +60,7 @@ var _ = Describe("Group Delete E2E Tests", func() {
 
 		It("should delete empty group successfully", func() {
 			// Create a group
-			groupName := fmt.Sprintf("group-delete-empty-group-%d", time.Now().UnixNano())
+			groupName := fmt.Sprintf("group-rm-empty-group-%d", time.Now().UnixNano())
 			createGroup(config, groupName)
 
 			// Verify group exists
@@ -68,12 +68,11 @@ var _ = Describe("Group Delete E2E Tests", func() {
 			Expect(stdout).To(ContainSubstring(groupName))
 
 			// Delete the group (provide confirmation)
-			cmd := exec.Command(config.THVBinary, "group", "delete", groupName)
+			cmd := exec.Command(config.THVBinary, "group", "rm", groupName)
 			cmd.Stdin = strings.NewReader("y\n")
 			output, err := cmd.CombinedOutput()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(output)).To(ContainSubstring("WARNING:"))
-			Expect(string(output)).To(ContainSubstring("No workloads are currently in this group"))
 			Expect(string(output)).To(ContainSubstring(fmt.Sprintf("Group '%s' deleted successfully", groupName)))
 
 			// Verify group is deleted
@@ -83,18 +82,18 @@ var _ = Describe("Group Delete E2E Tests", func() {
 
 		It("should delete group with single workload", func() {
 			// Create a group
-			groupName := fmt.Sprintf("group-delete-single-workload-group-%d", time.Now().UnixNano())
+			groupName := fmt.Sprintf("group-rm-single-workload-group-%d", time.Now().UnixNano())
 			createGroup(config, groupName)
 
 			// Create a workload in the group
-			workloadName := fmt.Sprintf("group-delete-test-workload-%d", time.Now().UnixNano())
+			workloadName := fmt.Sprintf("group-rm-test-workload-%d", time.Now().UnixNano())
 			createWorkloadInGroup(config, workloadName, groupName)
 
 			// Verify the workload is running
 			Expect(waitForWorkload(config, workloadName)).To(BeTrue(), "Workload did not appear in thv list within 3 seconds")
 
 			// Delete the group (provide confirmation)
-			cmd := exec.Command(config.THVBinary, "group", "delete", groupName)
+			cmd := exec.Command(config.THVBinary, "group", "rm", groupName)
 			cmd.Stdin = strings.NewReader("y\n")
 			output, err := cmd.CombinedOutput()
 			Expect(err).NotTo(HaveOccurred())
@@ -113,13 +112,13 @@ var _ = Describe("Group Delete E2E Tests", func() {
 
 		It("should delete group with multiple workloads", func() {
 			// Create a group
-			groupName := fmt.Sprintf("group-delete-multi-workload-group-%d", time.Now().UnixNano())
+			groupName := fmt.Sprintf("group-rm-multi-workload-group-%d", time.Now().UnixNano())
 			createGroup(config, groupName)
 
 			// Create multiple workloads in the group
-			workload1 := fmt.Sprintf("group-delete-test-workload-1-%d", time.Now().UnixNano())
-			workload2 := fmt.Sprintf("group-delete-test-workload-2-%d", time.Now().UnixNano())
-			workload3 := fmt.Sprintf("group-delete-test-workload-3-%d", time.Now().UnixNano())
+			workload1 := fmt.Sprintf("group-rm-test-workload-1-%d", time.Now().UnixNano())
+			workload2 := fmt.Sprintf("group-rm-test-workload-2-%d", time.Now().UnixNano())
+			workload3 := fmt.Sprintf("group-rm-test-workload-3-%d", time.Now().UnixNano())
 
 			createWorkloadInGroup(config, workload1, groupName)
 			createWorkloadInGroup(config, workload2, groupName)
@@ -131,7 +130,7 @@ var _ = Describe("Group Delete E2E Tests", func() {
 			}
 
 			// Delete the group (provide confirmation)
-			cmd := exec.Command(config.THVBinary, "group", "delete", groupName)
+			cmd := exec.Command(config.THVBinary, "group", "rm", groupName)
 			cmd.Stdin = strings.NewReader("y\n")
 			output, err := cmd.CombinedOutput()
 			Expect(err).NotTo(HaveOccurred())
@@ -152,16 +151,16 @@ var _ = Describe("Group Delete E2E Tests", func() {
 
 		It("should handle mixed workloads (some in group, some not)", func() {
 			// Create a group
-			groupName := fmt.Sprintf("group-delete-mixed-group-%d", time.Now().UnixNano())
+			groupName := fmt.Sprintf("group-rm-mixed-group-%d", time.Now().UnixNano())
 			createGroup(config, groupName)
 
 			// Create workloads in the group
-			groupWorkload1 := fmt.Sprintf("group-delete-group-workload-1-%d", time.Now().UnixNano())
-			groupWorkload2 := fmt.Sprintf("group-delete-group-workload-2-%d", time.Now().UnixNano())
+			groupWorkload1 := fmt.Sprintf("group-rm-group-workload-1-%d", time.Now().UnixNano())
+			groupWorkload2 := fmt.Sprintf("group-rm-group-workload-2-%d", time.Now().UnixNano())
 
 			// Create workloads not in the group
-			nonGroupWorkload1 := fmt.Sprintf("group-delete-non-group-workload-1-%d", time.Now().UnixNano())
-			nonGroupWorkload2 := fmt.Sprintf("group-delete-non-group-workload-2-%d", time.Now().UnixNano())
+			nonGroupWorkload1 := fmt.Sprintf("group-rm-non-group-workload-1-%d", time.Now().UnixNano())
+			nonGroupWorkload2 := fmt.Sprintf("group-rm-non-group-workload-2-%d", time.Now().UnixNano())
 
 			createWorkloadInGroup(config, groupWorkload1, groupName)
 			createWorkloadInGroup(config, groupWorkload2, groupName)
@@ -174,7 +173,7 @@ var _ = Describe("Group Delete E2E Tests", func() {
 			}
 
 			// Delete the group (provide confirmation)
-			cmd := exec.Command(config.THVBinary, "group", "delete", groupName)
+			cmd := exec.Command(config.THVBinary, "group", "rm", groupName)
 			cmd.Stdin = strings.NewReader("y\n")
 			output, err := cmd.CombinedOutput()
 			Expect(err).NotTo(HaveOccurred())
@@ -202,12 +201,12 @@ var _ = Describe("Group Delete E2E Tests", func() {
 
 		It("should delete group and workloads with --with-workloads flag", func() {
 			// Create a group
-			groupName := fmt.Sprintf("group-delete-with-workloads-group-%d", time.Now().UnixNano())
+			groupName := fmt.Sprintf("group-rm-with-workloads-group-%d", time.Now().UnixNano())
 			createGroup(config, groupName)
 
 			// Create multiple workloads in the group
-			workload1 := fmt.Sprintf("group-delete-with-workloads-1-%d", time.Now().UnixNano())
-			workload2 := fmt.Sprintf("group-delete-with-workloads-2-%d", time.Now().UnixNano())
+			workload1 := fmt.Sprintf("group-rm-with-workloads-1-%d", time.Now().UnixNano())
+			workload2 := fmt.Sprintf("group-rm-with-workloads-2-%d", time.Now().UnixNano())
 
 			createWorkloadInGroup(config, workload1, groupName)
 			createWorkloadInGroup(config, workload2, groupName)
@@ -218,7 +217,7 @@ var _ = Describe("Group Delete E2E Tests", func() {
 			}
 
 			// Delete the group with --with-workloads flag (provide confirmation)
-			cmd := exec.Command(config.THVBinary, "group", "delete", groupName, "--with-workloads")
+			cmd := exec.Command(config.THVBinary, "group", "rm", groupName, "--with-workloads")
 			cmd.Stdin = strings.NewReader("y\n")
 			output, err := cmd.CombinedOutput()
 			Expect(err).NotTo(HaveOccurred())

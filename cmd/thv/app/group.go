@@ -36,14 +36,13 @@ var groupListCmd = &cobra.Command{
 	RunE:  groupListCmdFunc,
 }
 
-var groupDeleteCmd = &cobra.Command{
-	Use:   "delete [group-name]",
-	Short: "Delete a group and remove workloads from it",
-	Long: "Delete a group and remove all MCP servers from it. By default, this only removes the group " +
-		"membership from workloads without deleting them. Use --with-workloads to also delete the workloads. " +
-		"The command will show a warning and require user confirmation before proceeding.",
+var groupRmCmd = &cobra.Command{
+	Use:   "rm [group-name]",
+	Short: "Remove a group and remove workloads from it",
+	Long: "Remove a group and remove all MCP servers from it. By default, this only removes the group " +
+		"membership from workloads without deleting them. Use --with-workloads to also delete the workloads. ",
 	Args: cobra.ExactArgs(1),
-	RunE: groupDeleteCmdFunc,
+	RunE: groupRmCmdFunc,
 }
 
 var withWorkloadsFlag bool
@@ -105,7 +104,7 @@ func groupListCmdFunc(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func groupDeleteCmdFunc(cmd *cobra.Command, args []string) error {
+func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	groupName := args[0]
 	ctx := cmd.Context()
 
@@ -124,13 +123,13 @@ func groupDeleteCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get all workloads in the group
-	workloadsInGroup, err := groupManager.ListWorkloadsInGroup(ctx, groupName)
+	groupWorkloads, err := groupManager.ListWorkloadsInGroup(ctx, groupName)
 	if err != nil {
 		return fmt.Errorf("failed to list workloads in group: %w", err)
 	}
 
 	// Show warning and get user confirmation
-	confirmed, err := showWarningAndGetConfirmation(groupName, workloadsInGroup)
+	confirmed, err := showWarningAndGetConfirmation(groupName, groupWorkloads)
 	if err != nil {
 		return err
 	}
@@ -140,11 +139,11 @@ func groupDeleteCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Handle workloads if any exist
-	if len(workloadsInGroup) > 0 {
+	if len(groupWorkloads) > 0 {
 		if withWorkloadsFlag {
-			err = deleteWorkloadsInGroup(ctx, workloadsInGroup, groupName)
+			err = deleteWorkloadsInGroup(ctx, groupWorkloads, groupName)
 		} else {
-			err = removeWorkloadsMembershipFromGroup(ctx, workloadsInGroup, groupName)
+			err = removeWorkloadsMembershipFromGroup(ctx, groupWorkloads, groupName)
 		}
 	}
 	if err != nil {
@@ -159,26 +158,24 @@ func groupDeleteCmdFunc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func showWarningAndGetConfirmation(groupName string, workloadsInGroup []*workloads.Workload) (bool, error) {
+func showWarningAndGetConfirmation(groupName string, groupWorkloads []string) (bool, error) {
 	// Show warning and get user confirmation
 	if withWorkloadsFlag {
 		fmt.Printf("⚠️  WARNING: This will delete group '%s' and DELETE all workloads belonging to it.\n", groupName)
 	} else {
-		fmt.Printf("⚠️  WARNING: This will delete group '%s' and remove all workloads from it "+
+		fmt.Printf("⚠️  WARNING: This will delete group '%s' and move all workloads to the 'default' group "+
 			"(workloads will not be deleted).\n", groupName)
 	}
 
-	if len(workloadsInGroup) > 0 {
-		fmt.Printf("   The following %d workload(s) will be affected:\n", len(workloadsInGroup))
-		for _, workload := range workloadsInGroup {
+	if len(groupWorkloads) > 0 {
+		fmt.Printf("   The following %d workload(s) will be affected:\n", len(groupWorkloads))
+		for _, workload := range groupWorkloads {
 			if withWorkloadsFlag {
-				fmt.Printf("   - %s (will be DELETED)\n", workload.Name)
+				fmt.Printf("   - %s (will be DELETED)\n", workload)
 			} else {
-				fmt.Printf("   - %s (will be removed from group)\n", workload.Name)
+				fmt.Printf("   - %s (will be moved to the 'default' group)\n", workload)
 			}
 		}
-	} else {
-		fmt.Printf("   No workloads are currently in this group.\n")
 	}
 
 	if withWorkloadsFlag {
@@ -204,21 +201,15 @@ func showWarningAndGetConfirmation(groupName string, workloadsInGroup []*workloa
 	return true, nil
 }
 
-func deleteWorkloadsInGroup(ctx context.Context, workloadsInGroup []*workloads.Workload, groupName string) error {
+func deleteWorkloadsInGroup(ctx context.Context, groupWorkloads []string, groupName string) error {
 	// Delete workloads
 	workloadManager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
-	// Extract workload names
-	var workloadNames []string
-	for _, workload := range workloadsInGroup {
-		workloadNames = append(workloadNames, workload.Name)
-	}
-
 	// Delete all workloads in the group
-	group, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
+	group, err := workloadManager.DeleteWorkloads(ctx, groupWorkloads)
 	if err != nil {
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
@@ -228,39 +219,33 @@ func deleteWorkloadsInGroup(ctx context.Context, workloadsInGroup []*workloads.W
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
 
-	fmt.Printf("Deleted %d workload(s) from group '%s'\n", len(workloadNames), groupName)
+	fmt.Printf("Deleted %d workload(s) from group '%s'\n", len(groupWorkloads), groupName)
 	return nil
 }
 
 // removeWorkloadsFromGroup removes the group membership from the workloads
 // in the group.
-func removeWorkloadsMembershipFromGroup(ctx context.Context, workloadsInGroup []*workloads.Workload, groupName string) error {
+func removeWorkloadsMembershipFromGroup(ctx context.Context, groupWorkloads []string, groupName string) error {
 	workloadManager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
-	// Extract workload names
-	var workloadNames []string
-	for _, workload := range workloadsInGroup {
-		workloadNames = append(workloadNames, workload.Name)
-	}
-
 	// Remove group membership from all workloads
-	if err := workloadManager.RemoveFromGroup(ctx, workloadNames, groupName); err != nil {
+	if err := workloadManager.RemoveFromGroup(ctx, groupWorkloads, groupName); err != nil {
 		return fmt.Errorf("failed to remove workloads from group: %w", err)
 	}
 
-	fmt.Printf("Removed %d workload(s) from group '%s'\n", len(workloadNames), groupName)
+	fmt.Printf("Removed %d workload(s) from group '%s'\n", len(groupWorkloads), groupName)
 	return nil
 }
 
 func init() {
 	groupCmd.AddCommand(groupCreateCmd)
 	groupCmd.AddCommand(groupListCmd)
-	groupCmd.AddCommand(groupDeleteCmd)
+	groupCmd.AddCommand(groupRmCmd)
 
-	// Add --with-workloads flag to group delete command
-	groupDeleteCmd.Flags().BoolVar(&withWorkloadsFlag, "with-workloads", false,
+	// Add --with-workloads flag to group rm command
+	groupRmCmd.Flags().BoolVar(&withWorkloadsFlag, "with-workloads", false,
 		"Delete all workloads in the group along with the group")
 }

@@ -63,6 +63,7 @@ type mcpClientConfig struct {
 	Extension                     Extension
 	SupportedTransportTypesMap    map[types.TransportType]string // stdio should be mapped to sse
 	IsTransportTypeFieldSupported bool
+	MCPServersUrlLabel            string
 }
 
 var (
@@ -91,6 +92,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "streamable-http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
 	},
 	{
 		ClientType:   Cline,
@@ -111,6 +113,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStdio: "sse",
 		},
 		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabel:            "url",
 	},
 	{
 		ClientType:   VSCodeInsider,
@@ -132,6 +135,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
 	},
 	{
 		ClientType:   VSCode,
@@ -153,6 +157,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
 	},
 	{
 		ClientType:           Cursor,
@@ -169,6 +174,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		// Adding type field is not explicitly required though, Cursor auto-detects and is able to
 		// connect to both sse and streamable-http types
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
 	},
 	{
 		ClientType:           ClaudeCode,
@@ -183,6 +189,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
 	},
 	{
 		ClientType:           Windsurf,
@@ -192,10 +199,12 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{".codeium", "windsurf"},
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio: "sse",
-			types.TransportTypeSSE:   "sse",
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "serverUrl",
 	},
 	{
 		ClientType:           WindsurfIntelliJ,
@@ -205,10 +214,12 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{".codeium"},
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio: "sse",
-			types.TransportTypeSSE:   "sse",
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "serverUrl",
 	},
 }
 
@@ -353,15 +364,16 @@ func Upsert(cf ConfigFile, name string, url string, transportType string) error 
 		if cf.ClientType != supportedClientIntegrations[i].ClientType {
 			continue
 		}
+		isServerUrl := supportedClientIntegrations[i].MCPServersUrlLabel == "serverUrl"
 		mappedTransportType, ok := supportedClientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
 		if supportedClientIntegrations[i].IsTransportTypeFieldSupported && ok {
-			var mcp_server MCPServer
-			if cf.ClientType == Windsurf || cf.ClientType == WindsurfIntelliJ {
-				mcp_server = MCPServer{ServerUrl: url, Type: mappedTransportType}
-			} else {
-				mcp_server = MCPServer{Url: url, Type: mappedTransportType}
+			if isServerUrl {
+				return cf.ConfigUpdater.Upsert(name, MCPServer{ServerUrl: url, Type: mappedTransportType})
 			}
-			return cf.ConfigUpdater.Upsert(name, mcp_server)
+			return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: mappedTransportType})
+		}
+		if isServerUrl {
+			return cf.ConfigUpdater.Upsert(name, MCPServer{ServerUrl: url})
 		}
 		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})
 	}

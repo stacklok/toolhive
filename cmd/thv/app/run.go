@@ -106,7 +106,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Check if we should load configuration from a file
 	if runFlags.FromConfig != "" {
-		return runFromConfigFile(ctx)
+		return runFromConfigFile(baseCtx)
 	}
 
 	// Get the name of the MCP server to run.

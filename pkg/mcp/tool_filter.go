@@ -250,6 +250,13 @@ func processSSEEvents(filterTools map[string]struct{}, buffer []byte, w io.Write
 		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
 			var toolsListResponse toolsListResponse
 			if err := json.Unmarshal(data, &toolsListResponse); err == nil && toolsListResponse.Result.Tools != nil {
+				// We got to the point of processing a real tools list response,
+				// so we need to write the "data: " prefix first.
+				_, err := w.Write([]byte("data: "))
+				if err != nil {
+					return fmt.Errorf("%w: %v", errBug, err)
+				}
+
 				if err := processToolsListResponse(filterTools, toolsListResponse, w); err != nil {
 					return err
 				}

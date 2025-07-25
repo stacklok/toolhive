@@ -163,8 +163,7 @@ func showWarningAndGetConfirmation(groupName string, groupWorkloads []string) (b
 	if withWorkloadsFlag {
 		fmt.Printf("⚠️  WARNING: This will delete group '%s' and DELETE all workloads belonging to it.\n", groupName)
 	} else {
-		fmt.Printf("⚠️  WARNING: This will delete group '%s' and move all workloads to the 'default' group "+
-			"(workloads will not be deleted).\n", groupName)
+		fmt.Printf("⚠️  WARNING: This will delete group '%s' and move all workloads to the 'default' group\n", groupName)
 	}
 
 	if len(groupWorkloads) > 0 {

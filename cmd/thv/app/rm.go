@@ -21,7 +21,7 @@ var rmCmd = &cobra.Command{
 
 func init() {
 	// TODO: Re-enable when group functionality is complete
-	// rmCmd.Flags().String("group", "", "Remove all workloads in the specified group")
+	// rmCmd.Flags().String("group", "", "Delete all workloads in the specified group")
 }
 
 //nolint:gocyclo // This function is complex but manageable
@@ -32,11 +32,11 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 	groupName, _ := cmd.Flags().GetString("group")
 
 	if groupName != "" {
-		// Remove all workloads in the specified group
+		// Delete all workloads in the specified group
 		return deleteAllWorkloadsInGroup(ctx, groupName)
 	}
 
-	// Remove specific workload
+	// Delete specific workload
 	if len(args) == 0 {
 		return fmt.Errorf("workload name is required when not using --group flag")
 	}

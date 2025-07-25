@@ -35,7 +35,7 @@ var _ = Describe("Group Remove E2E Tests", func() {
 			stdout, stderr := NewTHVCommand(config, "rm", "--help").ExpectSuccess()
 			output := stdout + stderr
 			Expect(output).To(ContainSubstring("--group string"))
-			Expect(output).To(ContainSubstring("Remove all workloads in the specified group"))
+			Expect(output).To(ContainSubstring("Delete all workloads in the specified group"))
 		})
 
 		It("should return error when group does not exist", func() {

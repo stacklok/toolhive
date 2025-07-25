@@ -117,24 +117,24 @@ func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*G
 
 // ListWorkloadsInGroup returns all workload names that belong to the specified group
 func (m *manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error) {
-	// List all runconfig names
+	// List all workload names
 	workloadNames, err := m.runconfigStore.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list runconfigs: %w", err)
 	}
 
-	// Filter runconfigs that belong to the specified group
+	// Filter workloads that belong to the specified group
 	var groupWorkloads []string
 
 	for _, workloadName := range workloadNames {
-		// Load the runconfig
+		// Load the workload
 		runnerInstance, err := runner.LoadState(ctx, workloadName)
 		if err != nil {
-			logger.Warnf("Failed to load runconfig %s: %v", workloadName, err)
+			logger.Warnf("Failed to load workload %s: %v", workloadName, err)
 			continue
 		}
 
-		// Check if this runconfig belongs to the specified group
+		// Check if this workload belongs to the specified group
 		if runnerInstance.Config.Group == groupName {
 			groupWorkloads = append(groupWorkloads, workloadName)
 		}

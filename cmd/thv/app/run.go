@@ -85,29 +85,33 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		workloadName = serverOrImage
 	}
 
-	if runFlags.Group != "" {
-		groupManager, err := groups.NewManager()
-		if err != nil {
-			return fmt.Errorf("failed to create group manager: %v", err)
-		}
+	// Create group manager
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create group manager: %v", err)
+	}
 
-		// Check if the workload is already in a group
-		group, err := groupManager.GetWorkloadGroup(ctx, workloadName)
-		if err != nil {
-			return fmt.Errorf("failed to get workload group: %v", err)
-		}
-		if group != nil && group.Name != runFlags.Group {
-			return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, group.Name)
-		}
+	// Set default group if no group is specified
+	if runFlags.Group == "" {
+		runFlags.Group = groups.DefaultGroupName
+	}
 
-		// Validate that the group specified exists
-		exists, err := groupManager.Exists(ctx, runFlags.Group)
-		if err != nil {
-			return fmt.Errorf("failed to check if group exists: %v", err)
-		}
-		if !exists {
-			return fmt.Errorf("group '%s' does not exist", runFlags.Group)
-		}
+	// Check if the workload is already in a group
+	group, err := groupManager.GetWorkloadGroup(ctx, workloadName)
+	if err != nil {
+		return fmt.Errorf("failed to get workload group: %v", err)
+	}
+	if group != nil && group.Name != runFlags.Group {
+		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, group.Name)
+	}
+
+	// Validate that the group specified exists
+	exists, err := groupManager.Exists(ctx, runFlags.Group)
+	if err != nil {
+		return fmt.Errorf("failed to check if group exists: %v", err)
+	}
+	if !exists {
+		return fmt.Errorf("group '%s' does not exist", runFlags.Group)
 	}
 
 	// Build the run configuration

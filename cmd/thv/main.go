@@ -7,6 +7,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv/app"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -17,6 +18,10 @@ func main() {
 	// Check and perform auto-discovery migration if needed
 	// Handles the auto-discovery flag depreciation, only executes once on old config files
 	client.CheckAndPerformAutoDiscoveryMigration()
+
+	// Check and perform default group migration if needed
+	// Migrates existing workloads to the default group, only executes once
+	groups.CheckAndPerformDefaultGroupMigration()
 
 	// Skip update check for completion command or if we are running in kubernetes
 	if err := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !runtime.IsKubernetesRuntime()).Execute(); err != nil {

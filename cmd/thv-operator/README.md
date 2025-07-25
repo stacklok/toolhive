@@ -161,7 +161,7 @@ kubectl describe mcpserver <name>
 
 ### MCPServer Spec
 
-| Field               | Description                                     | Required | Default |
+| Field               | Description                                      | Required | Default |
 |---------------------|--------------------------------------------------|----------|---------|
 | `image`             | Container image for the MCP server               | Yes      | -       |
 | `transport`         | Transport method (stdio, streamable-http or sse) | No       | stdio   |
@@ -173,6 +173,7 @@ kubectl describe mcpserver <name>
 | `resources`         | Resource requirements for the container          | No       | -       |
 | `secrets`           | References to secrets to mount in the container  | No       | -       |
 | `permissionProfile` | Permission profile configuration                 | No       | -       |
+| `tools`             | Allow-list filter on the list of tools           | No       | -       |
 
 ### Permission Profiles
 

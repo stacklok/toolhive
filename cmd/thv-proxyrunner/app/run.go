@@ -74,6 +74,9 @@ var (
 
 	// Network isolation flag
 	runIsolateNetwork bool
+
+	// Tools filter
+	runToolsFilter []string
 )
 
 func init() {
@@ -176,7 +179,12 @@ func init() {
 		"Enable Prometheus-style /metrics endpoint on the main transport port")
 	runCmd.Flags().BoolVar(&runIsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
-
+	runCmd.Flags().StringArrayVar(
+		&runToolsFilter,
+		"tools",
+		nil,
+		"Filter MCP server tools (comma-separated list of tool names)",
+	)
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
@@ -243,6 +251,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 			runThvCABundle, runJWKSAuthTokenFile, runJWKSAllowPrivateIP).
 		WithTelemetryConfig(finalOtelEndpoint, runOtelEnablePrometheusMetricsPath, runOtelServiceName,
 			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
+		WithToolsFilter(runToolsFilter).
 		Build(ctx, imageMetadata, runEnv, envVarValidator)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig: %v", err)

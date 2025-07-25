@@ -1,5 +1,105 @@
 components:
   schemas:
+    audit.Config:
+      description: AuditConfig contains the audit logging configuration
+      properties:
+        component:
+          description: Component is the component name to use in audit events
+          type: string
+        event_types:
+          description: EventTypes specifies which event types to audit. If empty,
+            all events are audited.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        exclude_event_types:
+          description: |-
+            ExcludeEventTypes specifies which event types to exclude from auditing.
+            This takes precedence over EventTypes.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        include_request_data:
+          description: IncludeRequestData determines whether to include request data
+            in audit logs
+          type: boolean
+        include_response_data:
+          description: IncludeResponseData determines whether to include response
+            data in audit logs
+          type: boolean
+        log_file:
+          description: LogFile specifies the file path for audit logs. If empty, logs
+            to stdout.
+          type: string
+        max_data_size:
+          description: MaxDataSize limits the size of request/response data included
+            in audit logs (in bytes)
+          type: integer
+      type: object
+    auth.TokenValidatorConfig:
+      description: OIDCConfig contains OIDC configuration
+      properties:
+        allowOpaqueTokens:
+          description: AllowOpaqueTokens indicates whether to allow opaque tokens
+            (non-JWT)
+          type: boolean
+        allowPrivateIP:
+          description: AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+          type: boolean
+        audience:
+          description: Audience is the expected audience for the token
+          type: string
+        authTokenFile:
+          description: AuthTokenFile is the path to file containing bearer token for
+            authentication
+          type: string
+        cacertPath:
+          description: CACertPath is the path to the CA certificate bundle for HTTPS
+            requests
+          type: string
+        clientID:
+          description: ClientID is the OIDC client ID
+          type: string
+        issuer:
+          description: Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)
+          type: string
+        jwksurl:
+          description: JWKSURL is the URL to fetch the JWKS from
+          type: string
+      type: object
+    authz.CedarConfig:
+      description: |-
+        Cedar is the Cedar-specific configuration.
+        This is only used when Type is ConfigTypeCedarV1.
+      properties:
+        entities_json:
+          description: EntitiesJSON is the JSON string representing Cedar entities
+          type: string
+        policies:
+          description: Policies is a list of Cedar policy strings
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
+    authz.Config:
+      description: AuthzConfig contains the authorization configuration
+      properties:
+        cedar:
+          $ref: '#/components/schemas/authz.CedarConfig'
+        type:
+          $ref: '#/components/schemas/authz.ConfigType'
+        version:
+          description: Version is the version of the configuration format.
+          type: string
+      type: object
+    authz.ConfigType:
+      description: Type is the type of authorization configuration.
+      type: string
+      x-enum-varnames:
+      - ConfigTypeCedarV1
     client.Client:
       properties:
         name:
@@ -65,7 +165,7 @@ components:
           type: boolean
       type: object
     permissions.Profile:
-      description: Permission profile to apply
+      description: PermissionProfile is the permission profile to use
       properties:
         name:
           description: Name is the name of the profile
@@ -255,6 +355,132 @@ components:
         predicate_type:
           type: string
       type: object
+    runner.RunConfig:
+      properties:
+        audit_config:
+          $ref: '#/components/schemas/audit.Config'
+        audit_config_path:
+          description: AuditConfigPath is the path to the audit configuration file
+          type: string
+        authz_config:
+          $ref: '#/components/schemas/authz.Config'
+        authz_config_path:
+          description: AuthzConfigPath is the path to the authorization configuration
+            file
+          type: string
+        base_name:
+          description: BaseName is the base name used for the container (without prefixes)
+          type: string
+        cmd_args:
+          description: CmdArgs are the arguments to pass to the container
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        container_labels:
+          additionalProperties:
+            type: string
+          description: ContainerLabels are the labels to apply to the container
+          type: object
+        container_name:
+          description: ContainerName is the name of the container
+          type: string
+        debug:
+          description: Debug indicates whether debug mode is enabled
+          type: boolean
+        env_vars:
+          additionalProperties:
+            type: string
+          description: EnvVars are the parsed environment variables as key-value pairs
+          type: object
+        group:
+          description: Group is the name of the group this workload belongs to, if
+            any
+          type: string
+        host:
+          description: Host is the host for the HTTP proxy
+          type: string
+        image:
+          description: Image is the Docker image to run
+          type: string
+        isolate_network:
+          description: IsolateNetwork indicates whether to isolate the network for
+            the container
+          type: boolean
+        jwks_allow_private_ip:
+          description: JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP
+            addresses
+          type: boolean
+        jwks_auth_token_file:
+          description: JWKSAuthTokenFile is the path to file containing auth token
+            for JWKS/OIDC requests
+          type: string
+        k8s_pod_template_patch:
+          description: |-
+            K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
+            Only applicable when using Kubernetes runtime
+          type: string
+        name:
+          description: Name is the name of the MCP server
+          type: string
+        oidc_config:
+          $ref: '#/components/schemas/auth.TokenValidatorConfig'
+        permission_profile:
+          $ref: '#/components/schemas/permissions.Profile'
+        permission_profile_name_or_path:
+          description: PermissionProfileNameOrPath is the name or path of the permission
+            profile
+          type: string
+        port:
+          description: Port is the port for the HTTP proxy to listen on (host port)
+          type: integer
+        proxy_mode:
+          $ref: '#/components/schemas/types.ProxyMode'
+        secrets:
+          description: |-
+            Secrets are the secret parameters to pass to the container
+            Format: "<secret name>,target=<target environment variable>"
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        target_host:
+          description: TargetHost is the host to forward traffic to (only applicable
+            to SSE transport)
+          type: string
+        target_port:
+          description: TargetPort is the port for the container to expose (only applicable
+            to SSE transport)
+          type: integer
+        telemetry_config:
+          $ref: '#/components/schemas/telemetry.Config'
+        thv_ca_bundle:
+          description: ThvCABundle is the path to the CA certificate bundle for ToolHive
+            HTTP operations
+          type: string
+        tools_filter:
+          description: ToolsFilter is the list of tools to filter
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport:
+          description: Transport is the transport mode (stdio, sse, or streamable-http)
+          type: string
+          x-enum-varnames:
+          - TransportTypeStdio
+          - TransportTypeSSE
+          - TransportTypeStreamableHTTP
+          - TransportTypeInspector
+        volumes:
+          description: |-
+            Volumes are the directory mounts to pass to the container
+            Format: "host-path:container-path[:ro]"
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
     secrets.SecretParameter:
       properties:
         name:
@@ -262,6 +488,52 @@ components:
         target:
           type: string
       type: object
+    telemetry.Config:
+      description: TelemetryConfig contains the OpenTelemetry configuration
+      properties:
+        enablePrometheusMetricsPath:
+          description: |-
+            EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint
+            The metrics are served on the main transport port at /metrics
+            This is separate from OTLP metrics which are sent to the Endpoint
+          type: boolean
+        endpoint:
+          description: Endpoint is the OTLP endpoint URL
+          type: string
+        environmentVariables:
+          description: |-
+            EnvironmentVariables is a list of environment variable names that should be
+            included in telemetry spans as attributes. Only variables in this list will
+            be read from the host machine and included in spans for observability.
+            Example: []string{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"}
+          items:
+            type: string
+          type: array
+        headers:
+          additionalProperties:
+            type: string
+          description: Headers contains authentication headers for the OTLP endpoint
+          type: object
+        insecure:
+          description: Insecure indicates whether to use HTTP instead of HTTPS for
+            the OTLP endpoint
+          type: boolean
+        samplingRate:
+          description: SamplingRate is the trace sampling rate (0.0-1.0)
+          type: number
+        serviceName:
+          description: ServiceName is the service name for telemetry
+          type: string
+        serviceVersion:
+          description: ServiceVersion is the service version for telemetry
+          type: string
+      type: object
+    types.ProxyMode:
+      description: ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+      type: string
+      x-enum-varnames:
+      - ProxyModeSSE
+      - ProxyModeStreamableHTTP
     types.TransportType:
       description: TransportType is the type of transport used for this workload.
       type: string
@@ -1309,6 +1581,32 @@ paths:
                 type: string
           description: Not Found
       summary: Get workload details
+      tags:
+      - workloads
+  /api/v1beta/workloads/{name}/export:
+    get:
+      description: Export a workload's run configuration as JSON
+      parameters:
+      - description: Workload name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/runner.RunConfig'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+      summary: Export workload configuration
       tags:
       - workloads
   /api/v1beta/workloads/{name}/logs:

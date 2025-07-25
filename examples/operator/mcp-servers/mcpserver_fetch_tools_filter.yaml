@@ -1,0 +1,22 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  tools:
+    - fetch
+  port: 8080
+  targetPort: 8080
+  permissionProfile:
+    type: builtin
+    name: network
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"

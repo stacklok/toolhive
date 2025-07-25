@@ -108,6 +108,10 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	groupName := args[0]
 	ctx := cmd.Context()
 
+	if strings.EqualFold(groupName, groups.DefaultGroup) {
+		return fmt.Errorf("cannot delete the %s group", groups.DefaultGroup)
+	}
+
 	groupManager, err := groups.NewManager()
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %w", err)
@@ -159,6 +163,10 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 }
 
 func showWarningAndGetConfirmation(groupName string, groupWorkloads []string) (bool, error) {
+	if len(groupWorkloads) == 0 {
+		return true, nil
+	}
+
 	// Show warning and get user confirmation
 	if withWorkloadsFlag {
 		fmt.Printf("⚠️  WARNING: This will delete group '%s' and DELETE all workloads belonging to it.\n", groupName)
@@ -166,14 +174,12 @@ func showWarningAndGetConfirmation(groupName string, groupWorkloads []string) (b
 		fmt.Printf("⚠️  WARNING: This will delete group '%s' and move all workloads to the 'default' group\n", groupName)
 	}
 
-	if len(groupWorkloads) > 0 {
-		fmt.Printf("   The following %d workload(s) will be affected:\n", len(groupWorkloads))
-		for _, workload := range groupWorkloads {
-			if withWorkloadsFlag {
-				fmt.Printf("   - %s (will be DELETED)\n", workload)
-			} else {
-				fmt.Printf("   - %s (will be moved to the 'default' group)\n", workload)
-			}
+	fmt.Printf("   The following %d workload(s) will be affected:\n", len(groupWorkloads))
+	for _, workload := range groupWorkloads {
+		if withWorkloadsFlag {
+			fmt.Printf("   - %s (will be DELETED)\n", workload)
+		} else {
+			fmt.Printf("   - %s (will be moved to the 'default' group)\n", workload)
 		}
 	}
 

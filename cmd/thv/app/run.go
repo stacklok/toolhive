@@ -24,7 +24,7 @@ var runCmd = &cobra.Command{
 	Short: "Run an MCP server",
 	Long: `Run an MCP server with the specified name, image, or protocol scheme.
 
-ToolHive supports four ways to run an MCP server:
+ToolHive supports five ways to run an MCP server:
 
 1. From the registry:
    $ thv run server-name [-- args...]
@@ -45,7 +45,12 @@ ToolHive supports four ways to run an MCP server:
    or go (Golang). For Go, you can also specify local paths starting
    with './' or '../' to build and run local Go projects.
 
-4. From an exported configuration:
+4. From an OCI runtime configuration artifact:
+   $ thv run registry.example.com/configs/my-server:latest
+   Runs an MCP server using a runtime configuration stored as an OCI artifact.
+   The system automatically detects and loads the configuration.
+
+5. From an exported configuration:
    $ thv run --from-config <path>
    Runs an MCP server using a previously exported configuration file.
 

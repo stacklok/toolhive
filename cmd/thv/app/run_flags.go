@@ -8,10 +8,14 @@ import (
 
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/oci"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/runner/export"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -316,4 +320,60 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 	}
 
 	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables
+}
+
+// isOCIRuntimeConfigArtifact checks if the serverOrImage is an OCI runtime configuration artifact
+func isOCIRuntimeConfigArtifact(ctx context.Context, serverOrImage string) bool {
+	// Try to parse as OCI reference first
+	if !oci.IsOCIReference(serverOrImage) {
+		return false
+	}
+
+	// Try to load as runtime configuration
+	imageManager := images.NewImageManager(ctx)
+	ociClient := oci.NewClient(imageManager)
+	exporter := export.NewOCIExporter(ociClient)
+	_, err := exporter.PullRunConfig(ctx, serverOrImage)
+	return err == nil
+}
+
+// loadAndMergeOCIRunConfig loads a runtime configuration from OCI and merges with command-line flags
+func loadAndMergeOCIRunConfig(ctx context.Context, ref string, flags *RunFlags, debugMode bool) (*runner.RunConfig, error) {
+	// Load the runtime configuration from OCI
+	imageManager := images.NewImageManager(ctx)
+	ociClient := oci.NewClient(imageManager)
+	exporter := export.NewOCIExporter(ociClient)
+	ociConfig, err := exporter.PullRunConfig(ctx, ref)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load runtime configuration from OCI artifact: %w", err)
+	}
+
+	// Create container runtime
+	rt, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create container runtime: %v", err)
+	}
+
+	// Set the runtime in the config
+	ociConfig.Deployer = rt
+
+	// Override with any command-line flags that were explicitly set
+	// This allows users to override specific settings from the OCI config
+	if flags.Name != "" {
+		ociConfig.Name = flags.Name
+	}
+	if flags.Host != "" {
+		ociConfig.Host = flags.Host
+	}
+	if flags.ProxyPort != 0 {
+		ociConfig.Port = flags.ProxyPort
+	}
+	if debugMode {
+		ociConfig.Debug = true
+	}
+
+	logger.Infof("Successfully loaded runtime configuration from OCI artifact: %s", ref)
+	logger.Infof("Using image: %s", ociConfig.Image)
+
+	return ociConfig, nil
 }

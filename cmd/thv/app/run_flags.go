@@ -70,6 +70,9 @@ type RunFlags struct {
 
 	// Tools filter
 	ToolsFilter []string
+
+	// Configuration import
+	FromConfig string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -155,6 +158,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		nil,
 		"Filter MCP server tools (comma-separated list of tool names)",
 	)
+	cmd.Flags().StringVar(&config.FromConfig, "from-config", "", "Load configuration from exported file")
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration

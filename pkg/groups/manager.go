@@ -6,13 +6,15 @@ import (
 	"fmt"
 
 	"github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/state"
 )
 
 // manager implements the Manager interface
 type manager struct {
-	store state.Store
+	groupStore     state.Store
+	runconfigStore state.Store
 }
 
 // NewManager creates a new group manager
@@ -21,8 +23,12 @@ func NewManager() (Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create group state store: %w", err)
 	}
+	runConfigStore, err := state.NewRunConfigStore("toolhive")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create runconfig store: %w", err)
+	}
 
-	return &manager{store: store}, nil
+	return &manager{groupStore: store, runconfigStore: runConfigStore}, nil
 }
 
 // Create creates a new group with the given name
@@ -33,7 +39,7 @@ func (m *manager) Create(ctx context.Context, name string) error {
 	}
 
 	// Check if group already exists
-	exists, err := m.store.Exists(ctx, name)
+	exists, err := m.groupStore.Exists(ctx, name)
 	if err != nil {
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
@@ -47,7 +53,7 @@ func (m *manager) Create(ctx context.Context, name string) error {
 
 // Get retrieves a group by name
 func (m *manager) Get(ctx context.Context, name string) (*Group, error) {
-	reader, err := m.store.GetReader(ctx, name)
+	reader, err := m.groupStore.GetReader(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get reader for group: %w", err)
 	}
@@ -63,7 +69,7 @@ func (m *manager) Get(ctx context.Context, name string) (*Group, error) {
 
 // List returns all groups
 func (m *manager) List(ctx context.Context) ([]*Group, error) {
-	names, err := m.store.List(ctx)
+	names, err := m.groupStore.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list groups: %w", err)
 	}
@@ -82,12 +88,12 @@ func (m *manager) List(ctx context.Context) ([]*Group, error) {
 
 // Delete removes a group by name
 func (m *manager) Delete(ctx context.Context, name string) error {
-	return m.store.Delete(ctx, name)
+	return m.groupStore.Delete(ctx, name)
 }
 
 // Exists checks if a group exists
 func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
-	return m.store.Exists(ctx, name)
+	return m.groupStore.Exists(ctx, name)
 }
 
 // GetWorkloadGroup returns the group that a workload belongs to, if any
@@ -109,9 +115,37 @@ func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*G
 	return m.Get(ctx, runnerInstance.Config.Group)
 }
 
+// ListWorkloadsInGroup returns all workload names that belong to the specified group
+func (m *manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error) {
+	// List all workload names
+	workloadNames, err := m.runconfigStore.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list runconfigs: %w", err)
+	}
+
+	// Filter workloads that belong to the specified group
+	var groupWorkloads []string
+
+	for _, workloadName := range workloadNames {
+		// Load the workload
+		runnerInstance, err := runner.LoadState(ctx, workloadName)
+		if err != nil {
+			logger.Warnf("Failed to load workload %s: %v", workloadName, err)
+			continue
+		}
+
+		// Check if this workload belongs to the specified group
+		if runnerInstance.Config.Group == groupName {
+			groupWorkloads = append(groupWorkloads, workloadName)
+		}
+	}
+
+	return groupWorkloads, nil
+}
+
 // saveGroup saves the group to the group state store
 func (m *manager) saveGroup(ctx context.Context, group *Group) error {
-	writer, err := m.store.GetWriter(ctx, group.Name)
+	writer, err := m.groupStore.GetWriter(ctx, group.Name)
 	if err != nil {
 		return fmt.Errorf("failed to get writer for group: %w", err)
 	}

@@ -26,6 +26,7 @@ thv mcp list prompts [flags]
   -h, --help               help for prompts
       --server string      MCP server URL (required)
       --timeout duration   Connection timeout (default 30s)
+      --transport string   Transport type (auto, sse, streamable-http) (default "auto")
 ```
 
 ### Options inherited from parent commands

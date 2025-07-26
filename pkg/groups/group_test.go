@@ -101,7 +101,7 @@ func TestManager_Create(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{store: mockStore}
+			manager := &manager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -176,7 +176,7 @@ func TestManager_Get(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{store: mockStore}
+			manager := &manager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -282,7 +282,7 @@ func TestManager_List(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{store: mockStore}
+			manager := &manager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -368,7 +368,7 @@ func TestManager_Delete(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{store: mockStore}
+			manager := &manager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -442,7 +442,7 @@ func TestManager_Exists(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{store: mockStore}
+			manager := &manager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -489,7 +489,7 @@ func TestManager_GetWorkloadGroup(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{store: mockStore}
+			manager := &manager{groupStore: mockStore}
 
 			// Call the method
 			group, err := manager.GetWorkloadGroup(context.Background(), tt.workloadName)

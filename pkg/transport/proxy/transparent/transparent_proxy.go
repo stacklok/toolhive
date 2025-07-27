@@ -18,6 +18,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+// loggingResponseWriter wraps http.ResponseWriter to capture the status code
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (lw *loggingResponseWriter) WriteHeader(code int) {
+	lw.statusCode = code
+	lw.ResponseWriter.WriteHeader(code)
+}
+
 // TransparentProxy implements the Proxy interface as a transparent HTTP proxy
 // that forwards requests to a destination.
 // It's used by the SSE transport to forward requests to the container's HTTP server.
@@ -47,6 +58,9 @@ type TransparentProxy struct {
 
 	// Optional Prometheus metrics handler
 	prometheusHandler http.Handler
+
+	// Optional auth info handler
+	authInfoHandler http.Handler
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -56,6 +70,7 @@ func NewTransparentProxy(
 	containerName string,
 	targetURI string,
 	prometheusHandler http.Handler,
+	authInfoHandler http.Handler,
 	middlewares ...types.Middleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
@@ -66,6 +81,7 @@ func NewTransparentProxy(
 		middlewares:       middlewares,
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
+		authInfoHandler:   authInfoHandler,
 	}
 
 	// Create MCP pinger and health checker
@@ -124,10 +140,28 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		logger.Info("Prometheus metrics endpoint enabled at /metrics")
 	}
 
+	// Add auth info endpoint if handler is provided (no middlewares)
+	if p.authInfoHandler != nil {
+		mux.Handle("/.well-known/oauth-protected-resource", p.authInfoHandler)
+		logger.Info("Auth info endpoint enabled at /.well-known/oauth-protected-resource")
+	}
+
+	// Wrap the mux with a logging handler that logs ALL requests and responses
+	loggingHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Create a response writer wrapper to capture status code
+		lw := &loggingResponseWriter{ResponseWriter: w, statusCode: 200}
+		
+		logger.Infof("Incoming request: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		
+		mux.ServeHTTP(lw, r)
+		
+		logger.Infof("Response: %s %s -> %d", r.Method, r.URL.Path, lw.statusCode)
+	})
+
 	// Create the server
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
-		Handler:           mux,
+		Handler:           loggingHandler,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 

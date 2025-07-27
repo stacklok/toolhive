@@ -386,7 +386,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 	replicas := int32(1)
 
 	// Prepare container args
-	args := []string{"run", "--foreground=true"}
+	args := []string{"run", "--debug", "--foreground=true"}
 	args = append(args, fmt.Sprintf("--port=%d", m.Spec.Port))
 	args = append(args, fmt.Sprintf("--name=%s", m.Name))
 	args = append(args, fmt.Sprintf("--transport=%s", m.Spec.Transport))

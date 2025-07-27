@@ -13,6 +13,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -48,7 +49,8 @@ type TokenValidator struct {
 	jwksURL           string
 	clientID          string
 	jwksClient        *jwk.Cache
-	allowOpaqueTokens bool // Whether to allow opaque tokens (non-JWT)
+	allowOpaqueTokens bool   // Whether to allow opaque tokens (non-JWT)
+	serverAddress     string // The server's listening address (e.g., "localhost:9090")
 
 	// No need for additional caching as jwk.Cache handles it
 }
@@ -78,6 +80,9 @@ type TokenValidatorConfig struct {
 
 	// AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
 	AllowPrivateIP bool
+
+	// ServerAddress is the server's listening address (e.g., "localhost:9090")
+	ServerAddress string
 }
 
 // discoverOIDCConfiguration discovers OIDC configuration from the issuer's well-known endpoint
@@ -134,7 +139,7 @@ func discoverOIDCConfiguration(
 }
 
 // NewTokenValidatorConfig creates a new TokenValidatorConfig with the provided parameters
-func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string, allowOpaqueTokens bool) *TokenValidatorConfig {
+func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID, serverAddress string, allowOpaqueTokens bool) *TokenValidatorConfig {
 	// Only create a config if at least one parameter is provided
 	if issuer == "" && audience == "" && jwksURL == "" && clientID == "" {
 		return nil
@@ -146,6 +151,7 @@ func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string, allowOp
 		JWKSURL:           jwksURL,
 		ClientID:          clientID,
 		AllowOpaqueTokens: allowOpaqueTokens,
+		ServerAddress:     serverAddress,
 	}
 }
 
@@ -193,6 +199,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, allowOp
 		clientID:          config.ClientID,
 		jwksClient:        cache,
 		allowOpaqueTokens: allowOpaqueTokens,
+		serverAddress:     config.ServerAddress,
 	}, nil
 }
 
@@ -345,5 +352,73 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// Add the claims to the request context using a proper key type
 		ctx := context.WithValue(r.Context(), ClaimsContextKey{}, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// rfc9728AuthInfo represents the OAuth Protected Resource metadata as defined in RFC 9728
+type rfc9728AuthInfo struct {
+	Resource               string   `json:"resource"`
+	AuthorizationServers   []string `json:"authorization_servers"`
+	BearerMethodsSupported []string `json:"bearer_methods_supported"`
+	JWKSURI                string   `json:"jwks_uri"`
+	ScopesSupported        []string `json:"scopes_supported"`
+}
+
+// AuthInfoHandler creates an HTTP handler that returns RFC-9728 compliant OAuth Protected Resource metadata
+func (v *TokenValidator) AuthInfoHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers for all requests
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			origin = "*" // Allow all origins if none specified
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "mcp-protocol-version, Content-Type, Authorization")
+		w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+
+		// Handle preflight OPTIONS request
+		if r.Method == http.MethodOptions {
+			logger.Infof("AuthInfoHandler: Handling CORS preflight request from %s", origin)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// Build the response
+		resourceURL := "http://localhost:9090/sse"
+		if v.serverAddress != "" {
+			// Use the actual server address if available
+			resourceURL = fmt.Sprintf("http://%s/", v.serverAddress)
+		} else {
+			logger.Warn("No server address configured, OAuth will probably not work")
+		}
+
+		authInfo := rfc9728AuthInfo{
+			Resource:               resourceURL,
+			AuthorizationServers:   []string{v.issuer},
+			BearerMethodsSupported: []string{"header"},
+			JWKSURI:                v.jwksURL,
+			ScopesSupported:        []string{"mcp:read", "mcp:tools", "mcp:prompts"},
+		}
+
+		// Debug: Log the request and response data
+		logger.Infof("AuthInfoHandler: Processing request for %s", r.URL.Path)
+		logger.Infof("AuthInfoHandler: Returning response - Issuer: %s, JWKS URI: %s", v.issuer, v.jwksURL)
+
+		// Convert to JSON for logging
+		responseBytes, _ := json.Marshal(authInfo)
+		logger.Infof("AuthInfoHandler: Full response JSON: %s", string(responseBytes))
+
+		// Set content type
+		w.Header().Set("Content-Type", "application/json")
+
+		// Encode and send the response
+		if err := json.NewEncoder(w).Encode(authInfo); err != nil {
+			logger.Errorf("AuthInfoHandler: Failed to encode response: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		logger.Infof("AuthInfoHandler: Successfully sent response")
 	})
 }

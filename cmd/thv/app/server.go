@@ -47,11 +47,18 @@ var serveCmd = &cobra.Command{
 			jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 			clientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
 
+			// Construct server address for the AuthInfoHandler
+			serverAddress := ""
+			if socketPath == "" { // Only set server address for TCP listeners, not UNIX sockets
+				serverAddress = fmt.Sprintf("%s:%d", host, port)
+			}
+
 			oidcConfig = &auth.TokenValidatorConfig{
-				Issuer:   issuer,
-				Audience: audience,
-				JWKSURL:  jwksURL,
-				ClientID: clientID,
+				Issuer:        issuer,
+				Audience:      audience,
+				JWKSURL:       jwksURL,
+				ClientID:      clientID,
+				ServerAddress: serverAddress,
 			}
 		}
 

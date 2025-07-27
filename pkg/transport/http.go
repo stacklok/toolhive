@@ -35,6 +35,7 @@ type HTTPTransport struct {
 	debug             bool
 	middlewares       []types.Middleware
 	prometheusHandler http.Handler
+	authInfoHandler   http.Handler
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -59,6 +60,7 @@ func NewHTTPTransport(
 	deployer rt.Deployer,
 	debug bool,
 	targetHost string,
+	authInfoHandler http.Handler,
 	prometheusHandler http.Handler,
 	middlewares ...types.Middleware,
 ) *HTTPTransport {
@@ -81,6 +83,7 @@ func NewHTTPTransport(
 		deployer:          deployer,
 		debug:             debug,
 		prometheusHandler: prometheusHandler,
+		authInfoHandler:   authInfoHandler,
 		shutdownCh:        make(chan struct{}),
 	}
 }
@@ -230,7 +233,10 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		t.proxyPort, targetURI)
 
 	// Create the transparent proxy with middlewares
-	t.proxy = transparent.NewTransparentProxy(t.host, t.proxyPort, t.containerName, targetURI, t.prometheusHandler, t.middlewares...)
+	t.proxy = transparent.NewTransparentProxy(
+		t.host, t.proxyPort, t.containerName, targetURI,
+		t.prometheusHandler, t.authInfoHandler,
+		t.middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}

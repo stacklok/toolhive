@@ -194,12 +194,19 @@ func (b *RunConfigBuilder) WithOIDCConfig(
 	jwksAllowPrivateIP bool,
 ) *RunConfigBuilder {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
+		// Construct server address if host and port are available
+		serverAddress := ""
+		if b.config.Host != "" && b.config.Port != 0 {
+			serverAddress = fmt.Sprintf("%s:%d", b.config.Host, b.config.Port)
+		}
+		
 		b.config.OIDCConfig = &auth.TokenValidatorConfig{
 			Issuer:            oidcIssuer,
 			Audience:          oidcAudience,
 			JWKSURL:           oidcJwksURL,
 			ClientID:          oidcClientID,
 			AllowOpaqueTokens: oidcAllowOpaqueTokens,
+			ServerAddress:     serverAddress,
 		}
 	}
 	// Set JWKS-related configuration

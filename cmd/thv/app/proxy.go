@@ -188,16 +188,20 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 		clientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
 
+		// Construct the server address for the AuthInfoHandler
+		serverAddress := fmt.Sprintf("%s:%d", proxyHost, port)
+
 		oidcConfig = &auth.TokenValidatorConfig{
-			Issuer:   issuer,
-			Audience: audience,
-			JWKSURL:  jwksURL,
-			ClientID: clientID,
+			Issuer:        issuer,
+			Audience:      audience,
+			JWKSURL:       jwksURL,
+			ClientID:      clientID,
+			ServerAddress: serverAddress,
 		}
 	}
 
 	// Get authentication middleware for incoming requests
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, false)
+	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, false)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
@@ -214,7 +218,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		port, proxyTargetURI)
 
 	// Create the transparent proxy with middlewares
-	proxy := transparent.NewTransparentProxy(proxyHost, port, serverName, proxyTargetURI, nil, middlewares...)
+	proxy := transparent.NewTransparentProxy(proxyHost, port, serverName, proxyTargetURI, nil, nil, middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %v", err)
 	}

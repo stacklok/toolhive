@@ -53,6 +53,22 @@ func createMockClientConfigs() []mcpClientConfig {
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
 		},
+		{
+			ClientType:           AmpCli,
+			Description:          "Sourcegraph Amp CLI (Mock)",
+			RelPath:              []string{"mock_amp_cli"},
+			SettingsFile:         "settings.json",
+			MCPServersPathPrefix: "/amp.mcpServers",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           AmpCursor,
+			Description:          "Cursor Sourcegraph Amp extension (Mock)",
+			RelPath:              []string{"mock_amp_cursor"},
+			SettingsFile:         "settings.json",
+			MCPServersPathPrefix: "/amp.mcpServers",
+			Extension:            JSON,
+		},
 	}
 }
 
@@ -260,6 +276,11 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(RooCode),
 					string(ClaudeCode),
 					string(Cline),
+					string(AmpCli),
+					string(AmpVSCode),
+					string(AmpCursor),
+					string(AmpVSCodeInsider),
+					string(AmpWindsurf),
 				},
 			},
 		}
@@ -312,6 +333,21 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case Cline:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"Cline config should contain mcpServers key")
+			case AmpCli:
+				assert.Contains(t, string(content), `"mcpServers":`,
+					"AmpCli config should contain mcpServers key")
+			case AmpVSCode:
+				assert.Contains(t, string(content), `"mcpServers":`,
+					"AmpVSCode config should contain mcpServers key")
+			case AmpVSCodeInsider:
+				assert.Contains(t, string(content), `"mcpServers":`,
+					"AmpVSCodeInsider config should contain mcpServers key")
+			case AmpCursor:
+				assert.Contains(t, string(content), `"mcpServers":`,
+					"AmpCursor config should contain mcpServers key")
+			case AmpWindsurf:
+				assert.Contains(t, string(content), `"mcpServers":`,
+					"AmpWindsurf config should contain mcpServers key")
 			}
 		}
 	})
@@ -337,7 +373,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case VSCode, VSCodeInsider:
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
-			case Cursor, RooCode, ClaudeCode, Cline:
+			case Cursor, RooCode, ClaudeCode, Cline, AmpCli, AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}

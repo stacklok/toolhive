@@ -106,7 +106,9 @@ func TestSave(t *testing.T) {
 				ProviderType: string(secrets.EncryptedType),
 			},
 			Clients: Clients{
-				RegisteredClients: []string{"vscode", "cursor", "roo-code", "cline", "claude-code"},
+				RegisteredClients: []string{
+					"vscode", "cursor", "roo-code", "cline", "claude-code", "amp-cli", "amp-vscode", "amp-cursor",
+				},
 			},
 		}
 

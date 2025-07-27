@@ -21,7 +21,7 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
@@ -258,6 +258,11 @@ func (in *MCPServerSpec) DeepCopyInto(out *MCPServerSpec) {
 		in, out := &in.AuthzConfig, &out.AuthzConfig
 		*out = new(AuthzConfigRef)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.ToolsFilter != nil {
+		in, out := &in.ToolsFilter, &out.ToolsFilter
+		*out = make([]string, len(*in))
+		copy(*out, *in)
 	}
 }
 

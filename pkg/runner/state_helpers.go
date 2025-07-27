@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state"
 )
@@ -51,7 +52,7 @@ func LoadState(ctx context.Context, name string) (*Runner, error) {
 		return nil, fmt.Errorf("failed to check if run configuration exists: %w", err)
 	}
 	if !exists {
-		return nil, fmt.Errorf("run configuration for %s not found", name)
+		return nil, errors.NewRunConfigNotFoundError(fmt.Sprintf("run configuration for %s not found", name), nil)
 	}
 
 	// Get a reader for the state

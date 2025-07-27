@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -54,6 +55,7 @@ func WorkloadRouter(
 	r.Post("/{name}/stop", routes.stopWorkload)
 	r.Post("/{name}/restart", routes.restartWorkload)
 	r.Get("/{name}/logs", routes.getLogsForWorkload)
+	r.Get("/{name}/export", routes.exportWorkload)
 	r.Delete("/{name}", routes.deleteWorkload)
 
 	return r
@@ -265,6 +267,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID, req.OIDC.AllowOpaqueTokens,
 										"", "", false). // JWKS auth parameters not exposed through API yet
 		WithTelemetryConfig("", false, "", 0.0, nil, false, nil). // Not exposed through API yet.
+		WithToolsFilter(req.ToolsFilter).
 		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
 	if err != nil {
 		logger.Errorf("Failed to create run config: %v", err)
@@ -443,6 +446,41 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// exportWorkload
+//
+//	@Summary		Export workload configuration
+//	@Description	Export a workload's run configuration as JSON
+//	@Tags			workloads
+//	@Produce		json
+//	@Param			name	path		string	true	"Workload name"
+//	@Success		200		{object}	runner.RunConfig
+//	@Failure		404		{string}	string	"Not Found"
+//	@Router			/api/v1beta/workloads/{name}/export [get]
+func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := chi.URLParam(r, "name")
+
+	// Load the saved run configuration using the runner package
+	runnerInstance, err := runner.LoadState(ctx, name)
+	if err != nil {
+		if thverrors.IsRunConfigNotFound(err) {
+			http.Error(w, "Workload configuration not found", http.StatusNotFound)
+			return
+		}
+		logger.Errorf("Failed to load workload configuration: %v", err)
+		http.Error(w, "Failed to load workload configuration", http.StatusInternalServerError)
+		return
+	}
+
+	// Return the configuration as JSON
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(runnerInstance.Config); err != nil {
+		logger.Errorf("Failed to encode workload configuration: %v", err)
+		http.Error(w, "Failed to encode workload configuration", http.StatusInternalServerError)
+		return
+	}
+}
+
 // Response type definitions.
 
 // workloadListResponse represents the response for listing workloads
@@ -485,6 +523,8 @@ type createRequest struct {
 	ProxyMode string `json:"proxy_mode"`
 	// Whether network isolation is turned on. This applies the rules in the permission profile.
 	NetworkIsolation bool `json:"network_isolation"`
+	// Tools filter
+	ToolsFilter []string `json:"tools"`
 }
 
 // oidcOptions represents OIDC configuration options

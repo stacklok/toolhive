@@ -121,6 +121,9 @@ type RunConfig struct {
 
 	// Group is the name of the group this workload belongs to, if any
 	Group string `json:"group,omitempty" yaml:"group,omitempty"`
+
+	// ToolsFilter is the list of tools to filter
+	ToolsFilter []string `json:"tools_filter,omitempty" yaml:"tools_filter,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -190,6 +193,7 @@ func NewRunConfigFromFlags(
 	envVarValidator EnvVarValidator,
 	proxyMode types.ProxyMode,
 	groupName string,
+	toolsFilter []string,
 ) (*RunConfig, error) {
 	return NewRunConfigBuilder().
 		WithRuntime(runtime).
@@ -215,6 +219,7 @@ func NewRunConfigFromFlags(
 			thvCABundle, jwksAuthTokenFile, jwksAllowPrivateIP).
 		WithTelemetryConfig(otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
 			otelSamplingRate, otelHeaders, otelInsecure, otelEnvironmentVariables).
+		WithToolsFilter(toolsFilter).
 		Build(ctx, imageMetadata, envVars, envVarValidator)
 }
 
@@ -362,6 +367,6 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 		transportLabel = types.TransportTypeStreamableHTTP.String()
 	}
 	// Use the Group field from the RunConfig
-	labels.AddStandardLabelsWithGroup(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port, c.Group)
+	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port)
 	return c
 }

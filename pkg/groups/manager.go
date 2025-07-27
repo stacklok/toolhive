@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/state"
-	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // manager implements the Manager interface
 type manager struct {
-	store           state.Store
-	workloadManager workloads.Manager
+	groupStore     state.Store
+	runconfigStore state.Store
 }
 
 // NewManager creates a new group manager
@@ -21,24 +23,12 @@ func NewManager() (Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create group state store: %w", err)
 	}
-
-	workloadManager, err := workloads.NewManager(context.Background())
+	runConfigStore, err := state.NewRunConfigStore("toolhive")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create workload manager: %w", err)
+		return nil, fmt.Errorf("failed to create runconfig store: %w", err)
 	}
 
-	return &manager{store: store, workloadManager: workloadManager}, nil
-}
-
-// NewManagerWithWorkloadManager creates a new group manager with a custom workload manager
-// This is useful for testing with mocks
-func NewManagerWithWorkloadManager(workloadManager workloads.Manager) (Manager, error) {
-	store, err := state.NewGroupConfigStore("toolhive")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create group state store: %w", err)
-	}
-
-	return &manager{store: store, workloadManager: workloadManager}, nil
+	return &manager{groupStore: store, runconfigStore: runConfigStore}, nil
 }
 
 // Create creates a new group with the given name
@@ -49,7 +39,7 @@ func (m *manager) Create(ctx context.Context, name string) error {
 	}
 
 	// Check if group already exists
-	exists, err := m.store.Exists(ctx, name)
+	exists, err := m.groupStore.Exists(ctx, name)
 	if err != nil {
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
@@ -63,7 +53,7 @@ func (m *manager) Create(ctx context.Context, name string) error {
 
 // Get retrieves a group by name
 func (m *manager) Get(ctx context.Context, name string) (*Group, error) {
-	reader, err := m.store.GetReader(ctx, name)
+	reader, err := m.groupStore.GetReader(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get reader for group: %w", err)
 	}
@@ -79,7 +69,7 @@ func (m *manager) Get(ctx context.Context, name string) (*Group, error) {
 
 // List returns all groups
 func (m *manager) List(ctx context.Context) ([]*Group, error) {
-	names, err := m.store.List(ctx)
+	names, err := m.groupStore.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list groups: %w", err)
 	}
@@ -98,37 +88,64 @@ func (m *manager) List(ctx context.Context) ([]*Group, error) {
 
 // Delete removes a group by name
 func (m *manager) Delete(ctx context.Context, name string) error {
-	return m.store.Delete(ctx, name)
+	return m.groupStore.Delete(ctx, name)
 }
 
 // Exists checks if a group exists
 func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
-	return m.store.Exists(ctx, name)
+	return m.groupStore.Exists(ctx, name)
 }
 
 // GetWorkloadGroup returns the group that a workload belongs to, if any
 func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error) {
-	// Use the workload manager to get the workload and check its group label
-
-	// Get the workload details
-	workload, err := m.workloadManager.GetWorkload(ctx, workloadName)
+	runnerInstance, err := runner.LoadState(ctx, workloadName)
 	if err != nil {
-		// If workload not found, it's not in any group
+		if errors.IsRunConfigNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	// If the workload has no group, return nil
+	if runnerInstance.Config.Group == "" {
 		return nil, nil
 	}
 
-	// Check if the workload has a group
-	if workload.Group == "" {
-		return nil, nil // Workload is not in any group
+	// Get the group details
+	return m.Get(ctx, runnerInstance.Config.Group)
+}
+
+// ListWorkloadsInGroup returns all workload names that belong to the specified group
+func (m *manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error) {
+	// List all workload names
+	workloadNames, err := m.runconfigStore.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list runconfigs: %w", err)
 	}
 
-	// Get the group details
-	return m.Get(ctx, workload.Group)
+	// Filter workloads that belong to the specified group
+	var groupWorkloads []string
+
+	for _, workloadName := range workloadNames {
+		// Load the workload
+		runnerInstance, err := runner.LoadState(ctx, workloadName)
+		if err != nil {
+			logger.Warnf("Failed to load workload %s: %v", workloadName, err)
+			continue
+		}
+
+		// Check if this workload belongs to the specified group
+		if runnerInstance.Config.Group == groupName {
+			groupWorkloads = append(groupWorkloads, workloadName)
+		}
+	}
+
+	return groupWorkloads, nil
 }
 
 // saveGroup saves the group to the group state store
 func (m *manager) saveGroup(ctx context.Context, group *Group) error {
-	writer, err := m.store.GetWriter(ctx, group.Name)
+	writer, err := m.groupStore.GetWriter(ctx, group.Name)
 	if err != nil {
 		return fmt.Errorf("failed to get writer for group: %w", err)
 	}

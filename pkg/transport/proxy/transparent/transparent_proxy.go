@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -133,7 +134,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	resp, err := t.forward(req)
 	if err != nil {
-		if err == context.Canceled {
+		if errors.Is(err, context.Canceled) {
 			// Expected during shutdown or client disconnect—silently ignore
 			return nil, err
 		}

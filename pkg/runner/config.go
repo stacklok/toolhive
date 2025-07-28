@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/environment"
+	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -124,6 +125,9 @@ type RunConfig struct {
 
 	// ToolsFilter is the list of tools to filter
 	ToolsFilter []string `json:"tools_filter,omitempty" yaml:"tools_filter,omitempty"`
+
+	// IgnoreConfig contains configuration for ignore processing
+	IgnoreConfig *ignore.Config `json:"ignore_config,omitempty" yaml:"ignore_config,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -194,6 +198,8 @@ func NewRunConfigFromFlags(
 	proxyMode types.ProxyMode,
 	groupName string,
 	toolsFilter []string,
+	ignoreGlobally bool,
+	printOverlays bool,
 ) (*RunConfig, error) {
 	return NewRunConfigBuilder().
 		WithRuntime(runtime).
@@ -220,6 +226,10 @@ func NewRunConfigFromFlags(
 		WithTelemetryConfig(otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
 			otelSamplingRate, otelHeaders, otelInsecure, otelEnvironmentVariables).
 		WithToolsFilter(toolsFilter).
+		WithIgnoreConfig(&ignore.Config{
+			LoadGlobal:    ignoreGlobally,
+			PrintOverlays: printOverlays,
+		}).
 		Build(ctx, imageMetadata, envVars, envVarValidator)
 }
 

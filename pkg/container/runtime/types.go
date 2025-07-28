@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
@@ -157,6 +158,21 @@ const (
 	TypeKubernetes Type = "kubernetes"
 )
 
+// MountType represents the type of mount
+type MountType string
+
+const (
+	// MountTypeBind represents a bind mount
+	MountTypeBind MountType = "bind"
+	// MountTypeTmpfs represents a tmpfs mount
+	MountTypeTmpfs MountType = "tmpfs"
+)
+
+// String returns the string representation of the mount type
+func (mt MountType) String() string {
+	return string(mt)
+}
+
 // PermissionConfig represents container permission configuration
 type PermissionConfig struct {
 	// Mounts is the list of volume mounts
@@ -196,6 +212,10 @@ type DeployWorkloadOptions struct {
 	// SSEHeadlessServiceName is the name of the Kubernetes service to use for the workload
 	// Only applicable when using Kubernetes runtime and SSE transport
 	SSEHeadlessServiceName string
+
+	// IgnoreConfig contains configuration for ignore patterns and tmpfs overlays
+	// Used to filter bind mount contents by hiding sensitive files
+	IgnoreConfig *ignore.Config
 }
 
 // PortBinding represents a host port binding
@@ -226,6 +246,8 @@ type Mount struct {
 	Target string
 	// ReadOnly indicates if the mount is read-only
 	ReadOnly bool
+	// Type is the mount type (bind or tmpfs)
+	Type MountType
 }
 
 // IsKubernetesRuntime returns true if the runtime is Kubernetes

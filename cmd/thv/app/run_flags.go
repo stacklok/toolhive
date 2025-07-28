@@ -73,6 +73,10 @@ type RunFlags struct {
 
 	// Configuration import
 	FromConfig string
+
+	// Ignore functionality
+	IgnoreGlobally bool
+	PrintOverlays  bool
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -160,6 +164,12 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Filter MCP server tools (comma-separated list of tool names)",
 	)
 	cmd.Flags().StringVar(&config.FromConfig, "from-config", "", "Load configuration from exported file")
+
+	// Ignore functionality flags
+	cmd.Flags().BoolVar(&config.IgnoreGlobally, "ignore-globally", true,
+		"Load global ignore patterns from ~/.config/toolhive/thvignore")
+	cmd.Flags().BoolVar(&config.PrintOverlays, "print-resolved-overlays", false,
+		"Debug: show resolved container paths for tmpfs overlays")
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration
@@ -267,6 +277,8 @@ func BuildRunnerConfig(
 		types.ProxyMode(runConfig.ProxyMode),
 		runConfig.Group,
 		runConfig.ToolsFilter,
+		runConfig.IgnoreGlobally,
+		runConfig.PrintOverlays,
 	)
 }
 

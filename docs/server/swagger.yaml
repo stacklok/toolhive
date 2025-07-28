@@ -139,6 +139,16 @@ components:
             ToolHive configuration
           type: boolean
       type: object
+    ignore.Config:
+      description: IgnoreConfig contains configuration for ignore processing
+      properties:
+        loadGlobal:
+          description: Whether to load global ignore patterns
+          type: boolean
+        printOverlays:
+          description: Whether to print resolved overlay paths for debugging
+          type: boolean
+      type: object
     permissions.NetworkPermissions:
       description: Network defines network permissions
       properties:
@@ -400,6 +410,8 @@ components:
         host:
           description: Host is the host for the HTTP proxy
           type: string
+        ignore_config:
+          $ref: '#/components/schemas/ignore.Config'
         image:
           description: Image is the Docker image to run
           type: string

@@ -63,9 +63,6 @@ type TransparentProxy struct {
 	// If mcp server has been initialized
 	IsServerInitialized bool
 
-	// Connection tracker for managing active connections
-	ConnTracker *ConnTracker
-
 	// Listener for the HTTP server
 	listener net.Listener
 }
@@ -296,8 +293,6 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		mux.Handle("/metrics", p.prometheusHandler)
 		logger.Info("Prometheus metrics endpoint enabled at /metrics")
 	}
-	tracker := NewConnTracker()
-	p.ConnTracker = tracker
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
@@ -308,7 +303,6 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
-		ConnState:         tracker.ConnState,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 

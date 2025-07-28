@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
@@ -144,7 +143,7 @@ func init() {
 }
 
 func proxyCmdFunc(cmd *cobra.Command, args []string) error {
-	ctx, stopSignal := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stopSignal := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignal()
 	// Get the server name
 	serverName := args[0]
@@ -225,34 +224,18 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		serverName, port, proxyTargetURI)
 	logger.Info("Press Ctrl+C to stop")
 
-	// Use errgroup to coordinate shutdown
-	g, gctx := errgroup.WithContext(ctx)
+	<-ctx.Done()
+	logger.Infof("Interrupt received, proxy is shutting down. Please wait for connections to close...")
 
-	g.Go(func() error {
-		<-gctx.Done()
-		logger.Infof("Interrupt received, shutting down proxy for server %s", serverName)
-		if err := proxy.CloseListener(); err != nil {
-			logger.Warnf("Error closing proxy listener: %v", err)
-		}
-		// Force-close currently tracked connections once
-		if proxy.ConnTracker != nil {
-			proxy.ConnTracker.CloseAll()
-		}
-
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		if err := proxy.Stop(shutdownCtx); err != nil {
-			logger.Warnf("Error during proxy shutdown: %v", err)
-		}
-		return nil
-	})
-	// Wait until shutdown logic completes
-	if err := g.Wait(); err != nil {
-		return fmt.Errorf("proxy shutdown failure: %w", err)
+	if err := proxy.CloseListener(); err != nil {
+		logger.Warnf("Error closing proxy listener: %v", err)
 	}
-
-	logger.Infof("Proxy for server %s stopped cleanly", serverName)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := proxy.Stop(shutdownCtx); err != nil {
+		logger.Warnf("Error during proxy shutdown: %v", err)
+	}
+	logger.Infof("Proxy stopped cleanly")
 	return nil
 }
 

@@ -21,6 +21,8 @@ Valid clients are:
   - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition
+  - windsurf: Windsurf IDE
+  - windsurf-jetbrains: Windsurf for JetBrains IDEs
 
 ```
 thv client register [client] [flags]

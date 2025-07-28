@@ -80,7 +80,9 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 }
 
 // filterWorkloadsByGroup filters workloads to only include those in the specified group
-func filterWorkloadsByGroup(ctx context.Context, workloadList []workloads.Workload, groupName string) ([]workloads.Workload, error) {
+func filterWorkloadsByGroup(
+	ctx context.Context, workloadList []workloads.Workload, groupName string,
+) ([]workloads.Workload, error) {
 	// Create group manager
 	groupManager, err := groups.NewManager()
 	if err != nil {

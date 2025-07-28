@@ -30,7 +30,6 @@ type HTTPTransport struct {
 	proxyPort         int
 	targetPort        int
 	targetHost        string
-	containerID       string
 	containerName     string
 	deployer          rt.Deployer
 	debug             bool
@@ -201,10 +200,6 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	if t.containerID == "" {
-		return errors.ErrContainerIDNotSet
-	}
-
 	if t.containerName == "" {
 		return errors.ErrContainerNameNotSet
 	}
@@ -244,7 +239,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create container monitor: %v", err)
 	}
-	t.monitor = container.NewMonitor(monitorRuntime, t.containerID, t.containerName)
+	t.monitor = container.NewMonitor(monitorRuntime, t.containerName)
 
 	// Start monitoring the container
 	t.errorCh, err = t.monitor.StartMonitoring(ctx)
@@ -280,8 +275,8 @@ func (t *HTTPTransport) Stop(ctx context.Context) error {
 	}
 
 	// Stop the container if deployer is available
-	if t.deployer != nil && t.containerID != "" {
-		if err := t.deployer.StopWorkload(ctx, t.containerID); err != nil {
+	if t.deployer != nil && t.containerName != "" {
+		if err := t.deployer.StopWorkload(ctx, t.containerName); err != nil {
 			return fmt.Errorf("failed to stop workload: %w", err)
 		}
 	}

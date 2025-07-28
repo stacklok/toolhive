@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -12,7 +13,6 @@ import (
 // ContainerMonitor watches a container's state and reports when it exits
 type ContainerMonitor struct {
 	runtime       runtime.Runtime
-	containerID   string
 	containerName string
 	stopCh        chan struct{}
 	errorCh       chan error
@@ -22,10 +22,9 @@ type ContainerMonitor struct {
 }
 
 // NewMonitor creates a new container monitor
-func NewMonitor(rt runtime.Runtime, containerID, containerName string) runtime.Monitor {
+func NewMonitor(rt runtime.Runtime, containerName string) runtime.Monitor {
 	return &ContainerMonitor{
 		runtime:       rt,
-		containerID:   containerID,
 		containerName: containerName,
 		stopCh:        make(chan struct{}),
 		errorCh:       make(chan error, 1), // Buffered to prevent blocking
@@ -47,7 +46,7 @@ func (m *ContainerMonitor) StartMonitoring(ctx context.Context) (<-chan error, e
 		return nil, err
 	}
 	if !running {
-		return nil, NewContainerError(ErrContainerNotRunning, m.containerID, "container is not running")
+		return nil, NewContainerError(ErrContainerNotRunning, m.containerName, "container is not running")
 	}
 
 	m.running = true
@@ -95,15 +94,15 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 			// Check if the container is still running
 			// Create a short timeout context for this check
 			checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			running, err := m.runtime.IsWorkloadRunning(checkCtx, m.containerID)
+			running, err := m.runtime.IsWorkloadRunning(checkCtx, m.containerName)
 			cancel() // Always cancel the context to avoid leaks
 			if err != nil {
 				// If the container is not found, it may have been removed
 				if IsContainerNotFound(err) {
 					exitErr := NewContainerError(
 						ErrContainerExited,
-						m.containerID,
-						fmt.Sprintf("Container %s (%s) not found, it may have been removed", m.containerName, m.containerID),
+						m.containerName,
+						fmt.Sprintf("Container %s (%s) not found, it may have been removed", m.containerName, m.containerName),
 					)
 					m.errorCh <- exitErr
 					return
@@ -117,15 +116,15 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 				// Container has exited, get logs and info
 				// Create a short timeout context for these operations
 				infoCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				logs, _ := m.runtime.GetWorkloadLogs(infoCtx, m.containerID, false)
-				info, _ := m.runtime.GetWorkloadInfo(infoCtx, m.containerID)
+				logs, _ := m.runtime.GetWorkloadLogs(infoCtx, m.containerName, false)
+				info, _ := m.runtime.GetWorkloadInfo(infoCtx, m.containerName)
 				cancel() // Always cancel the context to avoid leaks
 
 				exitErr := NewContainerError(
 					ErrContainerExited,
-					m.containerID,
+					m.containerName,
 					fmt.Sprintf("Container %s (%s) exited unexpectedly. Status: %s. Last logs:\n%s",
-						m.containerName, m.containerID, info.Status, logs),
+						m.containerName, m.containerName, info.Status, logs),
 				)
 				m.errorCh <- exitErr
 				return
@@ -136,5 +135,5 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 
 // IsContainerNotFound checks if the error is a container not found error
 func IsContainerNotFound(err error) bool {
-	return err == ErrContainerNotFound || (err != nil && err.Error() == ErrContainerNotFound.Error())
+	return errors.Is(err, ErrContainerNotFound) || (err != nil && err.Error() == ErrContainerNotFound.Error())
 }

@@ -39,4 +39,5 @@ func (t *ConnTracker) CloseAll() {
 	for c := range t.conns {
 		_ = c.Close()
 	}
+	t.conns = make(map[net.Conn]struct{})
 }

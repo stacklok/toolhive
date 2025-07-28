@@ -85,7 +85,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 	}
 
 	if len(pods.Items) == 0 {
-		return nil, nil, fmt.Errorf("no pods found for workload %s", workloadName)
+		return nil, nil, fmt.Errorf("%w: no pods found for workload %s", runtime.ErrWorkloadNotFound, workloadName)
 	}
 
 	// Use the first pod found
@@ -179,7 +179,7 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 	}
 
 	if len(pods.Items) == 0 {
-		return "", fmt.Errorf("no pods found for statefulset %s", workloadName)
+		return "", fmt.Errorf("%w: no pods found for statefulset %s", runtime.ErrWorkloadNotFound, workloadName)
 	}
 
 	// Use the first pod
@@ -317,7 +317,7 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runt
 	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadName, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return runtime.ContainerInfo{}, fmt.Errorf("statefulset %s not found", workloadName)
+			return runtime.ContainerInfo{}, fmt.Errorf("%w: statefulset %s not found", runtime.ErrWorkloadNotFound, workloadName)
 		}
 		return runtime.ContainerInfo{}, fmt.Errorf("failed to get statefulset %s: %w", workloadName, err)
 	}
@@ -385,7 +385,7 @@ func (c *Client) IsWorkloadRunning(ctx context.Context, workloadName string) (bo
 	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadName, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return false, fmt.Errorf("statefulset %s not found", workloadName)
+			return false, fmt.Errorf("%w: statefulset %s not found", runtime.ErrWorkloadNotFound, workloadName)
 		}
 		return false, fmt.Errorf("failed to get statefulset %s: %w", workloadName, err)
 	}

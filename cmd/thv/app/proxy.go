@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
@@ -143,7 +144,8 @@ func init() {
 }
 
 func proxyCmdFunc(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
+	ctx, stopSignal := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignal()
 	// Get the server name
 	serverName := args[0]
 
@@ -223,20 +225,28 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		serverName, port, proxyTargetURI)
 	logger.Info("Press Ctrl+C to stop")
 
-	// Set up signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	// Use errgroup to coordinate shutdown
+	g, gctx := errgroup.WithContext(ctx)
 
-	// Wait for signal
-	sig := <-sigCh
-	logger.Infof("Received signal %s, stopping proxy...", sig)
+	g.Go(func() error {
+		<-gctx.Done()
+		logger.Infof("Interrupt received — closing all active connections immediately")
+		proxy.ConnTracker.CloseAll() // Force close all currently tracked conns
 
-	// Stop the proxy
-	if err := proxy.Stop(ctx); err != nil {
-		logger.Warnf("Warning: Failed to stop proxy: %v", err)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		if err := proxy.Stop(shutdownCtx); err != nil {
+			logger.Warnf("Error during proxy shutdown: %v", err)
+		}
+		return nil
+	})
+	// Wait until shutdown logic completes
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("proxy shutdown failure: %w", err)
 	}
 
-	logger.Infof("Proxy for server %s stopped", serverName)
+	logger.Infof("Proxy for server %s stopped cleanly", serverName)
 	return nil
 }
 

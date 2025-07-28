@@ -61,6 +61,9 @@ type TransparentProxy struct {
 
 	// If mcp server has been initialized
 	IsServerInitialized bool
+
+	// Connection tracker for managing active connections
+	ConnTracker *ConnTracker
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -286,11 +289,13 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		mux.Handle("/metrics", p.prometheusHandler)
 		logger.Info("Prometheus metrics endpoint enabled at /metrics")
 	}
-
+	tracker := NewConnTracker()
+	p.ConnTracker = tracker
 	// Create the server
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
+		ConnState:         tracker.ConnState,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 
@@ -352,7 +357,10 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 
 	// Stop the HTTP server
 	if p.server != nil {
-		return p.server.Shutdown(ctx)
+		err := p.server.Shutdown(ctx)
+		// force closing any leftover connections
+		p.ConnTracker.CloseAll()
+		return err
 	}
 
 	return nil

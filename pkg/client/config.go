@@ -38,6 +38,10 @@ const (
 	VSCode MCPClient = "vscode"
 	// ClaudeCode represents the Claude Code CLI.
 	ClaudeCode MCPClient = "claude-code"
+	// Windsurf represents the Windsurf IDE.
+	Windsurf MCPClient = "windsurf"
+	// WindsurfJetBrains represents the Windsurf plugin for JetBrains.
+	WindsurfJetBrains MCPClient = "windsurf-jetbrains"
 	// AmpCli represents the Sourcegraph Amp CLI.
 	AmpCli MCPClient = "amp-cli"
 	// AmpVSCode represents the Sourcegraph Amp extension for VS Code.
@@ -69,6 +73,7 @@ type mcpClientConfig struct {
 	Extension                     Extension
 	SupportedTransportTypesMap    map[types.TransportType]string // stdio should be mapped to sse
 	IsTransportTypeFieldSupported bool
+	MCPServersUrlLabel            string
 }
 
 var (
@@ -97,6 +102,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "streamable-http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
 	},
 	{
 		ClientType:   Cline,
@@ -117,6 +123,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStdio: "sse",
 		},
 		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabel:            "url",
 	},
 	{
 		ClientType:   VSCodeInsider,
@@ -138,6 +145,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
 	},
 	{
 		ClientType:   VSCode,
@@ -159,6 +167,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
 	},
 	{
 		ClientType:           Cursor,
@@ -175,6 +184,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		// Adding type field is not explicitly required though, Cursor auto-detects and is able to
 		// connect to both sse and streamable-http types
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
 	},
 	{
 		ClientType:           ClaudeCode,
@@ -189,6 +199,37 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
+	},
+	{
+		ClientType:           Windsurf,
+		Description:          "Windsurf IDE",
+		SettingsFile:         "mcp_config.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".codeium", "windsurf"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "serverUrl",
+	},
+	{
+		ClientType:           WindsurfJetBrains,
+		Description:          "Windsurf plugin for JetBrains IDEs",
+		SettingsFile:         "mcp_config.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".codeium"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "serverUrl",
 	},
 	{
 		ClientType:           AmpCli,
@@ -428,9 +469,16 @@ func Upsert(cf ConfigFile, name string, url string, transportType string) error 
 		if cf.ClientType != supportedClientIntegrations[i].ClientType {
 			continue
 		}
+		isServerUrl := supportedClientIntegrations[i].MCPServersUrlLabel == "serverUrl"
 		mappedTransportType, ok := supportedClientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
 		if supportedClientIntegrations[i].IsTransportTypeFieldSupported && ok {
+			if isServerUrl {
+				return cf.ConfigUpdater.Upsert(name, MCPServer{ServerUrl: url, Type: mappedTransportType})
+			}
 			return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url, Type: mappedTransportType})
+		}
+		if isServerUrl {
+			return cf.ConfigUpdater.Upsert(name, MCPServer{ServerUrl: url})
 		}
 		return cf.ConfigUpdater.Upsert(name, MCPServer{Url: url})
 	}

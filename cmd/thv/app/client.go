@@ -45,7 +45,9 @@ Valid clients are:
   - cursor: Cursor editor
   - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
-  - vscode-insider: Visual Studio Code Insiders edition`,
+  - vscode-insider: Visual Studio Code Insiders edition
+  - windsurf: Windsurf IDE
+  - windsurf-jetbrains: Windsurf for JetBrains IDEs`,
 	Args: cobra.ExactArgs(1),
 	RunE: clientRegisterCmdFunc,
 }
@@ -65,7 +67,9 @@ Valid clients are:
   - cursor: Cursor editor
   - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
-  - vscode-insider: Visual Studio Code Insiders edition`,
+  - vscode-insider: Visual Studio Code Insiders edition
+  - windsurf: Windsurf IDE
+  - windsurf-jetbrains: Windsurf for JetBrains IDEs`,
 	Args: cobra.ExactArgs(1),
 	RunE: clientRemoveCmdFunc,
 }
@@ -158,13 +162,13 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode",
+	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "windsurf", "windsurf-jetbrains",
 		"amp-cli", "amp-vscode", "amp-vscode-insider", "amp-cursor", "amp-windsurf":
 		// Valid client type
 	default:
 		return fmt.Errorf(
 			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, "+
-				"amp-cli, amp-vscode, amp-vscode-insider, amp-cursor, amp-windsurf)",
+				"windsurf, windsurf-jetbrains, amp-cli, amp-vscode, amp-vscode-insider, amp-cursor, amp-windsurf)",
 			clientType)
 	}
 
@@ -190,13 +194,13 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode",
+	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "windsurf", "windsurf-jetbrains",
 		"amp-cli", "amp-vscode", "amp-vscode-insider", "amp-cursor", "amp-windsurf":
 		// Valid client type
 	default:
 		return fmt.Errorf(
 			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, "+
-				"amp-cli, amp-vscode, amp-vscode-insider, amp-cursor, amp-windsurf)",
+				"windsurf, windsurf-jetbrains, amp-cli, amp-vscode, amp-vscode-insider, amp-cursor, amp-windsurf)",
 			clientType)
 	}
 

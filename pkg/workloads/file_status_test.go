@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -42,7 +43,7 @@ func TestFileStatusManager_CreateWorkloadStatus(t *testing.T) {
 	err = json.Unmarshal(data, &statusFileData)
 	require.NoError(t, err)
 
-	assert.Equal(t, WorkloadStatusStarting, statusFileData.Status)
+	assert.Equal(t, runtime.WorkloadStatusStarting, statusFileData.Status)
 	assert.Empty(t, statusFileData.StatusContext)
 	assert.False(t, statusFileData.CreatedAt.IsZero())
 	assert.False(t, statusFileData.UpdatedAt.IsZero())
@@ -77,7 +78,7 @@ func TestFileStatusManager_GetWorkloadStatus(t *testing.T) {
 	// Get the status
 	status, statusContext, err := manager.GetWorkloadStatus(ctx, "test-workload")
 	require.NoError(t, err)
-	assert.Equal(t, WorkloadStatusStarting, *status)
+	assert.Equal(t, runtime.WorkloadStatusStarting, status)
 	assert.Empty(t, statusContext)
 }
 
@@ -104,12 +105,12 @@ func TestFileStatusManager_SetWorkloadStatus(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update the status
-	manager.SetWorkloadStatus(ctx, "test-workload", WorkloadStatusRunning, "container started")
+	manager.SetWorkloadStatus(ctx, "test-workload", runtime.WorkloadStatusRunning, "container started")
 
 	// Verify the status was updated
 	status, statusContext, err := manager.GetWorkloadStatus(ctx, "test-workload")
 	require.NoError(t, err)
-	assert.Equal(t, WorkloadStatusRunning, *status)
+	assert.Equal(t, runtime.WorkloadStatusRunning, status)
 	assert.Equal(t, "container started", statusContext)
 
 	// Verify the file on disk
@@ -121,7 +122,7 @@ func TestFileStatusManager_SetWorkloadStatus(t *testing.T) {
 	err = json.Unmarshal(data, &statusFileData)
 	require.NoError(t, err)
 
-	assert.Equal(t, WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, runtime.WorkloadStatusRunning, statusFileData.Status)
 	assert.Equal(t, "container started", statusFileData.StatusContext)
 	// CreatedAt should be preserved, UpdatedAt should be newer
 	assert.False(t, statusFileData.CreatedAt.IsZero())
@@ -137,7 +138,7 @@ func TestFileStatusManager_SetWorkloadStatus_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// Try to set status for non-existent workload - should not error but do nothing
-	manager.SetWorkloadStatus(ctx, "non-existent", WorkloadStatusRunning, "test")
+	manager.SetWorkloadStatus(ctx, "non-existent", runtime.WorkloadStatusRunning, "test")
 
 	// Verify no file was created
 	statusFile := filepath.Join(tempDir, "non-existent.json")
@@ -193,7 +194,7 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 			defer func() { done <- true }()
 			status, statusContext, err := manager.GetWorkloadStatus(ctx, "test-workload")
 			assert.NoError(t, err)
-			assert.Equal(t, WorkloadStatusStarting, *status)
+			assert.Equal(t, runtime.WorkloadStatusStarting, status)
 			assert.Empty(t, statusContext)
 		}()
 	}
@@ -223,31 +224,31 @@ func TestFileStatusManager_FullLifecycle(t *testing.T) {
 	// 2. Verify initial status
 	status, statusContext, err := manager.GetWorkloadStatus(ctx, workloadName)
 	require.NoError(t, err)
-	assert.Equal(t, WorkloadStatusStarting, *status)
+	assert.Equal(t, runtime.WorkloadStatusStarting, status)
 	assert.Empty(t, statusContext)
 
 	// 3. Update to running
-	manager.SetWorkloadStatus(ctx, workloadName, WorkloadStatusRunning, "started successfully")
+	manager.SetWorkloadStatus(ctx, workloadName, runtime.WorkloadStatusRunning, "started successfully")
 
 	status, statusContext, err = manager.GetWorkloadStatus(ctx, workloadName)
 	require.NoError(t, err)
-	assert.Equal(t, WorkloadStatusRunning, *status)
+	assert.Equal(t, runtime.WorkloadStatusRunning, status)
 	assert.Equal(t, "started successfully", statusContext)
 
 	// 4. Update to stopping
-	manager.SetWorkloadStatus(ctx, workloadName, WorkloadStatusStopping, "shutdown initiated")
+	manager.SetWorkloadStatus(ctx, workloadName, runtime.WorkloadStatusStopping, "shutdown initiated")
 
 	status, statusContext, err = manager.GetWorkloadStatus(ctx, workloadName)
 	require.NoError(t, err)
-	assert.Equal(t, WorkloadStatusStopping, *status)
+	assert.Equal(t, runtime.WorkloadStatusStopping, status)
 	assert.Equal(t, "shutdown initiated", statusContext)
 
 	// 5. Update to stopped
-	manager.SetWorkloadStatus(ctx, workloadName, WorkloadStatusStopped, "shutdown complete")
+	manager.SetWorkloadStatus(ctx, workloadName, runtime.WorkloadStatusStopped, "shutdown complete")
 
 	status, statusContext, err = manager.GetWorkloadStatus(ctx, workloadName)
 	require.NoError(t, err)
-	assert.Equal(t, WorkloadStatusStopped, *status)
+	assert.Equal(t, runtime.WorkloadStatusStopped, status)
 	assert.Equal(t, "shutdown complete", statusContext)
 
 	// 6. Delete workload

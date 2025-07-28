@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -77,6 +81,27 @@ func init() {
 	AddOIDCFlags(runCmd)
 }
 
+func cleanupAndWait(workloadManager workloads.Manager, name string, cancel context.CancelFunc, errCh <-chan error) {
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cleanupCancel()
+
+	group, err := workloadManager.DeleteWorkloads(cleanupCtx, []string{name})
+	if err != nil {
+		logger.Warnf("Failed to delete workload %q: %v", name, err)
+	} else if group != nil {
+		if err := group.Wait(); err != nil {
+			logger.Warnf("DeleteWorkloads group error for %q: %v", name, err)
+		}
+	}
+
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		logger.Warnf("Timeout waiting for workload to stop")
+	}
+}
+
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
@@ -102,34 +127,9 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
-	workloadName := runFlags.Name
-	if workloadName == "" {
-		workloadName = serverOrImage
-	}
-
-	if runFlags.Group != "" {
-		groupManager, err := groups.NewManager()
-		if err != nil {
-			return fmt.Errorf("failed to create group manager: %v", err)
-		}
-
-		// Check if the workload is already in a group
-		group, err := groupManager.GetWorkloadGroup(ctx, workloadName)
-		if err != nil {
-			return fmt.Errorf("failed to get workload group: %v", err)
-		}
-		if group != nil && group.Name != runFlags.Group {
-			return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, group.Name)
-		}
-
-		// Validate that the group specified exists
-		exists, err := groupManager.Exists(ctx, runFlags.Group)
-		if err != nil {
-			return fmt.Errorf("failed to check if group exists: %v", err)
-		}
-		if !exists {
-			return fmt.Errorf("group '%s' does not exist", runFlags.Group)
-		}
+	err := validateGroup(ctx, serverOrImage)
+	if err != nil {
+		return err
 	}
 
 	// Build the run configuration
@@ -146,17 +146,68 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	workloadManager := workloads.NewManagerFromRuntime(rt)
 
 	if runFlags.Foreground {
-		err = workloadManager.RunWorkload(ctx, runnerConfig)
-	} else {
-		// Run the workload in detached mode
-		err = workloadManager.RunWorkloadDetached(ctx, runnerConfig)
+		return runForeground(ctx, workloadManager, runnerConfig)
 	}
-	if err != nil {
+	return workloadManager.RunWorkloadDetached(ctx, runnerConfig)
+}
+
+func runForeground(ctx context.Context, workloadManager workloads.Manager, runnerConfig *runner.RunConfig) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- workloadManager.RunWorkload(ctx, runnerConfig)
+	}()
+
+	select {
+	case sig := <-sigCh:
+		if !process.IsDetached() {
+			logger.Infof("Received signal: %v, stopping server %q", sig, runnerConfig.BaseName)
+			cleanupAndWait(workloadManager, runnerConfig.BaseName, cancel, errCh)
+		}
+		return nil
+	case err := <-errCh:
 		return err
 	}
+}
 
+func validateGroup(ctx context.Context, serverOrImage string) error {
+	workloadName := runFlags.Name
+	if workloadName == "" {
+		workloadName = serverOrImage
+	}
+
+	// Create group manager
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create group manager: %v", err)
+	}
+
+	// Check if the workload is already in a group
+	group, err := groupManager.GetWorkloadGroup(ctx, workloadName)
+	if err != nil {
+		return fmt.Errorf("failed to get workload group: %v", err)
+	}
+	if group != nil && group.Name != runFlags.Group {
+		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, group.Name)
+	}
+
+	if runFlags.Group != "" {
+		// Validate that the group specified exists
+		exists, err := groupManager.Exists(ctx, runFlags.Group)
+		if err != nil {
+			return fmt.Errorf("failed to check if group exists: %v", err)
+		}
+		if !exists {
+			return fmt.Errorf("group '%s' does not exist", runFlags.Group)
+		}
+	}
 	return nil
-
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator

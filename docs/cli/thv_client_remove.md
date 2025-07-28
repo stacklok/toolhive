@@ -22,7 +22,7 @@ Valid clients are:
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition
   - windsurf: Windsurf IDE
-  - windsurf-jetbrains: Windsurf for Jetbrains IDEs
+  - windsurf-jetbrains: Windsurf for JetBrains IDEs
 
 ```
 thv client remove [client] [flags]

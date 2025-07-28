@@ -40,8 +40,8 @@ const (
 	ClaudeCode MCPClient = "claude-code"
 	// Windsurf represents the Windsurf IDE.
 	Windsurf MCPClient = "windsurf"
-	// WindsurfJetbrains represents the Windsurf plugin for IntelliJ.
-	WindsurfJetbrains MCPClient = "windsurf-jetbrains"
+	// WindsurfJetBrains represents the Windsurf plugin for JetBrains.
+	WindsurfJetBrains MCPClient = "windsurf-jetbrains"
 )
 
 // Extension is extension of the client config file.
@@ -207,8 +207,8 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersUrlLabel:            "serverUrl",
 	},
 	{
-		ClientType:           WindsurfJetbrains,
-		Description:          "Windsurf plugin for Jetbrains IDEs",
+		ClientType:           WindsurfJetBrains,
+		Description:          "Windsurf plugin for JetBrains IDEs",
 		SettingsFile:         "mcp_config.json",
 		MCPServersPathPrefix: "/mcpServers",
 		RelPath:              []string{".codeium"},

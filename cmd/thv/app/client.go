@@ -42,7 +42,7 @@ Valid clients are:
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition
   - windsurf: Windsurf IDE
-  - windsurf-jetbrains: Windsurf for Jetbrains IDEs`,
+  - windsurf-jetbrains: Windsurf for JetBrains IDEs`,
 	Args: cobra.ExactArgs(1),
 	RunE: clientRegisterCmdFunc,
 }
@@ -59,7 +59,7 @@ Valid clients are:
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition
   - windsurf: Windsurf IDE
-  - windsurf-jetbrains: Windsurf for Jetbrains IDEs`,
+  - windsurf-jetbrains: Windsurf for JetBrains IDEs`,
 	Args: cobra.ExactArgs(1),
 	RunE: clientRemoveCmdFunc,
 }

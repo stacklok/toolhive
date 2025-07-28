@@ -11,6 +11,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/state"
 )
 
+const (
+	// DefaultGroupName is the name of the default group
+	DefaultGroupName = "default"
+)
+
 // manager implements the Manager interface
 type manager struct {
 	groupStore     state.Store

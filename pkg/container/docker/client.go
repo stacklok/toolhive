@@ -252,7 +252,7 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 			Name:    name,
 			Image:   c.Image,
 			Status:  c.Status,
-			State:   c.State,
+			State:   dockerToDomainStatus(c.State),
 			Created: created,
 			Labels:  c.Labels,
 			Ports:   ports,
@@ -276,7 +276,7 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 	}
 
 	// If the container is not running, return success
-	if info.State != container.StateRunning {
+	if info.State != runtime.WorkloadStatusRunning {
 		return nil
 	}
 
@@ -441,7 +441,7 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtim
 		Name:    strings.TrimPrefix(info.Name, "/"),
 		Image:   info.Config.Image,
 		Status:  info.State.Status,
-		State:   info.State.Status,
+		State:   dockerToDomainStatus(info.State.Status),
 		Created: created,
 		Labels:  info.Config.Labels,
 		Ports:   ports,
@@ -1486,4 +1486,20 @@ func (c *Client) deleteNetworks(ctx context.Context, containerName string) error
 		}
 	}
 	return nil
+}
+
+func dockerToDomainStatus(status string) runtime.WorkloadStatus {
+	// Reference: https://docs.docker.com/reference/cli/docker/container/ls/#status
+	switch status {
+	case "running":
+		return runtime.WorkloadStatusRunning
+	case "created", "restarting":
+		return runtime.WorkloadStatusStarting
+	case "paused", "exited", "dead":
+		return runtime.WorkloadStatusStopped
+	case "removing": // TODO: add handling new workload creation
+		return runtime.WorkloadStatusRemoving
+	}
+	// We should not reach here.
+	return runtime.WorkloadStatusUnknown
 }

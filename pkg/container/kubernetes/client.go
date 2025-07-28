@@ -343,16 +343,18 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtim
 	}
 
 	// Determine status and state
-	var status, state string
+	var status string
+	var state runtime.WorkloadStatus
 	if statefulset.Status.ReadyReplicas > 0 {
 		status = "Running"
-		state = "running"
+		state = runtime.WorkloadStatusRunning
 	} else if statefulset.Status.Replicas > 0 {
 		status = "Pending"
-		state = "pending"
+		state = runtime.WorkloadStatusStarting
 	} else {
+		// NOTE: Not clear if this is correct since the stop operation is a no-op.
 		status = "Stopped"
-		state = "stopped"
+		state = runtime.WorkloadStatusStopped
 	}
 
 	// Get the image from the pod template
@@ -420,17 +422,17 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 
 		// Get container status
 		status := UnknownStatus
-		state := UnknownStatus
+		state := runtime.WorkloadStatusUnknown
 		if len(pod.Status.ContainerStatuses) > 0 {
 			containerStatus := pod.Status.ContainerStatuses[0]
 			if containerStatus.State.Running != nil {
-				state = "running"
+				state = runtime.WorkloadStatusRunning
 				status = "Running"
 			} else if containerStatus.State.Waiting != nil {
-				state = "waiting"
+				state = runtime.WorkloadStatusStarting
 				status = containerStatus.State.Waiting.Reason
 			} else if containerStatus.State.Terminated != nil {
-				state = "terminated"
+				state = runtime.WorkloadStatusRemoving
 				status = containerStatus.State.Terminated.Reason
 			}
 		}

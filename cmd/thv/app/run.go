@@ -103,11 +103,11 @@ func cleanupAndWait(workloadManager workloads.Manager, name string, cancel conte
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
-	baseCtx := cmd.Context()
+	ctx := cmd.Context()
 
 	// Check if we should load configuration from a file
 	if runFlags.FromConfig != "" {
-		return runFromConfigFile(baseCtx)
+		return runFromConfigFile(ctx)
 	}
 
 	// Get the name of the MCP server to run.
@@ -141,7 +141,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 
 		// Check if the workload is already in a group
-		group, err := groupManager.GetWorkloadGroup(baseCtx, workloadName)
+		group, err := groupManager.GetWorkloadGroup(ctx, workloadName)
 		if err != nil {
 			return fmt.Errorf("failed to get workload group: %v", err)
 		}
@@ -150,7 +150,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 
 		// Validate that the group specified exists
-		exists, err := groupManager.Exists(baseCtx, runFlags.Group)
+		exists, err := groupManager.Exists(ctx, runFlags.Group)
 		if err != nil {
 			return fmt.Errorf("failed to check if group exists: %v", err)
 		}
@@ -160,22 +160,22 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build the run configuration
-	runnerConfig, err := BuildRunnerConfig(baseCtx, &runFlags, serverOrImage, cmdArgs, debugMode, cmd)
+	runnerConfig, err := BuildRunnerConfig(ctx, &runFlags, serverOrImage, cmdArgs, debugMode, cmd)
 	if err != nil {
 		return err
 	}
 
 	// Create container runtime
-	rt, err := container.NewFactory().Create(baseCtx)
+	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 	workloadManager := workloads.NewManagerFromRuntime(rt)
 
 	if isForeground {
-		return runForeground(baseCtx, workloadManager, runnerConfig)
+		return runForeground(ctx, workloadManager, runnerConfig)
 	}
-	return workloadManager.RunWorkloadDetached(baseCtx, runnerConfig)
+	return workloadManager.RunWorkloadDetached(ctx, runnerConfig)
 }
 
 func runForeground(ctx context.Context, workloadManager workloads.Manager, runnerConfig *runner.RunConfig) error {
@@ -191,10 +191,9 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 		errCh <- workloadManager.RunWorkload(ctx, runnerConfig)
 	}()
 
-	internal := os.Getenv(process.ToolHiveDetachedEnv) == process.ToolHiveDetachedValue
 	select {
 	case sig := <-sigCh:
-		if !internal {
+		if !process.IsDetached() {
 			logger.Infof("Received signal: %v, stopping server %q", sig, runnerConfig.BaseName)
 			cleanupAndWait(workloadManager, runnerConfig.BaseName, cancel, errCh)
 		}

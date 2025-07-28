@@ -7,6 +7,9 @@ var (
 	// ErrContainerNotFound is returned when a container is not found
 	ErrContainerNotFound = fmt.Errorf("container not found")
 
+	// ErrMultipleContainersFound is returned when multiple containers are found
+	ErrMultipleContainersFound = fmt.Errorf("multiple containers found with same name")
+
 	// ErrContainerNotRunning is returned when a container is not running
 	ErrContainerNotRunning = fmt.Errorf("container not running")
 

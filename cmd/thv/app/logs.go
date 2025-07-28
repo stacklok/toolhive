@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -71,7 +72,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 
 	logs, err := manager.GetLogs(ctx, workloadName, follow)
 	if err != nil {
-		if errors.Is(err, workloads.ErrWorkloadNotFound) {
+		if errors.Is(err, rt.ErrWorkloadNotFound) {
 			logger.Infof("workload %s not found", workloadName)
 			return nil
 		}

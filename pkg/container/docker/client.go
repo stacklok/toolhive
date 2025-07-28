@@ -1530,7 +1530,7 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 
 	// ASSUMPTION: There should either be no containers found, or exactly one.
 	if len(containers) == 0 {
-		return empty, NewContainerError(ErrContainerNotFound, workloadName, "no containers found")
+		return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found")
 	}
 	// This should never happen (I hope).
 	if len(containers) > 1 {

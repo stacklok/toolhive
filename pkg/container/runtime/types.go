@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -278,3 +279,9 @@ type Mount struct {
 func IsKubernetesRuntime() bool {
 	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
 }
+
+// Common errors
+var (
+	// ErrWorkloadNotFound indicates that the specified workload was not found.
+	ErrWorkloadNotFound = fmt.Errorf("workload not found")
+)

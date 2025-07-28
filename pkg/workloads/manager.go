@@ -69,7 +69,6 @@ type defaultManager struct {
 // ErrWorkloadNotFound is returned when a container cannot be found by name.
 // ErrInvalidWorkloadName is returned when a workload name fails validation.
 var (
-	ErrWorkloadNotFound    = fmt.Errorf("workload not found")
 	ErrWorkloadNotRunning  = fmt.Errorf("workload not running")
 	ErrInvalidWorkloadName = fmt.Errorf("invalid workload name")
 )
@@ -202,7 +201,7 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 	for _, name := range names {
 		container, err := d.runtime.GetWorkloadInfo(ctx, name)
 		if err != nil {
-			if errors.Is(err, ErrWorkloadNotFound) {
+			if errors.Is(err, rt.ErrWorkloadNotFound) {
 				// Log but don't fail the entire operation for not found containers
 				logger.Warnf("Warning: Failed to stop workload %s: %v", name, err)
 				continue
@@ -508,8 +507,8 @@ func (d *defaultManager) GetLogs(ctx context.Context, workloadName string, follo
 	logs, err := d.runtime.GetWorkloadLogs(ctx, workloadName, follow)
 	if err != nil {
 		// Propagate the error if the container is not found
-		if errors.Is(err, ErrWorkloadNotFound) {
-			return "", fmt.Errorf("%w: %s", ErrWorkloadNotFound, workloadName)
+		if errors.Is(err, rt.ErrWorkloadNotFound) {
+			return "", fmt.Errorf("%w: %s", rt.ErrWorkloadNotFound, workloadName)
 		}
 		return "", fmt.Errorf("failed to get container logs %s: %v", workloadName, err)
 	}
@@ -536,7 +535,7 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 			// Find the container
 			container, err := d.runtime.GetWorkloadInfo(childCtx, name)
 			if err != nil {
-				if errors.Is(err, ErrWorkloadNotFound) {
+				if errors.Is(err, rt.ErrWorkloadNotFound) {
 					// Log but don't fail the entire operation for not found containers
 					logger.Warnf("Warning: Failed to delete workload %s: %v", name, err)
 					return nil
@@ -628,7 +627,7 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string) (
 			// Try to find the container.
 			container, err := d.runtime.GetWorkloadInfo(childCtx, name)
 			if err != nil {
-				if errors.Is(err, ErrWorkloadNotFound) {
+				if errors.Is(err, rt.ErrWorkloadNotFound) {
 					logger.Warnf("Warning: Failed to find container: %v", err)
 					logger.Warnf("Trying to find state with name %s directly...", name)
 

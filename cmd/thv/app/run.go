@@ -177,12 +177,6 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 }
 
 func validateGroup(ctx context.Context, serverOrImage string) error {
-	// Set default group if no group is specified,
-	// this is not required as the default value in cobra is already set to 'default',
-	//  but is currently disabled
-	if runFlags.Group == "" {
-		runFlags.Group = groups.DefaultGroupName
-	}
 	workloadName := runFlags.Name
 	if workloadName == "" {
 		workloadName = serverOrImage
@@ -203,13 +197,15 @@ func validateGroup(ctx context.Context, serverOrImage string) error {
 		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, group.Name)
 	}
 
-	// Validate that the group specified exists
-	exists, err := groupManager.Exists(ctx, runFlags.Group)
-	if err != nil {
-		return fmt.Errorf("failed to check if group exists: %v", err)
-	}
-	if !exists {
-		return fmt.Errorf("group '%s' does not exist", runFlags.Group)
+	if runFlags.Group != "" {
+		// Validate that the group specified exists
+		exists, err := groupManager.Exists(ctx, runFlags.Group)
+		if err != nil {
+			return fmt.Errorf("failed to check if group exists: %v", err)
+		}
+		if !exists {
+			return fmt.Errorf("group '%s' does not exist", runFlags.Group)
+		}
 	}
 	return nil
 }

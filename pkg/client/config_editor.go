@@ -23,8 +23,9 @@ type ConfigUpdater interface {
 
 // MCPServer represents an MCP server in a MCP client config file
 type MCPServer struct {
-	Url  string `json:"url,omitempty"`
-	Type string `json:"type,omitempty"`
+	Url       string `json:"url,omitempty"`
+	ServerUrl string `json:"serverUrl,omitempty"`
+	Type      string `json:"type,omitempty"`
 }
 
 // JSONConfigUpdater is a ConfigUpdater that is responsible for updating

@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/http"
 	"sync"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // ConnTracker tracks active connections for the transparent proxy
@@ -37,7 +39,9 @@ func (t *ConnTracker) CloseAll() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for c := range t.conns {
-		_ = c.Close()
+		if err := c.Close(); err != nil {
+			logger.Warnf("Failed to close connection: %v", err)
+		}
 	}
 	t.conns = make(map[net.Conn]struct{})
 }

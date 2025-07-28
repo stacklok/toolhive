@@ -28,6 +28,9 @@ const (
 	// ErrRunConfigNotFound is returned when a run configuration is not found
 	ErrRunConfigNotFound = "run_config_not_found"
 
+	// ErrGroupAlreadyExists is returned when a group already exists
+	ErrGroupAlreadyExists = "group_already_exists"
+
 	// ErrTransport is returned when there is an error with the transport
 	ErrTransport = "transport"
 
@@ -107,6 +110,11 @@ func NewRunConfigNotFoundError(message string, cause error) *Error {
 	return NewError(ErrRunConfigNotFound, message, cause)
 }
 
+// NewGroupAlreadyExistsError creates a new group already exists error
+func NewGroupAlreadyExistsError(message string, cause error) *Error {
+	return NewError(ErrGroupAlreadyExists, message, cause)
+}
+
 // NewTransportError creates a new transport error
 func NewTransportError(message string, cause error) *Error {
 	return NewError(ErrTransport, message, cause)
@@ -162,6 +170,12 @@ func IsContainerAlreadyRunning(err error) bool {
 func IsRunConfigNotFound(err error) bool {
 	e, ok := err.(*Error)
 	return ok && e.Type == ErrRunConfigNotFound
+}
+
+// IsGroupAlreadyExists checks if the error is a group already exists error
+func IsGroupAlreadyExists(err error) bool {
+	e, ok := err.(*Error)
+	return ok && e.Type == ErrGroupAlreadyExists
 }
 
 // IsTransport checks if the error is a transport error

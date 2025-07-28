@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/stacklok/toolhive/pkg/errors"
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/state"
@@ -49,7 +49,7 @@ func (m *manager) Create(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if exists {
-		return fmt.Errorf("group '%s' already exists", name)
+		return thverrors.NewGroupAlreadyExistsError(fmt.Sprintf("group '%s' already exists", name), nil)
 	}
 
 	group := &Group{Name: name}
@@ -105,7 +105,7 @@ func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
 func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error) {
 	runnerInstance, err := runner.LoadState(ctx, workloadName)
 	if err != nil {
-		if errors.IsRunConfigNotFound(err) {
+		if thverrors.IsRunConfigNotFound(err) {
 			return nil, nil
 		}
 		return nil, err

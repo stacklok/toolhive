@@ -139,6 +139,11 @@ components:
             ToolHive configuration
           type: boolean
       type: object
+    groups.Group:
+      properties:
+        name:
+          type: string
+      type: object
     ignore.Config:
       description: IgnoreConfig contains configuration for ignore processing
       properties:
@@ -620,6 +625,18 @@ components:
           - Windsurf
           - WindsurfIntelliJ
       type: object
+    v1.createGroupRequest:
+      properties:
+        name:
+          description: Name of the group to create
+          type: string
+      type: object
+    v1.createGroupResponse:
+      properties:
+        name:
+          description: Name of the created group
+          type: string
+      type: object
     v1.createRequest:
       description: Request to create a new workload
       properties:
@@ -749,6 +766,15 @@ components:
         server:
           $ref: '#/components/schemas/registry.ImageMetadata'
       type: object
+    v1.groupListResponse:
+      properties:
+        groups:
+          description: List of groups
+          items:
+            $ref: '#/components/schemas/groups.Group'
+          type: array
+          uniqueItems: false
+      type: object
     v1.listSecretsResponse:
       description: Response containing a list of secret keys
       properties:
@@ -766,6 +792,18 @@ components:
           description: List of servers in the registry
           items:
             $ref: '#/components/schemas/registry.ImageMetadata'
+          type: array
+          uniqueItems: false
+      type: object
+    v1.listWorkloadsInGroupResponse:
+      properties:
+        group_name:
+          description: Name of the group
+          type: string
+        workload_names:
+          description: List of workload names in the group
+          items:
+            type: string
           type: array
           uniqueItems: false
       type: object
@@ -1109,6 +1147,157 @@ paths:
       summary: List all clients status
       tags:
       - discovery
+  /api/v1beta/groups:
+    get:
+      description: Get a list of all groups
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.groupListResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: List all groups
+      tags:
+      - groups
+    post:
+      description: Create a new group with the specified name
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.createGroupRequest'
+        description: Group creation request
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.createGroupResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Create a new group
+      tags:
+      - groups
+  /api/v1beta/groups/{name}:
+    delete:
+      description: Delete a group by name
+      parameters:
+      - description: Group name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Delete a group
+      tags:
+      - groups
+    get:
+      description: Get details of a specific group
+      parameters:
+      - description: Group name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/groups.Group'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Get group details
+      tags:
+      - groups
+  /api/v1beta/groups/{name}/workloads:
+    get:
+      description: Get a list of all workload names that belong to the specified group
+      parameters:
+      - description: Group name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.listWorkloadsInGroupResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: List workloads in a group
+      tags:
+      - groups
   /api/v1beta/registry:
     get:
       description: Get a list of the current registries

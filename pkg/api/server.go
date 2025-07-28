@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/updates"
@@ -176,6 +177,12 @@ func Serve(
 
 	workloadManager := workloads.NewManagerFromRuntime(rt)
 
+	// Create group manager
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create group manager: %v", err)
+	}
+
 	routers := map[string]http.Handler{
 		"/health":               v1.HealthcheckRouter(rt),
 		"/api/v1beta/version":   v1.VersionRouter(),
@@ -184,6 +191,7 @@ func Serve(
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(clientManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
+		"/api/v1beta/groups":    v1.GroupsRouter(groupManager),
 	}
 
 	// Only mount docs router if enabled

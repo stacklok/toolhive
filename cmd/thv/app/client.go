@@ -40,7 +40,9 @@ Valid clients are:
   - cursor: Cursor editor
   - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
-  - vscode-insider: Visual Studio Code Insiders edition`,
+  - vscode-insider: Visual Studio Code Insiders edition
+  - windsurf: Windsurf IDE
+  - windsurf-jetbrains: Windsurf for Jetbrains IDEs`,
 	Args: cobra.ExactArgs(1),
 	RunE: clientRegisterCmdFunc,
 }
@@ -55,7 +57,9 @@ Valid clients are:
   - cursor: Cursor editor
   - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
-  - vscode-insider: Visual Studio Code Insiders edition`,
+  - vscode-insider: Visual Studio Code Insiders edition
+  - windsurf: Windsurf IDE
+  - windsurf-jetbrains: Windsurf for Jetbrains IDEs`,
 	Args: cobra.ExactArgs(1),
 	RunE: clientRemoveCmdFunc,
 }
@@ -148,12 +152,12 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "windsurf", "windsurf-intellij":
+	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "windsurf", "windsurf-jetbrains":
 		// Valid client type
 	default:
 		return fmt.Errorf(
 			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, "+
-				"vscode-insider, windsurf, windsurf-intellij)",
+				"vscode-insider, windsurf, windsurf-jetbrains)",
 			clientType)
 	}
 
@@ -179,12 +183,12 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate the client type
 	switch clientType {
-	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "windsurf", "windsurf-intellij":
+	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "windsurf", "windsurf-jetbrains":
 		// Valid client type
 	default:
 		return fmt.Errorf(
 			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, "+
-				"vscode-insider, windsurf, windsurf-intellij)",
+				"vscode-insider, windsurf, windsurf-jetbrains)",
 			clientType)
 	}
 

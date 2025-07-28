@@ -87,7 +87,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 	if port > 0 {
 		url = client.GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
 	}
-	
+
 	tType, err := types.ParseTransportType(transportType)
 	if err != nil {
 		// If we can't parse the transport type, default to SSE.

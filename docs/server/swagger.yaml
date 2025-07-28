@@ -493,6 +493,18 @@ components:
           type: array
           uniqueItems: false
       type: object
+    runtime.WorkloadStatus:
+      description: Status is the current status of the workload.
+      type: string
+      x-enum-varnames:
+      - WorkloadStatusRunning
+      - WorkloadStatusStopped
+      - WorkloadStatusError
+      - WorkloadStatusStarting
+      - WorkloadStatusStopping
+      - WorkloadStatusUnhealthy
+      - WorkloadStatusRemoving
+      - WorkloadStatusUnknown
     secrets.SecretParameter:
       properties:
         name:
@@ -927,7 +939,7 @@ components:
             This is embedded in the URL.
           type: integer
         status:
-          $ref: '#/components/schemas/workloads.WorkloadStatus'
+          $ref: '#/components/schemas/runtime.WorkloadStatus'
         status_context:
           description: |-
             StatusContext provides additional context about the workload's status.
@@ -950,18 +962,6 @@ components:
           description: URL is the URL of the workload exposed by the ToolHive proxy.
           type: string
       type: object
-    workloads.WorkloadStatus:
-      description: Status is the current status of the workload.
-      type: string
-      x-enum-varnames:
-      - WorkloadStatusRunning
-      - WorkloadStatusStopped
-      - WorkloadStatusError
-      - WorkloadStatusStarting
-      - WorkloadStatusStopping
-      - WorkloadStatusUnhealthy
-      - WorkloadStatusRemoving
-      - WorkloadStatusUnknown
 externalDocs:
   description: ""
   url: ""

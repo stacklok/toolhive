@@ -121,7 +121,7 @@ func (t *StdioTransport) Setup(
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, _, err := t.deployer.DeployWorkload(
+	_, err := t.deployer.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -136,8 +136,7 @@ func (t *StdioTransport) Setup(
 	if err != nil {
 		return fmt.Errorf("failed to create container: %v", err)
 	}
-	t.containerID = containerID
-	logger.Infof("Container created with ID: %s", containerID)
+	logger.Infof("Container created: %s", containerName)
 
 	return nil
 }

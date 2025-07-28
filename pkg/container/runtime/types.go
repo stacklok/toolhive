@@ -96,7 +96,7 @@ type Deployer interface {
 		transportType string,
 		options *DeployWorkloadOptions,
 		isolateNetwork bool,
-	) (string, int, error)
+	) (int, error)
 
 	// StopWorkload gracefully stops a running workload and all its components.
 	// This includes stopping the primary container, sidecars, and cleaning up

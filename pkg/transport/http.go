@@ -155,7 +155,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containe
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, exposedPort, err := t.deployer.DeployWorkload(
+	exposedPort, err := t.deployer.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -170,8 +170,7 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containe
 	if err != nil {
 		return fmt.Errorf("failed to create container: %v", err)
 	}
-	t.containerID = containerID
-	logger.Infof("Container created with ID: %s", containerID)
+	logger.Infof("Container created: %s", containerName)
 
 	if (t.Mode() == types.TransportTypeSSE || t.Mode() == types.TransportTypeStreamableHTTP) && rt.IsKubernetesRuntime() {
 		// If the SSEHeadlessServiceName is set, use it as the target host

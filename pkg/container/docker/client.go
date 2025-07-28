@@ -85,7 +85,7 @@ func (c *Client) DeployWorkload(
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
 	isolateNetwork bool,
-) (string, int, error) {
+) (int, error) {
 	// Get permission config from profile
 	var ignoreConfig *ignore.Config
 	if options != nil {
@@ -93,7 +93,7 @@ func (c *Client) DeployWorkload(
 	}
 	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType, ignoreConfig)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to get permission config: %w", err)
+		return 0, fmt.Errorf("failed to get permission config: %w", err)
 	}
 
 	// Determine if we should attach stdio
@@ -109,7 +109,7 @@ func (c *Client) DeployWorkload(
 
 	err = c.createExternalNetworks(ctx)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to create external networks: %v", err)
+		return 0, fmt.Errorf("failed to create external networks: %v", err)
 	}
 
 	networkIsolation := false
@@ -120,7 +120,7 @@ func (c *Client) DeployWorkload(
 		lb.AddNetworkLabels(internalNetworkLabels, networkName)
 		err := c.createNetwork(ctx, networkName, internalNetworkLabels, true)
 		if err != nil {
-			return "", 0, fmt.Errorf("failed to create internal network: %v", err)
+			return 0, fmt.Errorf("failed to create internal network: %v", err)
 		}
 
 		// create dns container
@@ -130,7 +130,7 @@ func (c *Client) DeployWorkload(
 			additionalDNS = dnsContainerIP
 		}
 		if err != nil {
-			return "", 0, fmt.Errorf("failed to create dns container: %v", err)
+			return 0, fmt.Errorf("failed to create dns container: %v", err)
 		}
 
 		// create egress container
@@ -146,7 +146,7 @@ func (c *Client) DeployWorkload(
 			permissionProfile.Network,
 		)
 		if err != nil {
-			return "", 0, fmt.Errorf("failed to create egress container: %v", err)
+			return 0, fmt.Errorf("failed to create egress container: %v", err)
 		}
 
 		envVars = addEgressEnvVars(envVars, egressContainerName)
@@ -157,7 +157,7 @@ func (c *Client) DeployWorkload(
 	// only remap if is not an auxiliary tool
 	newPortBindings, hostPort, err := generatePortBindings(labels, options.PortBindings)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to generate port bindings: %v", err)
+		return 0, fmt.Errorf("failed to generate port bindings: %v", err)
 	}
 
 	// Add a label to the MCP server indicating network isolation.
@@ -165,7 +165,7 @@ func (c *Client) DeployWorkload(
 	// about ingress/egress/dns containers.
 	lb.AddNetworkIsolationLabel(labels, networkIsolation)
 
-	containerId, err := c.createMcpContainer(
+	err = c.createMcpContainer(
 		ctx,
 		name,
 		networkName,
@@ -181,27 +181,27 @@ func (c *Client) DeployWorkload(
 		isolateNetwork,
 	)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to create mcp container: %v", err)
+		return 0, fmt.Errorf("failed to create mcp container: %v", err)
 	}
 
 	// Don't try and set up an ingress proxy if the transport type is stdio.
 	if transportType == "stdio" {
-		return containerId, 0, nil
+		return 0, nil
 	}
 
 	if isolateNetwork {
 		// just extract the first exposed port
 		firstPortInt, err := extractFirstPort(options)
 		if err != nil {
-			return "", 0, err // extractFirstPort already wraps the error with context.
+			return 0, err // extractFirstPort already wraps the error with context.
 		}
 		hostPort, err = c.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
 		if err != nil {
-			return "", 0, fmt.Errorf("failed to create ingress container: %v", err)
+			return 0, fmt.Errorf("failed to create ingress container: %v", err)
 		}
 	}
 
-	return containerId, hostPort, nil
+	return hostPort, nil
 }
 
 // ListWorkloads lists workloads
@@ -1159,8 +1159,13 @@ func setupPortBindings(hostConfig *container.HostConfig, portBindings map[string
 	return nil
 }
 
-func (c *Client) createContainer(ctx context.Context, containerName string, config *container.Config,
-	hostConfig *container.HostConfig, endpointsConfig map[string]*network.EndpointSettings) (string, error) {
+func (c *Client) createContainer(
+	ctx context.Context,
+	containerName string,
+	config *container.Config,
+	hostConfig *container.HostConfig,
+	endpointsConfig map[string]*network.EndpointSettings,
+) (string, error) {
 	existingID, err := c.findExistingContainer(ctx, containerName)
 	if err != nil {
 		return "", err
@@ -1272,7 +1277,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 func (c *Client) createMcpContainer(ctx context.Context, name string, networkName string, image string, command []string,
 	envVars map[string]string, labels map[string]string, attachStdio bool, permissionConfig *runtime.PermissionConfig,
 	additionalDNS string, exposedPorts map[string]struct{}, portBindings map[string][]runtime.PortBinding,
-	isolateNetwork bool) (string, error) {
+	isolateNetwork bool) error {
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,
@@ -1304,12 +1309,12 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 	// Configure ports if options are provided
 	// Setup exposed ports
 	if err := setupExposedPorts(config, exposedPorts); err != nil {
-		return "", NewContainerError(err, "", err.Error())
+		return NewContainerError(err, "", err.Error())
 	}
 
 	// Setup port bindings
 	if err := setupPortBindings(hostConfig, portBindings); err != nil {
-		return "", NewContainerError(err, "", err.Error())
+		return NewContainerError(err, "", err.Error())
 	}
 
 	// create mcp container
@@ -1324,12 +1329,12 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 			NetworkID: "toolhive-external",
 		}
 	}
-	containerId, err := c.createContainer(ctx, name, config, hostConfig, internalEndpointsConfig)
+	_, err := c.createContainer(ctx, name, config, hostConfig, internalEndpointsConfig)
 	if err != nil {
-		return "", fmt.Errorf("failed to create container: %v", err)
+		return fmt.Errorf("failed to create container: %v", err)
 	}
 
-	return containerId, nil
+	return nil
 
 }
 

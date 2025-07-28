@@ -235,7 +235,9 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 			logger.Warnf("Error closing proxy listener: %v", err)
 		}
 		// Force-close currently tracked connections once
-		proxy.ConnTracker.CloseAll()
+		if proxy.ConnTracker != nil {
+			proxy.ConnTracker.CloseAll()
+		}
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()

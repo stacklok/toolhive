@@ -372,8 +372,7 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 
 	// Stop the HTTP server
 	if p.server != nil {
-		err := p.server.Shutdown(ctx)
-		return err
+		return p.server.Shutdown(ctx)
 	}
 
 	return nil

@@ -102,33 +102,9 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
-	workloadName := runFlags.Name
-	if workloadName == "" {
-		workloadName = serverOrImage
-	}
-
-	// Create group manager
-	groupManager, err := groups.NewManager()
+	err := validateGroup(ctx, serverOrImage)
 	if err != nil {
-		return fmt.Errorf("failed to create group manager: %v", err)
-	}
-
-	// Check if the workload is already in a group
-	group, err := groupManager.GetWorkloadGroup(ctx, workloadName)
-	if err != nil {
-		return fmt.Errorf("failed to get workload group: %v", err)
-	}
-	if group != nil && group.Name != runFlags.Group {
-		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, group.Name)
-	}
-
-	// Validate that the group specified exists
-	exists, err := groupManager.Exists(ctx, runFlags.Group)
-	if err != nil {
-		return fmt.Errorf("failed to check if group exists: %v", err)
-	}
-	if !exists {
-		return fmt.Errorf("group '%s' does not exist", runFlags.Group)
+		return err
 	}
 
 	// Build the run configuration
@@ -156,6 +132,40 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	return nil
 
+}
+
+func validateGroup(ctx context.Context, serverOrImage string) error {
+	workloadName := runFlags.Name
+	if workloadName == "" {
+		workloadName = serverOrImage
+	}
+
+	// Create group manager
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create group manager: %v", err)
+	}
+
+	// Check if the workload is already in a group
+	group, err := groupManager.GetWorkloadGroup(ctx, workloadName)
+	if err != nil {
+		return fmt.Errorf("failed to get workload group: %v", err)
+	}
+	if group != nil && group.Name != runFlags.Group {
+		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, group.Name)
+	}
+
+	if runFlags.Group != "" {
+		// Validate that the group specified exists
+		exists, err := groupManager.Exists(ctx, runFlags.Group)
+		if err != nil {
+			return fmt.Errorf("failed to check if group exists: %v", err)
+		}
+		if !exists {
+			return fmt.Errorf("group '%s' does not exist", runFlags.Group)
+		}
+	}
+	return nil
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator

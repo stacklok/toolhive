@@ -42,7 +42,7 @@ func (m *ContainerMonitor) StartMonitoring(ctx context.Context) (<-chan error, e
 	}
 
 	// Check if the workload exists and is running
-	running, err := m.runtime.IsWorkloadRunning(ctx, m.containerID)
+	running, err := m.runtime.IsWorkloadRunning(ctx, m.containerName)
 	if err != nil {
 		return nil, err
 	}

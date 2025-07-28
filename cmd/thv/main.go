@@ -7,7 +7,6 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv/app"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -21,7 +20,8 @@ func main() {
 
 	// Check and perform default group migration if needed
 	// Migrates existing workloads to the default group, only executes once
-	groups.CheckAndPerformDefaultGroupMigration()
+	// TODO: Re-enable when group functionality is complete
+	// groups.CheckAndPerformDefaultGroupMigration()
 
 	// Skip update check for completion command or if we are running in kubernetes
 	if err := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !runtime.IsKubernetesRuntime()).Execute(); err != nil {

@@ -69,46 +69,6 @@ func NewClient(_ context.Context) (*Client, error) {
 	}, nil
 }
 
-// getNamespaceFromServiceAccount attempts to read the namespace from the service account token file
-func getNamespaceFromServiceAccount() (string, error) {
-	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-	if err != nil {
-		return "", fmt.Errorf("failed to read namespace file: %w", err)
-	}
-	return string(data), nil
-}
-
-// getNamespaceFromEnv attempts to get the namespace from environment variables
-func getNamespaceFromEnv() (string, error) {
-	ns := os.Getenv("POD_NAMESPACE")
-	if ns == "" {
-		return "", fmt.Errorf("POD_NAMESPACE environment variable not set")
-	}
-	return ns, nil
-}
-
-// getCurrentNamespace returns the namespace the pod is running in.
-// It tries multiple methods in order:
-// 1. Reading from the service account token file
-// 2. Getting the namespace from environment variables
-// 3. Falling back to "default" if both methods fail
-func getCurrentNamespace() string {
-	// Method 1: Try to read from the service account namespace file
-	ns, err := getNamespaceFromServiceAccount()
-	if err == nil {
-		return ns
-	}
-
-	// Method 2: Try to get the namespace from environment variables
-	ns, err = getNamespaceFromEnv()
-	if err == nil {
-		return ns
-	}
-
-	// Method 3: Fall back to default
-	return "default"
-}
-
 // AttachToWorkload implements runtime.Runtime.
 func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error) {
 	// AttachToWorkload attaches to a workload in Kubernetes
@@ -1115,4 +1075,44 @@ func configureMCPContainer(
 	}
 
 	return nil
+}
+
+// getNamespaceFromServiceAccount attempts to read the namespace from the service account token file
+func getNamespaceFromServiceAccount() (string, error) {
+	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	if err != nil {
+		return "", fmt.Errorf("failed to read namespace file: %w", err)
+	}
+	return string(data), nil
+}
+
+// getNamespaceFromEnv attempts to get the namespace from environment variables
+func getNamespaceFromEnv() (string, error) {
+	ns := os.Getenv("POD_NAMESPACE")
+	if ns == "" {
+		return "", fmt.Errorf("POD_NAMESPACE environment variable not set")
+	}
+	return ns, nil
+}
+
+// getCurrentNamespace returns the namespace the pod is running in.
+// It tries multiple methods in order:
+// 1. Reading from the service account token file
+// 2. Getting the namespace from environment variables
+// 3. Falling back to "default" if both methods fail
+func getCurrentNamespace() string {
+	// Method 1: Try to read from the service account namespace file
+	ns, err := getNamespaceFromServiceAccount()
+	if err == nil {
+		return ns
+	}
+
+	// Method 2: Try to get the namespace from environment variables
+	ns, err = getNamespaceFromEnv()
+	if err == nil {
+		return ns
+	}
+
+	// Method 3: Fall back to default
+	return "default"
 }

@@ -12,6 +12,30 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
+// WorkloadStatus is an enum representing the possible statuses of a workload.
+type WorkloadStatus string
+
+const (
+	// WorkloadStatusRunning indicates that the workload is currently running.
+	WorkloadStatusRunning WorkloadStatus = "running"
+	// WorkloadStatusStopped indicates that the workload is stopped.
+	WorkloadStatusStopped WorkloadStatus = "stopped"
+	// WorkloadStatusError indicates that the workload has encountered an error
+	// during creation/stop/restart/delete.
+	WorkloadStatusError WorkloadStatus = "error"
+	// WorkloadStatusStarting indicates that the workload is being started.
+	WorkloadStatusStarting WorkloadStatus = "starting"
+	// WorkloadStatusStopping indicates that the workload is being stopped.
+	WorkloadStatusStopping WorkloadStatus = "stopping"
+	// WorkloadStatusUnhealthy indicates that the workload is running, but is
+	// in an inconsistent state which prevents normal operation.
+	WorkloadStatusUnhealthy WorkloadStatus = "unhealthy"
+	// WorkloadStatusRemoving indicates that the workload is being removed.
+	WorkloadStatusRemoving WorkloadStatus = "removing"
+	// WorkloadStatusUnknown indicates that the workload status is unknown.
+	WorkloadStatusUnknown WorkloadStatus = "unknown"
+)
+
 // ContainerInfo represents information about a container
 type ContainerInfo struct {
 	// ID is the container ID
@@ -21,9 +45,10 @@ type ContainerInfo struct {
 	// Image is the container image
 	Image string
 	// Status is the container status
+	// This is usually some human-readable context.
 	Status string
 	// State is the container state
-	State string
+	State WorkloadStatus
 	// Created is the container creation timestamp
 	Created time.Time
 	// Labels is the container labels

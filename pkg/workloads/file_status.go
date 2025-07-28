@@ -12,6 +12,7 @@ import (
 	"github.com/adrg/xdg"
 	"github.com/gofrs/flock"
 
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -50,10 +51,10 @@ type fileStatusManager struct {
 
 // workloadStatusFile represents the JSON structure stored on disk
 type workloadStatusFile struct {
-	Status        WorkloadStatus `json:"status"`
-	StatusContext string         `json:"status_context,omitempty"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	Status        runtime.WorkloadStatus `json:"status"`
+	StatusContext string                 `json:"status_context,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
+	UpdatedAt     time.Time              `json:"updated_at"`
 }
 
 // CreateWorkloadStatus creates the initial `starting` status for a new workload.
@@ -70,7 +71,7 @@ func (f *fileStatusManager) CreateWorkloadStatus(ctx context.Context, workloadNa
 		// Create initial status
 		now := time.Now()
 		statusFile := workloadStatusFile{
-			Status:        WorkloadStatusStarting,
+			Status:        runtime.WorkloadStatusStarting,
 			StatusContext: "",
 			CreatedAt:     now,
 			UpdatedAt:     now,
@@ -86,8 +87,8 @@ func (f *fileStatusManager) CreateWorkloadStatus(ctx context.Context, workloadNa
 }
 
 // GetWorkloadStatus retrieves the status of a workload by its name.
-func (f *fileStatusManager) GetWorkloadStatus(ctx context.Context, workloadName string) (*WorkloadStatus, string, error) {
-	var result *WorkloadStatus
+func (f *fileStatusManager) GetWorkloadStatus(ctx context.Context, workloadName string) (runtime.WorkloadStatus, string, error) {
+	result := runtime.WorkloadStatusUnknown
 	var statusContext string
 
 	err := f.withFileReadLock(ctx, workloadName, func(statusFilePath string) error {
@@ -103,7 +104,7 @@ func (f *fileStatusManager) GetWorkloadStatus(ctx context.Context, workloadName 
 			return fmt.Errorf("failed to read status for workload %s: %w", workloadName, err)
 		}
 
-		result = &statusFile.Status
+		result = statusFile.Status
 		statusContext = statusFile.StatusContext
 		return nil
 	})
@@ -114,7 +115,7 @@ func (f *fileStatusManager) GetWorkloadStatus(ctx context.Context, workloadName 
 // SetWorkloadStatus sets the status of a workload by its name.
 // This method will do nothing if the workload does not exist, following the interface contract.
 func (f *fileStatusManager) SetWorkloadStatus(
-	ctx context.Context, workloadName string, status WorkloadStatus, contextMsg string,
+	ctx context.Context, workloadName string, status runtime.WorkloadStatus, contextMsg string,
 ) {
 	err := f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
 		// Check if file exists

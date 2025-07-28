@@ -14,11 +14,11 @@ type StatusManager interface {
 	// but will do nothing if the workload already exists.
 	CreateWorkloadStatus(ctx context.Context, workloadName string) error
 	// GetWorkloadStatus retrieves the status of a workload by its name.
-	GetWorkloadStatus(ctx context.Context, workloadName string) (*WorkloadStatus, string, error)
+	GetWorkloadStatus(ctx context.Context, workloadName string) (rt.WorkloadStatus, string, error)
 	// SetWorkloadStatus sets the status of a workload by its name.
 	// Note that this does not return errors, but logs them instead.
 	// This method will do nothing if the workload does not exist.
-	SetWorkloadStatus(ctx context.Context, workloadName string, status WorkloadStatus, contextMsg string)
+	SetWorkloadStatus(ctx context.Context, workloadName string, status rt.WorkloadStatus, contextMsg string)
 	// DeleteWorkloadStatus removes the status of a workload by its name.
 	DeleteWorkloadStatus(ctx context.Context, workloadName string) error
 }
@@ -43,11 +43,16 @@ func (*runtimeStatusManager) CreateWorkloadStatus(_ context.Context, workloadNam
 	return nil
 }
 
-func (*runtimeStatusManager) GetWorkloadStatus(_ context.Context, _ string) (*WorkloadStatus, string, error) {
-	return nil, "", nil
+func (*runtimeStatusManager) GetWorkloadStatus(_ context.Context, _ string) (rt.WorkloadStatus, string, error) {
+	return rt.WorkloadStatusUnknown, "", nil
 }
 
-func (*runtimeStatusManager) SetWorkloadStatus(_ context.Context, workloadName string, status WorkloadStatus, contextMsg string) {
+func (*runtimeStatusManager) SetWorkloadStatus(
+	_ context.Context,
+	workloadName string,
+	status rt.WorkloadStatus,
+	contextMsg string,
+) {
 	// TODO: This will need to handle concurrent updates.
 	logger.Debugf("workload %s set to status %s (context: %s)", workloadName, status, contextMsg)
 }

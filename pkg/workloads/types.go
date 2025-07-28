@@ -13,30 +13,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
-// WorkloadStatus is an enum representing the possible statuses of a workload.
-type WorkloadStatus string
-
-const (
-	// WorkloadStatusRunning indicates that the workload is currently running.
-	WorkloadStatusRunning WorkloadStatus = "running"
-	// WorkloadStatusStopped indicates that the workload is stopped.
-	WorkloadStatusStopped WorkloadStatus = "stopped"
-	// WorkloadStatusError indicates that the workload has encountered an error
-	// during creation/stop/restart/delete.
-	WorkloadStatusError WorkloadStatus = "error"
-	// WorkloadStatusStarting indicates that the workload is being started.
-	WorkloadStatusStarting WorkloadStatus = "starting"
-	// WorkloadStatusStopping indicates that the workload is being stopped.
-	WorkloadStatusStopping WorkloadStatus = "stopping"
-	// WorkloadStatusUnhealthy indicates that the workload is running, but is
-	// in an inconsistent state which prevents normal operation.
-	WorkloadStatusUnhealthy WorkloadStatus = "unhealthy"
-	// WorkloadStatusRemoving indicates that the workload is being removed.
-	WorkloadStatusRemoving WorkloadStatus = "removing"
-	// WorkloadStatusUnknown indicates that the workload status is unknown.
-	WorkloadStatusUnknown WorkloadStatus = "unknown"
-)
-
 // Workload is a domain model representing a workload in the system.
 // This is used in our API to hide details of the underlying runtime.
 type Workload struct {
@@ -56,7 +32,7 @@ type Workload struct {
 	// TransportType is the type of transport used for this workload.
 	TransportType types.TransportType `json:"transport_type"`
 	// Status is the current status of the workload.
-	Status WorkloadStatus `json:"status"`
+	Status runtime.WorkloadStatus `json:"status"`
 	// StatusContext provides additional context about the workload's status.
 	// The exact meaning is determined by the status and the underlying runtime.
 	StatusContext string `json:"status_context,omitempty"`
@@ -112,19 +88,6 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 		url = client.GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
 	}
 
-	// https://docs.docker.com/reference/api/engine/version/v1.45/#tag/Container/operation/ContainerList
-	// TODO: This mapping needs some refinement. For example, we should display the starting state
-	// before we start a container in Docker/Podman.
-	workloadStatus := WorkloadStatusUnknown
-	switch container.State {
-	case "running":
-		workloadStatus = WorkloadStatusRunning
-	case "paused", "exited", "dead":
-		workloadStatus = WorkloadStatusStopped
-	case "restarting", "creating": // TODO: add handling new workload creation
-		workloadStatus = WorkloadStatusStarting
-	}
-
 	tType, err := types.ParseTransportType(transportType)
 	if err != nil {
 		// If we can't parse the transport type, default to SSE.
@@ -145,7 +108,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 		return Workload{}, err
 	}
 
-	// Translate to domain model.
+	// Translate to the domain model.
 	return Workload{
 		Name: container.Name,
 		// TODO: make this return the thv-specific name.
@@ -153,7 +116,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 		URL:           url,
 		ToolType:      toolType,
 		TransportType: tType,
-		Status:        workloadStatus,
+		Status:        container.State,
 		StatusContext: container.Status,
 		CreatedAt:     container.Created,
 		Port:          port,

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -23,12 +25,15 @@ var (
 	listAll         bool
 	listFormat      string
 	listLabelFilter []string
+	listGroupFilter string
 )
 
 func init() {
 	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all workloads (default shows just running)")
 	listCmd.Flags().StringVar(&listFormat, "format", FormatText, "Output format (json, text, or mcpservers)")
 	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
+	// TODO: Re-enable when group functionality is complete
+	// listCmd.Flags().StringVar(&listGroupFilter, "group", "", "Filter workloads by group")
 }
 
 func listCmdFunc(cmd *cobra.Command, _ []string) error {
@@ -45,8 +50,20 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to list workloads: %v", err)
 	}
 
+	// Apply group filtering if specified
+	if listGroupFilter != "" {
+		workloadList, err = filterWorkloadsByGroup(ctx, workloadList, listGroupFilter)
+		if err != nil {
+			return fmt.Errorf("failed to filter workloads by group: %v", err)
+		}
+	}
+
 	if len(workloadList) == 0 {
-		fmt.Println("No MCP servers found")
+		if listGroupFilter != "" {
+			fmt.Printf("No MCP servers found in group '%s'\n", listGroupFilter)
+		} else {
+			fmt.Println("No MCP servers found")
+		}
 		return nil
 	}
 
@@ -60,6 +77,45 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 		printTextOutput(workloadList)
 		return nil
 	}
+}
+
+// filterWorkloadsByGroup filters workloads to only include those in the specified group
+func filterWorkloadsByGroup(ctx context.Context, workloadList []workloads.Workload, groupName string) ([]workloads.Workload, error) {
+	// Create group manager
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create group manager: %v", err)
+	}
+
+	// Check if the group exists
+	exists, err := groupManager.Exists(ctx, groupName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check if group exists: %v", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("group '%s' does not exist", groupName)
+	}
+
+	// Get all workload names in the specified group
+	groupWorkloadNames, err := groupManager.ListWorkloadsInGroup(ctx, groupName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workloads in group: %v", err)
+	}
+
+	groupWorkloadMap := make(map[string]struct{})
+	for _, name := range groupWorkloadNames {
+		groupWorkloadMap[name] = struct{}{}
+	}
+
+	// Filter workloads that belong to the specified group
+	var filteredWorkloads []workloads.Workload
+	for _, workload := range workloadList {
+		if _, ok := groupWorkloadMap[workload.Name]; ok {
+			filteredWorkloads = append(filteredWorkloads, workload)
+		}
+	}
+
+	return filteredWorkloads, nil
 }
 
 // printJSONOutput prints workload information in JSON format

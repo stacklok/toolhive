@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -64,6 +65,9 @@ type TransparentProxy struct {
 
 	// Connection tracker for managing active connections
 	ConnTracker *ConnTracker
+
+	// Listener for the HTTP server
+	listener net.Listener
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -132,10 +136,13 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	resp, err := t.forward(req)
 	if err != nil {
+		if err == context.Canceled {
+			// Expected during shutdown or client disconnect—silently ignore
+			return nil, err
+		}
 		logger.Errorf("Failed to forward request: %v", err)
 		return nil, err
 	}
-
 	if resp.StatusCode == http.StatusOK {
 		// check if we saw a valid mcp header
 		ct := resp.Header.Get("Mcp-Session-Id")
@@ -291,6 +298,12 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	}
 	tracker := NewConnTracker()
 	p.ConnTracker = tracker
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
+	if err != nil {
+		return fmt.Errorf("failed to listen: %w", err)
+	}
+	p.listener = ln
+
 	// Create the server
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
@@ -299,21 +312,29 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 
-	// Start the server in a goroutine
 	go func() {
-		logger.Infof("Transparent proxy started for container %s on %s:%d -> %s",
-			p.containerName, p.host, p.port, p.targetURI)
-
-		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		err := p.server.Serve(ln)
+		if err != nil && err != http.ErrServerClosed {
+			if opErr, ok := err.(*net.OpError); ok && opErr.Op == "accept" {
+				// Expected when listener is closed—silently return
+				return
+			}
 			logger.Errorf("Transparent proxy error: %v", err)
 		}
 	}()
-
 	// Start health-check monitoring only if health checker is enabled
 	if p.healthChecker != nil {
 		go p.monitorHealth(ctx)
 	}
 
+	return nil
+}
+
+// CloseListener closes the listener for the transparent proxy.
+func (p *TransparentProxy) CloseListener() error {
+	if p.listener != nil {
+		return p.listener.Close()
+	}
 	return nil
 }
 
@@ -358,8 +379,6 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 	// Stop the HTTP server
 	if p.server != nil {
 		err := p.server.Shutdown(ctx)
-		// force closing any leftover connections
-		p.ConnTracker.CloseAll()
 		return err
 	}
 

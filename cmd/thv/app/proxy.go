@@ -230,8 +230,12 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 	g.Go(func() error {
 		<-gctx.Done()
-		logger.Infof("Interrupt received — closing all active connections immediately")
-		proxy.ConnTracker.CloseAll() // Force close all currently tracked conns
+		logger.Infof("Interrupt received, shutting down proxy for server %s", serverName)
+		if err := proxy.CloseListener(); err != nil {
+			logger.Warnf("Error closing proxy listener: %v", err)
+		}
+		// Force-close currently tracked connections once
+		proxy.ConnTracker.CloseAll()
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()

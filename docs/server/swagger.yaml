@@ -115,7 +115,7 @@ components:
       - VSCode
       - ClaudeCode
       - Windsurf
-      - WindsurfIntelliJ
+      - WindsurfJetBrains
     client.MCPClientStatus:
       properties:
         client_type:
@@ -129,7 +129,7 @@ components:
           - VSCode
           - ClaudeCode
           - Windsurf
-          - WindsurfIntelliJ
+          - WindsurfJetBrains
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -580,7 +580,7 @@ components:
             - VSCode
             - ClaudeCode
             - Windsurf
-            - WindsurfIntelliJ
+            - WindsurfJetBrains
           type: array
           uniqueItems: false
       type: object
@@ -615,7 +615,7 @@ components:
           - VSCode
           - ClaudeCode
           - Windsurf
-          - WindsurfIntelliJ
+          - WindsurfJetBrains
       type: object
     v1.createClientResponse:
       properties:
@@ -630,7 +630,7 @@ components:
           - VSCode
           - ClaudeCode
           - Windsurf
-          - WindsurfIntelliJ
+          - WindsurfJetBrains
       type: object
     v1.createRequest:
       description: Request to create a new workload

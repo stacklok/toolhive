@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.6
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/containerd/errdefs v1.0.0
-	github.com/docker/docker v28.3.2+incompatible
+	github.com/docker/docker v28.3.3+incompatible
 	github.com/docker/go-connections v0.5.0
 	github.com/go-chi/chi/v5 v5.2.2
 	github.com/gofrs/flock v0.12.1

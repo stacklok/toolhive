@@ -373,7 +373,13 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 
 	// Stop the HTTP server
 	if p.server != nil {
-		return p.server.Shutdown(ctx)
+		err := p.server.Shutdown(ctx)
+		if err != nil && err != http.ErrServerClosed && err != context.DeadlineExceeded {
+			logger.Warnf("Error during proxy shutdown: %v", err)
+			return err
+		}
+		logger.Infof("Server for %s stopped successfully", p.containerName)
+		p.server = nil
 	}
 
 	return nil

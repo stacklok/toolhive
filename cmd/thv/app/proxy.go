@@ -232,11 +232,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := proxy.Stop(shutdownCtx); err != nil {
-		logger.Warnf("Error during proxy shutdown: %v", err)
-	}
-	logger.Infof("Proxy stopped cleanly")
-	return nil
+	return proxy.Stop(shutdownCtx)
 }
 
 // AuthInfo contains authentication information extracted from WWW-Authenticate header

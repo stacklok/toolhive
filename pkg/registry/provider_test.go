@@ -18,14 +18,14 @@ func TestNewRegistryProvider(t *testing.T) {
 		{
 			name:         "nil config returns embedded provider",
 			config:       nil,
-			expectedType: "*registry.EmbeddedRegistryProvider",
+			expectedType: "*registry.LocalRegistryProvider",
 		},
 		{
 			name: "empty registry URL returns embedded provider",
 			config: &config.Config{
 				RegistryUrl: "",
 			},
-			expectedType: "*registry.EmbeddedRegistryProvider",
+			expectedType: "*registry.LocalRegistryProvider",
 		},
 		{
 			name: "registry URL returns remote provider",
@@ -39,7 +39,7 @@ func TestNewRegistryProvider(t *testing.T) {
 			config: &config.Config{
 				LocalRegistryPath: "/path/to/registry.json",
 			},
-			expectedType: "*registry.EmbeddedRegistryProvider",
+			expectedType: "*registry.LocalRegistryProvider",
 		},
 		{
 			name: "registry URL takes precedence over local path",
@@ -65,9 +65,9 @@ func TestNewRegistryProvider(t *testing.T) {
 	}
 }
 
-func TestEmbeddedRegistryProvider(t *testing.T) {
+func TestLocalRegistryProvider(t *testing.T) {
 	t.Parallel()
-	provider := NewEmbeddedRegistryProvider()
+	provider := NewLocalRegistryProvider()
 
 	// Test GetRegistry
 	registry, err := provider.GetRegistry()
@@ -135,7 +135,7 @@ func TestRemoteRegistryProvider(t *testing.T) {
 	var _ Provider = provider
 }
 
-func TestEmbeddedRegistryProviderWithLocalFile(t *testing.T) {
+func TestLocalRegistryProviderWithLocalFile(t *testing.T) {
 	t.Parallel()
 
 	// Create a temporary registry file
@@ -170,7 +170,7 @@ func TestEmbeddedRegistryProviderWithLocalFile(t *testing.T) {
 	}
 
 	// Test with local file path
-	provider := NewEmbeddedRegistryProvider(registryFile)
+	provider := NewLocalRegistryProvider(registryFile)
 
 	// Test GetRegistry
 	registry, err := provider.GetRegistry()
@@ -180,6 +180,7 @@ func TestEmbeddedRegistryProviderWithLocalFile(t *testing.T) {
 
 	if registry == nil {
 		t.Fatal("GetRegistry() returned nil registry")
+		return
 	}
 
 	if len(registry.Servers) != 1 {
@@ -203,8 +204,8 @@ func TestEmbeddedRegistryProviderWithLocalFile(t *testing.T) {
 // getTypeName returns the type name of an interface value
 func getTypeName(v interface{}) string {
 	switch v.(type) {
-	case *EmbeddedRegistryProvider:
-		return "*registry.EmbeddedRegistryProvider"
+	case *LocalRegistryProvider:
+		return "*registry.LocalRegistryProvider"
 	case *RemoteRegistryProvider:
 		return "*registry.RemoteRegistryProvider"
 	default:

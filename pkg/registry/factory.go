@@ -18,9 +18,9 @@ func NewRegistryProvider(cfg *config.Config) Provider {
 		return NewRemoteRegistryProvider(cfg.RegistryUrl, cfg.AllowPrivateRegistryIp)
 	}
 	if cfg != nil && len(cfg.LocalRegistryPath) > 0 {
-		return NewEmbeddedRegistryProvider(cfg.LocalRegistryPath)
+		return NewLocalRegistryProvider(cfg.LocalRegistryPath)
 	}
-	return NewEmbeddedRegistryProvider()
+	return NewLocalRegistryProvider()
 }
 
 // GetDefaultProvider returns the default registry provider instance

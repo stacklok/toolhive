@@ -110,8 +110,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (Workload, erro
 
 	// Translate to the domain model.
 	return Workload{
-		Name: container.Name,
-		// TODO: make this return the thv-specific name.
+		Name:          container.Name,
 		Package:       container.Image,
 		URL:           url,
 		ToolType:      toolType,

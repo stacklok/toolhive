@@ -25,6 +25,8 @@ func (g *Group) WriteJSON(w *os.File) error {
 
 // Manager defines the interface for managing groups of MCP servers.
 // It provides methods for creating, retrieving, listing, and deleting groups.
+//
+//go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=group.go Manager
 type Manager interface {
 	// Create creates a new group with the specified name.
 	// Returns an error if a group with the same name already exists.

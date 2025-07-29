@@ -69,7 +69,6 @@ type defaultManager struct {
 // ErrWorkloadNotFound is returned when a container cannot be found by name.
 // ErrInvalidWorkloadName is returned when a workload name fails validation.
 var (
-	ErrWorkloadNotFound    = fmt.Errorf("workload not found")
 	ErrWorkloadNotRunning  = fmt.Errorf("workload not running")
 	ErrInvalidWorkloadName = fmt.Errorf("invalid workload name")
 )
@@ -106,83 +105,15 @@ func NewManagerFromRuntime(runtime rt.Runtime) Manager {
 }
 
 func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (Workload, error) {
-	// Validate workload name to prevent path traversal attacks
-	if err := validateWorkloadName(workloadName); err != nil {
-		return Workload{}, err
-	}
-
-	container, err := d.findContainerByName(ctx, workloadName)
-	if err != nil {
-		// Note that `findContainerByName` already wraps the error with a more specific message.
-		return Workload{}, err
-	}
-
-	return WorkloadFromContainerInfo(container)
+	// For the sake of minimizing changes, delegate to the status manager.
+	// Whether this method should still belong to the workload manager is TBD.
+	return d.statuses.GetWorkload(ctx, workloadName)
 }
 
 func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error) {
-	// List containers
-	containers, err := d.runtime.ListWorkloads(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Filter containers to only show those managed by ToolHive
-	var workloads []Workload
-	for _, c := range containers {
-		// If the caller did not set `listAll` to true, only include running containers.
-		if labels.IsToolHiveContainer(c.Labels) && (isContainerRunning(&c) || listAll) {
-			workload, err := WorkloadFromContainerInfo(&c)
-			if err != nil {
-				return nil, err
-			}
-			workloads = append(workloads, workload)
-		}
-	}
-
-	// Apply label filtering if specified
-	if len(labelFilters) > 0 {
-		workloads, err = d.filterWorkloadsByLabels(workloads, labelFilters)
-		if err != nil {
-			return nil, fmt.Errorf("failed to filter workloads by labels: %v", err)
-		}
-	}
-
-	return workloads, nil
-}
-
-// filterWorkloadsByLabels filters workloads based on label selectors
-func (d *defaultManager) filterWorkloadsByLabels(workloadList []Workload, labelFilters []string) ([]Workload, error) {
-	// Parse label filters
-	filters := make(map[string]string)
-	for _, filter := range labelFilters {
-		key, value, err := labels.ParseLabel(filter)
-		if err != nil {
-			return nil, fmt.Errorf("invalid label filter '%s': %v", filter, err)
-		}
-		filters[key] = value
-	}
-
-	// Filter workloads
-	var filtered []Workload
-	for _, workload := range workloadList {
-		if d.matchesLabelFilters(workload.Labels, filters) {
-			filtered = append(filtered, workload)
-		}
-	}
-
-	return filtered, nil
-}
-
-// matchesLabelFilters checks if workload labels match all the specified filters
-func (*defaultManager) matchesLabelFilters(workloadLabels, filters map[string]string) bool {
-	for filterKey, filterValue := range filters {
-		workloadValue, exists := workloadLabels[filterKey]
-		if !exists || workloadValue != filterValue {
-			return false
-		}
-	}
-	return true
+	// For the sake of minimizing changes, delegate to the status manager.
+	// Whether this method should still belong to the workload manager is TBD.
+	return d.statuses.ListWorkloads(ctx, listAll, labelFilters)
 }
 
 func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
@@ -200,9 +131,9 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 	// Find all containers first
 	var containers []*rt.ContainerInfo
 	for _, name := range names {
-		container, err := d.findContainerByName(ctx, name)
+		container, err := d.runtime.GetWorkloadInfo(ctx, name)
 		if err != nil {
-			if errors.Is(err, ErrWorkloadNotFound) {
+			if errors.Is(err, rt.ErrWorkloadNotFound) {
 				// Log but don't fail the entire operation for not found containers
 				logger.Warnf("Warning: Failed to stop workload %s: %v", name, err)
 				continue
@@ -210,7 +141,7 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 			return nil, fmt.Errorf("failed to find workload %s: %v", name, err)
 		}
 
-		running := isContainerRunning(container)
+		running := container.IsRunning()
 		if !running {
 			// Log but don't fail the entire operation for not running containers
 			logger.Warnf("Warning: Failed to stop workload %s: %v", name, ErrWorkloadNotRunning)
@@ -219,7 +150,7 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 
 		// Transition workload to `stopping` state.
 		d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, "")
-		containers = append(containers, container)
+		containers = append(containers, &container)
 	}
 
 	return d.stopWorkloads(ctx, containers), nil
@@ -503,20 +434,15 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	return nil
 }
 
-func (d *defaultManager) GetLogs(ctx context.Context, containerName string, follow bool) (string, error) {
-	container, err := d.findContainerByName(ctx, containerName)
+func (d *defaultManager) GetLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
+	// Get the logs from the runtime
+	logs, err := d.runtime.GetWorkloadLogs(ctx, workloadName, follow)
 	if err != nil {
 		// Propagate the error if the container is not found
-		if errors.Is(err, ErrWorkloadNotFound) {
-			return "", fmt.Errorf("%w: %s", ErrWorkloadNotFound, containerName)
+		if errors.Is(err, rt.ErrWorkloadNotFound) {
+			return "", fmt.Errorf("%w: %s", rt.ErrWorkloadNotFound, workloadName)
 		}
-		return "", fmt.Errorf("failed to find container %s: %v", containerName, err)
-	}
-
-	// Get the logs from the runtime
-	logs, err := d.runtime.GetWorkloadLogs(ctx, container.ID, follow)
-	if err != nil {
-		return "", fmt.Errorf("failed to get container logs %s: %v", containerName, err)
+		return "", fmt.Errorf("failed to get container logs %s: %v", workloadName, err)
 	}
 
 	return logs, nil
@@ -539,9 +465,9 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 			defer cancel()
 
 			// Find the container
-			container, err := d.findContainerByName(childCtx, name)
+			container, err := d.runtime.GetWorkloadInfo(childCtx, name)
 			if err != nil {
-				if errors.Is(err, ErrWorkloadNotFound) {
+				if errors.Is(err, rt.ErrWorkloadNotFound) {
 					// Log but don't fail the entire operation for not found containers
 					logger.Warnf("Warning: Failed to delete workload %s: %v", name, err)
 					return nil
@@ -553,10 +479,9 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 			// Now that we're sure the workload exists - set the status to removing.
 			d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusRemoving, "")
 
-			containerID := container.ID
 			containerLabels := container.Labels
 			baseName := labels.GetContainerBaseName(containerLabels)
-			isRunning := isContainerRunning(container)
+			isRunning := container.IsRunning()
 
 			if isRunning {
 				// Stop the proxy process first (like StopWorkload does)
@@ -568,7 +493,7 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 
 			// Remove the container
 			logger.Infof("Removing container %s...", name)
-			if err := d.runtime.RemoveWorkload(childCtx, containerID); err != nil {
+			if err := d.runtime.RemoveWorkload(childCtx, name); err != nil {
 				d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error())
 				return fmt.Errorf("failed to remove container: %v", err)
 			}
@@ -632,9 +557,9 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string) (
 			var containerBaseName string
 			var running bool
 			// Try to find the container.
-			container, err := d.findContainerByName(childCtx, name)
+			container, err := d.runtime.GetWorkloadInfo(childCtx, name)
 			if err != nil {
-				if errors.Is(err, ErrWorkloadNotFound) {
+				if errors.Is(err, rt.ErrWorkloadNotFound) {
 					logger.Warnf("Warning: Failed to find container: %v", err)
 					logger.Warnf("Trying to find state with name %s directly...", name)
 
@@ -646,7 +571,7 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string) (
 				}
 			} else {
 				// Container found, check if it's running and get the base name,
-				running = isContainerRunning(container)
+				running = container.IsRunning()
 				containerBaseName = labels.GetContainerBaseName(container.Labels)
 			}
 
@@ -676,14 +601,10 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string) (
 			// Run the tooling server inside a detached process.
 			logger.Infof("Starting tooling server %s...", name)
 
-			var containerID string
-			if container != nil {
-				containerID = container.ID
-			}
 			// If the container is running but the proxy is not, stop the container first
-			if containerID != "" && running { // && !proxyRunning was previously here but is implied by previous if statement.
+			if running { // && !proxyRunning was previously here but is implied by previous if statement.
 				logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
-				if err = d.runtime.StopWorkload(childCtx, containerID); err != nil {
+				if err = d.runtime.StopWorkload(childCtx, name); err != nil {
 					return fmt.Errorf("failed to stop container %s: %v", name, err)
 				}
 				logger.Infof("Container %s stopped", name)
@@ -694,35 +615,6 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string) (
 	}
 
 	return group, nil
-}
-
-func (d *defaultManager) findContainerByName(ctx context.Context, name string) (*rt.ContainerInfo, error) {
-	// List containers to find the one with the given name
-	containers, err := d.runtime.ListWorkloads(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Find the container with the given name
-	for _, c := range containers {
-		// Check if the container is managed by ToolHive
-		if !labels.IsToolHiveContainer(c.Labels) {
-			continue
-		}
-
-		// Check if the container name matches
-		containerName := labels.GetContainerName(c.Labels)
-		if containerName == "" {
-			name = c.Name // Fallback to container name
-		}
-
-		// Check if the name matches (exact match or prefix match)
-		if containerName == name || c.ID == name {
-			return &c, nil
-		}
-	}
-
-	return nil, fmt.Errorf("%w: %s", ErrWorkloadNotFound, name)
 }
 
 func shouldRemoveClientConfig() bool {
@@ -756,10 +648,6 @@ func removeClientConfigurations(containerName string) error {
 	}
 
 	return nil
-}
-
-func isContainerRunning(container *rt.ContainerInfo) bool {
-	return container.State == "running"
 }
 
 // loadRunnerFromState attempts to load a Runner from the state store
@@ -822,7 +710,7 @@ func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.Cont
 
 			logger.Infof("Stopping containers for %s...", name)
 			// Stop the container
-			if err := d.runtime.StopWorkload(childCtx, workload.ID); err != nil {
+			if err := d.runtime.StopWorkload(childCtx, workload.Name); err != nil {
 				d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error())
 				return fmt.Errorf("failed to stop container: %w", err)
 			}

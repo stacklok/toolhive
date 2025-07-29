@@ -37,6 +37,6 @@ func (*Factory) Create(ctx context.Context) (runtime.Runtime, error) {
 }
 
 // NewMonitor creates a new container monitor
-func NewMonitor(rt runtime.Runtime, containerID, containerName string) runtime.Monitor {
-	return docker.NewMonitor(rt, containerID, containerName)
+func NewMonitor(rt runtime.Runtime, containerName string) runtime.Monitor {
+	return docker.NewMonitor(rt, containerName)
 }

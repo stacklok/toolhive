@@ -144,3 +144,26 @@ func completeLogsArgs(cmd *cobra.Command, args []string, _ string) ([]string, co
 
 	return completions, cobra.ShellCompDirectiveNoFileComp
 }
+
+// ValidateGroupFlag returns a cobra PreRunE-compatible function
+// that validates the --group flag *if provided*.
+/*func validateGroupFlag() func(cmd *cobra.Command, args []string) error {
+	return func(cmd *cobra.Command, _ []string) error {
+		groupName, err := cmd.Flags().GetString("group")
+		if err != nil {
+			return fmt.Errorf("could not read --group flag: %w", err)
+		}
+
+		if groupName == "" {
+			// Optional flag not provided — no validation needed
+			return nil
+		}
+
+		// Validate if provided
+		if err := validation.ValidateGroupName(groupName); err != nil {
+			return fmt.Errorf("invalid group name in --group: %w", err)
+		}
+
+		return nil
+	}
+}*/

@@ -34,7 +34,8 @@ var clientRegisterCmd = &cobra.Command{
 	Use:   "register [client]",
 	Short: "Register a client for MCP server configuration",
 	Long: `Register a client for MCP server configuration.
-Valid clients are:
+
+Valid clients:
   - amp-cli: Sourcegraph Amp CLI
   - amp-cursor: Sourcegraph Amp extension for Cursor
   - amp-vscode: Sourcegraph Amp extension for VS Code
@@ -56,7 +57,8 @@ var clientRemoveCmd = &cobra.Command{
 	Use:   "remove [client]",
 	Short: "Remove a client from MCP server configuration",
 	Long: `Remove a client from MCP server configuration.
-Valid clients are:
+
+Valid clients:
   - amp-cli: Sourcegraph Amp CLI
   - amp-cursor: Sourcegraph Amp extension for Cursor
   - amp-vscode: Sourcegraph Amp extension for VS Code

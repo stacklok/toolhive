@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -37,9 +38,8 @@ const (
 )
 
 // ContainerInfo represents information about a container
+// TODO: Consider merging this with workloads.Workload
 type ContainerInfo struct {
-	// ID is the container ID
-	ID string
 	// Name is the container name
 	Name string
 	// Image is the container image
@@ -55,6 +55,11 @@ type ContainerInfo struct {
 	Labels map[string]string
 	// Ports is the container port mappings
 	Ports []PortMapping
+}
+
+// IsRunning returns true if the container is currently running.
+func (c *ContainerInfo) IsRunning() bool {
+	return c.State == WorkloadStatusRunning
 }
 
 // PortMapping represents a port mapping for a container
@@ -98,22 +103,22 @@ type Deployer interface {
 		transportType string,
 		options *DeployWorkloadOptions,
 		isolateNetwork bool,
-	) (string, int, error)
+	) (int, error)
 
 	// StopWorkload gracefully stops a running workload and all its components.
 	// This includes stopping the primary container, sidecars, and cleaning up
 	// any associated network resources. The workload remains available for restart.
-	StopWorkload(ctx context.Context, workloadID string) error
+	StopWorkload(ctx context.Context, workloadName string) error
 
 	// AttachToWorkload establishes a direct connection to the primary container
 	// of the workload for interactive communication. This is typically used
 	// for stdio transport where direct input/output streaming is required.
-	AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error)
+	AttachToWorkload(ctx context.Context, workloadName string) (io.WriteCloser, io.ReadCloser, error)
 
 	// IsWorkloadRunning checks if a workload is currently running and healthy.
 	// This verifies that the primary container is running and that any
 	// required sidecars are also operational.
-	IsWorkloadRunning(ctx context.Context, workloadID string) (bool, error)
+	IsWorkloadRunning(ctx context.Context, workloadName string) (bool, error)
 }
 
 // Runtime defines the interface for container runtimes that manage workloads.
@@ -143,18 +148,18 @@ type Runtime interface {
 	// This includes removing containers, cleaning up networks, volumes,
 	// and any other resources associated with the workload. This operation
 	// is irreversible.
-	RemoveWorkload(ctx context.Context, workloadID string) error
+	RemoveWorkload(ctx context.Context, workloadName string) error
 
 	// GetWorkloadLogs retrieves logs from the primary container of the workload.
 	// If follow is true, the logs will be streamed continuously.
 	// For workloads with multiple containers, this returns logs from the
 	// main MCP server container.
-	GetWorkloadLogs(ctx context.Context, workloadID string, follow bool) (string, error)
+	GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error)
 
 	// GetWorkloadInfo retrieves detailed information about a workload.
 	// This includes status, resource usage, network configuration,
 	// and metadata about all components in the workload.
-	GetWorkloadInfo(ctx context.Context, workloadID string) (ContainerInfo, error)
+	GetWorkloadInfo(ctx context.Context, workloadName string) (ContainerInfo, error)
 
 	// IsRunning checks the health of the container runtime.
 	// This is used to verify that the runtime is operational and can manage workloads.
@@ -280,3 +285,9 @@ type Mount struct {
 func IsKubernetesRuntime() bool {
 	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
 }
+
+// Common errors
+var (
+	// ErrWorkloadNotFound indicates that the specified workload was not found.
+	ErrWorkloadNotFound = fmt.Errorf("workload not found")
+)

@@ -27,21 +27,44 @@ func GetOrGenerateContainerName(containerName, image string) (string, string) {
 
 // generateContainerBaseName generates a base name for a container from the image name
 func generateContainerBaseName(image string) string {
-	// Extract the base name from the image, preserving registry namespaces
-	// Examples:
-	// - "nginx:latest" -> "nginx"
-	// - "docker.io/library/nginx:latest" -> "docker.io-library-nginx"
-	// - "quay.io/stacklok/mcp-server:v1" -> "quay.io-stacklok-mcp-server"
+	// Find last '/' and last ':' to distinguish port from tag
+	lastSlash := strings.LastIndex(image, "/")
+	lastColon := strings.LastIndex(image, ":")
 
-	// First, remove the tag part (everything after the colon)
-	imageWithoutTag := strings.Split(image, ":")[0]
+	imageWithoutTag := image
+	if lastColon > lastSlash {
+		imageWithoutTag = image[:lastColon]
+	}
 
-	// Replace slashes with dashes to preserve namespace structure
-	namespaceName := strings.ReplaceAll(imageWithoutTag, "/", "-")
+	// Split by '/'
+	parts := strings.Split(imageWithoutTag, "/")
+	var registryOrNamespace, name string
+	switch len(parts) {
+	case 1:
+		name = parts[0]
+	case 2:
+		registryOrNamespace = parts[0]
+		name = parts[1]
+	default:
+		registryOrNamespace = parts[len(parts)-2]
+		name = parts[len(parts)-1]
+	}
+	// Strip the port from registryOrNamespace if it looks like host:port
+	if registryOrNamespace != "" && strings.Contains(registryOrNamespace, ":") {
+		registryOrNamespace = strings.SplitN(registryOrNamespace, ":", 2)[0]
+	}
 
-	// Sanitize the name (allow alphanumeric, dashes)
+	// Construct the base name using the sanitized registryOrNamespace and name
+	var base string
+	if registryOrNamespace != "" {
+		base = registryOrNamespace + "-" + name
+	} else {
+		base = name
+	}
+
+	// Sanitize: allow alphanumeric and dashes
 	var sanitizedName strings.Builder
-	for _, c := range namespaceName {
+	for _, c := range base {
 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' {
 			sanitizedName.WriteRune(c)
 		} else {

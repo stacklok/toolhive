@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/updates"
@@ -158,7 +159,7 @@ func Serve(
 	r.Use(authMiddleware)
 
 	// Create container runtime
-	rt, err := container.NewFactory().Create(ctx)
+	containerRuntime, err := container.NewFactory().Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
@@ -174,16 +175,23 @@ func Serve(
 		return fmt.Errorf("failed to create client manager: %v", err)
 	}
 
-	workloadManager := workloads.NewManagerFromRuntime(rt)
+	workloadManager := workloads.NewManagerFromRuntime(containerRuntime)
+
+	// Create group manager
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create group manager: %v", err)
+	}
 
 	routers := map[string]http.Handler{
-		"/health":               v1.HealthcheckRouter(rt),
+		"/health":               v1.HealthcheckRouter(containerRuntime),
 		"/api/v1beta/version":   v1.VersionRouter(),
-		"/api/v1beta/workloads": v1.WorkloadRouter(workloadManager, rt, debugMode),
+		"/api/v1beta/workloads": v1.WorkloadRouter(workloadManager, containerRuntime, groupManager, debugMode),
 		"/api/v1beta/registry":  v1.RegistryRouter(registryProvider),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(clientManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
+		"/api/v1beta/groups":    v1.GroupsRouter(groupManager),
 	}
 
 	// Only mount docs router if enabled

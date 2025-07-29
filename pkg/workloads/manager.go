@@ -105,83 +105,15 @@ func NewManagerFromRuntime(runtime rt.Runtime) Manager {
 }
 
 func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (Workload, error) {
-	// Validate workload name to prevent path traversal attacks
-	if err := validateWorkloadName(workloadName); err != nil {
-		return Workload{}, err
-	}
-
-	container, err := d.runtime.GetWorkloadInfo(ctx, workloadName)
-	if err != nil {
-		// Note that `findContainerByName` already wraps the error with a more specific message.
-		return Workload{}, err
-	}
-
-	return WorkloadFromContainerInfo(&container)
+	// For the sake of minimizing changes, delegate to the status manager.
+	// Whether this method should still belong to the workload manager is TBD.
+	return d.statuses.GetWorkload(ctx, workloadName)
 }
 
 func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error) {
-	// List containers
-	containers, err := d.runtime.ListWorkloads(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Filter containers to only show those managed by ToolHive
-	var workloads []Workload
-	for _, c := range containers {
-		// If the caller did not set `listAll` to true, only include running containers.
-		if labels.IsToolHiveContainer(c.Labels) && (isContainerRunning(&c) || listAll) {
-			workload, err := WorkloadFromContainerInfo(&c)
-			if err != nil {
-				return nil, err
-			}
-			workloads = append(workloads, workload)
-		}
-	}
-
-	// Apply label filtering if specified
-	if len(labelFilters) > 0 {
-		workloads, err = d.filterWorkloadsByLabels(workloads, labelFilters)
-		if err != nil {
-			return nil, fmt.Errorf("failed to filter workloads by labels: %v", err)
-		}
-	}
-
-	return workloads, nil
-}
-
-// filterWorkloadsByLabels filters workloads based on label selectors
-func (d *defaultManager) filterWorkloadsByLabels(workloadList []Workload, labelFilters []string) ([]Workload, error) {
-	// Parse label filters
-	filters := make(map[string]string)
-	for _, filter := range labelFilters {
-		key, value, err := labels.ParseLabel(filter)
-		if err != nil {
-			return nil, fmt.Errorf("invalid label filter '%s': %v", filter, err)
-		}
-		filters[key] = value
-	}
-
-	// Filter workloads
-	var filtered []Workload
-	for _, workload := range workloadList {
-		if d.matchesLabelFilters(workload.Labels, filters) {
-			filtered = append(filtered, workload)
-		}
-	}
-
-	return filtered, nil
-}
-
-// matchesLabelFilters checks if workload labels match all the specified filters
-func (*defaultManager) matchesLabelFilters(workloadLabels, filters map[string]string) bool {
-	for filterKey, filterValue := range filters {
-		workloadValue, exists := workloadLabels[filterKey]
-		if !exists || workloadValue != filterValue {
-			return false
-		}
-	}
-	return true
+	// For the sake of minimizing changes, delegate to the status manager.
+	// Whether this method should still belong to the workload manager is TBD.
+	return d.statuses.ListWorkloads(ctx, listAll, labelFilters)
 }
 
 func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
@@ -209,7 +141,7 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 			return nil, fmt.Errorf("failed to find workload %s: %v", name, err)
 		}
 
-		running := isContainerRunning(&container)
+		running := container.IsRunning()
 		if !running {
 			// Log but don't fail the entire operation for not running containers
 			logger.Warnf("Warning: Failed to stop workload %s: %v", name, ErrWorkloadNotRunning)
@@ -549,7 +481,7 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 
 			containerLabels := container.Labels
 			baseName := labels.GetContainerBaseName(containerLabels)
-			isRunning := isContainerRunning(&container)
+			isRunning := container.IsRunning()
 
 			if isRunning {
 				// Stop the proxy process first (like StopWorkload does)
@@ -639,7 +571,7 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string) (
 				}
 			} else {
 				// Container found, check if it's running and get the base name,
-				running = isContainerRunning(&container)
+				running = container.IsRunning()
 				containerBaseName = labels.GetContainerBaseName(container.Labels)
 			}
 
@@ -716,10 +648,6 @@ func removeClientConfigurations(containerName string) error {
 	}
 
 	return nil
-}
-
-func isContainerRunning(container *rt.ContainerInfo) bool {
-	return container.State == "running"
 }
 
 // loadRunnerFromState attempts to load a Runner from the state store

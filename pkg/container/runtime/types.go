@@ -38,6 +38,7 @@ const (
 )
 
 // ContainerInfo represents information about a container
+// TODO: Consider merging this with workloads.Workload
 type ContainerInfo struct {
 	// Name is the container name
 	Name string
@@ -54,6 +55,11 @@ type ContainerInfo struct {
 	Labels map[string]string
 	// Ports is the container port mappings
 	Ports []PortMapping
+}
+
+// IsRunning returns true if the container is currently running.
+func (c *ContainerInfo) IsRunning() bool {
+	return c.State == WorkloadStatusRunning
 }
 
 // PortMapping represents a port mapping for a container

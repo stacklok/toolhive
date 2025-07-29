@@ -172,8 +172,14 @@ func init() {
 		logger.Warnf("Warning: Failed to mark flag as required: %v", err)
 	}
 
+	proxyStdioCmd.Flags().StringVar(&stdioHost, "host", "127.0.0.1", "Host for the stdio proxy to bind (IP or hostname)")
+	proxyStdioCmd.Flags().IntVar(&stdioPort, "port", 0, "Port for the stdio proxy to bind")
+	proxyStdioCmd.Flags().StringVar(&stdioTargetURI, "target-uri", "", "Target URI for the proxy (required)")
+	_ = proxyStdioCmd.MarkFlagRequired("target-uri")
+
 	// Attach the subcommand to the main proxy command
-	proxyCmd.AddCommand(proxyTunnelCmd)
+	proxyCmd.AddCommand(proxyStdioCmd)
+
 }
 
 func proxyCmdFunc(cmd *cobra.Command, args []string) error {

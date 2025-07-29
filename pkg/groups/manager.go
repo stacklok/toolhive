@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
-	"github.com/stacklok/toolhive/pkg/errors"
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/state"
@@ -38,18 +40,13 @@ func NewManager() (Manager, error) {
 
 // Create creates a new group with the given name
 func (m *manager) Create(ctx context.Context, name string) error {
-	// Validate group name
-	if name == "" {
-		return fmt.Errorf("group name cannot be empty")
-	}
-
 	// Check if group already exists
 	exists, err := m.groupStore.Exists(ctx, name)
 	if err != nil {
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
 	if exists {
-		return fmt.Errorf("group '%s' already exists", name)
+		return thverrors.NewGroupAlreadyExistsError(fmt.Sprintf("group '%s' already exists", name), nil)
 	}
 
 	group := &Group{Name: name}
@@ -88,6 +85,11 @@ func (m *manager) List(ctx context.Context) ([]*Group, error) {
 		groups = append(groups, group)
 	}
 
+	// Sort groups alphanumerically by name (handles mixed characters, numbers, etc.)
+	sort.Slice(groups, func(i, j int) bool {
+		return strings.Compare(groups[i].Name, groups[j].Name) < 0
+	})
+
 	return groups, nil
 }
 
@@ -105,7 +107,7 @@ func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
 func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error) {
 	runnerInstance, err := runner.LoadState(ctx, workloadName)
 	if err != nil {
-		if errors.IsRunConfigNotFound(err) {
+		if thverrors.IsRunConfigNotFound(err) {
 			return nil, nil
 		}
 		return nil, err

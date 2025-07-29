@@ -72,6 +72,8 @@ func init() {
 	// Add run flags
 	AddRunFlags(runCmd, &runFlags)
 
+	//runCmd.PreRunE = validateGroupFlag()
+
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
 	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
 		logger.Warnf("Error hiding flag: %v", err)

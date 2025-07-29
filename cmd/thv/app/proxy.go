@@ -143,7 +143,8 @@ func init() {
 }
 
 func proxyCmdFunc(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
+	ctx, stopSignal := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignal()
 	// Get the server name
 	serverName := args[0]
 
@@ -223,21 +224,15 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		serverName, port, proxyTargetURI)
 	logger.Info("Press Ctrl+C to stop")
 
-	// Set up signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-ctx.Done()
+	logger.Infof("Interrupt received, proxy is shutting down. Please wait for connections to close...")
 
-	// Wait for signal
-	sig := <-sigCh
-	logger.Infof("Received signal %s, stopping proxy...", sig)
-
-	// Stop the proxy
-	if err := proxy.Stop(ctx); err != nil {
-		logger.Warnf("Warning: Failed to stop proxy: %v", err)
+	if err := proxy.CloseListener(); err != nil {
+		logger.Warnf("Error closing proxy listener: %v", err)
 	}
-
-	logger.Infof("Proxy for server %s stopped", serverName)
-	return nil
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return proxy.Stop(shutdownCtx)
 }
 
 // AuthInfo contains authentication information extracted from WWW-Authenticate header

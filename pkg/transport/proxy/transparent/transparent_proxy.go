@@ -310,7 +310,8 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	go func() {
 		err := p.server.Serve(ln)
 		if err != nil && err != http.ErrServerClosed {
-			if opErr, ok := err.(*net.OpError); ok && opErr.Op == "accept" {
+			var opErr *net.OpError
+			if errors.As(err, &opErr) && opErr.Op == "accept" {
 				// Expected when listener is closed—silently return
 				return
 			}

@@ -50,11 +50,12 @@ func generateContainerBaseName(image string) string {
 		name = parts[len(parts)-1]
 	}
 
-	// If registryOrNamespace looks like host:port, strip the port
+	// Strip the port from registryOrNamespace if it looks like host:port
 	if strings.Contains(registryOrNamespace, ":") {
-		registryOrNamespace = strings.Split(registryOrNamespace, ":")[0]
+		registryOrNamespace = strings.SplitN(registryOrNamespace, ":", 2)[0]
 	}
 
+	// Construct the base name using the sanitized registryOrNamespace and name
 	var base string
 	if registryOrNamespace != "" {
 		base = registryOrNamespace + "-" + name

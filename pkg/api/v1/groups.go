@@ -11,6 +11,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/validation"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // GroupsRoutes defines the routes for group management.
@@ -157,9 +158,11 @@ func (s *GroupsRoutes) getGroup(w http.ResponseWriter, r *http.Request) {
 // deleteGroup
 //
 //	@Summary		Delete a group
-//	@Description	Delete a group by name
+//	@Description	Delete a group by name.
+//	Use with-workloads=true to delete all workloads in the group, otherwise workloads are moved to the default group.
 //	@Tags			groups
 //	@Param			name	path		string	true	"Group name"
+//	@Param			with-workloads	query	bool	false	"Delete all workloads in the group (default: false, moves workloads to default group)"
 //	@Success		204		{string}	string	"No Content"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Failure		500		{string}	string	"Internal Server Error"
@@ -172,6 +175,12 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	if err := validation.ValidateGroupName(name); err != nil {
 		logger.Errorf("Invalid group name: %v", err)
 		http.Error(w, fmt.Sprintf("Invalid group name: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Check if this is the default group
+	if name == groups.DefaultGroup {
+		http.Error(w, "Cannot delete the default group", http.StatusBadRequest)
 		return
 	}
 
@@ -188,6 +197,56 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get the with-workloads flag from query parameter
+	withWorkloads := r.URL.Query().Get("with-workloads") == "true"
+
+	// Get all workloads in the group
+	groupWorkloads, err := s.groupManager.ListWorkloadsInGroup(ctx, name)
+	if err != nil {
+		logger.Errorf("Failed to list workloads in group %s: %v", name, err)
+		http.Error(w, "Failed to list workloads in group", http.StatusInternalServerError)
+		return
+	}
+
+	// Handle workloads if any exist
+	if len(groupWorkloads) > 0 {
+		workloadManager, err := workloads.NewManager(ctx)
+		if err != nil {
+			logger.Errorf("Failed to create workload manager: %v", err)
+			http.Error(w, "Failed to create workload manager", http.StatusInternalServerError)
+			return
+		}
+
+		if withWorkloads {
+			// Delete all workloads in the group
+			group, err := workloadManager.DeleteWorkloads(ctx, groupWorkloads)
+			if err != nil {
+				logger.Errorf("Failed to delete workloads in group %s: %v", name, err)
+				http.Error(w, "Failed to delete workloads in group", http.StatusInternalServerError)
+				return
+			}
+
+			// Wait for the deletion to complete
+			if err := group.Wait(); err != nil {
+				logger.Errorf("Failed to delete workloads in group %s: %v", name, err)
+				http.Error(w, "Failed to delete workloads in group", http.StatusInternalServerError)
+				return
+			}
+
+			logger.Infof("Deleted %d workload(s) from group '%s'", len(groupWorkloads), name)
+		} else {
+			// Move workloads to default group
+			if err := workloadManager.MoveToDefaultGroup(ctx, groupWorkloads, name); err != nil {
+				logger.Errorf("Failed to move workloads to default group: %v", err)
+				http.Error(w, "Failed to move workloads to default group", http.StatusInternalServerError)
+				return
+			}
+
+			logger.Infof("Moved %d workload(s) from group '%s' to default group", len(groupWorkloads), name)
+		}
+	}
+
+	// Delete the group
 	err = s.groupManager.Delete(ctx, name)
 	if err != nil {
 		logger.Errorf("Failed to delete group %s: %v", name, err)

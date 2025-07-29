@@ -127,6 +127,7 @@ func TestGroupsRouter(t *testing.T) {
 			path:   "/testgroup",
 			setupMock: func(m *mocks.MockManager) {
 				m.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
+				m.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
 				m.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
@@ -141,6 +142,64 @@ func TestGroupsRouter(t *testing.T) {
 			},
 			expectedStatus: http.StatusNotFound,
 			expectedBody:   "Group not found",
+		},
+		{
+			name:   "delete default group protected",
+			method: "DELETE",
+			path:   "/default",
+			setupMock: func(_ *mocks.MockManager) {
+				// No mock setup needed as validation happens before manager call
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "Cannot delete the default group",
+		},
+		{
+			name:   "delete group with workloads flag true",
+			method: "DELETE",
+			path:   "/testgroup?with-workloads=true",
+			setupMock: func(m *mocks.MockManager) {
+				m.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
+				m.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				m.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
+			},
+			expectedStatus: http.StatusNoContent,
+			expectedBody:   "",
+		},
+		{
+			name:   "delete group with workloads flag false",
+			method: "DELETE",
+			path:   "/testgroup?with-workloads=false",
+			setupMock: func(m *mocks.MockManager) {
+				m.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
+				m.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				m.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
+			},
+			expectedStatus: http.StatusNoContent,
+			expectedBody:   "",
+		},
+		{
+			name:   "delete group without workloads flag (default behavior)",
+			method: "DELETE",
+			path:   "/testgroup",
+			setupMock: func(m *mocks.MockManager) {
+				m.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
+				m.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				m.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
+			},
+			expectedStatus: http.StatusNoContent,
+			expectedBody:   "",
+		},
+		{
+			name:   "delete group with no workloads",
+			method: "DELETE",
+			path:   "/testgroup",
+			setupMock: func(m *mocks.MockManager) {
+				m.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
+				m.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				m.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
+			},
+			expectedStatus: http.StatusNoContent,
+			expectedBody:   "",
 		},
 	}
 

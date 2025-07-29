@@ -34,7 +34,8 @@ var clientRegisterCmd = &cobra.Command{
 	Use:   "register [client]",
 	Short: "Register a client for MCP server configuration",
 	Long: `Register a client for MCP server configuration.
-Valid clients are:
+
+Valid clients:
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
   - cursor: Cursor editor
@@ -51,7 +52,8 @@ var clientRemoveCmd = &cobra.Command{
 	Use:   "remove [client]",
 	Short: "Remove a client from MCP server configuration",
 	Long: `Remove a client from MCP server configuration.
-Valid clients are:
+
+Valid clients:
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
   - cursor: Cursor editor

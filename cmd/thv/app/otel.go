@@ -21,10 +21,12 @@ var setOtelEndpointCmd = &cobra.Command{
 	Use:   "set-endpoint <endpoint>",
 	Short: "Set the OpenTelemetry endpoint URL",
 	Long: `Set the OpenTelemetry OTLP endpoint URL for tracing and metrics.
+
 This endpoint will be used by default when running MCP servers unless overridden by the --otel-endpoint flag.
 
 Example:
-  thv config otel set-endpoint https://api.honeycomb.io`,
+
+	thv config otel set-endpoint https://api.honeycomb.io`,
 	Args: cobra.ExactArgs(1),
 	RunE: setOtelEndpointCmdFunc,
 }
@@ -47,10 +49,12 @@ var setOtelSamplingRateCmd = &cobra.Command{
 	Use:   "set-sampling-rate <rate>",
 	Short: "Set the OpenTelemetry sampling rate",
 	Long: `Set the OpenTelemetry trace sampling rate (between 0.0 and 1.0).
+
 This sampling rate will be used by default when running MCP servers unless overridden by the --otel-sampling-rate flag.
 
 Example:
-  thv config otel set-sampling-rate 0.1`,
+
+	thv config otel set-sampling-rate 0.1`,
 	Args: cobra.ExactArgs(1),
 	RunE: setOtelSamplingRateCmdFunc,
 }
@@ -73,10 +77,12 @@ var setOtelEnvVarsCmd = &cobra.Command{
 	Use:   "set-env-vars <var1,var2,...>",
 	Short: "Set the OpenTelemetry environment variables",
 	Long: `Set the list of environment variable names to include in OpenTelemetry spans.
+
 These environment variables will be used by default when running MCP servers unless overridden by the --otel-env-vars flag.
 
 Example:
-  thv config otel set-env-vars USER,HOME,PATH`,
+
+	thv config otel set-env-vars USER,HOME,PATH`,
 	Args: cobra.ExactArgs(1),
 	RunE: setOtelEnvVarsCmdFunc,
 }

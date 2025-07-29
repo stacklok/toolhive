@@ -16,10 +16,11 @@ func newExportCmd() *cobra.Command {
 		Short: "Export a workload's run configuration to a file",
 		Long: `Export a workload's run configuration to a file for sharing or backup.
 
-	The exported configuration can be used with 'thv run --from-config <path>' to recreate
-	the same workload with identical settings.
+The exported configuration can be used with 'thv run --from-config <path>' to recreate
+the same workload with identical settings.
 
-	Examples:
+Examples:
+
 	# Export a workload configuration to a file
 	thv export my-server ./my-server-config.json
 

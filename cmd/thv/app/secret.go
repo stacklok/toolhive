@@ -19,7 +19,11 @@ func newSecretCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "secret",
 		Short: "Manage secrets",
-		Long:  "The secret command provides subcommands to set, get, delete, and list secrets.",
+		Long: `Manage secrets using the configured secrets provider.
+
+The secret command provides subcommands to configure, store, retrieve, and manage secrets securely.
+
+Run "thv secret setup" first to configure a secrets provider before using any secret operations.`,
 	}
 
 	cmd.AddCommand(
@@ -38,12 +42,18 @@ func newSecretCommand() *cobra.Command {
 func newSecretProviderCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "provider <name>",
-		Short: "Configure the secrets provider directly",
-		Long: `For most users, it is recommended to use "thv secret setup" instead.
-Configure the secrets provider.
-Valid secrets providers are:
-  - encrypted: Full read-write secrets provider
-  - 1password: Read-only secrets provider`,
+		Short: "Set the secrets provider directly",
+		Long: `Configure the secrets provider directly.
+
+Note: The "thv secret setup" command is recommended for interactive configuration.
+
+Use this command to set the secrets provider directly without interactive prompts,
+making it suitable for scripted deployments and automation.
+
+Valid secrets providers:
+  - encrypted: Full read-write secrets provider using AES-256-GCM encryption
+  - 1password: Read-only secrets provider (requires OP_SERVICE_ACCOUNT_TOKEN)
+  - none: Disables secrets functionality`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			provider := args[0]
@@ -57,15 +67,17 @@ func newSecretSetupCommand() *cobra.Command {
 		Use:   "setup",
 		Short: "Set up secrets provider",
 		Long: fmt.Sprintf(`Interactive setup for configuring a secrets provider.
-This command will guide you through selecting and configuring
-a secrets provider for storing and retrieving secrets.
+
+This command guides you through selecting and configuring a secrets provider
+for storing and retrieving secrets. The setup process validates your
+configuration and ensures the selected provider initializes properly.
 
 Available providers:
-  - %s: Stores secrets in an encrypted file using AES-256-GCM using the OS Keyring
-  - %s: Read-only access to 1Password secrets (requires OP_SERVICE_ACCOUNT_TOKEN)
+  - %s: Stores secrets in an encrypted file using AES-256-GCM using the OS keyring
+  - %s: Read-only access to 1Password secrets (requires OP_SERVICE_ACCOUNT_TOKEN environment variable)
   - %s: Disables secrets functionality
 
-You must run this command before using any other secrets functionality.`,
+Run this command before using any other secrets functionality.`,
 			string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType)), //nolint:gofmt,gci
 		Args: cobra.NoArgs,
 		RunE: runSecretsSetup,
@@ -76,21 +88,29 @@ func newSecretSetCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "set <name>",
 		Short: "Set a secret",
-		Long: `Set a secret with the given name.
+		Long: `Create or update a secret with the specified name.
 
-Input Methods:
-		- Piped Input: If data is piped to the command, the secret value will be read from stdin.
-		  Examples:
-		    echo "my-secret-value" | thv secret set my-secret
-		    cat secret-file.txt | thv secret set my-secret
-		
-		- Interactive Input: If no data is piped, you will be prompted to enter the secret value securely
-		  (input will be hidden).
-		  Example:
-		    thv secret set my-secret
-		    Enter secret value (input will be hidden): _
+This command supports two input methods for maximum flexibility:
 
-The secret will be stored securely using the configured secrets provider.`,
+Piped input:
+
+When you pipe data to the command, it reads the secret value from stdin.
+Examples:
+
+	$ echo "my-secret-value" | thv secret set my-secret
+	$ cat secret-file.txt | thv secret set my-secret
+
+Interactive input:
+
+When you don't pipe data, the command prompts you to enter the secret value securely.
+The input remains hidden for security.
+Example:
+
+	$ thv secret set my-secret
+	Enter secret value (input will be hidden): _
+
+The command stores the secret securely using your configured secrets provider.
+Note that some providers (like 1Password) are read-only and do not support setting secrets.`,
 		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			name := args[0]
@@ -166,7 +186,14 @@ func newSecretGetCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <name>",
 		Short: "Get a secret",
-		Args:  cobra.ExactArgs(1),
+		Long: `Retrieve and display the value of a secret by name.
+
+This command fetches the specified secret from your configured secrets provider
+and displays its value. The secret value prints to stdout, making it
+suitable for use in scripts or command substitution.
+
+The secret must exist in your configured secrets provider, otherwise the command returns an error.`,
+		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			ctx := cmd.Context()
 			name := args[0]
@@ -197,7 +224,14 @@ func newSecretDeleteCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <name>",
 		Short: "Delete a secret",
-		Args:  cobra.ExactArgs(1),
+		Long: `Remove a secret from the configured secrets provider.
+
+This command permanently deletes the specified secret from your secrets provider.
+Once you delete a secret, you cannot recover it unless you have a backup.
+
+Note that some secrets providers may not support deletion operations.
+If your provider is read-only or doesn't support deletion, this command returns an error.`,
+		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			ctx := cmd.Context()
 			name := args[0]
@@ -235,7 +269,11 @@ func newSecretListCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List all available secrets",
-		Args:  cobra.NoArgs,
+		Long: `Display all secrets available in the configured secrets provider.
+
+This command shows the names of all secrets stored in your secrets provider.
+If descriptions exist for the secrets, the command displays them alongside the names.`,
+		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
 			ctx := cmd.Context()
 			manager, err := getSecretsManager()
@@ -278,8 +316,23 @@ func newSecretListCommand() *cobra.Command {
 func newSecretResetKeyringCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reset-keyring",
-		Short: "Reset the keyring secret",
-		Args:  cobra.NoArgs,
+		Short: "Reset the keyring password",
+		Long: `Reset the keyring password used to encrypt secrets.
+
+This command resets the master password stored in your OS keyring that
+encrypts and decrypts secrets when using the 'encrypted' secrets provider.
+
+Use this command if:
+  - You've forgotten your keyring password
+  - You want to change your encryption password
+  - Your keyring has become corrupted
+
+Warning: Resetting the keyring password makes any existing encrypted secrets
+inaccessible unless you remember the previous password. You will need to set up
+your secrets again after resetting.
+
+This command only works with the 'encrypted' secrets provider.`,
+		Args: cobra.NoArgs,
 		Run: func(_ *cobra.Command, _ []string) {
 			if err := secrets.ResetKeyringSecret(); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to reset keyring secret: %v\n", err)

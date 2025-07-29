@@ -27,26 +27,34 @@ var runCmd = &cobra.Command{
 ToolHive supports four ways to run an MCP server:
 
 1. From the registry:
-   $ thv run server-name [-- args...]
+
+	   $ thv run server-name [-- args...]
+
    Looks up the server in the registry and uses its predefined settings
    (transport, permissions, environment variables, etc.)
 
 2. From a container image:
-   $ thv run ghcr.io/example/mcp-server:latest [-- args...]
+
+	   $ thv run ghcr.io/example/mcp-server:latest [-- args...]
+
    Runs the specified container image directly with the provided arguments
 
 3. Using a protocol scheme:
-   $ thv run uvx://package-name [-- args...]
-   $ thv run npx://package-name [-- args...]
-   $ thv run go://package-name [-- args...]
-   $ thv run go://./local-path [-- args...]
+
+	   $ thv run uvx://package-name [-- args...]
+	   $ thv run npx://package-name [-- args...]
+	   $ thv run go://package-name [-- args...]
+	   $ thv run go://./local-path [-- args...]
+
    Automatically generates a container that runs the specified package
    using either uvx (Python with uv package manager), npx (Node.js),
    or go (Golang). For Go, you can also specify local paths starting
    with './' or '../' to build and run local Go projects.
 
 4. From an exported configuration:
-   $ thv run --from-config <path>
+
+	   $ thv run --from-config <path>
+
    Runs an MCP server using a previously exported configuration file.
 
 The container will be started with the specified transport mode and

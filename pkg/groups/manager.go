@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -38,11 +40,6 @@ func NewManager() (Manager, error) {
 
 // Create creates a new group with the given name
 func (m *manager) Create(ctx context.Context, name string) error {
-	// Validate group name
-	if name == "" {
-		return fmt.Errorf("group name cannot be empty")
-	}
-
 	// Check if group already exists
 	exists, err := m.groupStore.Exists(ctx, name)
 	if err != nil {
@@ -87,6 +84,11 @@ func (m *manager) List(ctx context.Context) ([]*Group, error) {
 		}
 		groups = append(groups, group)
 	}
+
+	// Sort groups alphanumerically by name (handles mixed characters, numbers, etc.)
+	sort.Slice(groups, func(i, j int) bool {
+		return strings.Compare(groups[i].Name, groups[j].Name) < 0
+	})
 
 	return groups, nil
 }

@@ -77,7 +77,7 @@ func TestGroupsRouter(t *testing.T) {
 				// No mock setup needed as validation happens before manager call
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Group name is required",
+			expectedBody:   "group name cannot be empty or consist only of whitespace",
 		},
 		{
 			name:   "create group already exists",
@@ -136,27 +136,6 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "delete group not found",
 			method: "DELETE",
 			path:   "/nonexistent",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Exists(gomock.Any(), "nonexistent").Return(false, nil)
-			},
-			expectedStatus: http.StatusNotFound,
-			expectedBody:   "Group not found",
-		},
-		{
-			name:   "list workloads in group success",
-			method: "GET",
-			path:   "/testgroup/workloads",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
-				m.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{"workload1", "workload2"}, nil)
-			},
-			expectedStatus: http.StatusOK,
-			expectedBody:   `{"group_name":"testgroup","workload_names":["workload1","workload2"]}`,
-		},
-		{
-			name:   "list workloads in group not found",
-			method: "GET",
-			path:   "/nonexistent/workloads",
 			setupMock: func(m *mocks.MockManager) {
 				m.EXPECT().Exists(gomock.Any(), "nonexistent").Return(false, nil)
 			},

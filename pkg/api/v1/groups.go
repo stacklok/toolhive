@@ -2,6 +2,7 @@ package v1
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -9,6 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/validation"
 )
 
 // GroupsRoutes defines the routes for group management.
@@ -27,7 +29,6 @@ func GroupsRouter(groupManager groups.Manager) http.Handler {
 	r.Post("/", routes.createGroup)
 	r.Get("/{name}", routes.getGroup)
 	r.Delete("/{name}", routes.deleteGroup)
-	r.Get("/{name}/workloads", routes.listWorkloadsInGroup)
 
 	return r
 }
@@ -88,8 +89,10 @@ func (s *GroupsRoutes) createGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Name == "" {
-		http.Error(w, "Group name is required", http.StatusBadRequest)
+	// Validate group name
+	if err := validation.ValidateGroupName(req.Name); err != nil {
+		logger.Errorf("Invalid group name: %v", err)
+		http.Error(w, fmt.Sprintf("Invalid group name: %v", err), http.StatusBadRequest)
 		return
 	}
 
@@ -129,8 +132,10 @@ func (s *GroupsRoutes) getGroup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
-	if name == "" {
-		http.Error(w, "Group name is required", http.StatusBadRequest)
+	// Validate group name
+	if err := validation.ValidateGroupName(name); err != nil {
+		logger.Errorf("Invalid group name: %v", err)
+		http.Error(w, fmt.Sprintf("Invalid group name: %v", err), http.StatusBadRequest)
 		return
 	}
 
@@ -163,8 +168,10 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
-	if name == "" {
-		http.Error(w, "Group name is required", http.StatusBadRequest)
+	// Validate group name
+	if err := validation.ValidateGroupName(name); err != nil {
+		logger.Errorf("Invalid group name: %v", err)
+		http.Error(w, fmt.Sprintf("Invalid group name: %v", err), http.StatusBadRequest)
 		return
 	}
 
@@ -191,58 +198,6 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// listWorkloadsInGroup
-//
-//	@Summary		List workloads in a group
-//	@Description	Get a list of all workload names that belong to the specified group
-//	@Tags			groups
-//	@Produce		json
-//	@Param			name	path		string	true	"Group name"
-//	@Success		200		{object}	listWorkloadsInGroupResponse
-//	@Failure		404		{string}	string	"Not Found"
-//	@Failure		500		{string}	string	"Internal Server Error"
-//	@Router			/api/v1beta/groups/{name}/workloads [get]
-func (s *GroupsRoutes) listWorkloadsInGroup(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	name := chi.URLParam(r, "name")
-
-	if name == "" {
-		http.Error(w, "Group name is required", http.StatusBadRequest)
-		return
-	}
-
-	// Check if group exists
-	exists, err := s.groupManager.Exists(ctx, name)
-	if err != nil {
-		logger.Errorf("Failed to check if group exists %s: %v", name, err)
-		http.Error(w, "Failed to check group existence", http.StatusInternalServerError)
-		return
-	}
-
-	if !exists {
-		http.Error(w, "Group not found", http.StatusNotFound)
-		return
-	}
-
-	workloadNames, err := s.groupManager.ListWorkloadsInGroup(ctx, name)
-	if err != nil {
-		logger.Errorf("Failed to list workloads in group %s: %v", name, err)
-		http.Error(w, "Failed to list workloads in group", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	response := listWorkloadsInGroupResponse{
-		GroupName:     name,
-		WorkloadNames: workloadNames,
-	}
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to marshal workloads in group response: %v", err)
-		http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
-		return
-	}
-}
-
 // Response types
 
 type groupListResponse struct {
@@ -258,11 +213,4 @@ type createGroupRequest struct {
 type createGroupResponse struct {
 	// Name of the created group
 	Name string `json:"name"`
-}
-
-type listWorkloadsInGroupResponse struct {
-	// Name of the group
-	GroupName string `json:"group_name"`
-	// List of workload names in the group
-	WorkloadNames []string `json:"workload_names"`
 }

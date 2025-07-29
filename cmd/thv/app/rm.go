@@ -22,6 +22,8 @@ var rmCmd = &cobra.Command{
 func init() {
 	// TODO: Re-enable when group functionality is complete
 	// rmCmd.Flags().String("group", "", "Delete all workloads in the specified group")
+
+	// rmCmd.PreRunE = validateGroupFlag()
 }
 
 //nolint:gocyclo // This function is complex but manageable

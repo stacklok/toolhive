@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -90,6 +91,10 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 
 	// Apply group filtering if specified
 	if groupFilter != "" {
+		if err := validation.ValidateGroupName(groupFilter); err != nil {
+			http.Error(w, "Invalid group name: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 		workloadList, err = workloads.FilterByGroup(ctx, workloadList, groupFilter)
 		if err != nil {
 			if thverrors.IsGroupNotFound(err) {
@@ -619,8 +624,8 @@ func (s *WorkloadRoutes) getWorkloadNamesFromRequest(ctx context.Context, req bu
 		return req.Names, nil
 	}
 
-	if req.Group == "" {
-		return nil, fmt.Errorf("no group specified")
+	if err := validation.ValidateGroupName(req.Group); err != nil {
+		return nil, fmt.Errorf("invalid group name: %w", err)
 	}
 
 	// Check if the group exists

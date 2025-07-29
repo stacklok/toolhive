@@ -12,8 +12,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/oci"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/runner/export"
 )
 
 const (
@@ -57,7 +59,8 @@ func GetMCPServer(
 		imageToUse = generatedImage
 	} else {
 		logger.Debugf("No protocol scheme detected, using image: %s", serverOrImage)
-		// Try to find the imageMetadata in the registry
+
+		// First, try to find the server in the registry
 		provider, err := registry.GetDefaultProvider()
 		if err != nil {
 			return "", nil, fmt.Errorf("failed to get registry provider: %v", err)
@@ -65,6 +68,26 @@ func GetMCPServer(
 		imageMetadata, err = provider.GetServer(serverOrImage)
 		if err != nil {
 			logger.Debugf("ImageMetadata '%s' not found in registry: %v", serverOrImage, err)
+
+			// Not found in registry, check if this might be a runtime configuration OCI artifact
+			if oci.IsOCIReference(serverOrImage) {
+				logger.Debugf("Detected potential OCI reference, checking if it's a runtime configuration artifact: %s", serverOrImage)
+				runConfig, err := tryLoadRunConfigFromOCI(ctx, serverOrImage)
+				if err == nil {
+					logger.Infof("Successfully loaded runtime configuration from OCI artifact: %s", serverOrImage)
+					// Return the image from the runtime configuration
+					return runConfig.Image, nil, nil
+				}
+				// Check if this was an authentication or network error that we should propagate
+				errStr := err.Error()
+				if containsAuthError(errStr) || containsNetworkError(errStr) {
+					return "", nil, err
+				}
+				// Otherwise, it's not a runtime config artifact, continue with normal flow
+				logger.Debugf("OCI reference is not a runtime configuration artifact, treating as regular container image")
+			}
+
+			// Use the serverOrImage as-is (could be a container image reference)
 			imageToUse = serverOrImage
 		} else {
 			logger.Debugf("Found imageMetadata '%s' in registry: %v", serverOrImage, imageMetadata)
@@ -214,4 +237,93 @@ func hasLatestTag(imageRef string) bool {
 	// If no tag was specified, it defaults to "latest"
 	_, isDigest := ref.(nameref.Digest)
 	return !isDigest
+}
+
+// tryLoadRunConfigFromOCI attempts to load a runtime configuration from an OCI artifact
+// Returns the config if successful, or an error if it's not a runtime config artifact
+// This function distinguishes between authentication/network errors and "not a runtime config" errors
+func tryLoadRunConfigFromOCI(ctx context.Context, ref string) (*runner.RunConfig, error) {
+	imageManager := images.NewImageManager(ctx)
+	ociClient := oci.NewClient(imageManager)
+	exporter := export.NewOCIExporter(ociClient)
+
+	// Pull from registry (no local storage for OCI artifacts)
+	runConfig, err := exporter.PullRunConfig(ctx, ref)
+	if err != nil {
+		// Check if this is an authentication or network error that we should propagate
+		// vs. an artifact type mismatch that we should ignore
+		errStr := err.Error()
+		if containsAuthError(errStr) {
+			return nil, fmt.Errorf("authentication failed for OCI reference %s: %w", ref, err)
+		}
+		if containsNetworkError(errStr) {
+			return nil, fmt.Errorf("network error accessing OCI reference %s: %w", ref, err)
+		}
+
+		// If it's not an auth/network error, it's likely not our artifact type
+		// Log this for debugging but don't treat as fatal
+		logger.Debugf("OCI reference %s is not a runtime configuration artifact: %v", ref, err)
+		return nil, fmt.Errorf("not a runtime configuration artifact")
+	}
+
+	return runConfig, nil
+}
+
+// containsAuthError checks if the error message indicates an authentication problem
+func containsAuthError(errStr string) bool {
+	authErrors := []string{
+		"authentication required",
+		"unauthorized",
+		"401",
+		"403",
+		"forbidden",
+		"access denied",
+		"invalid credentials",
+	}
+
+	for _, authErr := range authErrors {
+		if contains(errStr, authErr) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsNetworkError checks if the error message indicates a network problem
+func containsNetworkError(errStr string) bool {
+	networkErrors := []string{
+		"connection refused",
+		"timeout",
+		"network unreachable",
+		"no such host",
+		"connection reset",
+		"dial tcp",
+	}
+
+	for _, netErr := range networkErrors {
+		if contains(errStr, netErr) {
+			return true
+		}
+	}
+	return false
+}
+
+// contains is a simple case-insensitive string contains check
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) &&
+		(s == substr ||
+			len(s) > len(substr) &&
+				(s[:len(substr)] == substr ||
+					s[len(s)-len(substr):] == substr ||
+					indexOfSubstring(s, substr) >= 0))
+}
+
+// indexOfSubstring finds the index of substr in s (case-insensitive)
+func indexOfSubstring(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
 }

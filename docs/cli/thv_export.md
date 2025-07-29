@@ -9,14 +9,17 @@ slug: thv_export
 
 ## thv export
 
-Export a workload's run configuration to a file
+Export a workload's run configuration to a file or OCI artifact
 
 ### Synopsis
 
-Export a workload's run configuration to a file for sharing or backup.
+Export a workload's run configuration to a file or OCI artifact for sharing or backup.
 
-	The exported configuration can be used with 'thv run --from-config <path>' to recreate
-	the same workload with identical settings.
+	The exported configuration can be used with 'thv run --from-config <path>' or
+	'thv run --from-config <oci-reference>' to recreate the same workload with identical settings.
+
+	When exporting to an OCI reference, the artifact is pushed to the remote registry.
+	When exporting to a file path, the configuration is saved as a JSON file.
 
 	Examples:
 	# Export a workload configuration to a file
@@ -25,8 +28,11 @@ Export a workload's run configuration to a file for sharing or backup.
 	# Export to a specific directory
 	thv export github-mcp /tmp/configs/github-config.json
 
+	# Export to an OCI artifact (pushes to registry)
+	thv export my-server registry.example.com/configs/my-server:latest
+
 ```
-thv export <workload name> <path> [flags]
+thv export <workload name> <path|oci-reference> [flags]
 ```
 
 ### Options

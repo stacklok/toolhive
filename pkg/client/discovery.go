@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 
 	"github.com/stacklok/toolhive/pkg/config"
 )
@@ -64,6 +65,11 @@ func GetClientStatus() ([]MCPClientStatus, error) {
 
 		statuses = append(statuses, status)
 	}
+
+	// Sort statuses alphabetically by ClientType
+	sort.Slice(statuses, func(i, j int) bool {
+		return string(statuses[i].ClientType) < string(statuses[j].ClientType)
+	})
 
 	return statuses, nil
 }

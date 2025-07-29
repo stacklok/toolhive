@@ -338,7 +338,7 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := s.validateBulkOperationRequest(req); err != nil {
+	if err := validateBulkOperationRequest(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -383,7 +383,7 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := s.validateBulkOperationRequest(req); err != nil {
+	if err := validateBulkOperationRequest(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -428,7 +428,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := s.validateBulkOperationRequest(req); err != nil {
+	if err := validateBulkOperationRequest(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -603,7 +603,7 @@ type bulkOperationRequest struct {
 }
 
 // validateBulkOperationRequest validates the bulk operation request
-func (s *WorkloadRoutes) validateBulkOperationRequest(req bulkOperationRequest) error {
+func validateBulkOperationRequest(req bulkOperationRequest) error {
 	if len(req.Names) > 0 && req.Group != "" {
 		return fmt.Errorf("cannot specify both names and group")
 	}

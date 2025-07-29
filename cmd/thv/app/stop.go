@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -97,7 +98,7 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		group, err = workloadManager.StopWorkloads(ctx, []string{workloadName})
 		if err != nil {
 			// If the workload is not found or not running, treat as a non-fatal error.
-			if errors.Is(err, workloads.ErrWorkloadNotFound) ||
+			if errors.Is(err, rt.ErrWorkloadNotFound) ||
 				errors.Is(err, workloads.ErrWorkloadNotRunning) ||
 				errors.Is(err, workloads.ErrInvalidWorkloadName) {
 				fmt.Printf("workload %s is not running\n", workloadName)

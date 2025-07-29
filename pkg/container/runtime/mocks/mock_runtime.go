@@ -44,9 +44,9 @@ func (m *MockDeployer) EXPECT() *MockDeployerMockRecorder {
 }
 
 // AttachToWorkload mocks base method.
-func (m *MockDeployer) AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error) {
+func (m *MockDeployer) AttachToWorkload(ctx context.Context, workloadName string) (io.WriteCloser, io.ReadCloser, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AttachToWorkload", ctx, workloadID)
+	ret := m.ctrl.Call(m, "AttachToWorkload", ctx, workloadName)
 	ret0, _ := ret[0].(io.WriteCloser)
 	ret1, _ := ret[1].(io.ReadCloser)
 	ret2, _ := ret[2].(error)
@@ -54,19 +54,18 @@ func (m *MockDeployer) AttachToWorkload(ctx context.Context, workloadID string) 
 }
 
 // AttachToWorkload indicates an expected call of AttachToWorkload.
-func (mr *MockDeployerMockRecorder) AttachToWorkload(ctx, workloadID any) *gomock.Call {
+func (mr *MockDeployerMockRecorder) AttachToWorkload(ctx, workloadName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AttachToWorkload", reflect.TypeOf((*MockDeployer)(nil).AttachToWorkload), ctx, workloadID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AttachToWorkload", reflect.TypeOf((*MockDeployer)(nil).AttachToWorkload), ctx, workloadName)
 }
 
 // DeployWorkload mocks base method.
-func (m *MockDeployer) DeployWorkload(ctx context.Context, image, name string, command []string, envVars, labels map[string]string, permissionProfile *permissions.Profile, transportType string, options *runtime.DeployWorkloadOptions, isolateNetwork bool) (string, int, error) {
+func (m *MockDeployer) DeployWorkload(ctx context.Context, image, name string, command []string, envVars, labels map[string]string, permissionProfile *permissions.Profile, transportType string, options *runtime.DeployWorkloadOptions, isolateNetwork bool) (int, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "DeployWorkload", ctx, image, name, command, envVars, labels, permissionProfile, transportType, options, isolateNetwork)
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(int)
-	ret2, _ := ret[2].(error)
-	return ret0, ret1, ret2
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // DeployWorkload indicates an expected call of DeployWorkload.
@@ -76,32 +75,32 @@ func (mr *MockDeployerMockRecorder) DeployWorkload(ctx, image, name, command, en
 }
 
 // IsWorkloadRunning mocks base method.
-func (m *MockDeployer) IsWorkloadRunning(ctx context.Context, workloadID string) (bool, error) {
+func (m *MockDeployer) IsWorkloadRunning(ctx context.Context, workloadName string) (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsWorkloadRunning", ctx, workloadID)
+	ret := m.ctrl.Call(m, "IsWorkloadRunning", ctx, workloadName)
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // IsWorkloadRunning indicates an expected call of IsWorkloadRunning.
-func (mr *MockDeployerMockRecorder) IsWorkloadRunning(ctx, workloadID any) *gomock.Call {
+func (mr *MockDeployerMockRecorder) IsWorkloadRunning(ctx, workloadName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsWorkloadRunning", reflect.TypeOf((*MockDeployer)(nil).IsWorkloadRunning), ctx, workloadID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsWorkloadRunning", reflect.TypeOf((*MockDeployer)(nil).IsWorkloadRunning), ctx, workloadName)
 }
 
 // StopWorkload mocks base method.
-func (m *MockDeployer) StopWorkload(ctx context.Context, workloadID string) error {
+func (m *MockDeployer) StopWorkload(ctx context.Context, workloadName string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "StopWorkload", ctx, workloadID)
+	ret := m.ctrl.Call(m, "StopWorkload", ctx, workloadName)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // StopWorkload indicates an expected call of StopWorkload.
-func (mr *MockDeployerMockRecorder) StopWorkload(ctx, workloadID any) *gomock.Call {
+func (mr *MockDeployerMockRecorder) StopWorkload(ctx, workloadName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StopWorkload", reflect.TypeOf((*MockDeployer)(nil).StopWorkload), ctx, workloadID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StopWorkload", reflect.TypeOf((*MockDeployer)(nil).StopWorkload), ctx, workloadName)
 }
 
 // MockRuntime is a mock of Runtime interface.
@@ -129,9 +128,9 @@ func (m *MockRuntime) EXPECT() *MockRuntimeMockRecorder {
 }
 
 // AttachToWorkload mocks base method.
-func (m *MockRuntime) AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error) {
+func (m *MockRuntime) AttachToWorkload(ctx context.Context, workloadName string) (io.WriteCloser, io.ReadCloser, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AttachToWorkload", ctx, workloadID)
+	ret := m.ctrl.Call(m, "AttachToWorkload", ctx, workloadName)
 	ret0, _ := ret[0].(io.WriteCloser)
 	ret1, _ := ret[1].(io.ReadCloser)
 	ret2, _ := ret[2].(error)
@@ -139,19 +138,18 @@ func (m *MockRuntime) AttachToWorkload(ctx context.Context, workloadID string) (
 }
 
 // AttachToWorkload indicates an expected call of AttachToWorkload.
-func (mr *MockRuntimeMockRecorder) AttachToWorkload(ctx, workloadID any) *gomock.Call {
+func (mr *MockRuntimeMockRecorder) AttachToWorkload(ctx, workloadName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AttachToWorkload", reflect.TypeOf((*MockRuntime)(nil).AttachToWorkload), ctx, workloadID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AttachToWorkload", reflect.TypeOf((*MockRuntime)(nil).AttachToWorkload), ctx, workloadName)
 }
 
 // DeployWorkload mocks base method.
-func (m *MockRuntime) DeployWorkload(ctx context.Context, image, name string, command []string, envVars, labels map[string]string, permissionProfile *permissions.Profile, transportType string, options *runtime.DeployWorkloadOptions, isolateNetwork bool) (string, int, error) {
+func (m *MockRuntime) DeployWorkload(ctx context.Context, image, name string, command []string, envVars, labels map[string]string, permissionProfile *permissions.Profile, transportType string, options *runtime.DeployWorkloadOptions, isolateNetwork bool) (int, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "DeployWorkload", ctx, image, name, command, envVars, labels, permissionProfile, transportType, options, isolateNetwork)
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(int)
-	ret2, _ := ret[2].(error)
-	return ret0, ret1, ret2
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // DeployWorkload indicates an expected call of DeployWorkload.
@@ -161,33 +159,33 @@ func (mr *MockRuntimeMockRecorder) DeployWorkload(ctx, image, name, command, env
 }
 
 // GetWorkloadInfo mocks base method.
-func (m *MockRuntime) GetWorkloadInfo(ctx context.Context, workloadID string) (runtime.ContainerInfo, error) {
+func (m *MockRuntime) GetWorkloadInfo(ctx context.Context, workloadName string) (runtime.ContainerInfo, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetWorkloadInfo", ctx, workloadID)
+	ret := m.ctrl.Call(m, "GetWorkloadInfo", ctx, workloadName)
 	ret0, _ := ret[0].(runtime.ContainerInfo)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetWorkloadInfo indicates an expected call of GetWorkloadInfo.
-func (mr *MockRuntimeMockRecorder) GetWorkloadInfo(ctx, workloadID any) *gomock.Call {
+func (mr *MockRuntimeMockRecorder) GetWorkloadInfo(ctx, workloadName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadInfo", reflect.TypeOf((*MockRuntime)(nil).GetWorkloadInfo), ctx, workloadID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadInfo", reflect.TypeOf((*MockRuntime)(nil).GetWorkloadInfo), ctx, workloadName)
 }
 
 // GetWorkloadLogs mocks base method.
-func (m *MockRuntime) GetWorkloadLogs(ctx context.Context, workloadID string, follow bool) (string, error) {
+func (m *MockRuntime) GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetWorkloadLogs", ctx, workloadID, follow)
+	ret := m.ctrl.Call(m, "GetWorkloadLogs", ctx, workloadName, follow)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetWorkloadLogs indicates an expected call of GetWorkloadLogs.
-func (mr *MockRuntimeMockRecorder) GetWorkloadLogs(ctx, workloadID, follow any) *gomock.Call {
+func (mr *MockRuntimeMockRecorder) GetWorkloadLogs(ctx, workloadName, follow any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadLogs", reflect.TypeOf((*MockRuntime)(nil).GetWorkloadLogs), ctx, workloadID, follow)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadLogs", reflect.TypeOf((*MockRuntime)(nil).GetWorkloadLogs), ctx, workloadName, follow)
 }
 
 // IsRunning mocks base method.
@@ -205,18 +203,18 @@ func (mr *MockRuntimeMockRecorder) IsRunning(ctx any) *gomock.Call {
 }
 
 // IsWorkloadRunning mocks base method.
-func (m *MockRuntime) IsWorkloadRunning(ctx context.Context, workloadID string) (bool, error) {
+func (m *MockRuntime) IsWorkloadRunning(ctx context.Context, workloadName string) (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsWorkloadRunning", ctx, workloadID)
+	ret := m.ctrl.Call(m, "IsWorkloadRunning", ctx, workloadName)
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // IsWorkloadRunning indicates an expected call of IsWorkloadRunning.
-func (mr *MockRuntimeMockRecorder) IsWorkloadRunning(ctx, workloadID any) *gomock.Call {
+func (mr *MockRuntimeMockRecorder) IsWorkloadRunning(ctx, workloadName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsWorkloadRunning", reflect.TypeOf((*MockRuntime)(nil).IsWorkloadRunning), ctx, workloadID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsWorkloadRunning", reflect.TypeOf((*MockRuntime)(nil).IsWorkloadRunning), ctx, workloadName)
 }
 
 // ListWorkloads mocks base method.
@@ -235,31 +233,31 @@ func (mr *MockRuntimeMockRecorder) ListWorkloads(ctx any) *gomock.Call {
 }
 
 // RemoveWorkload mocks base method.
-func (m *MockRuntime) RemoveWorkload(ctx context.Context, workloadID string) error {
+func (m *MockRuntime) RemoveWorkload(ctx context.Context, workloadName string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RemoveWorkload", ctx, workloadID)
+	ret := m.ctrl.Call(m, "RemoveWorkload", ctx, workloadName)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // RemoveWorkload indicates an expected call of RemoveWorkload.
-func (mr *MockRuntimeMockRecorder) RemoveWorkload(ctx, workloadID any) *gomock.Call {
+func (mr *MockRuntimeMockRecorder) RemoveWorkload(ctx, workloadName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveWorkload", reflect.TypeOf((*MockRuntime)(nil).RemoveWorkload), ctx, workloadID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveWorkload", reflect.TypeOf((*MockRuntime)(nil).RemoveWorkload), ctx, workloadName)
 }
 
 // StopWorkload mocks base method.
-func (m *MockRuntime) StopWorkload(ctx context.Context, workloadID string) error {
+func (m *MockRuntime) StopWorkload(ctx context.Context, workloadName string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "StopWorkload", ctx, workloadID)
+	ret := m.ctrl.Call(m, "StopWorkload", ctx, workloadName)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // StopWorkload indicates an expected call of StopWorkload.
-func (mr *MockRuntimeMockRecorder) StopWorkload(ctx, workloadID any) *gomock.Call {
+func (mr *MockRuntimeMockRecorder) StopWorkload(ctx, workloadName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StopWorkload", reflect.TypeOf((*MockRuntime)(nil).StopWorkload), ctx, workloadID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StopWorkload", reflect.TypeOf((*MockRuntime)(nil).StopWorkload), ctx, workloadName)
 }
 
 // MockMonitor is a mock of Monitor interface.

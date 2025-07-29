@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stacklok/toolhive/pkg/config"
@@ -29,6 +31,21 @@ func TestNewRegistryProvider(t *testing.T) {
 			name: "registry URL returns remote provider",
 			config: &config.Config{
 				RegistryUrl: "https://example.com/registry.json",
+			},
+			expectedType: "*registry.RemoteRegistryProvider",
+		},
+		{
+			name: "local registry path returns embedded provider with file path",
+			config: &config.Config{
+				LocalRegistryPath: "/path/to/registry.json",
+			},
+			expectedType: "*registry.EmbeddedRegistryProvider",
+		},
+		{
+			name: "registry URL takes precedence over local path",
+			config: &config.Config{
+				RegistryUrl:       "https://example.com/registry.json",
+				LocalRegistryPath: "/path/to/registry.json",
 			},
 			expectedType: "*registry.RemoteRegistryProvider",
 		},
@@ -116,6 +133,71 @@ func TestRemoteRegistryProvider(t *testing.T) {
 
 	// Test that it implements the interface
 	var _ Provider = provider
+}
+
+func TestEmbeddedRegistryProviderWithLocalFile(t *testing.T) {
+	t.Parallel()
+
+	// Create a temporary registry file
+	tempDir := t.TempDir()
+	registryFile := filepath.Join(tempDir, "test_registry.json")
+
+	// Write test registry data
+	testRegistry := `{
+		"version": "1.0.0",
+		"last_updated": "2023-01-01T00:00:00Z",
+		"servers": {
+			"test-server": {
+				"image": "test/image:latest",
+				"description": "Test server",
+				"tier": "community",
+				"status": "active",
+				"transport": "stdio",
+				"permissions": {
+					"allow_local_resource_access": false,
+					"allow_internet_access": false
+				},
+				"tools": ["test-tool"],
+				"env_vars": [],
+				"args": []
+			}
+		}
+	}`
+
+	err := os.WriteFile(registryFile, []byte(testRegistry), 0644)
+	if err != nil {
+		t.Fatalf("Failed to write test registry file: %v", err)
+	}
+
+	// Test with local file path
+	provider := NewEmbeddedRegistryProvider(registryFile)
+
+	// Test GetRegistry
+	registry, err := provider.GetRegistry()
+	if err != nil {
+		t.Fatalf("GetRegistry() error = %v", err)
+	}
+
+	if registry == nil {
+		t.Fatal("GetRegistry() returned nil registry")
+	}
+
+	if len(registry.Servers) != 1 {
+		t.Errorf("Expected 1 server, got %d", len(registry.Servers))
+	}
+
+	server, exists := registry.Servers["test-server"]
+	if !exists {
+		t.Error("Expected test-server to exist in registry")
+	}
+
+	if server.Name != "test-server" {
+		t.Errorf("Expected server name 'test-server', got '%s'", server.Name)
+	}
+
+	if server.Image != "test/image:latest" {
+		t.Errorf("Expected image 'test/image:latest', got '%s'", server.Image)
+	}
 }
 
 // getTypeName returns the type name of an interface value

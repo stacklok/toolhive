@@ -4,26 +4,45 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 )
 
 //go:embed data/registry.json
 var embeddedRegistryFS embed.FS
 
-// EmbeddedRegistryProvider provides registry data from embedded JSON files
+// EmbeddedRegistryProvider provides registry data from embedded JSON files or local files
 type EmbeddedRegistryProvider struct {
+	filePath string
 }
 
 // NewEmbeddedRegistryProvider creates a new embedded registry provider
-func NewEmbeddedRegistryProvider() *EmbeddedRegistryProvider {
-	return &EmbeddedRegistryProvider{}
+// If filePath is provided, it will read from that file; otherwise uses embedded data
+func NewEmbeddedRegistryProvider(filePath ...string) *EmbeddedRegistryProvider {
+	var path string
+	if len(filePath) > 0 {
+		path = filePath[0]
+	}
+	return &EmbeddedRegistryProvider{filePath: path}
 }
 
-// GetRegistry returns the embedded registry data
-func (*EmbeddedRegistryProvider) GetRegistry() (*Registry, error) {
-	data, err := embeddedRegistryFS.ReadFile("data/registry.json")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read embedded registry data: %w", err)
+// GetRegistry returns the registry data from file path or embedded data
+func (p *EmbeddedRegistryProvider) GetRegistry() (*Registry, error) {
+	var data []byte
+	var err error
+
+	if p.filePath != "" {
+		// Read from local file
+		data, err = os.ReadFile(p.filePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read local registry file %s: %w", p.filePath, err)
+		}
+	} else {
+		// Read from embedded data
+		data, err = embeddedRegistryFS.ReadFile("data/registry.json")
+		if err != nil {
+			return nil, fmt.Errorf("failed to read embedded registry data: %w", err)
+		}
 	}
 
 	registry, err := parseRegistryData(data)

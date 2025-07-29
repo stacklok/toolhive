@@ -4,26 +4,45 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 )
 
 //go:embed data/registry.json
 var embeddedRegistryFS embed.FS
 
-// EmbeddedRegistryProvider provides registry data from embedded JSON files
-type EmbeddedRegistryProvider struct {
+// LocalRegistryProvider provides registry data from embedded JSON files or local files
+type LocalRegistryProvider struct {
+	filePath string
 }
 
-// NewEmbeddedRegistryProvider creates a new embedded registry provider
-func NewEmbeddedRegistryProvider() *EmbeddedRegistryProvider {
-	return &EmbeddedRegistryProvider{}
+// NewLocalRegistryProvider creates a new local registry provider
+// If filePath is provided, it will read from that file; otherwise uses embedded data
+func NewLocalRegistryProvider(filePath ...string) *LocalRegistryProvider {
+	var path string
+	if len(filePath) > 0 {
+		path = filePath[0]
+	}
+	return &LocalRegistryProvider{filePath: path}
 }
 
-// GetRegistry returns the embedded registry data
-func (*EmbeddedRegistryProvider) GetRegistry() (*Registry, error) {
-	data, err := embeddedRegistryFS.ReadFile("data/registry.json")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read embedded registry data: %w", err)
+// GetRegistry returns the registry data from file path or embedded data
+func (p *LocalRegistryProvider) GetRegistry() (*Registry, error) {
+	var data []byte
+	var err error
+
+	if p.filePath != "" {
+		// Read from local file
+		data, err = os.ReadFile(p.filePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read local registry file %s: %w", p.filePath, err)
+		}
+	} else {
+		// Read from embedded data
+		data, err = embeddedRegistryFS.ReadFile("data/registry.json")
+		if err != nil {
+			return nil, fmt.Errorf("failed to read embedded registry data: %w", err)
+		}
 	}
 
 	registry, err := parseRegistryData(data)
@@ -40,7 +59,7 @@ func (*EmbeddedRegistryProvider) GetRegistry() (*Registry, error) {
 }
 
 // GetServer returns a specific server by name
-func (p *EmbeddedRegistryProvider) GetServer(name string) (*ImageMetadata, error) {
+func (p *LocalRegistryProvider) GetServer(name string) (*ImageMetadata, error) {
 	reg, err := p.GetRegistry()
 	if err != nil {
 		return nil, err
@@ -55,7 +74,7 @@ func (p *EmbeddedRegistryProvider) GetServer(name string) (*ImageMetadata, error
 }
 
 // SearchServers searches for servers matching the query
-func (p *EmbeddedRegistryProvider) SearchServers(query string) ([]*ImageMetadata, error) {
+func (p *LocalRegistryProvider) SearchServers(query string) ([]*ImageMetadata, error) {
 	reg, err := p.GetRegistry()
 	if err != nil {
 		return nil, err
@@ -90,7 +109,7 @@ func (p *EmbeddedRegistryProvider) SearchServers(query string) ([]*ImageMetadata
 }
 
 // ListServers returns all available servers
-func (p *EmbeddedRegistryProvider) ListServers() ([]*ImageMetadata, error) {
+func (p *LocalRegistryProvider) ListServers() ([]*ImageMetadata, error) {
 	reg, err := p.GetRegistry()
 	if err != nil {
 		return nil, err

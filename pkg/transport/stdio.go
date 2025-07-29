@@ -29,7 +29,6 @@ import (
 type StdioTransport struct {
 	host              string
 	proxyPort         int
-	containerID       string
 	containerName     string
 	deployer          rt.Deployer
 	debug             bool
@@ -121,7 +120,7 @@ func (t *StdioTransport) Setup(
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)
-	containerID, _, err := t.deployer.DeployWorkload(
+	_, err := t.deployer.DeployWorkload(
 		ctx,
 		image,
 		containerName,
@@ -136,8 +135,7 @@ func (t *StdioTransport) Setup(
 	if err != nil {
 		return fmt.Errorf("failed to create container: %v", err)
 	}
-	t.containerID = containerID
-	logger.Infof("Container created with ID: %s", containerID)
+	logger.Infof("Container created: %s", containerName)
 
 	return nil
 }
@@ -151,10 +149,6 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	// logger.Infof("Starting stdio transport with proxy mode: %s", t.proxyMode)
 	fmt.Printf("DEBUG: Starting stdio transport with proxy mode: %s\n", t.proxyMode)
 
-	if t.containerID == "" {
-		return errors.ErrContainerIDNotSet
-	}
-
 	if t.containerName == "" {
 		return errors.ErrContainerNameNotSet
 	}
@@ -165,7 +159,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 
 	// Attach to the container
 	var err error
-	t.stdin, t.stdout, err = t.deployer.AttachToWorkload(ctx, t.containerID)
+	t.stdin, t.stdout, err = t.deployer.AttachToWorkload(ctx, t.containerName)
 	if err != nil {
 		return fmt.Errorf("failed to attach to container: %w", err)
 	}
@@ -196,7 +190,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create container monitor: %v", err)
 	}
-	t.monitor = container.NewMonitor(monitorRuntime, t.containerID, t.containerName)
+	t.monitor = container.NewMonitor(monitorRuntime, t.containerName)
 
 	// Start monitoring the container
 	t.errorCh, err = t.monitor.StartMonitoring(ctx)
@@ -259,15 +253,15 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 	}
 
 	// Stop the container if deployer is available and we haven't already stopped it
-	if t.deployer != nil && t.containerID != "" {
+	if t.deployer != nil && t.containerName != "" {
 		// Check if the workload is still running before trying to stop it
-		running, err := t.deployer.IsWorkloadRunning(ctx, t.containerID)
+		running, err := t.deployer.IsWorkloadRunning(ctx, t.containerName)
 		if err != nil {
 			// If there's an error checking the workload status, it might be gone already
 			logger.Warnf("Warning: Failed to check workload status: %v", err)
 		} else if running {
 			// Only try to stop the workload if it's still running
-			if err := t.deployer.StopWorkload(ctx, t.containerID); err != nil {
+			if err := t.deployer.StopWorkload(ctx, t.containerName); err != nil {
 				logger.Warnf("Warning: Failed to stop workload: %v", err)
 			}
 		}

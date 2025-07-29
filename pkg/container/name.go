@@ -27,21 +27,44 @@ func GetOrGenerateContainerName(containerName, image string) (string, string) {
 
 // generateContainerBaseName generates a base name for a container from the image name
 func generateContainerBaseName(image string) string {
-	// Extract the base name from the image, preserving registry namespaces
-	// Examples:
-	// - "nginx:latest" -> "nginx"
-	// - "docker.io/library/nginx:latest" -> "docker.io-library-nginx"
-	// - "quay.io/stacklok/mcp-server:v1" -> "quay.io-stacklok-mcp-server"
+	// Find last '/' and last ':' to distinguish port from tag
+	lastSlash := strings.LastIndex(image, "/")
+	lastColon := strings.LastIndex(image, ":")
 
-	// First, remove the tag part (everything after the colon)
-	imageWithoutTag := strings.Split(image, ":")[0]
+	imageWithoutTag := image
+	if lastColon > lastSlash {
+		imageWithoutTag = image[:lastColon]
+	}
 
-	// Replace slashes with dashes to preserve namespace structure
-	namespaceName := strings.ReplaceAll(imageWithoutTag, "/", "-")
+	// Split by '/'
+	parts := strings.Split(imageWithoutTag, "/")
 
-	// Sanitize the name (allow alphanumeric, dashes)
+	var registryOrNamespace, name string
+	if len(parts) == 1 {
+		name = parts[0]
+	} else if len(parts) == 2 {
+		registryOrNamespace = parts[0]
+		name = parts[1]
+	} else if len(parts) > 2 {
+		registryOrNamespace = parts[len(parts)-2]
+		name = parts[len(parts)-1]
+	}
+
+	// If registryOrNamespace looks like host:port, strip the port
+	if strings.Contains(registryOrNamespace, ":") {
+		registryOrNamespace = strings.Split(registryOrNamespace, ":")[0]
+	}
+
+	var base string
+	if registryOrNamespace != "" {
+		base = registryOrNamespace + "-" + name
+	} else {
+		base = name
+	}
+
+	// Sanitize: allow alphanumeric and dashes
 	var sanitizedName strings.Builder
-	for _, c := range namespaceName {
+	for _, c := range base {
 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' {
 			sanitizedName.WriteRune(c)
 		} else {

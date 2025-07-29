@@ -590,8 +590,10 @@ components:
           uniqueItems: false
       type: object
     v1.bulkOperationRequest:
-      description: Request to perform bulk operations on workloads
       properties:
+        group:
+          description: Group name to operate on (mutually exclusive with names)
+          type: string
         names:
           description: Names of the workloads to operate on
           items:
@@ -1679,13 +1681,18 @@ paths:
       - version
   /api/v1beta/workloads:
     get:
-      description: Get a list of all running workloads
+      description: Get a list of all running workloads, optionally filtered by group
       parameters:
       - description: List all workloads, including stopped ones
         in: query
         name: all
         schema:
           type: boolean
+      - description: Filter workloads by group name
+        in: query
+        name: group
+        schema:
+          type: string
       responses:
         "200":
           content:
@@ -1693,6 +1700,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/v1.workloadListResponse'
           description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Group not found
       summary: List all workloads
       tags:
       - workloads
@@ -1905,13 +1918,13 @@ paths:
       - workloads
   /api/v1beta/workloads/delete:
     post:
-      description: Delete multiple workloads by name
+      description: Delete multiple workloads by name or by group
       requestBody:
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/v1.bulkOperationRequest'
-        description: Bulk delete request
+        description: Bulk delete request (names or group)
         required: true
       responses:
         "202":
@@ -1931,13 +1944,13 @@ paths:
       - workloads
   /api/v1beta/workloads/restart:
     post:
-      description: Restart multiple workloads by name
+      description: Restart multiple workloads by name or by group
       requestBody:
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/v1.bulkOperationRequest'
-        description: Bulk restart request
+        description: Bulk restart request (names or group)
         required: true
       responses:
         "202":
@@ -1957,13 +1970,13 @@ paths:
       - workloads
   /api/v1beta/workloads/stop:
     post:
-      description: Stop multiple workloads by name
+      description: Stop multiple workloads by name or by group
       requestBody:
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/v1.bulkOperationRequest'
-        description: Bulk stop request
+        description: Bulk stop request (names or group)
         required: true
       responses:
         "202":

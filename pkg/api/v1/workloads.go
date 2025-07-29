@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	thverrors "github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -25,6 +27,7 @@ type WorkloadRoutes struct {
 	workloadManager  workloads.Manager
 	containerRuntime runtime.Runtime
 	debugMode        bool
+	groupManager     groups.Manager
 }
 
 //	@title			ToolHive API
@@ -37,12 +40,14 @@ type WorkloadRoutes struct {
 func WorkloadRouter(
 	workloadManager workloads.Manager,
 	containerRuntime runtime.Runtime,
+	groupManager groups.Manager,
 	debugMode bool,
 ) http.Handler {
 	routes := WorkloadRoutes{
 		workloadManager:  workloadManager,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
+		groupManager:     groupManager,
 	}
 
 	r := chi.NewRouter()
@@ -63,20 +68,38 @@ func WorkloadRouter(
 
 //	 listWorkloads
 //		@Summary		List all workloads
-//		@Description	Get a list of all running workloads
+//		@Description	Get a list of all running workloads, optionally filtered by group
 //		@Tags			workloads
 //		@Produce		json
 //		@Param			all	query		bool	false	"List all workloads, including stopped ones"
+//		@Param			group	query		string	false	"Filter workloads by group name"
 //		@Success		200	{object}	workloadListResponse
+//		@Failure		404	{string}	string	"Group not found"
 //		@Router			/api/v1beta/workloads [get]
 func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	listAll := r.URL.Query().Get("all") == "true"
+	groupFilter := r.URL.Query().Get("group")
+
 	workloadList, err := s.workloadManager.ListWorkloads(ctx, listAll)
 	if err != nil {
 		logger.Errorf("Failed to list workloads: %v", err)
 		http.Error(w, "Failed to list workloads", http.StatusInternalServerError)
 		return
+	}
+
+	// Apply group filtering if specified
+	if groupFilter != "" {
+		workloadList, err = workloads.FilterByGroup(ctx, workloadList, groupFilter)
+		if err != nil {
+			if thverrors.IsGroupNotFound(err) {
+				http.Error(w, "Group not found", http.StatusNotFound)
+			} else {
+				logger.Errorf("Failed to filter workloads by group: %v", err)
+				http.Error(w, "Failed to list workloads in group", http.StatusInternalServerError)
+			}
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -299,10 +322,10 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 // stopWorkloadsBulk
 //
 //	@Summary		Stop workloads in bulk
-//	@Description	Stop multiple workloads by name
+//	@Description	Stop multiple workloads by name or by group
 //	@Tags			workloads
 //	@Accept			json
-//	@Param			request	body		bulkOperationRequest	true	"Bulk stop request"
+//	@Param			request	body		bulkOperationRequest	true	"Bulk stop request (names or group)"
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/stop [post]
@@ -315,14 +338,20 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if len(req.Names) == 0 {
-		http.Error(w, "No workload names provided", http.StatusBadRequest)
+	if err := s.validateBulkOperationRequest(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	workloadNames, err := s.getWorkloadNamesFromRequest(ctx, req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err := s.workloadManager.StopWorkloads(ctx, req.Names)
+	_, err = s.workloadManager.StopWorkloads(ctx, workloadNames)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -338,10 +367,10 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 // restartWorkloadsBulk
 //
 //	@Summary		Restart workloads in bulk
-//	@Description	Restart multiple workloads by name
+//	@Description	Restart multiple workloads by name or by group
 //	@Tags			workloads
 //	@Accept			json
-//	@Param			request	body		bulkOperationRequest	true	"Bulk restart request"
+//	@Param			request	body		bulkOperationRequest	true	"Bulk restart request (names or group)"
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/restart [post]
@@ -354,14 +383,20 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if len(req.Names) == 0 {
-		http.Error(w, "No workload names provided", http.StatusBadRequest)
+	if err := s.validateBulkOperationRequest(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	workloadNames, err := s.getWorkloadNamesFromRequest(ctx, req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err := s.workloadManager.RestartWorkloads(ctx, req.Names)
+	_, err = s.workloadManager.RestartWorkloads(ctx, workloadNames)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -377,10 +412,10 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 // deleteWorkloadsBulk
 //
 //	@Summary		Delete workloads in bulk
-//	@Description	Delete multiple workloads by name
+//	@Description	Delete multiple workloads by name or by group
 //	@Tags			workloads
 //	@Accept			json
-//	@Param			request	body		bulkOperationRequest	true	"Bulk delete request"
+//	@Param			request	body		bulkOperationRequest	true	"Bulk delete request (names or group)"
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/delete [post]
@@ -393,14 +428,20 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if len(req.Names) == 0 {
-		http.Error(w, "No workload names provided", http.StatusBadRequest)
+	if err := s.validateBulkOperationRequest(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	workloadNames, err := s.getWorkloadNamesFromRequest(ctx, req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err := s.workloadManager.DeleteWorkloads(ctx, req.Names)
+	_, err = s.workloadManager.DeleteWorkloads(ctx, workloadNames)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -553,10 +594,49 @@ type createWorkloadResponse struct {
 	Port int `json:"port"`
 }
 
-// bulkOperationRequest represents the request for bulk operations
-//
-//	@Description	Request to perform bulk operations on workloads
+// bulkOperationRequest represents a request for bulk operations on workloads
 type bulkOperationRequest struct {
 	// Names of the workloads to operate on
 	Names []string `json:"names"`
+	// Group name to operate on (mutually exclusive with names)
+	Group string `json:"group,omitempty"`
+}
+
+// validateBulkOperationRequest validates the bulk operation request
+func (s *WorkloadRoutes) validateBulkOperationRequest(req bulkOperationRequest) error {
+	if len(req.Names) > 0 && req.Group != "" {
+		return fmt.Errorf("cannot specify both names and group")
+	}
+	if len(req.Names) == 0 && req.Group == "" {
+		return fmt.Errorf("must specify either names or group")
+	}
+	return nil
+}
+
+// getWorkloadNamesFromRequest gets workload names from either the names field or group
+func (s *WorkloadRoutes) getWorkloadNamesFromRequest(ctx context.Context, req bulkOperationRequest) ([]string, error) {
+	if len(req.Names) > 0 {
+		return req.Names, nil
+	}
+
+	if req.Group == "" {
+		return nil, fmt.Errorf("no group specified")
+	}
+
+	// Check if the group exists
+	exists, err := s.groupManager.Exists(ctx, req.Group)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check if group exists: %v", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("group '%s' does not exist", req.Group)
+	}
+
+	// Get all workload names in the group
+	workloadNames, err := s.groupManager.ListWorkloadsInGroup(ctx, req.Group)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workloads in group: %v", err)
+	}
+
+	return workloadNames, nil
 }

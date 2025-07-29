@@ -73,6 +73,10 @@ type RunFlags struct {
 
 	// Configuration import
 	FromConfig string
+
+	// Ignore functionality
+	IgnoreGlobally bool
+	PrintOverlays  bool
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -81,7 +85,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	// TODO: Re-enable when group functionality is complete
-	// cmd.Flags().StringVar(&config.Group, "group", "", "Name of the group this workload belongs to")
+	// cmd.Flags().StringVar(&config.Group, "group", "default",
+	//	"Name of the group this workload belongs to (defaults to 'default' if not specified)")
 	cmd.Flags().StringVar(&config.Host, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	cmd.Flags().IntVar(&config.ProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
 	cmd.Flags().IntVar(&config.TargetPort, "target-port", 0,
@@ -159,6 +164,12 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Filter MCP server tools (comma-separated list of tool names)",
 	)
 	cmd.Flags().StringVar(&config.FromConfig, "from-config", "", "Load configuration from exported file")
+
+	// Ignore functionality flags
+	cmd.Flags().BoolVar(&config.IgnoreGlobally, "ignore-globally", true,
+		"Load global ignore patterns from ~/.config/toolhive/thvignore")
+	cmd.Flags().BoolVar(&config.PrintOverlays, "print-resolved-overlays", false,
+		"Debug: show resolved container paths for tmpfs overlays")
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration
@@ -266,6 +277,8 @@ func BuildRunnerConfig(
 		types.ProxyMode(runConfig.ProxyMode),
 		runConfig.Group,
 		runConfig.ToolsFilter,
+		runConfig.IgnoreGlobally,
+		runConfig.PrintOverlays,
 	)
 }
 

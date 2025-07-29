@@ -218,7 +218,7 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 		}
 
 		// Transition workload to `stopping` state.
-		d.statuses.SetWorkloadStatus(ctx, name, WorkloadStatusStopping, "")
+		d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, "")
 		containers = append(containers, container)
 	}
 
@@ -236,7 +236,7 @@ func (d *defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 	err := mcpRunner.Run(ctx)
 	if err != nil {
 		// If the run failed, we should set the status to error.
-		d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, WorkloadStatusError, err.Error())
+		d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, err.Error())
 	}
 	return err
 }
@@ -546,12 +546,12 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 					logger.Warnf("Warning: Failed to delete workload %s: %v", name, err)
 					return nil
 				}
-				d.statuses.SetWorkloadStatus(ctx, name, WorkloadStatusError, err.Error())
+				d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error())
 				return fmt.Errorf("failed to find workload %s: %v", name, err)
 			}
 
 			// Now that we're sure the workload exists - set the status to removing.
-			d.statuses.SetWorkloadStatus(ctx, name, WorkloadStatusRemoving, "")
+			d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusRemoving, "")
 
 			containerID := container.ID
 			containerLabels := container.Labels
@@ -569,7 +569,7 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 			// Remove the container
 			logger.Infof("Removing container %s...", name)
 			if err := d.runtime.RemoveWorkload(childCtx, containerID); err != nil {
-				d.statuses.SetWorkloadStatus(ctx, name, WorkloadStatusError, err.Error())
+				d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error())
 				return fmt.Errorf("failed to remove container: %v", err)
 			}
 
@@ -670,7 +670,7 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string) (
 
 			// At this point we're sure that the workload exists but is not running.
 			// Transition workload to `starting` state.
-			d.statuses.SetWorkloadStatus(ctx, name, WorkloadStatusStarting, "")
+			d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStarting, "")
 			logger.Infof("Loaded configuration from state for %s", containerBaseName)
 
 			// Run the tooling server inside a detached process.
@@ -823,7 +823,7 @@ func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.Cont
 			logger.Infof("Stopping containers for %s...", name)
 			// Stop the container
 			if err := d.runtime.StopWorkload(childCtx, workload.ID); err != nil {
-				d.statuses.SetWorkloadStatus(ctx, name, WorkloadStatusError, err.Error())
+				d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error())
 				return fmt.Errorf("failed to stop container: %w", err)
 			}
 
@@ -835,7 +835,7 @@ func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.Cont
 				}
 			}
 
-			d.statuses.SetWorkloadStatus(ctx, name, WorkloadStatusStopped, "")
+			d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, "")
 			logger.Infof("Successfully stopped %s...", name)
 			return nil
 		})

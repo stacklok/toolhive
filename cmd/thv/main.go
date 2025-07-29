@@ -18,6 +18,11 @@ func main() {
 	// Handles the auto-discovery flag depreciation, only executes once on old config files
 	client.CheckAndPerformAutoDiscoveryMigration()
 
+	// Check and perform default group migration if needed
+	// Migrates existing workloads to the default group, only executes once
+	// TODO: Re-enable when group functionality is complete
+	// groups.CheckAndPerformDefaultGroupMigration()
+
 	// Skip update check for completion command or if we are running in kubernetes
 	if err := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !runtime.IsKubernetesRuntime()).Execute(); err != nil {
 		os.Exit(1)

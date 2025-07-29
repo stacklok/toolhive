@@ -179,7 +179,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := transportHandler.Setup(
 		ctx, r.Config.Deployer, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
 		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile, r.Config.K8sPodTemplatePatch,
-		r.Config.IsolateNetwork,
+		r.Config.IsolateNetwork, r.Config.IgnoreConfig,
 	); err != nil {
 		return fmt.Errorf("failed to set up transport: %v", err)
 	}

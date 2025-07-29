@@ -24,8 +24,8 @@ Piped input:
 When you pipe data to the command, it reads the secret value from stdin.
 Examples:
 
-	echo "my-secret-value" | thv secret set my-secret
-	cat secret-file.txt | thv secret set my-secret
+	$ echo "my-secret-value" | thv secret set my-secret
+	$ cat secret-file.txt | thv secret set my-secret
 
 Interactive input:
 
@@ -33,7 +33,7 @@ When you don't pipe data, the command prompts you to enter the secret value secu
 The input remains hidden for security.
 Example:
 
-	thv secret set my-secret
+	$ thv secret set my-secret
 	Enter secret value (input will be hidden): _
 
 The command stores the secret securely using your configured secrets provider.

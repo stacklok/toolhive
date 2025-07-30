@@ -25,6 +25,7 @@ Valid clients:
   - amp-windsurf: Sourcegraph Amp extension for Windsurf
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
+  - copilot-jetbrains: GitHub Copilot plugin for JetBrains IDEs
   - cursor: Cursor editor
   - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code

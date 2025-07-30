@@ -121,6 +121,7 @@ components:
       - AmpCursor
       - AmpVSCodeInsider
       - AmpWindsurf
+      - CopilotJetBrains
     client.MCPClientStatus:
       properties:
         client_type:
@@ -140,6 +141,7 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - CopilotJetBrains
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -601,6 +603,7 @@ components:
             - AmpCursor
             - AmpVSCodeInsider
             - AmpWindsurf
+            - CopilotJetBrains
           type: array
           uniqueItems: false
       type: object
@@ -643,6 +646,7 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - CopilotJetBrains
       type: object
     v1.createClientResponse:
       properties:
@@ -663,6 +667,7 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - CopilotJetBrains
       type: object
     v1.createGroupRequest:
       properties:

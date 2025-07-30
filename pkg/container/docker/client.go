@@ -1536,11 +1536,13 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 	// we need to filter down to the exact name requested.
 	var containerID string
 	if len(containers) > 1 {
+		// The name in the API has a leading slash, so we need to search for that.
+		prefixedName := "/" + workloadName
+		// The name in the API response is a list of names, so we need to check
+		// if the prefixed name is in the list.
+		// The extra names are used for docker network functionality which is
+		// not relevant for us.
 		idx := slices.IndexFunc(containers, func(c container.Summary) bool {
-			// The name in the API has a leading slash, so we need to check for that.
-			prefixedName := "/" + workloadName
-			// The name in the API is a list of names, so we need to check if the prefixed name is in the list.
-			// The extra names are used for docker network functionality which is not relevant for us.
 			return slices.Contains(c.Names, prefixedName)
 		})
 		if idx == -1 {

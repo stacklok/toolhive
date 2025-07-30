@@ -52,6 +52,9 @@ type RunFlags struct {
 	JWKSAuthTokenFile  string
 	JWKSAllowPrivateIP bool
 
+	// OAuth discovery configuration
+	ResourceURL string
+
 	// Telemetry configuration
 	OtelEndpoint                    string
 	OtelServiceName                 string
@@ -139,6 +142,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Path to file containing bearer token for authenticating JWKS/OIDC requests")
 	cmd.Flags().BoolVar(&config.JWKSAllowPrivateIP, "jwks-allow-private-ip", false,
 		"Allow JWKS/OIDC endpoints on private IP addresses (use with caution)")
+
+	// OAuth discovery configuration
+	cmd.Flags().StringVar(&config.ResourceURL, "resource-url", "",
+		"Explicit resource URL for OAuth discovery endpoint (RFC 9728)")
 
 	// OpenTelemetry flags updated per origin/main
 	cmd.Flags().StringVar(&config.OtelEndpoint, "otel-endpoint", "",
@@ -274,6 +281,7 @@ func BuildRunnerConfig(
 			runConfig.ThvCABundle, runConfig.JWKSAuthTokenFile, runConfig.JWKSAllowPrivateIP).
 		WithTelemetryConfig(finalOtelEndpoint, runConfig.OtelEnablePrometheusMetricsPath, runConfig.OtelServiceName,
 			finalOtelSamplingRate, runConfig.OtelHeaders, runConfig.OtelInsecure, finalOtelEnvironmentVariables).
+		WithOAuthDiscovery(runConfig.ResourceURL).
 		WithToolsFilter(runConfig.ToolsFilter).
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    runConfig.IgnoreGlobally,

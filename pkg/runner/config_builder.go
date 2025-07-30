@@ -224,6 +224,15 @@ func (b *RunConfigBuilder) WithOIDCConfig(
 	return b
 }
 
+// WithOAuthDiscovery configures OAuth discovery settings (RFC 9728)
+func (b *RunConfigBuilder) WithOAuthDiscovery(resourceURL string) *RunConfigBuilder {
+	if b.config.OIDCConfig == nil {
+		b.config.OIDCConfig = &auth.TokenValidatorConfig{}
+	}
+	b.config.OIDCConfig.ResourceURL = resourceURL
+	return b
+}
+
 // WithTelemetryConfig configures telemetry settings
 func (b *RunConfigBuilder) WithTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
 	otelServiceName string, otelSamplingRate float64, otelHeaders []string, otelInsecure bool,

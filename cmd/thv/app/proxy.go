@@ -86,6 +86,8 @@ var (
 	proxyPort      int
 	proxyTargetURI string
 
+	resourceURL string // Explicit resource URL for OAuth discovery endpoint (RFC 9728)
+
 	// Remote server authentication flags
 	remoteAuthIssuer           string
 	remoteAuthClientID         string
@@ -125,6 +127,9 @@ func init() {
 
 	// Add OIDC validation flags
 	AddOIDCFlags(proxyCmd)
+
+	proxyCmd.Flags().StringVar(&resourceURL, "resource-url", "",
+		"Explicit resource URL for OAuth discovery endpoint (RFC 9728)")
 
 	// Add remote server authentication flags
 	proxyCmd.Flags().BoolVar(&enableRemoteAuth, "remote-auth", false, "Enable OAuth authentication to remote MCP server")
@@ -215,6 +220,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 			IntrospectionURL: introspectionURL,
 			ClientID:         clientID,
 			ClientSecret:     clientSecret,
+			ResourceURL:      resourceURL,
 		}
 	}
 

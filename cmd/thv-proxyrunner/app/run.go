@@ -78,6 +78,9 @@ var (
 
 	// Tools filter
 	runToolsFilter []string
+
+	// OAuth discovery resource URL
+	runResourceURL string
 )
 
 func init() {
@@ -185,6 +188,12 @@ func init() {
 		nil,
 		"Filter MCP server tools (comma-separated list of tool names)",
 	)
+	runCmd.Flags().StringVar(
+		&runResourceURL,
+		"resource-url",
+		"",
+		"Explicit resource URL for OAuth discovery endpoint (RFC 9728)",
+	)
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
@@ -249,6 +258,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		WithAuditEnabled(runEnableAudit, runAuditConfig).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
 			runThvCABundle, runJWKSAuthTokenFile, runJWKSAllowPrivateIP).
+		WithOAuthDiscovery(runResourceURL).
 		WithTelemetryConfig(finalOtelEndpoint, runOtelEnablePrometheusMetricsPath, runOtelServiceName,
 			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
 		WithToolsFilter(runToolsFilter).

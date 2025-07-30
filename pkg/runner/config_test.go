@@ -610,6 +610,7 @@ func TestRunConfigBuilder(t *testing.T) {
 		WithGroup("").
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, "", oidcClientID, "",
 			"", "", false).
+		WithOAuthDiscovery("").
 		WithTelemetryConfig("", false, "", 0.1, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{

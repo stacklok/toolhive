@@ -296,6 +296,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(AmpCursor),
 					string(AmpVSCodeInsider),
 					string(AmpWindsurf),
+					string(CopilotJetBrains),
 				},
 			},
 		}

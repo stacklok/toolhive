@@ -78,7 +78,7 @@ func createMockClientConfigs() []mcpClientConfig {
 		},
 		{
 			ClientType:           CopilotJetBrains,
-			Description:          "JetBrains Copilot plugin (Mock)",
+			Description:          "Copilot plugin for JetBrains IDEs (Mock)",
 			RelPath:              []string{"mock_jetbrains_copilot"},
 			SettingsFile:         "mcp.json",
 			MCPServersPathPrefix: "/servers",
@@ -372,7 +372,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					"AmpWindsurf config should contain mcpServers key")
 			case CopilotJetBrains:
 				assert.Contains(t, string(content), `"servers":`,
-					"JetBrains Copilot config should contain servers key")
+					"CopilotJetBrains config should contain servers key")
 			}
 		}
 	})

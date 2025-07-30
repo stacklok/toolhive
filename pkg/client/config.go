@@ -330,7 +330,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 	},
 	{
 		ClientType:   CopilotJetBrains,
-		Description:  "JetBrains Copilot plugin",
+		Description:  "Copilot plugin for JetBrains IDEs",
 		SettingsFile: "mcp.json",
 		RelPath: []string{
 			"github-copilot", "intellij",

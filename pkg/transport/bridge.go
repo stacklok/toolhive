@@ -28,9 +28,12 @@ type StdioBridge struct {
 }
 
 // NewStdioBridge creates a new StdioBridge instance.
-func NewStdioBridge(rawURL string) *StdioBridge {
-	u, _ := url.Parse(rawURL)
-	return &StdioBridge{baseURL: u, postURL: u}
+func NewStdioBridge(rawURL string) (*StdioBridge, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+	return &StdioBridge{baseURL: u, postURL: u}, nil
 }
 
 // Start begins the transport loop for the StdioBridge.
@@ -55,7 +58,8 @@ func (b *StdioBridge) loop(ctx context.Context) {
 			go b.runStreamableWriter(ctx)
 		} else { // legacy SSE
 			b.postURL = b.baseURL // reset
-			b.wg.Add(2 - 0)
+			const legacyWorkerCount = 2
+			b.wg.Add(legacyWorkerCount)
 			go b.runLegacyReader(ctx)
 			go b.runLegacyWriter(ctx)
 		}
@@ -72,8 +76,16 @@ func (b *StdioBridge) loop(ctx context.Context) {
 // Header include Mcp-Session-Id if needed
 func (b *StdioBridge) detectTransport(ctx context.Context) (string, error) {
 	initReq := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]interface{}{}}
-	body, _ := json.Marshal(initReq)
-	req, _ := http.NewRequestWithContext(ctx, "POST", b.baseURL.String(), bytes.NewReader(body))
+	body, err := json.Marshal(initReq)
+	if err != nil {
+		logger.Errorf("failed to marshal initialization request: %v", err)
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", b.baseURL.String(), bytes.NewReader(body))
+	if err != nil {
+		logger.Errorf("failed to create HTTP request: %v", err)
+		return "", err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	copyHeaders(req.Header, b.headers)
@@ -97,7 +109,11 @@ func (b *StdioBridge) handleInitializeResponse(resp *http.Response) {
 		b.headers.Set("Mcp-Session-Id", sid)
 		logger.Infof("Streamable HTTP session ID: %s", sid)
 	}
-	data, _ := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Errorf("failed to read response body: %v", err)
+		return
+	}
 	payload := strings.TrimSpace(string(data))
 	ct := resp.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "application/json") {
@@ -153,8 +169,12 @@ func (b *StdioBridge) runStreamableWriter(ctx context.Context) {
 			continue
 		}
 		ct := resp.Header.Get("Content-Type")
-		data, _ := io.ReadAll(resp.Body)
+		data, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		if err != nil {
+			logger.Errorf("Error reading response body: %v", err)
+			continue
+		}
 		payload := strings.TrimSpace(string(data))
 		if resp.StatusCode == http.StatusNotFound {
 			b.cancel()
@@ -170,7 +190,11 @@ func (b *StdioBridge) runStreamableWriter(ctx context.Context) {
 
 func (b *StdioBridge) runLegacyReader(ctx context.Context) {
 	defer b.wg.Done()
-	req, _ := http.NewRequestWithContext(ctx, "GET", b.baseURL.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL.String(), nil)
+	if err != nil {
+		logger.Errorf("Failed to create GET request: %v", err)
+		return
+	}
 	req.Header.Set("Accept", "text/event-stream")
 	copyHeaders(req.Header, b.headers)
 	resp, err := http.DefaultClient.Do(req)
@@ -216,7 +240,11 @@ func (b *StdioBridge) runLegacyWriter(ctx context.Context) {
 			logger.Errorf("Invalid JSON input: %v", err)
 			continue
 		}
-		req, _ := http.NewRequestWithContext(ctx, "POST", b.postURL.String(), strings.NewReader(raw))
+		req, err := http.NewRequestWithContext(ctx, "POST", b.postURL.String(), strings.NewReader(raw))
+		if err != nil {
+			logger.Errorf("Failed to create HTTP request: %v", err)
+			continue
+		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		copyHeaders(req.Header, b.headers)
@@ -248,10 +276,18 @@ func (b *StdioBridge) updatePostURL(path string) {
 }
 
 func (b *StdioBridge) sendInitialize(ctx context.Context) {
-	reqBody, _ := json.Marshal(map[string]interface{}{
+	reqBody, err := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]interface{}{},
 	})
-	req, _ := http.NewRequestWithContext(ctx, "POST", b.postURL.String(), bytes.NewReader(reqBody))
+	if err != nil {
+		logger.Errorf("Failed to marshal initialize request body: %v", err)
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", b.postURL.String(), bytes.NewReader(reqBody))
+	if err != nil {
+		logger.Errorf("Failed to create HTTP request: %v", err)
+		return
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	copyHeaders(req.Header, b.headers)

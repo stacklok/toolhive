@@ -116,6 +116,11 @@ components:
       - ClaudeCode
       - Windsurf
       - WindsurfJetBrains
+      - AmpCli
+      - AmpVSCode
+      - AmpCursor
+      - AmpVSCodeInsider
+      - AmpWindsurf
     client.MCPClientStatus:
       properties:
         client_type:
@@ -130,6 +135,11 @@ components:
           - ClaudeCode
           - Windsurf
           - WindsurfJetBrains
+          - AmpCli
+          - AmpVSCode
+          - AmpCursor
+          - AmpVSCodeInsider
+          - AmpWindsurf
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -586,6 +596,11 @@ components:
             - ClaudeCode
             - Windsurf
             - WindsurfJetBrains
+            - AmpCli
+            - AmpVSCode
+            - AmpCursor
+            - AmpVSCodeInsider
+            - AmpWindsurf
           type: array
           uniqueItems: false
       type: object
@@ -623,6 +638,11 @@ components:
           - ClaudeCode
           - Windsurf
           - WindsurfJetBrains
+          - AmpCli
+          - AmpVSCode
+          - AmpCursor
+          - AmpVSCodeInsider
+          - AmpWindsurf
       type: object
     v1.createClientResponse:
       properties:
@@ -638,6 +658,11 @@ components:
           - ClaudeCode
           - Windsurf
           - WindsurfJetBrains
+          - AmpCli
+          - AmpVSCode
+          - AmpCursor
+          - AmpVSCodeInsider
+          - AmpWindsurf
       type: object
     v1.createGroupRequest:
       properties:

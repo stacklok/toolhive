@@ -42,6 +42,16 @@ const (
 	Windsurf MCPClient = "windsurf"
 	// WindsurfJetBrains represents the Windsurf plugin for JetBrains.
 	WindsurfJetBrains MCPClient = "windsurf-jetbrains"
+	// AmpCli represents the Sourcegraph Amp CLI.
+	AmpCli MCPClient = "amp-cli"
+	// AmpVSCode represents the Sourcegraph Amp extension for VS Code.
+	AmpVSCode MCPClient = "amp-vscode"
+	// AmpCursor represents the Sourcegraph Amp extension for Cursor.
+	AmpCursor MCPClient = "amp-cursor"
+	// AmpVSCodeInsider represents the Sourcegraph Amp extension for VS Code Insiders.
+	AmpVSCodeInsider MCPClient = "amp-vscode-insider"
+	// AmpWindsurf represents the Sourcegraph Amp extension for Windsurf.
+	AmpWindsurf MCPClient = "amp-windsurf"
 )
 
 // Extension is extension of the client config file.
@@ -220,6 +230,101 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabel:            "serverUrl",
+	},
+	{
+		ClientType:           AmpCli,
+		Description:          "Sourcegraph Amp CLI",
+		SettingsFile:         "settings.json",
+		MCPServersPathPrefix: "/amp.mcpServers",
+		RelPath:              []string{"amp"},
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {".config"},
+			"windows": {"AppData", "Roaming"},
+		},
+		Extension: JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+	},
+	{
+		ClientType:           AmpVSCode,
+		Description:          "VS Code Sourcegraph Amp extension",
+		SettingsFile:         "settings.json",
+		MCPServersPathPrefix: "/amp.mcpServers",
+		RelPath:              []string{"Code", "User"},
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {"Library", "Application Support"},
+			"windows": {"AppData", "Roaming"},
+		},
+		Extension: JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+	},
+	{
+		ClientType:           AmpVSCodeInsider,
+		Description:          "VS Code Insiders Sourcegraph Amp extension",
+		SettingsFile:         "settings.json",
+		MCPServersPathPrefix: "/amp.mcpServers",
+		RelPath:              []string{"Code - Insiders", "User"},
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {"Library", "Application Support"},
+			"windows": {"AppData", "Roaming"},
+		},
+		Extension: JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+	},
+	{
+		ClientType:           AmpCursor,
+		Description:          "Cursor Sourcegraph Amp extension",
+		SettingsFile:         "settings.json",
+		MCPServersPathPrefix: "/amp.mcpServers",
+		RelPath:              []string{"Cursor", "User"},
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {"Library", "Application Support"},
+			"windows": {"AppData", "Roaming"},
+		},
+		Extension: JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+	},
+	{
+		ClientType:           AmpWindsurf,
+		Description:          "Windsurf Sourcegraph Amp extension",
+		SettingsFile:         "settings.json",
+		MCPServersPathPrefix: "/amp.mcpServers",
+		RelPath:              []string{"Windsurf", "User"},
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {"Library", "Application Support"},
+			"windows": {"AppData", "Roaming"},
+		},
+		Extension: JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
 	},
 }
 

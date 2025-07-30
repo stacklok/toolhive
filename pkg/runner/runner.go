@@ -93,7 +93,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsCallFilterMiddleware)
 	}
 
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
+	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}

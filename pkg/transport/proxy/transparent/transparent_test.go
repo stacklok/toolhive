@@ -92,6 +92,7 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", target.URL, nil)
+
 	proxy.ServeHTTP(rec, req)
 
 	assert.False(t, p.IsServerInitialized, "server should not be initialized for application/json")

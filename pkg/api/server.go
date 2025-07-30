@@ -155,7 +155,7 @@ func Serve(
 	r.Use(updateCheckMiddleware())
 
 	// Add authentication middleware
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}

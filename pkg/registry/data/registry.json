@@ -1917,6 +1917,73 @@
       ],
       "transport": "sse"
     },
+    "postgres-mcp-pro": {
+      "args": [
+        "--transport=sse",
+        "--sse-host=0.0.0.0",
+        "--sse-port=8000"
+      ],
+      "description": "Provides configurable read/write access and performance analysis for PostgreSQL databases.",
+      "env_vars": [
+        {
+          "description": "PostgreSQL connection string, like 'postgresql://username:password@host.docker.internal:5432/dbname'",
+          "name": "DATABASE_URI",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "OPENAI_API_KEY",
+          "description": "OpenAI API key for experimental index tuning by LLM",
+          "required": false,
+          "secret": true
+        }
+      ],
+      "image": "crystaldba/postgres-mcp:0.3.0",
+      "metadata": {
+        "last_updated": "2025-07-30T16:19:20Z",
+        "pulls": 9143,
+        "stars": 812
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [],
+            "insecure_allow_all": true
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/crystaldba/postgres-mcp",
+      "status": "Active",
+      "tags": [
+        "database",
+        "data",
+        "postgres",
+        "postgresql",
+        "sql",
+        "query",
+        "storage",
+        "analytics",
+        "performance",
+        "monitoring"
+      ],
+      "target_port": 8000,
+      "tier": "Official",
+      "tools": [
+        "list_schemas",
+        "list_objects",
+        "get_object_details",
+        "execute_sql",
+        "explain_query",
+        "get_top_queries",
+        "analyze_workload_indexes",
+        "analyze_query_indexes",
+        "analyze_db_health"
+      ],
+      "transport": "sse"
+    },
     "redis": {
       "args": [],
       "description": "Enables LLMs to interact with Redis key-value databases through a set of standardized tools.",

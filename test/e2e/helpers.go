@@ -11,6 +11,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Standard practice for Ginkgo
 	. "github.com/onsi/gomega"    //nolint:staticcheck // Standard practice for Gomega
+
+	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // TestConfig holds configuration for e2e tests
@@ -242,4 +245,93 @@ func StartDockerCommand(args ...string) *exec.Cmd {
 	cmd := exec.Command("docker", args...) //nolint:gosec // Intentional for e2e testing
 	cmd.Env = os.Environ()
 	return cmd
+}
+
+// Helper function to clean up a specific group and its workloads
+func cleanupSpecificGroup(groupName string) {
+	// Use the groups manager to delete the specific group and its workloads
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		// If we can't create the group manager, we can't clean up, so just return
+		return
+	}
+
+	ctx := context.Background()
+
+	// Check if the group exists before trying to delete it
+	exists, err := groupManager.Exists(ctx, groupName)
+	if err != nil || !exists {
+		// Group doesn't exist or we can't check, so nothing to clean up
+		return
+	}
+
+	// Get all workloads in the group
+	groupWorkloads, err := groupManager.ListWorkloadsInGroup(ctx, groupName)
+	if err != nil {
+		// If we can't list workloads, just try to delete the group
+		_ = groupManager.Delete(ctx, groupName)
+		return
+	}
+
+	// If there are workloads in the group, delete them first
+	if len(groupWorkloads) > 0 {
+		workloadManager, err := workloads.NewManager(ctx)
+		if err != nil {
+			// If we can't create the workload manager, just try to delete the group
+			_ = groupManager.Delete(ctx, groupName)
+			return
+		}
+
+		// Delete all workloads in the group
+		group, err := workloadManager.DeleteWorkloads(ctx, groupWorkloads)
+		if err != nil {
+			// If we can't delete workloads, just try to delete the group
+			_ = groupManager.Delete(ctx, groupName)
+			return
+		}
+
+		// Wait for all workload deletions to complete
+		if err := group.Wait(); err != nil {
+			// If workload deletion failed, just try to delete the group
+			_ = groupManager.Delete(ctx, groupName)
+			return
+		}
+	}
+
+	// Delete the group itself
+	_ = groupManager.Delete(ctx, groupName) // Ignore errors during cleanup
+}
+
+// Helper functions for group and workload management
+
+func createGroup(config *TestConfig, groupName string) {
+	NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
+}
+
+func createWorkloadInGroup(config *TestConfig, workloadName, groupName string) {
+	NewTHVCommand(config, "run", "fetch", "--group", groupName, "--name", workloadName).ExpectSuccess()
+}
+
+func createWorkload(config *TestConfig, workloadName string) {
+	NewTHVCommand(config, "run", "fetch", "--name", workloadName).ExpectSuccess()
+}
+
+func removeWorkload(config *TestConfig, workloadName string) {
+	NewTHVCommand(config, "rm", workloadName).ExpectSuccess()
+}
+
+func isWorkloadRunning(config *TestConfig, workloadName string) bool {
+	stdout, _ := NewTHVCommand(config, "list", "--all").ExpectSuccess()
+	return strings.Contains(stdout, workloadName)
+}
+
+func waitForWorkload(config *TestConfig, workloadName string) bool {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if isWorkloadRunning(config, workloadName) {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
 }

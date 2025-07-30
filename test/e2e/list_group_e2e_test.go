@@ -1,7 +1,5 @@
 package e2e_test
 
-// TODO: Re-enable when group functionality is complete
-/*
 import (
 	"context"
 	"fmt"
@@ -348,4 +346,3 @@ var _ = Describe("List Group", func() {
 		})
 	})
 })
-*/

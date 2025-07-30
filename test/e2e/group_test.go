@@ -1,7 +1,5 @@
 package e2e_test
 
-// TODO: add back in once we have a working group command
-/*
 import (
 	"context"
 	"fmt"
@@ -460,4 +458,3 @@ var _ = Describe("Group", func() {
 		})
 	})
 })
-*/

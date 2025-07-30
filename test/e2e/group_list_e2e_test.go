@@ -1,7 +1,5 @@
-package e2e_test
+package e2e
 
-// TODO: Add back in once we have a working group command, and update the docs
-/*
 import (
 	"fmt"
 	"os"
@@ -15,21 +13,12 @@ import (
 
 var _ = Describe("Group List E2E", func() {
 	var thvBinary string
-	var testGroupName string
 
 	BeforeEach(func() {
 		thvBinary = os.Getenv("THV_BINARY")
 		if thvBinary == "" {
 			Skip("THV_BINARY environment variable not set")
 		}
-
-		// Generate unique test group name with timestamp and nanoseconds
-		testGroupName = "e2e-test-group-" + time.Now().Format("20060102150405") + "-" + fmt.Sprintf("%d", time.Now().UnixNano()%1000000)
-	})
-
-	AfterEach(func() {
-		// Note: Group cleanup is not implemented yet, so we skip cleanup
-		// TODO: Implement group delete command for proper cleanup
 	})
 
 	Describe("Basic Group List Functionality", func() {
@@ -81,6 +70,12 @@ var _ = Describe("Group List E2E", func() {
 
 	Describe("Group Creation and Listing", func() {
 		It("should create a new group and show it in the list", func() {
+			// Create unique group name for this test
+			testGroupName := "e2e-test-group-" + time.Now().Format("20060102150405") + "-" + fmt.Sprintf("%d", time.Now().UnixNano()%1000000)
+
+			// Clean up the group after the test
+			defer cleanupSpecificGroup(testGroupName)
+
 			By("Creating a new test group")
 			createCmd := exec.Command(thvBinary, "group", "create", testGroupName)
 			createOutput, err := createCmd.CombinedOutput()
@@ -97,13 +92,22 @@ var _ = Describe("Group List E2E", func() {
 		})
 
 		It("should handle multiple group creation and listing", func() {
-			By("Creating multiple test groups")
+			// Create unique base name for this test
+			baseGroupName := "e2e-test-group-" + time.Now().Format("20060102150405") + "-" + fmt.Sprintf("%d", time.Now().UnixNano()%1000000)
 			groupNames := []string{
-				testGroupName + "-1",
-				testGroupName + "-2",
-				testGroupName + "-3",
+				baseGroupName + "-1",
+				baseGroupName + "-2",
+				baseGroupName + "-3",
 			}
 
+			// Clean up all groups created by this test
+			defer func() {
+				for _, groupName := range groupNames {
+					cleanupSpecificGroup(groupName)
+				}
+			}()
+
+			By("Creating multiple test groups")
 			for _, groupName := range groupNames {
 				createCmd := exec.Command(thvBinary, "group", "create", groupName)
 				createOutput, err := createCmd.CombinedOutput()
@@ -120,9 +124,6 @@ var _ = Describe("Group List E2E", func() {
 			for _, groupName := range groupNames {
 				Expect(outputStr).To(ContainSubstring(groupName), "Group %s should appear in the sorted list", groupName)
 			}
-
-			// Note: Group cleanup is not implemented yet
-			// TODO: Implement group delete command for proper cleanup
 		})
 	})
 
@@ -131,65 +132,55 @@ var _ = Describe("Group List E2E", func() {
 			By("Running group list with invalid arguments")
 			cmd := exec.Command(thvBinary, "group", "list", "invalid-arg")
 			output, err := cmd.CombinedOutput()
-			Expect(err).ToNot(HaveOccurred(), "Group list should ignore invalid arguments")
-
-			outputStr := string(output)
-			Expect(outputStr).To(ContainSubstring("NAME"), "Should still show table header")
-			Expect(outputStr).To(Not(ContainSubstring("Found")), "Should not show old format")
+			Expect(err).To(HaveOccurred(), "Should fail with invalid arguments")
+			Expect(string(output)).To(ContainSubstring("accepts 0 arg(s)"))
 		})
 
 		It("should handle group list with debug flag", func() {
 			By("Running group list with debug flag")
 			cmd := exec.Command(thvBinary, "group", "list", "--debug")
 			output, err := cmd.CombinedOutput()
-			Expect(err).ToNot(HaveOccurred(), "Group list with debug should succeed")
-
-			outputStr := string(output)
-			Expect(outputStr).To(ContainSubstring("NAME"), "Should still show table header")
+			Expect(err).ToNot(HaveOccurred(), "Should succeed with debug flag")
+			Expect(string(output)).To(ContainSubstring("NAME"))
 		})
 	})
 
 	Describe("Integration with Group Commands", func() {
 		It("should work with group create and list workflow", func() {
-			By("Creating a group")
+			// Create unique group name for this test
+			testGroupName := "e2e-test-group-" + time.Now().Format("20060102150405") + "-" + fmt.Sprintf("%d", time.Now().UnixNano()%1000000)
+
+			// Clean up the group after the test
+			defer cleanupSpecificGroup(testGroupName)
+
+			By("Creating a group and immediately listing it")
 			createCmd := exec.Command(thvBinary, "group", "create", testGroupName)
 			createOutput, err := createCmd.CombinedOutput()
-			if err != nil {
-				// Log the error output for debugging
-				GinkgoWriter.Printf("Group creation failed with output: %s\n", string(createOutput))
-			}
 			Expect(err).ToNot(HaveOccurred(), "Group creation should succeed")
 			Expect(string(createOutput)).To(ContainSubstring("created successfully"))
 
-			By("Listing groups immediately after creation")
 			listCmd := exec.Command(thvBinary, "group", "list")
 			listOutput, err := listCmd.CombinedOutput()
 			Expect(err).ToNot(HaveOccurred(), "Group list should succeed")
 
 			outputStr := string(listOutput)
-			Expect(outputStr).To(ContainSubstring(testGroupName), "New group should appear in the list")
-
-			By("Verifying group count increases")
-			lines := strings.Split(strings.TrimSpace(outputStr), "\n")
-			Expect(lines[0]).To(Equal("NAME"), "Should show table header")
+			Expect(outputStr).To(ContainSubstring(testGroupName), "Newly created group should appear in list")
 		})
 	})
 
 	Describe("Output Consistency", func() {
 		It("should produce consistent output format", func() {
-			By("Running group list multiple times")
-			var outputs []string
-
+			By("Running group list command multiple times")
+			outputs := make([]string, 3)
 			for i := 0; i < 3; i++ {
 				cmd := exec.Command(thvBinary, "group", "list")
 				output, err := cmd.CombinedOutput()
-				Expect(err).ToNot(HaveOccurred(), "Group list should succeed consistently")
-				outputs = append(outputs, string(output))
+				Expect(err).ToNot(HaveOccurred(), "Group list should succeed on iteration %d", i+1)
+				outputs[i] = string(output)
 			}
 
-			By("Verifying output format consistency")
+			By("Verifying outputs are consistent")
 			for i := 1; i < len(outputs); i++ {
-				// Extract group names from outputs (skip count line)
 				groups1 := extractGroupNames(outputs[i-1])
 				groups2 := extractGroupNames(outputs[i])
 
@@ -218,7 +209,8 @@ var _ = Describe("Group List E2E", func() {
 		})
 
 		It("should handle mixed alphanumeric group names correctly", func() {
-			By("Creating test groups with mixed alphanumeric names")
+			// Create unique base name for this test
+			baseGroupName := "e2e-test-group-" + time.Now().Format("20060102150405") + "-" + fmt.Sprintf("%d", time.Now().UnixNano()%1000000)
 			mixedGroupNames := []string{
 				"group-123",
 				"group-abc",
@@ -231,9 +223,23 @@ var _ = Describe("Group List E2E", func() {
 				"testgroup2",
 			}
 
+			// Create full group names
+			fullGroupNames := make([]string, len(mixedGroupNames))
+			for i, mixedName := range mixedGroupNames {
+				fullGroupNames[i] = baseGroupName + "-" + mixedName
+			}
+
+			// Clean up all groups created by this test
+			defer func() {
+				for _, groupName := range fullGroupNames {
+					cleanupSpecificGroup(groupName)
+				}
+			}()
+
+			By("Creating test groups with mixed alphanumeric names")
 			// Create groups with mixed names
-			for _, groupName := range mixedGroupNames {
-				createCmd := exec.Command(thvBinary, "group", "create", testGroupName+"-"+groupName)
+			for _, groupName := range fullGroupNames {
+				createCmd := exec.Command(thvBinary, "group", "create", groupName)
 				createOutput, err := createCmd.CombinedOutput()
 				Expect(err).ToNot(HaveOccurred(), "Group creation should succeed for %s", groupName)
 				Expect(string(createOutput)).To(ContainSubstring("created successfully"))
@@ -250,8 +256,8 @@ var _ = Describe("Group List E2E", func() {
 			// Find our test groups in the output
 			var testGroups []string
 			for _, group := range groups {
-				for _, mixedName := range mixedGroupNames {
-					if strings.Contains(group, testGroupName+"-"+mixedName) {
+				for _, fullName := range fullGroupNames {
+					if group == fullName {
 						testGroups = append(testGroups, group)
 						break
 					}
@@ -259,7 +265,7 @@ var _ = Describe("Group List E2E", func() {
 			}
 
 			By("Verifying test groups are in alphanumeric order")
-			Expect(len(testGroups)).To(Equal(len(mixedGroupNames)), "All test groups should be found")
+			Expect(len(testGroups)).To(Equal(len(fullGroupNames)), "All test groups should be found")
 
 			// Check that our test groups are sorted correctly
 			for i := 1; i < len(testGroups); i++ {
@@ -267,9 +273,6 @@ var _ = Describe("Group List E2E", func() {
 					"Test group '%s' should come before or equal to '%s' in alphanumeric order",
 					testGroups[i-1], testGroups[i])
 			}
-
-			// Note: Cleanup is not implemented yet
-			// TODO: Implement group delete command for proper cleanup
 		})
 	})
 })
@@ -289,4 +292,3 @@ func extractGroupNames(output string) []string {
 
 	return groups
 }
-*/

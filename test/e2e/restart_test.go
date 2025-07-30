@@ -116,92 +116,91 @@ var _ = Describe("Server Restart", func() {
 			})
 		})
 
-		// TODO: Uncomment when groups are fully supported
-		//Context("when restarting servers with --groups flag", func() {
-		//	It("should restart servers belonging to the specified group", func() {
-		//		// Define group name
-		//		groupName := fmt.Sprintf("restart-group-%d", GinkgoRandomSeed())
-		//
-		//		// Create two servers
-		//		serverName1 := generateTestServerName("restart-group-test1")
-		//		serverName2 := generateTestServerName("restart-group-test2")
-		//
-		//		By("Creating a group first")
-		//		stdout, stderr := e2e.NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
-		//		Expect(stdout+stderr).To(ContainSubstring("group"), "Output should mention group creation")
-		//
-		//		By("Starting the first server")
-		//		stdout, stderr = e2e.NewTHVCommand(config, "run", "--name", serverName1, "--group", groupName, "osv").ExpectSuccess()
-		//		Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
-		//
-		//		By("Starting the second server")
-		//		stdout, stderr = e2e.NewTHVCommand(config, "run", "--name", serverName2, "--group", groupName, "osv").ExpectSuccess()
-		//		Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
-		//
-		//		By("Waiting for both servers to be running")
-		//		err := e2e.WaitForMCPServer(config, serverName1, 60*time.Second)
-		//		Expect(err).ToNot(HaveOccurred(), "First server should be running within 60 seconds")
-		//
-		//		err = e2e.WaitForMCPServer(config, serverName2, 60*time.Second)
-		//		Expect(err).ToNot(HaveOccurred(), "Second server should be running within 60 seconds")
-		//
-		//		By("Stopping both servers")
-		//		stdout, _ = e2e.NewTHVCommand(config, "stop", serverName1).ExpectSuccess()
-		//		Expect(stdout).To(ContainSubstring("stop"), "Output should mention stop operation for first server")
-		//
-		//		stdout, _ = e2e.NewTHVCommand(config, "stop", serverName2).ExpectSuccess()
-		//		Expect(stdout).To(ContainSubstring("stop"), "Output should mention stop operation for second server")
-		//
-		//		By("Verifying the servers are stopped")
-		//		Eventually(func() bool {
-		//			stdout, _ := e2e.NewTHVCommand(config, "list", "--all").ExpectSuccess()
-		//			lines := strings.Split(stdout, "\n")
-		//			server1Found := false
-		//			server2Found := false
-		//			server1Running := false
-		//			server2Running := false
-		//
-		//			for _, line := range lines {
-		//				if strings.Contains(line, serverName1) {
-		//					server1Found = true
-		//					server1Running = strings.Contains(line, "running")
-		//				}
-		//				if strings.Contains(line, serverName2) {
-		//					server2Found = true
-		//					server2Running = strings.Contains(line, "running")
-		//				}
-		//			}
-		//
-		//			// Both servers should be found and neither should be running
-		//			return server1Found && server2Found && !server1Running && !server2Running
-		//		}, 10*time.Second, 1*time.Second).Should(BeTrue(), "Both servers should be stopped")
-		//
-		//		By("Restarting all servers in the group")
-		//		stdout, stderr = e2e.NewTHVCommand(config, "restart", "--group", groupName).ExpectSuccess()
-		//		Expect(stdout+stderr).To(ContainSubstring("restart"), "Output should mention restart operation")
-		//
-		//		By("Waiting for both servers to be running again")
-		//		err = e2e.WaitForMCPServer(config, serverName1, 60*time.Second)
-		//		Expect(err).ToNot(HaveOccurred(), "First server should be running again within 60 seconds")
-		//
-		//		err = e2e.WaitForMCPServer(config, serverName2, 60*time.Second)
-		//		Expect(err).ToNot(HaveOccurred(), "Second server should be running again within 60 seconds")
-		//
-		//		By("Verifying both servers are functional after restart")
-		//		stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
-		//		Expect(stdout).To(ContainSubstring(serverName1), "First server should be listed")
-		//		Expect(stdout).To(ContainSubstring(serverName2), "Second server should be listed")
-		//		Expect(stdout).To(ContainSubstring("running"), "Servers should be in running state")
-		//
-		//		// Clean up these specific servers at the end of the test
-		//		defer func() {
-		//			if config.CleanupAfter {
-		//				_ = e2e.StopAndRemoveMCPServer(config, serverName1)
-		//				_ = e2e.StopAndRemoveMCPServer(config, serverName2)
-		//			}
-		//		}()
-		//	})
-		//})
+		Context("when restarting servers with --groups flag", func() {
+			It("should restart servers belonging to the specified group", func() {
+				// Define group name
+				groupName := fmt.Sprintf("restart-group-%d", GinkgoRandomSeed())
+
+				// Create two servers
+				serverName1 := generateTestServerName("restart-group-test1")
+				serverName2 := generateTestServerName("restart-group-test2")
+
+				By("Creating a group first")
+				stdout, stderr := e2e.NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
+				Expect(stdout+stderr).To(ContainSubstring("group"), "Output should mention group creation")
+
+				By("Starting the first server")
+				stdout, stderr = e2e.NewTHVCommand(config, "run", "--name", serverName1, "--group", groupName, "osv").ExpectSuccess()
+				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
+
+				By("Starting the second server")
+				stdout, stderr = e2e.NewTHVCommand(config, "run", "--name", serverName2, "--group", groupName, "osv").ExpectSuccess()
+				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the osv server")
+
+				By("Waiting for both servers to be running")
+				err := e2e.WaitForMCPServer(config, serverName1, 60*time.Second)
+				Expect(err).ToNot(HaveOccurred(), "First server should be running within 60 seconds")
+
+				err = e2e.WaitForMCPServer(config, serverName2, 60*time.Second)
+				Expect(err).ToNot(HaveOccurred(), "Second server should be running within 60 seconds")
+
+				By("Stopping both servers")
+				stdout, _ = e2e.NewTHVCommand(config, "stop", serverName1).ExpectSuccess()
+				Expect(stdout).To(ContainSubstring("stop"), "Output should mention stop operation for first server")
+
+				stdout, _ = e2e.NewTHVCommand(config, "stop", serverName2).ExpectSuccess()
+				Expect(stdout).To(ContainSubstring("stop"), "Output should mention stop operation for second server")
+
+				By("Verifying the servers are stopped")
+				Eventually(func() bool {
+					stdout, _ := e2e.NewTHVCommand(config, "list", "--all").ExpectSuccess()
+					lines := strings.Split(stdout, "\n")
+					server1Found := false
+					server2Found := false
+					server1Running := false
+					server2Running := false
+
+					for _, line := range lines {
+						if strings.Contains(line, serverName1) {
+							server1Found = true
+							server1Running = strings.Contains(line, "running")
+						}
+						if strings.Contains(line, serverName2) {
+							server2Found = true
+							server2Running = strings.Contains(line, "running")
+						}
+					}
+
+					// Both servers should be found and neither should be running
+					return server1Found && server2Found && !server1Running && !server2Running
+				}, 10*time.Second, 1*time.Second).Should(BeTrue(), "Both servers should be stopped")
+
+				By("Restarting all servers in the group")
+				stdout, stderr = e2e.NewTHVCommand(config, "restart", "--group", groupName).ExpectSuccess()
+				Expect(stdout+stderr).To(ContainSubstring("restart"), "Output should mention restart operation")
+
+				By("Waiting for both servers to be running again")
+				err = e2e.WaitForMCPServer(config, serverName1, 60*time.Second)
+				Expect(err).ToNot(HaveOccurred(), "First server should be running again within 60 seconds")
+
+				err = e2e.WaitForMCPServer(config, serverName2, 60*time.Second)
+				Expect(err).ToNot(HaveOccurred(), "Second server should be running again within 60 seconds")
+
+				By("Verifying both servers are functional after restart")
+				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring(serverName1), "First server should be listed")
+				Expect(stdout).To(ContainSubstring(serverName2), "Second server should be listed")
+				Expect(stdout).To(ContainSubstring("running"), "Servers should be in running state")
+
+				// Clean up these specific servers at the end of the test
+				defer func() {
+					if config.CleanupAfter {
+						_ = e2e.StopAndRemoveMCPServer(config, serverName1)
+						_ = e2e.StopAndRemoveMCPServer(config, serverName2)
+					}
+				}()
+			})
+		})
 	})
 })
 

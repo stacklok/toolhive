@@ -1,10 +1,7 @@
 package e2e
 
-// TODO: add back in once we have a working group command, and update the docs
-/*
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -20,14 +17,6 @@ var _ = Describe("Group Remove E2E Tests", func() {
 		// Check if thv binary is available
 		err := CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
-
-		// Clean up any existing test groups and workloads
-		cleanupTestGroups()
-	})
-
-	AfterEach(func() {
-		// Clean up after each test
-		cleanupTestGroups()
 	})
 
 	Describe("thv rm --group command", func() {
@@ -47,6 +36,10 @@ var _ = Describe("Group Remove E2E Tests", func() {
 
 		It("should return success when group exists but has no workloads", func() {
 			groupName := fmt.Sprintf("rm-empty-group-%d", time.Now().UnixNano())
+
+			// Clean up the group after the test
+			defer cleanupSpecificGroup(groupName)
+
 			createGroup(config, groupName)
 
 			stdout, stderr := NewTHVCommand(config, "rm", "--group", groupName).ExpectSuccess()
@@ -56,6 +49,10 @@ var _ = Describe("Group Remove E2E Tests", func() {
 
 		It("should remove single workload from group", func() {
 			groupName := fmt.Sprintf("rm-group-single-%d", time.Now().UnixNano())
+
+			// Clean up the group after the test
+			defer cleanupSpecificGroup(groupName)
+
 			createGroup(config, groupName)
 			workloadName := fmt.Sprintf("rm-group-workload-%d", time.Now().UnixNano())
 			createWorkloadInGroup(config, workloadName, groupName)
@@ -72,6 +69,10 @@ var _ = Describe("Group Remove E2E Tests", func() {
 
 		It("should remove multiple workloads from group", func() {
 			groupName := fmt.Sprintf("rm-group-multi-%d", time.Now().UnixNano())
+
+			// Clean up the group after the test
+			defer cleanupSpecificGroup(groupName)
+
 			createGroup(config, groupName)
 			workload1 := fmt.Sprintf("rm-group-workload-1-%d", time.Now().UnixNano())
 			workload2 := fmt.Sprintf("rm-group-workload-2-%d", time.Now().UnixNano())
@@ -99,6 +100,10 @@ var _ = Describe("Group Remove E2E Tests", func() {
 
 		It("should handle mixed workloads (some in group, some not)", func() {
 			groupName := fmt.Sprintf("rm-group-mixed-%d", time.Now().UnixNano())
+
+			// Clean up the group after the test
+			defer cleanupSpecificGroup(groupName)
+
 			createGroup(config, groupName)
 			groupWorkload1 := fmt.Sprintf("rm-group-workload-1-%d", time.Now().UnixNano())
 			groupWorkload2 := fmt.Sprintf("rm-group-workload-2-%d", time.Now().UnixNano())
@@ -153,43 +158,3 @@ var _ = Describe("Group Remove E2E Tests", func() {
 		})
 	})
 })
-
-// Helper functions
-
-func createGroup(config *TestConfig, groupName string) {
-	NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
-}
-
-func createWorkloadInGroup(config *TestConfig, workloadName, groupName string) {
-	NewTHVCommand(config, "run", "fetch", "--group", groupName, "--name", workloadName).ExpectSuccess()
-}
-
-func createWorkload(config *TestConfig, workloadName string) {
-	NewTHVCommand(config, "run", "fetch", "--name", workloadName).ExpectSuccess()
-}
-
-func removeWorkload(config *TestConfig, workloadName string) {
-	NewTHVCommand(config, "rm", workloadName).ExpectSuccess()
-}
-
-func isWorkloadRunning(config *TestConfig, workloadName string) bool {
-	stdout, _ := NewTHVCommand(config, "list", "--all").ExpectSuccess()
-	return strings.Contains(stdout, workloadName)
-}
-
-func waitForWorkload(config *TestConfig, workloadName string) bool {
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if isWorkloadRunning(config, workloadName) {
-			return true
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return false
-}
-
-func cleanupTestGroups() {
-	// This is a simplified cleanup - in a real scenario, you might want to be more specific
-	// about which groups to clean up based on test naming conventions
-}
-*/

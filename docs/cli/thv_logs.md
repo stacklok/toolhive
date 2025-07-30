@@ -17,6 +17,9 @@ Output the logs of an MCP server or manage log files
 
 Output the logs of an MCP server managed by ToolHive, or manage log files.
 
+By default, this command shows the logs from the MCP server container.
+Use --proxy to view the logs from the ToolHive proxy process instead.
+
 ```
 thv logs [workload-name|prune] [flags]
 ```
@@ -26,6 +29,7 @@ thv logs [workload-name|prune] [flags]
 ```
   -f, --follow   Follow log output (only for workload logs)
   -h, --help     help for logs
+  -p, --proxy    Show proxy logs instead of container logs
 ```
 
 ### Options inherited from parent commands

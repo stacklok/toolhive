@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/adrg/xdg"
 	"github.com/spf13/cobra"
@@ -19,14 +20,18 @@ import (
 
 var (
 	followFlag bool
+	proxyFlag  bool
 )
 
 func logsCommand() *cobra.Command {
 	logsCommand := &cobra.Command{
 		Use:   "logs [workload-name|prune]",
 		Short: "Output the logs of an MCP server or manage log files",
-		Long:  `Output the logs of an MCP server managed by ToolHive, or manage log files.`,
-		Args:  cobra.ExactArgs(1),
+		Long: `Output the logs of an MCP server managed by ToolHive, or manage log files.
+
+By default, this command shows the logs from the MCP server container.
+Use --proxy to view the logs from the ToolHive proxy process instead.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Check if the argument is "prune"
 			if args[0] == "prune" {
@@ -38,7 +43,14 @@ func logsCommand() *cobra.Command {
 	}
 
 	logsCommand.Flags().BoolVarP(&followFlag, "follow", "f", false, "Follow log output (only for workload logs)")
+	logsCommand.Flags().BoolVarP(&proxyFlag, "proxy", "p", false, "Show proxy logs instead of container logs")
+
 	err := viper.BindPFlag("follow", logsCommand.Flags().Lookup("follow"))
+	if err != nil {
+		logger.Errorf("failed to bind flag: %v", err)
+	}
+
+	err = viper.BindPFlag("proxy", logsCommand.Flags().Lookup("proxy"))
 	if err != nil {
 		logger.Errorf("failed to bind flag: %v", err)
 	}
@@ -64,6 +76,11 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get workload name
 	workloadName := args[0]
 	follow := viper.GetBool("follow")
+	proxy := viper.GetBool("proxy")
+
+	if proxy {
+		return getProxyLogs(workloadName, follow)
+	}
 
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
@@ -197,5 +214,78 @@ func reportPruneResults(prunedFiles, errs []string) {
 		for _, errMsg := range errs {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", errMsg)
 		}
+	}
+}
+
+// getProxyLogs reads and displays the proxy logs for a given workload
+func getProxyLogs(workloadName string, follow bool) error {
+	// Get the proxy log file path
+	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
+	if err != nil {
+		return fmt.Errorf("failed to get proxy log file path: %v", err)
+	}
+
+	// Clean the file path to prevent path traversal
+	cleanLogFilePath := filepath.Clean(logFilePath)
+
+	// Check if the log file exists
+	if _, err := os.Stat(cleanLogFilePath); os.IsNotExist(err) {
+		logger.Infof("proxy log not found for workload %s", workloadName)
+		return nil
+	}
+
+	if follow {
+		return followProxyLogFile(cleanLogFilePath)
+	}
+
+	// Read and display the entire log file
+	content, err := os.ReadFile(cleanLogFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to read proxy log %s: %v", cleanLogFilePath, err)
+	}
+
+	fmt.Print(string(content))
+	return nil
+}
+
+// followProxyLogFile implements tail -f functionality for proxy logs
+func followProxyLogFile(logFilePath string) error {
+	// Clean the file path to prevent path traversal
+	cleanLogFilePath := filepath.Clean(logFilePath)
+
+	// Open the file
+	file, err := os.Open(cleanLogFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to open proxy log %s: %v", cleanLogFilePath, err)
+	}
+	defer file.Close()
+
+	// Read existing content first
+	content, err := os.ReadFile(cleanLogFilePath)
+	if err == nil {
+		fmt.Print(string(content))
+	}
+
+	// Seek to the end of the file for following
+	_, err = file.Seek(0, 2)
+	if err != nil {
+		return fmt.Errorf("failed to seek to end of proxy log: %v", err)
+	}
+
+	// Follow the file for new content
+	for {
+		// Read any new content
+		buffer := make([]byte, 1024)
+		n, err := file.Read(buffer)
+		if err != nil && err.Error() != "EOF" {
+			return fmt.Errorf("error reading proxy log: %v", err)
+		}
+
+		if n > 0 {
+			fmt.Print(string(buffer[:n]))
+		}
+
+		// Sleep briefly before checking for more content
+		time.Sleep(100 * time.Millisecond)
 	}
 }

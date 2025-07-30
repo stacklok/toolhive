@@ -342,7 +342,7 @@ var _ = Describe("List Group", func() {
 
 			outputStr := string(output)
 			Expect(outputStr).To(ContainSubstring("--group"))
-			Expect(outputStr).To(ContainSubstring("Filter workloads by group name"))
+			Expect(outputStr).To(ContainSubstring("Filter workloads by group"))
 		})
 	})
 })

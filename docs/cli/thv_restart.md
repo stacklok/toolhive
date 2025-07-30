@@ -24,8 +24,9 @@ thv restart [workload-name] [flags]
 ### Options
 
 ```
-  -a, --all    Restart all MCP servers
-  -h, --help   help for restart
+  -a, --all            Restart all MCP servers
+  -g, --group string   Restart all MCP servers in a specific group
+  -h, --help           help for restart
 ```
 
 ### Options inherited from parent commands

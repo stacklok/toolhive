@@ -118,7 +118,7 @@ var _ = Describe("Group", func() {
 				cmd := exec.Command(thvBinary, "group", "create", "invalid/group/name")
 				output, err := cmd.CombinedOutput()
 				Expect(err).To(HaveOccurred(), "Should fail with invalid group name")
-				Expect(string(output)).To(ContainSubstring("failed to create file"))
+				Expect(string(output)).To(ContainSubstring("invalid group name"))
 			})
 		})
 

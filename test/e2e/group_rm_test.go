@@ -25,7 +25,7 @@ var _ = Describe("Group Remove Command E2E Tests", func() {
 		It("should show help for group rm command", func() {
 			stdout, stderr := NewTHVCommand(config, "group", "rm", "--help").ExpectSuccess()
 			output := stdout + stderr
-			Expect(output).To(ContainSubstring("Remove a logical group"))
+			Expect(output).To(ContainSubstring("Remove a group and remove all MCP servers from it"))
 			Expect(output).To(ContainSubstring("--with-workloads"))
 		})
 
@@ -49,7 +49,7 @@ var _ = Describe("Group Remove Command E2E Tests", func() {
 			cmd.Stdin = strings.NewReader("y\n")
 			output, err := cmd.CombinedOutput()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(output)).To(ContainSubstring("Group deleted successfully"))
+			Expect(string(output)).To(ContainSubstring("deleted successfully"))
 
 			// Verify group is deleted
 			stdout, _ := NewTHVCommand(config, "group", "list").ExpectSuccess()
@@ -85,7 +85,7 @@ var _ = Describe("Group Remove Command E2E Tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(output)).To(ContainSubstring("WARNING:"))
 			Expect(string(output)).To(ContainSubstring("Removed 3 workload(s) from group"))
-			Expect(string(output)).To(ContainSubstring(fmt.Sprintf("Group '%s' deleted successfully", groupName)))
+			Expect(string(output)).To(ContainSubstring("deleted successfully"))
 
 			// Verify workloads still exist (not deleted by default)
 			stdout, _ := NewTHVCommand(config, "list").ExpectSuccess()

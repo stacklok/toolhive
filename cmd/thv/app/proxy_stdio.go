@@ -6,14 +6,14 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var (
-	stdioHost         string
-	stdioPort         int
 	stdioWorkloadName string
 )
 
@@ -26,8 +26,6 @@ Example:
   thv proxy stdio --host 127.0.0.1 --port 9000 --workload-name my-server my-server-proxy
 
 Flags:
-  --host           Host for the stdio proxy to bind (default: 127.0.0.1)
-  --port           Port for the stdio proxy to bind (default: 0)
   --workload-name  Workload name for the proxy (required)
 `,
 	Args: cobra.ExactArgs(1),
@@ -35,20 +33,10 @@ Flags:
 }
 
 func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
-	ctx, stopSignal := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-	defer stopSignal()
+	ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	serverName := args[0]
-
-	// Normalize host/port
-	host, err := ValidateAndNormaliseHostFlag(stdioHost)
-	if err != nil {
-		return fmt.Errorf("invalid host: %s", stdioHost)
-	}
-	port, err := networking.FindOrUsePort(stdioPort)
-	if err != nil {
-		return err
-	}
 
 	// validate that workload name exists
 	if stdioWorkloadName == "" {
@@ -63,12 +51,22 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get workload %q: %w", stdioWorkloadName, err)
 	}
-	fmt.Println("Using workload:", stdioWorkload.Name)
+
+	// check if workload has http/sse transport
+	if stdioWorkload.TransportType != types.TransportTypeSSE &&
+		stdioWorkload.TransportType != types.TransportTypeStreamableHTTP {
+		return fmt.Errorf("only HTTP/SSE workloads are supported for this proxy")
+	}
 
 	logger.Infof("Starting stdio proxy for server=%q on %s:%d -> %s",
 		serverName, host, port, stdioWorkloadName)
 
-	logger.Info("Proxy running (stdio mode). Press Ctrl+C to stop")
-	<-ctx.Done()
+	bridge := transport.NewStdioBridge(stdioWorkload.URL)
+	bridge.Start(ctx)
 
+	// Consume until interrupt
+	<-ctx.Done()
+	logger.Info("Shutting down bridge")
+	bridge.Shutdown()
+	return nil
 }

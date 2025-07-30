@@ -13,13 +13,11 @@ import (
 
 func TestGetClientStatus(t *testing.T) {
 	// Setup a temporary home directory for testing
-	origHome := os.Getenv("HOME")
 	tempHome, err := os.MkdirTemp("", "toolhive-test-home")
 	require.NoError(t, err)
 	defer os.RemoveAll(tempHome)
 
 	t.Setenv("HOME", tempHome)
-	defer t.Setenv("HOME", origHome)
 
 	// Create mock config with registered clients
 	mockConfig := &config.Config{
@@ -62,4 +60,38 @@ func TestGetClientStatus(t *testing.T) {
 	assert.True(t, exists)
 	assert.False(t, vscodeStatus.Installed)
 	assert.False(t, vscodeStatus.Registered)
+}
+
+func TestGetClientStatus_Sorting(t *testing.T) {
+	// Setup a temporary home directory for testing
+	origHome := os.Getenv("HOME")
+	tempHome, err := os.MkdirTemp("", "toolhive-test-home")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempHome)
+
+	t.Setenv("HOME", tempHome)
+	defer t.Setenv("HOME", origHome)
+
+	// Create mock config with no registered clients
+	mockConfig := &config.Config{
+		Clients: config.Clients{
+			RegisteredClients: []string{},
+		},
+	}
+	cleanup := MockConfig(t, mockConfig)
+	defer cleanup()
+
+	statuses, err := GetClientStatus()
+	require.NoError(t, err)
+	require.NotNil(t, statuses)
+	require.Greater(t, len(statuses), 1, "Need at least 2 clients to test sorting")
+
+	// Verify that the statuses are sorted alphabetically by ClientType
+	for i := 1; i < len(statuses); i++ {
+		prevClient := string(statuses[i-1].ClientType)
+		currClient := string(statuses[i].ClientType)
+		assert.True(t, prevClient < currClient,
+			"Client statuses should be sorted alphabetically: %s should come before %s",
+			prevClient, currClient)
+	}
 }

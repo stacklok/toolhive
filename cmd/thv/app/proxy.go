@@ -219,7 +219,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get authentication middleware for incoming requests
-	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
@@ -236,7 +236,11 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		port, proxyTargetURI)
 
 	// Create the transparent proxy with middlewares
-	proxy := transparent.NewTransparentProxy(proxyHost, port, serverName, proxyTargetURI, nil, false, middlewares...)
+	proxy := transparent.NewTransparentProxy(
+		proxyHost, port, serverName, proxyTargetURI,
+		nil, authInfoHandler,
+		false,
+		middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %v", err)
 	}

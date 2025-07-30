@@ -33,6 +33,7 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 			config.Deployer,
 			config.Debug,
 			config.TargetHost,
+			config.AuthInfoHandler,
 			config.PrometheusHandler,
 			config.Middlewares...,
 		), nil
@@ -45,6 +46,7 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 			config.Deployer,
 			config.Debug,
 			config.TargetHost,
+			config.AuthInfoHandler,
 			config.PrometheusHandler,
 			config.Middlewares...,
 		), nil

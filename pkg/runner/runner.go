@@ -93,11 +93,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsCallFilterMiddleware)
 	}
 
-	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
+	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
 	transportConfig.Middlewares = append(transportConfig.Middlewares, authMiddleware)
+	transportConfig.AuthInfoHandler = authInfoHandler
 
 	// Add MCP parsing middleware after authentication
 	logger.Info("MCP parsing middleware enabled for transport")

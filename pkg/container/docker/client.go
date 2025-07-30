@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1528,14 +1529,29 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 		return empty, NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
 	}
 
-	// ASSUMPTION: There should either be no containers found, or exactly one.
 	if len(containers) == 0 {
 		return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found")
 	}
-	// This should never happen (I hope).
+	// Docker does a prefix match on the name. If we find multiple containers,
+	// we need to filter down to the exact name requested.
+	var containerID string
 	if len(containers) > 1 {
-		return empty, NewContainerError(ErrMultipleContainersFound, workloadName, "multiple containers found with the same name")
+		// The name in the API has a leading slash, so we need to search for that.
+		prefixedName := "/" + workloadName
+		// The name in the API response is a list of names, so we need to check
+		// if the prefixed name is in the list.
+		// The extra names are used for docker network functionality which is
+		// not relevant for us.
+		idx := slices.IndexFunc(containers, func(c container.Summary) bool {
+			return slices.Contains(c.Names, prefixedName)
+		})
+		if idx == -1 {
+			return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found with the exact name")
+		}
+		containerID = containers[idx].ID
+	} else {
+		containerID = containers[0].ID
 	}
 
-	return c.client.ContainerInspect(ctx, containers[0].ID)
+	return c.client.ContainerInspect(ctx, containerID)
 }

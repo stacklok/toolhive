@@ -1,4 +1,4 @@
-package e2e_test
+package e2e
 
 import (
 	"bytes"
@@ -9,16 +9,14 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/stacklok/toolhive/test/e2e"
 )
 
 var _ = Describe("TimeStreamableHttpMcpServer", Serial, func() {
-	var config *e2e.TestConfig
+	var config *testConfig
 
 	BeforeEach(func() {
-		config = e2e.NewTestConfig()
-		err := e2e.CheckTHVBinaryAvailable(config)
+		config = NewTestConfig()
+		err := CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
 	})
 
@@ -31,32 +29,32 @@ var _ = Describe("TimeStreamableHttpMcpServer", Serial, func() {
 
 		AfterEach(func() {
 			if config.CleanupAfter {
-				err := e2e.StopAndRemoveMCPServer(config, serverName)
+				err := stopAndRemoveMCPServer(config, serverName)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 			}
 		})
 
 		It("should respond to a single get_current_time request and a batch request", func() {
 			By("Starting the time MCP server with streamable-http proxy")
-			e2e.NewTHVCommand(config, "run",
+			NewTHVCommand(config, "run",
 				"--name", serverName,
 				"--proxy-mode", "streamable-http",
 				"time").ExpectSuccess()
 
 			By("Waiting for the server to be running")
-			err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+			err := waitForMCPServer(config, serverName, 60*time.Second)
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Getting the server URL")
-			serverURL, err := e2e.GetMCPServerURL(config, serverName)
+			serverURL, err := getMCPServerURL(config, serverName)
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Waiting for MCP server to be ready")
-			err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)
+			err = WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Creating MCP client and initializing connection")
-			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(config, serverURL)
+			mcpClient, err := NewMCPClientForStreamableHTTP(config, serverURL)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 

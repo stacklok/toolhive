@@ -1,4 +1,4 @@
-package e2e_test
+package e2e
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/test/e2e"
 )
 
 func init() {
@@ -22,14 +21,14 @@ func init() {
 
 var _ = Describe("Group", func() {
 	var (
-		config          *e2e.TestConfig
+		config          *testConfig
 		groupName       string
 		thvBinary       string
 		sharedTimestamp int64
 	)
 
 	BeforeEach(func() {
-		config = e2e.NewTestConfig()
+		config = NewTestConfig()
 		// Use a shared timestamp for all workload names in this test
 		sharedTimestamp = time.Now().UnixNano()
 		// Use a more unique group name to avoid conflicts between tests
@@ -40,7 +39,7 @@ var _ = Describe("Group", func() {
 		}
 
 		// Check if thv binary is available
-		err := e2e.CheckTHVBinaryAvailable(config)
+		err := CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
 	})
 

@@ -15,11 +15,11 @@ import (
 // MCPClientHelper provides high-level MCP client operations for e2e tests
 type MCPClientHelper struct {
 	client *client.Client
-	config *TestConfig
+	config *testConfig
 }
 
 // NewMCPClientForSSE creates a new MCP client for SSE transport
-func NewMCPClientForSSE(config *TestConfig, serverURL string) (*MCPClientHelper, error) {
+func NewMCPClientForSSE(config *testConfig, serverURL string) (*MCPClientHelper, error) {
 	mcpClient, err := client.NewSSEMCPClient(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SSE MCP client: %w", err)
@@ -32,7 +32,7 @@ func NewMCPClientForSSE(config *TestConfig, serverURL string) (*MCPClientHelper,
 }
 
 // NewMCPClientForStreamableHTTP creates a new MCP client for streamable HTTP transport
-func NewMCPClientForStreamableHTTP(config *TestConfig, serverURL string) (*MCPClientHelper, error) {
+func NewMCPClientForStreamableHTTP(config *testConfig, serverURL string) (*MCPClientHelper, error) {
 	mcpClient, err := client.NewStreamableHttpClient(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Streamable HTTP MCP client: %w", err)
@@ -149,7 +149,7 @@ func (h *MCPClientHelper) ExpectResourceExists(ctx context.Context, uri string) 
 }
 
 // WaitForMCPServerReady waits for an MCP server to be ready and responsive
-func WaitForMCPServerReady(config *TestConfig, serverURL string, mode string, timeout time.Duration) error {
+func WaitForMCPServerReady(config *testConfig, serverURL string, mode string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -164,7 +164,7 @@ func WaitForMCPServerReady(config *TestConfig, serverURL string, mode string, ti
 		case <-ctx.Done():
 			// Before timing out, debug the server state
 			GinkgoWriter.Printf("MCP server connection timed out, debugging server state...\n")
-			DebugServerState(config, serverName)
+			debugServerState(config, serverName)
 
 			return fmt.Errorf("timeout waiting for MCP server to be ready at %s", serverURL)
 		case <-ticker.C:
@@ -211,7 +211,7 @@ func extractServerNameFromURL(serverURL string) string {
 }
 
 // TestMCPServerBasicFunctionality tests basic MCP server functionality
-func TestMCPServerBasicFunctionality(config *TestConfig, serverURL string) error {
+func TestMCPServerBasicFunctionality(config *testConfig, serverURL string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

@@ -11,7 +11,7 @@ import (
 )
 
 var _ = Describe("Group Remove Command E2E Tests", func() {
-	var config *TestConfig
+	var config *testConfig
 
 	BeforeEach(func() {
 		config = NewTestConfig()

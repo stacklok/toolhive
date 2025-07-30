@@ -1,4 +1,4 @@
-package e2e_test
+package e2e
 
 import (
 	"bytes"
@@ -18,7 +18,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/test/e2e"
 )
 
 // generateUniqueOIDCServerName creates a unique server name for OIDC mock tests
@@ -28,10 +27,10 @@ func generateUniqueOIDCServerName(prefix string) string {
 
 var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 	var (
-		config          *e2e.TestConfig
+		config          *testConfig
 		mockOIDCPort    int
 		proxyPort       int
-		mockOIDCServer  *e2e.OIDCMockServer
+		mockOIDCServer  *OIDCMockServer
 		proxyCmd        *exec.Cmd
 		osvServerName   string
 		proxyServerName string
@@ -41,10 +40,10 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 	)
 
 	BeforeEach(func() {
-		config = e2e.NewTestConfig()
+		config = NewTestConfig()
 
 		// Check if thv binary is available
-		err := e2e.CheckTHVBinaryAvailable(config)
+		err := CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available for testing")
 
 		// Generate unique names for this test run
@@ -64,12 +63,12 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 		By("Starting mock OIDC server")
 		specReport := CurrentSpecReport()
 		if strings.Contains(specReport.FullText(), "Proxy OAuth Authentication E2E") {
-			mockOIDCServer, err = e2e.NewOIDCMockServer(
+			mockOIDCServer, err = NewOIDCMockServer(
 				mockOIDCPort, clientID, clientSecret,
-				e2e.WithAccessTokenLifespan(2*time.Second),
+				WithAccessTokenLifespan(2*time.Second),
 			)
 		} else {
-			mockOIDCServer, err = e2e.NewOIDCMockServer(mockOIDCPort, clientID, clientSecret)
+			mockOIDCServer, err = NewOIDCMockServer(mockOIDCPort, clientID, clientSecret)
 		}
 		Expect(err).ToNot(HaveOccurred())
 
@@ -86,13 +85,13 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 
 		// Start OSV MCP server that will be our target
 		By("Starting OSV MCP server as target")
-		e2e.NewTHVCommand(config, "run",
+		NewTHVCommand(config, "run",
 			"--name", osvServerName,
 			"--transport", "sse",
 			"osv").ExpectSuccess()
 
 		// Wait for OSV server to be ready
-		err = e2e.WaitForMCPServer(config, osvServerName, 60*time.Second)
+		err = waitForMCPServer(config, osvServerName, 60*time.Second)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -107,7 +106,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 
 		// Stop and remove OSV server
 		if config.CleanupAfter {
-			err := e2e.StopAndRemoveMCPServer(config, osvServerName)
+			err := stopAndRemoveMCPServer(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 		}
 
@@ -123,7 +122,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 	Context("when OAuth authentication is enabled", func() {
 		It("should successfully start proxy with OAuth configuration", func() {
 			By("Getting OSV server URL")
-			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
+			osvServerURL, err := getMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
 			// remove path from server url
@@ -166,7 +165,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 
 		It("should handle OAuth auto-detection when target requires authentication", func() {
 			By("Getting OSV server URL")
-			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
+			osvServerURL, err := getMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
 			// remove path from server url
@@ -198,7 +197,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 	Context("when OAuth authentication fails", func() {
 		It("should handle invalid OAuth credentials gracefully", func() {
 			By("Getting OSV server URL")
-			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
+			osvServerURL, err := getMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
 			// remove path from server url
@@ -241,7 +240,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 
 		It("should handle missing OAuth issuer gracefully when remote-auth is explicitly enabled", func() {
 			By("Getting OSV server URL")
-			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
+			osvServerURL, err := getMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
 			// remove path from server url
@@ -284,7 +283,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 
 		It("should handle auto-detection when target server returns WWW-Authenticate header", func() {
 			By("Getting OSV server URL")
-			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
+			osvServerURL, err := getMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
 			// remove path from server url
@@ -316,7 +315,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 	Context("when testing proxy functionality with MCP protocol", func() {
 		It("should proxy MCP requests successfully after OAuth", func() {
 			By("Getting OSV server URL")
-			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
+			osvServerURL, err := getMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Extracting base URL for transparent proxy")
@@ -376,14 +375,14 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 			proxyURL := fmt.Sprintf("http://localhost:%d/sse", proxyPort)
 
 			// Wait for proxy to be ready for MCP connections
-			err = e2e.WaitForMCPServerReady(config, proxyURL, "sse", 60*time.Second)
+			err = WaitForMCPServerReady(config, proxyURL, "sse", 60*time.Second)
 			if err != nil {
 				GinkgoWriter.Printf("MCP connection through proxy failed: %v\n", err)
 				Skip("Skipping MCP test due to proxy not being ready")
 			}
 
 			By("Creating MCP client through proxy")
-			mcpClient, err := e2e.NewMCPClientForSSE(config, proxyURL)
+			mcpClient, err := NewMCPClientForSSE(config, proxyURL)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
@@ -406,7 +405,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 	Context("when testing proxy functionality with MCP protocol and token refresh", func() {
 		It("should refresh token after expiry and continue MCP operations", func() {
 			By("Getting OSV server URL")
-			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
+			osvServerURL, err := getMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Extracting base URL for transparent proxy")
@@ -443,10 +442,10 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 
 			By("Reconnecting via MCP to trigger token refresh")
 			proxyURL := fmt.Sprintf("http://localhost:%d/sse", proxyPort)
-			err = e2e.WaitForMCPServerReady(config, proxyURL, "sse", 10*time.Second)
+			err = WaitForMCPServerReady(config, proxyURL, "sse", 10*time.Second)
 			Expect(err).ToNot(HaveOccurred(), "MCP server not ready after token expiry")
 
-			mcpClient, err := e2e.NewMCPClientForSSE(config, proxyURL)
+			mcpClient, err := NewMCPClientForSSE(config, proxyURL)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
@@ -480,7 +479,7 @@ func checkServerHealth(healthUrl string) error {
 	return fmt.Errorf("server not healthy, status: %d", resp.StatusCode)
 }
 
-func startProxyWithOAuth(config *e2e.TestConfig, serverName, targetURL string, port int, issuer, clientID, clientSecret string) *exec.Cmd {
+func startProxyWithOAuth(config *testConfig, serverName, targetURL string, port int, issuer, clientID, clientSecret string) *exec.Cmd {
 	args := []string{
 		"proxy",
 		"--host", "localhost",
@@ -510,10 +509,10 @@ func startProxyWithOAuth(config *e2e.TestConfig, serverName, targetURL string, p
 	// Log the command for debugging
 	GinkgoWriter.Printf("Starting proxy with args: %v\n", args)
 
-	return e2e.StartLongRunningTHVCommand(config, args...)
+	return startLongRunningTHVCommand(config, args...)
 }
 
-func startProxyWithOAuthDetection(config *e2e.TestConfig, serverName, targetURL string, port int, clientID, clientSecret string) *exec.Cmd {
+func startProxyWithOAuthDetection(config *testConfig, serverName, targetURL string, port int, clientID, clientSecret string) *exec.Cmd {
 	args := []string{
 		"proxy",
 		"--host", "localhost",
@@ -525,10 +524,10 @@ func startProxyWithOAuthDetection(config *e2e.TestConfig, serverName, targetURL 
 		serverName,
 	}
 
-	return e2e.StartLongRunningTHVCommand(config, args...)
+	return startLongRunningTHVCommand(config, args...)
 }
 
-func startProxyWithAutoDetection(config *e2e.TestConfig, serverName, targetURL string, port int, clientID, clientSecret string) *exec.Cmd {
+func startProxyWithAutoDetection(config *testConfig, serverName, targetURL string, port int, clientID, clientSecret string) *exec.Cmd {
 	args := []string{
 		"proxy",
 		"--host", "localhost",
@@ -543,10 +542,10 @@ func startProxyWithAutoDetection(config *e2e.TestConfig, serverName, targetURL s
 	// Log the command for debugging
 	GinkgoWriter.Printf("Starting proxy with auto-detection args: %v\n", args)
 
-	return e2e.StartLongRunningTHVCommand(config, args...)
+	return startLongRunningTHVCommand(config, args...)
 }
 
-func startProxyWithOAuthForMCP(config *e2e.TestConfig, serverName, targetURL string, port int, issuer, clientID, clientSecret string) (*exec.Cmd, *bytes.Buffer) {
+func startProxyWithOAuthForMCP(config *testConfig, serverName, targetURL string, port int, issuer, clientID, clientSecret string) (*exec.Cmd, *bytes.Buffer) {
 	args := []string{
 		"proxy",
 		"--host", "localhost",

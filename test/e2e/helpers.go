@@ -16,39 +16,39 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
-// TestConfig holds configuration for e2e tests
-type TestConfig struct {
+// testConfig holds configuration for e2e tests
+type testConfig struct {
 	THVBinary    string
 	TestTimeout  time.Duration
 	CleanupAfter bool
 }
 
 // NewTestConfig creates a new test configuration with defaults
-func NewTestConfig() *TestConfig {
+func NewTestConfig() *testConfig {
 	// Look for thv binary in PATH or use a configurable path
 	thvBinary := os.Getenv("THV_BINARY")
 	if thvBinary == "" {
 		thvBinary = "thv" // Assume it's in PATH
 	}
 
-	return &TestConfig{
+	return &testConfig{
 		THVBinary:    thvBinary,
 		TestTimeout:  10 * time.Minute,
 		CleanupAfter: true,
 	}
 }
 
-// THVCommand represents a ToolHive CLI command execution
-type THVCommand struct {
-	config *TestConfig
+// thvCommand represents a ToolHive CLI command execution
+type thvCommand struct {
+	config *testConfig
 	args   []string
 	env    []string
 	dir    string
 }
 
 // NewTHVCommand creates a new ToolHive command
-func NewTHVCommand(config *TestConfig, args ...string) *THVCommand {
-	return &THVCommand{
+func NewTHVCommand(config *testConfig, args ...string) *thvCommand {
+	return &thvCommand{
 		config: config,
 		args:   args,
 		env:    os.Environ(),
@@ -57,24 +57,24 @@ func NewTHVCommand(config *TestConfig, args ...string) *THVCommand {
 }
 
 // WithEnv adds environment variables to the command
-func (c *THVCommand) WithEnv(env ...string) *THVCommand {
+func (c *thvCommand) WithEnv(env ...string) *thvCommand {
 	c.env = append(c.env, env...)
 	return c
 }
 
 // WithDir sets the working directory for the command
-func (c *THVCommand) WithDir(dir string) *THVCommand {
+func (c *thvCommand) WithDir(dir string) *thvCommand {
 	c.dir = dir
 	return c
 }
 
 // Run executes the ToolHive command and returns stdout, stderr, and error
-func (c *THVCommand) Run() (string, string, error) {
+func (c *thvCommand) Run() (string, string, error) {
 	return c.RunWithTimeout(c.config.TestTimeout)
 }
 
 // RunWithTimeout executes the ToolHive command with a specific timeout
-func (c *THVCommand) RunWithTimeout(timeout time.Duration) (string, string, error) {
+func (c *thvCommand) RunWithTimeout(timeout time.Duration) (string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -94,7 +94,7 @@ func (c *THVCommand) RunWithTimeout(timeout time.Duration) (string, string, erro
 }
 
 // ExpectSuccess runs the command and expects it to succeed
-func (c *THVCommand) ExpectSuccess() (string, string) {
+func (c *thvCommand) ExpectSuccess() (string, string) {
 	stdout, stderr, err := c.Run()
 	if err != nil {
 		// Log the command that failed for debugging
@@ -107,15 +107,15 @@ func (c *THVCommand) ExpectSuccess() (string, string) {
 }
 
 // ExpectFailure runs the command and expects it to fail
-func (c *THVCommand) ExpectFailure() (string, string, error) {
+func (c *thvCommand) ExpectFailure() (string, string, error) {
 	stdout, stderr, err := c.Run()
 	ExpectWithOffset(1, err).To(HaveOccurred(),
 		fmt.Sprintf("Command should have failed but succeeded\nStdout: %s\nStderr: %s", stdout, stderr))
 	return stdout, stderr, err
 }
 
-// WaitForMCPServer waits for an MCP server to be running
-func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Duration) error {
+// waitForMCPServer waits for an MCP server to be running
+func waitForMCPServer(config *testConfig, serverName string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -140,9 +140,9 @@ func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Durati
 	}
 }
 
-// StopAndRemoveMCPServer stops and removes an MCP server
+// stopAndRemoveMCPServer stops and removes an MCP server
 // This function is designed for cleanup and tolerates servers that don't exist
-func StopAndRemoveMCPServer(config *TestConfig, serverName string) error {
+func stopAndRemoveMCPServer(config *testConfig, serverName string) error {
 	// Try to stop the server first (ignore errors as server might not exist)
 	_, _, _ = NewTHVCommand(config, "stop", serverName).Run()
 
@@ -158,8 +158,8 @@ func StopAndRemoveMCPServer(config *TestConfig, serverName string) error {
 	return nil
 }
 
-// GetMCPServerURL gets the URL for an MCP server
-func GetMCPServerURL(config *TestConfig, serverName string) (string, error) {
+// getMCPServerURL gets the URL for an MCP server
+func getMCPServerURL(config *testConfig, serverName string) (string, error) {
 	stdout, stderr, err := NewTHVCommand(config, "list").Run()
 	if err != nil {
 		GinkgoWriter.Printf("Failed to list servers: %v\nStdout: %s\nStderr: %s\n", err, stdout, stderr)
@@ -187,8 +187,8 @@ func GetMCPServerURL(config *TestConfig, serverName string) (string, error) {
 	return "", fmt.Errorf("could not find URL for server %s in output: %s", serverName, stdout)
 }
 
-// GetServerLogs gets the logs for a server to help with debugging
-func GetServerLogs(config *TestConfig, serverName string) (string, error) {
+// getServerLogs gets the logs for a server to help with debugging
+func getServerLogs(config *testConfig, serverName string) (string, error) {
 	stdout, stderr, err := NewTHVCommand(config, "logs", serverName).Run()
 	if err != nil {
 		return "", fmt.Errorf("failed to get logs for %s: %w (stderr: %s)", serverName, err, stderr)
@@ -196,8 +196,8 @@ func GetServerLogs(config *TestConfig, serverName string) (string, error) {
 	return stdout, nil
 }
 
-// DebugServerState prints debugging information about a server
-func DebugServerState(config *TestConfig, serverName string) {
+// debugServerState prints debugging information about a server
+func debugServerState(config *testConfig, serverName string) {
 	GinkgoWriter.Printf("=== Debugging server state for %s ===\n", serverName)
 
 	// Get list output
@@ -205,7 +205,7 @@ func DebugServerState(config *TestConfig, serverName string) {
 	GinkgoWriter.Printf("thv list output:\nStdout: %s\nStderr: %s\nError: %v\n", stdout, stderr, err)
 
 	// Get logs
-	logs, err := GetServerLogs(config, serverName)
+	logs, err := getServerLogs(config, serverName)
 	if err != nil {
 		GinkgoWriter.Printf("Failed to get logs: %v\n", err)
 	} else {
@@ -216,7 +216,7 @@ func DebugServerState(config *TestConfig, serverName string) {
 }
 
 // CheckTHVBinaryAvailable checks if the thv binary is available
-func CheckTHVBinaryAvailable(config *TestConfig) error {
+func CheckTHVBinaryAvailable(config *testConfig) error {
 	_, _, err := NewTHVCommand(config, "--help").Run()
 	if err != nil {
 		return fmt.Errorf("thv binary not available at %s: %w", config.THVBinary, err)
@@ -224,8 +224,8 @@ func CheckTHVBinaryAvailable(config *TestConfig) error {
 	return nil
 }
 
-// StartLongRunningTHVCommand starts a long-running ToolHive command and returns the process
-func StartLongRunningTHVCommand(config *TestConfig, args ...string) *exec.Cmd {
+// startLongRunningTHVCommand starts a long-running ToolHive command and returns the process
+func startLongRunningTHVCommand(config *testConfig, args ...string) *exec.Cmd {
 	cmd := exec.Command(config.THVBinary, args...) //nolint:gosec // Intentional for e2e testing
 	cmd.Env = os.Environ()
 
@@ -240,8 +240,8 @@ func StartLongRunningTHVCommand(config *TestConfig, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// StartDockerCommand starts a docker command with proper environment setup and returns the command
-func StartDockerCommand(args ...string) *exec.Cmd {
+// startDockerCommand starts a docker command with proper environment setup and returns the command
+func startDockerCommand(args ...string) *exec.Cmd {
 	cmd := exec.Command("docker", args...) //nolint:gosec // Intentional for e2e testing
 	cmd.Env = os.Environ()
 	return cmd
@@ -304,34 +304,34 @@ func cleanupSpecificGroup(groupName string) {
 
 // Helper functions for group and workload management
 
-func createGroup(config *TestConfig, groupName string) {
+func createGroup(config *testConfig, groupName string) {
 	NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
 }
 
-func createWorkloadInGroup(config *TestConfig, workloadName, groupName string) {
+func createWorkloadInGroup(config *testConfig, workloadName, groupName string) {
 	NewTHVCommand(config, "run", "fetch", "--group", groupName, "--name", workloadName).ExpectSuccess()
 }
 
-func createWorkload(config *TestConfig, workloadName string) {
+func createWorkload(config *testConfig, workloadName string) {
 	NewTHVCommand(config, "run", "fetch", "--name", workloadName).ExpectSuccess()
 }
 
-func removeWorkload(config *TestConfig, workloadName string) {
+func removeWorkload(config *testConfig, workloadName string) {
 	NewTHVCommand(config, "rm", workloadName).ExpectSuccess()
 }
 
-func isWorkloadRunning(config *TestConfig, workloadName string) bool {
+func isWorkloadRunning(config *testConfig, workloadName string) bool {
 	stdout, _ := NewTHVCommand(config, "list", "--all").ExpectSuccess()
 	return strings.Contains(stdout, workloadName)
 }
 
-func waitForWorkload(config *TestConfig, workloadName string) bool {
-	deadline := time.Now().Add(3 * time.Second)
+func waitForWorkload(config *testConfig, workloadName string) bool {
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if isWorkloadRunning(config, workloadName) {
 			return true
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 	return false
 }

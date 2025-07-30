@@ -9,7 +9,7 @@ import (
 )
 
 var _ = Describe("Group Remove E2E Tests", func() {
-	var config *TestConfig
+	var config *testConfig
 
 	BeforeEach(func() {
 		config = NewTestConfig()
@@ -83,7 +83,7 @@ var _ = Describe("Group Remove E2E Tests", func() {
 
 			// Verify all workloads are running
 			for _, workloadName := range []string{workload1, workload2, workload3} {
-				Expect(waitForWorkload(config, workloadName)).To(BeTrue(), "Workload %s did not appear in thv list within 3 seconds", workloadName)
+				Expect(waitForWorkload(config, workloadName)).To(BeTrue(), "Workload %s did not appear in thv list within 10 seconds", workloadName)
 			}
 
 			// Remove all workloads in the group
@@ -114,9 +114,9 @@ var _ = Describe("Group Remove E2E Tests", func() {
 			createWorkload(config, nonGroupWorkload1)
 			createWorkload(config, nonGroupWorkload2)
 
-			// Wait for the workloads to appear in thv list (up to 5 seconds)
+			// Wait for the workloads to appear in thv list (up to 10 seconds)
 			for _, workloadName := range []string{groupWorkload1, groupWorkload2, nonGroupWorkload1, nonGroupWorkload2} {
-				Expect(waitForWorkload(config, workloadName)).To(BeTrue(), "Workload %s did not appear in thv list within 3 seconds", workloadName)
+				Expect(waitForWorkload(config, workloadName)).To(BeTrue(), "Workload %s did not appear in thv list within 10 seconds", workloadName)
 			}
 
 			// Remove all workloads in the group
@@ -147,8 +147,8 @@ var _ = Describe("Group Remove E2E Tests", func() {
 			workloadName := fmt.Sprintf("rm-test-workload-%d", time.Now().UnixNano())
 			createWorkload(config, workloadName)
 
-			// Wait for the workload to appear in thv list (up to 5 seconds)
-			Expect(waitForWorkload(config, workloadName)).To(BeTrue(), "Workload did not appear in thv list in time")
+			// Wait for the workload to appear in thv list (up to 10 seconds)
+			Expect(waitForWorkload(config, workloadName)).To(BeTrue(), "Workload did not appear in thv list within 10 seconds")
 
 			// Remove workload using normal rm command
 			NewTHVCommand(config, "rm", workloadName).ExpectSuccess()

@@ -1,4 +1,4 @@
-package e2e_test
+package e2e
 
 import (
 	"fmt"
@@ -8,13 +8,11 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/stacklok/toolhive/test/e2e"
 )
 
 // inspectorTestHelper contains common functionality for inspector tests
 type inspectorTestHelper struct {
-	config        *e2e.TestConfig
+	config        *testConfig
 	mcpServerName string
 	inspectorName string
 	client        *http.Client
@@ -23,27 +21,27 @@ type inspectorTestHelper struct {
 
 var _ = Describe("Inspector", func() {
 	var (
-		config        *e2e.TestConfig
+		config        *testConfig
 		mcpServerName string
 		inspectorName string
 	)
 
 	BeforeEach(func() {
-		config = e2e.NewTestConfig()
+		config = NewTestConfig()
 		mcpServerName = fmt.Sprintf("mcp-server-%d", GinkgoRandomSeed())
 		inspectorName = "inspector"
 
 		// Check if thv binary is available
-		err := e2e.CheckTHVBinaryAvailable(config)
+		err := CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
 	})
 
 	AfterEach(func() {
 		if config.CleanupAfter {
 			// Clean up both servers
-			err := e2e.StopAndRemoveMCPServer(config, inspectorName)
+			err := stopAndRemoveMCPServer(config, inspectorName)
 			Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove inspector")
-			err = e2e.StopAndRemoveMCPServer(config, mcpServerName)
+			err = stopAndRemoveMCPServer(config, mcpServerName)
 			Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove MCP server")
 		}
 	})
@@ -52,19 +50,19 @@ var _ = Describe("Inspector", func() {
 		Context("when providing invalid arguments", func() {
 			It("should fail when no server name is provided", func() {
 				By("Running inspector without server name")
-				_, _, err := e2e.NewTHVCommand(config, "inspector").ExpectFailure()
+				_, _, err := NewTHVCommand(config, "inspector").ExpectFailure()
 				Expect(err).To(HaveOccurred(), "Should fail without server name")
 			})
 
 			It("should fail when too many arguments are provided", func() {
 				By("Running inspector with multiple server names")
-				_, _, err := e2e.NewTHVCommand(config, "inspector", "server1", "server2").ExpectFailure()
+				_, _, err := NewTHVCommand(config, "inspector", "server1", "server2").ExpectFailure()
 				Expect(err).To(HaveOccurred(), "Should fail with multiple server names")
 			})
 
 			It("should fail when server doesn't exist", func() {
 				By("Running inspector with non-existent server")
-				_, stderr, err := e2e.NewTHVCommand(config, "inspector", "non-existent-server").
+				_, stderr, err := NewTHVCommand(config, "inspector", "non-existent-server").
 					RunWithTimeout(10 * time.Second)
 				Expect(err).To(HaveOccurred(), "Should fail with non-existent server")
 				Expect(stderr).To(ContainSubstring("not found"), "Should indicate server not found")
@@ -74,7 +72,7 @@ var _ = Describe("Inspector", func() {
 		Context("when checking help and flags", func() {
 			It("should show help information", func() {
 				By("Getting inspector help")
-				stdout, _ := e2e.NewTHVCommand(config, "inspector", "--help").ExpectSuccess()
+				stdout, _ := NewTHVCommand(config, "inspector", "--help").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring("MCP Inspector UI"), "Should mention Inspector UI")
 				Expect(stdout).To(ContainSubstring("--ui-port"), "Should show ui-port flag")
 				Expect(stdout).To(ContainSubstring("--mcp-proxy-port"), "Should show mcp-proxy-port flag")
@@ -82,7 +80,7 @@ var _ = Describe("Inspector", func() {
 
 			It("should accept custom ports", func() {
 				By("Running inspector with custom ports (should fail due to missing server)")
-				_, stderr, err := e2e.NewTHVCommand(config, "inspector",
+				_, stderr, err := NewTHVCommand(config, "inspector",
 					"--ui-port", "8080",
 					"--mcp-proxy-port", "8081",
 					"non-existent-server").RunWithTimeout(10 * time.Second)
@@ -104,9 +102,9 @@ var _ = Describe("Inspector", func() {
 		AfterEach(func() {
 			if config.CleanupAfter {
 				// Clean up both servers
-				err := e2e.StopAndRemoveMCPServer(config, inspectorName)
+				err := stopAndRemoveMCPServer(config, inspectorName)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove inspector")
-				err = e2e.StopAndRemoveMCPServer(config, mcpServerName)
+				err = stopAndRemoveMCPServer(config, mcpServerName)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove MCP server")
 			}
 		})
@@ -114,7 +112,7 @@ var _ = Describe("Inspector", func() {
 		Context("when launching inspector", func() {
 			It("should successfully start inspector UI", func() {
 				By("Starting the inspector")
-				stdout, stderr, err := e2e.NewTHVCommand(config, "inspector", mcpServerName).
+				stdout, stderr, err := NewTHVCommand(config, "inspector", mcpServerName).
 					RunWithTimeout(15 * time.Second)
 
 				output := stdout + stderr
@@ -156,7 +154,7 @@ var _ = Describe("Inspector", func() {
 			It("should use custom UI port when specified", func() {
 				By("Starting inspector with custom UI port")
 				customUIPort := "9999"
-				stdout, stderr, err := e2e.NewTHVCommand(config, "inspector",
+				stdout, stderr, err := NewTHVCommand(config, "inspector",
 					"--ui-port", customUIPort,
 					mcpServerName).RunWithTimeout(10 * time.Second)
 
@@ -194,7 +192,7 @@ var _ = Describe("Inspector", func() {
 				helper.verifyInspectorUIUnavailable()
 
 				By("Verifying no orphaned inspector containers remain")
-				stdout, _ := e2e.NewTHVCommand(config, "list", "--all").ExpectSuccess()
+				stdout, _ := NewTHVCommand(config, "list", "--all").ExpectSuccess()
 				Expect(stdout).ToNot(BeNil(), "Should get valid list output")
 			})
 		})
@@ -202,7 +200,7 @@ var _ = Describe("Inspector", func() {
 })
 
 // newInspectorTestHelper creates a new inspector test helper
-func newInspectorTestHelper(config *e2e.TestConfig, mcpServerName, inspectorName string) *inspectorTestHelper {
+func newInspectorTestHelper(config *testConfig, mcpServerName, inspectorName string) *inspectorTestHelper {
 	return &inspectorTestHelper{
 		config:        config,
 		mcpServerName: mcpServerName,
@@ -218,7 +216,7 @@ func (h *inspectorTestHelper) startInspectorInBackground(timeout time.Duration, 
 	go func() {
 		cmdArgs := append([]string{"inspector"}, args...)
 		cmdArgs = append(cmdArgs, h.mcpServerName)
-		_, _, err := e2e.NewTHVCommand(h.config, cmdArgs...).RunWithTimeout(timeout)
+		_, _, err := NewTHVCommand(h.config, cmdArgs...).RunWithTimeout(timeout)
 		done <- err
 	}()
 	return done
@@ -278,7 +276,7 @@ func (*inspectorTestHelper) waitForInspectorCompletion(done chan error, timeout 
 
 // cleanupInspector performs cleanup of inspector containers
 func (h *inspectorTestHelper) cleanupInspector() {
-	err := e2e.StopAndRemoveMCPServer(h.config, h.inspectorName)
+	err := stopAndRemoveMCPServer(h.config, h.inspectorName)
 	if err != nil {
 		GinkgoWriter.Printf("Note: Cleanup returned error (may be expected): %v\n", err)
 	}
@@ -288,7 +286,7 @@ func (h *inspectorTestHelper) cleanupInspector() {
 // setupMCPServer starts an MCP server and waits for it to be ready
 func (h *inspectorTestHelper) setupMCPServer() {
 	By("Starting an MCP server for inspector to connect to")
-	e2e.NewTHVCommand(h.config, "run", "--name", h.mcpServerName, "fetch").ExpectSuccess()
-	err := e2e.WaitForMCPServer(h.config, h.mcpServerName, 60*time.Second)
+	NewTHVCommand(h.config, "run", "--name", h.mcpServerName, "fetch").ExpectSuccess()
+	err := waitForMCPServer(h.config, h.mcpServerName, 60*time.Second)
 	Expect(err).ToNot(HaveOccurred(), "MCP server should be running")
 }

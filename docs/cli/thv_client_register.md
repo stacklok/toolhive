@@ -18,6 +18,11 @@ Register a client for MCP server configuration
 Register a client for MCP server configuration.
 
 Valid clients:
+  - amp-cli: Sourcegraph Amp CLI
+  - amp-cursor: Sourcegraph Amp extension for Cursor
+  - amp-vscode: Sourcegraph Amp extension for VS Code
+  - amp-vscode-insider: Sourcegraph Amp extension for VS Code Insiders
+  - amp-windsurf: Sourcegraph Amp extension for Windsurf
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
   - cursor: Cursor editor

@@ -18,7 +18,7 @@ Create a stdio-based proxy for an MCP server
 Create a stdio-based proxy that connects stdin/stdout to a target MCP server.
 
 Example:
-  thv proxy stdio --host 127.0.0.1 --port 9000 --workload-name my-server my-server-proxy
+  thv proxy stdio --workload-name my-server my-server-proxy
 
 Flags:
   --workload-name  Workload name for the proxy (required)

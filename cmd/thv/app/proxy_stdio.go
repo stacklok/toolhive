@@ -23,7 +23,7 @@ var proxyStdioCmd = &cobra.Command{
 	Long: `Create a stdio-based proxy that connects stdin/stdout to a target MCP server.
 
 Example:
-  thv proxy stdio --host 127.0.0.1 --port 9000 --workload-name my-server my-server-proxy
+  thv proxy stdio --workload-name my-server my-server-proxy
 
 Flags:
   --workload-name  Workload name for the proxy (required)
@@ -58,10 +58,12 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("only HTTP/SSE workloads are supported for this proxy")
 	}
 
-	logger.Infof("Starting stdio proxy for server=%q on %s:%d -> %s",
-		serverName, host, port, stdioWorkloadName)
+	logger.Infof("Starting stdio proxy for server=%q -> %s", serverName, stdioWorkloadName)
 
-	bridge := transport.NewStdioBridge(stdioWorkload.URL)
+	bridge, err := transport.NewStdioBridge(stdioWorkload.URL)
+	if err != nil {
+		return fmt.Errorf("failed to create stdio bridge: %w", err)
+	}
 	bridge.Start(ctx)
 
 	// Consume until interrupt

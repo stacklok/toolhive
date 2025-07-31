@@ -368,8 +368,9 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	}
 
 	if runConfig.ToolsFilter != nil {
-		toolsFilter := strings.Join(runConfig.ToolsFilter, ",")
-		detachedArgs = append(detachedArgs, "--tools", toolsFilter)
+		for _, tool := range runConfig.ToolsFilter {
+			detachedArgs = append(detachedArgs, "--tools", tool)
+		}
 	}
 
 	// Add the image and any arguments

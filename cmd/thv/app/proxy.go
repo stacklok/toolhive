@@ -175,7 +175,8 @@ func init() {
 	proxyStdioCmd.Flags().StringVar(&stdioWorkloadName, "workload-name", "", "Workload name for the proxy (required)")
 	_ = proxyStdioCmd.MarkFlagRequired("workload-name")
 
-	// Attach the subcommand to the main proxy command
+	// Attach the subcommands to the main proxy command
+	proxyCmd.AddCommand(proxyTunnelCmd)
 	proxyCmd.AddCommand(proxyStdioCmd)
 
 }

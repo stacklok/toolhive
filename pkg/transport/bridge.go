@@ -195,6 +195,7 @@ func (b *StdioBridge) runStreamableWriter(ctx context.Context) {
 
 func (b *StdioBridge) runLegacyReader(ctx context.Context) {
 	defer b.wg.Done()
+
 	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL.String(), nil)
 	if err != nil {
 		logger.Errorf("Failed to create GET request: %v", err)
@@ -202,30 +203,59 @@ func (b *StdioBridge) runLegacyReader(ctx context.Context) {
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	copyHeaders(req.Header, b.headers)
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		logger.Errorf("SSE connect error: %v", err)
 		return
 	}
 	defer resp.Body.Close()
+
 	scanner := bufio.NewScanner(resp.Body)
-	var sb strings.Builder
+	var (
+		eventName string
+		dataLines []string
+	)
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
 		if strings.HasPrefix(line, "data:") {
-			sb.WriteString(strings.TrimPrefix(line, "data:"))
+			dataLines = append(dataLines, strings.TrimPrefix(strings.TrimSpace(line), "data:"))
+			continue
 		}
 		if line == "" {
-			raw := strings.TrimSpace(sb.String())
-			sb.Reset()
-			if strings.HasPrefix(raw, "/") && strings.Contains(raw, "sessionId") {
-				b.updatePostURL(raw)
-				b.sendInitialize(ctx)
-			} else {
-				emitJSON(raw)
+			payload := strings.Join(dataLines, "\n")
+			dataLines = dataLines[:0]
+
+			switch eventName {
+			case "endpoint":
+				if payload != "" {
+					b.updatePostURL(payload)
+					b.sendInitialize(ctx)
+				}
+			default:
+				if isJSON(payload) {
+					emitJSON(payload)
+				} else {
+					logger.Debugf("Skipping non-JSON SSE event (%q): %q", eventName, payload)
+				}
 			}
+			eventName = ""
 		}
 	}
+
+	if err := scanner.Err(); err != nil {
+		logger.Errorf("SSE read error: %v", err)
+	}
+}
+
+func isJSON(s string) bool {
+	s = strings.TrimLeft(s, " \r\n\t")
+	return len(s) > 0 && (s[0] == '{' || s[0] == '[')
 }
 
 func (b *StdioBridge) runLegacyWriter(ctx context.Context) {

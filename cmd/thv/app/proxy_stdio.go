@@ -9,7 +9,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport"
-	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -50,12 +49,6 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 	stdioWorkload, err := workloadManager.GetWorkload(ctx, stdioWorkloadName)
 	if err != nil {
 		return fmt.Errorf("failed to get workload %q: %w", stdioWorkloadName, err)
-	}
-
-	// check if workload has http/sse transport
-	if stdioWorkload.TransportType != types.TransportTypeSSE &&
-		stdioWorkload.TransportType != types.TransportTypeStreamableHTTP {
-		return fmt.Errorf("only HTTP/SSE workloads are supported for this proxy")
 	}
 
 	logger.Infof("Starting stdio proxy for server=%q -> %s", serverName, stdioWorkloadName)

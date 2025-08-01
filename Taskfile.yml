@@ -7,8 +7,9 @@ includes:
 
 tasks:
   docs:
-    desc: Generate the docs
+    desc: Regenerate the docs
     cmds:
+      - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
 
   swagger-install:

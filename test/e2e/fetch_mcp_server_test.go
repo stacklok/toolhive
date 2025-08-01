@@ -1,4 +1,4 @@
-package e2e_test
+package e2e
 
 import (
 	"encoding/json"
@@ -9,29 +9,27 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/stacklok/toolhive/test/e2e"
 )
 
 var _ = Describe("FetchMcpServer", func() {
 	var (
-		config     *e2e.TestConfig
+		config     *testConfig
 		serverName string
 	)
 
 	BeforeEach(func() {
-		config = e2e.NewTestConfig()
+		config = NewTestConfig()
 		serverName = fmt.Sprintf("fetch-test-%d", GinkgoRandomSeed())
 
 		// Check if thv binary is available
-		err := e2e.CheckTHVBinaryAvailable(config)
+		err := CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
 	})
 
 	AfterEach(func() {
 		if config.CleanupAfter {
 			// Clean up the server if it exists
-			err := e2e.StopAndRemoveMCPServer(config, serverName)
+			err := stopAndRemoveMCPServer(config, serverName)
 			Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 		}
 	})
@@ -40,31 +38,31 @@ var _ = Describe("FetchMcpServer", func() {
 		Context("when starting the server from registry", func() {
 			It("should successfully start and be accessible", func() {
 				By("Starting the fetch MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch").ExpectSuccess()
+				stdout, stderr := NewTHVCommand(config, "run", "--name", serverName, "fetch").ExpectSuccess()
 
 				// The command should indicate success
 				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := waitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 30 seconds")
 
 				By("Verifying the server appears in the list")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ = NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 			})
 
 			It("should be accessible via HTTP", func() {
 				By("Starting the fetch MCP server")
-				e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch").ExpectSuccess()
+				NewTHVCommand(config, "run", "--name", serverName, "fetch").ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := waitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Getting the server URL")
-				serverURL, err := e2e.GetMCPServerURL(config, serverName)
+				serverURL, err := getMCPServerURL(config, serverName)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to get server URL")
 				Expect(serverURL).To(ContainSubstring("http"), "URL should be HTTP-based")
 
@@ -88,24 +86,24 @@ var _ = Describe("FetchMcpServer", func() {
 		Context("when starting the server from registry with tools filter", func() {
 			It("should start when filters are correct", func() {
 				By("Starting the fetch MCP server")
-				stdout, stderr := e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools", "fetch").ExpectSuccess()
+				stdout, stderr := NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools", "fetch").ExpectSuccess()
 
 				// The command should indicate success
 				Expect(stdout+stderr).To(ContainSubstring("fetch"), "Output should mention the fetch server")
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := waitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 30 seconds")
 
 				By("Verifying the server appears in the list")
-				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				stdout, _ = NewTHVCommand(config, "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 			})
 
 			It("should not start when filters are incorrect", func() {
 				By("Starting the fetch MCP server")
-				_, _, err := e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools", "wrong-tool").ExpectFailure()
+				_, _, err := NewTHVCommand(config, "run", "--name", serverName, "fetch", "--tools", "wrong-tool").ExpectFailure()
 				Expect(err).To(HaveOccurred(), "Should fail with non-existent server")
 			})
 		})
@@ -113,19 +111,19 @@ var _ = Describe("FetchMcpServer", func() {
 		Context("when managing the server lifecycle", func() {
 			BeforeEach(func() {
 				// Start a server for lifecycle tests
-				e2e.NewTHVCommand(config, "run", "--name", serverName, "fetch").ExpectSuccess()
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				NewTHVCommand(config, "run", "--name", serverName, "fetch").ExpectSuccess()
+				err := waitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
 			It("should stop the server successfully", func() {
 				By("Stopping the server")
-				stdout, _ := e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
+				stdout, _ := NewTHVCommand(config, "stop", serverName).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName), "Output should mention the server name")
 
 				By("Verifying the server is stopped")
 				Eventually(func() bool {
-					stdout, _ := e2e.NewTHVCommand(config, "list", "--all").ExpectSuccess()
+					stdout, _ := NewTHVCommand(config, "list", "--all").ExpectSuccess()
 					lines := strings.Split(stdout, "\n")
 					for _, line := range lines {
 						if strings.Contains(line, serverName) {
@@ -139,22 +137,22 @@ var _ = Describe("FetchMcpServer", func() {
 
 			It("should restart the server successfully", func() {
 				By("Restarting the server")
-				stdout, _ := e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
+				stdout, _ := NewTHVCommand(config, "restart", serverName).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName))
 
 				By("Waiting for the server to be running again")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := waitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
 			It("should remove the server successfully", func() {
 				By("Removing the server")
-				stdout, _ := e2e.NewTHVCommand(config, "rm", serverName).ExpectSuccess()
+				stdout, _ := NewTHVCommand(config, "rm", serverName).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName))
 
 				By("Verifying the server is no longer listed")
 				Eventually(func() string {
-					stdout, _ := e2e.NewTHVCommand(config, "list", "--all").ExpectSuccess()
+					stdout, _ := NewTHVCommand(config, "list", "--all").ExpectSuccess()
 					return stdout
 				}, 10*time.Second, 1*time.Second).ShouldNot(ContainSubstring(serverName),
 					"Server should no longer be listed")
@@ -164,13 +162,13 @@ var _ = Describe("FetchMcpServer", func() {
 		Context("when testing registry operations", func() {
 			It("should list available servers in registry", func() {
 				By("Listing registry servers")
-				stdout, _ := e2e.NewTHVCommand(config, "registry", "list").ExpectSuccess()
+				stdout, _ := NewTHVCommand(config, "registry", "list").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring("fetch"), "Registry should contain fetch server")
 			})
 
 			It("should show fetch server info", func() {
 				By("Getting fetch server info")
-				stdout, _ := e2e.NewTHVCommand(config, "registry", "info", "--format", "json", "fetch").ExpectSuccess()
+				stdout, _ := NewTHVCommand(config, "registry", "info", "--format", "json", "fetch").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring("fetch"), "Info should be about fetch server")
 				Expect(stdout).To(ContainSubstring("tools"), "Info should mention tools")
 
@@ -186,7 +184,7 @@ var _ = Describe("FetchMcpServer", func() {
 
 			It("should search for fetch server", func() {
 				By("Searching for fetch server")
-				stdout, _ := e2e.NewTHVCommand(config, "search", "fetch").ExpectSuccess()
+				stdout, _ := NewTHVCommand(config, "search", "fetch").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring("fetch"), "Search should find fetch server")
 			})
 		})
@@ -196,13 +194,13 @@ var _ = Describe("FetchMcpServer", func() {
 		Context("when providing invalid arguments", func() {
 			It("should fail with invalid server name", func() {
 				By("Trying to run a non-existent server")
-				_, _, err := e2e.NewTHVCommand(config, "run", "non-existent-server-12345").ExpectFailure()
+				_, _, err := NewTHVCommand(config, "run", "non-existent-server-12345").ExpectFailure()
 				Expect(err).To(HaveOccurred(), "Should fail with non-existent server")
 			})
 
 			It("should fail with invalid transport", func() {
 				By("Trying to run with invalid transport")
-				_, _, err := e2e.NewTHVCommand(config, "run",
+				_, _, err := NewTHVCommand(config, "run",
 					"--transport", "invalid-transport",
 					"fetch").ExpectFailure()
 				Expect(err).To(HaveOccurred(), "Should fail with invalid transport")
@@ -212,7 +210,7 @@ var _ = Describe("FetchMcpServer", func() {
 		Context("when managing non-existent servers", func() {
 			It("should handle stopping non-existent server gracefully", func() {
 				By("Trying to stop a non-existent server")
-				stdout, _ := e2e.NewTHVCommand(config, "stop", "non-existent-server-12345").ExpectSuccess()
+				stdout, _ := NewTHVCommand(config, "stop", "non-existent-server-12345").ExpectSuccess()
 				Expect(stdout).To(ContainSubstring("stopped successfully"), "Should indicate server has stopped successfully")
 			})
 		})

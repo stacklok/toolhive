@@ -1,4 +1,4 @@
-package e2e_test
+package e2e
 
 import (
 	"context"
@@ -13,18 +13,16 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/stacklok/toolhive/test/e2e"
 )
 
 var _ = Describe("OSV MCP Server with Authorization", Serial, func() {
-	var config *e2e.TestConfig
+	var config *testConfig
 
 	BeforeEach(func() {
-		config = e2e.NewTestConfig()
+		config = NewTestConfig()
 
 		// Check if thv binary is available
-		err := e2e.CheckTHVBinaryAvailable(config)
+		err := CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
 	})
 
@@ -32,7 +30,7 @@ var _ = Describe("OSV MCP Server with Authorization", Serial, func() {
 		Context("when authorization allows only one tool call for anybody", Ordered, func() {
 			var serverName string
 			var authzConfigPath string
-			var mcpClient *e2e.MCPClientHelper
+			var mcpClient *MCPClientHelper
 			var serverURL string
 			var cancel context.CancelFunc
 
@@ -61,28 +59,28 @@ var _ = Describe("OSV MCP Server with Authorization", Serial, func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				// Start ONE server for ALL tests in this context with metrics enabled
-				e2e.NewTHVCommand(config, "run",
+				NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "sse",
 					"--authz-config", authzConfigPath,
 					"--otel-enable-prometheus-metrics-path",
 					"osv").ExpectSuccess()
 
-				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err = waitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Get server URL
-				serverURL, err = e2e.GetMCPServerURL(config, serverName)
+				serverURL, err = getMCPServerURL(config, serverName)
 				Expect(err).ToNot(HaveOccurred())
 
-				err = e2e.WaitForMCPServerReady(config, serverURL, "sse", 60*time.Second)
+				err = WaitForMCPServerReady(config, serverURL, "sse", 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
 			BeforeEach(func() {
 				// Create fresh MCP client for each test
 				var err error
-				mcpClient, err = e2e.NewMCPClientForSSE(config, serverURL)
+				mcpClient, err = NewMCPClientForSSE(config, serverURL)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Create context that will be cancelled in AfterEach
@@ -104,7 +102,7 @@ var _ = Describe("OSV MCP Server with Authorization", Serial, func() {
 			AfterAll(func() {
 				if config.CleanupAfter {
 					// Clean up the shared server after all tests
-					err := e2e.StopAndRemoveMCPServer(config, serverName)
+					err := stopAndRemoveMCPServer(config, serverName)
 					Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
 
 					// Clean up the temporary config file

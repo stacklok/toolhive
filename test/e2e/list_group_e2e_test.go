@@ -1,7 +1,5 @@
-package e2e_test
+package e2e
 
-// TODO: Re-enable when group functionality is complete
-/*
 import (
 	"context"
 	"fmt"
@@ -15,7 +13,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/test/e2e"
 )
 
 func init() {
@@ -24,14 +21,14 @@ func init() {
 
 var _ = Describe("List Group", func() {
 	var (
-		config          *e2e.TestConfig
+		config          *testConfig
 		groupName       string
 		thvBinary       string
 		sharedTimestamp int64
 	)
 
 	BeforeEach(func() {
-		config = e2e.NewTestConfig()
+		config = NewTestConfig()
 		// Use a shared timestamp for all workload names in this test
 		sharedTimestamp = time.Now().UnixNano()
 		// Use a more unique group name to avoid conflicts between tests
@@ -42,7 +39,7 @@ var _ = Describe("List Group", func() {
 		}
 
 		// Check if thv binary is available
-		err := e2e.CheckTHVBinaryAvailable(config)
+		err := CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred(), "thv binary should be available")
 	})
 
@@ -85,11 +82,26 @@ var _ = Describe("List Group", func() {
 				output, err := cmd.CombinedOutput()
 				Expect(err).ToNot(HaveOccurred(), "Failed to add workload: %s", string(output))
 
-				// Wait for workload to be fully registered
-				time.Sleep(3 * time.Second)
+				// Wait for workload to be fully registered and appear in the group
+				time.Sleep(5 * time.Second)
 			})
 
 			It("should show only workloads in the specified group", func() {
+				// Wait for workload to appear in the group
+				By("Waiting for workload to appear in group")
+				deadline := time.Now().Add(10 * time.Second)
+				found := false
+				for time.Now().Before(deadline) {
+					cmd := exec.Command(thvBinary, "list", "--group", groupName)
+					output, err := cmd.CombinedOutput()
+					if err == nil && strings.Contains(string(output), workloadName) {
+						found = true
+						break
+					}
+					time.Sleep(500 * time.Millisecond)
+				}
+				Expect(found).To(BeTrue(), "Workload should appear in group within 10 seconds")
+
 				By("Listing workloads in the group")
 				cmd := exec.Command(thvBinary, "list", "--group", groupName)
 				output, err := cmd.CombinedOutput()
@@ -344,8 +356,7 @@ var _ = Describe("List Group", func() {
 
 			outputStr := string(output)
 			Expect(outputStr).To(ContainSubstring("--group"))
-			Expect(outputStr).To(ContainSubstring("Filter workloads by group name"))
+			Expect(outputStr).To(ContainSubstring("Filter workloads by group"))
 		})
 	})
 })
-*/

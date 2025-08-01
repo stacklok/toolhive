@@ -767,6 +767,112 @@
       ],
       "transport": "stdio"
     },
+    "falcon": {
+      "args": [],
+      "description": "Connects AI agents with the CrowdStrike Falcon platform for intelligent security analysis, providing programmatic access to detections, incidents, behaviors, threat intelligence, hosts, vulnerabilities, and identity protection capabilities.",
+      "env_vars": [
+        {
+          "description": "CrowdStrike API client ID",
+          "name": "FALCON_CLIENT_ID",
+          "required": true,
+          "secret": true
+        },
+        {
+          "description": "CrowdStrike API client secret",
+          "name": "FALCON_CLIENT_SECRET",
+          "required": true,
+          "secret": true
+        },
+        {
+          "description": "CrowdStrike API base URL (e.g., https://api.crowdstrike.com, https://api.us-2.crowdstrike.com, https://api.eu-1.crowdstrike.com)",
+          "name": "FALCON_BASE_URL",
+          "required": true
+        },
+        {
+          "description": "Comma-separated list of modules to enable (detections,incidents,intel,hosts,spotlight,cloud,idp). If not set, all modules are enabled.",
+          "name": "FALCON_MCP_MODULES",
+          "required": false
+        },
+        {
+          "description": "Transport method - stdio, sse, or streamable-http (default: stdio)",
+          "name": "FALCON_MCP_TRANSPORT",
+          "required": false
+        },
+        {
+          "description": "Enable debug logging - true or false (default: false)",
+          "name": "FALCON_MCP_DEBUG",
+          "required": false
+        },
+        {
+          "description": "Host for HTTP transports (default: 127.0.0.1)",
+          "name": "FALCON_MCP_HOST",
+          "required": false
+        },
+        {
+          "description": "Port for HTTP transports (default: 8000)",
+          "name": "FALCON_MCP_PORT",
+          "required": false
+        }
+      ],
+      "image": "quay.io/crowdstrike/falcon-mcp:latest",
+      "metadata": {
+        "last_updated": "2025-08-11T00:00:00Z",
+        "pulls": 1,
+        "stars": 30
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [],
+            "insecure_allow_all": true
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/crowdstrike/falcon-mcp",
+      "status": "Active",
+      "tags": [
+        "crowdstrike",
+        "falcon",
+        "security",
+        "cybersecurity",
+        "threat-intelligence",
+        "detections",
+        "incidents",
+        "vulnerabilities",
+        "endpoint-security",
+        "threat-hunting",
+        "incident-response",
+        "malware-analysis",
+        "identity-protection",
+        "cloud-security"
+      ],
+      "tier": "Official",
+      "tools": [
+        "falcon_check_connectivity",
+        "falcon_get_available_modules",
+        "falcon_search_detections",
+        "falcon_get_detection_details",
+        "falcon_show_crowd_score",
+        "falcon_search_incidents",
+        "falcon_get_incident_details",
+        "falcon_search_behaviors",
+        "falcon_get_behavior_details",
+        "falcon_search_actors",
+        "falcon_search_indicators",
+        "falcon_search_reports",
+        "falcon_search_hosts",
+        "falcon_get_host_details",
+        "falcon_search_vulnerabilities",
+        "falcon_search_kubernetes_containers",
+        "falcon_count_kubernetes_containers",
+        "falcon_search_images_vulnerabilities",
+        "idp_investigate_entity"
+      ],
+      "transport": "stdio"
+    },
     "fetch": {
       "args": [],
       "description": "Allows you to fetch content from the web",

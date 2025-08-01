@@ -14,6 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/stacklok/toolhive/pkg/updates"
 )
 
 // mockVersionClient is a mock implementation of the VersionClient interface
@@ -114,8 +116,11 @@ func TestService_CheckForUpdates(t *testing.T) {
 
 			assert.NoError(t, err)
 
-			// Verify ConfigMap was created/updated if API call was expected
-			if tt.expectedCallToAPI {
+			// Check if we're running in CI - if so, update checks should be skipped
+			isCI := updates.ShouldSkipUpdateChecks()
+
+			// Verify ConfigMap was created/updated if API call was expected AND not in CI
+			if tt.expectedCallToAPI && !isCI {
 				cm := &corev1.ConfigMap{}
 				err = fakeClient.Get(context.Background(), types.NamespacedName{
 					Name:      configMapName,
@@ -123,6 +128,17 @@ func TestService_CheckForUpdates(t *testing.T) {
 				}, cm)
 				require.NoError(t, err)
 				assert.Contains(t, cm.Data, instanceIDKey)
+			} else if isCI {
+				// In CI, verify that no ConfigMap was created since update check was skipped
+				cm := &corev1.ConfigMap{}
+				err = fakeClient.Get(context.Background(), types.NamespacedName{
+					Name:      configMapName,
+					Namespace: configMapNamespace,
+				}, cm)
+				if tt.existingConfigMap == nil {
+					// Should not find the ConfigMap since no update check happened
+					assert.True(t, err != nil, "Expected no ConfigMap to be created in CI environment")
+				}
 			}
 		})
 	}

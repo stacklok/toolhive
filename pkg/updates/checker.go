@@ -65,7 +65,7 @@ func NewUpdateChecker(versionClient VersionClient) (UpdateChecker, error) {
 
 const (
 	updateFilePathSuffix = "toolhive/updates.json"
-	updateInterval       = 4 * time.Hour
+	updateInterval       = 30 * time.Minute
 )
 
 // componentInfo represents component-specific update timing information.

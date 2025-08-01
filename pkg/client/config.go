@@ -52,6 +52,8 @@ const (
 	AmpVSCodeInsider MCPClient = "amp-vscode-insider"
 	// AmpWindsurf represents the Sourcegraph Amp extension for Windsurf.
 	AmpWindsurf MCPClient = "amp-windsurf"
+	// CopilotJetBrains represents the Copilot plugin for JetBrains IDEs.
+	CopilotJetBrains MCPClient = "copilot-jetbrains"
 )
 
 // Extension is extension of the client config file.
@@ -317,6 +319,27 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"linux":   {".config"},
 			"darwin":  {"Library", "Application Support"},
 			"windows": {"AppData", "Roaming"},
+		},
+		Extension: JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+	},
+	{
+		ClientType:   CopilotJetBrains,
+		Description:  "Copilot plugin for JetBrains IDEs",
+		SettingsFile: "mcp.json",
+		RelPath: []string{
+			"github-copilot", "intellij",
+		},
+		MCPServersPathPrefix: "/servers",
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {".config"},
+			"windows": {"AppData", "Local"},
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{

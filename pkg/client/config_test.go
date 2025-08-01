@@ -46,6 +46,14 @@ func createMockClientConfigs() []mcpClientConfig {
 			Extension:            JSON,
 		},
 		{
+			ClientType:           Cline,
+			Description:          "VS Code Cline extension (Mock)",
+			RelPath:              []string{"mock_cline"},
+			SettingsFile:         "mcp_settings.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
+		{
 			ClientType:           ClaudeCode,
 			Description:          "Claude Code CLI (Mock)",
 			RelPath:              []string{"mock_claude"},
@@ -67,6 +75,13 @@ func createMockClientConfigs() []mcpClientConfig {
 			RelPath:              []string{"mock_amp_cursor"},
 			SettingsFile:         "settings.json",
 			MCPServersPathPrefix: "/amp.mcpServers",
+		},
+		{
+			ClientType:           CopilotJetBrains,
+			Description:          "Copilot plugin for JetBrains IDEs (Mock)",
+			RelPath:              []string{"mock_jetbrains_copilot"},
+			SettingsFile:         "mcp.json",
+			MCPServersPathPrefix: "/servers",
 			Extension:            JSON,
 		},
 	}
@@ -281,6 +296,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(AmpCursor),
 					string(AmpVSCodeInsider),
 					string(AmpWindsurf),
+					string(CopilotJetBrains),
 				},
 			},
 		}
@@ -354,6 +370,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpWindsurf:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpWindsurf config should contain mcpServers key")
+			case CopilotJetBrains:
+				assert.Contains(t, string(content), `"servers":`,
+					"CopilotJetBrains config should contain servers key")
 			}
 		}
 	})
@@ -380,7 +399,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, CopilotJetBrains:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}

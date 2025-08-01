@@ -35,11 +35,6 @@ func init() {
 		"Timeout in seconds for runtime checks (default: 30 seconds)")
 }
 
-func init() {
-	rootCmd.AddCommand(runtimeCmd)
-	runtimeCmd.AddCommand(runtimeCheckCmd)
-}
-
 func runtimeCheckCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 

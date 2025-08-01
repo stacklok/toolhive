@@ -102,4 +102,5 @@ thv proxy [flags] SERVER_NAME
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
+* [thv proxy stdio](thv_proxy_stdio.md)	 - Create a stdio-based proxy for an MCP server
 

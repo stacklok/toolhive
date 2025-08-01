@@ -54,6 +54,13 @@ const (
 // ciEnvVars contains environment variables that indicate CI environments
 var ciEnvVars = []string{
 	"GITHUB_ACTIONS",
+	"CI",
+	"GITLAB_CI",
+	"CIRCLECI",
+	"TRAVIS",
+	"BUILDKITE",
+	"DRONE",
+	"CONTINUOUS_INTEGRATION",
 }
 
 // GetLatestVersion sends a GET request to the update API endpoint and returns the version from the response.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -49,6 +50,11 @@ const (
 	buildTypeRelease    = "release"
 	buildTypeLocalBuild = "local_build"
 )
+
+// ciEnvVars contains environment variables that indicate CI environments
+var ciEnvVars = []string{
+	"GITHUB_ACTIONS",
+}
 
 // GetLatestVersion sends a GET request to the update API endpoint and returns the version from the response.
 // It returns an error if the request fails or if the response status code is not 200.
@@ -129,4 +135,16 @@ func (d *defaultVersionClient) GetLatestVersion(instanceID string, currentVersio
 // GetComponent returns the component name for this version client.
 func (d *defaultVersionClient) GetComponent() string {
 	return d.component
+}
+
+// ShouldSkipUpdateChecks returns true if update checks should be skipped.
+// This includes CI environments and other scenarios where automated update checking is undesirable.
+func ShouldSkipUpdateChecks() bool {
+	// Check if running in any known CI environment
+	for _, envVar := range ciEnvVars {
+		if os.Getenv(envVar) != "" {
+			return true
+		}
+	}
+	return false
 }

@@ -74,6 +74,10 @@ func IsCompletionCommand(args []string) bool {
 }
 
 func checkForUpdates() {
+	if updates.ShouldSkipUpdateChecks() {
+		return
+	}
+
 	versionClient := updates.NewVersionClient()
 	updateChecker, err := updates.NewUpdateChecker(versionClient)
 	// treat update-related errors as non-fatal

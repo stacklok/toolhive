@@ -95,6 +95,9 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			go func() {
+				if updates.ShouldSkipUpdateChecks() {
+					return
+				}
 				component, version, uiReleaseBuild := getComponentAndVersionFromRequest(r)
 				versionClient := updates.NewVersionClientForComponent(component, version, uiReleaseBuild)
 

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,20 +14,32 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 var (
-	count       int
-	dryRun      bool
-	githubToken string
-	serverName  string
+	count            int
+	dryRun           bool
+	githubToken      string
+	serverName       string
+	verifyProvenance bool
 )
 
 type serverWithName struct {
 	name   string
 	server *registry.ImageMetadata
+}
+
+// ProvenanceVerificationError represents an error during provenance verification
+type ProvenanceVerificationError struct {
+	ServerName string
+	Reason     string
+}
+
+func (e *ProvenanceVerificationError) Error() string {
+	return fmt.Sprintf("provenance verification failed for server %s: %s", e.ServerName, e.Reason)
 }
 
 var updateCmd = &cobra.Command{
@@ -45,6 +58,8 @@ func init() {
 		"GitHub token for API authentication (can also be set via GITHUB_TOKEN env var)")
 	updateCmd.Flags().StringVarP(&serverName, "server", "s", "",
 		"Specific server name to update")
+	updateCmd.Flags().BoolVar(&verifyProvenance, "verify-provenance", false,
+		"Verify provenance information and remove servers that fail verification")
 
 	// Mark count and server flags as mutually exclusive
 	updateCmd.MarkFlagsMutuallyExclusive("count", "server")
@@ -69,7 +84,13 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Update servers
-	updatedServers := updateServers(servers)
+	updatedServers, failedServers := updateServers(servers, reg)
+
+	// Log summary
+	if len(failedServers) > 0 {
+		logger.Warnf("Removed %d servers due to provenance verification failures: %v",
+			len(failedServers), failedServers)
+	}
 
 	// Save results
 	return saveResults(reg, updatedServers)
@@ -159,13 +180,20 @@ func isOlder(serverI, serverJ *registry.ImageMetadata) bool {
 	return timeI.Before(timeJ)
 }
 
-func updateServers(servers []serverWithName) []string {
+func updateServers(servers []serverWithName, reg *registry.Registry) ([]string, []string) {
 	updatedServers := make([]string, 0, len(servers))
+	failedServers := make([]string, 0)
 
 	for _, s := range servers {
 		logger.Infof("Updating server: %s", s.name)
 
 		if err := updateServerInfo(s.name, s.server); err != nil {
+			var provenanceErr *ProvenanceVerificationError
+			if errors.As(err, &provenanceErr) {
+				logger.Errorf("Provenance verification failed for server %s: %v", s.name, err)
+				failedServers = append(failedServers, s.name)
+				continue
+			}
 			logger.Errorf("Failed to update server %s: %v", s.name, err)
 			continue
 		}
@@ -173,7 +201,12 @@ func updateServers(servers []serverWithName) []string {
 		updatedServers = append(updatedServers, s.name)
 	}
 
-	return updatedServers
+	// Remove failed servers from registry if provenance verification is enabled
+	if verifyProvenance && len(failedServers) > 0 {
+		removeFailedServers(reg, failedServers)
+	}
+
+	return updatedServers, failedServers
 }
 
 func saveResults(reg *registry.Registry, updatedServers []string) error {
@@ -203,6 +236,16 @@ func saveResults(reg *registry.Registry, updatedServers []string) error {
 
 // updateServerInfo updates the GitHub stars and pulls for a server
 func updateServerInfo(name string, server *registry.ImageMetadata) error {
+	// Verify provenance if requested
+	if verifyProvenance {
+		if err := verifyServerProvenance(name, server); err != nil {
+			return &ProvenanceVerificationError{
+				ServerName: name,
+				Reason:     err.Error(),
+			}
+		}
+	}
+
 	// Skip if no repository URL
 	if server.RepositoryURL == "" {
 		logger.Warnf("ImageMetadata %s has no repository URL, skipping", name)
@@ -243,6 +286,57 @@ func updateServerInfo(name string, server *registry.ImageMetadata) error {
 	server.Metadata.LastUpdated = time.Now().UTC().Format(time.RFC3339)
 
 	return nil
+}
+
+// verifyServerProvenance verifies the provenance information for a server
+func verifyServerProvenance(name string, server *registry.ImageMetadata) error {
+	// Skip if no provenance information
+	if server.Provenance == nil {
+		logger.Warnf("Server %s has no provenance information, skipping verification", name)
+		return nil
+	}
+
+	// Skip if no image reference
+	if server.Image == "" {
+		return fmt.Errorf("no image reference provided")
+	}
+
+	logger.Infof("Verifying provenance for server %s with image %s", name, server.Image)
+
+	// Create verifier
+	v, err := verifier.New(server)
+	if err != nil {
+		return fmt.Errorf("failed to create verifier: %w", err)
+	}
+
+	// Get verification results
+	results, err := v.GetVerificationResults(server.Image)
+	if err != nil {
+		return fmt.Errorf("verification failed: %w", err)
+	}
+
+	// Check if we have valid verification results
+	if len(results) == 0 {
+		return fmt.Errorf("no valid signatures found")
+	}
+
+	// Check if any result is verified
+	for _, result := range results {
+		if result != nil {
+			logger.Infof("Provenance verification successful for server %s", name)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("no verified signatures found")
+}
+
+// removeFailedServers removes servers that failed provenance verification from the registry
+func removeFailedServers(reg *registry.Registry, failedServers []string) {
+	for _, serverName := range failedServers {
+		logger.Warnf("Removing server %s from registry due to provenance verification failure", serverName)
+		delete(reg.Servers, serverName)
+	}
 }
 
 // extractOwnerRepo extracts the owner and repo from a GitHub repository URL

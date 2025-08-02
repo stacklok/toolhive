@@ -224,3 +224,63 @@ func getMCPServerFromFile(t *testing.T, configPath string, key string) MCPServer
 
 	return testMcpServer
 }
+
+func TestEnsurePathExists(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+
+	tests := []struct {
+		name           string
+		description    string
+		content        []byte
+		path           string
+		expectedResult []byte
+	}{
+		{
+			name:           "EmptyContent",
+			description:    "Should create path in empty JSON object",
+			content:        []byte("{}"),
+			path:           "/mcp/servers",
+			expectedResult: []byte("{\"mcp\": {\"servers\": {}}}\n"),
+		},
+		{
+			name:           "ExistingPath",
+			description:    "Should return existing path",
+			content:        []byte(`{"mcp": {"servers": {"existing": "value"}}}`),
+			path:           "/mcp/servers",
+			expectedResult: []byte("{\"mcp\": {\"servers\": {\"existing\": \"value\"}}}\n"),
+		},
+		{
+			name:           "PartialExistingPath",
+			description:    "Should create missing nested path when parent exists",
+			content:        []byte(`{"misc": {}}`),
+			path:           "/misc/mcp/servers",
+			expectedResult: []byte("{\"misc\": {\"mcp\": {\"servers\": {}}}}\n"),
+		},
+		{
+			name:           "PathWithDots",
+			description:    "Should handle paths with dots correctly",
+			content:        []byte(`{"agent.support": {"mcp.servers": {"existing": "value"}}}`),
+			path:           "/agent.support/mcp.servers",
+			expectedResult: []byte("{\"agent.support\": {\"mcp.servers\": {\"existing\": \"value\"}}}\n"),
+		},
+		{
+			name:           "RootPath",
+			description:    "Should handle root path",
+			content:        []byte(`{"server1": {"some": "config"}, "server2": {"some": "other_config"}}`),
+			path:           "/",
+			expectedResult: []byte("{\"server1\": {\"some\": \"config\"}, \"server2\": {\"some\": \"other_config\"}}\n"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := ensurePathExists(tt.content, tt.path)
+
+			assert.DeepEqual(t, tt.expectedResult, result)
+		})
+	}
+}

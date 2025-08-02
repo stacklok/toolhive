@@ -156,6 +156,13 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 // This is necessary because the MCP client config file is a JSON object,
 // and we need to ensure that the path exists before we can add a new key to it.
 func ensurePathExists(content []byte, path string) []byte {
+	// Special case: if path is root ("/"), just return everything (formatted)
+	if path == "/" {
+		v, _ := hujson.Parse(content)
+		formatted, _ := hujson.Format(v.Pack())
+		return formatted
+	}
+
 	segments := strings.Split(path, "/")
 
 	// Navigate through the JSON structure
@@ -172,12 +179,18 @@ func ensurePathExists(content []byte, path string) []byte {
 		// The "/" is added to the path for the patch operation because the path
 		// is a JSON pointer, and JSON pointers are prefixed with "/".
 		// The "." is added to the path for the retrieval operation.
+		// - gjson (used for retrieval) treats `.` as a special (traversal) character,
+		// so any json keys which contain `.` must have the `.` "escaped" with a single
+		// '\'. In it, key `a.b` would be matched by `a\.b` but not `a.b`.
+		// - hujson (used for the patch) treats "." and "\" as ordinary characters in a
+		// json key. In it, key `a.b` would be matched by `a.b` but not `a\.b`.
+		// So we need to "escape" json keys this way for retrieval, but not for patch.
 		if len(pathSoFarForPatch) == 0 {
 			pathSoFarForPatch = "/" + segment
-			pathSoFarForRetrieval = segment
+			pathSoFarForRetrieval = strings.ReplaceAll(segment, ".", `\.`)
 		} else {
 			pathSoFarForPatch = pathSoFarForPatch + "/" + segment
-			pathSoFarForRetrieval = pathSoFarForRetrieval + "." + segment
+			pathSoFarForRetrieval = pathSoFarForRetrieval + "." + strings.ReplaceAll(segment, ".", `\.`)
 		}
 
 		// We retrieve the segment from the content so that we can check if it exists

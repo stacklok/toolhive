@@ -70,7 +70,7 @@ func TestTokenValidator(t *testing.T) {
 		ClientID:       "test-client",
 		CACertPath:     caCertPath,
 		AllowPrivateIP: true,
-	}, false)
+	})
 	if err != nil {
 		t.Fatalf("Failed to create token validator: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 		ClientID:       "test-client",
 		CACertPath:     caCertPath,
 		AllowPrivateIP: true,
-	}, false)
+	})
 	if err != nil {
 		t.Fatalf("Failed to create token validator: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			AllowPrivateIP: true,
 		}
 
-		validator, err := NewTokenValidator(ctx, config, false)
+		validator, err := NewTokenValidator(ctx, config)
 		if err != nil {
 			t.Fatalf("Failed to create token validator: %v", err)
 		}
@@ -635,7 +635,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			AllowPrivateIP: true,
 		}
 
-		validator, err := NewTokenValidator(ctx, config, false)
+		validator, err := NewTokenValidator(ctx, config)
 		if err != nil {
 			t.Fatalf("Failed to create token validator: %v", err)
 		}
@@ -656,7 +656,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			AllowPrivateIP: true,
 		}
 
-		validator, err := NewTokenValidator(ctx, config, false)
+		validator, err := NewTokenValidator(ctx, config)
 		if err != ErrMissingIssuerAndJWKSURL {
 			t.Errorf("Expected error %v but got %v", ErrMissingIssuerAndJWKSURL, err)
 		}
@@ -674,7 +674,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			// No CA cert or AllowPrivateIP for this test - it should fail
 		}
 
-		validator, err := NewTokenValidator(ctx, config, false)
+		validator, err := NewTokenValidator(ctx, config)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}

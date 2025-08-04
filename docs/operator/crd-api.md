@@ -117,6 +117,7 @@ _Appears in:_
 | `issuer` _string_ | Issuer is the OIDC issuer URL |  | Required: \{\} <br /> |
 | `audience` _string_ | Audience is the expected audience for the token |  |  |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  |  |
+| `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint |  |  |
 | `clientId` _string_ | ClientID is deprecated and will be removed in a future release. |  |  |
 | `thvCABundlePath` _string_ | ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests<br />The file must be mounted into the pod (e.g., via ConfigMap or Secret volume) |  |  |
 | `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests<br />The file must be mounted into the pod (e.g., via Secret volume) |  |  |
@@ -141,6 +142,7 @@ _Appears in:_
 | `audience` _string_ | Audience is the expected audience for the token | toolhive |  |
 | `issuer` _string_ | Issuer is the OIDC issuer URL | https://kubernetes.default.svc |  |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL |  |  |
+| `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint<br />If empty, OIDC discovery will be used to automatically determine the introspection URL |  |  |
 | `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication<br />Defaults to true if not specified |  |  |
 
 

@@ -41,10 +41,6 @@ components:
     auth.TokenValidatorConfig:
       description: OIDCConfig contains OIDC configuration
       properties:
-        allowOpaqueTokens:
-          description: AllowOpaqueTokens indicates whether to allow opaque tokens
-            (non-JWT)
-          type: boolean
         allowPrivateIP:
           description: AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
           type: boolean
@@ -61,6 +57,10 @@ components:
           type: string
         clientID:
           description: ClientID is the OIDC client ID
+          type: string
+        introspectionURL:
+          description: IntrospectionURL is the optional introspection endpoint for
+            validating tokens
           type: string
         issuer:
           description: Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)
@@ -937,14 +937,14 @@ components:
     v1.oidcOptions:
       description: OIDC configuration options
       properties:
-        allow_opaque_tokens:
-          description: Allow opaque tokens (non-JWT) for OIDC validation
-          type: boolean
         audience:
           description: Expected audience
           type: string
         client_id:
           description: OAuth2 client ID
+          type: string
+        introspection_url:
+          description: Token introspection URL for OIDC
           type: string
         issuer:
           description: OIDC issuer URL

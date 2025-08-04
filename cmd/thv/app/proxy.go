@@ -178,11 +178,19 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Handle OAuth authentication to the remote server if needed
 	var tokenSource *oauth2.TokenSource
+	var oauthConfig *oauth.Config
+	var introspectionURL string
 
 	if enableRemoteAuth || shouldDetectAuth() {
-		tokenSource, err = handleOutgoingAuthentication(ctx)
+		tokenSource, oauthConfig, err = handleOutgoingAuthentication(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to authenticate to remote server: %w", err)
+		}
+		if oauthConfig != nil {
+			introspectionURL = oauthConfig.IntrospectionEndpoint
+			logger.Infof("Using OAuth config with introspection URL: %s", introspectionURL)
+		} else {
+			logger.Info("No OAuth configuration available, proceeding without outgoing authentication")
 		}
 	}
 
@@ -196,18 +204,20 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
 		audience := GetStringFlagOrEmpty(cmd, "oidc-audience")
 		jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
+		introspectionURL := GetStringFlagOrEmpty(cmd, "oidc-introspection-url")
 		clientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
 
 		oidcConfig = &auth.TokenValidatorConfig{
-			Issuer:   issuer,
-			Audience: audience,
-			JWKSURL:  jwksURL,
-			ClientID: clientID,
+			Issuer:           issuer,
+			Audience:         audience,
+			JWKSURL:          jwksURL,
+			IntrospectionURL: introspectionURL,
+			ClientID:         clientID,
 		}
 	}
 
 	// Get authentication middleware for incoming requests
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, false)
+	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
@@ -357,7 +367,8 @@ func extractParameter(params, paramName string) string {
 }
 
 // performOAuthFlow performs the OAuth authentication flow
-func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string, scopes []string) (*oauth2.TokenSource, error) {
+func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string,
+	scopes []string) (*oauth2.TokenSource, *oauth.Config, error) {
 	logger.Info("Starting OAuth authentication flow...")
 
 	// Create OAuth config from OIDC discovery
@@ -371,13 +382,13 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 		remoteAuthCallbackPort,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create OAuth config: %w", err)
+		return nil, nil, fmt.Errorf("failed to create OAuth config: %w", err)
 	}
 
 	// Create OAuth flow
 	flow, err := oauth.NewFlow(oauthConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create OAuth flow: %w", err)
+		return nil, nil, fmt.Errorf("failed to create OAuth flow: %w", err)
 	}
 
 	// Create a context with timeout for the OAuth flow
@@ -394,9 +405,9 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 	tokenResult, err := flow.Start(oauthCtx, remoteAuthSkipBrowser)
 	if err != nil {
 		if oauthCtx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("OAuth flow timed out after %v - user did not complete authentication", oauthTimeout)
+			return nil, nil, fmt.Errorf("OAuth flow timed out after %v - user did not complete authentication", oauthTimeout)
 		}
-		return nil, fmt.Errorf("OAuth flow failed: %w", err)
+		return nil, nil, fmt.Errorf("OAuth flow failed: %w", err)
 	}
 
 	logger.Info("OAuth authentication successful")
@@ -412,7 +423,7 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 	}
 
 	source := flow.TokenSource()
-	return &source, nil
+	return &source, oauthConfig, nil
 }
 
 // shouldDetectAuth determines if we should try to detect authentication requirements
@@ -423,20 +434,20 @@ func shouldDetectAuth() bool {
 }
 
 // handleOutgoingAuthentication handles authentication to the remote MCP server
-func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, error) {
+func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oauth.Config, error) {
 	// Resolve client secret from multiple sources
 	clientSecret, err := resolveClientSecret()
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve client secret: %w", err)
+		return nil, nil, fmt.Errorf("failed to resolve client secret: %w", err)
 	}
 
 	if enableRemoteAuth {
 		// If OAuth is explicitly enabled, use provided configuration
 		if remoteAuthIssuer == "" {
-			return nil, fmt.Errorf("remote-auth-issuer is required when remote authentication is enabled")
+			return nil, nil, fmt.Errorf("remote-auth-issuer is required when remote authentication is enabled")
 		}
 		if remoteAuthClientID == "" {
-			return nil, fmt.Errorf("remote-auth-client-id is required when remote authentication is enabled")
+			return nil, nil, fmt.Errorf("remote-auth-client-id is required when remote authentication is enabled")
 		}
 
 		return performOAuthFlow(ctx, remoteAuthIssuer, remoteAuthClientID, clientSecret, remoteAuthScopes)
@@ -446,21 +457,21 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, err
 	authInfo, err := detectAuthenticationFromServer(ctx, proxyTargetURI)
 	if err != nil {
 		logger.Debugf("Could not detect authentication from server: %v", err)
-		return nil, nil // Not an error, just no auth detected
+		return nil, nil, nil // Not an error, just no auth detected
 	}
 
 	if authInfo != nil {
 		logger.Infof("Detected authentication requirement from server: %s", authInfo.Realm)
 
 		if remoteAuthClientID == "" {
-			return nil, fmt.Errorf("detected OAuth requirement but no remote-auth-client-id provided")
+			return nil, nil, fmt.Errorf("detected OAuth requirement but no remote-auth-client-id provided")
 		}
 
 		// Perform OAuth flow with discovered configuration
 		return performOAuthFlow(ctx, authInfo.Realm, remoteAuthClientID, clientSecret, remoteAuthScopes)
 	}
 
-	return nil, nil // No authentication required
+	return nil, nil, nil // No authentication required
 }
 
 // resolveClientSecret resolves the OAuth client secret from multiple sources

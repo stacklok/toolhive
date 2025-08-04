@@ -77,9 +77,9 @@ thv proxy [flags] SERVER_NAME
       --host string                             Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --oidc-audience string                    Expected audience for the token
       --oidc-client-id string                   OIDC client ID
+      --oidc-introspection-url string           URL for token introspection endpoint
       --oidc-issuer string                      OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string                    URL to fetch the JWKS from
-      --oidc-skip-opaque-token-validation       Allow skipping validation of opaque tokens
       --port int                                Port for the HTTP proxy to listen on (host port)
       --remote-auth                             Enable OAuth authentication to remote MCP server
       --remote-auth-callback-port int           Port for OAuth callback server during remote authentication (default: 8666) (default 8666)

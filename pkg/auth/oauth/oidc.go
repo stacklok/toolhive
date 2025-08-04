@@ -17,6 +17,7 @@ import (
 type OIDCDiscoveryDocument struct {
 	Issuer                        string   `json:"issuer"`
 	AuthorizationEndpoint         string   `json:"authorization_endpoint"`
+	IntrospectionEndpoint         string   `json:"introspection_endpoint,omitempty"`
 	TokenEndpoint                 string   `json:"token_endpoint"`
 	UserinfoEndpoint              string   `json:"userinfo_endpoint"`
 	JWKSURI                       string   `json:"jwks_uri"`
@@ -135,6 +136,7 @@ func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string) err
 		"authorization_endpoint": doc.AuthorizationEndpoint,
 		"token_endpoint":         doc.TokenEndpoint,
 		"jwks_uri":               doc.JWKSURI,
+		"introspection_endpoint": doc.IntrospectionEndpoint,
 	}
 
 	if doc.UserinfoEndpoint != "" {
@@ -142,11 +144,12 @@ func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string) err
 	}
 
 	for name, endpoint := range endpoints {
-		if err := validateEndpointURL(endpoint); err != nil {
-			return fmt.Errorf("invalid %s: %w", name, err)
+		if endpoint != "" {
+			if err := validateEndpointURL(endpoint); err != nil {
+				return fmt.Errorf("invalid %s: %w", name, err)
+			}
 		}
 	}
-
 	return nil
 }
 
@@ -217,12 +220,13 @@ func createOAuthConfigFromOIDCWithClient(
 	}
 
 	return &Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		AuthURL:      doc.AuthorizationEndpoint,
-		TokenURL:     doc.TokenEndpoint,
-		Scopes:       scopes,
-		UsePKCE:      usePKCE,
-		CallbackPort: callbackPort,
+		ClientID:              clientID,
+		ClientSecret:          clientSecret,
+		AuthURL:               doc.AuthorizationEndpoint,
+		IntrospectionEndpoint: doc.IntrospectionEndpoint,
+		TokenURL:              doc.TokenEndpoint,
+		Scopes:                scopes,
+		UsePKCE:               usePKCE,
+		CallbackPort:          callbackPort,
 	}, nil
 }

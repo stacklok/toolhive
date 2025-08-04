@@ -196,18 +196,17 @@ func (b *RunConfigBuilder) WithAuditEnabled(enableAudit bool, auditConfigPath st
 
 // WithOIDCConfig configures OIDC settings
 func (b *RunConfigBuilder) WithOIDCConfig(
-	oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string,
-	oidcAllowOpaqueTokens bool,
+	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID string,
 	thvCABundle, jwksAuthTokenFile string,
 	jwksAllowPrivateIP bool,
 ) *RunConfigBuilder {
-	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
+	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" || oidcClientID != "" {
 		b.config.OIDCConfig = &auth.TokenValidatorConfig{
-			Issuer:            oidcIssuer,
-			Audience:          oidcAudience,
-			JWKSURL:           oidcJwksURL,
-			ClientID:          oidcClientID,
-			AllowOpaqueTokens: oidcAllowOpaqueTokens,
+			Issuer:           oidcIssuer,
+			Audience:         oidcAudience,
+			JWKSURL:          oidcJwksURL,
+			IntrospectionURL: oidcIntrospectionURL,
+			ClientID:         oidcClientID,
 		}
 	}
 	// Set JWKS-related configuration

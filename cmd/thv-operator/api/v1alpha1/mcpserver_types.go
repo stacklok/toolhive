@@ -314,6 +314,11 @@ type KubernetesOIDCConfig struct {
 	// +optional
 	JWKSURL string `json:"jwksUrl,omitempty"`
 
+	// IntrospectionURL is the URL for token introspection endpoint
+	// If empty, OIDC discovery will be used to automatically determine the introspection URL
+	// +optional
+	IntrospectionURL string `json:"introspectionUrl,omitempty"`
+
 	// UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token
 	// When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification
 	// and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication
@@ -347,6 +352,10 @@ type InlineOIDCConfig struct {
 	// JWKSURL is the URL to fetch the JWKS from
 	// +optional
 	JWKSURL string `json:"jwksUrl,omitempty"`
+
+	// IntrospectionURL is the URL for token introspection endpoint
+	// +optional
+	IntrospectionURL string `json:"introspectionUrl,omitempty"`
 
 	// ClientID is deprecated and will be removed in a future release.
 	// +optional

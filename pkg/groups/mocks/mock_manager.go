@@ -143,3 +143,17 @@ func (mr *MockManagerMockRecorder) ListWorkloadsInGroup(ctx, groupName any) *gom
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloadsInGroup", reflect.TypeOf((*MockManager)(nil).ListWorkloadsInGroup), ctx, groupName)
 }
+
+// RegisterClient mocks base method.
+func (m *MockManager) RegisterClient(ctx context.Context, groupName, clientName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RegisterClient", ctx, groupName, clientName)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RegisterClient indicates an expected call of RegisterClient.
+func (mr *MockManagerMockRecorder) RegisterClient(ctx, groupName, clientName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterClient", reflect.TypeOf((*MockManager)(nil).RegisterClient), ctx, groupName, clientName)
+}

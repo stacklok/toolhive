@@ -93,7 +93,7 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Save results
-	return saveResults(reg, updatedServers)
+	return saveResults(reg, updatedServers, failedServers)
 }
 
 func loadRegistry() (*registry.Registry, error) {
@@ -209,20 +209,20 @@ func updateServers(servers []serverWithName, reg *registry.Registry) ([]string, 
 	return updatedServers, failedServers
 }
 
-func saveResults(reg *registry.Registry, updatedServers []string) error {
+func saveResults(reg *registry.Registry, updatedServers []string, failedServers []string) error {
 	// If we're in dry run mode, don't save changes
 	if dryRun {
 		logger.Info("Dry run completed, no changes made")
 		return nil
 	}
 
-	// If we updated any servers, save the registry
-	if len(updatedServers) > 0 {
+	// If we updated any servers or removed any servers, save the registry
+	if len(updatedServers) > 0 || len(failedServers) > 0 {
 		// Update the last_updated timestamp
 		reg.LastUpdated = time.Now().UTC().Format(time.RFC3339)
 
 		// Save the updated registry
-		if err := saveRegistry(reg, updatedServers); err != nil {
+		if err := saveRegistry(reg, updatedServers, failedServers); err != nil {
 			return fmt.Errorf("failed to save registry: %w", err)
 		}
 
@@ -420,7 +420,7 @@ func getGitHubRepoInfo(owner, repo, serverName string, currentPulls int) (stars 
 }
 
 // saveRegistry saves the registry to the filesystem while preserving the order of entries
-func saveRegistry(reg *registry.Registry, updatedServers []string) error {
+func saveRegistry(reg *registry.Registry, updatedServers []string, failedServers []string) error {
 	// Find the registry file path
 	registryPath := filepath.Join("pkg", "registry", "data", "registry.json")
 
@@ -446,6 +446,12 @@ func saveRegistry(reg *registry.Registry, updatedServers []string) error {
 		return fmt.Errorf("invalid servers map in registry")
 	}
 
+	// Remove failed servers from the JSON
+	for _, name := range failedServers {
+		logger.Infof("Removing server %s from registry JSON", name)
+		delete(serversMap, name)
+	}
+
 	// Update only the servers that were modified
 	for _, name := range updatedServers {
 		server, ok := reg.Servers[name]
@@ -456,7 +462,7 @@ func saveRegistry(reg *registry.Registry, updatedServers []string) error {
 		// Get the server from the original JSON
 		serverJSON, ok := serversMap[name].(map[string]interface{})
 		if !ok {
-			logger.Warnf("ImageMetadata %s not found in original registry, skipping", name)
+			logger.Warnf("Server %s not found in original registry, skipping", name)
 			continue
 		}
 

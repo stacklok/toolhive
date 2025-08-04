@@ -88,6 +88,12 @@ func performDefaultGroupMigration() {
 		fmt.Println("No workloads needed migration to default group")
 	}
 
+	// Migrate client configurations from global config to default group
+	if err := migrateClientConfigs(context.Background(), groupManager); err != nil {
+		logger.Errorf("Failed to migrate client configurations: %v", err)
+		return
+	}
+
 	// Mark default group migration as completed
 	err = config.UpdateConfig(func(c *config.Config) {
 		c.DefaultGroupMigration = true
@@ -97,6 +103,64 @@ func performDefaultGroupMigration() {
 		logger.Errorf("Error updating config during migration: %v", err)
 		return
 	}
+}
+
+// migrateClientConfigs migrates client configurations from global config to default group
+func migrateClientConfigs(ctx context.Context, groupManager Manager) error {
+	appConfig := config.GetConfig()
+
+	// If there are no registered clients, nothing to migrate
+	if len(appConfig.Clients.RegisteredClients) == 0 {
+		logger.Infof("No client configurations to migrate")
+		return nil
+	}
+
+	fmt.Printf("Migrating %d client configurations to default group...\n", len(appConfig.Clients.RegisteredClients))
+
+	// Get the default group
+	defaultGroup, err := groupManager.Get(ctx, DefaultGroupName)
+	if err != nil {
+		return fmt.Errorf("failed to get default group: %w", err)
+	}
+
+	migratedCount := 0
+	// Copy all registered clients to the default group
+	for _, clientName := range appConfig.Clients.RegisteredClients {
+		// Check if client is already in the group (avoid duplicates)
+		alreadyRegistered := false
+		for _, existingClient := range defaultGroup.RegisteredClients {
+			if existingClient == clientName {
+				alreadyRegistered = true
+				break
+			}
+		}
+
+		if !alreadyRegistered {
+			if err := groupManager.RegisterClient(ctx, DefaultGroupName, clientName); err != nil {
+				logger.Warnf("Failed to register client %s to default group: %v", clientName, err)
+				continue
+			}
+			migratedCount++
+		}
+	}
+
+	if migratedCount > 0 {
+		fmt.Printf("Successfully migrated %d client configurations to default group '%s'\n", migratedCount, DefaultGroupName)
+
+		// Clear the global client configurations after successful migration
+		err = config.UpdateConfig(func(c *config.Config) {
+			c.Clients.RegisteredClients = []string{}
+		})
+		if err != nil {
+			logger.Warnf("Failed to clear global client configurations after migration: %v", err)
+		} else {
+			logger.Infof("Cleared global client configurations")
+		}
+	} else {
+		logger.Infof("No client configurations needed migration")
+	}
+
+	return nil
 }
 
 // createDefaultGroup creates the default group if it doesn't exist

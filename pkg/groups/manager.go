@@ -49,7 +49,10 @@ func (m *manager) Create(ctx context.Context, name string) error {
 		return thverrors.NewGroupAlreadyExistsError(fmt.Sprintf("group '%s' already exists", name), nil)
 	}
 
-	group := &Group{Name: name}
+	group := &Group{
+		Name:              name,
+		RegisteredClients: []string{},
+	}
 	return m.saveGroup(ctx, group)
 }
 
@@ -148,6 +151,28 @@ func (m *manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([
 	}
 
 	return groupWorkloads, nil
+}
+
+// RegisterClient registers a client with the group
+func (m *manager) RegisterClient(ctx context.Context, groupName, clientName string) error {
+	// Get the existing group
+	group, err := m.Get(ctx, groupName)
+	if err != nil {
+		return fmt.Errorf("failed to get group %s: %w", groupName, err)
+	}
+
+	// Check if client is already registered
+	for _, existingClient := range group.RegisteredClients {
+		if existingClient == clientName {
+			return fmt.Errorf("client '%s' is already registered with group '%s'", clientName, groupName)
+		}
+	}
+
+	// Add the client to the group
+	group.RegisteredClients = append(group.RegisteredClients, clientName)
+
+	// Save the updated group
+	return m.saveGroup(ctx, group)
 }
 
 // saveGroup saves the group to the group state store

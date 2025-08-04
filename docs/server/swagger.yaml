@@ -153,6 +153,11 @@ components:
       properties:
         name:
           type: string
+        registered_clients:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
       type: object
     ignore.Config:
       description: IgnoreConfig contains configuration for ignore processing

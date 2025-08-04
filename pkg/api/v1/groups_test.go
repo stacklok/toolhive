@@ -40,12 +40,12 @@ func TestGroupsRouter(t *testing.T) {
 			path:   "/",
 			setupMock: func(m *mocks.MockManager) {
 				m.EXPECT().List(gomock.Any()).Return([]*groups.Group{
-					{Name: "group1"},
-					{Name: "group2"},
+					{Name: "group1", RegisteredClients: []string{}},
+					{Name: "group2", RegisteredClients: []string{}},
 				}, nil)
 			},
 			expectedStatus: http.StatusOK,
-			expectedBody:   `{"groups":[{"name":"group1"},{"name":"group2"}]}`,
+			expectedBody:   `{"groups":[{"name":"group1", "registered_clients": []},{"name":"group2", "registered_clients": []}]}`,
 		},
 		{
 			name:   "list groups error",
@@ -106,10 +106,11 @@ func TestGroupsRouter(t *testing.T) {
 			method: "GET",
 			path:   "/testgroup",
 			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Get(gomock.Any(), "testgroup").Return(&groups.Group{Name: "testgroup"}, nil)
+				m.EXPECT().Get(gomock.Any(), "testgroup").
+					Return(&groups.Group{Name: "testgroup", RegisteredClients: []string{}}, nil)
 			},
 			expectedStatus: http.StatusOK,
-			expectedBody:   `{"name":"testgroup"}`,
+			expectedBody:   `{"name":"testgroup", "registered_clients": []}`,
 		},
 		{
 			name:   "get group not found",

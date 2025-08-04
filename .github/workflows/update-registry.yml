@@ -67,13 +67,14 @@ jobs:
         uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "Update registry with latest stars and pulls"
-          title: "Update registry with latest stars and pulls"
+          commit-message: "Refresh registry data - pulls, stars, etc."
+          title: "Refresh registry data - pulls, stars, etc."
           body: |
-            This PR updates the registry with the latest GitHub stars and pulls information.
+            This PR refreshes the registry with the latest GitHub stars and pulls information.
             
             The update was performed automatically by the `regup` command with provenance verification enabled.
-            Any servers that failed provenance verification have been automatically removed from the registry.
+
+            ** Note: Any servers that failed provenance verification have been automatically removed from the registry. **
           branch: update-registry
           base: main
           delete-branch: true

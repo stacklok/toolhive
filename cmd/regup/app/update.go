@@ -310,22 +310,15 @@ func verifyServerProvenance(name string, server *registry.ImageMetadata) error {
 	}
 
 	// Get verification results
-	results, err := v.GetVerificationResults(server.Image)
+	isVerified, err := v.VerifyServer(server.Image, server)
 	if err != nil {
 		return fmt.Errorf("verification failed: %w", err)
 	}
 
 	// Check if we have valid verification results
-	if len(results) == 0 {
-		return fmt.Errorf("no valid signatures found")
-	}
-
-	// Check if any result is verified
-	for _, result := range results {
-		if result != nil {
-			logger.Infof("Provenance verification successful for server %s", name)
-			return nil
-		}
+	if isVerified {
+		logger.Infof("Server %s verified successfully", name)
+		return nil
 	}
 
 	return fmt.Errorf("no verified signatures found")

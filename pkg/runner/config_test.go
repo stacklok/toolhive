@@ -12,6 +12,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -554,7 +555,7 @@ func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadat
 	return suppliedEnvVars, nil
 }
 
-func TestNewRunConfigFromFlags(t *testing.T) {
+func TestRunConfigBuilder(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
@@ -587,54 +588,38 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 	k8sPodPatch := `{"spec":{"containers":[{"name":"test","resources":{"limits":{"memory":"512Mi"}}}]}}`
 	envVarValidator := &mockEnvVarValidator{}
 
-	config, err := NewRunConfigFromFlags(
-		context.Background(),
-		runtime,
-		cmdArgs,
-		name,
-		imageURL,
-		imageMetadata,
-		host,
-		debug,
-		volumes,
-		secretsList,
-		authzConfigPath,
-		"",    // auditConfigPath
-		false, // enableAudit
-		permissionProfile,
-		targetHost,
-		mcpTransport,
-		proxyPort,
-		targetPort,
-		envVars,
-		nil, // labels
-		oidcIssuer,
-		oidcAudience,
-		oidcJwksURL,
-		oidcClientID,
-		false,
-		"",    // otelEndpoint
-		"",    // otelServiceName
-		0.1,   // otelSamplingRate
-		nil,   // otelHeaders
-		false, // otelInsecure
-		false, // otelEnablePrometheusMetricsPath
-		nil,   // otelEnvironmentVariables
-		false, // isolateNetwork
-		k8sPodPatch,
-		"",    // thvCABundle
-		"",    // jwksAuthTokenFile
-		false, // jwksAllowPrivateIP
-		envVarValidator,
-		"sse",
-		"",    // groupName
-		nil,   // toolsFilter
-		false, // ignoreGlobally
-		false, // printOverlays
-	)
-	require.NoError(t, err, "NewRunConfigFromFlags should not return an error")
+	config, err := NewRunConfigBuilder().
+		WithRuntime(runtime).
+		WithCmdArgs(cmdArgs).
+		WithName(name).
+		WithImage(imageURL).
+		WithHost(host).
+		WithTargetHost(targetHost).
+		WithDebug(debug).
+		WithVolumes(volumes).
+		WithSecrets(secretsList).
+		WithAuthzConfigPath(authzConfigPath).
+		WithAuditConfigPath("").
+		WithPermissionProfileNameOrPath(permissionProfile).
+		WithNetworkIsolation(false).
+		WithK8sPodPatch(k8sPodPatch).
+		WithProxyMode(types.ProxyModeSSE).
+		WithTransportAndPorts(mcpTransport, proxyPort, targetPort).
+		WithAuditEnabled(false, "").
+		WithLabels(nil).
+		WithGroup("").
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, false,
+			"", "", false).
+		WithTelemetryConfig("", false, "", 0.1, nil, false, nil).
+		WithToolsFilter(nil).
+		WithIgnoreConfig(&ignore.Config{
+			LoadGlobal:    false,
+			PrintOverlays: false,
+		}).
+		Build(context.Background(), imageMetadata, envVars, envVarValidator)
+	require.NoError(t, err, "Builder should not return an error")
 
-	assert.NotNil(t, config, "NewRunConfigFromFlags should return a non-nil config")
+	assert.NotNil(t, config, "Builder should return a non-nil config")
 	assert.Equal(t, runtime, config.Deployer, "Deployer should match")
 	assert.Equal(t, targetHost, config.TargetHost, "TargetHost should match")
 	// The metadata args are appended to the command-line args
@@ -782,8 +767,8 @@ func TestCommaSeparatedEnvVars(t *testing.T) {
 	}
 }
 
-// TestNewRunConfigFromFlags_MetadataOverrides ensures metadata is applied correctly
-func TestNewRunConfigFromFlags_MetadataOverrides(t *testing.T) {
+// TestRunConfigBuilder_MetadataOverrides ensures metadata is applied correctly
+func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
@@ -847,51 +832,34 @@ func TestNewRunConfigFromFlags_MetadataOverrides(t *testing.T) {
 			runtime := &mocks.MockRuntime{}
 			validator := &mockEnvVarValidator{}
 
-			config, err := NewRunConfigFromFlags(
-				context.Background(),
-				runtime,
-				nil, // cmdArgs
-				"test-server",
-				"test-image",
-				tt.metadata,
-				"localhost",
-				false, // debug
-				nil,   // volumes
-				nil,   // secrets
-				"",    // authzConfigPath
-				"",    // auditConfigPath
-				false, // enableAudit
-				permissions.ProfileNone,
-				"localhost",
-				tt.userTransport,
-				0, // port
-				tt.userTargetPort,
-				nil, // envVars
-				nil, // labels
-				"",  // oidc params...
-				"",
-				"",
-				"",
-				false,
-				"", // telemetry params...
-				"",
-				0,
-				nil,
-				false,
-				false,
-				nil,
-				false, // isolateNetwork
-				"",    // k8sPodPatch
-				"",    // thvCABundle
-				"",    // jwksAuthTokenFile
-				false, // jwksAllowPrivateIP
-				validator,
-				types.ProxyModeSSE,
-				"",    // groupName
-				nil,   // toolsFilter
-				false, // ignoreGlobally
-				false, // printOverlays
-			)
+			config, err := NewRunConfigBuilder().
+				WithRuntime(runtime).
+				WithCmdArgs(nil).
+				WithName("test-server").
+				WithImage("test-image").
+				WithHost("localhost").
+				WithTargetHost("localhost").
+				WithDebug(false).
+				WithVolumes(nil).
+				WithSecrets(nil).
+				WithAuthzConfigPath("").
+				WithAuditConfigPath("").
+				WithPermissionProfileNameOrPath(permissions.ProfileNone).
+				WithNetworkIsolation(false).
+				WithK8sPodPatch("").
+				WithProxyMode(types.ProxyModeSSE).
+				WithTransportAndPorts(tt.userTransport, 0, tt.userTargetPort).
+				WithAuditEnabled(false, "").
+				WithLabels(nil).
+				WithGroup("").
+				WithOIDCConfig("", "", "", "", false, "", "", false).
+				WithTelemetryConfig("", false, "", 0, nil, false, nil).
+				WithToolsFilter(nil).
+				WithIgnoreConfig(&ignore.Config{
+					LoadGlobal:    false,
+					PrintOverlays: false,
+				}).
+				Build(context.Background(), tt.metadata, nil, validator)
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectedTransport, config.Transport)
@@ -900,10 +868,10 @@ func TestNewRunConfigFromFlags_MetadataOverrides(t *testing.T) {
 	}
 }
 
-// TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency ensures that
+// TestRunConfigBuilder_EnvironmentVariableTransportDependency ensures that
 // environment variables set by WithEnvironmentVariables have access to the
 // correct transport and port values
-func TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency(t *testing.T) {
+func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
@@ -911,41 +879,34 @@ func TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency(t *testing
 	runtime := &mocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
-	config, err := NewRunConfigFromFlags(
-		context.Background(),
-		runtime,
-		nil,
-		"test-server",
-		"test-image",
-		nil,
-		"localhost",
-		false,
-		nil,
-		nil,
-		"",
-		"",
-		false,
-		permissions.ProfileNone,
-		"localhost",
-		"sse", // This should result in MCP_TRANSPORT=sse in env vars
-		0,
-		9000, // This should result in MCP_PORT=9000 in env vars
-		[]string{"USER_VAR=value"},
-		nil,                   // labels
-		"", "", "", "", false, // OIDC params
-		"", "", 0, nil, false, false, nil, // telemetry params
-		false,
-		"",
-		"",    // thvCABundle
-		"",    // jwksAuthTokenFile
-		false, // jwksAllowPrivateIP
-		validator,
-		types.ProxyModeSSE,
-		"",    // groupName
-		nil,   // toolsFilter
-		false, // ignoreGlobally
-		false, // printOverlays
-	)
+	config, err := NewRunConfigBuilder().
+		WithRuntime(runtime).
+		WithCmdArgs(nil).
+		WithName("test-server").
+		WithImage("test-image").
+		WithHost("localhost").
+		WithTargetHost("localhost").
+		WithDebug(false).
+		WithVolumes(nil).
+		WithSecrets(nil).
+		WithAuthzConfigPath("").
+		WithAuditConfigPath("").
+		WithPermissionProfileNameOrPath(permissions.ProfileNone).
+		WithNetworkIsolation(false).
+		WithK8sPodPatch("").
+		WithProxyMode(types.ProxyModeSSE).
+		WithTransportAndPorts("sse", 0, 9000). // This should result in MCP_TRANSPORT=sse and MCP_PORT=9000 in env vars
+		WithAuditEnabled(false, "").
+		WithLabels(nil).
+		WithGroup("").
+		WithOIDCConfig("", "", "", "", false, "", "", false).
+		WithTelemetryConfig("", false, "", 0, nil, false, nil).
+		WithToolsFilter(nil).
+		WithIgnoreConfig(&ignore.Config{
+			LoadGlobal:    false,
+			PrintOverlays: false,
+		}).
+		Build(context.Background(), nil, []string{"USER_VAR=value"}, validator)
 
 	require.NoError(t, err)
 
@@ -955,9 +916,9 @@ func TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency(t *testing
 	assert.Equal(t, "value", config.EnvVars["USER_VAR"])
 }
 
-// TestNewRunConfigFromFlags_CmdArgsMetadataPrepending ensures that metadata args
+// TestRunConfigBuilder_CmdArgsMetadataPrepending ensures that metadata args
 // are prepended to user args
-func TestNewRunConfigFromFlags_CmdArgsMetadataPrepending(t *testing.T) {
+func TestRunConfigBuilder_CmdArgsMetadataPrepending(t *testing.T) {
 	t.Parallel()
 
 	runtime := &mocks.MockRuntime{}
@@ -968,41 +929,34 @@ func TestNewRunConfigFromFlags_CmdArgsMetadataPrepending(t *testing.T) {
 		Args: []string{"--metadata-arg1", "--metadata-arg2"},
 	}
 
-	config, err := NewRunConfigFromFlags(
-		context.Background(),
-		runtime,
-		userArgs,
-		"test-server",
-		"test-image",
-		metadata,
-		"localhost",
-		false,
-		nil,
-		nil,
-		"",
-		"",
-		false,
-		permissions.ProfileNone,
-		"localhost",
-		"",
-		0,
-		0,
-		nil,
-		nil, // labels
-		"", "", "", "", false,
-		"", "", 0, nil, false, false, nil,
-		false,
-		"",
-		"",    // thvCABundle
-		"",    // jwksAuthTokenFile
-		false, // jwksAllowPrivateIP
-		validator,
-		types.ProxyModeSSE,
-		"",    // groupName
-		nil,   // toolsFilter
-		false, // ignoreGlobally
-		false, // printOverlays
-	)
+	config, err := NewRunConfigBuilder().
+		WithRuntime(runtime).
+		WithCmdArgs(userArgs).
+		WithName("test-server").
+		WithImage("test-image").
+		WithHost("localhost").
+		WithTargetHost("localhost").
+		WithDebug(false).
+		WithVolumes(nil).
+		WithSecrets(nil).
+		WithAuthzConfigPath("").
+		WithAuditConfigPath("").
+		WithPermissionProfileNameOrPath(permissions.ProfileNone).
+		WithNetworkIsolation(false).
+		WithK8sPodPatch("").
+		WithProxyMode(types.ProxyModeSSE).
+		WithTransportAndPorts("", 0, 0).
+		WithAuditEnabled(false, "").
+		WithLabels(nil).
+		WithGroup("").
+		WithOIDCConfig("", "", "", "", false, "", "", false).
+		WithTelemetryConfig("", false, "", 0, nil, false, nil).
+		WithToolsFilter(nil).
+		WithIgnoreConfig(&ignore.Config{
+			LoadGlobal:    false,
+			PrintOverlays: false,
+		}).
+		Build(context.Background(), metadata, nil, validator)
 
 	require.NoError(t, err)
 
@@ -1011,9 +965,9 @@ func TestNewRunConfigFromFlags_CmdArgsMetadataPrepending(t *testing.T) {
 	assert.Equal(t, expectedArgs, config.CmdArgs)
 }
 
-// TestNewRunConfigFromFlags_VolumeProcessing ensures volumes are processed
+// TestRunConfigBuilder_VolumeProcessing ensures volumes are processed
 // correctly and added to the permission profile
-func TestNewRunConfigFromFlags_VolumeProcessing(t *testing.T) {
+func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 	t.Parallel()
 
 	// Needed to prevent a nil pointer dereference in the logger.
@@ -1026,41 +980,34 @@ func TestNewRunConfigFromFlags_VolumeProcessing(t *testing.T) {
 		"/host/write:/container/write",
 	}
 
-	config, err := NewRunConfigFromFlags(
-		context.Background(),
-		runtime,
-		nil,
-		"test-server",
-		"test-image",
-		nil,
-		"localhost",
-		false,
-		volumes,
-		nil,
-		"",
-		"",
-		false,
-		permissions.ProfileNone, // Start with none profile
-		"localhost",
-		"",
-		0,
-		0,
-		nil,
-		nil, // labels
-		"", "", "", "", false,
-		"", "", 0, nil, false, false, nil,
-		false,
-		"",
-		"",    // thvCABundle
-		"",    // jwksAuthTokenFile
-		false, // jwksAllowPrivateIP
-		validator,
-		types.ProxyModeSSE,
-		"",    // groupName
-		nil,   // toolsFilter
-		false, // ignoreGlobally
-		false, // printOverlays
-	)
+	config, err := NewRunConfigBuilder().
+		WithRuntime(runtime).
+		WithCmdArgs(nil).
+		WithName("test-server").
+		WithImage("test-image").
+		WithHost("localhost").
+		WithTargetHost("localhost").
+		WithDebug(false).
+		WithVolumes(volumes).
+		WithSecrets(nil).
+		WithAuthzConfigPath("").
+		WithAuditConfigPath("").
+		WithPermissionProfileNameOrPath(permissions.ProfileNone). // Start with none profile
+		WithNetworkIsolation(false).
+		WithK8sPodPatch("").
+		WithProxyMode(types.ProxyModeSSE).
+		WithTransportAndPorts("", 0, 0).
+		WithAuditEnabled(false, "").
+		WithLabels(nil).
+		WithGroup("").
+		WithOIDCConfig("", "", "", "", false, "", "", false).
+		WithTelemetryConfig("", false, "", 0, nil, false, nil).
+		WithToolsFilter(nil).
+		WithIgnoreConfig(&ignore.Config{
+			LoadGlobal:    false,
+			PrintOverlays: false,
+		}).
+		Build(context.Background(), nil, nil, validator)
 
 	require.NoError(t, err)
 

@@ -18,7 +18,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -153,84 +152,6 @@ func NewRunConfig() *RunConfig {
 		ContainerLabels: make(map[string]string),
 		EnvVars:         make(map[string]string),
 	}
-}
-
-// NewRunConfigFromFlags creates a new RunConfig with values from command-line flags
-func NewRunConfigFromFlags(
-	ctx context.Context,
-	runtime rt.Deployer,
-	cmdArgs []string,
-	name string,
-	imageURL string,
-	imageMetadata *registry.ImageMetadata,
-	host string,
-	debug bool,
-	volumes []string,
-	secretsList []string,
-	authzConfigPath string,
-	auditConfigPath string,
-	enableAudit bool,
-	permissionProfile string,
-	targetHost string,
-	mcpTransport string,
-	port int,
-	targetPort int,
-	envVars []string,
-	runLabels []string,
-	oidcIssuer string,
-	oidcAudience string,
-	oidcJwksURL string,
-	oidcClientID string,
-	oidcAllowOpaqueTokens bool,
-	otelEndpoint string,
-	otelServiceName string,
-	otelSamplingRate float64,
-	otelHeaders []string,
-	otelInsecure bool,
-	otelEnablePrometheusMetricsPath bool,
-	otelEnvironmentVariables []string,
-	isolateNetwork bool,
-	k8sPodPatch string,
-	thvCABundle string,
-	jwksAuthTokenFile string,
-	jwksAllowPrivateIP bool,
-	envVarValidator EnvVarValidator,
-	proxyMode types.ProxyMode,
-	groupName string,
-	toolsFilter []string,
-	ignoreGlobally bool,
-	printOverlays bool,
-) (*RunConfig, error) {
-	return NewRunConfigBuilder().
-		WithRuntime(runtime).
-		WithCmdArgs(cmdArgs).
-		WithName(name).
-		WithImage(imageURL).
-		WithHost(host).
-		WithTargetHost(targetHost).
-		WithDebug(debug).
-		WithVolumes(volumes).
-		WithSecrets(secretsList).
-		WithAuthzConfigPath(authzConfigPath).
-		WithAuditConfigPath(auditConfigPath).
-		WithPermissionProfileNameOrPath(permissionProfile).
-		WithNetworkIsolation(isolateNetwork).
-		WithK8sPodPatch(k8sPodPatch).
-		WithProxyMode(proxyMode).
-		WithTransportAndPorts(mcpTransport, port, targetPort).
-		WithAuditEnabled(enableAudit, auditConfigPath).
-		WithLabels(runLabels).
-		WithGroup(groupName).
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
-			thvCABundle, jwksAuthTokenFile, jwksAllowPrivateIP).
-		WithTelemetryConfig(otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
-			otelSamplingRate, otelHeaders, otelInsecure, otelEnvironmentVariables).
-		WithToolsFilter(toolsFilter).
-		WithIgnoreConfig(&ignore.Config{
-			LoadGlobal:    ignoreGlobally,
-			PrintOverlays: printOverlays,
-		}).
-		Build(ctx, imageMetadata, envVars, envVarValidator)
 }
 
 // WithAuthz adds authorization configuration to the RunConfig

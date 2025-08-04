@@ -9,6 +9,7 @@ import (
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -241,45 +242,36 @@ func BuildRunnerConfig(
 	}
 
 	// Initialize a new RunConfig with values from command-line flags
-	// TODO: As noted elsewhere, we should use the builder pattern here to make it more readable.
-	return runner.NewRunConfigFromFlags(
-		ctx, rt, cmdArgs,
-		runConfig.Name,
-		imageURL, imageMetadata,
-		validatedHost,
-		debugMode,
-		runConfig.Volumes,
-		runConfig.Secrets,
-		runConfig.AuthzConfig,
-		runConfig.AuditConfig,
-		runConfig.EnableAudit,
-		runConfig.PermissionProfile,
-		runConfig.TargetHost,
-		runConfig.Transport,
-		runConfig.ProxyPort,
-		runConfig.TargetPort,
-		runConfig.Env,
-		runConfig.Labels,
-		oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
-		finalOtelEndpoint,
-		runConfig.OtelServiceName,
-		finalOtelSamplingRate,
-		runConfig.OtelHeaders,
-		runConfig.OtelInsecure,
-		runConfig.OtelEnablePrometheusMetricsPath,
-		finalOtelEnvironmentVariables,
-		runConfig.IsolateNetwork,
-		runConfig.K8sPodPatch,
-		runConfig.ThvCABundle,
-		runConfig.JWKSAuthTokenFile,
-		runConfig.JWKSAllowPrivateIP,
-		envVarValidator,
-		types.ProxyMode(runConfig.ProxyMode),
-		runConfig.Group,
-		runConfig.ToolsFilter,
-		runConfig.IgnoreGlobally,
-		runConfig.PrintOverlays,
-	)
+	return runner.NewRunConfigBuilder().
+		WithRuntime(rt).
+		WithCmdArgs(cmdArgs).
+		WithName(runConfig.Name).
+		WithImage(imageURL).
+		WithHost(validatedHost).
+		WithTargetHost(runConfig.TargetHost).
+		WithDebug(debugMode).
+		WithVolumes(runConfig.Volumes).
+		WithSecrets(runConfig.Secrets).
+		WithAuthzConfigPath(runConfig.AuthzConfig).
+		WithAuditConfigPath(runConfig.AuditConfig).
+		WithPermissionProfileNameOrPath(runConfig.PermissionProfile).
+		WithNetworkIsolation(runConfig.IsolateNetwork).
+		WithK8sPodPatch(runConfig.K8sPodPatch).
+		WithProxyMode(types.ProxyMode(runConfig.ProxyMode)).
+		WithTransportAndPorts(runConfig.Transport, runConfig.ProxyPort, runConfig.TargetPort).
+		WithAuditEnabled(runConfig.EnableAudit, runConfig.AuditConfig).
+		WithLabels(runConfig.Labels).
+		WithGroup(runConfig.Group).
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
+			runConfig.ThvCABundle, runConfig.JWKSAuthTokenFile, runConfig.JWKSAllowPrivateIP).
+		WithTelemetryConfig(finalOtelEndpoint, runConfig.OtelEnablePrometheusMetricsPath, runConfig.OtelServiceName,
+			finalOtelSamplingRate, runConfig.OtelHeaders, runConfig.OtelInsecure, finalOtelEnvironmentVariables).
+		WithToolsFilter(runConfig.ToolsFilter).
+		WithIgnoreConfig(&ignore.Config{
+			LoadGlobal:    runConfig.IgnoreGlobally,
+			PrintOverlays: runConfig.PrintOverlays,
+		}).
+		Build(ctx, imageMetadata, runConfig.Env, envVarValidator)
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags

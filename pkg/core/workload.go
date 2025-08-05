@@ -1,9 +1,11 @@
+// Package core provides the core domain model for the ToolHive system.
 package core
 
 import (
+	"time"
+
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/transport/types"
-	"time"
 )
 
 // Workload is a domain model representing a workload in the system.

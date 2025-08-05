@@ -3,7 +3,6 @@ package workloads
 import (
 	"context"
 	"errors"
-	"github.com/stacklok/toolhive/pkg/core"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 

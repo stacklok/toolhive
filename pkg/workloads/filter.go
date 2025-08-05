@@ -3,8 +3,8 @@ package workloads
 import (
 	"context"
 	"fmt"
-	"github.com/stacklok/toolhive/pkg/core"
 
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 )

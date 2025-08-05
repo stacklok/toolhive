@@ -3,12 +3,12 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/stacklok/toolhive/pkg/core"
 	"os"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )

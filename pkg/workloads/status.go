@@ -3,9 +3,9 @@ package workloads
 import (
 	"context"
 	"fmt"
-	"github.com/stacklok/toolhive/pkg/core"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 )

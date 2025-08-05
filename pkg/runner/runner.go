@@ -51,10 +51,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		Debug:      r.Config.Debug,
 	}
 
-	for _, config := range r.Config.MiddlewareConfig {
-		middleware, err := config.CreateMiddleware()
+	for _, middlewareConfig := range r.Config.MiddlewareConfig {
+		middleware, err := middlewareConfig.CreateMiddleware()
 		if err != nil {
-			return fmt.Errorf("failed to create middleware %s: %v", config.GetType(), err)
+			return fmt.Errorf("failed to create middleware %s: %v", middlewareConfig.GetType(), err)
 		}
 		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
 	}

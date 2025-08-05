@@ -14,6 +14,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwk"
 
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -78,6 +79,25 @@ type TokenValidatorConfig struct {
 
 	// AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
 	AllowPrivateIP bool
+}
+
+// JWTMiddlewareConfig implements the MiddlewareConfig interface for JWT token validation.
+type JWTMiddlewareConfig struct {
+	// Validator is the JWT token validator instance
+	Validator *TokenValidator
+}
+
+// GetType returns the type of middleware as a string.
+func (*JWTMiddlewareConfig) GetType() string {
+	return "jwt_auth"
+}
+
+// CreateMiddleware creates an instance of the JWT token validation middleware.
+func (c *JWTMiddlewareConfig) CreateMiddleware() (types.Middleware, error) {
+	if c.Validator == nil {
+		return nil, fmt.Errorf("validator is required")
+	}
+	return c.Validator.Middleware, nil
 }
 
 // discoverOIDCConfiguration discovers OIDC configuration from the issuer's well-known endpoint

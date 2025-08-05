@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // MCPMethodToFeatureOperation maps MCP method names to feature and operation pairs.
@@ -76,6 +77,25 @@ func convertToJSONRPC2ID(id interface{}) (jsonrpc2.ID, error) {
 	default:
 		return jsonrpc2.ID{}, fmt.Errorf("unsupported ID type: %T", id)
 	}
+}
+
+// CedarAuthzMiddlewareConfig implements the MiddlewareConfig interface for Cedar authorization.
+type CedarAuthzMiddlewareConfig struct {
+	// Authorizer is the Cedar authorizer instance
+	Authorizer *CedarAuthorizer
+}
+
+// GetType returns the type of middleware as a string.
+func (*CedarAuthzMiddlewareConfig) GetType() string {
+	return "cedar_authz"
+}
+
+// CreateMiddleware creates an instance of the Cedar authorization middleware.
+func (c *CedarAuthzMiddlewareConfig) CreateMiddleware() (types.Middleware, error) {
+	if c.Authorizer == nil {
+		return nil, fmt.Errorf("authorizer is required")
+	}
+	return c.Authorizer.Middleware, nil
 }
 
 // handleUnauthorized handles unauthorized requests.

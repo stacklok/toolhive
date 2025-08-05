@@ -12,6 +12,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // contextKey is a type for context keys to avoid collisions.
@@ -38,6 +39,19 @@ type ParsedMCPRequest struct {
 	IsRequest bool
 	// IsBatch indicates if this is a batch request
 	IsBatch bool
+}
+
+// ParsingMiddlewareConfig implements the MiddlewareConfig interface for MCP parsing.
+type ParsingMiddlewareConfig struct{}
+
+// GetType returns the type of middleware as a string.
+func (*ParsingMiddlewareConfig) GetType() string {
+	return "mcp_parser"
+}
+
+// CreateMiddleware creates an instance of the MCP parsing middleware.
+func (*ParsingMiddlewareConfig) CreateMiddleware() (types.Middleware, error) {
+	return ParsingMiddleware, nil
 }
 
 // ParsingMiddleware creates an HTTP middleware that parses MCP JSON-RPC requests

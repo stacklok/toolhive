@@ -40,6 +40,42 @@ type HTTPMiddleware struct {
 	activeConnections metric.Int64UpDownCounter
 }
 
+// MiddlewareConfig implements the MiddlewareConfig interface for OpenTelemetry instrumentation.
+type MiddlewareConfig struct {
+	// Config is the telemetry configuration
+	Config Config
+	// TracerProvider is the OpenTelemetry tracer provider
+	TracerProvider trace.TracerProvider
+	// MeterProvider is the OpenTelemetry meter provider
+	MeterProvider metric.MeterProvider
+	// ServerName is the name of the MCP server
+	ServerName string
+	// Transport is the backend transport type
+	Transport string
+}
+
+// GetType returns the type of middleware as a string.
+func (*MiddlewareConfig) GetType() string {
+	return "http_otel"
+}
+
+// CreateMiddleware creates an instance of the OpenTelemetry instrumentation middleware.
+func (c *MiddlewareConfig) CreateMiddleware() (types.Middleware, error) {
+	if c.TracerProvider == nil {
+		return nil, fmt.Errorf("tracer provider is required")
+	}
+	if c.MeterProvider == nil {
+		return nil, fmt.Errorf("meter provider is required")
+	}
+	if c.ServerName == "" {
+		return nil, fmt.Errorf("server name is required")
+	}
+	if c.Transport == "" {
+		return nil, fmt.Errorf("transport is required")
+	}
+	return NewHTTPMiddleware(c.Config, c.TracerProvider, c.MeterProvider, c.ServerName, c.Transport), nil
+}
+
 // NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.
 // serverName is the name of the MCP server (e.g., "github", "fetch")
 // transport is the backend transport type ("stdio" or "sse")

@@ -7,7 +7,22 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+// AnonymousMiddlewareConfig implements the MiddlewareConfig interface for anonymous authentication.
+type AnonymousMiddlewareConfig struct{}
+
+// GetType returns the type of middleware as a string.
+func (*AnonymousMiddlewareConfig) GetType() string {
+	return "anonymous_auth"
+}
+
+// CreateMiddleware creates an instance of the anonymous authentication middleware.
+func (*AnonymousMiddlewareConfig) CreateMiddleware() (types.Middleware, error) {
+	return AnonymousMiddleware, nil
+}
 
 // AnonymousMiddleware creates an HTTP middleware that sets up anonymous claims.
 // This is useful for testing and local environments where authorization policies

@@ -24,7 +24,7 @@ type ToolFilterMiddlewareConfig struct {
 }
 
 // GetType returns the type of middleware as a string.
-func (c *ToolFilterMiddlewareConfig) GetType() string {
+func (*ToolFilterMiddlewareConfig) GetType() string {
 	// TODO: Is this an enum?
 	return "tool_filter"
 }
@@ -75,8 +75,7 @@ func (c *ToolFilterMiddlewareConfig) CreateMiddleware() (types.Middleware, error
 	}, nil
 }
 
-// TODO: Need config for this too.
-// NewToolCallFilterMiddleware creates an HTTP middleware that parses tool call
+// ToolCallFilterMiddlewareConfig creates an HTTP middleware that parses tool call
 // requests and filters out tools that are not in the filter list.
 //
 // The middleware looks for JSON-RPC messages with:
@@ -86,13 +85,24 @@ func (c *ToolFilterMiddlewareConfig) CreateMiddleware() (types.Middleware, error
 // This middleware is designed to be used ONLY when tool filtering is enabled,
 // and expects the list of tools to be "correct" (i.e. not empty and not
 // containing nonexisting tools).
-func NewToolCallFilterMiddleware(filterTools []string) (types.Middleware, error) {
-	if len(filterTools) == 0 {
+type ToolCallFilterMiddlewareConfig struct {
+	// FilterTools is the list of tools to filter. If empty, no filtering is applied.
+	FilterTools []string
+}
+
+// GetType returns the type of middleware as a string.
+func (*ToolCallFilterMiddlewareConfig) GetType() string {
+	return "tool_call_filter"
+}
+
+// CreateMiddleware creates an instance of the tool call filter middleware.
+func (c *ToolCallFilterMiddlewareConfig) CreateMiddleware() (types.Middleware, error) {
+	if len(c.FilterTools) == 0 {
 		return nil, fmt.Errorf("tools list for filtering is empty")
 	}
 
 	toolsMap := make(map[string]struct{})
-	for _, tool := range filterTools {
+	for _, tool := range c.FilterTools {
 		toolsMap[tool] = struct{}{}
 	}
 

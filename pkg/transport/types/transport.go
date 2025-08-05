@@ -29,6 +29,8 @@ type MiddlewareConfig interface {
 	CreateMiddleware() (Middleware, error)
 }
 
+// TODO: Do we need a middleware interface?
+
 // Transport defines the interface for MCP transport implementations.
 // It provides methods for handling communication between the client and server.
 type Transport interface {

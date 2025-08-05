@@ -3,11 +3,33 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+// LocalUserMiddlewareConfig implements the MiddlewareConfig interface for local user authentication.
+type LocalUserMiddlewareConfig struct {
+	// Username is the local username to use
+	Username string
+}
+
+// GetType returns the type of middleware as a string.
+func (*LocalUserMiddlewareConfig) GetType() string {
+	return "local_user_auth"
+}
+
+// CreateMiddleware creates an instance of the local user authentication middleware.
+func (c *LocalUserMiddlewareConfig) CreateMiddleware() (types.Middleware, error) {
+	if c.Username == "" {
+		return nil, fmt.Errorf("username is required")
+	}
+	return LocalUserMiddleware(c.Username), nil
+}
 
 // LocalUserMiddleware creates an HTTP middleware that sets up local user claims.
 // This allows specifying a local username while still bypassing authentication.

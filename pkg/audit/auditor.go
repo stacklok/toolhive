@@ -4,6 +4,7 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // LevelAudit is a custom audit log level - between Info and Warn
@@ -37,6 +39,25 @@ func NewAuditLogger(w io.Writer) *slog.Logger {
 type Auditor struct {
 	config      *Config
 	auditLogger *slog.Logger
+}
+
+// MiddlewareConfig implements the MiddlewareConfig interface for audit logging.
+type MiddlewareConfig struct {
+	// Auditor is the audit logging instance
+	Auditor *Auditor
+}
+
+// GetType returns the type of middleware as a string.
+func (*MiddlewareConfig) GetType() string {
+	return "audit_log"
+}
+
+// CreateMiddleware creates an instance of the audit logging middleware.
+func (c *MiddlewareConfig) CreateMiddleware() (types.Middleware, error) {
+	if c.Auditor == nil {
+		return nil, fmt.Errorf("auditor is required")
+	}
+	return c.Auditor.Middleware, nil
 }
 
 // NewAuditor creates a new Auditor with the given configuration.

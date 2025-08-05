@@ -6,16 +6,12 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/stacklok/toolhive/pkg/audit"
-	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
-	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -100,18 +96,6 @@ func (b *RunConfigBuilder) WithSecrets(secrets []string) *RunConfigBuilder {
 	return b
 }
 
-// WithAuthzConfigPath sets the authorization config path
-func (b *RunConfigBuilder) WithAuthzConfigPath(path string) *RunConfigBuilder {
-	b.config.AuthzConfigPath = path
-	return b
-}
-
-// WithAuditConfigPath sets the audit config path
-func (b *RunConfigBuilder) WithAuditConfigPath(path string) *RunConfigBuilder {
-	b.config.AuditConfigPath = path
-	return b
-}
-
 // WithPermissionProfileNameOrPath sets the permission profile name or path.
 // If called multiple times or mixed with WithPermissionProfile,
 // the last call takes precedence.
@@ -183,93 +167,6 @@ func (b *RunConfigBuilder) WithTransportAndPorts(mcpTransport string, port, targ
 	b.transportString = mcpTransport
 	b.port = port
 	b.targetPort = targetPort
-	return b
-}
-
-// WithAuditEnabled configures audit settings
-func (b *RunConfigBuilder) WithAuditEnabled(enableAudit bool, auditConfigPath string) *RunConfigBuilder {
-	if enableAudit && auditConfigPath == "" {
-		b.config.AuditConfig = audit.DefaultConfig()
-	}
-	return b
-}
-
-// WithOIDCConfig configures OIDC settings
-func (b *RunConfigBuilder) WithOIDCConfig(
-	oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string,
-	oidcAllowOpaqueTokens bool,
-	thvCABundle, jwksAuthTokenFile string,
-	jwksAllowPrivateIP bool,
-) *RunConfigBuilder {
-	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
-		b.config.OIDCConfig = &auth.TokenValidatorConfig{
-			Issuer:            oidcIssuer,
-			Audience:          oidcAudience,
-			JWKSURL:           oidcJwksURL,
-			ClientID:          oidcClientID,
-			AllowOpaqueTokens: oidcAllowOpaqueTokens,
-		}
-	}
-	// Set JWKS-related configuration
-	b.config.ThvCABundle = thvCABundle
-	b.config.JWKSAuthTokenFile = jwksAuthTokenFile
-	b.config.JWKSAllowPrivateIP = jwksAllowPrivateIP
-	return b
-}
-
-// WithTelemetryConfig configures telemetry settings
-func (b *RunConfigBuilder) WithTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
-	otelServiceName string, otelSamplingRate float64, otelHeaders []string, otelInsecure bool,
-	otelEnvironmentVariables []string) *RunConfigBuilder {
-
-	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
-		return b
-	}
-
-	// Parse headers from key=value format
-	headers := make(map[string]string)
-	for _, header := range otelHeaders {
-		parts := strings.SplitN(header, "=", 2)
-		if len(parts) == 2 {
-			headers[parts[0]] = parts[1]
-		}
-	}
-
-	// Use provided service name or default
-	serviceName := otelServiceName
-	if serviceName == "" {
-		serviceName = telemetry.DefaultConfig().ServiceName
-	}
-
-	// Process environment variables - split comma-separated values
-	var processedEnvVars []string
-	for _, envVarEntry := range otelEnvironmentVariables {
-		// Split by comma and trim whitespace
-		envVars := strings.Split(envVarEntry, ",")
-		for _, envVar := range envVars {
-			trimmed := strings.TrimSpace(envVar)
-			if trimmed != "" {
-				processedEnvVars = append(processedEnvVars, trimmed)
-			}
-		}
-	}
-
-	b.config.TelemetryConfig = &telemetry.Config{
-		Endpoint:                    otelEndpoint,
-		ServiceName:                 serviceName,
-		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
-		SamplingRate:                otelSamplingRate,
-		Headers:                     headers,
-		Insecure:                    otelInsecure,
-		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
-		EnvironmentVariables:        processedEnvVars,
-	}
-	return b
-}
-
-// WithToolsFilter sets the tools filter
-func (b *RunConfigBuilder) WithToolsFilter(toolsFilter []string) *RunConfigBuilder {
-	b.config.ToolsFilter = toolsFilter
 	return b
 }
 
@@ -370,25 +267,6 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 
 	// Add standard labels
 	c.WithStandardLabels()
-
-	// Add authorization configuration if provided
-	if c.AuthzConfigPath != "" {
-		authzConfig, err := authz.LoadConfig(c.AuthzConfigPath)
-		if err != nil {
-			return fmt.Errorf("failed to load authorization configuration: %v", err)
-		}
-		c.WithAuthz(authzConfig)
-	}
-
-	// Add audit configuration if provided
-	if c.AuditConfigPath != "" {
-		auditConfig, err := audit.LoadFromFile(c.AuditConfigPath)
-		if err != nil {
-			return fmt.Errorf("failed to load audit configuration: %v", err)
-		}
-		c.WithAudit(auditConfig)
-	}
-	// Note: AuditConfig is already set from --enable-audit flag if provided
 
 	// Prepend registry args to command-line args if available
 	if imageMetadata != nil && len(imageMetadata.Args) > 0 {

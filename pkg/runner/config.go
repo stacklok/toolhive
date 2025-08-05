@@ -7,9 +7,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/stacklok/toolhive/pkg/audit"
-	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/environment"
@@ -20,7 +17,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
-	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -76,24 +72,6 @@ type RunConfig struct {
 	// ContainerLabels are the labels to apply to the container
 	ContainerLabels map[string]string `json:"container_labels,omitempty" yaml:"container_labels,omitempty"`
 
-	// OIDCConfig contains OIDC configuration
-	OIDCConfig *auth.TokenValidatorConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
-
-	// AuthzConfig contains the authorization configuration
-	AuthzConfig *authz.Config `json:"authz_config,omitempty" yaml:"authz_config,omitempty"`
-
-	// AuthzConfigPath is the path to the authorization configuration file
-	AuthzConfigPath string `json:"authz_config_path,omitempty" yaml:"authz_config_path,omitempty"`
-
-	// AuditConfig contains the audit logging configuration
-	AuditConfig *audit.Config `json:"audit_config,omitempty" yaml:"audit_config,omitempty"`
-
-	// AuditConfigPath is the path to the audit configuration file
-	AuditConfigPath string `json:"audit_config_path,omitempty" yaml:"audit_config_path,omitempty"`
-
-	// TelemetryConfig contains the OpenTelemetry configuration
-	TelemetryConfig *telemetry.Config `json:"telemetry_config,omitempty" yaml:"telemetry_config,omitempty"`
-
 	// Secrets are the secret parameters to pass to the container
 	// Format: "<secret name>,target=<target environment variable>"
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
@@ -114,12 +92,6 @@ type RunConfig struct {
 	// ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations
 	ThvCABundle string `json:"thv_ca_bundle,omitempty" yaml:"thv_ca_bundle,omitempty"`
 
-	// JWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests
-	JWKSAuthTokenFile string `json:"jwks_auth_token_file,omitempty" yaml:"jwks_auth_token_file,omitempty"`
-
-	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
-	JWKSAllowPrivateIP bool `json:"jwks_allow_private_ip,omitempty" yaml:"jwks_allow_private_ip,omitempty"`
-
 	// Group is the name of the group this workload belongs to, if any
 	Group string `json:"group,omitempty" yaml:"group,omitempty"`
 
@@ -131,6 +103,7 @@ type RunConfig struct {
 
 	// MiddlewareConfig contains the list of middleware to apply to the transport
 	// along with the configuration needed to instantiate each one.
+	// TODO: Need to deserialize this from JSON
 	MiddlewareConfig []types.MiddlewareConfig `json:"middleware_config,omitempty" yaml:"middleware_config,omitempty"`
 }
 
@@ -157,18 +130,6 @@ func NewRunConfig() *RunConfig {
 		ContainerLabels: make(map[string]string),
 		EnvVars:         make(map[string]string),
 	}
-}
-
-// WithAuthz adds authorization configuration to the RunConfig
-func (c *RunConfig) WithAuthz(config *authz.Config) *RunConfig {
-	c.AuthzConfig = config
-	return c
-}
-
-// WithAudit adds audit configuration to the RunConfig
-func (c *RunConfig) WithAudit(config *audit.Config) *RunConfig {
-	c.AuditConfig = config
-	return c
 }
 
 // WithTransport parses and sets the transport type

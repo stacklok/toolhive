@@ -17,7 +17,19 @@ var errToolNameNotFound = errors.New("tool name not found")
 var errToolNotInFilter = errors.New("tool not in filter")
 var errBug = errors.New("there's a bug")
 
-// NewToolFilterMiddleware creates an HTTP middleware that parses SSE responses
+// ToolFilterMiddlewareConfig implements the MiddlewareConfig interface for tool filtering.
+type ToolFilterMiddlewareConfig struct {
+	// FilterTools is the list of tools to filter. If empty, no filtering is applied.
+	FilterTools []string
+}
+
+// GetType returns the type of middleware as a string.
+func (c *ToolFilterMiddlewareConfig) GetType() string {
+	// TODO: Is this an enum?
+	return "tool_filter"
+}
+
+// CreateMiddleware creates an instance of the tool filter middleware.
 // and plain JSON objects to extract tool names from JSON-RPC messages containing
 // tool lists or tool calls.
 //
@@ -32,13 +44,13 @@ var errBug = errors.New("there's a bug")
 // This middleware is designed to be used ONLY when tool filtering is enabled,
 // and expects the list of tools to be "correct" (i.e. not empty and not
 // containing nonexisting tools).
-func NewToolFilterMiddleware(filterTools []string) (types.Middleware, error) {
-	if len(filterTools) == 0 {
+func (c *ToolFilterMiddlewareConfig) CreateMiddleware() (types.Middleware, error) {
+	if len(c.FilterTools) == 0 {
 		return nil, fmt.Errorf("tools list for filtering is empty")
 	}
 
 	toolsMap := make(map[string]struct{})
-	for _, tool := range filterTools {
+	for _, tool := range c.FilterTools {
 		toolsMap[tool] = struct{}{}
 	}
 
@@ -63,6 +75,7 @@ func NewToolFilterMiddleware(filterTools []string) (types.Middleware, error) {
 	}, nil
 }
 
+// TODO: Need config for this too.
 // NewToolCallFilterMiddleware creates an HTTP middleware that parses tool call
 // requests and filters out tools that are not in the filter list.
 //

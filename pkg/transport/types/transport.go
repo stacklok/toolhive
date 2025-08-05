@@ -17,13 +17,25 @@ import (
 // Middleware is a function that wraps an http.Handler with additional functionality.
 type Middleware func(http.Handler) http.Handler
 
+// MiddlewareConfig holds the configuration parameters needed to instantiate
+// a middleware instance. This is implemented as an interface so that we can
+// have a plugin-like model for middleware.
+type MiddlewareConfig interface {
+	// GetType returns the type of middleware as a string.
+	// This is used to identify the middleware type in the configuration.
+	GetType() string
+	// CreateMiddleware creates an instance of the middleware.
+	// It returns a Middleware function that can be used to wrap http handlers.
+	CreateMiddleware() (Middleware, error)
+}
+
 // Transport defines the interface for MCP transport implementations.
 // It provides methods for handling communication between the client and server.
 type Transport interface {
 	// Mode returns the transport mode.
 	Mode() TransportType
 
-	// Port returns the port used by the transport.
+	// ProxyPort returns the port used by the transport.
 	ProxyPort() int
 
 	// Setup prepares the transport for use.

@@ -9,12 +9,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -53,7 +51,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		Debug:      r.Config.Debug,
 	}
 
-	if len(r.Config.ToolsFilter) > 0 {
+	for _, config := range r.Config.MiddlewareConfig {
+		middleware, err := config.CreateMiddleware()
+		if err != nil {
+			return fmt.Errorf("failed to create middleware %s: %v", config.GetType(), err)
+		}
+		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
+	}
+
+	/*if len(r.Config.ToolsFilter) > 0 {
 		toolsFilterMiddleware, err := mcp.NewToolFilterMiddleware(r.Config.ToolsFilter)
 		if err != nil {
 			return fmt.Errorf("failed to create tools filter middleware: %v", err)
@@ -137,7 +143,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Add audit middleware to transport config
 		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
-	}
+	}*/
 
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode

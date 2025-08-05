@@ -128,6 +128,10 @@ type RunConfig struct {
 
 	// IgnoreConfig contains configuration for ignore processing
 	IgnoreConfig *ignore.Config `json:"ignore_config,omitempty" yaml:"ignore_config,omitempty"`
+
+	// MiddlewareConfig contains the list of middleware to apply to the transport
+	// along with the configuration needed to instantiate each one.
+	MiddlewareConfig []types.MiddlewareConfig `json:"middleware_config,omitempty" yaml:"middleware_config,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer

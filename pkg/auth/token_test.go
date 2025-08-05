@@ -688,3 +688,75 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 		}
 	})
 }
+
+func TestTokenValidator_OpaqueToken(t *testing.T) {
+	t.Parallel()
+
+	// Create a fake introspection server
+	introspectionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate introspection response for opaque tokens
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("Failed to parse form: %v", err)
+		}
+		token := r.FormValue("token")
+		if token == "valid-opaque-token" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"active": true,
+				"sub":    "opaque-user",
+				"iss":    "opaque-issuer",
+				"aud":    "opaque-audience",
+				"scope":  "read:stuff",
+				"exp":    time.Now().Add(1 * time.Hour).Unix(),
+			})
+		} else {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"active": false,
+			})
+		}
+	}))
+	t.Cleanup(func() {
+		introspectionServer.Close()
+	})
+
+	ctx := context.Background()
+	// Create a token validator that only uses introspection (no JWKS URL)
+	validator := &TokenValidator{
+		introspectURL: introspectionServer.URL,
+		clientID:      "test-client-id",
+		clientSecret:  "test-client-secret",
+		client:        http.DefaultClient,
+		issuer:        "opaque-issuer",
+		audience:      "opaque-audience",
+	}
+
+	t.Run("valid opaque token", func(t *testing.T) {
+		t.Parallel()
+		claims, err := validator.ValidateToken(ctx, "valid-opaque-token")
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+
+		if claims["sub"] != "opaque-user" {
+			t.Errorf("Expected sub=opaque-user, got %v", claims["sub"])
+		}
+		if claims["iss"] != "opaque-issuer" {
+			t.Errorf("Expected iss=opaque-issuer, got %v", claims["iss"])
+		}
+		if claims["aud"] != "opaque-audience" {
+			t.Errorf("Expected aud=opaque-audience, got %v", claims["aud"])
+		}
+	})
+
+	t.Run("inactive opaque token", func(t *testing.T) {
+		t.Parallel()
+		_, err := validator.ValidateToken(ctx, "invalid-opaque-token")
+		if err == nil {
+			t.Fatal("Expected error for inactive token, got nil")
+		}
+		if !errors.Is(err, ErrInvalidToken) {
+			t.Errorf("Expected ErrInvalidToken, got %v", err)
+		}
+	})
+}

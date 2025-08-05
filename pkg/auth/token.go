@@ -245,7 +245,7 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 	return rawKey, nil
 }
 
-// validateClaims validates the cl aims in the token.
+// validateClaims validates the claims in the token.
 func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 	// Validate the issuer if provided
 	if v.issuer != "" {

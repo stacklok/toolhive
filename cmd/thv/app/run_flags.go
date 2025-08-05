@@ -10,6 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -190,6 +191,16 @@ func BuildRunnerConfig(
 
 	// Get OIDC flags
 	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret := getOidcFromFlags(cmd)
+	if oidcJwksURL != "" {
+		if err := networking.ValidateEndpointURL(oidcJwksURL); err != nil {
+			return nil, fmt.Errorf("invalid %s: %w", oidcJwksURL, err)
+		}
+	}
+	if oidcIntrospectionURL != "" {
+		if err := networking.ValidateEndpointURL(oidcIntrospectionURL); err != nil {
+			return nil, fmt.Errorf("invalid %s: %w", oidcIntrospectionURL, err)
+		}
+	}
 
 	// Get OTEL flag values with config fallbacks
 	config := cfg.GetConfig()

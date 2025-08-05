@@ -1005,7 +1005,7 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig("", "", "", "", false, "", "", false).
+		WithOIDCConfig("", "", "", "", "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
@@ -1129,7 +1129,7 @@ func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig("", "", "", "", false, "", "", false).
+		WithOIDCConfig("", "", "", "", "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	nameref "github.com/google/go-containerregistry/pkg/name"
+
 	"github.com/stacklok/toolhive/pkg/certs"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/templates"
@@ -30,6 +32,20 @@ func HandleProtocolScheme(
 	serverOrImage string,
 	caCertPath string,
 ) (string, error) {
+	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "")
+}
+
+// BuildFromProtocolSchemeWithName checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
+// and builds a Docker image for it if needed with a custom image name.
+// If imageName is empty, a default name will be generated.
+// Returns the Docker image name to use and any error encountered.
+func BuildFromProtocolSchemeWithName(
+	ctx context.Context,
+	imageManager images.ImageManager,
+	serverOrImage string,
+	caCertPath string,
+	imageName string,
+) (string, error) {
 	transportType, packageName, err := parseProtocolScheme(serverOrImage)
 	if err != nil {
 		return "", err
@@ -40,7 +56,7 @@ func HandleProtocolScheme(
 		return "", err
 	}
 
-	return buildImageFromTemplate(ctx, imageManager, transportType, packageName, templateData)
+	return buildImageFromTemplateWithName(ctx, imageManager, transportType, packageName, templateData, imageName)
 }
 
 // parseProtocolScheme extracts the transport type and package name from the protocol scheme.
@@ -243,13 +259,15 @@ func generateImageName(transportType templates.TransportType, packageName string
 		tag))
 }
 
-// buildImageFromTemplate builds a Docker image from the template data.
-func buildImageFromTemplate(
+// buildImageFromTemplateWithName builds a Docker image from the template data with a custom image name.
+// If imageName is empty, a default name will be generated.
+func buildImageFromTemplateWithName(
 	ctx context.Context,
 	imageManager images.ImageManager,
 	transportType templates.TransportType,
 	packageName string,
 	templateData templates.TemplateData,
+	imageName string,
 ) (string, error) {
 
 	// Get the Dockerfile content
@@ -277,8 +295,20 @@ func buildImageFromTemplate(
 	}
 	defer caCertCleanup()
 
-	// Generate image name
-	imageName := generateImageName(transportType, packageName)
+	// Use provided image name or generate one
+	finalImageName := imageName
+	if finalImageName == "" {
+		finalImageName = generateImageName(transportType, packageName)
+	} else {
+		// Validate the provided image name using go-containerregistry
+		ref, err := nameref.ParseReference(finalImageName)
+		if err != nil {
+			return "", fmt.Errorf("invalid image name format '%s': %w", finalImageName, err)
+		}
+		// Use the normalized reference string
+		finalImageName = ref.String()
+		logger.Debugf("Using validated image name: %s", finalImageName)
+	}
 
 	// Log the build process
 	logger.Debugf("Building Docker image for %s package: %s", transportType, packageName)
@@ -286,12 +316,12 @@ func buildImageFromTemplate(
 
 	// Build the Docker image
 	logger.Infof("Building Docker image for %s package: %s", transportType, packageName)
-	if err := imageManager.BuildImage(ctx, buildCtx.Dir, imageName); err != nil {
+	if err := imageManager.BuildImage(ctx, buildCtx.Dir, finalImageName); err != nil {
 		return "", fmt.Errorf("failed to build Docker image: %w", err)
 	}
-	logger.Infof("Successfully built Docker image: %s", imageName)
+	logger.Infof("Successfully built Docker image: %s", finalImageName)
 
-	return imageName, nil
+	return finalImageName, nil
 }
 
 // Replace slashes with dashes to create a valid Docker image name. If there

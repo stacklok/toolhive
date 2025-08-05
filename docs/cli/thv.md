@@ -35,6 +35,7 @@ thv [flags]
 
 ### SEE ALSO
 
+* [thv build](thv_build.md)	 - Build a container for an MCP server without running it
 * [thv client](thv_client.md)	 - Manage MCP clients
 * [thv config](thv_config.md)	 - Manage application configuration
 * [thv export](thv_export.md)	 - Export a workload's run configuration to a file

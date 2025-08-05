@@ -278,10 +278,9 @@ func BuildRunnerConfig(
 		WithLabels(runConfig.Labels).
 		WithGroup(runConfig.Group).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-			runConfig.ThvCABundle, runConfig.JWKSAuthTokenFile, runConfig.JWKSAllowPrivateIP).
+			runConfig.ThvCABundle, runConfig.JWKSAuthTokenFile, runConfig.ResourceURL, runConfig.JWKSAllowPrivateIP).
 		WithTelemetryConfig(finalOtelEndpoint, runConfig.OtelEnablePrometheusMetricsPath, runConfig.OtelServiceName,
 			finalOtelSamplingRate, runConfig.OtelHeaders, runConfig.OtelInsecure, finalOtelEnvironmentVariables).
-		WithOAuthDiscovery(runConfig.ResourceURL).
 		WithToolsFilter(runConfig.ToolsFilter).
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    runConfig.IgnoreGlobally,

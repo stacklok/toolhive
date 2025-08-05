@@ -203,7 +203,7 @@ func (b *RunConfigBuilder) WithAuditEnabled(enableAudit bool, auditConfigPath st
 // WithOIDCConfig configures OIDC settings
 func (b *RunConfigBuilder) WithOIDCConfig(
 	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID string, oidcClientSecret string,
-	thvCABundle, jwksAuthTokenFile string,
+	thvCABundle, jwksAuthTokenFile, resourceURL string,
 	jwksAllowPrivateIP bool,
 ) *RunConfigBuilder {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
@@ -221,15 +221,16 @@ func (b *RunConfigBuilder) WithOIDCConfig(
 	b.config.ThvCABundle = thvCABundle
 	b.config.JWKSAuthTokenFile = jwksAuthTokenFile
 	b.config.JWKSAllowPrivateIP = jwksAllowPrivateIP
-	return b
-}
 
-// WithOAuthDiscovery configures OAuth discovery settings (RFC 9728)
-func (b *RunConfigBuilder) WithOAuthDiscovery(resourceURL string) *RunConfigBuilder {
-	if b.config.OIDCConfig == nil {
-		b.config.OIDCConfig = &auth.TokenValidatorConfig{}
+	// Set ResourceURL if OIDCConfig exists or if resourceURL is not empty
+	if b.config.OIDCConfig != nil {
+		b.config.OIDCConfig.ResourceURL = resourceURL
+	} else if resourceURL != "" {
+		// Create OIDCConfig just for ResourceURL if it doesn't exist but resourceURL is provided
+		b.config.OIDCConfig = &auth.TokenValidatorConfig{
+			ResourceURL: resourceURL,
+		}
 	}
-	b.config.OIDCConfig.ResourceURL = resourceURL
 	return b
 }
 

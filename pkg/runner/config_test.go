@@ -608,9 +608,7 @@ func TestRunConfigBuilder(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, "", oidcClientID, "",
-			"", "", false).
-		WithOAuthDiscovery("").
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, "", oidcClientID, "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0.1, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
@@ -852,7 +850,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 				WithAuditEnabled(false, "").
 				WithLabels(nil).
 				WithGroup("").
-				WithOIDCConfig("", "", "", "", "", "", "", "", false).
+				WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
 				WithTelemetryConfig("", false, "", 0, nil, false, nil).
 				WithToolsFilter(nil).
 				WithIgnoreConfig(&ignore.Config{
@@ -899,7 +897,7 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig("", "", "", "", "", "", "", "", false).
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
@@ -951,7 +949,7 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig("", "", "", "", "", "", "", "", false).
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
@@ -1006,7 +1004,7 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig("", "", "", "", "", "", "", "", false).
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
@@ -1057,7 +1055,7 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig("", "", "", "", "", "", "", "", false).
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
@@ -1130,7 +1128,7 @@ func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig("", "", "", "", "", "", "", "", false).
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{

@@ -257,8 +257,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		WithTransportAndPorts(runTransport, runProxyPort, runTargetPort).
 		WithAuditEnabled(runEnableAudit, runAuditConfig).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-			runThvCABundle, runJWKSAuthTokenFile, runJWKSAllowPrivateIP).
-		WithOAuthDiscovery(runResourceURL).
+			runThvCABundle, runJWKSAuthTokenFile, runResourceURL, runJWKSAllowPrivateIP).
 		WithTelemetryConfig(finalOtelEndpoint, runOtelEnablePrometheusMetricsPath, runOtelServiceName,
 			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
 		WithToolsFilter(runToolsFilter).

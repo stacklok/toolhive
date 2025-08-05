@@ -155,6 +155,10 @@ spec:
                         description: ClientID is deprecated and will be removed in
                           a future release.
                         type: string
+                      clientSecret:
+                        description: ClientSecret is the client secret for introspection
+                          (optional)
+                        type: string
                       introspectionUrl:
                         description: IntrospectionURL is the URL for token introspection
                           endpoint

@@ -18,6 +18,7 @@ func AddOIDCFlags(cmd *cobra.Command) {
 	cmd.Flags().String("oidc-jwks-url", "", "URL to fetch the JWKS from")
 	cmd.Flags().String("oidc-introspection-url", "", "URL for token introspection endpoint")
 	cmd.Flags().String("oidc-client-id", "", "OIDC client ID")
+	cmd.Flags().String("oidc-client-secret", "", "OIDC client secret (optional, for introspection)")
 }
 
 // GetStringFlagOrEmpty tries to get the string value of the given flag.

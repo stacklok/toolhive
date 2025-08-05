@@ -58,6 +58,9 @@ components:
         clientID:
           description: ClientID is the OIDC client ID
           type: string
+        clientSecret:
+          description: ClientSecret is the optional OIDC client secret for introspection
+          type: string
         introspectionURL:
           description: IntrospectionURL is the optional introspection endpoint for
             validating tokens
@@ -942,6 +945,9 @@ components:
           type: string
         client_id:
           description: OAuth2 client ID
+          type: string
+        client_secret:
+          description: OAuth2 client secret
           type: string
         introspection_url:
           description: Token introspection URL for OIDC

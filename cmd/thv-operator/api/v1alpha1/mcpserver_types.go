@@ -361,6 +361,10 @@ type InlineOIDCConfig struct {
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
 
+	// ClientSecret is the client secret for introspection (optional)
+	// +optional
+	ClientSecret string `json:"clientSecret,omitempty"`
+
 	// ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
 	// The file must be mounted into the pod (e.g., via ConfigMap or Secret volume)
 	// +optional

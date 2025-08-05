@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -49,6 +50,7 @@ type TokenValidator struct {
 	audience      string
 	jwksURL       string
 	clientID      string
+	clientSecret  string // Optional client secret for introspection
 	jwksClient    *jwk.Cache
 	introspectURL string       // Optional introspection endpoint
 	client        *http.Client // HTTP client for making requests
@@ -69,6 +71,9 @@ type TokenValidatorConfig struct {
 
 	// ClientID is the OIDC client ID
 	ClientID string
+
+	// ClientSecret is the optional OIDC client secret for introspection
+	ClientSecret string
 
 	// CACertPath is the path to the CA certificate bundle for HTTPS requests
 	CACertPath string
@@ -140,17 +145,18 @@ func discoverOIDCConfiguration(
 }
 
 // NewTokenValidatorConfig creates a new TokenValidatorConfig with the provided parameters
-func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string) *TokenValidatorConfig {
+func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string, clientSecret string) *TokenValidatorConfig {
 	// Only create a config if at least one parameter is provided
-	if issuer == "" && audience == "" && jwksURL == "" && clientID == "" {
+	if issuer == "" && audience == "" && jwksURL == "" && clientID == "" && clientSecret == "" {
 		return nil
 	}
 
 	return &TokenValidatorConfig{
-		Issuer:   issuer,
-		Audience: audience,
-		JWKSURL:  jwksURL,
-		ClientID: clientID,
+		Issuer:       issuer,
+		Audience:     audience,
+		JWKSURL:      jwksURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	}
 }
 
@@ -199,6 +205,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		jwksURL:       jwksURL,
 		introspectURL: config.IntrospectionURL,
 		clientID:      config.ClientID,
+		clientSecret:  config.ClientSecret,
 		jwksClient:    cache,
 		client:        config.httpClient,
 	}, nil
@@ -246,7 +253,6 @@ func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 		if err != nil {
 			return fmt.Errorf("failed to get issuer from claims: %w", err)
 		}
-
 		if strings.TrimSpace(issuerClaim) != strings.TrimSpace(v.issuer) {
 			return ErrInvalidIssuer
 		}
@@ -280,54 +286,24 @@ func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 	return nil
 }
 
-func (v *TokenValidator) introspectOpaqueToken(ctx context.Context, tokenStr string) (jwt.MapClaims, error) {
-	if v.introspectURL == "" {
-		return nil, fmt.Errorf("no introspection endpoint available")
-	}
-	form := url.Values{"token": {tokenStr}}
-	// Optional: add token_type_hint
-	form.Set("token_type_hint", "access_token")
-
-	// Build POST request with encoding and required headers
-	req, err := http.NewRequestWithContext(ctx, "POST", v.introspectURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create introspection request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+tokenStr)
-
-	resp, err := v.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("introspection call failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("introspection unauthorized: %s", resp.Status)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("introspection failed, status %d", resp.StatusCode)
-	}
-
+func parseIntrospectionClaims(r io.Reader) (jwt.MapClaims, error) {
 	var j struct {
-		Active   bool                   `json:"active"`
-		Exp      *float64               `json:"exp,omitempty"`
-		Sub      string                 `json:"sub,omitempty"`
-		Aud      interface{}            `json:"aud,omitempty"`
-		Scope    string                 `json:"scope,omitempty"`
-		Iss      string                 `json:"iss,omitempty"`
-		ClientID string                 `json:"client_id,omitempty"`
-		Extra    map[string]interface{} `json:"-"`
+		Active bool                   `json:"active"`
+		Exp    *float64               `json:"exp,omitempty"`
+		Sub    string                 `json:"sub,omitempty"`
+		Aud    interface{}            `json:"aud,omitempty"`
+		Scope  string                 `json:"scope,omitempty"`
+		Iss    string                 `json:"iss,omitempty"`
+		Extra  map[string]interface{} `json:"-"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&j); err != nil {
+
+	if err := json.NewDecoder(r).Decode(&j); err != nil {
 		return nil, fmt.Errorf("failed to decode introspection JSON: %w", err)
 	}
 	if !j.Active {
 		return nil, ErrInvalidToken
 	}
 
-	// Build jwt.MapClaims from the JSON response
 	claims := jwt.MapClaims{}
 	if j.Exp != nil {
 		claims["exp"] = *j.Exp
@@ -344,9 +320,49 @@ func (v *TokenValidator) introspectOpaqueToken(ctx context.Context, tokenStr str
 	if j.Iss != "" {
 		claims["iss"] = strings.TrimSpace(j.Iss)
 	}
-	// Add any extra fields returned from the introspection endpoint
-	for k, v2 := range j.Extra {
-		claims[k] = v2
+	for k, v := range j.Extra {
+		claims[k] = v
+	}
+
+	return claims, nil
+}
+
+func (v *TokenValidator) introspectOpaqueToken(ctx context.Context, tokenStr string) (jwt.MapClaims, error) {
+	if v.introspectURL == "" {
+		return nil, fmt.Errorf("no introspection endpoint available")
+	}
+	form := url.Values{"token": {tokenStr}}
+	form.Set("token_type_hint", "access_token")
+
+	// Build POST request with encoding and required headers
+	req, err := http.NewRequestWithContext(ctx, "POST", v.introspectURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create introspection request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	// if we have client id and secret, add them to the request
+	if v.clientID != "" && v.clientSecret != "" {
+		req.SetBasicAuth(v.clientID, v.clientSecret)
+	}
+
+	resp, err := v.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("introspection call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("introspection unauthorized: %s", resp.Status)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("introspection failed, status %d", resp.StatusCode)
+	}
+
+	claims, err := parseIntrospectionClaims(resp.Body)
+	if err != nil {
+		return nil, err
 	}
 
 	// Validate required claims (e.g. exp)

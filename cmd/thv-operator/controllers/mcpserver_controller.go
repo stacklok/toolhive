@@ -1282,6 +1282,9 @@ func (r *MCPServerReconciler) generateConfigMapOIDCArgs( // nolint:gocyclo
 	if clientID, exists := configMap.Data["clientId"]; exists && clientID != "" {
 		args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
 	}
+	if clientSecret, exists := configMap.Data["clientSecret"]; exists && clientSecret != "" {
+		args = append(args, fmt.Sprintf("--oidc-client-secret=%s", clientSecret))
+	}
 	if thvCABundlePath, exists := configMap.Data["thvCABundlePath"]; exists && thvCABundlePath != "" {
 		args = append(args, fmt.Sprintf("--thv-ca-bundle=%s", thvCABundlePath))
 	}

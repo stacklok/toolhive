@@ -119,6 +119,7 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  |  |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint |  |  |
 | `clientId` _string_ | ClientID is deprecated and will be removed in a future release. |  |  |
+| `clientSecret` _string_ | ClientSecret is the client secret for introspection (optional) |  |  |
 | `thvCABundlePath` _string_ | ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests<br />The file must be mounted into the pod (e.g., via ConfigMap or Secret volume) |  |  |
 | `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests<br />The file must be mounted into the pod (e.g., via Secret volume) |  |  |
 | `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Use with caution - only enable for trusted internal IDPs | false |  |

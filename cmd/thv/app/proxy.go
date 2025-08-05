@@ -206,6 +206,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 		introspectionURL := GetStringFlagOrEmpty(cmd, "oidc-introspection-url")
 		clientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
+		clientSecret := GetStringFlagOrEmpty(cmd, "oidc-client-secret")
 
 		oidcConfig = &auth.TokenValidatorConfig{
 			Issuer:           issuer,
@@ -213,6 +214,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 			JWKSURL:          jwksURL,
 			IntrospectionURL: introspectionURL,
 			ClientID:         clientID,
+			ClientSecret:     clientSecret,
 		}
 	}
 

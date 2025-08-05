@@ -142,7 +142,6 @@ func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string) err
 	if doc.UserinfoEndpoint != "" {
 		endpoints["userinfo_endpoint"] = doc.UserinfoEndpoint
 	}
-
 	for name, endpoint := range endpoints {
 		if endpoint != "" {
 			if err := validateEndpointURL(endpoint); err != nil {

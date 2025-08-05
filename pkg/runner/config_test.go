@@ -584,7 +584,6 @@ func TestRunConfigBuilder(t *testing.T) {
 	oidcIssuer := "https://issuer.example.com"
 	oidcAudience := "test-audience"
 	oidcJwksURL := "https://issuer.example.com/.well-known/jwks.json"
-	oidcIntrospectionURL := "https://issuer.example.com/introspect"
 	oidcClientID := "test-client"
 	k8sPodPatch := `{"spec":{"containers":[{"name":"test","resources":{"limits":{"memory":"512Mi"}}}]}}`
 	envVarValidator := &mockEnvVarValidator{}
@@ -609,7 +608,7 @@ func TestRunConfigBuilder(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcIntrospectionURL, false,
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, "", oidcClientID, "",
 			"", "", false).
 		WithTelemetryConfig("", false, "", 0.1, nil, false, nil).
 		WithToolsFilter(nil).
@@ -852,7 +851,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 				WithAuditEnabled(false, "").
 				WithLabels(nil).
 				WithGroup("").
-				WithOIDCConfig("", "", "", "", "", false, "", "", false).
+				WithOIDCConfig("", "", "", "", "", "", "", "", false).
 				WithTelemetryConfig("", false, "", 0, nil, false, nil).
 				WithToolsFilter(nil).
 				WithIgnoreConfig(&ignore.Config{
@@ -899,7 +898,7 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig("", "", "", "", "", false, "", "", false).
+		WithOIDCConfig("", "", "", "", "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
@@ -951,7 +950,7 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig("", "", "", "", "", false, "", "", false).
+		WithOIDCConfig("", "", "", "", "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
@@ -1057,7 +1056,7 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 		WithAuditEnabled(false, "").
 		WithLabels(nil).
 		WithGroup("").
-		WithOIDCConfig("", "", "", "", "", "", "", false).
+		WithOIDCConfig("", "", "", "", "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{

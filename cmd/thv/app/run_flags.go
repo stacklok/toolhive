@@ -189,7 +189,7 @@ func BuildRunnerConfig(
 	}
 
 	// Get OIDC flags
-	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID := getOidcFromFlags(cmd)
+	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret := getOidcFromFlags(cmd)
 
 	// Get OTEL flag values with config fallbacks
 	config := cfg.GetConfig()
@@ -259,7 +259,7 @@ func BuildRunnerConfig(
 		WithAuditEnabled(runConfig.EnableAudit, runConfig.AuditConfig).
 		WithLabels(runConfig.Labels).
 		WithGroup(runConfig.Group).
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcIntrospectionURL,
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
 			runConfig.ThvCABundle, runConfig.JWKSAuthTokenFile, runConfig.JWKSAllowPrivateIP).
 		WithTelemetryConfig(finalOtelEndpoint, runConfig.OtelEnablePrometheusMetricsPath, runConfig.OtelServiceName,
 			finalOtelSamplingRate, runConfig.OtelHeaders, runConfig.OtelInsecure, finalOtelEnvironmentVariables).
@@ -272,14 +272,15 @@ func BuildRunnerConfig(
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags
-func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, string) {
+func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, string, string) {
 	oidcIssuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
 	oidcAudience := GetStringFlagOrEmpty(cmd, "oidc-audience")
 	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 	introspectionURL := GetStringFlagOrEmpty(cmd, "oidc-introspection-url")
 	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
+	oidcClientSecret := GetStringFlagOrEmpty(cmd, "oidc-client-secret")
 
-	return oidcIssuer, oidcAudience, oidcJwksURL, introspectionURL, oidcClientID
+	return oidcIssuer, oidcAudience, oidcJwksURL, introspectionURL, oidcClientID, oidcClientSecret
 }
 
 // getTelemetryFromFlags extracts telemetry configuration from command flags

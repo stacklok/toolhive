@@ -44,7 +44,6 @@ var _ = Describe("Client Management", func() {
 		Expect(err).ToNot(HaveOccurred())
 	})
 
-
 	Describe("client register command", func() {
 		It("should fail to register an invalid client", func() {
 			// Try to register an invalid client

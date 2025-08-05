@@ -2587,6 +2587,46 @@
         "convert_time"
       ],
       "transport": "stdio"
+    },
+    "plotting": {
+      "args": [],
+      "description": "Provides plotting capabilities for visualizing data in various formats.",
+      "env_vars": [],
+      "image": "ghcr.io/stackloklabs/plotting-mcp:latest",
+      "metadata": {
+        "last_updated": "2025-08-05T00:24:22Z",
+        "pulls": 4,
+        "stars": 0
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/StacklokLabs/plotting-mcp",
+      "status": "Active",
+      "tags": [
+        "plotting",
+        "visualization",
+        "data",
+        "charts",
+        "graphs",
+        "matplotlib",
+        "seaborn",
+        "cartopy",
+        "maps"
+      ],
+      "tier": "Community",
+      "tools": [
+        "generate_plot"
+      ],
+      "transport": "streamable-http"
     }
   },
   "version": "1.0.0"

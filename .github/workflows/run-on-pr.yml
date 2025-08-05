@@ -22,6 +22,8 @@ jobs:
     uses: ./.github/workflows/e2e-tests.yml
   docs:
     name: Docs
+    permissions:
+      contents: read
     uses: ./.github/workflows/verify-docgen.yml
   swagger:
     name: Swagger

@@ -41,6 +41,7 @@ func NewRootCmd(enableUpdates bool) *cobra.Command {
 
 	// Add subcommands
 	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(buildCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(rmCmd)

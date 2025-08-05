@@ -44,18 +44,22 @@ type CedarConfig struct {
 
 // LoadConfig loads the authorization configuration from a file.
 // It supports both JSON and YAML formats, detected by file extension.
-//
-//nolint:gosec // This is intentionally loading a file specified by the user
 func LoadConfig(path string) (*Config, error) {
+	// Validate and clean the path to prevent directory traversal attacks
+	cleanPath := filepath.Clean(path)
+	if strings.Contains(cleanPath, "..") {
+		return nil, fmt.Errorf("path contains directory traversal elements: %s", path)
+	}
+
 	// Read the file
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read authorization configuration file: %w", err)
 	}
 
 	// Determine the file format based on extension
 	var config Config
-	ext := strings.ToLower(filepath.Ext(path))
+	ext := strings.ToLower(filepath.Ext(cleanPath))
 
 	// Parse the file based on its format
 	switch ext {

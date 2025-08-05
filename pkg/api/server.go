@@ -192,7 +192,7 @@ func Serve(
 		"/api/v1beta/workloads": v1.WorkloadRouter(workloadManager, containerRuntime, groupManager, debugMode),
 		"/api/v1beta/registry":  v1.RegistryRouter(registryProvider),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
-		"/api/v1beta/clients":   v1.ClientRouter(clientManager),
+		"/api/v1beta/clients":   v1.ClientRouter(clientManager, workloadManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
 		"/api/v1beta/groups":    v1.GroupsRouter(groupManager),
 	}

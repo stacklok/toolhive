@@ -9,6 +9,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var clientCmd = &cobra.Command{
@@ -142,9 +143,20 @@ func getAvailableClients(statuses []client.MCPClientStatus) []client.MCPClientSt
 func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.MCPClientStatus) error {
 	ctx := cmd.Context()
 
-	manager, err := client.NewManager(ctx)
+	clientManager, err := client.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	workloadManager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %w", err)
+	}
+
+	// Fetch running workloads to register with the clients
+	runningWorkloads, err := workloadManager.ListWorkloads(ctx, false)
+	if err != nil {
+		return fmt.Errorf("failed to list running workloads: %w", err)
 	}
 
 	clients := make([]client.Client, len(clientsToRegister))
@@ -152,7 +164,7 @@ func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.MCPC
 		clients[i] = client.Client{Name: cli.ClientType}
 	}
 
-	err = manager.RegisterClients(ctx, clients)
+	err = clientManager.RegisterClients(clients, runningWorkloads)
 	if err != nil {
 		return fmt.Errorf("failed to register clients: %w", err)
 	}
@@ -182,9 +194,20 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create client manager: %w", err)
 	}
 
-	err = manager.RegisterClients(ctx, []client.Client{
+	workloadManager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %w", err)
+	}
+
+	// Fetch running workloads to register with the client
+	runningWorkloads, err := workloadManager.ListWorkloads(ctx, false)
+	if err != nil {
+		return fmt.Errorf("failed to list running workloads: %w", err)
+	}
+
+	err = manager.RegisterClients([]client.Client{
 		{Name: client.MCPClient(clientType)},
-	})
+	}, runningWorkloads)
 	if err != nil {
 		return fmt.Errorf("failed to register client %s: %w", clientType, err)
 	}

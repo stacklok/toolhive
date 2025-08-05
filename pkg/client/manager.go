@@ -8,9 +8,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/transport"
+)
+
+const (
+	mcpToolType = "mcp"
 )
 
 // Client represents a registered ToolHive client.
@@ -22,8 +26,8 @@ type Client struct {
 type Manager interface {
 	// ListClients returns a list of all registered.
 	ListClients() ([]Client, error)
-	// RegisterClients registers multiple clients with ToolHive.
-	RegisterClients(ctx context.Context, clients []Client) error
+	// RegisterClients registers multiple clients with ToolHive for the specified workloads.
+	RegisterClients(clients []Client, workloads []core.Workload) error
 	// UnregisterClients unregisters multiple clients from ToolHive.
 	UnregisterClients(ctx context.Context, clients []Client) error
 }
@@ -55,8 +59,8 @@ func (*defaultManager) ListClients() ([]Client, error) {
 	return clients, nil
 }
 
-// RegisterClients registers multiple clients with ToolHive.
-func (m *defaultManager) RegisterClients(ctx context.Context, clients []Client) error {
+// RegisterClients registers multiple clients with ToolHive for the specified workloads.
+func (m *defaultManager) RegisterClients(clients []Client, workloads []core.Workload) error {
 	for _, client := range clients {
 		err := config.UpdateConfig(func(c *config.Config) {
 			// Check if client is already registered and skip.
@@ -76,85 +80,11 @@ func (m *defaultManager) RegisterClients(ctx context.Context, clients []Client) 
 
 		logger.Infof("Successfully registered client: %s\n", client.Name)
 
-		// Add currently running MCPs to the newly registered client
-		if err := m.addRunningMCPsToClient(ctx, client.Name); err != nil {
-			return fmt.Errorf("failed to add running MCPs to client %s: %v", client.Name, err)
+		// Add specified workloads to the newly registered client
+		if err := m.addWorkloadsToClient(client.Name, workloads); err != nil {
+			return fmt.Errorf("failed to add workloads to client %s: %v", client.Name, err)
 		}
 	}
-	return nil
-}
-
-// addRunningMCPsToClient adds currently running MCP servers to the specified client's configuration
-func (m *defaultManager) addRunningMCPsToClient(ctx context.Context, clientType MCPClient) error {
-	// List workloads
-	containers, err := m.runtime.ListWorkloads(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Filter containers to only show those managed by ToolHive and running
-	var runningContainers []rt.ContainerInfo
-	for _, c := range containers {
-		if labels.IsToolHiveContainer(c.Labels) && c.State == "running" {
-			runningContainers = append(runningContainers, c)
-		}
-	}
-
-	if len(runningContainers) == 0 {
-		// No running servers, nothing to do
-		return nil
-	}
-
-	// Find the client configuration for the specified client
-	clientConfig, err := FindClientConfig(clientType)
-	if err != nil {
-		if errors.Is(err, ErrConfigFileNotFound) {
-			// Create a new client configuration if it doesn't exist
-			clientConfig, err = CreateClientConfig(clientType)
-			if err != nil {
-				return fmt.Errorf("failed to create client configuration for %s: %w", clientType, err)
-			}
-		} else {
-			return fmt.Errorf("failed to find client configuration: %w", err)
-		}
-	}
-
-	// For each running container, add it to the client configuration
-	for _, c := range runningContainers {
-		// Get container name from labels
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
-
-		// Get tool type from labels
-		toolType := labels.GetToolType(c.Labels)
-
-		// Only include containers with tool type "mcp"
-		if toolType != "mcp" {
-			continue
-		}
-
-		// Get port from labels
-		port, err := labels.GetPort(c.Labels)
-		if err != nil {
-			continue // Skip if we can't get the port
-		}
-
-		transportType := labels.GetTransportType(c.Labels)
-
-		// Generate URL for the MCP server
-		url := GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
-
-		// Update the MCP server configuration with locking
-		if err := Upsert(*clientConfig, name, url, transportType); err != nil {
-			logger.Warnf("Warning: Failed to update MCP server configuration in %s: %v", clientConfig.Path, err)
-			continue
-		}
-
-		logger.Infof("Added MCP server %s to client %s\n", name, clientType)
-	}
-
 	return nil
 }
 
@@ -223,7 +153,7 @@ func (m *defaultManager) removeMCPsFromClient(ctx context.Context, clientType MC
 		toolType := labels.GetToolType(c.Labels)
 
 		// Only include containers with tool type "mcp"
-		if toolType != "mcp" {
+		if toolType != mcpToolType {
 			continue
 		}
 
@@ -234,6 +164,45 @@ func (m *defaultManager) removeMCPsFromClient(ctx context.Context, clientType MC
 		}
 
 		logger.Infof("Removed MCP server %s from client %s\n", name, clientType)
+	}
+
+	return nil
+}
+
+// addWorkloadsToClient adds the specified workloads to the client's configuration
+func (*defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []core.Workload) error {
+	// Find the client configuration for the specified client
+	clientConfig, err := FindClientConfig(clientType)
+	if err != nil {
+		if errors.Is(err, ErrConfigFileNotFound) {
+			// Create a new client configuration if it doesn't exist
+			clientConfig, err = CreateClientConfig(clientType)
+			if err != nil {
+				return fmt.Errorf("failed to create client configuration for %s: %w", clientType, err)
+			}
+		} else {
+			return fmt.Errorf("failed to find client configuration: %w", err)
+		}
+	}
+
+	if len(workloads) == 0 {
+		// No workloads to add, nothing more to do
+		return nil
+	}
+
+	// For each workload, add it to the client configuration
+	for _, workload := range workloads {
+		if workload.ToolType != mcpToolType {
+			continue
+		}
+
+		// Update the MCP server configuration with locking
+		if err := Upsert(*clientConfig, workload.Name, workload.URL, string(workload.TransportType)); err != nil {
+			logger.Warnf("Warning: Failed to update MCP server configuration in %s: %v", clientConfig.Path, err)
+			continue
+		}
+
+		logger.Infof("Added MCP server %s to client %s\n", workload.Name, clientType)
 	}
 
 	return nil

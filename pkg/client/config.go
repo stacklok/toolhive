@@ -3,7 +3,6 @@
 package client
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -361,31 +360,7 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	return configFile, nil
 }
 
-// ensureClientConfigWithRunningMCPs expects the client config file to not exist, and creates it with
-// the running MCPs for the given client type.
-func ensureClientConfigWithRunningMCPs(clientType MCPClient) (*ConfigFile, error) {
-	ctx := context.Background()
-	mgrIface, mgrErr := NewManager(ctx)
-	if mgrErr != nil {
-		return nil, fmt.Errorf("unable to create manager for %s: %w", clientType, mgrErr)
-	}
-	mgr, ok := mgrIface.(*defaultManager)
-	if !ok {
-		return nil, fmt.Errorf("manager is not of type *defaultManager for %s", clientType)
-	}
-	// Add the running MCPs to the client config file by creating it if it doesn't exist
-	if err := mgr.addRunningMCPsToClient(ctx, clientType); err != nil {
-		return nil, fmt.Errorf("unable to add running MCPs to client config for %s: %w", clientType, err)
-	}
-	cf, err := FindClientConfig(clientType)
-	if err != nil {
-		return nil, fmt.Errorf("unable to load client config for %s after creation: %w", clientType, err)
-	}
-	return cf, nil
-}
-
-// FindRegisteredClientConfigs finds all registered client configs and creates them if they don't exist
-// and ensures they are populated with the running MCPs.
+// FindRegisteredClientConfigs finds all registered client configs and creates them if they don't exist.
 func FindRegisteredClientConfigs() ([]ConfigFile, error) {
 	clientStatuses, err := GetClientStatus()
 	if err != nil {
@@ -400,13 +375,13 @@ func FindRegisteredClientConfigs() ([]ConfigFile, error) {
 		cf, err := FindClientConfig(clientStatus.ClientType)
 		if err != nil {
 			if errors.Is(err, ErrConfigFileNotFound) {
-				logger.Infof("Client config file not found for %s, creating it and adding running MCPs...", clientStatus.ClientType)
-				cf, err = ensureClientConfigWithRunningMCPs(clientStatus.ClientType)
+				logger.Infof("Client config file not found for %s, creating it...", clientStatus.ClientType)
+				cf, err = CreateClientConfig(clientStatus.ClientType)
 				if err != nil {
-					logger.Warnf("Unable to create and populate client config for %s: %v", clientStatus.ClientType, err)
+					logger.Warnf("Unable to create client config for %s: %v", clientStatus.ClientType, err)
 					continue
 				}
-				logger.Infof("Successfully created and populated client config file for %s", clientStatus.ClientType)
+				logger.Infof("Successfully created client config file for %s", clientStatus.ClientType)
 			} else {
 				logger.Warnf("Unable to process client config for %s: %v", clientStatus.ClientType, err)
 				continue

@@ -15,6 +15,7 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -379,7 +380,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 		setupRuntimeMock func(*mocks.MockRuntime)
 		expectedCount    int
 		expectedError    string
-		checkWorkloads   func([]Workload)
+		checkWorkloads   func([]core.Workload)
 	}{
 		{
 			name:    "empty directory",
@@ -403,7 +404,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 				m.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
 			},
 			expectedCount: 1,
-			checkWorkloads: func(workloads []Workload) {
+			checkWorkloads: func(workloads []core.Workload) {
 				assert.Equal(t, "test-workload", workloads[0].Name)
 				assert.Equal(t, rt.WorkloadStatusStarting, workloads[0].Status)
 			},
@@ -442,7 +443,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 				m.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{info}, nil)
 			},
 			expectedCount: 1,
-			checkWorkloads: func(workloads []Workload) {
+			checkWorkloads: func(workloads []core.Workload) {
 				assert.Equal(t, "running-workload", workloads[0].Name)
 				assert.Equal(t, rt.WorkloadStatusRunning, workloads[0].Status)
 			},
@@ -540,10 +541,10 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 				m.EXPECT().ListWorkloads(gomock.Any()).Return(containers, nil)
 			},
 			expectedCount: 2,
-			checkWorkloads: func(workloads []Workload) {
+			checkWorkloads: func(workloads []core.Workload) {
 				// Find the merged workload
-				var mergedWorkload *Workload
-				var runtimeOnlyWorkload *Workload
+				var mergedWorkload *core.Workload
+				var runtimeOnlyWorkload *core.Workload
 				for i := range workloads {
 					switch workloads[i].Name {
 					case "merge-workload":

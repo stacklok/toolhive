@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 )
 
 // FilterByGroup filters workloads to only include those in the specified group
 func FilterByGroup(
-	ctx context.Context, workloadList []Workload, groupName string,
-) ([]Workload, error) {
+	ctx context.Context, workloadList []core.Workload, groupName string,
+) ([]core.Workload, error) {
 	// Create group manager
 	groupManager, err := groups.NewManager()
 	if err != nil {
@@ -40,7 +41,7 @@ func FilterByGroup(
 	}
 
 	// Filter workloads that belong to the specified group
-	var filteredWorkloads []Workload
+	var filteredWorkloads []core.Workload
 	for _, workload := range workloadList {
 		if groupWorkloadMap[workload.Name] {
 			filteredWorkloads = append(filteredWorkloads, workload)

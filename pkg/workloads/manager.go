@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -37,11 +38,11 @@ import (
 //go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=manager.go Manager
 type Manager interface {
 	// GetWorkload retrieves details of the named workload including its status.
-	GetWorkload(ctx context.Context, workloadName string) (Workload, error)
+	GetWorkload(ctx context.Context, workloadName string) (core.Workload, error)
 	// ListWorkloads retrieves the states of all workloads.
 	// The `listAll` parameter determines whether to include workloads that are not running.
 	// The optional `labelFilters` parameter allows filtering workloads by labels (format: key=value).
-	ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error)
+	ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]core.Workload, error)
 	// DeleteWorkloads deletes the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
@@ -104,13 +105,13 @@ func NewManagerFromRuntime(runtime rt.Runtime) Manager {
 	}
 }
 
-func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (Workload, error) {
+func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
 	// For the sake of minimizing changes, delegate to the status manager.
 	// Whether this method should still belong to the workload manager is TBD.
 	return d.statuses.GetWorkload(ctx, workloadName)
 }
 
-func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error) {
+func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]core.Workload, error) {
 	// For the sake of minimizing changes, delegate to the status manager.
 	// Whether this method should still belong to the workload manager is TBD.
 	return d.statuses.ListWorkloads(ctx, listAll, labelFilters)

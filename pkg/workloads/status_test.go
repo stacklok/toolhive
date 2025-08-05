@@ -11,6 +11,7 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -169,7 +170,7 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 		setupMock      func(*mocks.MockRuntime)
 		expectedCount  int
 		expectedError  string
-		checkWorkloads func([]Workload)
+		checkWorkloads func([]core.Workload)
 	}{
 		{
 			name:    "list running workloads only",
@@ -179,7 +180,7 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 				m.EXPECT().ListWorkloads(gomock.Any()).Return(containers, nil)
 			},
 			expectedCount: 1,
-			checkWorkloads: func(workloads []Workload) {
+			checkWorkloads: func(workloads []core.Workload) {
 				assert.Equal(t, "running-workload", workloads[0].Name)
 				assert.Equal(t, rt.WorkloadStatusRunning, workloads[0].Status)
 			},
@@ -202,7 +203,7 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 				m.EXPECT().ListWorkloads(gomock.Any()).Return(containers, nil)
 			},
 			expectedCount: 1,
-			checkWorkloads: func(workloads []Workload) {
+			checkWorkloads: func(workloads []core.Workload) {
 				assert.Equal(t, "stopped-workload", workloads[0].Name)
 			},
 		},

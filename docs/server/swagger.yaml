@@ -149,6 +149,59 @@ components:
             ToolHive configuration
           type: boolean
       type: object
+    core.Workload:
+      properties:
+        created_at:
+          description: CreatedAt is the timestamp when the workload was created.
+          type: string
+        group:
+          description: Group is the name of the group this workload belongs to, if
+            any.
+          type: string
+        labels:
+          additionalProperties:
+            type: string
+          description: Labels are the container labels (excluding standard ToolHive
+            labels)
+          type: object
+        name:
+          description: |-
+            Name is the name of the workload.
+            It is used as a unique identifier.
+          type: string
+        package:
+          description: Package specifies the Workload Package used to create this
+            Workload.
+          type: string
+        port:
+          description: |-
+            Port is the port on which the workload is exposed.
+            This is embedded in the URL.
+          type: integer
+        status:
+          $ref: '#/components/schemas/runtime.WorkloadStatus'
+        status_context:
+          description: |-
+            StatusContext provides additional context about the workload's status.
+            The exact meaning is determined by the status and the underlying runtime.
+          type: string
+        tool_type:
+          description: |-
+            ToolType is the type of tool this workload represents.
+            For now, it will always be "mcp" - representing an MCP server.
+          type: string
+        tools:
+          description: ToolsFilter is the filter on tools applied to the workload.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport_type:
+          $ref: '#/components/schemas/types.TransportType'
+        url:
+          description: URL is the URL of the workload exposed by the ToolHive proxy.
+          type: string
+      type: object
     groups.Group:
       properties:
         name:
@@ -963,62 +1016,9 @@ components:
         workloads:
           description: List of container information for each workload
           items:
-            $ref: '#/components/schemas/workloads.Workload'
+            $ref: '#/components/schemas/core.Workload'
           type: array
           uniqueItems: false
-      type: object
-    workloads.Workload:
-      properties:
-        created_at:
-          description: CreatedAt is the timestamp when the workload was created.
-          type: string
-        group:
-          description: Group is the name of the group this workload belongs to, if
-            any.
-          type: string
-        labels:
-          additionalProperties:
-            type: string
-          description: Labels are the container labels (excluding standard ToolHive
-            labels)
-          type: object
-        name:
-          description: |-
-            Name is the name of the workload.
-            It is used as a unique identifier.
-          type: string
-        package:
-          description: Package specifies the Workload Package used to create this
-            Workload.
-          type: string
-        port:
-          description: |-
-            Port is the port on which the workload is exposed.
-            This is embedded in the URL.
-          type: integer
-        status:
-          $ref: '#/components/schemas/runtime.WorkloadStatus'
-        status_context:
-          description: |-
-            StatusContext provides additional context about the workload's status.
-            The exact meaning is determined by the status and the underlying runtime.
-          type: string
-        tool_type:
-          description: |-
-            ToolType is the type of tool this workload represents.
-            For now, it will always be "mcp" - representing an MCP server.
-          type: string
-        tools:
-          description: ToolsFilter is the filter on tools applied to the workload.
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        transport_type:
-          $ref: '#/components/schemas/types.TransportType'
-        url:
-          description: URL is the URL of the workload exposed by the ToolHive proxy.
-          type: string
       type: object
 externalDocs:
   description: ""
@@ -1778,7 +1778,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/workloads.Workload'
+                $ref: '#/components/schemas/core.Workload'
           description: OK
         "404":
           content:

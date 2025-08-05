@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/stacklok/toolhive/pkg/core"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -122,7 +123,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 //	@Tags			workloads
 //	@Produce		json
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		200		{object}	workloads.Workload
+//	@Success		200		{object}	core.Workload
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [get]
 func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
@@ -534,7 +535,7 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 //	@Description	Response containing a list of workloads
 type workloadListResponse struct {
 	// List of container information for each workload
-	Workloads []workloads.Workload `json:"workloads"`
+	Workloads []core.Workload `json:"workloads"`
 }
 
 // createRequest represents the request to create a new workload

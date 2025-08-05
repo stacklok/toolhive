@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/stacklok/toolhive/pkg/core"
 	"os"
 	"text/tabwriter"
 
@@ -80,7 +81,7 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 }
 
 // printJSONOutput prints workload information in JSON format
-func printJSONOutput(workloadList []workloads.Workload) error {
+func printJSONOutput(workloadList []core.Workload) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(workloadList, "", "  ")
 	if err != nil {
@@ -94,7 +95,7 @@ func printJSONOutput(workloadList []workloads.Workload) error {
 
 // printMCPServersOutput prints MCP servers configuration in JSON format
 // This format is compatible with client configuration files
-func printMCPServersOutput(workloadList []workloads.Workload) error {
+func printMCPServersOutput(workloadList []core.Workload) error {
 	// Create a map to hold the MCP servers configuration
 	mcpServers := make(map[string]map[string]string)
 
@@ -120,7 +121,7 @@ func printMCPServersOutput(workloadList []workloads.Workload) error {
 }
 
 // printTextOutput prints workload information in text format
-func printTextOutput(workloadList []workloads.Workload) {
+func printTextOutput(workloadList []core.Workload) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tTOOL TYPE\tGROUP\tCREATED AT")

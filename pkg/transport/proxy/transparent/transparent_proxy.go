@@ -305,10 +305,19 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	}
 	p.listener = ln
 
-	// Add auth info endpoint if handler is provided (no middlewares)
+	// Add .well-known path space handler if auth info handler is provided (no middlewares)
 	if p.authInfoHandler != nil {
-		mux.Handle("/.well-known/oauth-protected-resource", p.authInfoHandler)
-		logger.Info("Auth info endpoint enabled at /.well-known/oauth-protected-resource")
+		// Create a handler that routes .well-known requests
+		wellKnownHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/.well-known/oauth-protected-resource":
+				p.authInfoHandler.ServeHTTP(w, r)
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		mux.Handle("/.well-known/", wellKnownHandler)
+		logger.Info("Well-known discovery endpoints enabled at /.well-known/ (no middlewares)")
 	}
 
 	// Create the server

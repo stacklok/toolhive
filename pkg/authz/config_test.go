@@ -55,6 +55,58 @@ func TestLoadConfig(t *testing.T) {
 	assert.Equal(t, config.Cedar.EntitiesJSON, loadedConfig.Cedar.EntitiesJSON, "EntitiesJSON does not match")
 }
 
+func TestLoadConfigPathTraversal(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		path        string
+		expectError bool
+	}{
+		{
+			name:        "Directory traversal with ../",
+			path:        "../../../etc/passwd",
+			expectError: true,
+		},
+		{
+			name:        "Directory traversal with ./",
+			path:        "./../../../etc/passwd",
+			expectError: true,
+		},
+		{
+			name:        "Multiple directory traversals",
+			path:        "../../../../../../etc/passwd",
+			expectError: true,
+		},
+		{
+			name:        "Valid relative path",
+			path:        "config.json",
+			expectError: false, // Will fail because file doesn't exist, not path traversal
+		},
+		{
+			name:        "Valid absolute path",
+			path:        "/tmp/config.json",
+			expectError: false, // Will fail because file doesn't exist, not path traversal
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := LoadConfig(tc.path)
+			if tc.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "directory traversal elements")
+			} else {
+				// For valid paths, we expect a "no such file or directory" error, not a traversal error
+				if err != nil {
+					assert.NotContains(t, err.Error(), "directory traversal elements")
+				}
+			}
+		})
+	}
+}
+
 func TestValidateConfig(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {

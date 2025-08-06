@@ -195,7 +195,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create middlewares slice for incoming request authentication
-	var middlewares []types.Middleware
+	var middlewares []types.MiddlewareFunction
 
 	// Get OIDC configuration if enabled (for protecting the proxy endpoint)
 	var oidcConfig *auth.TokenValidatorConfig
@@ -514,7 +514,7 @@ func resolveClientSecret() (string, error) {
 }
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
-func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.Middleware {
+func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, err := (*tokenSource).Token()

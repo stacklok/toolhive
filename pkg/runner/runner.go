@@ -29,6 +29,9 @@ type Runner struct {
 
 	// telemetryProvider is the OpenTelemetry provider for cleanup
 	telemetryProvider *telemetry.Provider
+
+	// supportedMiddleware is a map of supported middleware types to their factory functions.
+	supportedMiddleware map[string]types.MiddlewareFactory
 }
 
 // NewRunner creates a new Runner with the provided configuration
@@ -51,6 +54,29 @@ func (r *Runner) Run(ctx context.Context) error {
 		TargetHost: r.Config.TargetHost,
 		Deployer:   r.Config.Deployer,
 		Debug:      r.Config.Debug,
+	}
+
+	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
+	for _, middlewareConfig := range r.Config.MiddlewareConfigs {
+		// First, get the correct factory function for the middleware type.
+		factory, ok := r.supportedMiddleware[middlewareConfig.Type]
+		if !ok {
+			return fmt.Errorf("unsupported middleware type: %s", middlewareConfig.Type)
+		}
+
+		// Create the middleware instance using the factory function.
+		middleware, err := factory(&middlewareConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create middleware of type %s: %v", middlewareConfig.Type, err)
+		}
+
+		// Ensure middleware is cleaned up on shutdown.
+		defer func() {
+			if err := middleware.Close(); err != nil {
+				logger.Warnf("Failed to close middleware of type %s: %v", middlewareConfig.Type, err)
+			}
+		}()
+		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware.Handler())
 	}
 
 	if len(r.Config.ToolsFilter) > 0 {

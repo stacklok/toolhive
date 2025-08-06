@@ -44,7 +44,7 @@ type TransparentProxy struct {
 	server *http.Server
 
 	// Middleware chain
-	middlewares []types.Middleware
+	middlewares []types.MiddlewareFunction
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -76,7 +76,7 @@ func NewTransparentProxy(
 	targetURI string,
 	prometheusHandler http.Handler,
 	enableHealthCheck bool,
-	middlewares ...types.Middleware,
+	middlewares ...types.MiddlewareFunction,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
 		host:              host,

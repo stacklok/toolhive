@@ -3,7 +3,6 @@ package workloads
 import (
 	"context"
 
-	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/errors"
@@ -52,7 +51,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 	// Generate URL for the MCP server
 	url := ""
 	if port > 0 {
-		url = client.GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
+		url = transport.GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
 	}
 
 	tType, err := types.ParseTransportType(transportType)

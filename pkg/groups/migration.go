@@ -64,7 +64,7 @@ func performDefaultGroupMigration() {
 	migratedCount := 0
 	for _, runConfigName := range runConfigNames {
 		// Load the runconfig
-		runnerInstance, err := runner.LoadState(context.Background(), runConfigName)
+		runConfig, err := runner.LoadState(context.Background(), runConfigName)
 		if err != nil {
 			// Log the error but continue processing other runconfigs
 			logger.Warnf("Failed to load runconfig %s: %v", runConfigName, err)
@@ -72,9 +72,9 @@ func performDefaultGroupMigration() {
 		}
 
 		// If the workload has no group, assign it to the default group
-		if runnerInstance.Config.Group == "" {
-			runnerInstance.Config.Group = DefaultGroupName
-			if err := runnerInstance.SaveState(context.Background()); err != nil {
+		if runConfig.Group == "" {
+			runConfig.Group = DefaultGroupName
+			if err := runConfig.SaveState(context.Background()); err != nil {
 				logger.Warnf("Failed to save runconfig for %s: %v", runConfigName, err)
 				continue
 			}

@@ -155,9 +155,16 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	workloadManager := workloads.NewManagerFromRuntime(rt)
 
+	// Always save the run config to disk before starting (both foreground and detached modes)
+	// NOTE: Save before secrets processing to avoid storing secrets in the state store
+	if err := runnerConfig.SaveState(ctx); err != nil {
+		return fmt.Errorf("failed to save run configuration: %v", err)
+	}
+
 	if runFlags.Foreground {
 		return runForeground(ctx, workloadManager, runnerConfig)
 	}
+
 	return workloadManager.RunWorkloadDetached(ctx, runnerConfig)
 }
 

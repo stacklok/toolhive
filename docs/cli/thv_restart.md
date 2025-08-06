@@ -24,8 +24,9 @@ thv restart [workload-name] [flags]
 ### Options
 
 ```
-  -a, --all    Restart all MCP servers
-  -h, --help   help for restart
+  -a, --all          Restart all MCP servers
+  -f, --foreground   Run the restarted workload in foreground mode
+  -h, --help         help for restart
 ```
 
 ### Options inherited from parent commands

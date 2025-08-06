@@ -123,18 +123,18 @@ func (mr *MockManagerMockRecorder) MoveToDefaultGroup(ctx, workloadNames, groupN
 }
 
 // RestartWorkloads mocks base method.
-func (m *MockManager) RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
+func (m *MockManager) RestartWorkloads(ctx context.Context, names []string, foreground bool) (*errgroup.Group, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RestartWorkloads", ctx, names)
+	ret := m.ctrl.Call(m, "RestartWorkloads", ctx, names, foreground)
 	ret0, _ := ret[0].(*errgroup.Group)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // RestartWorkloads indicates an expected call of RestartWorkloads.
-func (mr *MockManagerMockRecorder) RestartWorkloads(ctx, names any) *gomock.Call {
+func (mr *MockManagerMockRecorder) RestartWorkloads(ctx, names, foreground any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RestartWorkloads", reflect.TypeOf((*MockManager)(nil).RestartWorkloads), ctx, names)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RestartWorkloads", reflect.TypeOf((*MockManager)(nil).RestartWorkloads), ctx, names, foreground)
 }
 
 // RunWorkload mocks base method.

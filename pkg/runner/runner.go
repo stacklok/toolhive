@@ -147,14 +147,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create transport: %v", err)
 	}
 
-	// Save the configuration to the state store
-	if err := r.SaveState(ctx); err != nil {
-		logger.Warnf("Warning: Failed to save run configuration: %v", err)
-	}
-
 	// Process secrets if provided
-	// NOTE: This MUST happen after we save the run config to avoid storing
-	// the secrets in the state store.
 	if len(r.Config.Secrets) > 0 {
 		cfg := config.GetConfig()
 

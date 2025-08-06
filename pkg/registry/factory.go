@@ -37,3 +37,11 @@ func GetDefaultProvider() (Provider, error) {
 
 	return defaultProvider, defaultProviderErr
 }
+
+// ResetDefaultProvider clears the cached default provider instance
+// This allows the provider to be recreated with updated configuration
+func ResetDefaultProvider() {
+	defaultProviderOnce = sync.Once{}
+	defaultProvider = nil
+	defaultProviderErr = nil
+}

@@ -33,7 +33,7 @@ type MiddlewareConfig struct {
 	Type string `json:"type"`
 	// Parameters is a JSON object containing the middleware parameters.
 	// It is stored as a raw message to allow flexible parameter types.
-	Parameters json.RawMessage `json:"parameters"`
+	Parameters json.RawMessage `json:"parameters" swaggertype:"object"`
 }
 
 // NewMiddlewareConfig creates a new MiddlewareConfig with the given type and parameters.
@@ -60,7 +60,7 @@ type Transport interface {
 	// Mode returns the transport mode.
 	Mode() TransportType
 
-	// Port returns the port used by the transport.
+	// ProxyPort returns the port used by the transport.
 	ProxyPort() int
 
 	// Setup prepares the transport for use.

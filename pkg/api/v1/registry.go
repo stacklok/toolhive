@@ -200,6 +200,9 @@ func (*RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request) {
 		message = fmt.Sprintf("Successfully set local registry file: %s", *req.LocalPath)
 	}
 
+	// Reset the default provider to pick up configuration changes
+	registry.ResetDefaultProvider()
+
 	response := UpdateRegistryResponse{
 		Message: message,
 		Type:    responseType,

@@ -639,6 +639,29 @@ components:
       - TransportTypeSSE
       - TransportTypeStreamableHTTP
       - TransportTypeInspector
+    v1.UpdateRegistryRequest:
+      description: Request containing registry configuration updates
+      properties:
+        allow_private_ip:
+          description: Allow private IP addresses for registry URL
+          type: boolean
+        local_path:
+          description: Local registry file path
+          type: string
+        url:
+          description: Registry URL (for remote registries)
+          type: string
+      type: object
+    v1.UpdateRegistryResponse:
+      description: Response containing update result
+      properties:
+        message:
+          description: Status message
+          type: string
+        type:
+          description: Registry type after update
+          type: string
+      type: object
     v1.bulkClientRequest:
       properties:
         names:
@@ -1371,6 +1394,44 @@ paths:
                 type: string
           description: Not Found
       summary: Get a registry
+      tags:
+      - registry
+    put:
+      description: Update registry URL or local path for the default registry
+      parameters:
+      - description: Registry name (must be 'default')
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.UpdateRegistryRequest'
+        description: Registry configuration
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.UpdateRegistryResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+      summary: Update registry configuration
       tags:
       - registry
   /api/v1beta/registry/{name}/servers:

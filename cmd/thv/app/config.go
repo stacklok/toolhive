@@ -1,17 +1,14 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/certs"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 var configCmd = &cobra.Command{
@@ -170,156 +167,69 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-const (
-	registryTypeFile = "file"
-	registryTypeURL  = "url"
-)
-
-func detectRegistryType(input string) (registryType string, cleanPath string) {
-	// Check for explicit file:// protocol
-	if strings.HasPrefix(input, "file://") {
-		return registryTypeFile, strings.TrimPrefix(input, "file://")
-	}
-
-	// Check for HTTP/HTTPS URLs
-	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
-		return registryTypeURL, input
-	}
-
-	// Default: treat as file path
-	return registryTypeFile, filepath.Clean(input)
-}
-
 func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 	input := args[0]
-	registryType, cleanPath := detectRegistryType(input)
+	registryType, cleanPath := config.DetectRegistryType(input)
 
 	switch registryType {
-	case registryTypeURL:
-		return setRegistryURL(cleanPath)
-	case registryTypeFile:
-		return setRegistryFile(cleanPath)
+	case config.RegistryTypeURL:
+		err := config.SetRegistryURL(cleanPath, allowPrivateRegistryIp)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Successfully set registry URL: %s\n", cleanPath)
+		if allowPrivateRegistryIp {
+			fmt.Print("Successfully enabled use of private IP addresses for the remote registry\n")
+			fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +
+				"Make sure you trust any remote registries you configure with ToolHive.")
+		} else {
+			fmt.Printf("Use of private IP addresses for the remote registry has been disabled" +
+				" as it's not needed for the provided registry.\n")
+		}
+		return nil
+	case config.RegistryTypeFile:
+		return config.SetRegistryFile(cleanPath)
 	default:
 		return fmt.Errorf("unsupported registry type")
 	}
 }
 
-func setRegistryURL(registryURL string) error {
-	// Basic URL validation - check if it starts with http:// or https://
-	if registryURL != "" && !strings.HasPrefix(registryURL, "http://") && !strings.HasPrefix(registryURL, "https://") {
-		return fmt.Errorf("registry URL must start with http:// or https://")
-	}
-
-	if !allowPrivateRegistryIp {
-		registryClient, err := networking.NewHttpClientBuilder().Build()
-		if err != nil {
-			return fmt.Errorf("failed to create HTTP client: %w", err)
-		}
-		_, err = registryClient.Get(registryURL)
-		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
-			return err
-		}
-	}
-
-	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.RegistryUrl = registryURL
-		c.LocalRegistryPath = "" // Clear local path when setting URL
-		c.AllowPrivateRegistryIp = allowPrivateRegistryIp
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
-	}
-
-	fmt.Printf("Successfully set registry URL: %s\n", registryURL)
-	if allowPrivateRegistryIp {
-		fmt.Print("Successfully enabled use of private IP addresses for the remote registry\n")
-		fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +
-			"Make sure you trust any remote registries you configure with ToolHive.")
-	} else {
-		fmt.Printf("Use of private IP addresses for the remote registry has been disabled" +
-			" as it's not needed for the provided registry.\n")
-	}
-
-	return nil
-}
-
-func setRegistryFile(registryPath string) error {
-	// Validate that the file exists and is readable
-	if _, err := os.Stat(registryPath); err != nil {
-		return fmt.Errorf("local registry file not found or not accessible: %w", err)
-	}
-
-	// Basic validation - check if it's a JSON file
-	if !strings.HasSuffix(strings.ToLower(registryPath), ".json") {
-		return fmt.Errorf("registry file must be a JSON file (*.json)")
-	}
-
-	// Try to read and parse the file to validate it's a valid registry
-	// #nosec G304: File path is user-provided but validated above
-	registryContent, err := os.ReadFile(registryPath)
-	if err != nil {
-		return fmt.Errorf("failed to read registry file: %w", err)
-	}
-
-	// Basic JSON validation
-	var registry map[string]interface{}
-	if err := json.Unmarshal(registryContent, &registry); err != nil {
-		return fmt.Errorf("invalid JSON format in registry file: %w", err)
-	}
-
-	// Update the configuration
-	err = config.UpdateConfig(func(c *config.Config) {
-		c.LocalRegistryPath = registryPath
-		c.RegistryUrl = "" // Clear URL when setting local path
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
-	}
-
-	fmt.Printf("Successfully set local registry file: %s\n", registryPath)
-	return nil
-}
-
 func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	url, localPath, _, registryType := config.GetRegistryConfig()
 
-	if cfg.RegistryUrl != "" {
-		fmt.Printf("Current registry: %s (remote URL)\n", cfg.RegistryUrl)
-		return nil
-	}
-
-	if cfg.LocalRegistryPath != "" {
-		fmt.Printf("Current registry: %s (local file)\n", cfg.LocalRegistryPath)
-
+	switch registryType {
+	case config.RegistryTypeURL:
+		fmt.Printf("Current registry: %s (remote URL)\n", url)
+	case config.RegistryTypeFile:
+		fmt.Printf("Current registry: %s (local file)\n", localPath)
 		// Check if the file still exists
-		if _, err := os.Stat(cfg.LocalRegistryPath); err != nil {
+		if _, err := os.Stat(localPath); err != nil {
 			fmt.Printf("Warning: The configured local registry file is not accessible: %v\n", err)
 		}
-		return nil
+	default:
+		fmt.Println("No custom registry is currently configured. Using built-in registry.")
 	}
-
-	fmt.Println("No custom registry is currently configured. Using built-in registry.")
 	return nil
 }
 
 func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	url, localPath, _, registryType := config.GetRegistryConfig()
 
-	if cfg.RegistryUrl == "" && cfg.LocalRegistryPath == "" {
+	if registryType == "default" {
 		fmt.Println("No custom registry is currently configured.")
 		return nil
 	}
 
-	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.RegistryUrl = ""
-		c.LocalRegistryPath = ""
-	})
+	err := config.UnsetRegistry()
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
 
-	fmt.Println("Successfully removed registry configuration. Will use built-in registry.")
+	if url != "" {
+		fmt.Printf("Successfully removed registry URL: %s\n", url)
+	} else if localPath != "" {
+		fmt.Printf("Successfully removed local registry file: %s\n", localPath)
+	}
+	fmt.Println("Will use built-in registry.")
 	return nil
 }

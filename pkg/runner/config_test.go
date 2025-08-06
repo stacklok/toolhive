@@ -622,10 +622,9 @@ func TestRunConfigBuilder(t *testing.T) {
 	assert.NotNil(t, config, "Builder should return a non-nil config")
 	assert.Equal(t, runtime, config.Deployer, "Deployer should match")
 	assert.Equal(t, targetHost, config.TargetHost, "TargetHost should match")
-	// The metadata args are appended to the command-line args
-	expectedCmdArgs := append([]string{}, cmdArgs...)
-	expectedCmdArgs = append(expectedCmdArgs, imageMetadata.Args...)
-	assert.Equal(t, expectedCmdArgs, config.CmdArgs, "CmdArgs should include metadata args")
+	// User args override registry defaults
+	expectedCmdArgs := cmdArgs // User args take precedence over registry defaults
+	assert.Equal(t, expectedCmdArgs, config.CmdArgs, "CmdArgs should use user args, overriding registry defaults")
 	assert.Equal(t, name, config.Name, "Name should match")
 	assert.Equal(t, imageURL, config.Image, "Image should match")
 	assert.Equal(t, debug, config.Debug, "Debug should match")
@@ -652,8 +651,8 @@ func TestRunConfigBuilder(t *testing.T) {
 	assert.Equal(t, oidcJwksURL, config.OIDCConfig.JWKSURL, "OIDCConfig.JWKSURL should match")
 	assert.Equal(t, oidcClientID, config.OIDCConfig.ClientID, "OIDCConfig.ClientID should match")
 
-	// Check that metadata args were prepended
-	assert.Contains(t, config.CmdArgs, "--metadata-arg", "Metadata args should be prepended")
+	// Check that user args override registry defaults (metadata args should not be present)
+	assert.NotContains(t, config.CmdArgs, "--metadata-arg", "User args should override registry defaults")
 }
 
 func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
@@ -916,10 +915,12 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 	assert.Equal(t, "value", config.EnvVars["USER_VAR"])
 }
 
-// TestRunConfigBuilder_CmdArgsMetadataPrepending ensures that metadata args
-// are prepended to user args
-func TestRunConfigBuilder_CmdArgsMetadataPrepending(t *testing.T) {
+// TestRunConfigBuilder_CmdArgsMetadataOverride tests that user args override registry defaults
+func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 	t.Parallel()
+
+	// Needed to prevent a nil pointer dereference in the logger.
+	logger.Initialize()
 
 	runtime := &mocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
@@ -960,8 +961,63 @@ func TestRunConfigBuilder_CmdArgsMetadataPrepending(t *testing.T) {
 
 	require.NoError(t, err)
 
-	// Metadata args should be appended to user args (not prepended despite the log message)
-	expectedArgs := []string{"--user-arg1", "--user-arg2", "--metadata-arg1", "--metadata-arg2"}
+	// User args should override registry defaults
+	expectedArgs := []string{"--user-arg1", "--user-arg2"}
+	assert.Equal(t, expectedArgs, config.CmdArgs)
+
+	// Check that user args override registry defaults (metadata args should not be present)
+	assert.NotContains(t, config.CmdArgs, "--metadata-arg", "User args should override registry defaults")
+}
+
+// TestRunConfigBuilder_CmdArgsMetadataDefaults tests that registry defaults are used when no user args provided
+func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
+	t.Parallel()
+
+	// Needed to prevent a nil pointer dereference in the logger.
+	logger.Initialize()
+
+	runtime := &mocks.MockRuntime{}
+	validator := &mockEnvVarValidator{}
+
+	// No user args provided
+	userArgs := []string{}
+	metadata := &registry.ImageMetadata{
+		Args: []string{"--metadata-arg1", "--metadata-arg2"},
+	}
+
+	config, err := NewRunConfigBuilder().
+		WithRuntime(runtime).
+		WithCmdArgs(userArgs).
+		WithName("test-server").
+		WithImage("test-image").
+		WithHost("localhost").
+		WithTargetHost("localhost").
+		WithDebug(false).
+		WithVolumes(nil).
+		WithSecrets(nil).
+		WithAuthzConfigPath("").
+		WithAuditConfigPath("").
+		WithPermissionProfileNameOrPath(permissions.ProfileNone).
+		WithNetworkIsolation(false).
+		WithK8sPodPatch("").
+		WithProxyMode(types.ProxyModeSSE).
+		WithTransportAndPorts("", 0, 0).
+		WithAuditEnabled(false, "").
+		WithLabels(nil).
+		WithGroup("").
+		WithOIDCConfig("", "", "", "", false, "", "", false).
+		WithTelemetryConfig("", false, "", 0, nil, false, nil).
+		WithToolsFilter(nil).
+		WithIgnoreConfig(&ignore.Config{
+			LoadGlobal:    false,
+			PrintOverlays: false,
+		}).
+		Build(context.Background(), metadata, nil, validator)
+
+	require.NoError(t, err)
+
+	// Registry defaults should be used when no user args provided
+	expectedArgs := []string{"--metadata-arg1", "--metadata-arg2"}
 	assert.Equal(t, expectedArgs, config.CmdArgs)
 }
 
@@ -1033,4 +1089,61 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 		}
 	}
 	assert.True(t, writeMountFound, "Read-write volume should be in permission profile")
+}
+
+// TestRunConfigBuilder_FilesystemMCPScenario tests the specific scenario from the bug report
+func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
+	t.Parallel()
+
+	// Needed to prevent a nil pointer dereference in the logger.
+	logger.Initialize()
+
+	runtime := &mocks.MockRuntime{}
+	validator := &mockEnvVarValidator{}
+
+	// Simulate the filesystem MCP registry configuration
+	metadata := &registry.ImageMetadata{
+		Args: []string{"/projects"}, // Default args from registry
+	}
+
+	// Simulate user providing their own arguments
+	userArgs := []string{"/Users/testuser/repos/github.com/stacklok/toolhive"}
+
+	config, err := NewRunConfigBuilder().
+		WithRuntime(runtime).
+		WithCmdArgs(userArgs).
+		WithName("filesystem").
+		WithImage("mcp/filesystem:latest").
+		WithHost("localhost").
+		WithTargetHost("localhost").
+		WithDebug(false).
+		WithVolumes(nil).
+		WithSecrets(nil).
+		WithAuthzConfigPath("").
+		WithAuditConfigPath("").
+		WithPermissionProfileNameOrPath(permissions.ProfileNone).
+		WithNetworkIsolation(false).
+		WithK8sPodPatch("").
+		WithProxyMode(types.ProxyModeSSE).
+		WithTransportAndPorts("", 0, 0).
+		WithAuditEnabled(false, "").
+		WithLabels(nil).
+		WithGroup("").
+		WithOIDCConfig("", "", "", "", false, "", "", false).
+		WithTelemetryConfig("", false, "", 0, nil, false, nil).
+		WithToolsFilter(nil).
+		WithIgnoreConfig(&ignore.Config{
+			LoadGlobal:    false,
+			PrintOverlays: false,
+		}).
+		Build(context.Background(), metadata, nil, validator)
+
+	require.NoError(t, err)
+
+	// User args should override registry defaults (not be appended)
+	expectedArgs := []string{"/Users/testuser/repos/github.com/stacklok/toolhive"}
+	assert.Equal(t, expectedArgs, config.CmdArgs)
+
+	// Registry default args should not be present
+	assert.NotContains(t, config.CmdArgs, "/projects", "Registry default args should not be appended")
 }

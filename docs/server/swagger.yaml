@@ -306,7 +306,8 @@ components:
         args:
           description: |-
             Args are the default command-line arguments to pass to the MCP server container.
-            These arguments will be prepended to any command-line arguments provided by the user.
+            These arguments will be used only if no command-line arguments are provided by the user.
+            If the user provides arguments, they will override these defaults.
           items:
             type: string
           type: array

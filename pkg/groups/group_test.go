@@ -504,8 +504,8 @@ func TestManager_GetWorkloadGroup(t *testing.T) {
 	}
 }
 
-// TestManager_RegisterClient tests client registration
-func TestManager_RegisterClient(t *testing.T) {
+// TestManager_RegisterClients tests client registration
+func TestManager_RegisterClients(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -545,8 +545,7 @@ func TestManager_RegisterClient(t *testing.T) {
 					GetReader(gomock.Any(), testGroupName).
 					Return(io.NopCloser(strings.NewReader(groupData)), nil)
 			},
-			expectError: true,
-			errorMsg:    "is already registered",
+			expectError: false, // Changed from true - we now treat this as success
 		},
 		{
 			name:       "group not found",
@@ -576,7 +575,7 @@ func TestManager_RegisterClient(t *testing.T) {
 			tt.setupMock(mockStore)
 
 			// Execute operation
-			err := manager.RegisterClient(context.Background(), tt.groupName, tt.clientName)
+			err := manager.RegisterClients(context.Background(), []string{tt.groupName}, []string{tt.clientName})
 
 			// Verify results
 			if tt.expectError {

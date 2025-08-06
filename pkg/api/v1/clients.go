@@ -1,12 +1,16 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -15,16 +19,19 @@ import (
 type ClientRoutes struct {
 	clientManager   client.Manager
 	workloadManager workloads.Manager
+	groupManager    groups.Manager
 }
 
 // ClientRouter creates a new router for the client API.
 func ClientRouter(
 	manager client.Manager,
 	workloadManager workloads.Manager,
+	groupManager groups.Manager,
 ) http.Handler {
 	routes := ClientRoutes{
 		clientManager:   manager,
 		workloadManager: workloadManager,
+		groupManager:    groupManager,
 	}
 
 	r := chi.NewRouter()
@@ -80,17 +87,18 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch running workloads to register with the client
-	runningWorkloads, err := c.workloadManager.ListWorkloads(r.Context(), false)
-	if err != nil {
-		logger.Errorf("Failed to list running workloads: %v", err)
-		http.Error(w, "Failed to list running workloads", http.StatusInternalServerError)
-		return
+	// Default groups to "default" group if it exists
+	if len(newClient.Groups) == 0 {
+		defaultGroup, err := c.groupManager.Get(r.Context(), groups.DefaultGroupName)
+		if err != nil {
+			logger.Debugf("Failed to get default group: %v", err)
+		}
+		if defaultGroup != nil {
+			newClient.Groups = []string{groups.DefaultGroupName}
+		}
 	}
 
-	err = c.clientManager.RegisterClients([]client.Client{
-		{Name: newClient.Name},
-	}, runningWorkloads)
+	err = c.performClientRegistration(r.Context(), []client.Client{{Name: newClient.Name}}, newClient.Groups)
 	if err != nil {
 		logger.Errorf("Failed to register client: %v", err)
 		http.Error(w, "Failed to register client", http.StatusInternalServerError)
@@ -163,18 +171,10 @@ func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Reques
 		clients[i] = client.Client{Name: name}
 	}
 
-	// Fetch running workloads to register with the clients
-	runningWorkloads, err := c.workloadManager.ListWorkloads(r.Context(), false)
-	if err != nil {
-		logger.Errorf("Failed to list running workloads: %v", err)
-		http.Error(w, "Failed to list running workloads", http.StatusInternalServerError)
-		return
-	}
-
-	err = c.clientManager.RegisterClients(clients, runningWorkloads)
+	err = c.performClientRegistration(r.Context(), clients, req.Groups)
 	if err != nil {
 		logger.Errorf("Failed to register clients: %v", err)
-		http.Error(w, "Failed to register clients", http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -233,14 +233,80 @@ func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Requ
 type createClientRequest struct {
 	// Name is the type of the client to register.
 	Name client.MCPClient `json:"name"`
+	// Groups is the list of groups configured on the client.
+	Groups []string `json:"groups,omitempty"`
 }
 
 type createClientResponse struct {
 	// Name is the type of the client that was registered.
 	Name client.MCPClient `json:"name"`
+	// Groups is the list of groups configured on the client.
+	Groups []string `json:"groups,omitempty"`
 }
 
 type bulkClientRequest struct {
 	// Names is the list of client names to operate on.
 	Names []client.MCPClient `json:"names"`
+	// Groups is the list of groups configured on the client.
+	Groups []string `json:"groups,omitempty"`
+}
+
+func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []client.Client, groupNames []string) error {
+	runningWorkloads, err := c.workloadManager.ListWorkloads(ctx, false)
+	if err != nil {
+		return fmt.Errorf("failed to list running workloads: %w", err)
+	}
+
+	if len(groupNames) > 0 {
+		logger.Infof("Filtering workloads to groups: %v", groupNames)
+
+		filteredWorkloads, err := workloads.FilterByGroups(ctx, runningWorkloads, groupNames)
+		if err != nil {
+			return fmt.Errorf("failed to filter workloads by groups: %w", err)
+		}
+
+		// Extract client names
+		clientNames := make([]string, len(clients))
+		for i, clientToRegister := range clients {
+			clientNames[i] = string(clientToRegister.Name)
+		}
+
+		// Register the clients in the groups
+		err = c.groupManager.RegisterClients(ctx, groupNames, clientNames)
+		if err != nil {
+			return fmt.Errorf("failed to register clients with groups: %w", err)
+		}
+
+		// Add the workloads to the client's configuration file
+		err = c.clientManager.RegisterClients(clients, filteredWorkloads)
+		if err != nil {
+			return fmt.Errorf("failed to register clients: %w", err)
+		}
+	} else {
+		// We should never reach this point once groups are enabled
+		for _, clientToRegister := range clients {
+			err := config.UpdateConfig(func(c *config.Config) {
+				for _, registeredClient := range c.Clients.RegisteredClients {
+					if registeredClient == string(clientToRegister.Name) {
+						logger.Infof("Client %s is already registered, skipping...", clientToRegister.Name)
+						return
+					}
+				}
+
+				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, string(clientToRegister.Name))
+			})
+			if err != nil {
+				return fmt.Errorf("failed to update configuration for client %s: %w", clientToRegister.Name, err)
+			}
+
+			logger.Infof("Successfully registered client: %s\n", clientToRegister.Name)
+		}
+
+		err = c.clientManager.RegisterClients(clients, runningWorkloads)
+		if err != nil {
+			return fmt.Errorf("failed to register clients: %w", err)
+		}
+	}
+
+	return nil
 }

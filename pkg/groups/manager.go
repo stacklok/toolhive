@@ -153,26 +153,47 @@ func (m *manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([
 	return groupWorkloads, nil
 }
 
-// RegisterClient registers a client with the group
-func (m *manager) RegisterClient(ctx context.Context, groupName, clientName string) error {
-	// Get the existing group
-	group, err := m.Get(ctx, groupName)
-	if err != nil {
-		return fmt.Errorf("failed to get group %s: %w", groupName, err)
-	}
+// RegisterClients registers multiple clients with multiple groups
+func (m *manager) RegisterClients(ctx context.Context, groupNames []string, clientNames []string) error {
+	for _, groupName := range groupNames {
+		// Get the existing group
+		group, err := m.Get(ctx, groupName)
+		if err != nil {
+			return fmt.Errorf("failed to get group %s: %w", groupName, err)
+		}
 
-	// Check if client is already registered
-	for _, existingClient := range group.RegisteredClients {
-		if existingClient == clientName {
-			return fmt.Errorf("client '%s' is already registered with group '%s'", clientName, groupName)
+		groupModified := false
+		for _, clientName := range clientNames {
+			// Check if client is already registered
+			alreadyRegistered := false
+			for _, existingClient := range group.RegisteredClients {
+				if existingClient == clientName {
+					alreadyRegistered = true
+					break
+				}
+			}
+
+			if alreadyRegistered {
+				logger.Infof("Client %s is already registered with group %s, skipping", clientName, groupName)
+				continue
+			}
+
+			// Add the client to the group
+			group.RegisteredClients = append(group.RegisteredClients, clientName)
+			groupModified = true
+			logger.Infof("Successfully registered client %s with group %s", clientName, groupName)
+		}
+
+		// Only save if the group was actually modified
+		if groupModified {
+			err = m.saveGroup(ctx, group)
+			if err != nil {
+				return fmt.Errorf("failed to save group %s: %w", groupName, err)
+			}
 		}
 	}
 
-	// Add the client to the group
-	group.RegisteredClients = append(group.RegisteredClients, clientName)
-
-	// Save the updated group
-	return m.saveGroup(ctx, group)
+	return nil
 }
 
 // saveGroup saves the group to the group state store

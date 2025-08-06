@@ -136,7 +136,7 @@ func migrateClientConfigs(ctx context.Context, groupManager Manager) error {
 		}
 
 		if !alreadyRegistered {
-			if err := groupManager.RegisterClient(ctx, DefaultGroupName, clientName); err != nil {
+			if err := groupManager.RegisterClients(ctx, []string{DefaultGroupName}, []string{clientName}); err != nil {
 				logger.Warnf("Failed to register client %s to default group: %v", clientName, err)
 				continue
 			}

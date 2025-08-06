@@ -665,6 +665,12 @@ components:
       type: object
     v1.bulkClientRequest:
       properties:
+        groups:
+          description: Groups is the list of groups configured on the client.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         names:
           description: Names is the list of client names to operate on.
           items:
@@ -708,6 +714,12 @@ components:
       type: object
     v1.createClientRequest:
       properties:
+        groups:
+          description: Groups is the list of groups configured on the client.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         name:
           description: Name is the type of the client to register.
           type: string
@@ -728,6 +740,12 @@ components:
       type: object
     v1.createClientResponse:
       properties:
+        groups:
+          description: Groups is the list of groups configured on the client.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         name:
           description: Name is the type of the client that was registered.
           type: string

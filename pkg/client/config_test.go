@@ -14,7 +14,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -202,42 +201,6 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 		assert.Contains(t, logOutput, "failed to validate config file format", "Should log the specific validation error")
 		assert.Contains(t, logOutput, "cursor", "Should mention cursor in the error message")
 	})
-}
-
-func TestGenerateMCPServerURL(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name          string
-		host          string
-		port          int
-		containerName string
-		expected      string
-	}{
-		{
-			name:          "Standard URL",
-			host:          "localhost",
-			port:          12345,
-			containerName: "test-container",
-			expected:      "http://localhost:12345" + ssecommon.HTTPSSEEndpoint + "#test-container",
-		},
-		{
-			name:          "Different host",
-			host:          "192.168.1.100",
-			port:          54321,
-			containerName: "another-container",
-			expected:      "http://192.168.1.100:54321" + ssecommon.HTTPSSEEndpoint + "#another-container",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			url := GenerateMCPServerURL(types.TransportTypeSSE.String(), tt.host, tt.port, tt.containerName)
-			if url != tt.expected {
-				t.Errorf("GenerateMCPServerURL() = %v, want %v", url, tt.expected)
-			}
-		})
-	}
 }
 
 func TestSuccessfulClientConfigOperations(t *testing.T) {

@@ -320,7 +320,7 @@ func updateClientConfigurations(
 
 	// Generate the URL for the MCP server
 	transportType := labels.GetTransportType(containerLabels)
-	url := client.GenerateMCPServerURL(transportType, host, proxyPort, containerName)
+	url := transport.GenerateMCPServerURL(transportType, host, proxyPort, containerName)
 
 	// Update each configuration file
 	for _, clientConfig := range clientConfigs {

@@ -295,13 +295,19 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		WithTransportAndPorts(req.Transport, 0, req.TargetPort).
 		WithAuditEnabled(false, "").
 		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID, req.OIDC.AllowOpaqueTokens,
-										"", "", false). // JWKS auth parameters not exposed through API yet
+			"", "", false). // JWKS auth parameters not exposed through API yet
 		WithTelemetryConfig("", false, "", 0.0, nil, false, nil). // Not exposed through API yet.
 		WithToolsFilter(req.ToolsFilter).
 		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
 	if err != nil {
 		logger.Errorf("Failed to create run config: %v", err)
 		http.Error(w, "Failed to create run config", http.StatusBadRequest)
+		return
+	}
+
+	if err := runConfig.SaveState(ctx); err != nil {
+		logger.Errorf("Failed to save workload config: %v", err)
+		http.Error(w, "Failed to save workload config", http.StatusInternalServerError)
 		return
 	}
 

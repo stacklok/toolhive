@@ -91,6 +91,7 @@ thv proxy [flags] SERVER_NAME
       --remote-auth-scopes strings              OAuth scopes to request for remote server authentication (default [openid,profile,email])
       --remote-auth-skip-browser                Skip opening browser for remote server OAuth flow
       --remote-auth-timeout duration            Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s) (default 30s)
+      --resource-url string                     Explicit resource URL for OAuth discovery endpoint (RFC 9728)
       --target-uri string                       URI for the target MCP server (e.g., http://localhost:8080) (required)
 ```
 

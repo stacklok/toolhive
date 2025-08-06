@@ -390,10 +390,12 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	}
 	// Note: AuditConfig is already set from --enable-audit flag if provided
 
-	// Prepend registry args to command-line args if available
 	if imageMetadata != nil && len(imageMetadata.Args) > 0 {
-		logger.Debugf("Prepending registry args: %v", imageMetadata.Args)
-		c.CmdArgs = append(c.CmdArgs, imageMetadata.Args...)
+		if len(c.CmdArgs) == 0 {
+			// No user args provided, use registry defaults
+			logger.Debugf("Using registry default args: %v", imageMetadata.Args)
+			c.CmdArgs = append(c.CmdArgs, imageMetadata.Args...)
+		}
 	}
 
 	if c.ToolsFilter != nil && imageMetadata != nil && imageMetadata.Tools != nil {

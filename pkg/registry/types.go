@@ -44,7 +44,8 @@ type ImageMetadata struct {
 	// EnvVars defines environment variables that can be passed to the server
 	EnvVars []*EnvVar `json:"env_vars"`
 	// Args are the default command-line arguments to pass to the MCP server container.
-	// These arguments will be prepended to any command-line arguments provided by the user.
+	// These arguments will be used only if no command-line arguments are provided by the user.
+	// If the user provides arguments, they will override these defaults.
 	Args []string `json:"args"`
 	// Metadata contains additional information about the server such as popularity metrics
 	Metadata *Metadata `json:"metadata"`

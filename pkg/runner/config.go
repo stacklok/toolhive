@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -300,4 +301,40 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 	// Use the Group field from the RunConfig
 	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port)
 	return c
+}
+
+// SaveState saves the run configuration to the state store
+func (c *RunConfig) SaveState(ctx context.Context) error {
+	// Create a state store
+	store, err := state.NewRunConfigStore(state.DefaultAppName)
+	if err != nil {
+		return fmt.Errorf("failed to create state store: %w", err)
+	}
+
+	// Get a writer for the state
+	writer, err := store.GetWriter(ctx, c.BaseName)
+	if err != nil {
+		return fmt.Errorf("failed to get writer for state: %w", err)
+	}
+	defer writer.Close()
+
+	// Serialize the configuration to JSON and write it directly to the state store
+	if err := c.WriteJSON(writer); err != nil {
+		return fmt.Errorf("failed to write run configuration: %w", err)
+	}
+
+	logger.Infof("Saved run configuration for %s", c.BaseName)
+	return nil
+}
+
+// LoadState loads a run configuration from the state store
+func LoadState(ctx context.Context, name string) (*RunConfig, error) {
+	reader, err := state.LoadRunConfigJSON(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	// Deserialize the configuration
+	return ReadJSON(reader)
 }

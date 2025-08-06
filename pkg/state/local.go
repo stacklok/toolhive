@@ -55,49 +55,6 @@ func (s *LocalStore) getFilePath(name string) string {
 	return filepath.Join(s.basePath, name)
 }
 
-// Save stores the data for the given name from the provided reader
-func (s *LocalStore) Save(_ context.Context, name string, r io.Reader) error {
-	// Create the file
-	filePath := s.getFilePath(name)
-	// #nosec G304 - filePath is controlled by getFilePath which ensures it's within our designated directory
-	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
-	}
-	defer file.Close()
-
-	// Copy the data from the reader to the file
-	_, err = io.Copy(file, r)
-	if err != nil {
-		return fmt.Errorf("failed to write data to file: %w", err)
-	}
-
-	return nil
-}
-
-// Load retrieves the data for the given name and writes it to the provided writer
-func (s *LocalStore) Load(_ context.Context, name string, w io.Writer) error {
-	// Open the file
-	filePath := s.getFilePath(name)
-	// #nosec G304 - filePath is controlled by getFilePath which ensures it's within our designated directory
-	file, err := os.Open(filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("state '%s' not found", name)
-		}
-		return fmt.Errorf("failed to open state file: %w", err)
-	}
-	defer file.Close()
-
-	// Copy the data from the file to the writer
-	_, err = io.Copy(w, file)
-	if err != nil {
-		return fmt.Errorf("failed to read data from file: %w", err)
-	}
-
-	return nil
-}
-
 // GetReader returns a reader for the state data
 func (s *LocalStore) GetReader(_ context.Context, name string) (io.ReadCloser, error) {
 	// Open the file

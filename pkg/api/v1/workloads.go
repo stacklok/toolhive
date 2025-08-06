@@ -195,7 +195,8 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.workloadManager.RestartWorkloads(ctx, []string{name})
+	// Note: In the API, we always assume that the restart is a background operation
+	_, err := s.workloadManager.RestartWorkloads(ctx, []string{name}, false)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -402,7 +403,8 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err = s.workloadManager.RestartWorkloads(ctx, workloadNames)
+	// Note: In the API, we always assume that the restart is a background operation.
+	_, err = s.workloadManager.RestartWorkloads(ctx, workloadNames, false)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -507,8 +509,8 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
-	// Load the saved run configuration using the runner package
-	runnerInstance, err := runner.LoadState(ctx, name)
+	// Load the saved run configuration
+	runConfig, err := runner.LoadState(ctx, name)
 	if err != nil {
 		if thverrors.IsRunConfigNotFound(err) {
 			http.Error(w, "Workload configuration not found", http.StatusNotFound)
@@ -521,7 +523,7 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 
 	// Return the configuration as JSON
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(runnerInstance.Config); err != nil {
+	if err := json.NewEncoder(w).Encode(runConfig); err != nil {
 		logger.Errorf("Failed to encode workload configuration: %v", err)
 		http.Error(w, "Failed to encode workload configuration", http.StatusInternalServerError)
 		return

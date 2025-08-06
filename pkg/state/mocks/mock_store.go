@@ -114,31 +114,3 @@ func (mr *MockStoreMockRecorder) List(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockStore)(nil).List), ctx)
 }
-
-// Load mocks base method.
-func (m *MockStore) Load(ctx context.Context, name string, w io.Writer) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Load", ctx, name, w)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Load indicates an expected call of Load.
-func (mr *MockStoreMockRecorder) Load(ctx, name, w any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Load", reflect.TypeOf((*MockStore)(nil).Load), ctx, name, w)
-}
-
-// Save mocks base method.
-func (m *MockStore) Save(ctx context.Context, name string, r io.Reader) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Save", ctx, name, r)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Save indicates an expected call of Save.
-func (mr *MockStoreMockRecorder) Save(ctx, name, r any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Save", reflect.TypeOf((*MockStore)(nil).Save), ctx, name, r)
-}

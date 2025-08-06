@@ -17,7 +17,7 @@ import (
 // Returns empty string if runconfig doesn't exist or doesn't have group info
 func loadGroupFromRunConfig(ctx context.Context, name string) (string, error) {
 	// Try to load the runconfig
-	runnerInstance, err := runner.LoadState(ctx, name)
+	runConfig, err := runner.LoadState(ctx, name)
 	if err != nil {
 		if errors.IsRunConfigNotFound(err) {
 			return "", nil
@@ -26,7 +26,7 @@ func loadGroupFromRunConfig(ctx context.Context, name string) (string, error) {
 	}
 
 	// Return the group from the runconfig
-	return runnerInstance.Config.Group, nil
+	return runConfig.Group, nil
 }
 
 // WorkloadFromContainerInfo creates a Workload struct from the runtime container info.

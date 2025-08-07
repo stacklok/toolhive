@@ -42,7 +42,7 @@ require (
 	golang.org/x/mod v0.26.0
 	golang.org/x/oauth2 v0.30.0
 	golang.org/x/sync v0.16.0
-	golang.org/x/term v0.33.0
+	golang.org/x/term v0.34.0
 	gopkg.in/yaml.v3 v3.0.1
 	gotest.tools v2.2.0+incompatible
 	k8s.io/api v0.33.3
@@ -293,6 +293,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.37.0
 	golang.org/x/crypto v0.40.0 // indirect
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
-	golang.org/x/sys v0.34.0 // indirect
+	golang.org/x/sys v0.35.0 // indirect
 	k8s.io/client-go v0.33.3
 )

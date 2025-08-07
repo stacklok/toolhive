@@ -17,14 +17,50 @@ const (
 	defaultRegistryName = "default"
 )
 
-// RegistryRoutes defines the routes for the registry API.
-type RegistryRoutes struct {
-	provider registry.Provider
+// RegistryType represents the type of registry
+type RegistryType string
+
+const (
+	// RegistryTypeFile represents a local file registry
+	RegistryTypeFile RegistryType = "file"
+	// RegistryTypeURL represents a remote URL registry
+	RegistryTypeURL RegistryType = "url"
+	// RegistryTypeDefault represents a built-in registry
+	RegistryTypeDefault RegistryType = "default"
+)
+
+// getRegistryInfo returns the registry type and the source
+func getRegistryInfo() (RegistryType, string) {
+	url, localPath, _, registryType := config.GetRegistryConfig()
+
+	switch registryType {
+	case "url":
+		return RegistryTypeURL, url
+	case "file":
+		return RegistryTypeFile, localPath
+	default:
+		// Default built-in registry
+		return RegistryTypeDefault, ""
+	}
 }
 
+// getCurrentProvider returns the current registry provider
+func getCurrentProvider(w http.ResponseWriter) (registry.Provider, bool) {
+	provider, err := registry.GetDefaultProvider()
+	if err != nil {
+		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
+		logger.Errorf("Failed to get registry provider: %v", err)
+		return nil, false
+	}
+	return provider, true
+}
+
+// RegistryRoutes defines the routes for the registry API.
+type RegistryRoutes struct{}
+
 // RegistryRouter creates a new router for the registry API.
-func RegistryRouter(provider registry.Provider) http.Handler {
-	routes := RegistryRoutes{provider: provider}
+func RegistryRouter() http.Handler {
+	routes := RegistryRoutes{}
 
 	r := chi.NewRouter()
 	r.Get("/", routes.listRegistries)
@@ -49,12 +85,19 @@ func RegistryRouter(provider registry.Provider) http.Handler {
 //		@Produce		json
 //		@Success		200	{object}	registryListResponse
 //		@Router			/api/v1beta/registry [get]
-func (routes *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
-	reg, err := routes.provider.GetRegistry()
+func (*RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
+	provider, ok := getCurrentProvider(w)
+	if !ok {
+		return
+	}
+
+	reg, err := provider.GetRegistry()
 	if err != nil {
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
+
+	registryType, source := getRegistryInfo()
 
 	registries := []registryInfo{
 		{
@@ -62,6 +105,8 @@ func (routes *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Requ
 			Version:     reg.Version,
 			LastUpdated: reg.LastUpdated,
 			ServerCount: len(reg.Servers),
+			Type:        registryType,
+			Source:      source,
 		},
 	}
 
@@ -98,7 +143,7 @@ func (*RegistryRoutes) addRegistry(w http.ResponseWriter, _ *http.Request) {
 //		@Success		200	{object}	getRegistryResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name} [get]
-func (routes *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
+func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Only "default" registry is supported currently
@@ -107,17 +152,26 @@ func (routes *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	reg, err := routes.provider.GetRegistry()
+	provider, ok := getCurrentProvider(w)
+	if !ok {
+		return
+	}
+
+	reg, err := provider.GetRegistry()
 	if err != nil {
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
+
+	registryType, source := getRegistryInfo()
 
 	response := getRegistryResponse{
 		Name:        defaultRegistryName,
 		Version:     reg.Version,
 		LastUpdated: reg.LastUpdated,
 		ServerCount: len(reg.Servers),
+		Type:        registryType,
+		Source:      source,
 		Registry:    reg,
 	}
 
@@ -249,7 +303,7 @@ func (*RegistryRoutes) removeRegistry(w http.ResponseWriter, r *http.Request) {
 //		@Success		200	{object}	listServersResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name}/servers [get]
-func (routes *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
+func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 
 	// Only "default" registry is supported currently
@@ -258,7 +312,12 @@ func (routes *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	servers, err := routes.provider.ListServers()
+	provider, ok := getCurrentProvider(w)
+	if !ok {
+		return
+	}
+
+	servers, err := provider.ListServers()
 	if err != nil {
 		logger.Errorf("Failed to list servers: %v", err)
 		http.Error(w, "Failed to list servers", http.StatusInternalServerError)
@@ -285,7 +344,7 @@ func (routes *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request
 //		@Success		200	{object}	getServerResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name}/servers/{serverName} [get]
-func (routes *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
+func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 	serverName := chi.URLParam(r, "serverName")
 
@@ -295,7 +354,12 @@ func (routes *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	server, err := routes.provider.GetServer(serverName)
+	provider, ok := getCurrentProvider(w)
+	if !ok {
+		return
+	}
+
+	server, err := provider.GetServer(serverName)
 	if err != nil {
 		logger.Errorf("Failed to get server '%s': %v", serverName, err)
 		http.Error(w, "ImageMetadata not found", http.StatusNotFound)
@@ -325,6 +389,10 @@ type registryInfo struct {
 	LastUpdated string `json:"last_updated"`
 	// Number of servers in the registry
 	ServerCount int `json:"server_count"`
+	// Type of registry (file, url, or default)
+	Type RegistryType `json:"type"`
+	// Source of the registry (URL, file path, or empty string for built-in)
+	Source string `json:"source"`
 }
 
 // registryListResponse represents the response for listing registries
@@ -347,6 +415,10 @@ type getRegistryResponse struct {
 	LastUpdated string `json:"last_updated"`
 	// Number of servers in the registry
 	ServerCount int `json:"server_count"`
+	// Type of registry (file, url, or default)
+	Type RegistryType `json:"type"`
+	// Source of the registry (URL, file path, or empty string for built-in)
+	Source string `json:"source"`
 	// Full registry data
 	Registry *registry.Registry `json:"registry"`
 }

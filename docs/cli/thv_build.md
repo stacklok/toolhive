@@ -44,8 +44,10 @@ thv build [flags] PROTOCOL
 ### Options
 
 ```
-  -h, --help         help for build
-  -t, --tag string   Name and optionally a tag in the 'name:tag' format for the built image
+      --dry-run         Generate Dockerfile without building (stdout output unless -o is set)
+  -h, --help            help for build
+  -o, --output string   Write the Dockerfile to the specified file instead of building
+  -t, --tag string      Name and optionally a tag in the 'name:tag' format for the built image
 ```
 
 ### Options inherited from parent commands

@@ -380,6 +380,7 @@ func writeTestServerCert(t *testing.T, server *httptest.Server) string {
 	cert := server.Certificate()
 	if cert == nil {
 		t.Fatal("Test server has no certificate")
+		return ""
 	}
 
 	// Create temp file

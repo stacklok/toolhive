@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -85,7 +86,7 @@ func (c *Client) DeployWorkload(
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
 	isolateNetwork bool,
-) (string, int, error) {
+) (int, error) {
 	// Get permission config from profile
 	var ignoreConfig *ignore.Config
 	if options != nil {
@@ -93,7 +94,7 @@ func (c *Client) DeployWorkload(
 	}
 	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType, ignoreConfig)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to get permission config: %w", err)
+		return 0, fmt.Errorf("failed to get permission config: %w", err)
 	}
 
 	// Determine if we should attach stdio
@@ -109,7 +110,7 @@ func (c *Client) DeployWorkload(
 
 	err = c.createExternalNetworks(ctx)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to create external networks: %v", err)
+		return 0, fmt.Errorf("failed to create external networks: %v", err)
 	}
 
 	networkIsolation := false
@@ -120,7 +121,7 @@ func (c *Client) DeployWorkload(
 		lb.AddNetworkLabels(internalNetworkLabels, networkName)
 		err := c.createNetwork(ctx, networkName, internalNetworkLabels, true)
 		if err != nil {
-			return "", 0, fmt.Errorf("failed to create internal network: %v", err)
+			return 0, fmt.Errorf("failed to create internal network: %v", err)
 		}
 
 		// create dns container
@@ -130,7 +131,7 @@ func (c *Client) DeployWorkload(
 			additionalDNS = dnsContainerIP
 		}
 		if err != nil {
-			return "", 0, fmt.Errorf("failed to create dns container: %v", err)
+			return 0, fmt.Errorf("failed to create dns container: %v", err)
 		}
 
 		// create egress container
@@ -146,7 +147,7 @@ func (c *Client) DeployWorkload(
 			permissionProfile.Network,
 		)
 		if err != nil {
-			return "", 0, fmt.Errorf("failed to create egress container: %v", err)
+			return 0, fmt.Errorf("failed to create egress container: %v", err)
 		}
 
 		envVars = addEgressEnvVars(envVars, egressContainerName)
@@ -157,7 +158,7 @@ func (c *Client) DeployWorkload(
 	// only remap if is not an auxiliary tool
 	newPortBindings, hostPort, err := generatePortBindings(labels, options.PortBindings)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to generate port bindings: %v", err)
+		return 0, fmt.Errorf("failed to generate port bindings: %v", err)
 	}
 
 	// Add a label to the MCP server indicating network isolation.
@@ -165,7 +166,7 @@ func (c *Client) DeployWorkload(
 	// about ingress/egress/dns containers.
 	lb.AddNetworkIsolationLabel(labels, networkIsolation)
 
-	containerId, err := c.createMcpContainer(
+	err = c.createMcpContainer(
 		ctx,
 		name,
 		networkName,
@@ -181,27 +182,27 @@ func (c *Client) DeployWorkload(
 		isolateNetwork,
 	)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to create mcp container: %v", err)
+		return 0, fmt.Errorf("failed to create mcp container: %v", err)
 	}
 
 	// Don't try and set up an ingress proxy if the transport type is stdio.
 	if transportType == "stdio" {
-		return containerId, 0, nil
+		return 0, nil
 	}
 
 	if isolateNetwork {
 		// just extract the first exposed port
 		firstPortInt, err := extractFirstPort(options)
 		if err != nil {
-			return "", 0, err // extractFirstPort already wraps the error with context.
+			return 0, err // extractFirstPort already wraps the error with context.
 		}
 		hostPort, err = c.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
 		if err != nil {
-			return "", 0, fmt.Errorf("failed to create ingress container: %v", err)
+			return 0, fmt.Errorf("failed to create ingress container: %v", err)
 		}
 	}
 
-	return containerId, hostPort, nil
+	return hostPort, nil
 }
 
 // ListWorkloads lists workloads
@@ -248,7 +249,6 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 		created := time.Unix(c.Created, 0)
 
 		result = append(result, runtime.ContainerInfo{
-			ID:      c.ID,
 			Name:    name,
 			Image:   c.Image,
 			Status:  c.Status,
@@ -264,9 +264,9 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 
 // StopWorkload stops a workload
 // If the workload is already stopped, it returns success
-func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
+func (c *Client) StopWorkload(ctx context.Context, workloadName string) error {
 	// Check if the workload is running
-	info, err := c.GetWorkloadInfo(ctx, workloadID)
+	info, err := c.GetWorkloadInfo(ctx, workloadName)
 	if err != nil {
 		// If the container doesn't exist, that's fine - it's already "stopped"
 		if errors.Is(err, ErrContainerNotFound) {
@@ -282,9 +282,9 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 
 	// Use a reasonable timeout
 	timeoutSeconds := 30
-	err = c.client.ContainerStop(ctx, workloadID, container.StopOptions{Timeout: &timeoutSeconds})
+	err = c.client.ContainerStop(ctx, workloadName, container.StopOptions{Timeout: &timeoutSeconds})
 	if err != nil {
-		return NewContainerError(err, workloadID, fmt.Sprintf("failed to stop workload: %v", err))
+		return NewContainerError(err, workloadName, fmt.Sprintf("failed to stop workload: %v", err))
 	}
 
 	// If network isolation is not enabled, then there is nothing else to do.
@@ -313,11 +313,11 @@ func (c *Client) StopWorkload(ctx context.Context, workloadID string) error {
 
 // RemoveWorkload removes a workload
 // If the workload doesn't exist, it returns success
-func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
+func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error {
 	// get container name from ID
-	containerResponse, err := c.client.ContainerInspect(ctx, workloadID)
+	containerResponse, err := c.inspectContainerByName(ctx, workloadName)
 	if err != nil {
-		logger.Warnf("Failed to inspect container %s: %v", workloadID, err)
+		logger.Warnf("Failed to inspect container %s: %v", workloadName, err)
 	}
 
 	// remove the / if it starts with it
@@ -331,7 +331,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 	} else {
 		labels = make(map[string]string)
 	}
-	err = c.removeContainer(ctx, workloadID)
+	err = c.removeContainer(ctx, containerResponse.ID)
 	if err != nil {
 		return err // removeContainer already wraps the error with context.
 	}
@@ -352,7 +352,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadID string) error {
 }
 
 // GetWorkloadLogs gets workload logs
-func (c *Client) GetWorkloadLogs(ctx context.Context, workloadID string, follow bool) (string, error) {
+func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
 	options := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -360,18 +360,22 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadID string, follow 
 		Tail:       "100",
 	}
 
-	// Get logs
-	logs, err := c.client.ContainerLogs(ctx, workloadID, options)
+	workloadContainer, err := c.inspectContainerByName(ctx, workloadName)
 	if err != nil {
-		return "", NewContainerError(err, workloadID, fmt.Sprintf("failed to get workload logs: %v", err))
+		return "", err
+	}
+
+	logs, err := c.client.ContainerLogs(ctx, workloadContainer.ID, options)
+	if err != nil {
+		return "", NewContainerError(err, workloadName, fmt.Sprintf("failed to get workload logs: %v", err))
 	}
 	defer logs.Close()
 
 	if follow {
 		_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, logs)
 		if err != nil && err != io.EOF {
-			logger.Errorf("Error reading container logs: %v", err)
-			return "", NewContainerError(err, workloadID, fmt.Sprintf("failed to follow workload logs: %v", err))
+			logger.Errorf("Error reading workload logs: %v", err)
+			return "", NewContainerError(err, workloadName, fmt.Sprintf("failed to follow workload logs: %v", err))
 		}
 	}
 
@@ -379,37 +383,37 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadID string, follow 
 	var buf bytes.Buffer
 	_, err = stdcopy.StdCopy(&buf, &buf, logs)
 	if err != nil {
-		return "", NewContainerError(err, workloadID, fmt.Sprintf("failed to read workload logs: %v", err))
+		return "", NewContainerError(err, workloadName, fmt.Sprintf("failed to read workload logs: %v", err))
 	}
 
 	return buf.String(), nil
 }
 
 // IsWorkloadRunning checks if a workload is running
-func (c *Client) IsWorkloadRunning(ctx context.Context, workloadID string) (bool, error) {
+func (c *Client) IsWorkloadRunning(ctx context.Context, workloadName string) (bool, error) {
 	// Inspect workload
-	info, err := c.client.ContainerInspect(ctx, workloadID)
+	info, err := c.inspectContainerByName(ctx, workloadName)
 	if err != nil {
 		// Check if the error is because the workload doesn't exist
 		if errdefs.IsNotFound(err) {
-			return false, NewContainerError(ErrContainerNotFound, workloadID, "workload not found")
+			return false, NewContainerError(ErrContainerNotFound, workloadName, "workload not found")
 		}
-		return false, NewContainerError(err, workloadID, fmt.Sprintf("failed to inspect workload: %v", err))
+		return false, NewContainerError(err, workloadName, fmt.Sprintf("failed to inspect workload: %v", err))
 	}
 
 	return info.State.Running, nil
 }
 
 // GetWorkloadInfo gets workload information
-func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtime.ContainerInfo, error) {
+func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runtime.ContainerInfo, error) {
 	// Inspect workload
-	info, err := c.client.ContainerInspect(ctx, workloadID)
+	info, err := c.inspectContainerByName(ctx, workloadName)
 	if err != nil {
 		// Check if the error is because the workload doesn't exist
 		if errdefs.IsNotFound(err) {
-			return runtime.ContainerInfo{}, NewContainerError(ErrContainerNotFound, workloadID, "workload not found")
+			return runtime.ContainerInfo{}, NewContainerError(ErrContainerNotFound, workloadName, "workload not found")
 		}
-		return runtime.ContainerInfo{}, NewContainerError(err, workloadID, fmt.Sprintf("failed to inspect workload: %v", err))
+		return runtime.ContainerInfo{}, NewContainerError(err, workloadName, fmt.Sprintf("failed to inspect workload: %v", err))
 	}
 
 	// Extract port mappings
@@ -437,7 +441,6 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtim
 	}
 
 	return runtime.ContainerInfo{
-		ID:      info.ID,
 		Name:    strings.TrimPrefix(info.Name, "/"),
 		Image:   info.Config.Image,
 		Status:  info.State.Status,
@@ -449,25 +452,25 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadID string) (runtim
 }
 
 // AttachToWorkload attaches to a workload
-func (c *Client) AttachToWorkload(ctx context.Context, workloadID string) (io.WriteCloser, io.ReadCloser, error) {
+func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.WriteCloser, io.ReadCloser, error) {
 	// Check if workload exists and is running
-	running, err := c.IsWorkloadRunning(ctx, workloadID)
+	running, err := c.IsWorkloadRunning(ctx, workloadName)
 	if err != nil {
 		return nil, nil, err
 	}
 	if !running {
-		return nil, nil, NewContainerError(ErrContainerNotRunning, workloadID, "workload is not running")
+		return nil, nil, NewContainerError(ErrContainerNotRunning, workloadName, "workload is not running")
 	}
 
 	// Attach to workload
-	resp, err := c.client.ContainerAttach(ctx, workloadID, container.AttachOptions{
+	resp, err := c.client.ContainerAttach(ctx, workloadName, container.AttachOptions{
 		Stream: true,
 		Stdin:  true,
 		Stdout: true,
 		Stderr: true,
 	})
 	if err != nil {
-		return nil, nil, NewContainerError(ErrAttachFailed, workloadID, fmt.Sprintf("failed to attach to workload: %v", err))
+		return nil, nil, NewContainerError(ErrAttachFailed, workloadName, fmt.Sprintf("failed to attach to workload: %v", err))
 	}
 
 	stdoutReader, stdoutWriter := io.Pipe()
@@ -1157,8 +1160,13 @@ func setupPortBindings(hostConfig *container.HostConfig, portBindings map[string
 	return nil
 }
 
-func (c *Client) createContainer(ctx context.Context, containerName string, config *container.Config,
-	hostConfig *container.HostConfig, endpointsConfig map[string]*network.EndpointSettings) (string, error) {
+func (c *Client) createContainer(
+	ctx context.Context,
+	containerName string,
+	config *container.Config,
+	hostConfig *container.HostConfig,
+	endpointsConfig map[string]*network.EndpointSettings,
+) (string, error) {
 	existingID, err := c.findExistingContainer(ctx, containerName)
 	if err != nil {
 		return "", err
@@ -1270,7 +1278,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 func (c *Client) createMcpContainer(ctx context.Context, name string, networkName string, image string, command []string,
 	envVars map[string]string, labels map[string]string, attachStdio bool, permissionConfig *runtime.PermissionConfig,
 	additionalDNS string, exposedPorts map[string]struct{}, portBindings map[string][]runtime.PortBinding,
-	isolateNetwork bool) (string, error) {
+	isolateNetwork bool) error {
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,
@@ -1302,12 +1310,12 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 	// Configure ports if options are provided
 	// Setup exposed ports
 	if err := setupExposedPorts(config, exposedPorts); err != nil {
-		return "", NewContainerError(err, "", err.Error())
+		return NewContainerError(err, "", err.Error())
 	}
 
 	// Setup port bindings
 	if err := setupPortBindings(hostConfig, portBindings); err != nil {
-		return "", NewContainerError(err, "", err.Error())
+		return NewContainerError(err, "", err.Error())
 	}
 
 	// create mcp container
@@ -1322,12 +1330,12 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 			NetworkID: "toolhive-external",
 		}
 	}
-	containerId, err := c.createContainer(ctx, name, config, hostConfig, internalEndpointsConfig)
+	_, err := c.createContainer(ctx, name, config, hostConfig, internalEndpointsConfig)
 	if err != nil {
-		return "", fmt.Errorf("failed to create container: %v", err)
+		return fmt.Errorf("failed to create container: %v", err)
 	}
 
-	return containerId, nil
+	return nil
 
 }
 
@@ -1502,4 +1510,48 @@ func dockerToDomainStatus(status string) runtime.WorkloadStatus {
 	}
 	// We should not reach here.
 	return runtime.WorkloadStatusUnknown
+}
+
+// inspectContainerByName finds a container by the workload name and inspects it.
+func (c *Client) inspectContainerByName(ctx context.Context, workloadName string) (container.InspectResponse, error) {
+	empty := container.InspectResponse{}
+
+	// Since the Docker API expects a lookup by ID, do a search by name and label instead.
+	filterArgs := filters.NewArgs()
+	filterArgs.Add("label", "toolhive=true")
+	filterArgs.Add("name", workloadName)
+
+	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filterArgs,
+	})
+	if err != nil {
+		return empty, NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
+	}
+
+	if len(containers) == 0 {
+		return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found")
+	}
+	// Docker does a prefix match on the name. If we find multiple containers,
+	// we need to filter down to the exact name requested.
+	var containerID string
+	if len(containers) > 1 {
+		// The name in the API has a leading slash, so we need to search for that.
+		prefixedName := "/" + workloadName
+		// The name in the API response is a list of names, so we need to check
+		// if the prefixed name is in the list.
+		// The extra names are used for docker network functionality which is
+		// not relevant for us.
+		idx := slices.IndexFunc(containers, func(c container.Summary) bool {
+			return slices.Contains(c.Names, prefixedName)
+		})
+		if idx == -1 {
+			return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found with the exact name")
+		}
+		containerID = containers[idx].ID
+	} else {
+		containerID = containers[0].ID
+	}
+
+	return c.client.ContainerInspect(ctx, containerID)
 }

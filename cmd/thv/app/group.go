@@ -5,13 +5,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -24,9 +24,11 @@ var groupCmd = &cobra.Command{
 var groupCreateCmd = &cobra.Command{
 	Use:   "create [group-name]",
 	Short: "Create a new group of MCP servers",
-	Long:  `Create a new logical group of MCP servers. The group can be used to organize and manage multiple MCP servers together.`,
-	Args:  cobra.ExactArgs(1),
-	RunE:  groupCreateCmdFunc,
+	Long: `Create a new logical group of MCP servers.
+		 The group can be used to organize and manage multiple MCP servers together.`,
+	Args:    cobra.ExactArgs(1),
+	PreRunE: validateGroupArg(),
+	RunE:    groupCreateCmdFunc,
 }
 
 var groupListCmd = &cobra.Command{
@@ -41,8 +43,21 @@ var groupRmCmd = &cobra.Command{
 	Short: "Remove a group and remove workloads from it",
 	Long: "Remove a group and remove all MCP servers from it. By default, this only removes the group " +
 		"membership from workloads without deleting them. Use --with-workloads to also delete the workloads. ",
-	Args: cobra.ExactArgs(1),
-	RunE: groupRmCmdFunc,
+	Args:    cobra.ExactArgs(1),
+	PreRunE: validateGroupArg(),
+	RunE:    groupRmCmdFunc,
+}
+
+func validateGroupArg() func(cmd *cobra.Command, args []string) error {
+	return func(_ *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return fmt.Errorf("group name is required")
+		}
+		if err := validation.ValidateGroupName(args[0]); err != nil {
+			return fmt.Errorf("invalid group name: %w", err)
+		}
+		return nil
+	}
 }
 
 var withWorkloadsFlag bool
@@ -77,11 +92,6 @@ func groupListCmdFunc(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to list groups: %w", err)
 	}
 
-	// Sort groups alphanumerically by name (handles mixed characters, numbers, etc.)
-	sort.Slice(allGroups, func(i, j int) bool {
-		return strings.Compare(allGroups[i].Name, allGroups[j].Name) < 0
-	})
-
 	if len(allGroups) == 0 {
 		fmt.Println("No groups configured.")
 		return nil
@@ -111,14 +121,13 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	if strings.EqualFold(groupName, groups.DefaultGroup) {
 		return fmt.Errorf("cannot delete the %s group", groups.DefaultGroup)
 	}
-
-	groupManager, err := groups.NewManager()
+	manager, err := groups.NewManager()
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %w", err)
 	}
 
 	// Check if group exists
-	exists, err := groupManager.Exists(ctx, groupName)
+	exists, err := manager.Exists(ctx, groupName)
 	if err != nil {
 		return fmt.Errorf("failed to check if group exists: %w", err)
 	}
@@ -127,7 +136,7 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get all workloads in the group
-	groupWorkloads, err := groupManager.ListWorkloadsInGroup(ctx, groupName)
+	groupWorkloads, err := manager.ListWorkloadsInGroup(ctx, groupName)
 	if err != nil {
 		return fmt.Errorf("failed to list workloads in group: %w", err)
 	}
@@ -154,7 +163,7 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err = groupManager.Delete(ctx, groupName); err != nil {
+	if err = manager.Delete(ctx, groupName); err != nil {
 		return fmt.Errorf("failed to delete group: %w", err)
 	}
 

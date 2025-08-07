@@ -21,7 +21,7 @@ import (
 
 const (
 	// updateInterval defines how often to check for updates
-	updateInterval = 4 * time.Hour
+	updateInterval = 30 * time.Minute
 	// configMapName is the name of the ConfigMap used to store telemetry data
 	configMapName = "toolhive-operator-telemetry"
 	// configMapNamespace is the namespace where the ConfigMap is stored
@@ -91,6 +91,10 @@ func NewService(k8sClient client.Client, namespace string) *Service {
 
 // CheckForUpdates checks for updates and sends telemetry data
 func (s *Service) CheckForUpdates(ctx context.Context) error {
+	if updates.ShouldSkipUpdateChecks() {
+		return nil
+	}
+
 	logger := log.FromContext(ctx)
 
 	// Get or create telemetry data

@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -34,7 +35,8 @@ var clientRegisterCmd = &cobra.Command{
 	Use:   "register [client]",
 	Short: "Register a client for MCP server configuration",
 	Long: `Register a client for MCP server configuration.
-Valid clients are:
+
+Valid clients:
   - amp-cli: Sourcegraph Amp CLI
   - amp-cursor: Sourcegraph Amp extension for Cursor
   - amp-vscode: Sourcegraph Amp extension for VS Code
@@ -56,7 +58,8 @@ var clientRemoveCmd = &cobra.Command{
 	Use:   "remove [client]",
 	Short: "Remove a client from MCP server configuration",
 	Long: `Remove a client from MCP server configuration.
-Valid clients are:
+
+Valid clients:
   - amp-cli: Sourcegraph Amp CLI
   - amp-cursor: Sourcegraph Amp extension for Cursor
   - amp-vscode: Sourcegraph Amp extension for VS Code
@@ -227,8 +230,14 @@ func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
 		fmt.Println("No clients are currently registered.")
 		return nil
 	}
+
+	// Create a copy of the registered clients and sort it alphabetically
+	registeredClients := make([]string, len(cfg.Clients.RegisteredClients))
+	copy(registeredClients, cfg.Clients.RegisteredClients)
+	sort.Strings(registeredClients)
+
 	fmt.Println("Registered clients:")
-	for _, clientName := range cfg.Clients.RegisteredClients {
+	for _, clientName := range registeredClients {
 		fmt.Printf("  - %s\n", clientName)
 	}
 	return nil

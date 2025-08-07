@@ -171,7 +171,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 			options.K8sPodTemplatePatch = tc.k8sPodTemplatePatch
 
 			// Deploy the workload
-			containerID, _, err := client.DeployWorkload(
+			_, err := client.DeployWorkload(
 				context.Background(),
 				"test-image",
 				"test-container",
@@ -186,7 +186,6 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 
 			// Check that there was no error
 			require.NoError(t, err)
-			assert.NotEmpty(t, containerID)
 
 			// Get the created StatefulSet
 			statefulSet, err := clientset.AppsV1().StatefulSets("default").Get(
@@ -667,7 +666,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 			}
 
 			// Deploy the workload
-			containerID, _, err := client.DeployWorkload(
+			_, err := client.DeployWorkload(
 				context.Background(),
 				tc.image,
 				"test-container",
@@ -682,7 +681,6 @@ func TestCreateContainerWithMCP(t *testing.T) {
 
 			// Check that there was no error
 			require.NoError(t, err)
-			assert.NotEmpty(t, containerID)
 
 			// Get the created StatefulSet
 			statefulSet, err := clientset.AppsV1().StatefulSets("default").Get(

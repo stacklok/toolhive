@@ -12,7 +12,7 @@ import (
 	"github.com/adrg/xdg"
 	"github.com/gofrs/flock"
 
-	"github.com/stacklok/toolhive/pkg/container/runtime"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -27,7 +27,7 @@ const (
 
 // NewFileStatusManager creates a new file-based StatusManager.
 // Status files will be stored in the XDG data directory under "statuses/".
-func NewFileStatusManager() StatusManager {
+func NewFileStatusManager(runtime rt.Runtime) StatusManager {
 	// Get the base directory using XDG data directory
 	baseDir, err := xdg.DataFile(statusesPrefix)
 	if err != nil {
@@ -39,6 +39,7 @@ func NewFileStatusManager() StatusManager {
 
 	return &fileStatusManager{
 		baseDir: baseDir,
+		runtime: runtime,
 	}
 }
 
@@ -47,14 +48,15 @@ func NewFileStatusManager() StatusManager {
 // to prevent concurrent access issues.
 type fileStatusManager struct {
 	baseDir string
+	runtime rt.Runtime
 }
 
 // workloadStatusFile represents the JSON structure stored on disk
 type workloadStatusFile struct {
-	Status        runtime.WorkloadStatus `json:"status"`
-	StatusContext string                 `json:"status_context,omitempty"`
-	CreatedAt     time.Time              `json:"created_at"`
-	UpdatedAt     time.Time              `json:"updated_at"`
+	Status        rt.WorkloadStatus `json:"status"`
+	StatusContext string            `json:"status_context,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
 // CreateWorkloadStatus creates the initial `starting` status for a new workload.
@@ -71,7 +73,7 @@ func (f *fileStatusManager) CreateWorkloadStatus(ctx context.Context, workloadNa
 		// Create initial status
 		now := time.Now()
 		statusFile := workloadStatusFile{
-			Status:        runtime.WorkloadStatusStarting,
+			Status:        rt.WorkloadStatusStarting,
 			StatusContext: "",
 			CreatedAt:     now,
 			UpdatedAt:     now,
@@ -86,15 +88,16 @@ func (f *fileStatusManager) CreateWorkloadStatus(ctx context.Context, workloadNa
 	})
 }
 
-// GetWorkloadStatus retrieves the status of a workload by its name.
-func (f *fileStatusManager) GetWorkloadStatus(ctx context.Context, workloadName string) (runtime.WorkloadStatus, string, error) {
-	result := runtime.WorkloadStatusUnknown
-	var statusContext string
+// GetWorkload retrieves the status of a workload by its name.
+func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string) (Workload, error) {
+	result := Workload{Name: workloadName}
+	fileFound := false
 
 	err := f.withFileReadLock(ctx, workloadName, func(statusFilePath string) error {
 		// Check if file exists
 		if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
-			return fmt.Errorf("workload %s not found", workloadName)
+			// File doesn't exist, we'll fall back to runtime check
+			return nil
 		} else if err != nil {
 			return fmt.Errorf("failed to check status file for workload %s: %w", workloadName, err)
 		}
@@ -104,18 +107,121 @@ func (f *fileStatusManager) GetWorkloadStatus(ctx context.Context, workloadName 
 			return fmt.Errorf("failed to read status for workload %s: %w", workloadName, err)
 		}
 
-		result = statusFile.Status
-		statusContext = statusFile.StatusContext
+		result.Status = statusFile.Status
+		result.StatusContext = statusFile.StatusContext
+		result.CreatedAt = statusFile.CreatedAt
+		fileFound = true
 		return nil
 	})
+	if err != nil {
+		return Workload{}, err
+	}
 
-	return result, statusContext, err
+	// If file was found and workload is running, get additional info from runtime
+	if fileFound && result.Status == rt.WorkloadStatusRunning {
+		// TODO: Find discrepancies between the file and runtime workload.
+		runtimeResult, err := f.getWorkloadFromRuntime(ctx, workloadName)
+		if err != nil {
+			return Workload{}, err
+		}
+		// Use runtime data but preserve file-based status info
+		fileStatus := result.Status
+		fileStatusContext := result.StatusContext
+		fileCreatedAt := result.CreatedAt
+		result = runtimeResult
+		result.Status = fileStatus               // Keep the file status
+		result.StatusContext = fileStatusContext // Keep the file status context
+		result.CreatedAt = fileCreatedAt         // Keep the file created time
+		return result, nil
+	}
+
+	// If file was found and workload is not running, return file data
+	if fileFound {
+		return result, nil
+	}
+
+	// File not found, fall back to runtime check
+	return f.getWorkloadFromRuntime(ctx, workloadName)
+}
+
+func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]Workload, error) {
+	// Parse the filters into a format we can use for matching.
+	parsedFilters, err := parseLabelFilters(labelFilters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse label filters: %v", err)
+	}
+
+	// Get workloads from runtime
+	runtimeContainers, err := f.runtime.ListWorkloads(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workloads from runtime: %w", err)
+	}
+
+	// Get workloads from files
+	fileWorkloads, err := f.getWorkloadsFromFiles()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get workloads from files: %w", err)
+	}
+
+	// Create a map of runtime workloads by name for easy lookup
+	runtimeWorkloadMap := make(map[string]rt.ContainerInfo)
+	for _, container := range runtimeContainers {
+		runtimeWorkloadMap[container.Name] = container
+	}
+
+	// Create result map to avoid duplicates and merge data
+	workloadMap := make(map[string]Workload)
+
+	// First, add all runtime workloads
+	for _, container := range runtimeContainers {
+		workload, err := WorkloadFromContainerInfo(&container)
+		if err != nil {
+			logger.Warnf("failed to convert container info for workload %s: %v", container.Name, err)
+			continue
+		}
+		workloadMap[container.Name] = workload
+	}
+
+	// Then, merge with file workloads, preferring file status
+	for name, fileWorkload := range fileWorkloads {
+		if runtimeWorkload, exists := workloadMap[name]; exists {
+			// Merge: use runtime data but prefer file status
+			merged := runtimeWorkload
+			merged.Status = fileWorkload.Status
+			merged.StatusContext = fileWorkload.StatusContext
+			merged.CreatedAt = fileWorkload.CreatedAt
+			workloadMap[name] = merged
+		} else {
+			// File-only workload (runtime not available)
+			workloadMap[name] = fileWorkload
+		}
+	}
+
+	// Convert map to slice and apply filters
+	var workloads []Workload
+	for _, workload := range workloadMap {
+		// Apply listAll filter
+		if !listAll && workload.Status != rt.WorkloadStatusRunning {
+			continue
+		}
+
+		// Apply label filters
+		if len(parsedFilters) > 0 {
+			if !matchesLabelFilters(workload.Labels, parsedFilters) {
+				continue
+			}
+		}
+
+		workloads = append(workloads, workload)
+	}
+
+	return workloads, nil
 }
 
 // SetWorkloadStatus sets the status of a workload by its name.
 // This method will do nothing if the workload does not exist, following the interface contract.
 func (f *fileStatusManager) SetWorkloadStatus(
-	ctx context.Context, workloadName string, status runtime.WorkloadStatus, contextMsg string,
+	ctx context.Context, workloadName string, status rt.WorkloadStatus, contextMsg string,
 ) {
 	err := f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
 		// Check if file exists
@@ -277,4 +383,53 @@ func (*fileStatusManager) writeStatusFile(statusFilePath string, statusFile work
 	}
 
 	return nil
+}
+
+// getWorkloadFromRuntime retrieves workload information from the runtime.
+func (f *fileStatusManager) getWorkloadFromRuntime(ctx context.Context, workloadName string) (Workload, error) {
+	info, err := f.runtime.GetWorkloadInfo(ctx, workloadName)
+	if err != nil {
+		return Workload{}, fmt.Errorf("failed to get workload info from runtime: %w", err)
+	}
+
+	return WorkloadFromContainerInfo(&info)
+}
+
+// getWorkloadsFromFiles retrieves all workloads from status files.
+func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]Workload, error) {
+	// Ensure base directory exists
+	if err := f.ensureBaseDir(); err != nil {
+		return nil, fmt.Errorf("failed to ensure base directory: %w", err)
+	}
+
+	// List all .json files in the base directory
+	files, err := filepath.Glob(filepath.Join(f.baseDir, "*.json"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list status files: %w", err)
+	}
+
+	workloads := make(map[string]Workload)
+	for _, file := range files {
+		// Extract workload name from filename (remove .json extension)
+		workloadName := strings.TrimSuffix(filepath.Base(file), ".json")
+
+		// Read the status file
+		statusFile, err := f.readStatusFile(file)
+		if err != nil {
+			logger.Warnf("failed to read status file %s: %v", file, err)
+			continue
+		}
+
+		// Create workload from file data
+		workload := Workload{
+			Name:          workloadName,
+			Status:        statusFile.Status,
+			StatusContext: statusFile.StatusContext,
+			CreatedAt:     statusFile.CreatedAt,
+		}
+
+		workloads[workloadName] = workload
+	}
+
+	return workloads, nil
 }

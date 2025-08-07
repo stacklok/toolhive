@@ -147,7 +147,7 @@ func TestCheckLatestVersion(t *testing.T) {
 			LatestVersion: existingVersion,
 			Components: map[string]componentInfo{
 				componentName: {
-					LastCheck: time.Now().UTC().Add(-1 * time.Hour), // Within 4-hour window
+					LastCheck: time.Now().UTC().Add(-15 * time.Minute), // Within 4-hour window
 				},
 			},
 		}

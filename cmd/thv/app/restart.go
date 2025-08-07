@@ -32,6 +32,8 @@ func init() {
 	//
 	//// Mark the flags as mutually exclusive
 	//restartCmd.MarkFlagsMutuallyExclusive("all", "group")
+
+	// restartCmd.PreRunE = validateGroupFlag()
 }
 
 func restartCmdFunc(cmd *cobra.Command, args []string) error {

@@ -28,15 +28,17 @@ var proxyCmd = &cobra.Command{
 	Use:   "proxy [flags] SERVER_NAME",
 	Short: "Create a transparent proxy for an MCP server with authentication support",
 	Long: `Create a transparent HTTP proxy that forwards requests to an MCP server endpoint.
+
 This command starts a standalone proxy without creating a workload, providing:
 
-• Transparent request forwarding to the target MCP server
-• Optional OAuth/OIDC authentication to remote MCP servers
-• Automatic authentication detection via WWW-Authenticate headers
-• OIDC-based access control for incoming proxy requests
-• Secure credential handling via files or environment variables
+- Transparent request forwarding to the target MCP server
+- Optional OAuth/OIDC authentication to remote MCP servers
+- Automatic authentication detection via WWW-Authenticate headers
+- OIDC-based access control for incoming proxy requests
+- Secure credential handling via files or environment variables
 
-AUTHENTICATION MODES:
+#### Authentication modes
+
 The proxy supports multiple authentication scenarios:
 
 1. No Authentication: Simple transparent forwarding
@@ -44,30 +46,37 @@ The proxy supports multiple authentication scenarios:
 3. Incoming Authentication: Protect the proxy endpoint with OIDC validation
 4. Bidirectional: Both incoming and outgoing authentication
 
-OAUTH CLIENT SECRET SOURCES:
+#### OAuth client secret sources
+
 OAuth client secrets can be provided via (in order of precedence):
+
 1. --remote-auth-client-secret flag (not recommended for production)
 2. --remote-auth-client-secret-file flag (secure file-based approach)
 3. ` + envOAuthClientSecret + ` environment variable
 
-EXAMPLES:
-  # Basic transparent proxy
-  thv proxy my-server --target-uri http://localhost:8080
+#### Examples
 
-  # Proxy with OAuth authentication to remote server
-  thv proxy my-server --target-uri https://api.example.com \
-    --remote-auth --remote-auth-issuer https://auth.example.com \
-    --remote-auth-client-id my-client-id \
-    --remote-auth-client-secret-file /path/to/secret
+Basic transparent proxy:
 
-  # Proxy with OIDC protection for incoming requests
-  thv proxy my-server --target-uri http://localhost:8080 \
-    --oidc-issuer https://auth.example.com \
-    --oidc-audience my-audience
+	thv proxy my-server --target-uri http://localhost:8080
 
-  # Auto-detect authentication requirements
-  thv proxy my-server --target-uri https://protected-api.com \
-    --remote-auth-client-id my-client-id`,
+Proxy with OAuth authentication to remote server:
+
+	thv proxy my-server --target-uri https://api.example.com \
+	  --remote-auth --remote-auth-issuer https://auth.example.com \
+	  --remote-auth-client-id my-client-id \
+	  --remote-auth-client-secret-file /path/to/secret
+
+Proxy with OIDC protection for incoming requests:
+
+	thv proxy my-server --target-uri http://localhost:8080 \
+	  --oidc-issuer https://auth.example.com \
+	  --oidc-audience my-audience
+
+Auto-detect authentication requirements:
+
+	thv proxy my-server --target-uri https://protected-api.com \
+	  --remote-auth-client-id my-client-id`,
 	Args: cobra.ExactArgs(1),
 	RunE: proxyCmdFunc,
 }
@@ -143,7 +152,8 @@ func init() {
 }
 
 func proxyCmdFunc(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
+	ctx, stopSignal := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignal()
 	// Get the server name
 	serverName := args[0]
 
@@ -223,21 +233,15 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		serverName, port, proxyTargetURI)
 	logger.Info("Press Ctrl+C to stop")
 
-	// Set up signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-ctx.Done()
+	logger.Infof("Interrupt received, proxy is shutting down. Please wait for connections to close...")
 
-	// Wait for signal
-	sig := <-sigCh
-	logger.Infof("Received signal %s, stopping proxy...", sig)
-
-	// Stop the proxy
-	if err := proxy.Stop(ctx); err != nil {
-		logger.Warnf("Warning: Failed to stop proxy: %v", err)
+	if err := proxy.CloseListener(); err != nil {
+		logger.Warnf("Error closing proxy listener: %v", err)
 	}
-
-	logger.Infof("Proxy for server %s stopped", serverName)
-	return nil
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return proxy.Stop(shutdownCtx)
 }
 
 // AuthInfo contains authentication information extracted from WWW-Authenticate header

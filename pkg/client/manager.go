@@ -62,25 +62,7 @@ func (*defaultManager) ListClients() ([]Client, error) {
 // RegisterClients registers multiple clients with ToolHive for the specified workloads.
 func (m *defaultManager) RegisterClients(clients []Client, workloads []core.Workload) error {
 	for _, client := range clients {
-		err := config.UpdateConfig(func(c *config.Config) {
-			// Check if client is already registered and skip.
-			for _, registeredClient := range c.Clients.RegisteredClients {
-				if registeredClient == string(client.Name) {
-					logger.Infof("Client %s is already registered, skipping...", client.Name)
-					return
-				}
-			}
-
-			// Add the client to the registered clients list
-			c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, string(client.Name))
-		})
-		if err != nil {
-			return fmt.Errorf("failed to update configuration for client %s: %w", client.Name, err)
-		}
-
-		logger.Infof("Successfully registered client: %s\n", client.Name)
-
-		// Add specified workloads to the newly registered client
+		// Add specified workloads to the client
 		if err := m.addWorkloadsToClient(client.Name, workloads); err != nil {
 			return fmt.Errorf("failed to add workloads to client %s: %v", client.Name, err)
 		}

@@ -10,6 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -189,9 +190,16 @@ func BuildRunnerConfig(
 	}
 
 	// Get OIDC flags
-	oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, err := getOidcFromFlags(cmd)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get OIDC flags: %v", err)
+	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret := getOidcFromFlags(cmd)
+	if oidcJwksURL != "" {
+		if err := networking.ValidateEndpointURL(oidcJwksURL); err != nil {
+			return nil, fmt.Errorf("invalid %s: %w", oidcJwksURL, err)
+		}
+	}
+	if oidcIntrospectionURL != "" {
+		if err := networking.ValidateEndpointURL(oidcIntrospectionURL); err != nil {
+			return nil, fmt.Errorf("invalid %s: %w", oidcIntrospectionURL, err)
+		}
 	}
 
 	// Get OTEL flag values with config fallbacks
@@ -262,7 +270,7 @@ func BuildRunnerConfig(
 		WithAuditEnabled(runConfig.EnableAudit, runConfig.AuditConfig).
 		WithLabels(runConfig.Labels).
 		WithGroup(runConfig.Group).
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
 			runConfig.ThvCABundle, runConfig.JWKSAuthTokenFile, runConfig.JWKSAllowPrivateIP).
 		WithTelemetryConfig(finalOtelEndpoint, runConfig.OtelEnablePrometheusMetricsPath, runConfig.OtelServiceName,
 			finalOtelSamplingRate, runConfig.OtelHeaders, runConfig.OtelInsecure, finalOtelEnvironmentVariables).
@@ -275,17 +283,15 @@ func BuildRunnerConfig(
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags
-func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, bool, error) {
+func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, string, string) {
 	oidcIssuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
 	oidcAudience := GetStringFlagOrEmpty(cmd, "oidc-audience")
 	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
+	introspectionURL := GetStringFlagOrEmpty(cmd, "oidc-introspection-url")
 	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
-	oidcAllowOpaqueTokens, err := cmd.Flags().GetBool("oidc-skip-opaque-token-validation")
-	if err != nil {
-		return "", "", "", "", false, fmt.Errorf("failed to get oidc-skip-opaque-token-validation flag: %v", err)
-	}
+	oidcClientSecret := GetStringFlagOrEmpty(cmd, "oidc-client-secret")
 
-	return oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens, nil
+	return oidcIssuer, oidcAudience, oidcJwksURL, introspectionURL, oidcClientID, oidcClientSecret
 }
 
 // getTelemetryFromFlags extracts telemetry configuration from command flags

@@ -14,7 +14,23 @@
         "ghcr.io/stacklok/toolhive/operator"
       ],
       "matchFileNames": ["deploy/charts/operator/**"]
+    },
+    {
+      "groupName": "dockerfile template base images",
+      "matchDatasources": ["docker"],
+      "matchManagers": ["custom.regex"]
     }
   ],
- "postUpdateOptions": ["gomodTidy"]
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update Docker base images in template files",
+      "managerFilePatterns": ["pkg/container/templates/*.tmpl"],
+      "matchStrings": [
+        "FROM (?<depName>[a-z0-9.-]+):(?<currentValue>[a-z0-9.-]+)"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "postUpdateOptions": ["gomodTidy"]
 }

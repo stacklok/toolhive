@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -9,7 +10,13 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/core"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/workloads"
+)
+
+var (
+	groupNames []string
 )
 
 var clientCmd = &cobra.Command{
@@ -93,6 +100,10 @@ func init() {
 	clientCmd.AddCommand(clientRegisterCmd)
 	clientCmd.AddCommand(clientRemoveCmd)
 	clientCmd.AddCommand(clientListRegisteredCmd)
+
+	// TODO: Re-enable when group functionality is complete
+	//clientRegisterCmd.Flags().StringSliceVar(
+	//	&groupNames, "group", []string{"default"}, "Only register workloads from specified groups")
 }
 
 func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
@@ -113,7 +124,18 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 		fmt.Println("No new clients found.")
 		return nil
 	}
-	selected, confirmed, err := ui.RunClientSetup(availableClients)
+	// Get available groups for the UI
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create group manager: %w", err)
+	}
+
+	availableGroups, err := groupManager.List(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to list groups: %w", err)
+	}
+
+	selectedClients, selectedGroups, confirmed, err := ui.RunClientSetup(availableClients, availableGroups)
 	if err != nil {
 		return fmt.Errorf("error running interactive setup: %w", err)
 	}
@@ -121,11 +143,15 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 		fmt.Println("Setup cancelled. No clients registered.")
 		return nil
 	}
-	if len(selected) == 0 {
+	if len(selectedClients) == 0 {
 		fmt.Println("No clients selected for registration.")
 		return nil
 	}
-	return registerSelectedClients(cmd, selected)
+	if len(selectedGroups) == 0 && len(availableGroups) != 0 {
+		fmt.Println("No groups selected for registration. Please select at least one group.")
+		return nil
+	}
+	return registerSelectedClients(cmd, selectedClients, selectedGroups)
 }
 
 // Helper to get available (installed but unregistered) clients
@@ -140,36 +166,13 @@ func getAvailableClients(statuses []client.MCPClientStatus) []client.MCPClientSt
 }
 
 // Helper to register selected clients
-func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.MCPClientStatus) error {
-	ctx := cmd.Context()
-
-	clientManager, err := client.NewManager(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create client manager: %w", err)
-	}
-
-	workloadManager, err := workloads.NewManager(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %w", err)
-	}
-
-	// Fetch running workloads to register with the clients
-	runningWorkloads, err := workloadManager.ListWorkloads(ctx, false)
-	if err != nil {
-		return fmt.Errorf("failed to list running workloads: %w", err)
-	}
-
+func registerSelectedClients(cmd *cobra.Command, clientsToRegister []client.MCPClientStatus, selectedGroups []string) error {
 	clients := make([]client.Client, len(clientsToRegister))
 	for i, cli := range clientsToRegister {
 		clients[i] = client.Client{Name: cli.ClientType}
 	}
 
-	err = clientManager.RegisterClients(clients, runningWorkloads)
-	if err != nil {
-		return fmt.Errorf("failed to register clients: %w", err)
-	}
-
-	return nil
+	return performClientRegistration(cmd.Context(), clients, selectedGroups)
 }
 
 func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
@@ -187,32 +190,7 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 			clientType)
 	}
 
-	ctx := cmd.Context()
-
-	manager, err := client.NewManager(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create client manager: %w", err)
-	}
-
-	workloadManager, err := workloads.NewManager(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %w", err)
-	}
-
-	// Fetch running workloads to register with the client
-	runningWorkloads, err := workloadManager.ListWorkloads(ctx, false)
-	if err != nil {
-		return fmt.Errorf("failed to list running workloads: %w", err)
-	}
-
-	err = manager.RegisterClients([]client.Client{
-		{Name: client.MCPClient(clientType)},
-	}, runningWorkloads)
-	if err != nil {
-		return fmt.Errorf("failed to register client %s: %w", clientType, err)
-	}
-
-	return nil
+	return performClientRegistration(cmd.Context(), []client.Client{{Name: client.MCPClient(clientType)}}, groupNames)
 }
 
 func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
@@ -263,5 +241,101 @@ func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
 	for _, clientName := range registeredClients {
 		fmt.Printf("  - %s\n", clientName)
 	}
+	return nil
+}
+
+func performClientRegistration(ctx context.Context, clients []client.Client, groupNames []string) error {
+	clientManager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	workloadManager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %w", err)
+	}
+
+	runningWorkloads, err := workloadManager.ListWorkloads(ctx, false)
+	if err != nil {
+		return fmt.Errorf("failed to list running workloads: %w", err)
+	}
+
+	if len(groupNames) > 0 {
+		return registerClientsWithGroups(ctx, clients, groupNames, clientManager, runningWorkloads)
+	}
+
+	// We should never reach here once groups are enabled
+	return registerClientsGlobally(clients, clientManager, runningWorkloads)
+}
+
+func registerClientsWithGroups(
+	ctx context.Context,
+	clients []client.Client,
+	groupNames []string,
+	clientManager client.Manager,
+	runningWorkloads []core.Workload,
+) error {
+	fmt.Printf("Filtering workloads to groups: %v\n", groupNames)
+
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create group manager: %w", err)
+	}
+
+	clientNames := make([]string, len(clients))
+	for i, clientToRegister := range clients {
+		clientNames[i] = string(clientToRegister.Name)
+	}
+
+	// Register the clients in the groups
+	err = groupManager.RegisterClients(ctx, groupNames, clientNames)
+	if err != nil {
+		return fmt.Errorf("failed to register clients with groups: %w", err)
+	}
+
+	filteredWorkloads, err := workloads.FilterByGroups(ctx, runningWorkloads, groupNames)
+	if err != nil {
+		return fmt.Errorf("failed to filter workloads by groups: %w", err)
+	}
+
+	// Add the workloads to the client's configuration file
+	err = clientManager.RegisterClients(clients, filteredWorkloads)
+	if err != nil {
+		return fmt.Errorf("failed to register clients: %w", err)
+	}
+
+	return nil
+}
+
+func registerClientsGlobally(
+	clients []client.Client,
+	clientManager client.Manager,
+	runningWorkloads []core.Workload,
+) error {
+	for _, clientToRegister := range clients {
+		// Update the global config to register the client
+		err := config.UpdateConfig(func(c *config.Config) {
+			for _, registeredClient := range c.Clients.RegisteredClients {
+				if registeredClient == string(clientToRegister.Name) {
+					fmt.Printf("Client %s is already registered, skipping...\n", clientToRegister.Name)
+					return
+				}
+			}
+
+			c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, string(clientToRegister.Name))
+		})
+		if err != nil {
+			return fmt.Errorf("failed to update configuration for client %s: %w", clientToRegister.Name, err)
+		}
+
+		fmt.Printf("Successfully registered client: %s\n", clientToRegister.Name)
+	}
+
+	// Add the workloads to the client's configuration file
+	err := clientManager.RegisterClients(clients, runningWorkloads)
+	if err != nil {
+		return fmt.Errorf("failed to register clients: %w", err)
+	}
+
 	return nil
 }

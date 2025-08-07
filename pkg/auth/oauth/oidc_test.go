@@ -14,6 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 const (
@@ -35,7 +37,7 @@ func testDiscoverOIDCEndpoints(
 	}
 
 	// Ensure HTTPS for security (except localhost for development)
-	if issuerURL.Scheme != httpsScheme && !isLocalhost(issuerURL.Host) {
+	if issuerURL.Scheme != httpsScheme && !networking.IsLocalhost(issuerURL.Host) {
 		return nil, fmt.Errorf("issuer must use HTTPS: %s", issuer)
 	}
 
@@ -487,7 +489,7 @@ func TestValidateEndpointURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateEndpointURL(tt.endpoint)
+			err := networking.ValidateEndpointURL(tt.endpoint)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -521,7 +523,7 @@ func TestIsLocalhost(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := isLocalhost(tt.host)
+			result := networking.IsLocalhost(tt.host)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -1251,7 +1253,7 @@ func TestValidateEndpointURL_AdditionalCases(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateEndpointURL(tt.endpoint)
+			err := networking.ValidateEndpointURL(tt.endpoint)
 
 			if tt.expectError {
 				require.Error(t, err)

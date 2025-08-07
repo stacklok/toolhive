@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // OIDCDiscoveryDocument represents the OIDC discovery document structure
@@ -17,6 +19,7 @@ import (
 type OIDCDiscoveryDocument struct {
 	Issuer                        string   `json:"issuer"`
 	AuthorizationEndpoint         string   `json:"authorization_endpoint"`
+	IntrospectionEndpoint         string   `json:"introspection_endpoint,omitempty"`
 	TokenEndpoint                 string   `json:"token_endpoint"`
 	UserinfoEndpoint              string   `json:"userinfo_endpoint"`
 	JWKSURI                       string   `json:"jwks_uri"`
@@ -42,7 +45,7 @@ func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client 
 	}
 
 	// Ensure HTTPS for security (except localhost for development)
-	if issuerURL.Scheme != "https" && !isLocalhost(issuerURL.Host) {
+	if issuerURL.Scheme != "https" && !networking.IsLocalhost(issuerURL.Host) {
 		return nil, fmt.Errorf("issuer must use HTTPS: %s", issuer)
 	}
 
@@ -135,44 +138,20 @@ func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string) err
 		"authorization_endpoint": doc.AuthorizationEndpoint,
 		"token_endpoint":         doc.TokenEndpoint,
 		"jwks_uri":               doc.JWKSURI,
+		"introspection_endpoint": doc.IntrospectionEndpoint,
 	}
 
 	if doc.UserinfoEndpoint != "" {
 		endpoints["userinfo_endpoint"] = doc.UserinfoEndpoint
 	}
-
 	for name, endpoint := range endpoints {
-		if err := validateEndpointURL(endpoint); err != nil {
-			return fmt.Errorf("invalid %s: %w", name, err)
+		if endpoint != "" {
+			if err := networking.ValidateEndpointURL(endpoint); err != nil {
+				return fmt.Errorf("invalid %s: %w", name, err)
+			}
 		}
 	}
-
 	return nil
-}
-
-// validateEndpointURL validates that an endpoint URL is secure
-func validateEndpointURL(endpoint string) error {
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
-	}
-
-	// Ensure HTTPS for security (except localhost for development)
-	if u.Scheme != "https" && !isLocalhost(u.Host) {
-		return fmt.Errorf("endpoint must use HTTPS: %s", endpoint)
-	}
-
-	return nil
-}
-
-// isLocalhost checks if a host is localhost (for development)
-func isLocalhost(host string) bool {
-	return strings.HasPrefix(host, "localhost:") ||
-		strings.HasPrefix(host, "127.0.0.1:") ||
-		strings.HasPrefix(host, "[::1]:") ||
-		host == "localhost" ||
-		host == "127.0.0.1" ||
-		host == "[::1]"
 }
 
 // CreateOAuthConfigFromOIDC creates an OAuth config from OIDC discovery
@@ -217,12 +196,13 @@ func createOAuthConfigFromOIDCWithClient(
 	}
 
 	return &Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		AuthURL:      doc.AuthorizationEndpoint,
-		TokenURL:     doc.TokenEndpoint,
-		Scopes:       scopes,
-		UsePKCE:      usePKCE,
-		CallbackPort: callbackPort,
+		ClientID:              clientID,
+		ClientSecret:          clientSecret,
+		AuthURL:               doc.AuthorizationEndpoint,
+		IntrospectionEndpoint: doc.IntrospectionEndpoint,
+		TokenURL:              doc.TokenEndpoint,
+		Scopes:                scopes,
+		UsePKCE:               usePKCE,
+		CallbackPort:          callbackPort,
 	}, nil
 }

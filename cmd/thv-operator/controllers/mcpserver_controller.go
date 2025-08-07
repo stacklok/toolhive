@@ -1227,6 +1227,12 @@ func (*MCPServerReconciler) generateKubernetesOIDCArgs(m *mcpv1alpha1.MCPServer)
 		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
 	}
 
+	// Introspection URL (optional - if empty, thv will use OIDC discovery)
+	introspectionURL := config.IntrospectionURL
+	if introspectionURL != "" {
+		args = append(args, fmt.Sprintf("--oidc-introspection-url=%s", introspectionURL))
+	}
+
 	// Add cluster auth flags if enabled (default is true)
 	if useClusterAuth {
 		args = append(args, "--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
@@ -1270,8 +1276,14 @@ func (r *MCPServerReconciler) generateConfigMapOIDCArgs( // nolint:gocyclo
 	if jwksURL, exists := configMap.Data["jwksUrl"]; exists && jwksURL != "" {
 		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
 	}
+	if introspectionURL, exists := configMap.Data["introspectionUrl"]; exists && introspectionURL != "" {
+		args = append(args, fmt.Sprintf("--oidc-introspection-url=%s", introspectionURL))
+	}
 	if clientID, exists := configMap.Data["clientId"]; exists && clientID != "" {
 		args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
+	}
+	if clientSecret, exists := configMap.Data["clientSecret"]; exists && clientSecret != "" {
+		args = append(args, fmt.Sprintf("--oidc-client-secret=%s", clientSecret))
 	}
 	if thvCABundlePath, exists := configMap.Data["thvCABundlePath"]; exists && thvCABundlePath != "" {
 		args = append(args, fmt.Sprintf("--thv-ca-bundle=%s", thvCABundlePath))
@@ -1308,6 +1320,11 @@ func (*MCPServerReconciler) generateInlineOIDCArgs(m *mcpv1alpha1.MCPServer) []s
 	// JWKS URL (optional)
 	if config.JWKSURL != "" {
 		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", config.JWKSURL))
+	}
+
+	// Introspection URL (optional)
+	if config.IntrospectionURL != "" {
+		args = append(args, fmt.Sprintf("--oidc-introspection-url=%s", config.IntrospectionURL))
 	}
 
 	// CA Bundle path (optional)

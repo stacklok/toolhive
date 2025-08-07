@@ -54,6 +54,6 @@ type Manager interface {
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group.
 	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error)
 
-	// RegisterClient registers a client with the group.
-	RegisterClient(ctx context.Context, groupName, clientName string) error
+	// RegisterClients registers multiple clients with multiple groups.
+	RegisterClients(ctx context.Context, groupNames []string, clientNames []string) error
 }

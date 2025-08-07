@@ -40,7 +40,7 @@ func getRegistryInfo() (RegistryType, string) {
 		return RegistryTypeFile, localPath
 	default:
 		// Default built-in registry
-		return RegistryTypeDefault, "default"
+		return RegistryTypeDefault, ""
 	}
 }
 
@@ -56,10 +56,10 @@ func getCurrentProvider(w http.ResponseWriter) (registry.Provider, bool) {
 }
 
 // RegistryRoutes defines the routes for the registry API.
-type RegistryRoutes struct {}
+type RegistryRoutes struct{}
 
 // RegistryRouter creates a new router for the registry API.
-func RegistryRouter(provider registry.Provider) http.Handler {
+func RegistryRouter(_ registry.Provider) http.Handler {
 	routes := RegistryRoutes{}
 
 	r := chi.NewRouter()
@@ -85,7 +85,7 @@ func RegistryRouter(provider registry.Provider) http.Handler {
 //		@Produce		json
 //		@Success		200	{object}	registryListResponse
 //		@Router			/api/v1beta/registry [get]
-func (routes *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
+func (*RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
 	provider, ok := getCurrentProvider(w)
 	if !ok {
 		return
@@ -143,7 +143,7 @@ func (*RegistryRoutes) addRegistry(w http.ResponseWriter, _ *http.Request) {
 //		@Success		200	{object}	getRegistryResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name} [get]
-func (routes *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
+func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Only "default" registry is supported currently
@@ -303,7 +303,7 @@ func (*RegistryRoutes) removeRegistry(w http.ResponseWriter, r *http.Request) {
 //		@Success		200	{object}	listServersResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name}/servers [get]
-func (routes *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
+func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 
 	// Only "default" registry is supported currently
@@ -344,7 +344,7 @@ func (routes *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request
 //		@Success		200	{object}	getServerResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name}/servers/{serverName} [get]
-func (routes *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
+func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 	serverName := chi.URLParam(r, "serverName")
 

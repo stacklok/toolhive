@@ -155,6 +155,14 @@ spec:
                         description: ClientID is deprecated and will be removed in
                           a future release.
                         type: string
+                      clientSecret:
+                        description: ClientSecret is the client secret for introspection
+                          (optional)
+                        type: string
+                      introspectionUrl:
+                        description: IntrospectionURL is the URL for token introspection
+                          endpoint
+                        type: string
                       issuer:
                         description: Issuer is the OIDC issuer URL
                         type: string
@@ -188,6 +196,11 @@ spec:
                       audience:
                         default: toolhive
                         description: Audience is the expected audience for the token
+                        type: string
+                      introspectionUrl:
+                        description: |-
+                          IntrospectionURL is the URL for token introspection endpoint
+                          If empty, OIDC discovery will be used to automatically determine the introspection URL
                         type: string
                       issuer:
                         default: https://kubernetes.default.svc

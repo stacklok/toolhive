@@ -294,7 +294,8 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		WithProxyMode(types.ProxyMode(req.ProxyMode)).
 		WithTransportAndPorts(req.Transport, 0, req.TargetPort).
 		WithAuditEnabled(false, "").
-		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID, req.OIDC.AllowOpaqueTokens,
+		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.IntrospectionURL,
+			req.OIDC.ClientID, req.OIDC.ClientSecret,
 										"", "", false). // JWKS auth parameters not exposed through API yet
 		WithTelemetryConfig("", false, "", 0.0, nil, false, nil). // Not exposed through API yet.
 		WithToolsFilter(req.ToolsFilter).
@@ -592,10 +593,12 @@ type oidcOptions struct {
 	Audience string `json:"audience"`
 	// JWKS URL for key verification
 	JwksURL string `json:"jwks_url"`
+	// Token introspection URL for OIDC
+	IntrospectionURL string `json:"introspection_url"`
 	// OAuth2 client ID
 	ClientID string `json:"client_id"`
-	// Allow opaque tokens (non-JWT) for OIDC validation
-	AllowOpaqueTokens bool `json:"allow_opaque_tokens"`
+	// OAuth2 client secret
+	ClientSecret string `json:"client_secret"`
 }
 
 // createWorkloadResponse represents the response for workload creation

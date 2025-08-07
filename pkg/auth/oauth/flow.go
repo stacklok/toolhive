@@ -48,6 +48,9 @@ type Config struct {
 
 	// CallbackPort is the port for the OAuth callback server (optional, 0 means auto-select)
 	CallbackPort int
+
+	// IntrospectionEndpoint is the optional introspection endpoint for validating tokens
+	IntrospectionEndpoint string
 }
 
 // Flow handles the OAuth authentication flow

@@ -60,11 +60,12 @@ var (
 	runJWKSAuthTokenFile  string
 	runJWKSAllowPrivateIP bool
 
-	oidcIssuer            string
-	oidcAudience          string
-	oidcJwksURL           string
-	oidcClientID          string
-	oidcAllowOpaqueTokens bool
+	oidcIssuer           string
+	oidcAudience         string
+	oidcJwksURL          string
+	oidcIntrospectionURL string
+	oidcClientID         string
+	oidcClientSecret     string
 
 	// OpenTelemetry flags
 	runOtelServiceName                 string
@@ -131,9 +132,8 @@ func init() {
 	runCmd.Flags().StringVar(&oidcAudience, "oidc-audience", "", "Expected audience for the token")
 	runCmd.Flags().StringVar(&oidcJwksURL, "oidc-jwks-url", "", "URL to fetch the JWKS from")
 	runCmd.Flags().StringVar(&oidcClientID, "oidc-client-id", "", "OIDC client ID")
-	runCmd.Flags().BoolVar(&oidcAllowOpaqueTokens, "oidc-skip-opaque-token-validation",
-		false, "Allow skipping validation of opaque tokens (default: false)",
-	)
+	runCmd.Flags().StringVar(&oidcClientSecret, "oidc-client-secret", "", "OIDC client secret (optional, for introspection)")
+	runCmd.Flags().StringVar(&oidcIntrospectionURL, "oidc-introspection-url", "", "OIDC token introspection URL")
 
 	// the below aren't used or set via the operator, so we need to see if lower level packages use their defaults
 	runCmd.Flags().StringArrayVarP(
@@ -247,7 +247,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		WithProxyMode(types.ProxyMode("sse")).
 		WithTransportAndPorts(runTransport, runProxyPort, runTargetPort).
 		WithAuditEnabled(runEnableAudit, runAuditConfig).
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
 			runThvCABundle, runJWKSAuthTokenFile, runJWKSAllowPrivateIP).
 		WithTelemetryConfig(finalOtelEndpoint, runOtelEnablePrometheusMetricsPath, runOtelServiceName,
 			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).

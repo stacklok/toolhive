@@ -44,14 +44,23 @@ func getRegistryInfo() (RegistryType, string) {
 	}
 }
 
-// RegistryRoutes defines the routes for the registry API.
-type RegistryRoutes struct {
-	provider registry.Provider
+// getCurrentProvider returns the current registry provider
+func getCurrentProvider(w http.ResponseWriter) (registry.Provider, bool) {
+	provider, err := registry.GetDefaultProvider()
+	if err != nil {
+		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
+		logger.Errorf("Failed to get registry provider: %v", err)
+		return nil, false
+	}
+	return provider, true
 }
+
+// RegistryRoutes defines the routes for the registry API.
+type RegistryRoutes struct {}
 
 // RegistryRouter creates a new router for the registry API.
 func RegistryRouter(provider registry.Provider) http.Handler {
-	routes := RegistryRoutes{provider: provider}
+	routes := RegistryRoutes{}
 
 	r := chi.NewRouter()
 	r.Get("/", routes.listRegistries)
@@ -77,7 +86,12 @@ func RegistryRouter(provider registry.Provider) http.Handler {
 //		@Success		200	{object}	registryListResponse
 //		@Router			/api/v1beta/registry [get]
 func (routes *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
-	reg, err := routes.provider.GetRegistry()
+	provider, ok := getCurrentProvider(w)
+	if !ok {
+		return
+	}
+
+	reg, err := provider.GetRegistry()
 	if err != nil {
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
@@ -138,7 +152,12 @@ func (routes *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	reg, err := routes.provider.GetRegistry()
+	provider, ok := getCurrentProvider(w)
+	if !ok {
+		return
+	}
+
+	reg, err := provider.GetRegistry()
 	if err != nil {
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
@@ -293,7 +312,12 @@ func (routes *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	servers, err := routes.provider.ListServers()
+	provider, ok := getCurrentProvider(w)
+	if !ok {
+		return
+	}
+
+	servers, err := provider.ListServers()
 	if err != nil {
 		logger.Errorf("Failed to list servers: %v", err)
 		http.Error(w, "Failed to list servers", http.StatusInternalServerError)
@@ -330,7 +354,12 @@ func (routes *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	server, err := routes.provider.GetServer(serverName)
+	provider, ok := getCurrentProvider(w)
+	if !ok {
+		return
+	}
+
+	server, err := provider.GetServer(serverName)
 	if err != nil {
 		logger.Errorf("Failed to get server '%s': %v", serverName, err)
 		http.Error(w, "ImageMetadata not found", http.StatusNotFound)

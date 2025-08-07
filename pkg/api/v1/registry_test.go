@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,19 +18,48 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
+func MockConfig(t *testing.T, cfg *config.Config) func() {
+	t.Helper()
+
+	// Create a temporary directory for the test
+	tempDir := t.TempDir()
+
+	// TODO: see if there's a way to avoid changing env vars during tests.
+	// Save original XDG_CONFIG_HOME
+	originalXDGConfigHome := os.Getenv("XDG_CONFIG_HOME")
+	t.Setenv("XDG_CONFIG_HOME", tempDir)
+
+	// Create the config directory structure
+	configDir := filepath.Join(tempDir, "toolhive")
+	err := os.MkdirAll(configDir, 0755)
+	require.NoError(t, err)
+
+	// Write the config file if one is provided
+	if cfg != nil {
+		err = config.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		require.NoError(t, err)
+	}
+
+	return func() {
+		t.Setenv("XDG_CONFIG_HOME", originalXDGConfigHome)
+	}
+}
+
 func TestRegistryRouter(t *testing.T) {
 	t.Parallel()
 
 	logger.Initialize()
 
-	router := RegistryRouter(nil)
+	router := RegistryRouter()
 	assert.NotNil(t, router)
 }
 
 func TestGetRegistryInfo(t *testing.T) {
-	t.Parallel()
-
 	logger.Initialize()
+
+	// Setup temporary config to avoid modifying user's real config
+	cleanup := MockConfig(t, nil)
+	defer cleanup()
 
 	tests := []struct {
 		name           string
@@ -78,8 +109,6 @@ func TestGetRegistryInfo(t *testing.T) {
 			assert.Equal(t, tt.expectedSource, source, "Registry source should match expected")
 		})
 	}
-
-	_ = config.UnsetRegistry()
 }
 
 func TestRegistryAPI_PutEndpoint(t *testing.T) {

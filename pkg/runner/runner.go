@@ -29,6 +29,9 @@ type Runner struct {
 
 	// telemetryProvider is the OpenTelemetry provider for cleanup
 	telemetryProvider *telemetry.Provider
+
+	// supportedMiddleware is a map of supported middleware types to their factory functions.
+	supportedMiddleware map[string]types.MiddlewareFactory
 }
 
 // NewRunner creates a new Runner with the provided configuration
@@ -53,6 +56,29 @@ func (r *Runner) Run(ctx context.Context) error {
 		Debug:      r.Config.Debug,
 	}
 
+	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
+	for _, middlewareConfig := range r.Config.MiddlewareConfigs {
+		// First, get the correct factory function for the middleware type.
+		factory, ok := r.supportedMiddleware[middlewareConfig.Type]
+		if !ok {
+			return fmt.Errorf("unsupported middleware type: %s", middlewareConfig.Type)
+		}
+
+		// Create the middleware instance using the factory function.
+		middleware, err := factory(&middlewareConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create middleware of type %s: %v", middlewareConfig.Type, err)
+		}
+
+		// Ensure middleware is cleaned up on shutdown.
+		defer func() {
+			if err := middleware.Close(); err != nil {
+				logger.Warnf("Failed to close middleware of type %s: %v", middlewareConfig.Type, err)
+			}
+		}()
+		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware.Handler())
+	}
+
 	if len(r.Config.ToolsFilter) > 0 {
 		toolsFilterMiddleware, err := mcp.NewToolFilterMiddleware(r.Config.ToolsFilter)
 		if err != nil {
@@ -67,16 +93,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsCallFilterMiddleware)
 	}
 
-	// Get authentication middleware
-	allowOpaqueTokens := false
-	if r.Config.OIDCConfig != nil && r.Config.OIDCConfig.AllowOpaqueTokens {
-		allowOpaqueTokens = r.Config.OIDCConfig.AllowOpaqueTokens
-	}
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig, allowOpaqueTokens)
+	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
 	transportConfig.Middlewares = append(transportConfig.Middlewares, authMiddleware)
+	transportConfig.AuthInfoHandler = authInfoHandler
 
 	// Add MCP parsing middleware after authentication
 	logger.Info("MCP parsing middleware enabled for transport")

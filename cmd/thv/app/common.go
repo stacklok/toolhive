@@ -16,8 +16,9 @@ func AddOIDCFlags(cmd *cobra.Command) {
 	cmd.Flags().String("oidc-issuer", "", "OIDC issuer URL (e.g., https://accounts.google.com)")
 	cmd.Flags().String("oidc-audience", "", "Expected audience for the token")
 	cmd.Flags().String("oidc-jwks-url", "", "URL to fetch the JWKS from")
+	cmd.Flags().String("oidc-introspection-url", "", "URL for token introspection endpoint")
 	cmd.Flags().String("oidc-client-id", "", "OIDC client ID")
-	cmd.Flags().Bool("oidc-skip-opaque-token-validation", false, "Allow skipping validation of opaque tokens")
+	cmd.Flags().String("oidc-client-secret", "", "OIDC client secret (optional, for introspection)")
 }
 
 // GetStringFlagOrEmpty tries to get the string value of the given flag.
@@ -35,8 +36,9 @@ func GetStringFlagOrEmpty(cmd *cobra.Command, flagName string) string {
 func IsOIDCEnabled(cmd *cobra.Command) bool {
 	jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 	issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
+	introspectionURL := GetStringFlagOrEmpty(cmd, "oidc-introspection-url")
 
-	return jwksURL != "" || issuer != ""
+	return jwksURL != "" || issuer != "" || introspectionURL != ""
 }
 
 // SetSecretsProvider sets the secrets provider type in the configuration.

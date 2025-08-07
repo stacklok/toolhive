@@ -4,6 +4,7 @@ package types
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"golang.org/x/exp/jsonrpc2"
@@ -14,8 +15,44 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 )
 
-// Middleware is a function that wraps an http.Handler with additional functionality.
-type Middleware func(http.Handler) http.Handler
+// MiddlewareFunction is a function that wraps an http.Handler with additional functionality.
+type MiddlewareFunction func(http.Handler) http.Handler
+
+// Middleware defines a middleware interceptor and a close method.
+type Middleware interface {
+	// Handler returns the middleware function used by the proxy.
+	Handler() MiddlewareFunction
+	// Close cleans up any resources used by the middleware.
+	Close() error
+}
+
+// MiddlewareConfig represents the configuration for a middleware.
+// This is stored in the run config, and is used to instantiate the middleware.
+type MiddlewareConfig struct {
+	// Type is a string representing the middleware type.
+	Type string `json:"type"`
+	// Parameters is a JSON object containing the middleware parameters.
+	// It is stored as a raw message to allow flexible parameter types.
+	Parameters json.RawMessage `json:"parameters" swaggertype:"object"`
+}
+
+// NewMiddlewareConfig creates a new MiddlewareConfig with the given type and parameters.
+// The parameters are marshaled to JSON and stored in the Parameters field.
+func NewMiddlewareConfig(middlewareType string, parameters any) (*MiddlewareConfig, error) {
+	// Marshal the parameters to JSON
+	paramsJSON, err := json.Marshal(parameters)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MiddlewareConfig{
+		Type:       middlewareType,
+		Parameters: paramsJSON,
+	}, nil
+}
+
+// MiddlewareFactory is a function that creates a Middleware instance based on the provided configuration.
+type MiddlewareFactory func(config *MiddlewareConfig) (Middleware, error)
 
 // Transport defines the interface for MCP transport implementations.
 // It provides methods for handling communication between the client and server.
@@ -23,7 +60,7 @@ type Transport interface {
 	// Mode returns the transport mode.
 	Mode() TransportType
 
-	// Port returns the port used by the transport.
+	// ProxyPort returns the port used by the transport.
 	ProxyPort() int
 
 	// Setup prepares the transport for use.
@@ -132,11 +169,15 @@ type Config struct {
 
 	// Middlewares is a list of middleware functions to apply to the transport.
 	// These are applied in order, with the first middleware being the outermost wrapper.
-	Middlewares []Middleware
+	Middlewares []MiddlewareFunction
 
 	// PrometheusHandler is an optional HTTP handler for Prometheus metrics endpoint.
 	// If provided, it will be exposed at /metrics on the transport's HTTP server.
 	PrometheusHandler http.Handler
+
+	// AuthInfoHandler is an optional HTTP handler for authentication information endpoint.
+	// If provided, it will be exposed at /.well-known/oauth-protected-resource on the transport's HTTP server.
+	AuthInfoHandler http.Handler
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode ProxyMode

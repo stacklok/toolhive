@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -42,7 +43,9 @@ var buildFlags BuildFlags
 
 // BuildFlags holds the configuration for building MCP server containers
 type BuildFlags struct {
-	Tag string
+	Tag    string
+	Output string
+	DryRun bool
 }
 
 func init() {
@@ -53,6 +56,8 @@ func init() {
 // AddBuildFlags adds all the build flags to a command
 func AddBuildFlags(cmd *cobra.Command, config *BuildFlags) {
 	cmd.Flags().StringVarP(&config.Tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format for the built image")
+	cmd.Flags().StringVarP(&config.Output, "output", "o", "", "Write the Dockerfile to the specified file instead of building")
+	cmd.Flags().BoolVar(&config.DryRun, "dry-run", false, "Generate Dockerfile without building (stdout output unless -o is set)")
 }
 
 func buildCmdFunc(cmd *cobra.Command, args []string) error {
@@ -64,13 +69,34 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid protocol scheme: %s. Supported schemes are: uvx://, npx://, go://", protocolScheme)
 	}
 
-	logger.Infof("Building container for protocol scheme: %s", protocolScheme)
-
-	// Create image manager for building
+	// Create image manager (even for dry-run, we pass it but it won't be used)
 	imageManager := images.NewImageManager(ctx)
 
+	// If dry-run or output is specified, just generate the Dockerfile
+	if buildFlags.DryRun || buildFlags.Output != "" {
+		dockerfileContent, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, true)
+		if err != nil {
+			return fmt.Errorf("failed to generate Dockerfile for %s: %v", protocolScheme, err)
+		}
+
+		// Write to output file if specified
+		if buildFlags.Output != "" {
+			if err := os.WriteFile(buildFlags.Output, []byte(dockerfileContent), 0600); err != nil {
+				return fmt.Errorf("failed to write Dockerfile to %s: %v", buildFlags.Output, err)
+			}
+			logger.Infof("Dockerfile written to: %s", buildFlags.Output)
+			fmt.Printf("Dockerfile written to: %s\n", buildFlags.Output)
+		} else {
+			// Output to stdout
+			fmt.Print(dockerfileContent)
+		}
+		return nil
+	}
+
+	logger.Infof("Building container for protocol scheme: %s", protocolScheme)
+
 	// Build the image using the new protocol handler with custom name
-	imageName, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag)
+	imageName, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, false)
 	if err != nil {
 		return fmt.Errorf("failed to build container for %s: %v", protocolScheme, err)
 	}

@@ -128,6 +128,10 @@ type RunConfig struct {
 
 	// IgnoreConfig contains configuration for ignore processing
 	IgnoreConfig *ignore.Config `json:"ignore_config,omitempty" yaml:"ignore_config,omitempty"`
+
+	// MiddlewareConfigs contains the list of middleware to apply to the transport
+	// and the configuration for each middleware.
+	MiddlewareConfigs []types.MiddlewareConfig `json:"middleware_configs,omitempty" yaml:"middleware_configs,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -164,6 +168,12 @@ func (c *RunConfig) WithAuthz(config *authz.Config) *RunConfig {
 // WithAudit adds audit configuration to the RunConfig
 func (c *RunConfig) WithAudit(config *audit.Config) *RunConfig {
 	c.AuditConfig = config
+	return c
+}
+
+// WithMiddlewareConfig adds middleware configuration to the RunConfig
+func (c *RunConfig) WithMiddlewareConfig(middlewareConfig []types.MiddlewareConfig) *RunConfig {
+	c.MiddlewareConfigs = middlewareConfig
 	return c
 }
 

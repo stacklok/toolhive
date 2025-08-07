@@ -28,7 +28,7 @@ type HTTPProxy struct {
 	containerName     string
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
-	middlewares       []types.Middleware
+	middlewares       []types.MiddlewareFunction
 
 	// Message channel for sending JSON-RPC to the container
 	messageCh chan jsonrpc2.Message
@@ -44,7 +44,7 @@ func NewHTTPProxy(
 	port int,
 	containerName string,
 	prometheusHandler http.Handler,
-	middlewares ...types.Middleware,
+	middlewares ...types.MiddlewareFunction,
 ) *HTTPProxy {
 	return &HTTPProxy{
 		host:              host,

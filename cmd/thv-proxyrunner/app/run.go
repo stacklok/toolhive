@@ -60,11 +60,12 @@ var (
 	runJWKSAuthTokenFile  string
 	runJWKSAllowPrivateIP bool
 
-	oidcIssuer            string
-	oidcAudience          string
-	oidcJwksURL           string
-	oidcClientID          string
-	oidcAllowOpaqueTokens bool
+	oidcIssuer           string
+	oidcAudience         string
+	oidcJwksURL          string
+	oidcIntrospectionURL string
+	oidcClientID         string
+	oidcClientSecret     string
 
 	// OpenTelemetry flags
 	runOtelServiceName                 string
@@ -77,6 +78,9 @@ var (
 
 	// Tools filter
 	runToolsFilter []string
+
+	// OAuth discovery resource URL
+	runResourceURL string
 )
 
 func init() {
@@ -131,9 +135,8 @@ func init() {
 	runCmd.Flags().StringVar(&oidcAudience, "oidc-audience", "", "Expected audience for the token")
 	runCmd.Flags().StringVar(&oidcJwksURL, "oidc-jwks-url", "", "URL to fetch the JWKS from")
 	runCmd.Flags().StringVar(&oidcClientID, "oidc-client-id", "", "OIDC client ID")
-	runCmd.Flags().BoolVar(&oidcAllowOpaqueTokens, "oidc-skip-opaque-token-validation",
-		false, "Allow skipping validation of opaque tokens (default: false)",
-	)
+	runCmd.Flags().StringVar(&oidcClientSecret, "oidc-client-secret", "", "OIDC client secret (optional, for introspection)")
+	runCmd.Flags().StringVar(&oidcIntrospectionURL, "oidc-introspection-url", "", "OIDC token introspection URL")
 
 	// the below aren't used or set via the operator, so we need to see if lower level packages use their defaults
 	runCmd.Flags().StringArrayVarP(
@@ -184,6 +187,12 @@ func init() {
 		"tools",
 		nil,
 		"Filter MCP server tools (comma-separated list of tool names)",
+	)
+	runCmd.Flags().StringVar(
+		&runResourceURL,
+		"resource-url",
+		"",
+		"Explicit resource URL for OAuth discovery endpoint (RFC 9728)",
 	)
 }
 
@@ -247,8 +256,8 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		WithProxyMode(types.ProxyMode("sse")).
 		WithTransportAndPorts(runTransport, runProxyPort, runTargetPort).
 		WithAuditEnabled(runEnableAudit, runAuditConfig).
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
-			runThvCABundle, runJWKSAuthTokenFile, runJWKSAllowPrivateIP).
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
+			runThvCABundle, runJWKSAuthTokenFile, runResourceURL, runJWKSAllowPrivateIP).
 		WithTelemetryConfig(finalOtelEndpoint, runOtelEnablePrometheusMetricsPath, runOtelServiceName,
 			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
 		WithToolsFilter(runToolsFilter).

@@ -41,10 +41,6 @@ components:
     auth.TokenValidatorConfig:
       description: OIDCConfig contains OIDC configuration
       properties:
-        allowOpaqueTokens:
-          description: AllowOpaqueTokens indicates whether to allow opaque tokens
-            (non-JWT)
-          type: boolean
         allowPrivateIP:
           description: AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
           type: boolean
@@ -62,11 +58,22 @@ components:
         clientID:
           description: ClientID is the OIDC client ID
           type: string
+        clientSecret:
+          description: ClientSecret is the optional OIDC client secret for introspection
+          type: string
+        introspectionURL:
+          description: IntrospectionURL is the optional introspection endpoint for
+            validating tokens
+          type: string
         issuer:
           description: Issuer is the OIDC issuer URL (e.g., https://accounts.google.com)
           type: string
         jwksurl:
           description: JWKSURL is the URL to fetch the JWKS from
+          type: string
+        resourceURL:
+          description: ResourceURL is the explicit resource URL for OAuth discovery
+            (RFC 9728)
           type: string
       type: object
     authz.CedarConfig:
@@ -506,6 +513,14 @@ components:
             K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
             Only applicable when using Kubernetes runtime
           type: string
+        middleware_configs:
+          description: |-
+            MiddlewareConfigs contains the list of middleware to apply to the transport
+            and the configuration for each middleware.
+          items:
+            $ref: '#/components/schemas/types.MiddlewareConfig'
+          type: array
+          uniqueItems: false
         name:
           description: Name is the name of the MCP server
           type: string
@@ -624,6 +639,17 @@ components:
           type: string
         serviceVersion:
           description: ServiceVersion is the service version for telemetry
+          type: string
+      type: object
+    types.MiddlewareConfig:
+      properties:
+        parameters:
+          description: |-
+            Parameters is a JSON object containing the middleware parameters.
+            It is stored as a raw message to allow flexible parameter types.
+          type: object
+        type:
+          description: Type is a string representing the middleware type.
           type: string
       type: object
     types.ProxyMode:
@@ -937,14 +963,17 @@ components:
     v1.oidcOptions:
       description: OIDC configuration options
       properties:
-        allow_opaque_tokens:
-          description: Allow opaque tokens (non-JWT) for OIDC validation
-          type: boolean
         audience:
           description: Expected audience
           type: string
         client_id:
           description: OAuth2 client ID
+          type: string
+        client_secret:
+          description: OAuth2 client secret
+          type: string
+        introspection_url:
+          description: Token introspection URL for OIDC
           type: string
         issuer:
           description: OIDC issuer URL

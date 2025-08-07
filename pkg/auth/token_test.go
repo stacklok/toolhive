@@ -70,7 +70,7 @@ func TestTokenValidator(t *testing.T) {
 		ClientID:       "test-client",
 		CACertPath:     caCertPath,
 		AllowPrivateIP: true,
-	}, false)
+	})
 	if err != nil {
 		t.Fatalf("Failed to create token validator: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 		ClientID:       "test-client",
 		CACertPath:     caCertPath,
 		AllowPrivateIP: true,
-	}, false)
+	})
 	if err != nil {
 		t.Fatalf("Failed to create token validator: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			AllowPrivateIP: true,
 		}
 
-		validator, err := NewTokenValidator(ctx, config, false)
+		validator, err := NewTokenValidator(ctx, config)
 		if err != nil {
 			t.Fatalf("Failed to create token validator: %v", err)
 		}
@@ -635,7 +635,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			AllowPrivateIP: true,
 		}
 
-		validator, err := NewTokenValidator(ctx, config, false)
+		validator, err := NewTokenValidator(ctx, config)
 		if err != nil {
 			t.Fatalf("Failed to create token validator: %v", err)
 		}
@@ -656,7 +656,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			AllowPrivateIP: true,
 		}
 
-		validator, err := NewTokenValidator(ctx, config, false)
+		validator, err := NewTokenValidator(ctx, config)
 		if err != ErrMissingIssuerAndJWKSURL {
 			t.Errorf("Expected error %v but got %v", ErrMissingIssuerAndJWKSURL, err)
 		}
@@ -674,7 +674,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			// No CA cert or AllowPrivateIP for this test - it should fail
 		}
 
-		validator, err := NewTokenValidator(ctx, config, false)
+		validator, err := NewTokenValidator(ctx, config)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}
@@ -687,4 +687,262 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			t.Errorf("Expected error to wrap %v but got %v", ErrFailedToDiscoverOIDC, err)
 		}
 	})
+}
+
+func TestTokenValidator_OpaqueToken(t *testing.T) {
+	t.Parallel()
+
+	// Create a fake introspection server
+	introspectionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate introspection response for opaque tokens
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("Failed to parse form: %v", err)
+		}
+		token := r.FormValue("token")
+		if token == "valid-opaque-token" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"active": true,
+				"sub":    "opaque-user",
+				"iss":    "opaque-issuer",
+				"aud":    "opaque-audience",
+				"scope":  "read:stuff",
+				"exp":    time.Now().Add(1 * time.Hour).Unix(),
+			})
+		} else {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"active": false,
+			})
+		}
+	}))
+	t.Cleanup(func() {
+		introspectionServer.Close()
+	})
+
+	ctx := context.Background()
+	// Create a token validator that only uses introspection (no JWKS URL)
+	validator := &TokenValidator{
+		introspectURL: introspectionServer.URL,
+		clientID:      "test-client-id",
+		clientSecret:  "test-client-secret",
+		client:        http.DefaultClient,
+		issuer:        "opaque-issuer",
+		audience:      "opaque-audience",
+	}
+
+	t.Run("valid opaque token", func(t *testing.T) {
+		t.Parallel()
+		claims, err := validator.ValidateToken(ctx, "valid-opaque-token")
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+
+		if claims["sub"] != "opaque-user" {
+			t.Errorf("Expected sub=opaque-user, got %v", claims["sub"])
+		}
+		if claims["iss"] != "opaque-issuer" {
+			t.Errorf("Expected iss=opaque-issuer, got %v", claims["iss"])
+		}
+		if claims["aud"] != "opaque-audience" {
+			t.Errorf("Expected aud=opaque-audience, got %v", claims["aud"])
+		}
+	})
+
+	t.Run("inactive opaque token", func(t *testing.T) {
+		t.Parallel()
+		_, err := validator.ValidateToken(ctx, "invalid-opaque-token")
+		if err == nil {
+			t.Fatal("Expected error for inactive token, got nil")
+		}
+		if !errors.Is(err, ErrInvalidToken) {
+			t.Errorf("Expected ErrInvalidToken, got %v", err)
+		}
+	})
+}
+
+func TestNewAuthInfoHandler(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		issuer       string
+		jwksURL      string
+		resourceURL  string
+		scopes       []string
+		method       string
+		origin       string
+		expectStatus int
+		expectBody   bool
+		expectCORS   bool
+	}{
+		{
+			name:         "successful GET request with all parameters",
+			issuer:       "https://auth.example.com",
+			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
+			resourceURL:  "https://api.example.com",
+			scopes:       []string{"read", "write"},
+			method:       "GET",
+			origin:       "https://client.example.com",
+			expectStatus: http.StatusOK,
+			expectBody:   true,
+			expectCORS:   true,
+		},
+		{
+			name:         "successful GET request without origin",
+			issuer:       "https://auth.example.com",
+			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
+			resourceURL:  "https://api.example.com",
+			scopes:       nil, // Test default scopes
+			method:       "GET",
+			origin:       "",
+			expectStatus: http.StatusOK,
+			expectBody:   true,
+			expectCORS:   true,
+		},
+		{
+			name:         "OPTIONS preflight request",
+			issuer:       "https://auth.example.com",
+			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
+			resourceURL:  "https://api.example.com",
+			scopes:       []string{"openid", "profile"},
+			method:       "OPTIONS",
+			origin:       "https://client.example.com",
+			expectStatus: http.StatusNoContent,
+			expectBody:   false,
+			expectCORS:   true,
+		},
+		{
+			name:         "missing resource URL returns 404",
+			issuer:       "https://auth.example.com",
+			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
+			resourceURL:  "",
+			scopes:       []string{"openid"},
+			method:       "GET",
+			origin:       "https://client.example.com",
+			expectStatus: http.StatusNotFound,
+			expectBody:   false,
+			expectCORS:   true,
+		},
+		{
+			name:         "empty issuer and jwksURL with resource URL",
+			issuer:       "",
+			jwksURL:      "",
+			resourceURL:  "https://api.example.com",
+			scopes:       []string{}, // Test empty scopes (should default to openid)
+			method:       "GET",
+			origin:       "https://client.example.com",
+			expectStatus: http.StatusOK,
+			expectBody:   true,
+			expectCORS:   true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create the handler
+			handler := NewAuthInfoHandler(tc.issuer, tc.jwksURL, tc.resourceURL, tc.scopes)
+
+			// Create test request
+			req := httptest.NewRequest(tc.method, "/", nil)
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+
+			// Create response recorder
+			rec := httptest.NewRecorder()
+
+			// Serve the request
+			handler.ServeHTTP(rec, req)
+
+			// Check status code
+			if rec.Code != tc.expectStatus {
+				t.Errorf("Expected status %d but got %d", tc.expectStatus, rec.Code)
+			}
+
+			// Check CORS headers if expected
+			if tc.expectCORS {
+				expectedOrigin := tc.origin
+				if expectedOrigin == "" {
+					expectedOrigin = "*"
+				}
+				if actualOrigin := rec.Header().Get("Access-Control-Allow-Origin"); actualOrigin != expectedOrigin {
+					t.Errorf("Expected Access-Control-Allow-Origin %s but got %s", expectedOrigin, actualOrigin)
+				}
+
+				if allowMethods := rec.Header().Get("Access-Control-Allow-Methods"); allowMethods != "GET, OPTIONS" {
+					t.Errorf("Expected Access-Control-Allow-Methods 'GET, OPTIONS' but got %s", allowMethods)
+				}
+
+				expectedHeaders := "mcp-protocol-version, Content-Type, Authorization"
+				if allowHeaders := rec.Header().Get("Access-Control-Allow-Headers"); allowHeaders != expectedHeaders {
+					t.Errorf("Expected Access-Control-Allow-Headers '%s' but got %s", expectedHeaders, allowHeaders)
+				}
+
+				if maxAge := rec.Header().Get("Access-Control-Max-Age"); maxAge != "86400" {
+					t.Errorf("Expected Access-Control-Max-Age '86400' but got %s", maxAge)
+				}
+			}
+
+			// Check response body if expected
+			if tc.expectBody {
+				var authInfo RFC9728AuthInfo
+				if err := json.NewDecoder(rec.Body).Decode(&authInfo); err != nil {
+					t.Fatalf("Failed to decode response body: %v", err)
+				}
+
+				// Verify the response content
+				if authInfo.Resource != tc.resourceURL {
+					t.Errorf("Expected resource %s but got %s", tc.resourceURL, authInfo.Resource)
+				}
+
+				if tc.issuer != "" {
+					if len(authInfo.AuthorizationServers) != 1 || authInfo.AuthorizationServers[0] != tc.issuer {
+						t.Errorf("Expected authorization servers [%s] but got %v", tc.issuer, authInfo.AuthorizationServers)
+					}
+				} else {
+					if len(authInfo.AuthorizationServers) != 1 || authInfo.AuthorizationServers[0] != "" {
+						t.Errorf("Expected authorization servers [''] but got %v", authInfo.AuthorizationServers)
+					}
+				}
+
+				if authInfo.JWKSURI != tc.jwksURL {
+					t.Errorf("Expected JWKS URI %s but got %s", tc.jwksURL, authInfo.JWKSURI)
+				}
+
+				expectedMethods := []string{"header"}
+				if len(authInfo.BearerMethodsSupported) != len(expectedMethods) {
+					t.Errorf("Expected bearer methods %v but got %v", expectedMethods, authInfo.BearerMethodsSupported)
+				} else {
+					for i, method := range expectedMethods {
+						if authInfo.BearerMethodsSupported[i] != method {
+							t.Errorf("Expected bearer method %s but got %s", method, authInfo.BearerMethodsSupported[i])
+						}
+					}
+				}
+
+				// Determine expected scopes
+				expectedScopes := tc.scopes
+				if len(expectedScopes) == 0 {
+					expectedScopes = []string{"openid"}
+				}
+				if len(authInfo.ScopesSupported) != len(expectedScopes) {
+					t.Errorf("Expected scopes %v but got %v", expectedScopes, authInfo.ScopesSupported)
+				} else {
+					for i, scope := range expectedScopes {
+						if authInfo.ScopesSupported[i] != scope {
+							t.Errorf("Expected scope %s but got %s", scope, authInfo.ScopesSupported[i])
+						}
+					}
+				}
+
+				// Check content type
+				if contentType := rec.Header().Get("Content-Type"); contentType != "application/json" {
+					t.Errorf("Expected Content-Type 'application/json' but got %s", contentType)
+				}
+			}
+		})
+	}
 }

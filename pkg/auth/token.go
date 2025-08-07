@@ -6,13 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -37,18 +40,21 @@ type OIDCDiscoveryDocument struct {
 	TokenEndpoint         string `json:"token_endpoint"`
 	UserinfoEndpoint      string `json:"userinfo_endpoint"`
 	JWKSURI               string `json:"jwks_uri"`
+	IntrospectionEndpoint string `json:"introspection_endpoint"`
 	// Add other fields as needed
 }
 
 // TokenValidator validates JWT or opaque tokens using OIDC configuration.
 type TokenValidator struct {
 	// OIDC configuration
-	issuer            string
-	audience          string
-	jwksURL           string
-	clientID          string
-	jwksClient        *jwk.Cache
-	allowOpaqueTokens bool // Whether to allow opaque tokens (non-JWT)
+	issuer        string
+	audience      string
+	jwksURL       string
+	clientID      string
+	clientSecret  string // Optional client secret for introspection
+	jwksClient    *jwk.Cache
+	introspectURL string       // Optional introspection endpoint
+	client        *http.Client // HTTP client for making requests
 
 	// No need for additional caching as jwk.Cache handles it
 }
@@ -67,8 +73,8 @@ type TokenValidatorConfig struct {
 	// ClientID is the OIDC client ID
 	ClientID string
 
-	// AllowOpaqueTokens indicates whether to allow opaque tokens (non-JWT)
-	AllowOpaqueTokens bool
+	// ClientSecret is the optional OIDC client secret for introspection
+	ClientSecret string
 
 	// CACertPath is the path to the CA certificate bundle for HTTPS requests
 	CACertPath string
@@ -78,6 +84,15 @@ type TokenValidatorConfig struct {
 
 	// AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
 	AllowPrivateIP bool
+
+	// IntrospectionURL is the optional introspection endpoint for validating tokens
+	IntrospectionURL string
+
+	// Store http client with the right config
+	httpClient *http.Client
+
+	// ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)
+	ResourceURL string
 }
 
 // discoverOIDCConfiguration discovers OIDC configuration from the issuer's well-known endpoint
@@ -134,23 +149,23 @@ func discoverOIDCConfiguration(
 }
 
 // NewTokenValidatorConfig creates a new TokenValidatorConfig with the provided parameters
-func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string, allowOpaqueTokens bool) *TokenValidatorConfig {
+func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string, clientSecret string) *TokenValidatorConfig {
 	// Only create a config if at least one parameter is provided
-	if issuer == "" && audience == "" && jwksURL == "" && clientID == "" {
+	if issuer == "" && audience == "" && jwksURL == "" && clientID == "" && clientSecret == "" {
 		return nil
 	}
 
 	return &TokenValidatorConfig{
-		Issuer:            issuer,
-		Audience:          audience,
-		JWKSURL:           jwksURL,
-		ClientID:          clientID,
-		AllowOpaqueTokens: allowOpaqueTokens,
+		Issuer:       issuer,
+		Audience:     audience,
+		JWKSURL:      jwksURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	}
 }
 
 // NewTokenValidator creates a new token validator.
-func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, allowOpaqueTokens bool) (*TokenValidator, error) {
+func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*TokenValidator, error) {
 	jwksURL := config.JWKSURL
 
 	// If JWKS URL is not provided but issuer is, try to discover it
@@ -160,6 +175,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, allowOp
 			return nil, fmt.Errorf("%w: %v", ErrFailedToDiscoverOIDC, err)
 		}
 		jwksURL = doc.JWKSURI
+
 	}
 
 	// Ensure we have a JWKS URL either provided or discovered
@@ -176,6 +192,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, allowOp
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
+	config.httpClient = httpClient
 
 	// Create a new JWKS client with auto-refresh
 	cache := jwk.NewCache(ctx)
@@ -187,12 +204,14 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, allowOp
 	}
 
 	return &TokenValidator{
-		issuer:            config.Issuer,
-		audience:          config.Audience,
-		jwksURL:           jwksURL,
-		clientID:          config.ClientID,
-		jwksClient:        cache,
-		allowOpaqueTokens: allowOpaqueTokens,
+		issuer:        config.Issuer,
+		audience:      config.Audience,
+		jwksURL:       jwksURL,
+		introspectURL: config.IntrospectionURL,
+		clientID:      config.ClientID,
+		clientSecret:  config.ClientSecret,
+		jwksClient:    cache,
+		client:        config.httpClient,
 	}, nil
 }
 
@@ -234,12 +253,14 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 	// Validate the issuer if provided
 	if v.issuer != "" {
-		issuer, err := claims.GetIssuer()
-		if err != nil || issuer != v.issuer {
+		issuerClaim, err := claims.GetIssuer()
+		if err != nil {
+			return fmt.Errorf("failed to get issuer from claims: %w", err)
+		}
+		if strings.TrimSpace(issuerClaim) != strings.TrimSpace(v.issuer) {
 			return ErrInvalidIssuer
 		}
 	}
-
 	// Validate the audience if provided
 	if v.audience != "" {
 		audiences, err := claims.GetAudience()
@@ -269,6 +290,92 @@ func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 	return nil
 }
 
+func parseIntrospectionClaims(r io.Reader) (jwt.MapClaims, error) {
+	var j struct {
+		Active bool                   `json:"active"`
+		Exp    *float64               `json:"exp,omitempty"`
+		Sub    string                 `json:"sub,omitempty"`
+		Aud    interface{}            `json:"aud,omitempty"`
+		Scope  string                 `json:"scope,omitempty"`
+		Iss    string                 `json:"iss,omitempty"`
+		Extra  map[string]interface{} `json:"-"`
+	}
+
+	if err := json.NewDecoder(r).Decode(&j); err != nil {
+		return nil, fmt.Errorf("failed to decode introspection JSON: %w", err)
+	}
+	if !j.Active {
+		return nil, ErrInvalidToken
+	}
+
+	claims := jwt.MapClaims{}
+	if j.Exp != nil {
+		claims["exp"] = *j.Exp
+	}
+	if j.Sub != "" {
+		claims["sub"] = strings.TrimSpace(j.Sub)
+	}
+	if j.Aud != nil {
+		claims["aud"] = j.Aud
+	}
+	if j.Scope != "" {
+		claims["scope"] = strings.TrimSpace(j.Scope)
+	}
+	if j.Iss != "" {
+		claims["iss"] = strings.TrimSpace(j.Iss)
+	}
+	for k, v := range j.Extra {
+		claims[k] = v
+	}
+
+	return claims, nil
+}
+
+func (v *TokenValidator) introspectOpaqueToken(ctx context.Context, tokenStr string) (jwt.MapClaims, error) {
+	if v.introspectURL == "" {
+		return nil, fmt.Errorf("no introspection endpoint available")
+	}
+	form := url.Values{"token": {tokenStr}}
+	form.Set("token_type_hint", "access_token")
+
+	// Build POST request with encoding and required headers
+	req, err := http.NewRequestWithContext(ctx, "POST", v.introspectURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create introspection request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	// if we have client id and secret, add them to the request
+	if v.clientID != "" && v.clientSecret != "" {
+		req.SetBasicAuth(v.clientID, v.clientSecret)
+	}
+
+	resp, err := v.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("introspection call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("introspection unauthorized: %s", resp.Status)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("introspection failed, status %d", resp.StatusCode)
+	}
+
+	claims, err := parseIntrospectionClaims(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate required claims (e.g. exp)
+	if err := v.validateClaims(claims); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
 // ValidateToken validates a token.
 func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) (jwt.MapClaims, error) {
 	// Parse the token
@@ -278,11 +385,12 @@ func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) 
 
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenMalformed) {
-			// just an opaque token, let it run
-			if v.allowOpaqueTokens {
-				return nil, nil
+			// check against introspection endpoint if available
+			claims, err := v.introspectOpaqueToken(ctx, tokenString)
+			if err != nil {
+				return nil, fmt.Errorf("failed to introspect opaque token: %w", err)
 			}
-			return nil, fmt.Errorf("token seems to be opaque, but opaque tokens are not allowed: %w", err)
+			return claims, nil
 		}
 		return nil, fmt.Errorf("failed to parse token: %w", err)
 	}
@@ -345,5 +453,67 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// Add the claims to the request context using a proper key type
 		ctx := context.WithValue(r.Context(), ClaimsContextKey{}, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// RFC9728AuthInfo represents the OAuth Protected Resource metadata as defined in RFC 9728
+type RFC9728AuthInfo struct {
+	Resource               string   `json:"resource"`
+	AuthorizationServers   []string `json:"authorization_servers"`
+	BearerMethodsSupported []string `json:"bearer_methods_supported"`
+	JWKSURI                string   `json:"jwks_uri"`
+	ScopesSupported        []string `json:"scopes_supported"`
+}
+
+// NewAuthInfoHandler creates an HTTP handler that returns RFC-9728 compliant OAuth Protected Resource metadata
+func NewAuthInfoHandler(issuer, jwksURL, resourceURL string, scopes []string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers for all requests
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// Allow all origins if none specified. This should be fine because this is a discovery endpoint.
+			origin = "*"
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		// At least mcp-inspector requires these headers to be set for CORS. It seems to be a little
+		// off since this is a discovery endpoint, but let's make the inspector happy.
+		w.Header().Set("Access-Control-Allow-Headers", "mcp-protocol-version, Content-Type, Authorization")
+		w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// if resourceURL is not set, return 404 as we shouldn't presume a resource URL
+		if resourceURL == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		// Use provided scopes or default to 'openid'
+		supportedScopes := scopes
+		if len(supportedScopes) == 0 {
+			supportedScopes = []string{"openid"}
+		}
+
+		authInfo := RFC9728AuthInfo{
+			Resource:               resourceURL,
+			AuthorizationServers:   []string{issuer},
+			BearerMethodsSupported: []string{"header"},
+			JWKSURI:                jwksURL,
+			ScopesSupported:        supportedScopes,
+		}
+
+		// Set content type
+		w.Header().Set("Content-Type", "application/json")
+
+		// Encode and send the response
+		if err := json.NewEncoder(w).Encode(authInfo); err != nil {
+			logger.Errorf("Failed to encode OAuth discovery response: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 	})
 }

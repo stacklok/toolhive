@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
+	"os"
+	"strings"
 )
 
 const (
@@ -56,4 +59,32 @@ func AddressReferencesPrivateIp(address string) error {
 	}
 
 	return nil
+}
+
+// ValidateEndpointURL validates that an endpoint URL is secure
+func ValidateEndpointURL(endpoint string) error {
+	if strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true") {
+		return nil // Skip validation
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Ensure HTTPS for security (except localhost for development)
+	if u.Scheme != "https" && !IsLocalhost(u.Host) {
+		return fmt.Errorf("endpoint must use HTTPS: %s", endpoint)
+	}
+
+	return nil
+}
+
+// IsLocalhost checks if a host is localhost (for development)
+func IsLocalhost(host string) bool {
+	return strings.HasPrefix(host, "localhost:") ||
+		strings.HasPrefix(host, "127.0.0.1:") ||
+		strings.HasPrefix(host, "[::1]:") ||
+		host == "localhost" ||
+		host == "127.0.0.1" ||
+		host == "[::1]"
 }

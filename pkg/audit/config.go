@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // Config represents the audit logging configuration.
@@ -103,7 +105,7 @@ func (c *Config) ShouldAuditEvent(eventType string) bool {
 }
 
 // CreateMiddleware creates an HTTP middleware from the audit configuration.
-func (c *Config) CreateMiddleware() (func(http.Handler) http.Handler, error) {
+func (c *Config) CreateMiddleware() (types.MiddlewareFunction, error) {
 	auditor, err := NewAuditor(c)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auditor: %w", err)

@@ -214,7 +214,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Update the MCPServer status with the service URL
 	if mcpServer.Status.URL == "" {
-		mcpServer.Status.URL = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", service.Name, service.Namespace, mcpServer.Spec.Port)
+		mcpServer.Status.URL = createServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.Spec.Port)
 		err = r.Status().Update(ctx, mcpServer)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update MCPServer status")
@@ -429,6 +429,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 		oidcArgs := r.generateOIDCArgs(ctx, m)
 		args = append(args, oidcArgs...)
+
+		// Add OAuth discovery resource URL for RFC 9728 compliance
+		resourceURL := createServiceURL(m.Name, m.Namespace, m.Spec.Port)
+		args = append(args, fmt.Sprintf("--resource-url=%s", resourceURL))
 	}
 
 	// Add authorization configuration args
@@ -643,6 +647,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 func createServiceName(mcpServerName string) string {
 	return fmt.Sprintf("mcp-%s-proxy", mcpServerName)
+}
+
+// createServiceURL generates the full cluster-local service URL for an MCP server
+func createServiceURL(mcpServerName, namespace string, port int32) string {
+	serviceName := createServiceName(mcpServerName)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
 }
 
 // serviceForMCPServer returns a MCPServer Service object
@@ -1247,6 +1257,12 @@ func (*MCPServerReconciler) generateKubernetesOIDCArgs(m *mcpv1alpha1.MCPServer)
 		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
 	}
 
+	// Introspection URL (optional - if empty, thv will use OIDC discovery)
+	introspectionURL := config.IntrospectionURL
+	if introspectionURL != "" {
+		args = append(args, fmt.Sprintf("--oidc-introspection-url=%s", introspectionURL))
+	}
+
 	// Add cluster auth flags if enabled (default is true)
 	if useClusterAuth {
 		args = append(args, "--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
@@ -1290,8 +1306,14 @@ func (r *MCPServerReconciler) generateConfigMapOIDCArgs( // nolint:gocyclo
 	if jwksURL, exists := configMap.Data["jwksUrl"]; exists && jwksURL != "" {
 		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
 	}
+	if introspectionURL, exists := configMap.Data["introspectionUrl"]; exists && introspectionURL != "" {
+		args = append(args, fmt.Sprintf("--oidc-introspection-url=%s", introspectionURL))
+	}
 	if clientID, exists := configMap.Data["clientId"]; exists && clientID != "" {
 		args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
+	}
+	if clientSecret, exists := configMap.Data["clientSecret"]; exists && clientSecret != "" {
+		args = append(args, fmt.Sprintf("--oidc-client-secret=%s", clientSecret))
 	}
 	if thvCABundlePath, exists := configMap.Data["thvCABundlePath"]; exists && thvCABundlePath != "" {
 		args = append(args, fmt.Sprintf("--thv-ca-bundle=%s", thvCABundlePath))
@@ -1328,6 +1350,11 @@ func (*MCPServerReconciler) generateInlineOIDCArgs(m *mcpv1alpha1.MCPServer) []s
 	// JWKS URL (optional)
 	if config.JWKSURL != "" {
 		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", config.JWKSURL))
+	}
+
+	// Introspection URL (optional)
+	if config.IntrospectionURL != "" {
+		args = append(args, fmt.Sprintf("--oidc-introspection-url=%s", config.IntrospectionURL))
 	}
 
 	// CA Bundle path (optional)

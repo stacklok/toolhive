@@ -32,7 +32,7 @@ var errBug = errors.New("there's a bug")
 // This middleware is designed to be used ONLY when tool filtering is enabled,
 // and expects the list of tools to be "correct" (i.e. not empty and not
 // containing nonexisting tools).
-func NewToolFilterMiddleware(filterTools []string) (types.Middleware, error) {
+func NewToolFilterMiddleware(filterTools []string) (types.MiddlewareFunction, error) {
 	if len(filterTools) == 0 {
 		return nil, fmt.Errorf("tools list for filtering is empty")
 	}
@@ -73,7 +73,7 @@ func NewToolFilterMiddleware(filterTools []string) (types.Middleware, error) {
 // This middleware is designed to be used ONLY when tool filtering is enabled,
 // and expects the list of tools to be "correct" (i.e. not empty and not
 // containing nonexisting tools).
-func NewToolCallFilterMiddleware(filterTools []string) (types.Middleware, error) {
+func NewToolCallFilterMiddleware(filterTools []string) (types.MiddlewareFunction, error) {
 	if len(filterTools) == 0 {
 		return nil, fmt.Errorf("tools list for filtering is empty")
 	}

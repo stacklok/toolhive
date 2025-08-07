@@ -78,9 +78,10 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --name string                           Name of the MCP server (auto-generated from image if not provided)
       --oidc-audience string                  Expected audience for the token
       --oidc-client-id string                 OIDC client ID
+      --oidc-client-secret string             OIDC client secret (optional, for introspection)
+      --oidc-introspection-url string         URL for token introspection endpoint
       --oidc-issuer string                    OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string                  URL to fetch the JWKS from
-      --oidc-skip-opaque-token-validation     Allow skipping validation of opaque tokens
       --otel-enable-prometheus-metrics-path   Enable Prometheus-style /metrics endpoint on the main transport port
       --otel-endpoint string                  OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
       --otel-env-vars stringArray             Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)
@@ -92,6 +93,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --print-resolved-overlays               Debug: show resolved container paths for tmpfs overlays
       --proxy-mode string                     Proxy mode for stdio transport (sse or streamable-http) (default "sse")
       --proxy-port int                        Port for the HTTP proxy to listen on (host port)
+      --resource-url string                   Explicit resource URL for OAuth discovery endpoint (RFC 9728)
       --secret stringArray                    Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
       --target-host string                    Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")
       --target-port int                       Port for the container to expose (only applicable to SSE or Streamable HTTP transport)

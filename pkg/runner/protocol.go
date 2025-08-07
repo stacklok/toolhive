@@ -32,19 +32,21 @@ func HandleProtocolScheme(
 	serverOrImage string,
 	caCertPath string,
 ) (string, error) {
-	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "")
+	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", false)
 }
 
 // BuildFromProtocolSchemeWithName checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
 // and builds a Docker image for it if needed with a custom image name.
 // If imageName is empty, a default name will be generated.
-// Returns the Docker image name to use and any error encountered.
+// If dryRun is true, returns the Dockerfile content instead of building the image.
+// Returns the Docker image name (or Dockerfile content if dryRun) and any error encountered.
 func BuildFromProtocolSchemeWithName(
 	ctx context.Context,
 	imageManager images.ImageManager,
 	serverOrImage string,
 	caCertPath string,
 	imageName string,
+	dryRun bool,
 ) (string, error) {
 	transportType, packageName, err := parseProtocolScheme(serverOrImage)
 	if err != nil {
@@ -54,6 +56,15 @@ func BuildFromProtocolSchemeWithName(
 	templateData, err := createTemplateData(transportType, packageName, caCertPath)
 	if err != nil {
 		return "", err
+	}
+
+	// If dry-run, just return the Dockerfile content
+	if dryRun {
+		dockerfileContent, err := templates.GetDockerfileTemplate(transportType, templateData)
+		if err != nil {
+			return "", fmt.Errorf("failed to get Dockerfile template: %w", err)
+		}
+		return dockerfileContent, nil
 	}
 
 	return buildImageFromTemplateWithName(ctx, imageManager, transportType, packageName, templateData, imageName)

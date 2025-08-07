@@ -45,13 +45,17 @@ var serveCmd = &cobra.Command{
 			issuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
 			audience := GetStringFlagOrEmpty(cmd, "oidc-audience")
 			jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
+			introspectionURL := GetStringFlagOrEmpty(cmd, "oidc-introspection-url")
 			clientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
+			clientSecret := GetStringFlagOrEmpty(cmd, "oidc-client-secret")
 
 			oidcConfig = &auth.TokenValidatorConfig{
-				Issuer:   issuer,
-				Audience: audience,
-				JWKSURL:  jwksURL,
-				ClientID: clientID,
+				Issuer:           issuer,
+				Audience:         audience,
+				JWKSURL:          jwksURL,
+				IntrospectionURL: introspectionURL,
+				ClientID:         clientID,
+				ClientSecret:     clientSecret,
 			}
 		}
 

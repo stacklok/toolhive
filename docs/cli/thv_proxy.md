@@ -48,10 +48,19 @@ Basic transparent proxy:
 
 	thv proxy my-server --target-uri http://localhost:8080
 
-Proxy with OAuth authentication to remote server:
+Proxy with OIDC authentication to remote server:
 
 	thv proxy my-server --target-uri https://api.example.com \
 	  --remote-auth --remote-auth-issuer https://auth.example.com \
+	  --remote-auth-client-id my-client-id \
+	  --remote-auth-client-secret-file /path/to/secret
+
+Proxy with non-OIDC OAuth authentication to remote server:
+
+	thv proxy my-server --target-uri https://api.example.com \
+	  --remote-auth \
+	  --remote-auth-authorize-url https://auth.example.com/oauth/authorize \
+	  --remote-auth-token-url https://auth.example.com/oauth/token \
 	  --remote-auth-client-id my-client-id \
 	  --remote-auth-client-secret-file /path/to/secret
 
@@ -77,19 +86,23 @@ thv proxy [flags] SERVER_NAME
       --host string                             Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --oidc-audience string                    Expected audience for the token
       --oidc-client-id string                   OIDC client ID
+      --oidc-client-secret string               OIDC client secret (optional, for introspection)
+      --oidc-introspection-url string           URL for token introspection endpoint
       --oidc-issuer string                      OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string                    URL to fetch the JWKS from
-      --oidc-skip-opaque-token-validation       Allow skipping validation of opaque tokens
       --port int                                Port for the HTTP proxy to listen on (host port)
       --remote-auth                             Enable OAuth authentication to remote MCP server
+      --remote-auth-authorize-url string        OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
       --remote-auth-callback-port int           Port for OAuth callback server during remote authentication (default: 8666) (default 8666)
       --remote-auth-client-id string            OAuth client ID for remote server authentication
       --remote-auth-client-secret string        OAuth client secret for remote server authentication (optional for PKCE)
       --remote-auth-client-secret-file string   Path to file containing OAuth client secret (alternative to --remote-auth-client-secret)
       --remote-auth-issuer string               OAuth/OIDC issuer URL for remote server authentication (e.g., https://accounts.google.com)
-      --remote-auth-scopes strings              OAuth scopes to request for remote server authentication (default [openid,profile,email])
+      --remote-auth-scopes strings              OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')
       --remote-auth-skip-browser                Skip opening browser for remote server OAuth flow
       --remote-auth-timeout duration            Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s) (default 30s)
+      --remote-auth-token-url string            OAuth token endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
+      --resource-url string                     Explicit resource URL for OAuth discovery endpoint (RFC 9728)
       --target-uri string                       URI for the target MCP server (e.g., http://localhost:8080) (required)
 ```
 

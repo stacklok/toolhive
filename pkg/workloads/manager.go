@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -21,12 +20,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport/proxy"
 )
 
@@ -37,11 +38,11 @@ import (
 //go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=manager.go Manager
 type Manager interface {
 	// GetWorkload retrieves details of the named workload including its status.
-	GetWorkload(ctx context.Context, workloadName string) (Workload, error)
+	GetWorkload(ctx context.Context, workloadName string) (core.Workload, error)
 	// ListWorkloads retrieves the states of all workloads.
 	// The `listAll` parameter determines whether to include workloads that are not running.
 	// The optional `labelFilters` parameter allows filtering workloads by labels (format: key=value).
-	ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error)
+	ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]core.Workload, error)
 	// DeleteWorkloads deletes the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
@@ -54,7 +55,7 @@ type Manager interface {
 	RunWorkloadDetached(ctx context.Context, runConfig *runner.RunConfig) error
 	// RestartWorkloads restarts the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
-	RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error)
+	RestartWorkloads(ctx context.Context, names []string, foreground bool) (*errgroup.Group, error)
 	// GetLogs retrieves the logs of a container.
 	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
 	// MoveToDefaultGroup moves the specified workloads to the default group by updating the runconfig.
@@ -104,13 +105,13 @@ func NewManagerFromRuntime(runtime rt.Runtime) Manager {
 	}
 }
 
-func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (Workload, error) {
+func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
 	// For the sake of minimizing changes, delegate to the status manager.
 	// Whether this method should still belong to the workload manager is TBD.
 	return d.statuses.GetWorkload(ctx, workloadName)
 }
 
-func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error) {
+func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]core.Workload, error) {
 	// For the sake of minimizing changes, delegate to the status manager.
 	// Whether this method should still belong to the workload manager is TBD.
 	return d.statuses.ListWorkloads(ctx, listAll, labelFilters)
@@ -195,7 +196,6 @@ func validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig) 
 	return nil
 }
 
-//nolint:gocyclo // This function is complex but manageable
 func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *runner.RunConfig) error {
 	// before running, validate the parameters for the workload
 	err := validateSecretParameters(ctx, runConfig)
@@ -223,162 +223,9 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 		logger.Infof("Logging to: %s", logFilePath)
 	}
 
-	// Prepare the command arguments for the detached process
-	// We'll run the same command but with the --foreground flag
-	detachedArgs := []string{"run", "--foreground"}
-
-	// Add all the original flags
-	if runConfig.Transport != "stdio" {
-		detachedArgs = append(detachedArgs, "--transport", string(runConfig.Transport))
-	}
-
-	// Add proxy-mode if set
-	if runConfig.ProxyMode != "" {
-		detachedArgs = append(detachedArgs, "--proxy-mode", runConfig.ProxyMode.String())
-	}
-
-	if runConfig.Debug {
-		detachedArgs = append(detachedArgs, "--debug")
-	}
-
-	if runConfig.IsolateNetwork {
-		detachedArgs = append(detachedArgs, "--isolate-network")
-	}
-
-	// Use Name if available
-	if runConfig.Name != "" {
-		detachedArgs = append(detachedArgs, "--name", runConfig.Name)
-	}
-
-	// Use ContainerName if available
-	if runConfig.ContainerName != "" {
-		detachedArgs = append(detachedArgs, "--name", runConfig.ContainerName)
-	}
-
-	// Add group if specified
-	if runConfig.Group != "" {
-		detachedArgs = append(detachedArgs, "--group", runConfig.Group)
-	}
-
-	if runConfig.Host != "" {
-		detachedArgs = append(detachedArgs, "--host", runConfig.Host)
-	}
-
-	if runConfig.Port != 0 {
-		detachedArgs = append(detachedArgs, "--proxy-port", strconv.Itoa(runConfig.Port))
-	}
-
-	if runConfig.TargetPort != 0 {
-		detachedArgs = append(detachedArgs, "--target-port", strconv.Itoa(runConfig.TargetPort))
-	}
-
-	// Add target host if it's not the default
-	if runConfig.TargetHost != "localhost" {
-		detachedArgs = append(detachedArgs, "--target-host", runConfig.TargetHost)
-	}
-
-	// Pass the permission profile to the detached process
-	if runConfig.PermissionProfile != nil {
-		// We need to create a temporary file for the permission profile
-		permProfilePath, err := runner.CreatePermissionProfileFile(runConfig.BaseName, runConfig.PermissionProfile)
-		if err != nil {
-			logger.Warnf("Warning: Failed to create permission profile file: %v", err)
-		} else {
-			detachedArgs = append(detachedArgs, "--permission-profile", permProfilePath)
-		}
-	}
-
-	// Add environment variables
-	for key, value := range runConfig.EnvVars {
-		detachedArgs = append(detachedArgs, "--env", fmt.Sprintf("%s=%s", key, value))
-	}
-
-	// Add volume mounts if they were provided
-	for _, volume := range runConfig.Volumes {
-		detachedArgs = append(detachedArgs, "--volume", volume)
-	}
-
-	// Add labels if they were provided
-	for key, value := range runConfig.ContainerLabels {
-		// Skip standard ToolHive labels as they will be added automatically
-		if !labels.IsStandardToolHiveLabel(key) {
-			detachedArgs = append(detachedArgs, "--label", fmt.Sprintf("%s=%s", key, value))
-		}
-	}
-
-	// Add secrets if they were provided
-	for _, secret := range runConfig.Secrets {
-		detachedArgs = append(detachedArgs, "--secret", secret)
-	}
-
-	// Add OIDC flags if they were provided
-	if runConfig.OIDCConfig != nil {
-		if runConfig.OIDCConfig.Issuer != "" {
-			detachedArgs = append(detachedArgs, "--oidc-issuer", runConfig.OIDCConfig.Issuer)
-		}
-		if runConfig.OIDCConfig.Audience != "" {
-			detachedArgs = append(detachedArgs, "--oidc-audience", runConfig.OIDCConfig.Audience)
-		}
-		if runConfig.OIDCConfig.JWKSURL != "" {
-			detachedArgs = append(detachedArgs, "--oidc-jwks-url", runConfig.OIDCConfig.JWKSURL)
-		}
-		if runConfig.OIDCConfig.ClientID != "" {
-			detachedArgs = append(detachedArgs, "--oidc-client-id", runConfig.OIDCConfig.ClientID)
-		}
-	}
-
-	// Add authz config if it was provided
-	if runConfig.AuthzConfigPath != "" {
-		detachedArgs = append(detachedArgs, "--authz-config", runConfig.AuthzConfigPath)
-	}
-
-	// Add audit config if it was provided
-	if runConfig.AuditConfigPath != "" {
-		detachedArgs = append(detachedArgs, "--audit-config", runConfig.AuditConfigPath)
-	}
-
-	// Add telemetry flags if telemetry config is provided
-	if runConfig.TelemetryConfig != nil {
-		if runConfig.TelemetryConfig.Endpoint != "" {
-			detachedArgs = append(detachedArgs, "--otel-endpoint", runConfig.TelemetryConfig.Endpoint)
-		}
-		if runConfig.TelemetryConfig.ServiceName != "" {
-			detachedArgs = append(detachedArgs, "--otel-service-name", runConfig.TelemetryConfig.ServiceName)
-		}
-		if runConfig.TelemetryConfig.SamplingRate != 0.1 { // Only add if not default
-			detachedArgs = append(detachedArgs, "--otel-sampling-rate", fmt.Sprintf("%f", runConfig.TelemetryConfig.SamplingRate))
-		}
-		for key, value := range runConfig.TelemetryConfig.Headers {
-			detachedArgs = append(detachedArgs, "--otel-headers", fmt.Sprintf("%s=%s", key, value))
-		}
-		if runConfig.TelemetryConfig.Insecure {
-			detachedArgs = append(detachedArgs, "--otel-insecure")
-		}
-		if runConfig.TelemetryConfig.EnablePrometheusMetricsPath {
-			detachedArgs = append(detachedArgs, "--otel-enable-prometheus-metrics-path")
-		}
-		for _, envVar := range runConfig.TelemetryConfig.EnvironmentVariables {
-			detachedArgs = append(detachedArgs, "--otel-env-vars", envVar)
-		}
-	}
-
-	// Add enable audit flag if audit config is set but no config path is provided
-	if runConfig.AuditConfig != nil && runConfig.AuditConfigPath == "" {
-		detachedArgs = append(detachedArgs, "--enable-audit")
-	}
-
-	if runConfig.ToolsFilter != nil {
-		for _, tool := range runConfig.ToolsFilter {
-			detachedArgs = append(detachedArgs, "--tools", tool)
-		}
-	}
-
-	// Add the image and any arguments
-	detachedArgs = append(detachedArgs, runConfig.Image)
-	if len(runConfig.CmdArgs) > 0 {
-		detachedArgs = append(detachedArgs, "--")
-		detachedArgs = append(detachedArgs, runConfig.CmdArgs...)
-	}
+	// Use the restart command to start the detached process
+	// The config has already been saved to disk, so restart can load it
+	detachedArgs := []string{"restart", runConfig.BaseName, "--foreground"}
 
 	// Create a new command
 	// #nosec G204 - This is safe as execPath is the path to the current binary
@@ -507,7 +354,7 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 				}
 
 				// Delete the saved state if it exists
-				if err := runner.DeleteSavedConfig(childCtx, baseName); err != nil {
+				if err := state.DeleteSavedRunConfig(childCtx, baseName); err != nil {
 					logger.Warnf("Warning: Failed to delete saved state: %v", err)
 				} else {
 					logger.Infof("Saved state for %s removed", baseName)
@@ -536,7 +383,7 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 }
 
 // RestartWorkloads restarts the specified workloads by name.
-func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
+func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string, foreground bool) (*errgroup.Group, error) {
 	// Validate all workload names to prevent path traversal attacks
 	for _, name := range names {
 		if err := validateWorkloadName(name); err != nil {
@@ -611,6 +458,9 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string) (
 				logger.Infof("Container %s stopped", name)
 			}
 
+			if foreground {
+				return d.RunWorkload(ctx, mcpRunner.Config)
+			}
 			return d.RunWorkloadDetached(ctx, mcpRunner.Config)
 		})
 	}
@@ -653,16 +503,17 @@ func removeClientConfigurations(containerName string) error {
 
 // loadRunnerFromState attempts to load a Runner from the state store
 func (d *defaultManager) loadRunnerFromState(ctx context.Context, baseName string) (*runner.Runner, error) {
-	// Load the runner from the state store
-	r, err := runner.LoadState(ctx, baseName)
+	// Load the run config from the state store
+	runConfig, err := runner.LoadState(ctx, baseName)
 	if err != nil {
 		return nil, err
 	}
 
 	// Update the runtime in the loaded configuration
-	r.Config.Deployer = d.runtime
+	runConfig.Deployer = d.runtime
 
-	return r, nil
+	// Create a new runner with the loaded configuration
+	return runner.NewRunner(runConfig), nil
 }
 
 func needSecretsPassword(secretOptions []string) bool {
@@ -679,7 +530,7 @@ func needSecretsPassword(secretOptions []string) bool {
 // cleanupTempPermissionProfile cleans up temporary permission profile files for a given base name
 func (*defaultManager) cleanupTempPermissionProfile(ctx context.Context, baseName string) error {
 	// Try to load the saved configuration to get the permission profile path
-	r, err := runner.LoadState(ctx, baseName)
+	runConfig, err := runner.LoadState(ctx, baseName)
 	if err != nil {
 		// If we can't load the state, there's nothing to clean up
 		logger.Debugf("Could not load state for %s, skipping permission profile cleanup: %v", baseName, err)
@@ -687,8 +538,8 @@ func (*defaultManager) cleanupTempPermissionProfile(ctx context.Context, baseNam
 	}
 
 	// Clean up the temporary permission profile if it exists
-	if r.Config.PermissionProfileNameOrPath != "" {
-		if err := runner.CleanupTempPermissionProfile(r.Config.PermissionProfileNameOrPath); err != nil {
+	if runConfig.PermissionProfileNameOrPath != "" {
+		if err := runner.CleanupTempPermissionProfile(runConfig.PermissionProfileNameOrPath); err != nil {
 			return fmt.Errorf("failed to cleanup temporary permission profile: %v", err)
 		}
 	}
@@ -776,8 +627,8 @@ func validateWorkloadName(name string) error {
 	return nil
 }
 
-// RemoveFromGroup removes the specified workloads from the given group by updating the runconfig.
-func (d *defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error {
+// MoveToDefaultGroup moves the specified workloads to the default group by updating their runconfig.
+func (*defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error {
 	for _, workloadName := range workloadNames {
 		// Validate workload name
 		if err := validateWorkloadName(workloadName); err != nil {
@@ -785,23 +636,23 @@ func (d *defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames [
 		}
 
 		// Load the runner state to check and update the configuration
-		runnerInstance, err := d.loadRunnerFromState(ctx, workloadName)
+		runnerConfig, err := runner.LoadState(ctx, workloadName)
 		if err != nil {
 			return fmt.Errorf("failed to load runner state for workload %s: %w", workloadName, err)
 		}
 
 		// Check if the workload is actually in the specified group
-		if runnerInstance.Config.Group != groupName {
+		if runnerConfig.Group != groupName {
 			logger.Debugf("Workload %s is not in group %s (current group: %s), skipping",
-				workloadName, groupName, runnerInstance.Config.Group)
+				workloadName, groupName, runnerConfig.Group)
 			continue
 		}
 
 		// Move the workload to the default group
-		runnerInstance.Config.Group = groups.DefaultGroup
+		runnerConfig.Group = groups.DefaultGroup
 
 		// Save the updated configuration
-		if err := runnerInstance.SaveState(ctx); err != nil {
+		if err = runnerConfig.SaveState(ctx); err != nil {
 			return fmt.Errorf("failed to save updated configuration for workload %s: %w", workloadName, err)
 		}
 

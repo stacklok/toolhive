@@ -8,19 +8,23 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // ClientRoutes defines the routes for the client API.
 type ClientRoutes struct {
-	manager client.Manager
+	clientManager   client.Manager
+	workloadManager workloads.Manager
 }
 
 // ClientRouter creates a new router for the client API.
 func ClientRouter(
 	manager client.Manager,
+	workloadManager workloads.Manager,
 ) http.Handler {
 	routes := ClientRoutes{
-		manager: manager,
+		clientManager:   manager,
+		workloadManager: workloadManager,
 	}
 
 	r := chi.NewRouter()
@@ -41,7 +45,7 @@ func ClientRouter(
 //	@Success		200	{array}	client.Client
 //	@Router			/api/v1beta/clients [get]
 func (c *ClientRoutes) listClients(w http.ResponseWriter, _ *http.Request) {
-	clients, err := c.manager.ListClients()
+	clients, err := c.clientManager.ListClients()
 	if err != nil {
 		logger.Errorf("Failed to list clients: %v", err)
 		http.Error(w, "Failed to list clients", http.StatusInternalServerError)
@@ -76,9 +80,17 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = c.manager.RegisterClients(r.Context(), []client.Client{
+	// Fetch running workloads to register with the client
+	runningWorkloads, err := c.workloadManager.ListWorkloads(r.Context(), false)
+	if err != nil {
+		logger.Errorf("Failed to list running workloads: %v", err)
+		http.Error(w, "Failed to list running workloads", http.StatusInternalServerError)
+		return
+	}
+
+	err = c.clientManager.RegisterClients([]client.Client{
 		{Name: newClient.Name},
-	})
+	}, runningWorkloads)
 	if err != nil {
 		logger.Errorf("Failed to register client: %v", err)
 		http.Error(w, "Failed to register client", http.StatusInternalServerError)
@@ -109,7 +121,7 @@ func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	err := c.manager.UnregisterClients(r.Context(), []client.Client{
+	err := c.clientManager.UnregisterClients(r.Context(), []client.Client{
 		{Name: client.MCPClient(clientName)},
 	})
 	if err != nil {
@@ -151,7 +163,15 @@ func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Reques
 		clients[i] = client.Client{Name: name}
 	}
 
-	err = c.manager.RegisterClients(r.Context(), clients)
+	// Fetch running workloads to register with the clients
+	runningWorkloads, err := c.workloadManager.ListWorkloads(r.Context(), false)
+	if err != nil {
+		logger.Errorf("Failed to list running workloads: %v", err)
+		http.Error(w, "Failed to list running workloads", http.StatusInternalServerError)
+		return
+	}
+
+	err = c.clientManager.RegisterClients(clients, runningWorkloads)
 	if err != nil {
 		logger.Errorf("Failed to register clients: %v", err)
 		http.Error(w, "Failed to register clients", http.StatusInternalServerError)
@@ -200,7 +220,7 @@ func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Requ
 		clients[i] = client.Client{Name: name}
 	}
 
-	err = c.manager.UnregisterClients(r.Context(), clients)
+	err = c.clientManager.UnregisterClients(r.Context(), clients)
 	if err != nil {
 		logger.Errorf("Failed to unregister clients: %v", err)
 		http.Error(w, "Failed to unregister clients", http.StatusInternalServerError)

@@ -13,6 +13,7 @@ import (
 	"github.com/gofrs/flock"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -89,8 +90,8 @@ func (f *fileStatusManager) CreateWorkloadStatus(ctx context.Context, workloadNa
 }
 
 // GetWorkload retrieves the status of a workload by its name.
-func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string) (Workload, error) {
-	result := Workload{Name: workloadName}
+func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
+	result := core.Workload{Name: workloadName}
 	fileFound := false
 
 	err := f.withFileReadLock(ctx, workloadName, func(statusFilePath string) error {
@@ -114,7 +115,7 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		return nil
 	})
 	if err != nil {
-		return Workload{}, err
+		return core.Workload{}, err
 	}
 
 	// If file was found and workload is running, get additional info from runtime
@@ -122,7 +123,7 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		// TODO: Find discrepancies between the file and runtime workload.
 		runtimeResult, err := f.getWorkloadFromRuntime(ctx, workloadName)
 		if err != nil {
-			return Workload{}, err
+			return core.Workload{}, err
 		}
 		// Use runtime data but preserve file-based status info
 		fileStatus := result.Status
@@ -144,7 +145,7 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 	return f.getWorkloadFromRuntime(ctx, workloadName)
 }
 
-func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]Workload, error) {
+func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error) {
 	// Parse the filters into a format we can use for matching.
 	parsedFilters, err := parseLabelFilters(labelFilters)
 	if err != nil {
@@ -170,7 +171,7 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 	}
 
 	// Create result map to avoid duplicates and merge data
-	workloadMap := make(map[string]Workload)
+	workloadMap := make(map[string]core.Workload)
 
 	// First, add all runtime workloads
 	for _, container := range runtimeContainers {
@@ -198,7 +199,7 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 	}
 
 	// Convert map to slice and apply filters
-	var workloads []Workload
+	var workloads []core.Workload
 	for _, workload := range workloadMap {
 		// Apply listAll filter
 		if !listAll && workload.Status != rt.WorkloadStatusRunning {
@@ -386,17 +387,17 @@ func (*fileStatusManager) writeStatusFile(statusFilePath string, statusFile work
 }
 
 // getWorkloadFromRuntime retrieves workload information from the runtime.
-func (f *fileStatusManager) getWorkloadFromRuntime(ctx context.Context, workloadName string) (Workload, error) {
+func (f *fileStatusManager) getWorkloadFromRuntime(ctx context.Context, workloadName string) (core.Workload, error) {
 	info, err := f.runtime.GetWorkloadInfo(ctx, workloadName)
 	if err != nil {
-		return Workload{}, fmt.Errorf("failed to get workload info from runtime: %w", err)
+		return core.Workload{}, fmt.Errorf("failed to get workload info from runtime: %w", err)
 	}
 
 	return WorkloadFromContainerInfo(&info)
 }
 
 // getWorkloadsFromFiles retrieves all workloads from status files.
-func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]Workload, error) {
+func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, error) {
 	// Ensure base directory exists
 	if err := f.ensureBaseDir(); err != nil {
 		return nil, fmt.Errorf("failed to ensure base directory: %w", err)
@@ -408,7 +409,7 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]Workload, error)
 		return nil, fmt.Errorf("failed to list status files: %w", err)
 	}
 
-	workloads := make(map[string]Workload)
+	workloads := make(map[string]core.Workload)
 	for _, file := range files {
 		// Extract workload name from filename (remove .json extension)
 		workloadName := strings.TrimSuffix(filepath.Base(file), ".json")
@@ -421,7 +422,7 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]Workload, error)
 		}
 
 		// Create workload from file data
-		workload := Workload{
+		workload := core.Workload{
 			Name:          workloadName,
 			Status:        statusFile.Status,
 			StatusContext: statusFile.StatusContext,

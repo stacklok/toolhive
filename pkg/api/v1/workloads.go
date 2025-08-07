@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/core"
 	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -122,7 +123,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 //	@Tags			workloads
 //	@Produce		json
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		200		{object}	workloads.Workload
+//	@Success		200		{object}	core.Workload
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [get]
 func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +195,8 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
-	_, err := s.workloadManager.RestartWorkloads(ctx, []string{name})
+	// Note: In the API, we always assume that the restart is a background operation
+	_, err := s.workloadManager.RestartWorkloads(ctx, []string{name}, false)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -303,6 +305,12 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if err := runConfig.SaveState(ctx); err != nil {
+		logger.Errorf("Failed to save workload config: %v", err)
+		http.Error(w, "Failed to save workload config", http.StatusInternalServerError)
+		return
+	}
+
 	// Start workload with specified RunConfig.
 	err = s.workloadManager.RunWorkloadDetached(ctx, runConfig)
 	if err != nil {
@@ -401,7 +409,8 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
-	_, err = s.workloadManager.RestartWorkloads(ctx, workloadNames)
+	// Note: In the API, we always assume that the restart is a background operation.
+	_, err = s.workloadManager.RestartWorkloads(ctx, workloadNames, false)
 	if err != nil {
 		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -506,8 +515,8 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
-	// Load the saved run configuration using the runner package
-	runnerInstance, err := runner.LoadState(ctx, name)
+	// Load the saved run configuration
+	runConfig, err := runner.LoadState(ctx, name)
 	if err != nil {
 		if thverrors.IsRunConfigNotFound(err) {
 			http.Error(w, "Workload configuration not found", http.StatusNotFound)
@@ -520,7 +529,7 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 
 	// Return the configuration as JSON
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(runnerInstance.Config); err != nil {
+	if err := json.NewEncoder(w).Encode(runConfig); err != nil {
 		logger.Errorf("Failed to encode workload configuration: %v", err)
 		http.Error(w, "Failed to encode workload configuration", http.StatusInternalServerError)
 		return
@@ -534,7 +543,7 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 //	@Description	Response containing a list of workloads
 type workloadListResponse struct {
 	// List of container information for each workload
-	Workloads []workloads.Workload `json:"workloads"`
+	Workloads []core.Workload `json:"workloads"`
 }
 
 // createRequest represents the request to create a new workload

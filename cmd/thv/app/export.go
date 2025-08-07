@@ -37,7 +37,7 @@ func exportCmdFunc(cmd *cobra.Command, args []string) error {
 	outputPath := args[1]
 
 	// Load the saved run configuration
-	runnerInstance, err := runner.LoadState(ctx, workloadName)
+	runConfig, err := runner.LoadState(ctx, workloadName)
 	if err != nil {
 		return fmt.Errorf("failed to load run configuration for workload '%s': %w", workloadName, err)
 	}
@@ -57,7 +57,7 @@ func exportCmdFunc(cmd *cobra.Command, args []string) error {
 	defer outputFile.Close()
 
 	// Write the configuration to the file
-	if err := runnerInstance.Config.WriteJSON(outputFile); err != nil {
+	if err := runConfig.WriteJSON(outputFile); err != nil {
 		return fmt.Errorf("failed to write configuration to file: %w", err)
 	}
 

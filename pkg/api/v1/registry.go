@@ -2,10 +2,12 @@ package v1
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 )
@@ -28,6 +30,7 @@ func RegistryRouter(provider registry.Provider) http.Handler {
 	r.Get("/", routes.listRegistries)
 	r.Post("/", routes.addRegistry)
 	r.Get("/{name}", routes.getRegistry)
+	r.Put("/{name}", routes.updateRegistry)
 	r.Delete("/{name}", routes.removeRegistry)
 
 	// Add nested routes for servers within a registry
@@ -116,6 +119,93 @@ func (routes *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request
 		LastUpdated: reg.LastUpdated,
 		ServerCount: len(reg.Servers),
 		Registry:    reg,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		logger.Errorf("Failed to encode response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+}
+
+//	 updateRegistry
+//
+//		@Summary		Update registry configuration
+//		@Description	Update registry URL or local path for the default registry
+//		@Tags			registry
+//		@Accept			json
+//		@Produce		json
+//		@Param			name	path		string					true	"Registry name (must be 'default')"
+//		@Param			body	body		UpdateRegistryRequest	true	"Registry configuration"
+//		@Success		200		{object}	UpdateRegistryResponse
+//		@Failure		400		{string}	string	"Bad Request"
+//		@Failure		404		{string}	string	"Not Found"
+//		@Router			/api/v1beta/registry/{name} [put]
+func (*RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+
+	// Only "default" registry can be updated currently
+	if name != defaultRegistryName {
+		http.Error(w, "Registry not found", http.StatusNotFound)
+		return
+	}
+
+	var req UpdateRegistryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate that only one of URL or LocalPath is provided
+	if req.URL != nil && req.LocalPath != nil {
+		http.Error(w, "Cannot specify both URL and local path", http.StatusBadRequest)
+		return
+	}
+
+	var responseType string
+	var message string
+
+	// Handle reset to default (no URL or LocalPath specified)
+	if req.URL == nil && req.LocalPath == nil {
+		if err := config.UnsetRegistry(); err != nil {
+			logger.Errorf("Failed to unset registry: %v", err)
+			http.Error(w, "Failed to reset registry configuration", http.StatusInternalServerError)
+			return
+		}
+		responseType = "default"
+		message = "Registry configuration reset to default"
+	} else if req.URL != nil {
+		// Handle URL update
+		allowPrivateIP := false
+		if req.AllowPrivateIP != nil {
+			allowPrivateIP = *req.AllowPrivateIP
+		}
+
+		if err := config.SetRegistryURL(*req.URL, allowPrivateIP); err != nil {
+			logger.Errorf("Failed to set registry URL: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to set registry URL: %v", err), http.StatusBadRequest)
+			return
+		}
+		responseType = "url"
+		message = fmt.Sprintf("Successfully set registry URL: %s", *req.URL)
+	} else if req.LocalPath != nil {
+		// Handle local path update
+		if err := config.SetRegistryFile(*req.LocalPath); err != nil {
+			logger.Errorf("Failed to set registry file: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to set registry file: %v", err), http.StatusBadRequest)
+			return
+		}
+		responseType = "file"
+		message = fmt.Sprintf("Successfully set local registry file: %s", *req.LocalPath)
+	}
+
+	// Reset the default provider to pick up configuration changes
+	registry.ResetDefaultProvider()
+
+	response := UpdateRegistryResponse{
+		Message: message,
+		Type:    responseType,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -275,4 +365,26 @@ type listServersResponse struct {
 type getServerResponse struct {
 	// Server details
 	Server *registry.ImageMetadata `json:"server"`
+}
+
+// UpdateRegistryRequest represents the request for updating a registry
+//
+//	@Description	Request containing registry configuration updates
+type UpdateRegistryRequest struct {
+	// Registry URL (for remote registries)
+	URL *string `json:"url,omitempty"`
+	// Local registry file path
+	LocalPath *string `json:"local_path,omitempty"`
+	// Allow private IP addresses for registry URL
+	AllowPrivateIP *bool `json:"allow_private_ip,omitempty"`
+}
+
+// UpdateRegistryResponse represents the response for updating a registry
+//
+//	@Description	Response containing update result
+type UpdateRegistryResponse struct {
+	// Status message
+	Message string `json:"message"`
+	// Registry type after update
+	Type string `json:"type"`
 }

@@ -13,8 +13,8 @@ import (
 	context "context"
 	reflect "reflect"
 
+	core "github.com/stacklok/toolhive/pkg/core"
 	runner "github.com/stacklok/toolhive/pkg/runner"
-	workloads "github.com/stacklok/toolhive/pkg/workloads"
 	gomock "go.uber.org/mock/gomock"
 	errgroup "golang.org/x/sync/errgroup"
 )
@@ -74,10 +74,10 @@ func (mr *MockManagerMockRecorder) GetLogs(ctx, containerName, follow any) *gomo
 }
 
 // GetWorkload mocks base method.
-func (m *MockManager) GetWorkload(ctx context.Context, workloadName string) (workloads.Workload, error) {
+func (m *MockManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetWorkload", ctx, workloadName)
-	ret0, _ := ret[0].(workloads.Workload)
+	ret0, _ := ret[0].(core.Workload)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -89,14 +89,14 @@ func (mr *MockManagerMockRecorder) GetWorkload(ctx, workloadName any) *gomock.Ca
 }
 
 // ListWorkloads mocks base method.
-func (m *MockManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]workloads.Workload, error) {
+func (m *MockManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]core.Workload, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{ctx, listAll}
 	for _, a := range labelFilters {
 		varargs = append(varargs, a)
 	}
 	ret := m.ctrl.Call(m, "ListWorkloads", varargs...)
-	ret0, _ := ret[0].([]workloads.Workload)
+	ret0, _ := ret[0].([]core.Workload)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -123,18 +123,18 @@ func (mr *MockManagerMockRecorder) MoveToDefaultGroup(ctx, workloadNames, groupN
 }
 
 // RestartWorkloads mocks base method.
-func (m *MockManager) RestartWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
+func (m *MockManager) RestartWorkloads(ctx context.Context, names []string, foreground bool) (*errgroup.Group, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "RestartWorkloads", ctx, names)
+	ret := m.ctrl.Call(m, "RestartWorkloads", ctx, names, foreground)
 	ret0, _ := ret[0].(*errgroup.Group)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // RestartWorkloads indicates an expected call of RestartWorkloads.
-func (mr *MockManagerMockRecorder) RestartWorkloads(ctx, names any) *gomock.Call {
+func (mr *MockManagerMockRecorder) RestartWorkloads(ctx, names, foreground any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RestartWorkloads", reflect.TypeOf((*MockManager)(nil).RestartWorkloads), ctx, names)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RestartWorkloads", reflect.TypeOf((*MockManager)(nil).RestartWorkloads), ctx, names, foreground)
 }
 
 // RunWorkload mocks base method.

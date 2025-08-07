@@ -49,7 +49,10 @@ func (m *manager) Create(ctx context.Context, name string) error {
 		return thverrors.NewGroupAlreadyExistsError(fmt.Sprintf("group '%s' already exists", name), nil)
 	}
 
-	group := &Group{Name: name}
+	group := &Group{
+		Name:              name,
+		RegisteredClients: []string{},
+	}
 	return m.saveGroup(ctx, group)
 }
 
@@ -105,7 +108,7 @@ func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
 
 // GetWorkloadGroup returns the group that a workload belongs to, if any
 func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error) {
-	runnerInstance, err := runner.LoadState(ctx, workloadName)
+	runConfig, err := runner.LoadState(ctx, workloadName)
 	if err != nil {
 		if thverrors.IsRunConfigNotFound(err) {
 			return nil, nil
@@ -114,12 +117,12 @@ func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*G
 	}
 
 	// If the workload has no group, return nil
-	if runnerInstance.Config.Group == "" {
+	if runConfig.Group == "" {
 		return nil, nil
 	}
 
 	// Get the group details
-	return m.Get(ctx, runnerInstance.Config.Group)
+	return m.Get(ctx, runConfig.Group)
 }
 
 // ListWorkloadsInGroup returns all workload names that belong to the specified group
@@ -135,19 +138,41 @@ func (m *manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([
 
 	for _, workloadName := range workloadNames {
 		// Load the workload
-		runnerInstance, err := runner.LoadState(ctx, workloadName)
+		runConfig, err := runner.LoadState(ctx, workloadName)
 		if err != nil {
 			logger.Warnf("Failed to load workload %s: %v", workloadName, err)
 			continue
 		}
 
 		// Check if this workload belongs to the specified group
-		if runnerInstance.Config.Group == groupName {
+		if runConfig.Group == groupName {
 			groupWorkloads = append(groupWorkloads, workloadName)
 		}
 	}
 
 	return groupWorkloads, nil
+}
+
+// RegisterClient registers a client with the group
+func (m *manager) RegisterClient(ctx context.Context, groupName, clientName string) error {
+	// Get the existing group
+	group, err := m.Get(ctx, groupName)
+	if err != nil {
+		return fmt.Errorf("failed to get group %s: %w", groupName, err)
+	}
+
+	// Check if client is already registered
+	for _, existingClient := range group.RegisteredClients {
+		if existingClient == clientName {
+			return fmt.Errorf("client '%s' is already registered with group '%s'", clientName, groupName)
+		}
+	}
+
+	// Add the client to the group
+	group.RegisteredClients = append(group.RegisteredClients, clientName)
+
+	// Save the updated group
+	return m.saveGroup(ctx, group)
 }
 
 // saveGroup saves the group to the group state store

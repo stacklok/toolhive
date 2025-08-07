@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -16,9 +17,9 @@ type StatusManager interface {
 	// but will do nothing if the workload already exists.
 	CreateWorkloadStatus(ctx context.Context, workloadName string) error
 	// GetWorkload retrieves details of a workload by its name.
-	GetWorkload(ctx context.Context, workloadName string) (Workload, error)
+	GetWorkload(ctx context.Context, workloadName string) (core.Workload, error)
 	// ListWorkloads returns details of all workloads.
-	ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]Workload, error)
+	ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error)
 	// SetWorkloadStatus sets the status of a workload by its name.
 	// Note that this does not return errors, but logs them instead.
 	// This method will do nothing if the workload does not exist.
@@ -47,21 +48,21 @@ func (*runtimeStatusManager) CreateWorkloadStatus(_ context.Context, workloadNam
 	return nil
 }
 
-func (r *runtimeStatusManager) GetWorkload(ctx context.Context, workloadName string) (Workload, error) {
+func (r *runtimeStatusManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
 	if err := validateWorkloadName(workloadName); err != nil {
-		return Workload{}, err
+		return core.Workload{}, err
 	}
 
 	info, err := r.runtime.GetWorkloadInfo(ctx, workloadName)
 	if err != nil {
 		// The error from the runtime is already wrapped in context.
-		return Workload{}, err
+		return core.Workload{}, err
 	}
 
 	return WorkloadFromContainerInfo(&info)
 }
 
-func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]Workload, error) {
+func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error) {
 	// List containers
 	containers, err := r.runtime.ListWorkloads(ctx)
 	if err != nil {
@@ -75,7 +76,7 @@ func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, 
 	}
 
 	// Filter containers to only show those managed by ToolHive
-	var workloads []Workload
+	var workloads []core.Workload
 	for _, c := range containers {
 		// If the caller did not set `listAll` to true, only include running containers.
 		if c.IsRunning() || listAll {

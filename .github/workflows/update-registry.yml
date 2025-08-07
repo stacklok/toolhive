@@ -45,8 +45,8 @@ jobs:
       - name: Update registry
         id: update
         run: |
-          # Run regup with the specified count
-          ./bin/regup update --count ${{ steps.set-count.outputs.count }}
+          # Run regup with the specified count and provenance verification
+          ./bin/regup update --count ${{ steps.set-count.outputs.count }} --verify-provenance
           
           # Check if there are changes
           if git diff --exit-code pkg/registry/data/registry.json; then
@@ -55,6 +55,9 @@ jobs:
           else
             echo "changes=true" >> $GITHUB_OUTPUT
             echo "Changes detected in the registry"
+            # Log what changed for debugging
+            git diff --name-only --diff-filter=M pkg/registry/data/registry.json || true
+            git diff --stat pkg/registry/data/registry.json || true
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -64,12 +67,14 @@ jobs:
         uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "Update registry with latest stars and pulls"
-          title: "Update registry with latest stars and pulls"
+          commit-message: "Refresh registry data - pulls, stars, etc."
+          title: "Refresh registry data - pulls, stars, etc."
           body: |
-            This PR updates the registry with the latest GitHub stars and pulls information.
+            This PR refreshes the registry with the latest GitHub stars and pulls information.
             
-            The update was performed automatically by the `regup` command.
+            The update was performed automatically by the `regup` command with provenance verification enabled.
+
+            ** Note: Any servers that failed provenance verification have been automatically removed from the registry. **
           branch: update-registry
           base: main
           delete-branch: true

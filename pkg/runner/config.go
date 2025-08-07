@@ -18,8 +18,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -153,84 +153,6 @@ func NewRunConfig() *RunConfig {
 		ContainerLabels: make(map[string]string),
 		EnvVars:         make(map[string]string),
 	}
-}
-
-// NewRunConfigFromFlags creates a new RunConfig with values from command-line flags
-func NewRunConfigFromFlags(
-	ctx context.Context,
-	runtime rt.Deployer,
-	cmdArgs []string,
-	name string,
-	imageURL string,
-	imageMetadata *registry.ImageMetadata,
-	host string,
-	debug bool,
-	volumes []string,
-	secretsList []string,
-	authzConfigPath string,
-	auditConfigPath string,
-	enableAudit bool,
-	permissionProfile string,
-	targetHost string,
-	mcpTransport string,
-	port int,
-	targetPort int,
-	envVars []string,
-	runLabels []string,
-	oidcIssuer string,
-	oidcAudience string,
-	oidcJwksURL string,
-	oidcClientID string,
-	oidcAllowOpaqueTokens bool,
-	otelEndpoint string,
-	otelServiceName string,
-	otelSamplingRate float64,
-	otelHeaders []string,
-	otelInsecure bool,
-	otelEnablePrometheusMetricsPath bool,
-	otelEnvironmentVariables []string,
-	isolateNetwork bool,
-	k8sPodPatch string,
-	thvCABundle string,
-	jwksAuthTokenFile string,
-	jwksAllowPrivateIP bool,
-	envVarValidator EnvVarValidator,
-	proxyMode types.ProxyMode,
-	groupName string,
-	toolsFilter []string,
-	ignoreGlobally bool,
-	printOverlays bool,
-) (*RunConfig, error) {
-	return NewRunConfigBuilder().
-		WithRuntime(runtime).
-		WithCmdArgs(cmdArgs).
-		WithName(name).
-		WithImage(imageURL).
-		WithHost(host).
-		WithTargetHost(targetHost).
-		WithDebug(debug).
-		WithVolumes(volumes).
-		WithSecrets(secretsList).
-		WithAuthzConfigPath(authzConfigPath).
-		WithAuditConfigPath(auditConfigPath).
-		WithPermissionProfileNameOrPath(permissionProfile).
-		WithNetworkIsolation(isolateNetwork).
-		WithK8sPodPatch(k8sPodPatch).
-		WithProxyMode(proxyMode).
-		WithTransportAndPorts(mcpTransport, port, targetPort).
-		WithAuditEnabled(enableAudit, auditConfigPath).
-		WithLabels(runLabels).
-		WithGroup(groupName).
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
-			thvCABundle, jwksAuthTokenFile, jwksAllowPrivateIP).
-		WithTelemetryConfig(otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
-			otelSamplingRate, otelHeaders, otelInsecure, otelEnvironmentVariables).
-		WithToolsFilter(toolsFilter).
-		WithIgnoreConfig(&ignore.Config{
-			LoadGlobal:    ignoreGlobally,
-			PrintOverlays: printOverlays,
-		}).
-		Build(ctx, imageMetadata, envVars, envVarValidator)
 }
 
 // WithAuthz adds authorization configuration to the RunConfig
@@ -379,4 +301,40 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 	// Use the Group field from the RunConfig
 	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port)
 	return c
+}
+
+// SaveState saves the run configuration to the state store
+func (c *RunConfig) SaveState(ctx context.Context) error {
+	// Create a state store
+	store, err := state.NewRunConfigStore(state.DefaultAppName)
+	if err != nil {
+		return fmt.Errorf("failed to create state store: %w", err)
+	}
+
+	// Get a writer for the state
+	writer, err := store.GetWriter(ctx, c.BaseName)
+	if err != nil {
+		return fmt.Errorf("failed to get writer for state: %w", err)
+	}
+	defer writer.Close()
+
+	// Serialize the configuration to JSON and write it directly to the state store
+	if err := c.WriteJSON(writer); err != nil {
+		return fmt.Errorf("failed to write run configuration: %w", err)
+	}
+
+	logger.Infof("Saved run configuration for %s", c.BaseName)
+	return nil
+}
+
+// LoadState loads a run configuration from the state store
+func LoadState(ctx context.Context, name string) (*RunConfig, error) {
+	reader, err := state.LoadRunConfigJSON(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	// Deserialize the configuration
+	return ReadJSON(reader)
 }

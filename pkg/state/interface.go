@@ -11,13 +11,6 @@ import (
 
 // Store defines the interface for runner state storage operations
 type Store interface {
-	// Save stores the data for the given name from the provided reader
-	Save(ctx context.Context, name string, r io.Reader) error
-
-	// Load retrieves the data for the given name and writes it to the provided writer
-	// Returns an error if the state doesn't exist
-	Load(ctx context.Context, name string, w io.Writer) error
-
 	// GetReader returns a reader for the state data
 	// This is useful for streaming large state data
 	GetReader(ctx context.Context, name string) (io.ReadCloser, error)

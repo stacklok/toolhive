@@ -180,7 +180,7 @@ func createOAuthConfigFromOIDCWithClient(
 		return nil, fmt.Errorf("failed to discover OIDC endpoints: %w", err)
 	}
 
-	// Default scopes if none provided
+	// Default scopes for OIDC if none provided
 	if len(scopes) == 0 {
 		scopes = []string{"openid", "profile", "email"}
 	}

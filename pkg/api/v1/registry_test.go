@@ -60,7 +60,7 @@ func TestGetRegistryInfo(t *testing.T) {
 
 	// Setup temporary config to avoid modifying user's real config
 	cleanup := MockConfig(t, nil)
-	defer cleanup()
+	t.Cleanup(cleanup)
 
 	tests := []struct {
 		name           string

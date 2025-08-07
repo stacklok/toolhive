@@ -59,7 +59,7 @@ func getCurrentProvider(w http.ResponseWriter) (registry.Provider, bool) {
 type RegistryRoutes struct{}
 
 // RegistryRouter creates a new router for the registry API.
-func RegistryRouter(_ registry.Provider) http.Handler {
+func RegistryRouter() http.Handler {
 	routes := RegistryRoutes{}
 
 	r := chi.NewRouter()

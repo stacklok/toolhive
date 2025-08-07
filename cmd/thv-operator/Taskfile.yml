@@ -2,8 +2,8 @@ version: '3'
 
 vars:
   CRD_DIR: config/crd/bases
-  DOCS_OUT: ../../docs/operator/crd-api.md
-  CRDREF_CONFIG: ../../docs/operator/crd-ref-config.yaml
+  DOCS_OUT: docs/operator/crd-api.md
+  CRDREF_CONFIG: docs/operator/crd-ref-config.yaml
 
 tasks:
   kind-setup:
@@ -16,7 +16,10 @@ tasks:
     desc: Destroy a local Kind cluster
     cmds:
       - kind delete cluster --name toolhive
-      - rm kconfig.yaml
+      - cmd: rm kconfig.yaml
+        platforms: [linux, darwin]
+      - cmd: cmd.exe /c "del kconfig.yaml"
+        platforms: [windows]
 
   kind-ingress-setup:
     desc: Setup Nginx Ingress Controller in a local Kind cluster
@@ -55,11 +58,17 @@ tasks:
         sh: git describe --tags --always --dirty || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
-      BUILD_DATE:
-        sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
     cmds:
-      - mkdir -p bin
-      - go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/thv-operator ./cmd/thv-operator
+      - cmd: mkdir -p bin
+        platforms: [linux, darwin]
+      - cmd: go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/thv-operator ./cmd/thv-operator
+        platforms: [linux, darwin]
+      - cmd: cmd.exe /c mkdir bin
+        platforms: [windows]
+        ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
+      - cmd: go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/thv-operator.exe ./cmd/thv-operator
+        platforms: [windows]
 
   install-operator:
     desc: Install the thv-operator binary to GOPATH/bin
@@ -68,8 +77,7 @@ tasks:
         sh: git describe --tags --always --dirty || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
-      BUILD_DATE:
-        sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
     cmds:
       - go install -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv-operator
 
@@ -95,6 +103,7 @@ tasks:
 
   operator-deploy-local:
     desc: Build the ToolHive runtime and Operator image locally and deploy it to the K8s cluster
+    platforms: [linux, darwin]
     vars:
       OPERATOR_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
@@ -123,14 +132,22 @@ tasks:
   operator-generate:
     desc: Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations
     cmds:
-      - mkdir -p bin
+      - cmd: mkdir -p bin
+        platforms: [linux, darwin]
+      - cmd: cmd.exe /c mkdir bin
+        platforms: [windows]
+        ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
       - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
       - $(go env GOPATH)/bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./cmd/thv-operator/..."
 
   operator-manifests:
     desc: Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects
     cmds:
-      - mkdir -p bin
+      - cmd: mkdir -p bin
+        platforms: [linux, darwin]
+      - cmd: cmd.exe /c mkdir bin
+        platforms: [windows]
+        ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
       - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
       - $(go env GOPATH)/bin/controller-gen crd webhook paths="./cmd/thv-operator/..." output:crd:artifacts:config=deploy/charts/operator-crds/templates
       - $(go env GOPATH)/bin/controller-gen rbac:roleName=toolhive-operator-manager-role paths="./cmd/thv-operator/..." output:rbac:artifacts:config=deploy/charts/operator/templates/clusterrole

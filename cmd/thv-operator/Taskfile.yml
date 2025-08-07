@@ -2,8 +2,9 @@ version: '3'
 
 vars:
   CRD_DIR: config/crd/bases
-  DOCS_OUT: docs/operator/crd-api.md
-  CRDREF_CONFIG: docs/operator/crd-ref-config.yaml
+  # Don't change the following 2 paths - they fail locally, but are needed for CI in Github
+  DOCS_OUT: ../../docs/operator/crd-api.md
+  CRDREF_CONFIG: ../../docs/operator/crd-ref-config.yaml
 
 tasks:
   kind-setup:

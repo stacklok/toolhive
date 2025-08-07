@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/adrg/xdg"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,6 +29,7 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 	// Save original XDG_CONFIG_HOME
 	originalXDGConfigHome := os.Getenv("XDG_CONFIG_HOME")
 	t.Setenv("XDG_CONFIG_HOME", tempDir)
+	xdg.Reload()
 
 	// Create the config directory structure
 	configDir := filepath.Join(tempDir, "toolhive")

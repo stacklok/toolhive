@@ -427,7 +427,7 @@ type getRegistryResponse struct {
 //
 //	@Description	Response containing a list of servers
 type listServersResponse struct {
-	// List of registries
+	// List of servers in the registry
 	Servers []*registry.ImageMetadata `json:"servers"`
 }
 

@@ -32,7 +32,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -165,12 +164,6 @@ func Serve(
 	containerRuntime, err := container.NewFactory().Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
-	}
-
-	// Create registry provider
-	registryProvider, err := registry.GetDefaultProvider()
-	if err != nil {
-		return fmt.Errorf("failed to create registry provider: %v", err)
 	}
 
 	clientManager, err := client.NewManager(ctx)

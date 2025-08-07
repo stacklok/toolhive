@@ -666,6 +666,13 @@ components:
       - TransportTypeSSE
       - TransportTypeStreamableHTTP
       - TransportTypeInspector
+    v1.RegistryType:
+      description: Type of registry (file, url, or default)
+      type: string
+      x-enum-varnames:
+      - RegistryTypeFile
+      - RegistryTypeURL
+      - RegistryTypeDefault
     v1.UpdateRegistryRequest:
       description: Request containing registry configuration updates
       properties:
@@ -909,6 +916,16 @@ components:
         server_count:
           description: Number of servers in the registry
           type: integer
+        source:
+          description: Source of the registry (URL, file path, or "default")
+          type: string
+        type:
+          description: Type of registry (file, url, or default)
+          type: string
+          x-enum-varnames:
+          - RegistryTypeFile
+          - RegistryTypeURL
+          - RegistryTypeDefault
         version:
           description: Version of the registry schema
           type: string
@@ -954,7 +971,7 @@ components:
       description: Response containing a list of servers
       properties:
         servers:
-          description: List of servers in the registry
+          description: List of registries
           items:
             $ref: '#/components/schemas/registry.ImageMetadata'
           type: array
@@ -1013,6 +1030,11 @@ components:
         server_count:
           description: Number of servers in the registry
           type: integer
+        source:
+          description: Source of the registry (URL, file path, or "default")
+          type: string
+        type:
+          $ref: '#/components/schemas/v1.RegistryType'
         version:
           description: Version of the registry schema
           type: string

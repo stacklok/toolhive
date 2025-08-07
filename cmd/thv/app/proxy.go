@@ -149,6 +149,9 @@ func init() {
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
 		logger.Warnf("Warning: Failed to mark flag as required: %v", err)
 	}
+
+	// Attach the subcommand to the main proxy command
+	proxyCmd.AddCommand(proxyTunnelCmd)
 }
 
 func proxyCmdFunc(cmd *cobra.Command, args []string) error {

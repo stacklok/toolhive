@@ -25,20 +25,22 @@ const (
 	RegistryTypeFile RegistryType = "file"
 	// RegistryTypeURL represents a remote URL registry
 	RegistryTypeURL RegistryType = "url"
+	// RegistryTypeDefault represents a built-in registry
+	RegistryTypeDefault RegistryType = "default"
 )
 
-// getRegistryTypeInfo returns the registry type and whether it's custom
-func getRegistryTypeInfo() (RegistryType, bool) {
-	_, _, _, registryType := config.GetRegistryConfig()
+// getRegistryInfo returns the registry type and the source
+func getRegistryInfo() (RegistryType, string) {
+	url, localPath, _, registryType := config.GetRegistryConfig()
 
 	switch registryType {
 	case "url":
-		return RegistryTypeURL, true
+		return RegistryTypeURL, url
 	case "file":
-		return RegistryTypeFile, true
+		return RegistryTypeFile, localPath
 	default:
-		// Default embedded registry
-		return RegistryTypeFile, false
+		// Default built-in registry
+		return RegistryTypeDefault, "default"
 	}
 }
 
@@ -81,16 +83,16 @@ func (routes *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Requ
 		return
 	}
 
-	registryType, isCustom := getRegistryTypeInfo()
+	registryType, source := getRegistryInfo()
 
 	registries := []registryInfo{
 		{
-			Name:         defaultRegistryName,
-			Version:      reg.Version,
-			LastUpdated:  reg.LastUpdated,
-			ServerCount:  len(reg.Servers),
-			RegistryType: registryType,
-			IsCustom:     isCustom,
+			Name:        defaultRegistryName,
+			Version:     reg.Version,
+			LastUpdated: reg.LastUpdated,
+			ServerCount: len(reg.Servers),
+			Type:        registryType,
+			Source:      source,
 		},
 	}
 
@@ -142,16 +144,16 @@ func (routes *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	registryType, isCustom := getRegistryTypeInfo()
+	registryType, source := getRegistryInfo()
 
 	response := getRegistryResponse{
-		Name:         defaultRegistryName,
-		Version:      reg.Version,
-		LastUpdated:  reg.LastUpdated,
-		ServerCount:  len(reg.Servers),
-		RegistryType: registryType,
-		IsCustom:     isCustom,
-		Registry:     reg,
+		Name:        defaultRegistryName,
+		Version:     reg.Version,
+		LastUpdated: reg.LastUpdated,
+		ServerCount: len(reg.Servers),
+		Type:        registryType,
+		Source:      source,
+		Registry:    reg,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -358,10 +360,10 @@ type registryInfo struct {
 	LastUpdated string `json:"last_updated"`
 	// Number of servers in the registry
 	ServerCount int `json:"server_count"`
-	// Type of registry (file or url)
-	RegistryType RegistryType `json:"registry_type"`
-	// Whether this is a custom registry (not the default embedded one)
-	IsCustom bool `json:"isCustom"`
+	// Type of registry (file, url, or default)
+	Type RegistryType `json:"type"`
+	// Source of the registry (URL, file path, or "default")
+	Source string `json:"source"`
 }
 
 // registryListResponse represents the response for listing registries
@@ -384,10 +386,10 @@ type getRegistryResponse struct {
 	LastUpdated string `json:"last_updated"`
 	// Number of servers in the registry
 	ServerCount int `json:"server_count"`
-	// Type of registry (file or url)
-	RegistryType RegistryType `json:"registry_type"`
-	// Whether this is a custom registry (not the default embedded one)
-	IsCustom bool `json:"isCustom"`
+	// Type of registry (file, url, or default)
+	Type RegistryType `json:"type"`
+	// Source of the registry (URL, file path, or "default")
+	Source string `json:"source"`
 	// Full registry data
 	Registry *registry.Registry `json:"registry"`
 }
@@ -396,7 +398,7 @@ type getRegistryResponse struct {
 //
 //	@Description	Response containing a list of servers
 type listServersResponse struct {
-	// List of servers in the registry
+	// List of registries
 	Servers []*registry.ImageMetadata `json:"servers"`
 }
 

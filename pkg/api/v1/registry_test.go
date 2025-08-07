@@ -54,6 +54,7 @@ func TestRegistryRouter(t *testing.T) {
 	assert.NotNil(t, router)
 }
 
+//nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
 func TestGetRegistryInfo(t *testing.T) {
 	logger.Initialize()
 

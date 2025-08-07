@@ -4,6 +4,25 @@ vars:
   CRD_DIR: config/crd/bases
   DOCS_OUT: ../../docs/operator/crd-api.md
   CRDREF_CONFIG: ../../docs/operator/crd-ref-config.yaml
+  OCP_REGISTRY_ROUTE:
+    sh: |
+      if command -v oc >/dev/null 2>&1; then
+        oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null || echo ""
+      else
+        echo ""
+      fi
+  OCP_PROJECT: '{{.OCP_PROJECT | default "toolhive-system"}}'
+  OCP_INSECURE_REGISTRY: '{{.OCP_INSECURE_REGISTRY | default "false"}}'
+  CONTAINER_RUNTIME:
+    sh: |
+      if command -v podman >/dev/null 2>&1; then
+        echo "podman"
+      elif command -v docker >/dev/null 2>&1; then
+        echo "docker"
+      else
+        echo "docker"
+      fi
+
 
 tasks:
   kind-setup:
@@ -171,3 +190,47 @@ tasks:
       - 'api/**/*.go'
     generates:
       - '{{ .DOCS_OUT }}'
+
+  ocp-setup-registry-sa:
+    desc: Create registry-pusher service account with required permissions
+    cmds:
+      - |
+        if ! command -v oc >/dev/null 2>&1; then
+          echo "Error: 'oc' command not found. Please install the OpenShift CLI."
+          exit 1
+        fi
+      - oc create serviceaccount registry-pusher -n {{.OCP_PROJECT}} || echo "ServiceAccount registry-pusher already exists"
+      - oc policy add-role-to-user system:image-builder system:serviceaccount:{{.OCP_PROJECT}}:registry-pusher -n {{.OCP_PROJECT}} || echo "Role already assigned"
+      - echo "ServiceAccount registry-pusher created/verified with image-builder permissions"
+
+  ocp-registry-login:
+    desc: Login to OpenShift registry using detected container runtime ({{.CONTAINER_RUNTIME}})
+    deps: [ocp-setup-registry-sa]
+    cmds:
+      - |
+        if [ -z "{{.OCP_REGISTRY_ROUTE}}" ]; then
+          echo "Error: OCP_REGISTRY_ROUTE is empty. Please ensure 'oc' is installed and you're connected to an OpenShift cluster."
+          exit 1
+        fi
+        TOKEN=$(oc create token registry-pusher -n {{.OCP_PROJECT}} --duration=24h)
+        {{.CONTAINER_RUNTIME}} login -u serviceaccount -p $TOKEN {{.OCP_REGISTRY_ROUTE}}
+
+  ocp-build-and-push:
+    desc: Build ToolHive and Operator images and push them to OpenShift registry
+    cmds:
+      - task: ocp-registry-login
+      - echo "Building and pushing toolhive operator image to {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}..."
+      - KO_DOCKER_REPO={{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}} ko build --push --base-import-paths {{if eq .OCP_INSECURE_REGISTRY "true"}}--insecure-registry{{end}} ./cmd/thv-operator
+      - echo "Building and pushing toolhive proxy runner image to {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}..."
+      - KO_DOCKER_REPO={{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}} ko build --push --base-import-paths {{if eq .OCP_INSECURE_REGISTRY "true"}}--insecure-registry{{end}} ./cmd/thv-proxyrunner
+      - echo "Images pushed successfully to {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}"
+
+  ocp-verify-push:
+    desc: Verify images were pushed successfully to OpenShift registry
+    cmds:
+      - echo "Checking image streams in project {{.OCP_PROJECT}}..."
+      - oc get is -n {{.OCP_PROJECT}}
+      - echo "Describing thv-operator image stream..."
+      - oc describe is thv-operator -n {{.OCP_PROJECT}} || echo "thv-operator image stream not found"
+      - echo "Describing thv-proxyrunner image stream..."
+      - oc describe is thv-proxyrunner -n {{.OCP_PROJECT}} || echo "thv-proxyrunner image stream not found"

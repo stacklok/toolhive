@@ -27,8 +27,6 @@ func TestRegistryRouter(t *testing.T) {
 }
 
 func TestRegistryAPI_TypeAndSourceFields(t *testing.T) {
-	t.Parallel()
-
 	logger.Initialize()
 
 	tests := []struct {
@@ -130,8 +128,6 @@ func TestRegistryAPI_TypeAndSourceFields(t *testing.T) {
 }
 
 func TestRegistryAPI_CacheInvalidation(t *testing.T) {
-	t.Parallel()
-
 	logger.Initialize()
 
 	t.Run("cache invalidation after PUT", func(t *testing.T) {
@@ -191,8 +187,6 @@ func TestRegistryAPI_CacheInvalidation(t *testing.T) {
 }
 
 func TestGetRegistryInfo(t *testing.T) {
-	t.Parallel()
-
 	logger.Initialize()
 
 	tests := []struct {

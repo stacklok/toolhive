@@ -175,6 +175,10 @@ type Config struct {
 	// If provided, it will be exposed at /metrics on the transport's HTTP server.
 	PrometheusHandler http.Handler
 
+	// AuthInfoHandler is an optional HTTP handler for authentication information endpoint.
+	// If provided, it will be exposed at /.well-known/oauth-protected-resource on the transport's HTTP server.
+	AuthInfoHandler http.Handler
+
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode ProxyMode
 }

@@ -86,6 +86,8 @@ var (
 	proxyPort      int
 	proxyTargetURI string
 
+	resourceURL string // Explicit resource URL for OAuth discovery endpoint (RFC 9728)
+
 	// Remote server authentication flags
 	remoteAuthIssuer           string
 	remoteAuthClientID         string
@@ -125,6 +127,9 @@ func init() {
 
 	// Add OIDC validation flags
 	AddOIDCFlags(proxyCmd)
+
+	proxyCmd.Flags().StringVar(&resourceURL, "resource-url", "",
+		"Explicit resource URL for OAuth discovery endpoint (RFC 9728)")
 
 	// Add remote server authentication flags
 	proxyCmd.Flags().BoolVar(&enableRemoteAuth, "remote-auth", false, "Enable OAuth authentication to remote MCP server")
@@ -215,11 +220,12 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 			IntrospectionURL: introspectionURL,
 			ClientID:         clientID,
 			ClientSecret:     clientSecret,
+			ResourceURL:      resourceURL,
 		}
 	}
 
 	// Get authentication middleware for incoming requests
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
@@ -236,7 +242,11 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		port, proxyTargetURI)
 
 	// Create the transparent proxy with middlewares
-	proxy := transparent.NewTransparentProxy(proxyHost, port, serverName, proxyTargetURI, nil, false, middlewares...)
+	proxy := transparent.NewTransparentProxy(
+		proxyHost, port, serverName, proxyTargetURI,
+		nil, authInfoHandler,
+		false,
+		middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %v", err)
 	}

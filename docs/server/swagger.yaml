@@ -71,6 +71,10 @@ components:
         jwksurl:
           description: JWKSURL is the URL to fetch the JWKS from
           type: string
+        resourceURL:
+          description: ResourceURL is the explicit resource URL for OAuth discovery
+            (RFC 9728)
+          type: string
       type: object
     authz.CedarConfig:
       description: |-

@@ -93,6 +93,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --print-resolved-overlays               Debug: show resolved container paths for tmpfs overlays
       --proxy-mode string                     Proxy mode for stdio transport (sse or streamable-http) (default "sse")
       --proxy-port int                        Port for the HTTP proxy to listen on (host port)
+      --resource-url string                   Explicit resource URL for OAuth discovery endpoint (RFC 9728)
       --secret stringArray                    Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
       --target-host string                    Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")
       --target-port int                       Port for the container to expose (only applicable to SSE or Streamable HTTP transport)

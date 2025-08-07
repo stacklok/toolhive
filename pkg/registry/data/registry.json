@@ -976,6 +976,49 @@
       ],
       "transport": "stdio"
     },
+    "context7": {
+      "args": [],
+      "description": "Context7 MCP pulls up-to-date, version-specific documentation and code examples straight from the source — and places them directly into your prompt",
+      "env_vars": [],
+      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.14",
+      "metadata": {
+        "last_updated": "2025-08-07T00:24:17Z",
+        "pulls": 1,
+        "stars": 24500
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [
+              443
+            ],
+            "insecure_allow_all": true
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/release.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
+      "repository_url": "https://github.com/stacklok/dockyard",
+      "status": "Active",
+      "tags": [
+        "documentation",
+        "modelcontextprotocol"
+      ],
+      "tier": "Community",
+      "tools": [
+        "resolve-library-id",
+        "get-library-docs"
+      ],
+      "transport": "stdio"
+    },
     "firecrawl": {
       "args": [],
       "description": "A powerful web scraping and content extraction MCP server that provides advanced crawling, search, and structured data extraction capabilities with LLM integration.",

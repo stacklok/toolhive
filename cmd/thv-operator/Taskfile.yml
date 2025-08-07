@@ -234,3 +234,14 @@ tasks:
       - oc describe is thv-operator -n {{.OCP_PROJECT}} || echo "thv-operator image stream not found"
       - echo "Describing thv-proxyrunner image stream..."
       - oc describe is thv-proxyrunner -n {{.OCP_PROJECT}} || echo "thv-proxyrunner image stream not found"
+
+  ocp-deploy-operator:
+    desc: Deploy ToolHive Operator to OpenShift using locally built images
+    cmds:
+      - |
+        helm upgrade --install toolhive-operator deploy/charts/operator \
+        --set operator.image=image-registry.openshift-image-registry.svc:5000/{{.OCP_PROJECT}}/thv-operator:latest \
+        --set operator.toolhiveRunnerImage=image-registry.openshift-image-registry.svc:5000/{{.OCP_PROJECT}}/thv-proxyrunner:latest \
+        --namespace {{.OCP_PROJECT}} \
+        --create-namespace \
+        {{ .CLI_ARGS }}

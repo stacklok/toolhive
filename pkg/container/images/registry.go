@@ -9,7 +9,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/daemon"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
@@ -62,7 +62,7 @@ func (r *RegistryImageManager) ImageExists(_ context.Context, imageName string) 
 
 // PullImage pulls an image from a registry and saves it to the local daemon
 func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) error {
-	logger.Infof("Pulling image: %s", imageName)
+	logger.Infof("Pulling1 image: %s", imageName)
 
 	// Parse the image reference
 	ref, err := name.ParseReference(imageName)

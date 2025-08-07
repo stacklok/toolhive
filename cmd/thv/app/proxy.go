@@ -154,6 +154,13 @@ func init() {
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
 		logger.Warnf("Warning: Failed to mark flag as required: %v", err)
 	}
+
+	proxyStdioCmd.Flags().StringVar(&stdioWorkloadName, "workload-name", "", "Workload name for the proxy (required)")
+	_ = proxyStdioCmd.MarkFlagRequired("workload-name")
+
+	// Attach the subcommand to the main proxy command
+	proxyCmd.AddCommand(proxyStdioCmd)
+
 }
 
 func proxyCmdFunc(cmd *cobra.Command, args []string) error {

@@ -391,7 +391,7 @@ type registryInfo struct {
 	ServerCount int `json:"server_count"`
 	// Type of registry (file, url, or default)
 	Type RegistryType `json:"type"`
-	// Source of the registry (URL, file path, or "default")
+	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
 }
 
@@ -417,7 +417,7 @@ type getRegistryResponse struct {
 	ServerCount int `json:"server_count"`
 	// Type of registry (file, url, or default)
 	Type RegistryType `json:"type"`
-	// Source of the registry (URL, file path, or "default")
+	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
 	// Full registry data
 	Registry *registry.Registry `json:"registry"`

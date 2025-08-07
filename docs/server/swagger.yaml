@@ -917,7 +917,8 @@ components:
           description: Number of servers in the registry
           type: integer
         source:
-          description: Source of the registry (URL, file path, or "default")
+          description: Source of the registry (URL, file path, or empty string for
+            built-in)
           type: string
         type:
           description: Type of registry (file, url, or default)
@@ -1031,7 +1032,8 @@ components:
           description: Number of servers in the registry
           type: integer
         source:
-          description: Source of the registry (URL, file path, or "default")
+          description: Source of the registry (URL, file path, or empty string for
+            built-in)
           type: string
         type:
           $ref: '#/components/schemas/v1.RegistryType'

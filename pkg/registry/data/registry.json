@@ -86,7 +86,7 @@
           "required": false
         }
       ],
-      "image": "ghcr.io/sooperset/mcp-atlassian:latest",
+      "image": "ghcr.io/sooperset/mcp-atlassian:0.11.9@sha256:45167f17be9311919a5266443d1efb2cc2bc20d27deb4786ecc64bc27f223862",
       "metadata": {
         "last_updated": "2025-08-08T00:24:01Z",
         "pulls": 12189,
@@ -203,7 +203,7 @@
           "required": false
         }
       ],
-      "image": "public.ecr.aws/f3y8w4n0/awslabs/cost-analysis-mcp-server:1.0.4",
+      "image": "public.ecr.aws/f3y8w4n0/awslabs/cost-analysis-mcp-server:1.0.4@sha256:e4040281340a8326b8b17ddb40df5410e545c5394154265cd3204c9a5cf476a5",
       "metadata": {
         "last_updated": "2025-08-08T00:24:07Z",
         "pulls": 7923,
@@ -261,7 +261,7 @@
           "required": false
         }
       ],
-      "image": "mcp/aws-diagram:latest",
+      "image": "docker.io/mcp/aws-diagram:latest@sha256:fab8719351d79cea7989f0a096539ea97f293a7abcd1173722bb5a4c7b48011e",
       "metadata": {
         "last_updated": "2025-08-08T00:24:07Z",
         "pulls": 6988,
@@ -313,7 +313,7 @@
           "required": false
         }
       ],
-      "image": "mcp/aws-documentation:latest",
+      "image": "docker.io/mcp/aws-documentation:latest@sha256:9398764c2f1ba80bfd2b9131cd6c940a52002417dea904c904c0c5a73aa87b34",
       "metadata": {
         "last_updated": "2025-08-08T00:24:06Z",
         "pulls": 9683,
@@ -386,7 +386,7 @@
           "required": false
         }
       ],
-      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:latest",
+      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.8@sha256:c7b3710bd0fe5706467532f3c5988c4e6375dd0bce0d14f8fb80c63f648a9e49",
       "metadata": {
         "last_updated": "2025-08-08T00:24:02Z",
         "pulls": 7735,
@@ -474,7 +474,7 @@
           "required": false
         }
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.1",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.1@sha256:374a48038c85d866e7aba7c6e9df50d75f7e495815ce8734406530eaa1ec7f02",
       "metadata": {
         "last_updated": "2025-08-08T00:24:01Z",
         "pulls": 1203,
@@ -566,7 +566,7 @@
           "required": false
         }
       ],
-      "image": "ghcr.io/buildkite/buildkite-mcp-server:latest",
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.5.8@sha256:8b782f6cc798a082ac84f6e9772c321ca6234ce326f63cc2672cba6a64b749fe",
       "metadata": {
         "last_updated": "2025-08-08T00:24:06Z",
         "pulls": 2782,
@@ -667,7 +667,7 @@
           "required": false
         }
       ],
-      "image": "quay.io/crowdstrike/falcon-mcp:latest",
+      "image": "quay.io/crowdstrike/falcon-mcp:latest@sha256:2fc7e6b688c9ee2e659c3638794f392501a16f5c3e940fe9d3a92e3a4b3590b7",
       "metadata": {
         "last_updated": "2025-08-08T00:24:07Z",
         "pulls": 3033,
@@ -783,7 +783,7 @@
           "required": false
         }
       ],
-      "image": "mcp/elasticsearch:latest",
+      "image": "docker.io/mcp/elasticsearch:latest@sha256:9c978b8277e32be0229e0c2f5c631e4106dd1c9c955ec361814588688582bcfd",
       "metadata": {
         "last_updated": "2025-08-08T00:24:05Z",
         "pulls": 10269,
@@ -830,7 +830,7 @@
       "args": [],
       "description": "This MCP server attempts to exercise all the features of the MCP protocol",
       "env_vars": [],
-      "image": "mcp/everything:latest",
+      "image": "docker.io/mcp/everything:latest@sha256:330885a0c4b2eed6f0cd3aae0f0b37152ccdf2852e2f6af6d616a5d5c1e9817d",
       "metadata": {
         "last_updated": "2025-08-08T00:24:05Z",
         "pulls": 16161,
@@ -877,7 +877,7 @@
       "args": [],
       "description": "Allows you to fetch content from the web",
       "env_vars": [],
-      "image": "ghcr.io/stackloklabs/gofetch/server:latest",
+      "image": "ghcr.io/stackloklabs/gofetch/server:0.0.4@sha256:f046d82df38a2a0d39d78bc5cb07942a1a06de752170d541564ef6f3281ecbdf",
       "metadata": {
         "last_updated": "2025-08-08T00:24:08Z",
         "pulls": 11958,
@@ -929,7 +929,7 @@
       ],
       "description": "Allows you to do filesystem operations. Mount paths under /projects using --volume.",
       "env_vars": [],
-      "image": "mcp/filesystem:latest",
+      "image": "docker.io/mcp/filesystem:latest@sha256:35fcf0217ca0d5bf7b0a5bd68fb3b89e08174676c0e0b4f431604512cf7b3f67",
       "metadata": {
         "last_updated": "2025-08-08T00:24:03Z",
         "pulls": 19761,
@@ -1022,7 +1022,7 @@
           "required": false
         }
       ],
-      "image": "mcp/firecrawl:latest",
+      "image": "docker.io/mcp/firecrawl:latest@sha256:f8dee5dd3e2c17dfd92e399d884d17ce51bc308bf8eb5f7cb225cf69bb96edad",
       "metadata": {
         "last_updated": "2025-08-08T00:24:01Z",
         "pulls": 11990,
@@ -1076,7 +1076,7 @@
       "args": [],
       "description": "A comprehensive MCP server for database operations that provides tools for connecting to and interacting with various database systems with advanced features like connection pooling, authentication, and observability. Mount and configured via tools.yaml",
       "env_vars": [],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:latest",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.11.0@sha256:9fe992aa5bdf8c7e5bf5adea020e625720f831c2c8ac3c2aaffd7bfa8a2c64dd",
       "metadata": {
         "last_updated": "2025-08-08T00:24:03Z",
         "pulls": 1892,
@@ -1120,7 +1120,7 @@
       "args": [],
       "description": "Provides support for interacting with Git repositories",
       "env_vars": [],
-      "image": "mcp/git:latest",
+      "image": "docker.io/mcp/git:latest@sha256:ad6af958e79466a14b895891e772fdda28fdc12c06fff4a70637b66773303a2c",
       "metadata": {
         "last_updated": "2025-08-08T00:24:04Z",
         "pulls": 9960,
@@ -1183,7 +1183,7 @@
           "required": false
         }
       ],
-      "image": "ghcr.io/github/github-mcp-server:latest",
+      "image": "ghcr.io/github/github-mcp-server:v0.10.0@sha256:634fed5e94587a8b151e0b3457c92f196c1b61466ef890e0675ca40288a2efcc",
       "metadata": {
         "last_updated": "2025-08-08T00:24:02Z",
         "pulls": 5000,
@@ -1325,7 +1325,7 @@
           "secret": true
         }
       ],
-      "image": "mcp/grafana:latest",
+      "image": "docker.io/mcp/grafana:latest@sha256:eed87b13099db25e7da34cea2261a0811fde827dab0fcf375ee67d74dabea23b",
       "metadata": {
         "last_updated": "2025-08-08T00:24:06Z",
         "pulls": 7700,
@@ -1424,7 +1424,7 @@
           "secret": true
         }
       ],
-      "image": "voska/hass-mcp:latest",
+      "image": "docker.io/voska/hass-mcp:0.1.1@sha256:f5d4f810564d03603069afceccdb0b26f821f9389909ea0cc8f9e80b7d34a6e9",
       "metadata": {
         "last_updated": "2025-08-08T00:24:06Z",
         "pulls": 16206,
@@ -1481,7 +1481,7 @@
           "required": false
         }
       ],
-      "image": "ghcr.io/stackloklabs/mkp/server:latest",
+      "image": "ghcr.io/stackloklabs/mkp/server:0.0.10@sha256:75de76e6f518431e9ad774d474d37c782aa82aa2603019d7309680e14620b261",
       "metadata": {
         "last_updated": "2025-08-08T00:24:04Z",
         "pulls": 13184,
@@ -1538,7 +1538,7 @@
           "required": false
         }
       ],
-      "image": "ghcr.io/nirmata/kyverno-mcp:latest",
+      "image": "ghcr.io/nirmata/kyverno-mcp:v0.2.2@sha256:ca4def123c98612a58114ab20ff7b21defc5db2df420b3b1156a2ba5088359fd",
       "metadata": {
         "last_updated": "2025-08-08T00:24:00Z",
         "pulls": 4154,
@@ -1598,7 +1598,7 @@
           "required": false
         }
       ],
-      "image": "mcp/memory:latest",
+      "image": "docker.io/mcp/memory:latest@sha256:db0c2db07a44b6797eba7a832b1bda142ffc899588aae82c92780cbb2252407f",
       "metadata": {
         "last_updated": "2025-08-08T00:24:01Z",
         "pulls": 15164,
@@ -1700,7 +1700,7 @@
           "required": false
         }
       ],
-      "image": "mongodb/mongodb-mcp-server:latest",
+      "image": "docker.io/mongodb/mongodb-mcp-server:0.2.0@sha256:b5225eb6dc123d66ac83fe748b57ddb98a48d632ea69036f8a0ad012db905249",
       "metadata": {
         "last_updated": "2025-08-08T00:24:01Z",
         "pulls": 4508,
@@ -1791,7 +1791,7 @@
           "required": false
         }
       ],
-      "image": "aantti/mcp-netbird:latest",
+      "image": "docker.io/aantti/mcp-netbird:latest",
       "metadata": {
         "last_updated": "2025-08-08T00:24:05Z",
         "pulls": 10340,
@@ -1848,7 +1848,7 @@
           "secret": true
         }
       ],
-      "image": "mcp/notion:latest",
+      "image": "docker.io/mcp/notion:latest@sha256:10c4a7cdf7a6860834e6f65b1cc70af1c56f495646004a4c50fbbb20c7469de5",
       "metadata": {
         "last_updated": "2025-08-08T00:24:05Z",
         "pulls": 5629,
@@ -1921,7 +1921,7 @@
           "secret": true
         }
       ],
-      "image": "ghcr.io/stackloklabs/ocireg-mcp/server:latest",
+      "image": "ghcr.io/stackloklabs/ocireg-mcp/server:0.0.4@sha256:d91a3ee67fe6af2845cb65cae81fd9a6661c1af85ce8d517bdbe4ce2d8e9fab6",
       "metadata": {
         "last_updated": "2025-08-08T00:24:08Z",
         "pulls": 7435,
@@ -1973,7 +1973,7 @@
       "args": [],
       "description": "Provides access to the OSV (Open Source Vulnerabilities) database. Allows LLM-powered applications to query the OSV database for vulnerability information about packages and commits.",
       "env_vars": [],
-      "image": "ghcr.io/stackloklabs/osv-mcp/server:latest",
+      "image": "ghcr.io/stackloklabs/osv-mcp/server:0.0.7@sha256:b63d5bab6f21f9f131b35c8bb9a70107a033ff8baba218a54085c7e51cc2af45",
       "metadata": {
         "last_updated": "2025-08-08T00:24:03Z",
         "pulls": 9754,
@@ -2034,7 +2034,7 @@
           "secret": true
         }
       ],
-      "image": "mcp/perplexity-ask:latest",
+      "image": "docker.io/mcp/perplexity-ask:latest@sha256:7816f45a6f266ad30a21d96c69749f88dd15552c0d1db0ce38704156a49ee538",
       "metadata": {
         "last_updated": "2025-08-08T00:24:05Z",
         "pulls": 14444,
@@ -2077,7 +2077,7 @@
       ],
       "description": "Provides browser automation capabilities using Playwright",
       "env_vars": [],
-      "image": "mcr.microsoft.com/playwright/mcp",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.32@sha256:4419b27bce580bd244c5682a10f3f3f9d8b7fe6652e33a877f6451443ce0e40e",
       "metadata": {
         "last_updated": "2025-08-08T00:24:07Z",
         "pulls": 22728,
@@ -2139,7 +2139,7 @@
       "args": [],
       "description": "Provides plotting capabilities for visualizing data in various formats.",
       "env_vars": [],
-      "image": "ghcr.io/stackloklabs/plotting-mcp:latest",
+      "image": "ghcr.io/stackloklabs/plotting-mcp:v0.0.2@sha256:ffa1336e99a7f8eaffa21369124268aa805bbf5efd9948b8ce28c42beb2939ba",
       "metadata": {
         "last_updated": "2025-08-08T00:24:04Z",
         "pulls": 528,
@@ -2203,7 +2203,7 @@
           "secret": true
         }
       ],
-      "image": "crystaldba/postgres-mcp:0.3.0",
+      "image": "crystaldba/postgres-mcp:0.3.0@sha256:dbbd346860d29f1543e991f30f3284bf4ab5f096d049ecc3426528f20b1b6e6b",
       "metadata": {
         "last_updated": "2025-08-08T00:24:01Z",
         "pulls": 9899,
@@ -2320,7 +2320,7 @@
           "required": false
         }
       ],
-      "image": "mcp/redis:latest",
+      "image": "docker.io/mcp/redis:latest@sha256:389504d6d301e06d621a22ff54f73360479bbd90aeaaefdb29cdf140e6487eb1",
       "metadata": {
         "last_updated": "2025-08-08T00:24:05Z",
         "pulls": 9856,
@@ -2413,7 +2413,7 @@
           "secret": true
         }
       ],
-      "image": "ghcr.io/semgrep/mcp:latest",
+      "image": "ghcr.io/semgrep/mcp:0.4.1@sha256:a1616abc200c67c89068029d40d9a15910937df96ced2ee5263044e1361ad908",
       "metadata": {
         "last_updated": "2025-08-08T00:24:04Z",
         "pulls": 11550,
@@ -2464,7 +2464,7 @@
       "args": [],
       "description": "Enables dynamic problem-solving with a structured, reflective approach that can adapt and evolve as understanding deepens.",
       "env_vars": [],
-      "image": "mcp/sequentialthinking:latest",
+      "image": "docker.io/mcp/sequentialthinking:latest@sha256:cd3174b2ecf37738654cf7671fb1b719a225c40a78274817da00c4241f465e5f",
       "metadata": {
         "last_updated": "2025-08-08T00:24:05Z",
         "pulls": 14261,
@@ -2507,7 +2507,7 @@
       "args": [],
       "description": "Provides tools and resources for querying SQLite databases.",
       "env_vars": [],
-      "image": "ghcr.io/stackloklabs/sqlite-mcp/server:latest",
+      "image": "ghcr.io/stackloklabs/sqlite-mcp/server:0.0.1@sha256:e309e4a1996a1e6b5dbede7bce595a1041a3c68464491d49d1b2eda5ec77b2db",
       "metadata": {
         "last_updated": "2025-08-08T00:24:02Z",
         "pulls": 3564,
@@ -2546,7 +2546,7 @@
       "args": [],
       "description": "Provides integration with the Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.",
       "env_vars": [],
-      "image": "hashicorp/terraform-mcp-server:latest",
+      "image": "docker.io/hashicorp/terraform-mcp-server:0.2.2@sha256:0fd7ff29ac8b2a673ee73e64b171b89eddc8a4174e6471a688b479631785a064",
       "metadata": {
         "last_updated": "2025-08-08T00:24:06Z",
         "pulls": 8832,
@@ -2597,7 +2597,7 @@
       "args": [],
       "description": "Provides time information and IANA timezone conversions with auto system timezone detection.",
       "env_vars": [],
-      "image": "mcp/time:latest",
+      "image": "docker.io/mcp/time:latest@sha256:9c46a918633fb474bf8035e3ee90ebac6bcf2b18ccb00679ac4c179cba0ebfcf",
       "metadata": {
         "last_updated": "2025-08-08T00:24:03Z",
         "pulls": 10500,

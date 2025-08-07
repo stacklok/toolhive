@@ -972,7 +972,7 @@ components:
       description: Response containing a list of servers
       properties:
         servers:
-          description: List of registries
+          description: List of servers in the registry
           items:
             $ref: '#/components/schemas/registry.ImageMetadata'
           type: array

@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -556,6 +557,23 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		}
 	}
 
+	// Prepare ProxyRunner's pod and container security context
+	proxyRunnerPodSecurityContext := &corev1.PodSecurityContext{
+		RunAsNonRoot: ptr.To(true),
+		RunAsUser:    ptr.To(int64(1000)),
+		RunAsGroup:   ptr.To(int64(1000)),
+		FSGroup:      ptr.To(int64(1000)),
+	}
+
+	proxyRunnerContainerSecurityContext := &corev1.SecurityContext{
+		Privileged:               ptr.To(false),
+		RunAsNonRoot:             ptr.To(true),
+		RunAsUser:                ptr.To(int64(1000)),
+		RunAsGroup:               ptr.To(int64(1000)),
+		AllowPrivilegeEscalation: ptr.To(false),
+		ReadOnlyRootFilesystem:   ptr.To(true),
+	}
+
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        m.Name,
@@ -610,8 +628,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 							TimeoutSeconds:      3,
 							FailureThreshold:    3,
 						},
+						SecurityContext: proxyRunnerContainerSecurityContext,
 					}},
-					Volumes: volumes,
+					Volumes:         volumes,
+					SecurityContext: proxyRunnerPodSecurityContext,
 				},
 			},
 		},

@@ -33,7 +33,7 @@ type HTTPTransport struct {
 	containerName     string
 	deployer          rt.Deployer
 	debug             bool
-	middlewares       []types.Middleware
+	middlewares       []types.MiddlewareFunction
 	prometheusHandler http.Handler
 
 	// Mutex for protecting shared state
@@ -60,7 +60,7 @@ func NewHTTPTransport(
 	debug bool,
 	targetHost string,
 	prometheusHandler http.Handler,
-	middlewares ...types.Middleware,
+	middlewares ...types.MiddlewareFunction,
 ) *HTTPTransport {
 	if host == "" {
 		host = LocalhostIPv4

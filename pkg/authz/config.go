@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"sigs.k8s.io/yaml"
+
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // ConfigType represents the type of authorization configuration.
@@ -117,7 +119,7 @@ func (c *Config) Validate() error {
 }
 
 // CreateMiddleware creates an HTTP middleware from the configuration.
-func (c *Config) CreateMiddleware() (func(http.Handler) http.Handler, error) {
+func (c *Config) CreateMiddleware() (types.MiddlewareFunction, error) {
 	// Create the appropriate middleware based on the configuration type
 	switch c.Type {
 	case ConfigTypeCedarV1:

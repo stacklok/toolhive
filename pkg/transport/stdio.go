@@ -32,7 +32,7 @@ type StdioTransport struct {
 	containerName     string
 	deployer          rt.Deployer
 	debug             bool
-	middlewares       []types.Middleware
+	middlewares       []types.MiddlewareFunction
 	prometheusHandler http.Handler
 
 	// Mutex for protecting shared state
@@ -61,7 +61,7 @@ func NewStdioTransport(
 	deployer rt.Deployer,
 	debug bool,
 	prometheusHandler http.Handler,
-	middlewares ...types.Middleware,
+	middlewares ...types.MiddlewareFunction,
 ) *StdioTransport {
 	return &StdioTransport{
 		host:              host,

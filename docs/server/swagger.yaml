@@ -509,6 +509,14 @@ components:
             K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
             Only applicable when using Kubernetes runtime
           type: string
+        middleware_configs:
+          description: |-
+            MiddlewareConfigs contains the list of middleware to apply to the transport
+            and the configuration for each middleware.
+          items:
+            $ref: '#/components/schemas/types.MiddlewareConfig'
+          type: array
+          uniqueItems: false
         name:
           description: Name is the name of the MCP server
           type: string
@@ -627,6 +635,17 @@ components:
           type: string
         serviceVersion:
           description: ServiceVersion is the service version for telemetry
+          type: string
+      type: object
+    types.MiddlewareConfig:
+      properties:
+        parameters:
+          description: |-
+            Parameters is a JSON object containing the middleware parameters.
+            It is stored as a raw message to allow flexible parameter types.
+          type: object
+        type:
+          description: Type is a string representing the middleware type.
           type: string
       type: object
     types.ProxyMode:

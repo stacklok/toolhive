@@ -48,7 +48,7 @@ func NewHTTPMiddleware(
 	tracerProvider trace.TracerProvider,
 	meterProvider metric.MeterProvider,
 	serverName, transport string,
-) types.Middleware {
+) types.MiddlewareFunction {
 	meter := meterProvider.Meter(instrumentationName)
 
 	// Initialize metrics

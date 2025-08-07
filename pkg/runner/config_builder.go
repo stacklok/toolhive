@@ -58,6 +58,12 @@ func (b *RunConfigBuilder) WithName(name string) *RunConfigBuilder {
 	return b
 }
 
+// WithMiddlewareConfig sets the middleware configuration
+func (b *RunConfigBuilder) WithMiddlewareConfig(middlewareConfig []types.MiddlewareConfig) *RunConfigBuilder {
+	b.config.MiddlewareConfigs = middlewareConfig
+	return b
+}
+
 // WithCmdArgs sets the command arguments
 func (b *RunConfigBuilder) WithCmdArgs(args []string) *RunConfigBuilder {
 	b.config.CmdArgs = args

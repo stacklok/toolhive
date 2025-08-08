@@ -47,7 +47,7 @@ func init() {
 		"The provider to use for the tunnel (e.g., 'ngrok') - mandatory")
 	proxyTunnelCmd.Flags().StringVar(&providerArgsJSON, "provider-args", "{}", "JSON object with provider-specific arguments")
 
-	// Mark target-uri as required
+	// Mark tunnel-provider as required
 	if err := proxyTunnelCmd.MarkFlagRequired("tunnel-provider"); err != nil {
 		logger.Warnf("Warning: Failed to mark flag as required: %v", err)
 	}

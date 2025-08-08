@@ -17,17 +17,21 @@ Create a tunnel proxy for exposing internal endpoints
 
 Create a tunnel proxy for exposing internal endpoints.
 
-Example:
-  thv proxy tunnel --target-uri http://localhost:8080 my-server
+	TARGET may be either:
+  • a URL (http://..., https://...) -> used directly as the target URI
+  • a workload name                  -> resolved to its URL
+
+Examples:
+  thv proxy tunnel http://localhost:8080 my-server --tunnel-provider ngrok
+  thv proxy tunnel my-workload        my-server --tunnel-provider ngrok
 
 Flags:
-  --target-uri string   The target URI to tunnel to
-  --workload-name string The name of the workload to use for the tunnel
-  --tunnel-provider string The provider to use for the tunnel (e.g., "ngrok") - mandatory
+  --tunnel-provider string   The provider to use for the tunnel (e.g., "ngrok") - mandatory
+  --provider-args string     JSON object with provider-specific arguments (default "{}")
 
 
 ```
-thv proxy tunnel [flags] SERVER_NAME
+thv proxy tunnel [flags] TARGET SERVER_NAME
 ```
 
 ### Options
@@ -35,9 +39,7 @@ thv proxy tunnel [flags] SERVER_NAME
 ```
   -h, --help                     help for tunnel
       --provider-args string     JSON object with provider-specific arguments (default "{}")
-      --target-uri string        The target URI to tunnel to (required)
       --tunnel-provider string   The provider to use for the tunnel (e.g., 'ngrok') - mandatory
-      --workload-name string     The name of the workload to use for the tunnel
 ```
 
 ### Options inherited from parent commands

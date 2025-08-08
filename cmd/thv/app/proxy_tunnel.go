@@ -1,9 +1,12 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -14,33 +17,32 @@ import (
 )
 
 var (
-	tunnelSourceTargetURI string
-	tunnelWorkloadName    string
-	tunnelProvider        string
+	tunnelProvider   string
+	providerArgsJSON string
 )
 
-var providerArgsJSON string
-
 var proxyTunnelCmd = &cobra.Command{
-	Use:   "tunnel [flags] SERVER_NAME",
+	Use:   "tunnel [flags] TARGET SERVER_NAME",
 	Short: "Create a tunnel proxy for exposing internal endpoints",
 	Long: `Create a tunnel proxy for exposing internal endpoints.
 
-Example:
-  thv proxy tunnel --target-uri http://localhost:8080 my-server
+	TARGET may be either:
+  • a URL (http://..., https://...) -> used directly as the target URI
+  • a workload name                  -> resolved to its URL
+
+Examples:
+  thv proxy tunnel http://localhost:8080 my-server --tunnel-provider ngrok
+  thv proxy tunnel my-workload        my-server --tunnel-provider ngrok
 
 Flags:
-  --target-uri string   The target URI to tunnel to
-  --workload-name string The name of the workload to use for the tunnel
-  --tunnel-provider string The provider to use for the tunnel (e.g., "ngrok") - mandatory
+  --tunnel-provider string   The provider to use for the tunnel (e.g., "ngrok") - mandatory
+  --provider-args string     JSON object with provider-specific arguments (default "{}")
 `,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.ExactArgs(2),
 	RunE: proxyTunnelCmdFunc,
 }
 
 func init() {
-	proxyTunnelCmd.Flags().StringVar(&tunnelSourceTargetURI, "target-uri", "", "The target URI to tunnel to (required)")
-	proxyTunnelCmd.Flags().StringVar(&tunnelWorkloadName, "workload-name", "", "The name of the workload to use for the tunnel")
 	proxyTunnelCmd.Flags().StringVar(&tunnelProvider, "tunnel-provider", "",
 		"The provider to use for the tunnel (e.g., 'ngrok') - mandatory")
 	proxyTunnelCmd.Flags().StringVar(&providerArgsJSON, "provider-args", "{}", "JSON object with provider-specific arguments")
@@ -55,12 +57,8 @@ func proxyTunnelCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	serverName := args[0]
-
-	// Ensure exactly one of target-uri or workload-name is set
-	if (tunnelSourceTargetURI == "") == (tunnelWorkloadName == "") {
-		return fmt.Errorf("you must provide exactly one of --target-uri or --workload-name")
-	}
+	targetArg := args[0] // URL or workload name
+	serverName := args[1]
 
 	// Validate provider
 	provider, ok := types.SupportedTunnelProviders[tunnelProvider]
@@ -74,26 +72,9 @@ func proxyTunnelCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// validate target uri
-	finalTargetURI := ""
-	if tunnelSourceTargetURI != "" {
-		err := validateProxyTargetURI(tunnelSourceTargetURI)
-		if err != nil {
-			return fmt.Errorf("invalid target URI: %w", err)
-		}
-		finalTargetURI = tunnelSourceTargetURI
-	}
-
-	// If workload name is provided, resolve the target URI from the workload
-	if tunnelWorkloadName != "" {
-		workloadManager, err := workloads.NewManager(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to create workload manager: %w", err)
-		}
-		tunnelWorkload, err := workloadManager.GetWorkload(ctx, tunnelWorkloadName)
-		if err != nil {
-			return fmt.Errorf("failed to get workload %q: %w", tunnelWorkloadName, err)
-		}
-		finalTargetURI = tunnelWorkload.URL
+	finalTargetURI, err := resolveTarget(ctx, targetArg)
+	if err != nil {
+		return err
 	}
 
 	// parse provider-specific configuration
@@ -110,4 +91,38 @@ func proxyTunnelCmdFunc(cmd *cobra.Command, args []string) error {
 	<-ctx.Done()
 	logger.Info("Shutting down tunnel")
 	return nil
+}
+
+func resolveTarget(ctx context.Context, target string) (string, error) {
+	// If it's a URL, validate and return it
+	if looksLikeURL(target) {
+		if err := validateProxyTargetURI(target); err != nil {
+			return "", fmt.Errorf("invalid target URI: %w", err)
+		}
+		return target, nil
+	}
+
+	// Otherwise treat as workload name
+	workloadManager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to create workload manager: %w", err)
+	}
+	tunnelWorkload, err := workloadManager.GetWorkload(ctx, target)
+	if err != nil {
+		return "", fmt.Errorf("failed to get workload %q: %w", target, err)
+	}
+	if tunnelWorkload.URL == "" {
+		return "", fmt.Errorf("workload %q has empty URL", target)
+	}
+	return tunnelWorkload.URL, nil
+}
+
+func looksLikeURL(s string) bool {
+	// Fast-path for common schemes
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		return true
+	}
+	// Fallback parse check
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme != "" && u.Host != ""
 }

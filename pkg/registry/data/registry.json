@@ -185,7 +185,7 @@
           "secret": true
         },
         {
-          "description": "AWS sesison token for temporary credentials",
+          "description": "AWS session token for temporary credentials",
           "name": "AWS_SESSION_TOKEN",
           "required": false,
           "secret": true
@@ -368,7 +368,7 @@
           "secret": true
         },
         {
-          "description": "AWS sesison token for temporary credentials",
+          "description": "AWS session token for temporary credentials",
           "name": "AWS_SESSION_TOKEN",
           "required": false,
           "secret": true

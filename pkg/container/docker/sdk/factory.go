@@ -36,6 +36,8 @@ const (
 	DockerDesktopMacSocketPath = ".docker/run/docker.sock"
 	// RancherDesktopMacSocketPath is the Docker socket path for Rancher Desktop on macOS
 	RancherDesktopMacSocketPath = ".rd/docker.sock"
+	// ColimaDesktopMacSocketPath is the Docker socket path for Colima on macOS
+	ColimaDesktopMacSocketPath = ".colima/default/docker.sock"
 )
 
 var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}

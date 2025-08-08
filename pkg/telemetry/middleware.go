@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -78,6 +79,74 @@ type HTTPMiddleware struct {
 	requestCounter    metric.Int64Counter
 	requestDuration   metric.Float64Histogram
 	activeConnections metric.Int64UpDownCounter
+}
+
+// MiddlewareFromConfig creates a new HTTP middleware for OpenTelemetry instrumentation.
+// It implements the types.MiddlewareFactory signature, accepting a MiddlewareConfig
+// and extracting the necessary parameters from it.
+func MiddlewareFromConfig(middlewareConfig *types.MiddlewareConfig) (types.Middleware, error) {
+	// Validate that this is a telemetry middleware config
+	if middlewareConfig.Type != MiddlewareTypeTelemetry {
+		return nil, fmt.Errorf("expected middleware type %s, got %s", MiddlewareTypeTelemetry, middlewareConfig.Type)
+	}
+
+	// Extract parameters from the middleware config
+	var params MiddlewareParams
+	if err := json.Unmarshal(middlewareConfig.Parameters, &params); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal telemetry middleware parameters: %w", err)
+	}
+
+	// Validate required parameters
+	if params.ServerName == "" {
+		return nil, fmt.Errorf("server name is required for telemetry middleware")
+	}
+	if params.Transport == "" {
+		return nil, fmt.Errorf("transport type is required for telemetry middleware")
+	}
+
+	// Create a telemetry provider with the given config
+	// TODO: This creates a new provider per middleware instance, which may not be ideal
+	// In the future, consider using a global provider registry or dependency injection
+	ctx := context.Background()
+	provider, err := NewProvider(ctx, params.Config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create telemetry provider: %w", err)
+	}
+
+	// Get tracer and meter providers from the provider
+	tracerProvider := provider.TracerProvider()
+	meterProvider := provider.MeterProvider()
+	meter := meterProvider.Meter(instrumentationName)
+
+	// Initialize metrics
+	requestCounter, _ := meter.Int64Counter(
+		"toolhive_mcp_requests", // The exporter adds the _total suffix automatically
+		metric.WithDescription("Total number of MCP requests"),
+	)
+
+	requestDuration, _ := meter.Float64Histogram(
+		"toolhive_mcp_request_duration", // The exporter adds the _seconds suffix automatically
+		metric.WithDescription("Duration of MCP requests in seconds"),
+		metric.WithUnit("s"),
+	)
+
+	activeConnections, _ := meter.Int64UpDownCounter(
+		"toolhive_mcp_active_connections",
+		metric.WithDescription("Number of active MCP connections"),
+	)
+
+	return &HTTPMiddleware{
+		config:            params.Config,
+		tracerProvider:    tracerProvider,
+		tracer:            tracerProvider.Tracer(instrumentationName),
+		meterProvider:     meterProvider,
+		meter:             meter,
+		serverName:        params.ServerName,
+		transport:         params.Transport,
+		requestCounter:    requestCounter,
+		requestDuration:   requestDuration,
+		activeConnections: activeConnections,
+	}, nil
 }
 
 // NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.

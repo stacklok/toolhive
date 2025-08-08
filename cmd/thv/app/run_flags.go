@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -256,6 +258,51 @@ func BuildRunnerConfig(
 		}
 	}
 
+	// Create middleware configurations if needed
+	var middlewareConfigs []types.MiddlewareConfig
+	
+	// Add telemetry middleware if telemetry is configured
+	if finalOtelEndpoint != "" || runConfig.OtelEnablePrometheusMetricsPath {
+		telemetryConfig := &telemetry.Config{
+			Endpoint:                    finalOtelEndpoint,
+			ServiceName:                 runConfig.OtelServiceName,
+			ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+			SamplingRate:                finalOtelSamplingRate,
+			Headers:                     make(map[string]string),
+			Insecure:                    runConfig.OtelInsecure,
+			EnablePrometheusMetricsPath: runConfig.OtelEnablePrometheusMetricsPath,
+			EnvironmentVariables:        finalOtelEnvironmentVariables,
+		}
+		
+		// Parse headers from key=value format
+		for _, header := range runConfig.OtelHeaders {
+			parts := strings.SplitN(header, "=", 2)
+			if len(parts) == 2 {
+				telemetryConfig.Headers[parts[0]] = parts[1]
+			}
+		}
+		
+		// Use provided service name or default
+		if telemetryConfig.ServiceName == "" {
+			telemetryConfig.ServiceName = telemetry.DefaultConfig().ServiceName
+		}
+		
+		// Determine transport type for the middleware config
+		// Use the transport from flags, or default to stdio if not specified
+		transportType := runConfig.Transport
+		if transportType == "" {
+			// Default to stdio if no transport specified (this matches the logic in validateConfig)
+			transportType = types.TransportTypeStdio.String()
+		}
+		
+		// Create telemetry middleware config
+		middlewareConfig, err := telemetry.NewTelemetryMiddlewareConfig(*telemetryConfig, serverOrImage, types.TransportType(transportType))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create telemetry middleware config: %w", err)
+		}
+		middlewareConfigs = append(middlewareConfigs, *middlewareConfig)
+	}
+
 	// Initialize a new RunConfig with values from command-line flags
 	return runner.NewRunConfigBuilder().
 		WithRuntime(rt).
@@ -281,6 +328,7 @@ func BuildRunnerConfig(
 			runConfig.ThvCABundle, runConfig.JWKSAuthTokenFile, runConfig.ResourceURL, runConfig.JWKSAllowPrivateIP).
 		WithTelemetryConfig(finalOtelEndpoint, runConfig.OtelEnablePrometheusMetricsPath, runConfig.OtelServiceName,
 			finalOtelSamplingRate, runConfig.OtelHeaders, runConfig.OtelInsecure, finalOtelEnvironmentVariables).
+		WithMiddlewareConfig(middlewareConfigs).
 		WithToolsFilter(runConfig.ToolsFilter).
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    runConfig.IgnoreGlobally,

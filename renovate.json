@@ -18,7 +18,14 @@
     {
       "groupName": "dockerfile template base images",
       "matchDatasources": ["docker"],
-      "matchManagers": ["custom.regex"]
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["pkg/container/templates/*.tmpl"]
+    },
+    {
+      "groupName": "mcp server images",
+      "matchDatasources": ["docker"],
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["pkg/registry/data/registry.json"]
     }
   ],
   "customManagers": [
@@ -28,6 +35,15 @@
       "managerFilePatterns": ["pkg/container/templates/*.tmpl"],
       "matchStrings": [
         "FROM (?<depName>[a-z0-9.-]+):(?<currentValue>[a-z0-9.-]+)"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Update MCP server Docker images in registry.json",
+      "managerFilePatterns": ["pkg/registry/data/registry.json"],
+      "matchStrings": [
+        "\"image\":\\s*\"(?<depName>(?:(?:[a-zA-Z0-9][a-zA-Z0-9-]*(?:\\.[a-zA-Z0-9][a-zA-Z0-9-]*)*(?::[0-9]+)?/)?(?:[a-z0-9]+(?:[._-][a-z0-9]+)*/)*)?[a-z0-9]+(?:[._-][a-z0-9]+)*):(?<currentValue>[a-zA-Z0-9][a-zA-Z0-9._-]*(?:@sha256:[a-f0-9]{64})?)\""
       ],
       "datasourceTemplate": "docker"
     }

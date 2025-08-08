@@ -22,7 +22,47 @@ import (
 const (
 	// instrumentationName is the name of this instrumentation package
 	instrumentationName = "github.com/stacklok/toolhive/pkg/telemetry"
+
+	// MiddlewareTypeTelemetry is the type identifier for telemetry middleware
+	MiddlewareTypeTelemetry = "telemetry"
 )
+
+// MiddlewareParams defines the configuration parameters for telemetry middleware
+type MiddlewareParams struct {
+	// Config is the telemetry configuration
+	Config Config `json:"config"`
+	// ServerName is the name of the MCP server (e.g., "github", "fetch")
+	ServerName string `json:"server_name"`
+	// Transport is the backend transport type ("stdio" or "sse")
+	Transport string `json:"transport"`
+}
+
+// NewTelemetryMiddlewareConfig creates a MiddlewareConfig for telemetry middleware.
+// It validates the parameters and returns a properly configured MiddlewareConfig.
+func NewTelemetryMiddlewareConfig(
+	config Config,
+	serverName string,
+	transportType types.TransportType,
+) (*types.MiddlewareConfig, error) {
+	// Validate required parameters
+	if serverName == "" {
+		return nil, fmt.Errorf("server name is required for telemetry middleware")
+	}
+
+	if transportType == "" {
+		return nil, fmt.Errorf("transport type is required for telemetry middleware")
+	}
+
+	// Create middleware parameters
+	params := MiddlewareParams{
+		Config:     config,
+		ServerName: serverName,
+		Transport:  string(transportType),
+	}
+
+	// Create and return the middleware config
+	return types.NewMiddlewareConfig(MiddlewareTypeTelemetry, params)
+}
 
 // HTTPMiddleware provides OpenTelemetry instrumentation for HTTP requests.
 type HTTPMiddleware struct {
@@ -48,7 +88,7 @@ func NewHTTPMiddleware(
 	tracerProvider trace.TracerProvider,
 	meterProvider metric.MeterProvider,
 	serverName, transport string,
-) types.MiddlewareFunction {
+) types.Middleware {
 	meter := meterProvider.Meter(instrumentationName)
 
 	// Initialize metrics
@@ -68,7 +108,7 @@ func NewHTTPMiddleware(
 		metric.WithDescription("Number of active MCP connections"),
 	)
 
-	middleware := &HTTPMiddleware{
+	return &HTTPMiddleware{
 		config:            config,
 		tracerProvider:    tracerProvider,
 		tracer:            tracerProvider.Tracer(instrumentationName),
@@ -80,14 +120,23 @@ func NewHTTPMiddleware(
 		requestDuration:   requestDuration,
 		activeConnections: activeConnections,
 	}
-
-	return middleware.Handler
 }
 
-// Handler implements the middleware function that wraps HTTP handlers.
+// Handler implements the types.Middleware interface and returns the middleware function.
+func (m *HTTPMiddleware) Handler() types.MiddlewareFunction {
+	return m.middlewareHandler
+}
+
+// Close implements the types.Middleware interface.
+func (*HTTPMiddleware) Close() error {
+	// No resources to clean up for HTTP middleware
+	return nil
+}
+
+// middlewareHandler implements the middleware function that wraps HTTP handlers.
 // This middleware should be placed after the MCP parsing middleware in the chain
 // to leverage the parsed MCP data.
-func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
+func (m *HTTPMiddleware) middlewareHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 

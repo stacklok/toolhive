@@ -56,7 +56,7 @@ func TestHTTPMiddleware_Handler_BasicRequest(t *testing.T) {
 	})
 
 	// Wrap with middleware
-	wrappedHandler := middleware(testHandler)
+	wrappedHandler := middleware.Handler()(testHandler)
 
 	// Create test request
 	req := httptest.NewRequest("GET", "/test", nil)
@@ -90,7 +90,7 @@ func TestHTTPMiddleware_Handler_WithMCPData(t *testing.T) {
 	})
 
 	// Wrap with middleware
-	wrappedHandler := middleware(testHandler)
+	wrappedHandler := middleware.Handler()(testHandler)
 
 	// Create MCP request data
 	mcpRequest := &mcp.ParsedMCPRequest{
@@ -635,7 +635,7 @@ func TestHTTPMiddleware_WithRealMetrics(t *testing.T) {
 		w.Write([]byte("test"))
 	})
 
-	wrappedHandler := middleware(testHandler)
+	wrappedHandler := middleware.Handler()(testHandler)
 
 	// Execute request
 	req := httptest.NewRequest("POST", "/messages", nil)

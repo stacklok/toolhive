@@ -162,8 +162,12 @@ func TestProvider_Middleware(t *testing.T) {
 		w.Write([]byte("test"))
 	})
 
-	wrappedHandler := middleware(testHandler)
+	wrappedHandler := middleware.Handler()(testHandler)
 	assert.NotNil(t, wrappedHandler)
+
+	// Test that middleware can be closed
+	err = middleware.Close()
+	assert.NoError(t, err)
 }
 
 func TestProvider_ShutdownTimeout(t *testing.T) {

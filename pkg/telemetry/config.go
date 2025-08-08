@@ -290,7 +290,7 @@ func createMetricExporter(ctx context.Context, config Config) (sdkmetric.Exporte
 // Middleware returns an HTTP middleware that instruments requests with OpenTelemetry.
 // serverName is the name of the MCP server (e.g., "github", "fetch")
 // transport is the backend transport type ("stdio" or "sse")
-func (p *Provider) Middleware(serverName, transport string) types.MiddlewareFunction {
+func (p *Provider) Middleware(serverName, transport string) types.Middleware {
 	return NewHTTPMiddleware(p.config, p.tracerProvider, p.meterProvider, serverName, transport)
 }
 

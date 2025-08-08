@@ -116,7 +116,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Create telemetry middleware with server name and transport type
 		telemetryMiddleware := telemetryProvider.Middleware(r.Config.Name, r.Config.Transport.String())
-		transportConfig.Middlewares = append(transportConfig.Middlewares, telemetryMiddleware)
+		transportConfig.Middlewares = append(transportConfig.Middlewares, telemetryMiddleware.Handler())
 
 		// Add Prometheus handler to transport config if metrics port is configured
 		if r.Config.TelemetryConfig.EnablePrometheusMetricsPath {
@@ -124,8 +124,14 @@ func (r *Runner) Run(ctx context.Context) error {
 			logger.Infof("Prometheus metrics will be exposed on port %d at /metrics", r.Config.Port)
 		}
 
-		// Store provider for cleanup
+		// Store provider and middleware for cleanup
 		r.telemetryProvider = telemetryProvider
+		// Add cleanup for the middleware
+		defer func() {
+			if err := telemetryMiddleware.Close(); err != nil {
+				logger.Warnf("Failed to close telemetry middleware: %v", err)
+			}
+		}()
 	}
 
 	// Add authorization middleware if authorization configuration is provided

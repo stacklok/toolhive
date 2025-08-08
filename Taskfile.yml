@@ -11,17 +11,12 @@ tasks:
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
+      - go tool github.com/swaggo/swag/v2/cmd/swag init -g pkg/api/server.go --v3.1 -o docs/server
 
-  swagger-install:
-    desc: Install the swag tool for OpenAPI/Swagger generation
+  gen:
+    desc: Perform code generation
     cmds:
-      - go install github.com/swaggo/swag/v2/cmd/swag@latest
-
-  swagger-gen:
-    desc: Generate OpenAPI/Swagger documentation
-    deps: [swagger-install]
-    cmds:
-      - swag init -g pkg/api/server.go --v3.1 -o docs/server
+      - go generate ./...
 
   lint:
     desc: Run linting tools
@@ -35,6 +30,7 @@ tasks:
       - golangci-lint run --fix ./...
 
   test:
+    deps: [gen]
     desc: Run unit tests (excluding e2e tests)
     cmds:
       - go test -v $(go list ./... | grep -v '/test/e2e')
@@ -62,6 +58,7 @@ tasks:
     deps: [test, test-e2e]
 
   build:
+    deps: [gen]
     desc: Build the binary
     vars:
       VERSION:

@@ -53,7 +53,7 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 
 	// Apply group filtering if specified
 	if listGroupFilter != "" {
-		workloadList, err = workloads.FilterByGroup(ctx, workloadList, listGroupFilter)
+		workloadList, err = workloads.FilterByGroup(workloadList, listGroupFilter)
 		if err != nil {
 			return fmt.Errorf("failed to filter workloads by group: %v", err)
 		}

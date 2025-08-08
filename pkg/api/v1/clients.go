@@ -260,7 +260,7 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 	if len(groupNames) > 0 {
 		logger.Infof("Filtering workloads to groups: %v", groupNames)
 
-		filteredWorkloads, err := workloads.FilterByGroups(ctx, runningWorkloads, groupNames)
+		filteredWorkloads, err := workloads.FilterByGroups(runningWorkloads, groupNames)
 		if err != nil {
 			return fmt.Errorf("failed to filter workloads by groups: %w", err)
 		}

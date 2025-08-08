@@ -15,8 +15,10 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/groups/mocks"
+	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/workloads"
+	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
 func TestGroupsRouter(t *testing.T) {
@@ -30,7 +32,7 @@ func TestGroupsRouter(t *testing.T) {
 		method         string
 		path           string
 		body           string
-		setupMock      func(*mocks.MockManager)
+		setupMock      func(*groupsmocks.MockManager, *workloadsmocks.MockManager)
 		expectedStatus int
 		expectedBody   string
 	}{
@@ -38,8 +40,8 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "list groups success",
 			method: "GET",
 			path:   "/",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().List(gomock.Any()).Return([]*groups.Group{
+			setupMock: func(gm *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
+				gm.EXPECT().List(gomock.Any()).Return([]*groups.Group{
 					{Name: "group1", RegisteredClients: []string{}},
 					{Name: "group2", RegisteredClients: []string{}},
 				}, nil)
@@ -51,8 +53,8 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "list groups error",
 			method: "GET",
 			path:   "/",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().List(gomock.Any()).Return(nil, fmt.Errorf("database error"))
+			setupMock: func(gm *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
+				gm.EXPECT().List(gomock.Any()).Return(nil, fmt.Errorf("database error"))
 			},
 			expectedStatus: http.StatusInternalServerError,
 			expectedBody:   "Failed to list groups",
@@ -62,8 +64,8 @@ func TestGroupsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"newgroup"}`,
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Create(gomock.Any(), "newgroup").Return(nil)
+			setupMock: func(gm *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
+				gm.EXPECT().Create(gomock.Any(), "newgroup").Return(nil)
 			},
 			expectedStatus: http.StatusCreated,
 			expectedBody:   `{"name":"newgroup"}`,
@@ -73,7 +75,7 @@ func TestGroupsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":""}`,
-			setupMock: func(_ *mocks.MockManager) {
+			setupMock: func(_ *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
 				// No mock setup needed as validation happens before manager call
 			},
 			expectedStatus: http.StatusBadRequest,
@@ -84,8 +86,8 @@ func TestGroupsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"existinggroup"}`,
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Create(gomock.Any(), "existinggroup").Return(errors.NewGroupAlreadyExistsError("group 'existinggroup' already exists", nil))
+			setupMock: func(gm *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
+				gm.EXPECT().Create(gomock.Any(), "existinggroup").Return(errors.NewGroupAlreadyExistsError("group 'existinggroup' already exists", nil))
 			},
 			expectedStatus: http.StatusConflict,
 			expectedBody:   "group_already_exists: group 'existinggroup' already exists",
@@ -95,7 +97,7 @@ func TestGroupsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":`,
-			setupMock: func(_ *mocks.MockManager) {
+			setupMock: func(_ *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
 				// No mock setup needed as JSON parsing fails first
 			},
 			expectedStatus: http.StatusBadRequest,
@@ -105,8 +107,8 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "get group success",
 			method: "GET",
 			path:   "/testgroup",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Get(gomock.Any(), "testgroup").
+			setupMock: func(gm *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
+				gm.EXPECT().Get(gomock.Any(), "testgroup").
 					Return(&groups.Group{Name: "testgroup", RegisteredClients: []string{}}, nil)
 			},
 			expectedStatus: http.StatusOK,
@@ -116,8 +118,8 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "get group not found",
 			method: "GET",
 			path:   "/nonexistent",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Get(gomock.Any(), "nonexistent").Return(nil, fmt.Errorf("group not found"))
+			setupMock: func(gm *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
+				gm.EXPECT().Get(gomock.Any(), "nonexistent").Return(nil, fmt.Errorf("group not found"))
 			},
 			expectedStatus: http.StatusNotFound,
 			expectedBody:   "Group not found",
@@ -126,10 +128,10 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "delete group success",
 			method: "DELETE",
 			path:   "/testgroup",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
-				m.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
-				m.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
+			setupMock: func(gm *groupsmocks.MockManager, wm *workloadsmocks.MockManager) {
+				gm.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
+				wm.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				gm.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
 			expectedBody:   "",
@@ -138,8 +140,8 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "delete group not found",
 			method: "DELETE",
 			path:   "/nonexistent",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Exists(gomock.Any(), "nonexistent").Return(false, nil)
+			setupMock: func(gm *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
+				gm.EXPECT().Exists(gomock.Any(), "nonexistent").Return(false, nil)
 			},
 			expectedStatus: http.StatusNotFound,
 			expectedBody:   "Group not found",
@@ -148,7 +150,7 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "delete default group protected",
 			method: "DELETE",
 			path:   "/default",
-			setupMock: func(_ *mocks.MockManager) {
+			setupMock: func(_ *groupsmocks.MockManager, _ *workloadsmocks.MockManager) {
 				// No mock setup needed as validation happens before manager call
 			},
 			expectedStatus: http.StatusBadRequest,
@@ -158,10 +160,10 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "delete group with workloads flag true",
 			method: "DELETE",
 			path:   "/testgroup?with-workloads=true",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
-				m.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
-				m.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
+			setupMock: func(gm *groupsmocks.MockManager, wm *workloadsmocks.MockManager) {
+				gm.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
+				wm.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				gm.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
 			expectedBody:   "",
@@ -170,10 +172,10 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "delete group with workloads flag false",
 			method: "DELETE",
 			path:   "/testgroup?with-workloads=false",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
-				m.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
-				m.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
+			setupMock: func(gm *groupsmocks.MockManager, wm *workloadsmocks.MockManager) {
+				gm.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
+				wm.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				gm.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
 			expectedBody:   "",
@@ -182,10 +184,10 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "delete group without workloads flag (default behavior)",
 			method: "DELETE",
 			path:   "/testgroup",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
-				m.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
-				m.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
+			setupMock: func(gm *groupsmocks.MockManager, wm *workloadsmocks.MockManager) {
+				gm.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
+				wm.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				gm.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
 			expectedBody:   "",
@@ -194,10 +196,10 @@ func TestGroupsRouter(t *testing.T) {
 			name:   "delete group with no workloads",
 			method: "DELETE",
 			path:   "/testgroup",
-			setupMock: func(m *mocks.MockManager) {
-				m.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
-				m.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
-				m.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
+			setupMock: func(gm *groupsmocks.MockManager, wm *workloadsmocks.MockManager) {
+				gm.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
+				wm.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				gm.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
 			expectedBody:   "",
@@ -212,14 +214,15 @@ func TestGroupsRouter(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			// Create mock manager
-			mockManager := mocks.NewMockManager(ctrl)
+			// Create mock managers
+			mockGroupManager := groupsmocks.NewMockManager(ctrl)
+			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
 			if tt.setupMock != nil {
-				tt.setupMock(mockManager)
+				tt.setupMock(mockGroupManager, mockWorkloadManager)
 			}
 
 			// Create router
-			router := GroupsRouter(mockManager)
+			router := GroupsRouter(mockGroupManager, mockWorkloadManager)
 
 			// Create request
 			var req *http.Request
@@ -266,13 +269,18 @@ func TestGroupsRouter(t *testing.T) {
 func TestGroupsRouter_Integration(t *testing.T) {
 	t.Parallel()
 
-	// Test with real group manager (integration test)
+	// Test with real managers (integration test)
 	groupManager, err := groups.NewManager()
 	if err != nil {
 		t.Skip("Skipping integration test: failed to create group manager")
 	}
 
-	router := GroupsRouter(groupManager)
+	workloadManager, err := workloads.NewManager(context.Background())
+	if err != nil {
+		t.Skip("Skipping integration test: failed to create workload manager")
+	}
+
+	router := GroupsRouter(groupManager, workloadManager)
 
 	// Test creating a group
 	t.Run("create and list group", func(t *testing.T) {

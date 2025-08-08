@@ -293,7 +293,7 @@ func registerClientsWithGroups(
 		return fmt.Errorf("failed to register clients with groups: %w", err)
 	}
 
-	filteredWorkloads, err := workloads.FilterByGroups(ctx, runningWorkloads, groupNames)
+	filteredWorkloads, err := workloads.FilterByGroups(runningWorkloads, groupNames)
 	if err != nil {
 		return fmt.Errorf("failed to filter workloads by groups: %w", err)
 	}

@@ -108,6 +108,21 @@ func (mr *MockManagerMockRecorder) ListWorkloads(ctx, listAll any, labelFilters 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloads", reflect.TypeOf((*MockManager)(nil).ListWorkloads), varargs...)
 }
 
+// ListWorkloadsInGroup mocks base method.
+func (m *MockManager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListWorkloadsInGroup", ctx, groupName)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListWorkloadsInGroup indicates an expected call of ListWorkloadsInGroup.
+func (mr *MockManagerMockRecorder) ListWorkloadsInGroup(ctx, groupName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloadsInGroup", reflect.TypeOf((*MockManager)(nil).ListWorkloadsInGroup), ctx, groupName)
+}
+
 // MoveToDefaultGroup mocks base method.
 func (m *MockManager) MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error {
 	m.ctrl.T.Helper()

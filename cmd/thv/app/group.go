@@ -135,8 +135,14 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("group '%s' does not exist", groupName)
 	}
 
+	// Create workloads manager
+	workloadsManager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create workloads manager: %w", err)
+	}
+
 	// Get all workloads in the group
-	groupWorkloads, err := manager.ListWorkloadsInGroup(ctx, groupName)
+	groupWorkloads, err := workloadsManager.ListWorkloadsInGroup(ctx, groupName)
 	if err != nil {
 		return fmt.Errorf("failed to list workloads in group: %w", err)
 	}

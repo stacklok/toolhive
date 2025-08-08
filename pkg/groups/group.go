@@ -47,13 +47,6 @@ type Manager interface {
 	// Exists checks if a group with the specified name exists.
 	Exists(ctx context.Context, name string) (bool, error)
 
-	// GetWorkloadGroup returns the group that a workload belongs to, if any.
-	// Returns nil if the workload is not in any group.
-	GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error)
-
-	// ListWorkloadsInGroup returns all workload names that belong to the specified group.
-	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error)
-
 	// RegisterClients registers multiple clients with multiple groups.
 	RegisterClients(ctx context.Context, groupNames []string, clientNames []string) error
 }

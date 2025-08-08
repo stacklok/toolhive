@@ -70,7 +70,7 @@ func TestTelemetryIntegration_EndToEnd(t *testing.T) {
 
 	// Wrap with MCP parsing middleware first, then telemetry
 	mcpHandler := mcp.ParsingMiddleware(testHandler)
-	wrappedHandler := middleware(mcpHandler)
+	wrappedHandler := middleware.Handler()(mcpHandler)
 
 	// Test different types of MCP requests
 	testCases := []struct {
@@ -191,7 +191,7 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 		w.Write([]byte("success"))
 	})
 
-	wrappedHandler := middleware(testHandler)
+	wrappedHandler := middleware.Handler()(testHandler)
 
 	// Create MCP request
 	mcpRequest := &mcp.ParsedMCPRequest{
@@ -324,7 +324,7 @@ func TestTelemetryIntegration_ErrorHandling(t *testing.T) {
 		w.Write([]byte("internal server error"))
 	})
 
-	wrappedHandler := middleware(errorHandler)
+	wrappedHandler := middleware.Handler()(errorHandler)
 
 	// Test error request
 	req := httptest.NewRequest("POST", "/messages", nil)
@@ -373,7 +373,7 @@ func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
 		w.Write([]byte("tool result"))
 	})
 
-	wrappedHandler := middleware(testHandler)
+	wrappedHandler := middleware.Handler()(testHandler)
 
 	// Create tools/call request
 	mcpRequest := &mcp.ParsedMCPRequest{
@@ -459,7 +459,7 @@ func TestTelemetryIntegration_MultipleRequests(t *testing.T) {
 		w.Write([]byte("ok"))
 	})
 
-	wrappedHandler := middleware(testHandler)
+	wrappedHandler := middleware.Handler()(testHandler)
 
 	// Send multiple requests
 	numRequests := 5

@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -22,7 +23,47 @@ import (
 const (
 	// instrumentationName is the name of this instrumentation package
 	instrumentationName = "github.com/stacklok/toolhive/pkg/telemetry"
+
+	// MiddlewareTypeTelemetry is the type identifier for telemetry middleware
+	MiddlewareTypeTelemetry = "telemetry"
 )
+
+// MiddlewareParams defines the configuration parameters for telemetry middleware
+type MiddlewareParams struct {
+	// Config is the telemetry configuration
+	Config Config `json:"config"`
+	// ServerName is the name of the MCP server (e.g., "github", "fetch")
+	ServerName string `json:"server_name"`
+	// Transport is the backend transport type ("stdio" or "sse")
+	Transport string `json:"transport"`
+}
+
+// NewTelemetryMiddlewareConfig creates a MiddlewareConfig for telemetry middleware.
+// It validates the parameters and returns a properly configured MiddlewareConfig.
+func NewTelemetryMiddlewareConfig(
+	config Config,
+	serverName string,
+	transportType types.TransportType,
+) (*types.MiddlewareConfig, error) {
+	// Validate required parameters
+	if serverName == "" {
+		return nil, fmt.Errorf("server name is required for telemetry middleware")
+	}
+
+	if transportType == "" {
+		return nil, fmt.Errorf("transport type is required for telemetry middleware")
+	}
+
+	// Create middleware parameters
+	params := MiddlewareParams{
+		Config:     config,
+		ServerName: serverName,
+		Transport:  string(transportType),
+	}
+
+	// Create and return the middleware config
+	return types.NewMiddlewareConfig(MiddlewareTypeTelemetry, params)
+}
 
 // HTTPMiddleware provides OpenTelemetry instrumentation for HTTP requests.
 type HTTPMiddleware struct {
@@ -40,15 +81,41 @@ type HTTPMiddleware struct {
 	activeConnections metric.Int64UpDownCounter
 }
 
-// NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.
-// serverName is the name of the MCP server (e.g., "github", "fetch")
-// transport is the backend transport type ("stdio" or "sse")
-func NewHTTPMiddleware(
-	config Config,
-	tracerProvider trace.TracerProvider,
-	meterProvider metric.MeterProvider,
-	serverName, transport string,
-) types.MiddlewareFunction {
+// MiddlewareFromConfig creates a new HTTP middleware for OpenTelemetry instrumentation.
+// It implements the types.MiddlewareFactory signature, accepting a MiddlewareConfig
+// and extracting the necessary parameters from it.
+func MiddlewareFromConfig(middlewareConfig *types.MiddlewareConfig) (types.Middleware, error) {
+	// Validate that this is a telemetry middleware config
+	if middlewareConfig.Type != MiddlewareTypeTelemetry {
+		return nil, fmt.Errorf("expected middleware type %s, got %s", MiddlewareTypeTelemetry, middlewareConfig.Type)
+	}
+
+	// Extract parameters from the middleware config
+	var params MiddlewareParams
+	if err := json.Unmarshal(middlewareConfig.Parameters, &params); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal telemetry middleware parameters: %w", err)
+	}
+
+	// Validate required parameters
+	if params.ServerName == "" {
+		return nil, fmt.Errorf("server name is required for telemetry middleware")
+	}
+	if params.Transport == "" {
+		return nil, fmt.Errorf("transport type is required for telemetry middleware")
+	}
+
+	// Create a telemetry provider with the given config
+	// TODO: This creates a new provider per middleware instance, which may not be ideal
+	// In the future, consider using a global provider registry or dependency injection
+	ctx := context.Background()
+	provider, err := NewProvider(ctx, params.Config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create telemetry provider: %w", err)
+	}
+
+	// Get tracer and meter providers from the provider
+	tracerProvider := provider.TracerProvider()
+	meterProvider := provider.MeterProvider()
 	meter := meterProvider.Meter(instrumentationName)
 
 	// Initialize metrics
@@ -68,7 +135,49 @@ func NewHTTPMiddleware(
 		metric.WithDescription("Number of active MCP connections"),
 	)
 
-	middleware := &HTTPMiddleware{
+	return &HTTPMiddleware{
+		config:            params.Config,
+		tracerProvider:    tracerProvider,
+		tracer:            tracerProvider.Tracer(instrumentationName),
+		meterProvider:     meterProvider,
+		meter:             meter,
+		serverName:        params.ServerName,
+		transport:         params.Transport,
+		requestCounter:    requestCounter,
+		requestDuration:   requestDuration,
+		activeConnections: activeConnections,
+	}, nil
+}
+
+// NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.
+// serverName is the name of the MCP server (e.g., "github", "fetch")
+// transport is the backend transport type ("stdio" or "sse")
+func NewHTTPMiddleware(
+	config Config,
+	tracerProvider trace.TracerProvider,
+	meterProvider metric.MeterProvider,
+	serverName, transport string,
+) types.Middleware {
+	meter := meterProvider.Meter(instrumentationName)
+
+	// Initialize metrics
+	requestCounter, _ := meter.Int64Counter(
+		"toolhive_mcp_requests", // The exporter adds the _total suffix automatically
+		metric.WithDescription("Total number of MCP requests"),
+	)
+
+	requestDuration, _ := meter.Float64Histogram(
+		"toolhive_mcp_request_duration", // The exporter adds the _seconds suffix automatically
+		metric.WithDescription("Duration of MCP requests in seconds"),
+		metric.WithUnit("s"),
+	)
+
+	activeConnections, _ := meter.Int64UpDownCounter(
+		"toolhive_mcp_active_connections",
+		metric.WithDescription("Number of active MCP connections"),
+	)
+
+	return &HTTPMiddleware{
 		config:            config,
 		tracerProvider:    tracerProvider,
 		tracer:            tracerProvider.Tracer(instrumentationName),
@@ -80,14 +189,23 @@ func NewHTTPMiddleware(
 		requestDuration:   requestDuration,
 		activeConnections: activeConnections,
 	}
-
-	return middleware.Handler
 }
 
-// Handler implements the middleware function that wraps HTTP handlers.
+// Handler implements the types.Middleware interface and returns the middleware function.
+func (m *HTTPMiddleware) Handler() types.MiddlewareFunction {
+	return m.middlewareHandler
+}
+
+// Close implements the types.Middleware interface.
+func (*HTTPMiddleware) Close() error {
+	// No resources to clean up for HTTP middleware
+	return nil
+}
+
+// middlewareHandler implements the middleware function that wraps HTTP handlers.
 // This middleware should be placed after the MCP parsing middleware in the chain
 // to leverage the parsed MCP data.
-func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
+func (m *HTTPMiddleware) middlewareHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 

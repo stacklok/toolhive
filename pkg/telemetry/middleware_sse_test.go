@@ -77,7 +77,7 @@ func TestHTTPMiddleware_SSEHandling(t *testing.T) {
 			})
 
 			// Wrap with our middleware
-			wrappedHandler := middleware(testHandler)
+			wrappedHandler := middleware.Handler()(testHandler)
 
 			// Create test request
 			req := httptest.NewRequest("GET", tt.path, nil)
@@ -181,7 +181,7 @@ func TestHTTPMiddleware_SSEIntegration(t *testing.T) {
 	})
 
 	// Wrap with middleware
-	wrappedHandler := middleware(sseHandler)
+	wrappedHandler := middleware.Handler()(sseHandler)
 
 	// Test SSE endpoint
 	req := httptest.NewRequest("GET", "/sse", nil)

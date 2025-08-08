@@ -60,6 +60,8 @@ type Manager interface {
 	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
 	// MoveToDefaultGroup moves the specified workloads to the default group by updating the runconfig.
 	MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error
+	// ListWorkloadsInGroup returns all workload names that belong to the specified group, including stopped workloads.
+	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error)
 }
 
 type defaultManager struct {
@@ -660,4 +662,22 @@ func (*defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []s
 	}
 
 	return nil
+}
+
+// ListWorkloadsInGroup returns all workload names that belong to the specified group
+func (d *defaultManager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error) {
+	workloads, err := d.ListWorkloads(ctx, true) // listAll=true to include stopped workloads
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workloads: %w", err)
+	}
+
+	// Filter workloads that belong to the specified group
+	var groupWorkloads []string
+	for _, workload := range workloads {
+		if workload.Group == groupName {
+			groupWorkloads = append(groupWorkloads, workload.Name)
+		}
+	}
+
+	return groupWorkloads, nil
 }

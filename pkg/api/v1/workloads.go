@@ -96,7 +96,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid group name: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		workloadList, err = workloads.FilterByGroup(ctx, workloadList, groupFilter)
+		workloadList, err = workloads.FilterByGroup(workloadList, groupFilter)
 		if err != nil {
 			if thverrors.IsGroupNotFound(err) {
 				http.Error(w, "Group not found", http.StatusNotFound)
@@ -649,7 +649,7 @@ func (s *WorkloadRoutes) getWorkloadNamesFromRequest(ctx context.Context, req bu
 	}
 
 	// Get all workload names in the group
-	workloadNames, err := s.groupManager.ListWorkloadsInGroup(ctx, req.Group)
+	workloadNames, err := s.workloadManager.ListWorkloadsInGroup(ctx, req.Group)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workloads in group: %v", err)
 	}

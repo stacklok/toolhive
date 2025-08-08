@@ -6,6 +6,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/tunnel/ngrok"
 )
 
+//go:generate mockgen -destination=mocks/mock_tunnel_provider.go -package=mocks -source=tunnel.go
+
 // SupportedTunnelProviders maps provider names to their implementations.
 var SupportedTunnelProviders = map[string]TunnelProvider{
 	"ngrok": &ngrok.TunnelProvider{},

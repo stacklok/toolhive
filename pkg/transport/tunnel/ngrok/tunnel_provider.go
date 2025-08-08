@@ -19,6 +19,7 @@ type TunnelProvider struct {
 type TunnelConfig struct {
 	AuthToken string
 	Domain    string // Optional: specify custom domain
+	DryRun    bool
 }
 
 // ParseConfig parses the configuration for the ngrok tunnel provider from a map.
@@ -37,11 +38,20 @@ func (p *TunnelProvider) ParseConfig(raw map[string]any) error {
 	}
 
 	p.config = cfg
+
+	if dr, ok := raw["dry-run"].(bool); ok {
+		p.config.DryRun = dr
+	}
 	return nil
 }
 
 // StartTunnel starts a tunnel using ngrok to the specified target URI.
 func (p *TunnelProvider) StartTunnel(ctx context.Context, name, targetURI string) error {
+	if p.config.DryRun {
+		// behave like an active tunnel that exits on ctx cancel
+		<-ctx.Done()
+		return nil
+	}
 	logger.Infof("[ngrok] Starting tunnel %q → %s", name, targetURI)
 
 	agent, err := ngrok.NewAgent(

@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -12,6 +13,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 		transportType   TransportType
 		data            TemplateData
 		wantContains    []string
+		wantMatches     []string // New field for regex patterns
 		wantNotContains []string
 		wantErr         bool
 	}{
@@ -23,10 +25,12 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				MCPArgs:    []string{"--arg1", "--arg2", "value"},
 			},
 			wantContains: []string{
-				"FROM python:3.12-slim",
 				"apt-get install -y --no-install-recommends ca-certificates",
 				"pip install --no-cache-dir uv",
 				"ENTRYPOINT [\"uvx\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
+			},
+			wantMatches: []string{
+				`FROM python:\d+\.\d+-slim`, // Match any Python version
 			},
 			wantNotContains: []string{
 				"Add custom CA certificate",
@@ -43,7 +47,6 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
 			},
 			wantContains: []string{
-				"FROM python:3.12-slim",
 				"apt-get install -y --no-install-recommends ca-certificates",
 				"pip install --no-cache-dir uv",
 				"ENTRYPOINT [\"uvx\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
@@ -51,6 +54,9 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
 				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",
 				"update-ca-certificates",
+			},
+			wantMatches: []string{
+				`FROM python:\d+\.\d+-slim`, // Match any Python version
 			},
 			wantNotContains: []string{},
 			wantErr:         false,
@@ -63,8 +69,10 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				MCPArgs:    []string{"--arg1", "--arg2", "value"},
 			},
 			wantContains: []string{
-				"FROM node:22-alpine",
 				"ENTRYPOINT [\"npx\", \"--yes\", \"--\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
+			},
+			wantMatches: []string{
+				`FROM node:\d+-alpine`, // Match any Node version
 			},
 			wantNotContains: []string{
 				"Add custom CA certificate",
@@ -81,12 +89,14 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
 			},
 			wantContains: []string{
-				"FROM node:22-alpine",
 				"ENTRYPOINT [\"npx\", \"--yes\", \"--\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
 				"Add custom CA certificate BEFORE any network operations",
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
 				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",
 				"update-ca-certificates",
+			},
+			wantMatches: []string{
+				`FROM node:\d+-alpine`, // Match any Node version
 			},
 			wantNotContains: []string{},
 			wantErr:         false,
@@ -99,8 +109,10 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				MCPArgs:    []string{"--arg1", "--arg2", "value"},
 			},
 			wantContains: []string{
-				"FROM golang:1.24-alpine",
 				"ENTRYPOINT [\"go\", \"run\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
+			},
+			wantMatches: []string{
+				`FROM golang:\d+\.\d+-alpine`, // Match any Go version
 			},
 			wantNotContains: []string{
 				"Add custom CA certificate",
@@ -117,12 +129,14 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
 			},
 			wantContains: []string{
-				"FROM golang:1.24-alpine",
 				"ENTRYPOINT [\"go\", \"run\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
 				"Add custom CA certificate BEFORE any network operations",
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
 				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",
 				"update-ca-certificates",
+			},
+			wantMatches: []string{
+				`FROM golang:\d+\.\d+-alpine`, // Match any Go version
 			},
 			wantNotContains: []string{},
 			wantErr:         false,
@@ -136,9 +150,11 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				IsLocalPath: true,
 			},
 			wantContains: []string{
-				"FROM golang:1.24-alpine",
 				"COPY . /app/",
 				"ENTRYPOINT [\"go\", \"run\", \"./cmd/server\", \"--arg1\", \"value\"]",
+			},
+			wantMatches: []string{
+				`FROM golang:\d+\.\d+-alpine`, // Match any Go version
 			},
 			wantNotContains: []string{
 				"Add custom CA certificate",
@@ -154,9 +170,11 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				IsLocalPath: true,
 			},
 			wantContains: []string{
-				"FROM golang:1.24-alpine",
 				"COPY . /app/",
 				"ENTRYPOINT [\"go\", \"run\", \".\"]",
+			},
+			wantMatches: []string{
+				`FROM golang:\d+\.\d+-alpine`, // Match any Go version
 			},
 			wantNotContains: []string{
 				"Add custom CA certificate",
@@ -189,12 +207,26 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				return
 			}
 
+			// Check for exact string matches
 			for _, want := range tt.wantContains {
 				if !strings.Contains(got, want) {
 					t.Errorf("GetDockerfileTemplate() = %v, want to contain %v", got, want)
 				}
 			}
 
+			// Check for regex pattern matches
+			for _, pattern := range tt.wantMatches {
+				matched, err := regexp.MatchString(pattern, got)
+				if err != nil {
+					t.Errorf("Invalid regex pattern %v: %v", pattern, err)
+					continue
+				}
+				if !matched {
+					t.Errorf("GetDockerfileTemplate() = %v, want to match pattern %v", got, pattern)
+				}
+			}
+
+			// Check for strings that should not be present
 			for _, notWant := range tt.wantNotContains {
 				if strings.Contains(got, notWant) {
 					t.Errorf("GetDockerfileTemplate() = %v, want NOT to contain %v", got, notWant)

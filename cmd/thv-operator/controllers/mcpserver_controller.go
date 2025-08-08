@@ -556,6 +556,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		}
 	}
 
+	env = ensureRequiredEnvVars(env)
+
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        m.Name,
@@ -623,6 +625,36 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		return nil
 	}
 	return dep
+}
+
+func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
+	// Check for the existence of the XDG_CONFIG_HOME and HOME environment variables
+	// and set them to /tmp if they don't exist
+	xdgConfigHomeFound := false
+	homeFound := false
+	for _, envVar := range env {
+		if envVar.Name == "XDG_CONFIG_HOME" {
+			xdgConfigHomeFound = true
+		}
+		if envVar.Name == "HOME" {
+			homeFound = true
+		}
+	}
+	if !xdgConfigHomeFound {
+		logger.Debugf("XDG_CONFIG_HOME not found, setting to /tmp")
+		env = append(env, corev1.EnvVar{
+			Name:  "XDG_CONFIG_HOME",
+			Value: "/tmp",
+		})
+	}
+	if !homeFound {
+		logger.Debugf("HOME not found, setting to /tmp")
+		env = append(env, corev1.EnvVar{
+			Name:  "HOME",
+			Value: "/tmp",
+		})
+	}
+	return env
 }
 
 func createServiceName(mcpServerName string) string {

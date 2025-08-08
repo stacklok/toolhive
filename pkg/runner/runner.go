@@ -105,7 +105,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.Middlewares = append(transportConfig.Middlewares, mcp.ParsingMiddleware)
 
 	// Add telemetry middleware if telemetry configuration is provided
-	if r.Config.TelemetryConfig != nil {
+	/*if r.Config.TelemetryConfig != nil {
 		logger.Info("OpenTelemetry instrumentation enabled for transport")
 
 		// Create telemetry provider
@@ -132,7 +132,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				logger.Warnf("Failed to close telemetry middleware: %v", err)
 			}
 		}()
-	}
+	}*/
 
 	// Add authorization middleware if authorization configuration is provided
 	if r.Config.AuthzConfig != nil {

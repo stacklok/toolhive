@@ -38,7 +38,8 @@ require (
 	go.opentelemetry.io/otel/sdk v1.37.0
 	go.opentelemetry.io/otel/sdk/metric v1.37.0
 	go.uber.org/mock v0.5.2
-	golang.org/x/exp/jsonrpc2 v0.0.0-20250718183923-645b1fa84792
+	golang.ngrok.com/ngrok/v2 v2.0.0
+	golang.org/x/exp/jsonrpc2 v0.0.0-20250808145144-a408d31f581a
 	golang.org/x/mod v0.27.0
 	golang.org/x/oauth2 v0.30.0
 	golang.org/x/sync v0.16.0
@@ -238,8 +239,7 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
-	golang.ngrok.com/ngrok/v2 v2.0.0 // indirect
-	golang.org/x/exp/event v0.0.0-20250620022241-b7579e27df2b // indirect
+	golang.org/x/exp/event v0.0.0-20250718183923-645b1fa84792 // indirect
 	golang.org/x/net v0.42.0 // indirect
 	golang.org/x/text v0.27.0 // indirect
 	golang.org/x/time v0.12.0 // indirect

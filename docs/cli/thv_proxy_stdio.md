@@ -18,21 +18,17 @@ Create a stdio-based proxy for an MCP server
 Create a stdio-based proxy that connects stdin/stdout to a target MCP server.
 
 Example:
-  thv proxy stdio --workload-name my-server my-server-proxy
-
-Flags:
-  --workload-name  Workload name for the proxy (required)
+  thv proxy stdio my-workload my-server-proxy
 
 
 ```
-thv proxy stdio [flags] SERVER_NAME
+thv proxy stdio WORKLOAD-NAME SERVER_NAME [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help                   help for stdio
-      --workload-name string   Workload name for the proxy (required)
+  -h, --help   help for stdio
 ```
 
 ### Options inherited from parent commands

@@ -174,37 +174,43 @@ func setupTestRegistryWithMultipleServers(t *testing.T) (string, func()) {
 		LastUpdated: "2025-06-16T12:00:00Z",
 		Servers: map[string]*registry.ImageMetadata{
 			"github": {
-				Name:          "github",
-				Description:   "GitHub MCP server",
-				Image:         "ghcr.io/github/github-mcp-server:latest",
-				RepositoryURL: "https://github.com/github/github-mcp-server",
-				Metadata: &registry.Metadata{
-					Stars:       100,
-					Pulls:       5000,
-					LastUpdated: "2025-06-16T12:00:00Z", // Older
+				BaseServerMetadata: registry.BaseServerMetadata{
+					Name:          "github",
+					Description:   "GitHub MCP server",
+					RepositoryURL: "https://github.com/github/github-mcp-server",
+					Metadata: &registry.Metadata{
+						Stars:       100,
+						Pulls:       5000,
+						LastUpdated: "2025-06-16T12:00:00Z", // Older
+					},
 				},
+				Image: "ghcr.io/github/github-mcp-server:latest",
 			},
 			"gitlab": {
-				Name:          "gitlab",
-				Description:   "GitLab MCP server",
-				Image:         "mcp/gitlab:latest",
-				RepositoryURL: "https://github.com/example/gitlab-mcp-server",
-				Metadata: &registry.Metadata{
-					Stars:       50,
-					Pulls:       2000,
-					LastUpdated: "2025-06-17T12:00:00Z", // Newer
+				BaseServerMetadata: registry.BaseServerMetadata{
+					Name:          "gitlab",
+					Description:   "GitLab MCP server",
+					RepositoryURL: "https://github.com/example/gitlab-mcp-server",
+					Metadata: &registry.Metadata{
+						Stars:       50,
+						Pulls:       2000,
+						LastUpdated: "2025-06-17T12:00:00Z", // Newer
+					},
 				},
+				Image: "mcp/gitlab:latest",
 			},
 			"fetch": {
-				Name:          "fetch",
-				Description:   "Fetch MCP server",
-				Image:         "mcp/fetch:latest",
-				RepositoryURL: "https://github.com/example/fetch-mcp-server",
-				Metadata: &registry.Metadata{
-					Stars:       25,
-					Pulls:       1000,
-					LastUpdated: "2025-06-15T12:00:00Z", // Oldest
+				BaseServerMetadata: registry.BaseServerMetadata{
+					Name:          "fetch",
+					Description:   "Fetch MCP server",
+					RepositoryURL: "https://github.com/example/fetch-mcp-server",
+					Metadata: &registry.Metadata{
+						Stars:       25,
+						Pulls:       1000,
+						LastUpdated: "2025-06-15T12:00:00Z", // Oldest
+					},
 				},
+				Image: "mcp/fetch:latest",
 			},
 		},
 	}

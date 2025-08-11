@@ -30,7 +30,9 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 	}`
 
 	imageMetadata := &registry.ImageMetadata{
-		Name: "test-image",
+		BaseServerMetadata: registry.BaseServerMetadata{
+			Name: "test-image",
+		},
 		Permissions: &permissions.Profile{
 			Network: &permissions.NetworkPermissions{
 				Outbound: &permissions.OutboundNetworkPermissions{

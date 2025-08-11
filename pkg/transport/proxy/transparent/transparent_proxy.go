@@ -44,7 +44,7 @@ type TransparentProxy struct {
 	server *http.Server
 
 	// Middleware chain
-	middlewares []types.Middleware
+	middlewares []types.MiddlewareFunction
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -57,6 +57,9 @@ type TransparentProxy struct {
 
 	// Optional Prometheus metrics handler
 	prometheusHandler http.Handler
+
+	// Optional auth info handler
+	authInfoHandler http.Handler
 
 	// Sessions for tracking state
 	sessionManager *session.Manager
@@ -75,8 +78,9 @@ func NewTransparentProxy(
 	containerName string,
 	targetURI string,
 	prometheusHandler http.Handler,
+	authInfoHandler http.Handler,
 	enableHealthCheck bool,
-	middlewares ...types.Middleware,
+	middlewares ...types.MiddlewareFunction,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
 		host:              host,
@@ -86,6 +90,7 @@ func NewTransparentProxy(
 		middlewares:       middlewares,
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
+		authInfoHandler:   authInfoHandler,
 		sessionManager:    session.NewManager(30*time.Minute, session.NewProxySession),
 	}
 
@@ -299,6 +304,21 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 	p.listener = ln
+
+	// Add .well-known path space handler if auth info handler is provided (no middlewares)
+	if p.authInfoHandler != nil {
+		// Create a handler that routes .well-known requests
+		wellKnownHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/.well-known/oauth-protected-resource":
+				p.authInfoHandler.ServeHTTP(w, r)
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		mux.Handle("/.well-known/", wellKnownHandler)
+		logger.Info("Well-known discovery endpoints enabled at /.well-known/ (no middlewares)")
+	}
 
 	// Create the server
 	p.server = &http.Server{

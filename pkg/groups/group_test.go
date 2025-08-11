@@ -454,56 +454,6 @@ func TestManager_Exists(t *testing.T) {
 	}
 }
 
-// TestManager_GetWorkloadGroup tests the GetWorkloadGroup method
-func TestManager_GetWorkloadGroup(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		workloadName  string
-		expectError   bool
-		expectedGroup *Group
-		errorMsg      string
-	}{
-		{
-			name:          "workload not found",
-			workloadName:  "nonexistent-workload",
-			expectError:   false,
-			expectedGroup: nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-
-			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{groupStore: mockStore}
-
-			// Call the method
-			group, err := manager.GetWorkloadGroup(context.Background(), tt.workloadName)
-
-			// Assert results
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorMsg != "" {
-					assert.Contains(t, err.Error(), tt.errorMsg)
-				}
-			} else {
-				assert.NoError(t, err)
-				if tt.expectedGroup != nil {
-					assert.Equal(t, tt.expectedGroup.Name, group.Name)
-				} else {
-					assert.Nil(t, group)
-				}
-			}
-		})
-	}
-}
-
 // TestManager_RegisterClients tests client registration
 func TestManager_RegisterClients(t *testing.T) {
 	t.Parallel()

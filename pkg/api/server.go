@@ -32,7 +32,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -155,7 +154,7 @@ func Serve(
 	r.Use(updateCheckMiddleware())
 
 	// Add authentication middleware
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
@@ -165,12 +164,6 @@ func Serve(
 	containerRuntime, err := container.NewFactory().Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
-	}
-
-	// Create registry provider
-	registryProvider, err := registry.GetDefaultProvider()
-	if err != nil {
-		return fmt.Errorf("failed to create registry provider: %v", err)
 	}
 
 	clientManager, err := client.NewManager(ctx)
@@ -190,11 +183,11 @@ func Serve(
 		"/health":               v1.HealthcheckRouter(containerRuntime),
 		"/api/v1beta/version":   v1.VersionRouter(),
 		"/api/v1beta/workloads": v1.WorkloadRouter(workloadManager, containerRuntime, groupManager, debugMode),
-		"/api/v1beta/registry":  v1.RegistryRouter(registryProvider),
+		"/api/v1beta/registry":  v1.RegistryRouter(),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(clientManager, workloadManager, groupManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
-		"/api/v1beta/groups":    v1.GroupsRouter(groupManager),
+		"/api/v1beta/groups":    v1.GroupsRouter(groupManager, workloadManager),
 	}
 
 	// Only mount docs router if enabled

@@ -58,6 +58,12 @@ func (b *RunConfigBuilder) WithName(name string) *RunConfigBuilder {
 	return b
 }
 
+// WithMiddlewareConfig sets the middleware configuration
+func (b *RunConfigBuilder) WithMiddlewareConfig(middlewareConfig []types.MiddlewareConfig) *RunConfigBuilder {
+	b.config.MiddlewareConfigs = middlewareConfig
+	return b
+}
+
 // WithCmdArgs sets the command arguments
 func (b *RunConfigBuilder) WithCmdArgs(args []string) *RunConfigBuilder {
 	b.config.CmdArgs = args
@@ -197,7 +203,7 @@ func (b *RunConfigBuilder) WithAuditEnabled(enableAudit bool, auditConfigPath st
 // WithOIDCConfig configures OIDC settings
 func (b *RunConfigBuilder) WithOIDCConfig(
 	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID string, oidcClientSecret string,
-	thvCABundle, jwksAuthTokenFile string,
+	thvCABundle, jwksAuthTokenFile, resourceURL string,
 	jwksAllowPrivateIP bool,
 ) *RunConfigBuilder {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
@@ -215,6 +221,16 @@ func (b *RunConfigBuilder) WithOIDCConfig(
 	b.config.ThvCABundle = thvCABundle
 	b.config.JWKSAuthTokenFile = jwksAuthTokenFile
 	b.config.JWKSAllowPrivateIP = jwksAllowPrivateIP
+
+	// Set ResourceURL if OIDCConfig exists or if resourceURL is not empty
+	if b.config.OIDCConfig != nil {
+		b.config.OIDCConfig.ResourceURL = resourceURL
+	} else if resourceURL != "" {
+		// Create OIDCConfig just for ResourceURL if it doesn't exist but resourceURL is provided
+		b.config.OIDCConfig = &auth.TokenValidatorConfig{
+			ResourceURL: resourceURL,
+		}
+	}
 	return b
 }
 

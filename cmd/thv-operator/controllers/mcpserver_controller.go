@@ -213,7 +213,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Update the MCPServer status with the service URL
 	if mcpServer.Status.URL == "" {
-		mcpServer.Status.URL = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", service.Name, service.Namespace, mcpServer.Spec.Port)
+		mcpServer.Status.URL = createServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.Spec.Port)
 		err = r.Status().Update(ctx, mcpServer)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update MCPServer status")
@@ -428,6 +428,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 		oidcArgs := r.generateOIDCArgs(ctx, m)
 		args = append(args, oidcArgs...)
+
+		// Add OAuth discovery resource URL for RFC 9728 compliance
+		resourceURL := createServiceURL(m.Name, m.Namespace, m.Spec.Port)
+		args = append(args, fmt.Sprintf("--resource-url=%s", resourceURL))
 	}
 
 	// Add authorization configuration args
@@ -623,6 +627,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 func createServiceName(mcpServerName string) string {
 	return fmt.Sprintf("mcp-%s-proxy", mcpServerName)
+}
+
+// createServiceURL generates the full cluster-local service URL for an MCP server
+func createServiceURL(mcpServerName, namespace string, port int32) string {
+	serviceName := createServiceName(mcpServerName)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
 }
 
 // serviceForMCPServer returns a MCPServer Service object

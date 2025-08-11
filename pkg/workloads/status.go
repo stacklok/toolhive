@@ -11,6 +11,8 @@ import (
 )
 
 // StatusManager is an interface for fetching and retrieving workload statuses.
+//
+//go:generate mockgen -destination=mocks/mock_status_manager.go -package=mocks -source=status.go StatusManager
 type StatusManager interface {
 	// CreateWorkloadStatus creates the initial `starting` status for a new workload.
 	// Unlike SetWorkloadStatus, this will create a new entry in the status store,

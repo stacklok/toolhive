@@ -60,10 +60,19 @@ Basic transparent proxy:
 
 	thv proxy my-server --target-uri http://localhost:8080
 
-Proxy with OAuth authentication to remote server:
+Proxy with OIDC authentication to remote server:
 
 	thv proxy my-server --target-uri https://api.example.com \
 	  --remote-auth --remote-auth-issuer https://auth.example.com \
+	  --remote-auth-client-id my-client-id \
+	  --remote-auth-client-secret-file /path/to/secret
+
+Proxy with non-OIDC OAuth authentication to remote server:
+
+	thv proxy my-server --target-uri https://api.example.com \
+	  --remote-auth \
+	  --remote-auth-authorize-url https://auth.example.com/oauth/authorize \
+	  --remote-auth-token-url https://auth.example.com/oauth/token \
 	  --remote-auth-client-id my-client-id \
 	  --remote-auth-client-secret-file /path/to/secret
 
@@ -86,6 +95,8 @@ var (
 	proxyPort      int
 	proxyTargetURI string
 
+	resourceURL string // Explicit resource URL for OAuth discovery endpoint (RFC 9728)
+
 	// Remote server authentication flags
 	remoteAuthIssuer           string
 	remoteAuthClientID         string
@@ -96,6 +107,10 @@ var (
 	remoteAuthTimeout          time.Duration
 	remoteAuthCallbackPort     int
 	enableRemoteAuth           bool
+
+	// Manual OAuth endpoint configuration
+	remoteAuthAuthorizeURL string
+	remoteAuthTokenURL     string
 )
 
 // Default timeout constants
@@ -126,6 +141,9 @@ func init() {
 	// Add OIDC validation flags
 	AddOIDCFlags(proxyCmd)
 
+	proxyCmd.Flags().StringVar(&resourceURL, "resource-url", "",
+		"Explicit resource URL for OAuth discovery endpoint (RFC 9728)")
+
 	// Add remote server authentication flags
 	proxyCmd.Flags().BoolVar(&enableRemoteAuth, "remote-auth", false, "Enable OAuth authentication to remote MCP server")
 	proxyCmd.Flags().StringVar(&remoteAuthIssuer, "remote-auth-issuer", "",
@@ -136,19 +154,26 @@ func init() {
 		"OAuth client secret for remote server authentication (optional for PKCE)")
 	proxyCmd.Flags().StringVar(&remoteAuthClientSecretFile, "remote-auth-client-secret-file", "",
 		"Path to file containing OAuth client secret (alternative to --remote-auth-client-secret)")
-	proxyCmd.Flags().StringSliceVar(&remoteAuthScopes, "remote-auth-scopes",
-		[]string{"openid", "profile", "email"}, "OAuth scopes to request for remote server authentication")
+	proxyCmd.Flags().StringSliceVar(&remoteAuthScopes, "remote-auth-scopes", []string{},
+		"OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')")
 	proxyCmd.Flags().BoolVar(&remoteAuthSkipBrowser, "remote-auth-skip-browser", false,
 		"Skip opening browser for remote server OAuth flow")
 	proxyCmd.Flags().DurationVar(&remoteAuthTimeout, "remote-auth-timeout", 30*time.Second,
 		"Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s)")
 	proxyCmd.Flags().IntVar(&remoteAuthCallbackPort, "remote-auth-callback-port", 8666,
 		"Port for OAuth callback server during remote authentication (default: 8666)")
+	proxyCmd.Flags().StringVar(&remoteAuthAuthorizeURL, "remote-auth-authorize-url", "",
+		"OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)")
+	proxyCmd.Flags().StringVar(&remoteAuthTokenURL, "remote-auth-token-url", "",
+		"OAuth token endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)")
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
 		logger.Warnf("Warning: Failed to mark flag as required: %v", err)
 	}
+
+	// Attach the subcommand to the main proxy command
+	proxyCmd.AddCommand(proxyTunnelCmd)
 }
 
 func proxyCmdFunc(cmd *cobra.Command, args []string) error {
@@ -195,7 +220,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create middlewares slice for incoming request authentication
-	var middlewares []types.Middleware
+	var middlewares []types.MiddlewareFunction
 
 	// Get OIDC configuration if enabled (for protecting the proxy endpoint)
 	var oidcConfig *auth.TokenValidatorConfig
@@ -215,11 +240,12 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 			IntrospectionURL: introspectionURL,
 			ClientID:         clientID,
 			ClientSecret:     clientSecret,
+			ResourceURL:      resourceURL,
 		}
 	}
 
 	// Get authentication middleware for incoming requests
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
@@ -236,7 +262,11 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		port, proxyTargetURI)
 
 	// Create the transparent proxy with middlewares
-	proxy := transparent.NewTransparentProxy(proxyHost, port, serverName, proxyTargetURI, nil, false, middlewares...)
+	proxy := transparent.NewTransparentProxy(
+		proxyHost, port, serverName, proxyTargetURI,
+		nil, authInfoHandler,
+		false,
+		middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %v", err)
 	}
@@ -373,16 +403,34 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 	scopes []string) (*oauth2.TokenSource, *oauth.Config, error) {
 	logger.Info("Starting OAuth authentication flow...")
 
-	// Create OAuth config from OIDC discovery
-	oauthConfig, err := oauth.CreateOAuthConfigFromOIDC(
-		ctx,
-		issuer,
-		clientID,
-		clientSecret,
-		scopes,
-		true, // Enable PKCE by default for security
-		remoteAuthCallbackPort,
-	)
+	var oauthConfig *oauth.Config
+	var err error
+
+	// Check if we have manual OAuth endpoints configured
+	if remoteAuthAuthorizeURL != "" && remoteAuthTokenURL != "" {
+		logger.Info("Using manual OAuth configuration")
+		oauthConfig, err = oauth.CreateOAuthConfigManual(
+			clientID,
+			clientSecret,
+			remoteAuthAuthorizeURL,
+			remoteAuthTokenURL,
+			scopes,
+			true, // Enable PKCE by default for security
+			remoteAuthCallbackPort,
+		)
+	} else {
+		// Fall back to OIDC discovery
+		logger.Info("Using OIDC discovery")
+		oauthConfig, err = oauth.CreateOAuthConfigFromOIDC(
+			ctx,
+			issuer,
+			clientID,
+			clientSecret,
+			scopes,
+			true, // Enable PKCE by default for security
+			remoteAuthCallbackPort,
+		)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create OAuth config: %w", err)
 	}
@@ -444,12 +492,22 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 	}
 
 	if enableRemoteAuth {
-		// If OAuth is explicitly enabled, use provided configuration
-		if remoteAuthIssuer == "" {
-			return nil, nil, fmt.Errorf("remote-auth-issuer is required when remote authentication is enabled")
-		}
+		// If OAuth is explicitly enabled, validate configuration
 		if remoteAuthClientID == "" {
 			return nil, nil, fmt.Errorf("remote-auth-client-id is required when remote authentication is enabled")
+		}
+
+		// Check if we have either OIDC issuer or manual OAuth endpoints
+		hasOIDCConfig := remoteAuthIssuer != ""
+		hasManualConfig := remoteAuthAuthorizeURL != "" && remoteAuthTokenURL != ""
+
+		if !hasOIDCConfig && !hasManualConfig {
+			return nil, nil, fmt.Errorf("either --remote-auth-issuer (for OIDC) or both --remote-auth-authorize-url " +
+				"and --remote-auth-token-url (for OAuth) are required")
+		}
+
+		if hasOIDCConfig && hasManualConfig {
+			return nil, nil, fmt.Errorf("cannot specify both OIDC issuer and manual OAuth endpoints - choose one approach")
 		}
 
 		return performOAuthFlow(ctx, remoteAuthIssuer, remoteAuthClientID, clientSecret, remoteAuthScopes)
@@ -514,7 +572,7 @@ func resolveClientSecret() (string, error) {
 }
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
-func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.Middleware {
+func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, err := (*tokenSource).Token()

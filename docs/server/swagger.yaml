@@ -71,6 +71,10 @@ components:
         jwksurl:
           description: JWKSURL is the URL to fetch the JWKS from
           type: string
+        resourceURL:
+          description: ResourceURL is the explicit resource URL for OAuth discovery
+            (RFC 9728)
+          type: string
       type: object
     authz.CedarConfig:
       description: |-
@@ -509,6 +513,14 @@ components:
             K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
             Only applicable when using Kubernetes runtime
           type: string
+        middleware_configs:
+          description: |-
+            MiddlewareConfigs contains the list of middleware to apply to the transport
+            and the configuration for each middleware.
+          items:
+            $ref: '#/components/schemas/types.MiddlewareConfig'
+          type: array
+          uniqueItems: false
         name:
           description: Name is the name of the MCP server
           type: string
@@ -629,6 +641,17 @@ components:
           description: ServiceVersion is the service version for telemetry
           type: string
       type: object
+    types.MiddlewareConfig:
+      properties:
+        parameters:
+          description: |-
+            Parameters is a JSON object containing the middleware parameters.
+            It is stored as a raw message to allow flexible parameter types.
+          type: object
+        type:
+          description: Type is a string representing the middleware type.
+          type: string
+      type: object
     types.ProxyMode:
       description: ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
       type: string
@@ -643,6 +666,13 @@ components:
       - TransportTypeSSE
       - TransportTypeStreamableHTTP
       - TransportTypeInspector
+    v1.RegistryType:
+      description: Type of registry (file, url, or default)
+      type: string
+      x-enum-varnames:
+      - RegistryTypeFile
+      - RegistryTypeURL
+      - RegistryTypeDefault
     v1.UpdateRegistryRequest:
       description: Request containing registry configuration updates
       properties:
@@ -886,6 +916,17 @@ components:
         server_count:
           description: Number of servers in the registry
           type: integer
+        source:
+          description: Source of the registry (URL, file path, or empty string for
+            built-in)
+          type: string
+        type:
+          description: Type of registry (file, url, or default)
+          type: string
+          x-enum-varnames:
+          - RegistryTypeFile
+          - RegistryTypeURL
+          - RegistryTypeDefault
         version:
           description: Version of the registry schema
           type: string
@@ -990,6 +1031,12 @@ components:
         server_count:
           description: Number of servers in the registry
           type: integer
+        source:
+          description: Source of the registry (URL, file path, or empty string for
+            built-in)
+          type: string
+        type:
+          $ref: '#/components/schemas/v1.RegistryType'
         version:
           description: Version of the registry schema
           type: string

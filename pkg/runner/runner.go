@@ -29,6 +29,9 @@ type Runner struct {
 
 	// telemetryProvider is the OpenTelemetry provider for cleanup
 	telemetryProvider *telemetry.Provider
+
+	// supportedMiddleware is a map of supported middleware types to their factory functions.
+	supportedMiddleware map[string]types.MiddlewareFactory
 }
 
 // NewRunner creates a new Runner with the provided configuration
@@ -53,6 +56,29 @@ func (r *Runner) Run(ctx context.Context) error {
 		Debug:      r.Config.Debug,
 	}
 
+	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
+	for _, middlewareConfig := range r.Config.MiddlewareConfigs {
+		// First, get the correct factory function for the middleware type.
+		factory, ok := r.supportedMiddleware[middlewareConfig.Type]
+		if !ok {
+			return fmt.Errorf("unsupported middleware type: %s", middlewareConfig.Type)
+		}
+
+		// Create the middleware instance using the factory function.
+		middleware, err := factory(&middlewareConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create middleware of type %s: %v", middlewareConfig.Type, err)
+		}
+
+		// Ensure middleware is cleaned up on shutdown.
+		defer func() {
+			if err := middleware.Close(); err != nil {
+				logger.Warnf("Failed to close middleware of type %s: %v", middlewareConfig.Type, err)
+			}
+		}()
+		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware.Handler())
+	}
+
 	if len(r.Config.ToolsFilter) > 0 {
 		toolsFilterMiddleware, err := mcp.NewToolFilterMiddleware(r.Config.ToolsFilter)
 		if err != nil {
@@ -67,11 +93,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsCallFilterMiddleware)
 	}
 
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
+	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
 	transportConfig.Middlewares = append(transportConfig.Middlewares, authMiddleware)
+	transportConfig.AuthInfoHandler = authInfoHandler
 
 	// Add MCP parsing middleware after authentication
 	logger.Info("MCP parsing middleware enabled for transport")
@@ -183,8 +210,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Update client configurations with the MCP server URL.
 	// Note that this function checks the configuration to determine which
 	// clients should be updated, if any.
-	if err := updateClientConfigurations(r.Config.ContainerName, r.Config.ContainerLabels, "localhost", r.Config.Port); err != nil {
-		logger.Warnf("Warning: Failed to update client configurations: %v", err)
+	clientManager, err := client.NewManager(ctx)
+	if err != nil {
+		logger.Warnf("Warning: Failed to create client manager: %v", err)
+	} else {
+		transportType := labels.GetTransportType(r.Config.ContainerLabels)
+		serverURL := transport.GenerateMCPServerURL(transportType, "localhost", r.Config.Port, r.Config.ContainerName)
+
+		if err := clientManager.AddServerToClients(ctx, r.Config.ContainerName, serverURL, transportType, r.Config.Group); err != nil {
+			logger.Warnf("Warning: Failed to add server to client configurations: %v", err)
+		}
 	}
 
 	// Define a function to stop the MCP server
@@ -285,42 +320,5 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
-}
-
-// updateClientConfigurations updates client configuration files with the MCP server URL
-func updateClientConfigurations(
-	containerName string,
-	containerLabels map[string]string,
-	host string,
-	proxyPort int,
-) error {
-	// Find client configuration files
-	clientConfigs, err := client.FindRegisteredClientConfigs()
-	if err != nil {
-		return fmt.Errorf("failed to find client configurations: %w", err)
-	}
-
-	if len(clientConfigs) == 0 {
-		logger.Infof("No client configuration files found")
-		return nil
-	}
-
-	// Generate the URL for the MCP server
-	transportType := labels.GetTransportType(containerLabels)
-	url := transport.GenerateMCPServerURL(transportType, host, proxyPort, containerName)
-
-	// Update each configuration file
-	for _, clientConfig := range clientConfigs {
-		logger.Infof("Updating client configuration: %s", clientConfig.Path)
-
-		if err := client.Upsert(clientConfig, containerName, url, transportType); err != nil {
-			fmt.Printf("Warning: Failed to update MCP server configuration in %s: %v\n", clientConfig.Path, err)
-			continue
-		}
-
-		logger.Infof("Successfully updated client configuration: %s", clientConfig.Path)
-	}
-
 	return nil
 }

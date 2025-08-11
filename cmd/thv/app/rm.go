@@ -89,8 +89,14 @@ func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 		return fmt.Errorf("group '%s' does not exist", groupName)
 	}
 
+	// Create workload manager
+	workloadManager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
+
 	// Get all workloads in the group
-	groupWorkloads, err := groupManager.ListWorkloadsInGroup(ctx, groupName)
+	groupWorkloads, err := workloadManager.ListWorkloadsInGroup(ctx, groupName)
 	if err != nil {
 		return fmt.Errorf("failed to list workloads in group: %v", err)
 	}
@@ -98,12 +104,6 @@ func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 	if len(groupWorkloads) == 0 {
 		fmt.Printf("No workloads found in group '%s'\n", groupName)
 		return nil
-	}
-
-	// Create workload manager
-	workloadManager, err := workloads.NewManager(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
 	// Delete all workloads in the group

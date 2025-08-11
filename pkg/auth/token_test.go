@@ -760,3 +760,189 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 		}
 	})
 }
+
+func TestNewAuthInfoHandler(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		issuer       string
+		jwksURL      string
+		resourceURL  string
+		scopes       []string
+		method       string
+		origin       string
+		expectStatus int
+		expectBody   bool
+		expectCORS   bool
+	}{
+		{
+			name:         "successful GET request with all parameters",
+			issuer:       "https://auth.example.com",
+			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
+			resourceURL:  "https://api.example.com",
+			scopes:       []string{"read", "write"},
+			method:       "GET",
+			origin:       "https://client.example.com",
+			expectStatus: http.StatusOK,
+			expectBody:   true,
+			expectCORS:   true,
+		},
+		{
+			name:         "successful GET request without origin",
+			issuer:       "https://auth.example.com",
+			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
+			resourceURL:  "https://api.example.com",
+			scopes:       nil, // Test default scopes
+			method:       "GET",
+			origin:       "",
+			expectStatus: http.StatusOK,
+			expectBody:   true,
+			expectCORS:   true,
+		},
+		{
+			name:         "OPTIONS preflight request",
+			issuer:       "https://auth.example.com",
+			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
+			resourceURL:  "https://api.example.com",
+			scopes:       []string{"openid", "profile"},
+			method:       "OPTIONS",
+			origin:       "https://client.example.com",
+			expectStatus: http.StatusNoContent,
+			expectBody:   false,
+			expectCORS:   true,
+		},
+		{
+			name:         "missing resource URL returns 404",
+			issuer:       "https://auth.example.com",
+			jwksURL:      "https://auth.example.com/.well-known/jwks.json",
+			resourceURL:  "",
+			scopes:       []string{"openid"},
+			method:       "GET",
+			origin:       "https://client.example.com",
+			expectStatus: http.StatusNotFound,
+			expectBody:   false,
+			expectCORS:   true,
+		},
+		{
+			name:         "empty issuer and jwksURL with resource URL",
+			issuer:       "",
+			jwksURL:      "",
+			resourceURL:  "https://api.example.com",
+			scopes:       []string{}, // Test empty scopes (should default to openid)
+			method:       "GET",
+			origin:       "https://client.example.com",
+			expectStatus: http.StatusOK,
+			expectBody:   true,
+			expectCORS:   true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create the handler
+			handler := NewAuthInfoHandler(tc.issuer, tc.jwksURL, tc.resourceURL, tc.scopes)
+
+			// Create test request
+			req := httptest.NewRequest(tc.method, "/", nil)
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+
+			// Create response recorder
+			rec := httptest.NewRecorder()
+
+			// Serve the request
+			handler.ServeHTTP(rec, req)
+
+			// Check status code
+			if rec.Code != tc.expectStatus {
+				t.Errorf("Expected status %d but got %d", tc.expectStatus, rec.Code)
+			}
+
+			// Check CORS headers if expected
+			if tc.expectCORS {
+				expectedOrigin := tc.origin
+				if expectedOrigin == "" {
+					expectedOrigin = "*"
+				}
+				if actualOrigin := rec.Header().Get("Access-Control-Allow-Origin"); actualOrigin != expectedOrigin {
+					t.Errorf("Expected Access-Control-Allow-Origin %s but got %s", expectedOrigin, actualOrigin)
+				}
+
+				if allowMethods := rec.Header().Get("Access-Control-Allow-Methods"); allowMethods != "GET, OPTIONS" {
+					t.Errorf("Expected Access-Control-Allow-Methods 'GET, OPTIONS' but got %s", allowMethods)
+				}
+
+				expectedHeaders := "mcp-protocol-version, Content-Type, Authorization"
+				if allowHeaders := rec.Header().Get("Access-Control-Allow-Headers"); allowHeaders != expectedHeaders {
+					t.Errorf("Expected Access-Control-Allow-Headers '%s' but got %s", expectedHeaders, allowHeaders)
+				}
+
+				if maxAge := rec.Header().Get("Access-Control-Max-Age"); maxAge != "86400" {
+					t.Errorf("Expected Access-Control-Max-Age '86400' but got %s", maxAge)
+				}
+			}
+
+			// Check response body if expected
+			if tc.expectBody {
+				var authInfo RFC9728AuthInfo
+				if err := json.NewDecoder(rec.Body).Decode(&authInfo); err != nil {
+					t.Fatalf("Failed to decode response body: %v", err)
+				}
+
+				// Verify the response content
+				if authInfo.Resource != tc.resourceURL {
+					t.Errorf("Expected resource %s but got %s", tc.resourceURL, authInfo.Resource)
+				}
+
+				if tc.issuer != "" {
+					if len(authInfo.AuthorizationServers) != 1 || authInfo.AuthorizationServers[0] != tc.issuer {
+						t.Errorf("Expected authorization servers [%s] but got %v", tc.issuer, authInfo.AuthorizationServers)
+					}
+				} else {
+					if len(authInfo.AuthorizationServers) != 1 || authInfo.AuthorizationServers[0] != "" {
+						t.Errorf("Expected authorization servers [''] but got %v", authInfo.AuthorizationServers)
+					}
+				}
+
+				if authInfo.JWKSURI != tc.jwksURL {
+					t.Errorf("Expected JWKS URI %s but got %s", tc.jwksURL, authInfo.JWKSURI)
+				}
+
+				expectedMethods := []string{"header"}
+				if len(authInfo.BearerMethodsSupported) != len(expectedMethods) {
+					t.Errorf("Expected bearer methods %v but got %v", expectedMethods, authInfo.BearerMethodsSupported)
+				} else {
+					for i, method := range expectedMethods {
+						if authInfo.BearerMethodsSupported[i] != method {
+							t.Errorf("Expected bearer method %s but got %s", method, authInfo.BearerMethodsSupported[i])
+						}
+					}
+				}
+
+				// Determine expected scopes
+				expectedScopes := tc.scopes
+				if len(expectedScopes) == 0 {
+					expectedScopes = []string{"openid"}
+				}
+				if len(authInfo.ScopesSupported) != len(expectedScopes) {
+					t.Errorf("Expected scopes %v but got %v", expectedScopes, authInfo.ScopesSupported)
+				} else {
+					for i, scope := range expectedScopes {
+						if authInfo.ScopesSupported[i] != scope {
+							t.Errorf("Expected scope %s but got %s", scope, authInfo.ScopesSupported[i])
+						}
+					}
+				}
+
+				// Check content type
+				if contentType := rec.Header().Get("Content-Type"); contentType != "application/json" {
+					t.Errorf("Expected Content-Type 'application/json' but got %s", contentType)
+				}
+			}
+		})
+	}
+}

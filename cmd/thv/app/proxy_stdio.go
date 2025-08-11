@@ -12,22 +12,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
-var (
-	stdioWorkloadName string
-)
-
 var proxyStdioCmd = &cobra.Command{
-	Use:   "stdio [flags] SERVER_NAME",
+	Use:   "stdio WORKLOAD-NAME SERVER_NAME",
 	Short: "Create a stdio-based proxy for an MCP server",
 	Long: `Create a stdio-based proxy that connects stdin/stdout to a target MCP server.
 
 Example:
-  thv proxy stdio --workload-name my-server my-server-proxy
-
-Flags:
-  --workload-name  Workload name for the proxy (required)
+  thv proxy stdio my-workload my-server-proxy
 `,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.ExactArgs(2),
 	RunE: proxyStdioCmdFunc,
 }
 
@@ -35,23 +28,18 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	serverName := args[0]
-
-	// validate that workload name exists
-	if stdioWorkloadName == "" {
-		return fmt.Errorf("workload name must be specified with --workload-name")
-	}
+	workloadName := args[0]
+	serverName := args[1]
 
 	workloadManager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
-	stdioWorkload, err := workloadManager.GetWorkload(ctx, stdioWorkloadName)
+	stdioWorkload, err := workloadManager.GetWorkload(ctx, workloadName)
 	if err != nil {
-		return fmt.Errorf("failed to get workload %q: %w", stdioWorkloadName, err)
+		return fmt.Errorf("failed to get workload %q: %w", workloadName, err)
 	}
-
-	logger.Infof("Starting stdio proxy for server=%q -> %s", serverName, stdioWorkloadName)
+	logger.Infof("Starting stdio proxy for server=%q -> %s", serverName, workloadName)
 
 	bridge, err := transport.NewStdioBridge(stdioWorkload.URL)
 	if err != nil {

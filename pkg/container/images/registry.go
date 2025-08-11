@@ -62,7 +62,7 @@ func (r *RegistryImageManager) ImageExists(_ context.Context, imageName string) 
 
 // PullImage pulls an image from a registry and saves it to the local daemon
 func (r *RegistryImageManager) PullImage(ctx context.Context, imageName string) error {
-	logger.Infof("Pulling1 image: %s", imageName)
+	logger.Infof("Pulling image: %s", imageName)
 
 	// Parse the image reference
 	ref, err := name.ParseReference(imageName)

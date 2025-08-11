@@ -111,14 +111,14 @@ var _ = Describe("Proxy Tunnel E2E", Serial, func() {
 				"definitely-not-a-workload",
 				proxyServerName,
 				"--tunnel-provider", "ngrok",
-				`--provider-args`, `{"ngrok-auth-token":"dummy","dry-run":true}`,
+				`--provider-args`, `{"auth-token":"dummy","dry-run":true}`,
 			).ExpectFailure()
 
 			// The exact text may vary a bit; cover both likely messages.
 			Expect(stderr).To(MatchRegexp(`failed to get workload|workload .* has empty URL`))
 		})
 
-		It("fails when ngrok args are incorrect (missing ngrok-auth-token)", func() {
+		It("fails when ngrok args are incorrect (missing auth-token)", func() {
 			osvServerURL, err := e2e.GetMCPServerURL(config, osvServerName)
 			Expect(err).ToNot(HaveOccurred())
 			base := mustBaseURL(osvServerURL)
@@ -133,7 +133,7 @@ var _ = Describe("Proxy Tunnel E2E", Serial, func() {
 			).ExpectFailure()
 
 			// ParseConfig should surface this
-			Expect(stderr).To(MatchRegexp(`invalid provider config:.*ngrok-auth-token is required`))
+			Expect(stderr).To(MatchRegexp(`invalid provider config:.*auth-token is required`))
 		})
 	})
 
@@ -144,7 +144,7 @@ var _ = Describe("Proxy Tunnel E2E", Serial, func() {
 			base := mustBaseURL(osvServerURL)
 
 			// Use dry-run to skip real network calls
-			argsJSON := `{"ngrok-auth-token":"dummy-token","dry-run":true}`
+			argsJSON := `{"auth-token":"dummy-token","dry-run":true}`
 
 			By("Starting the proxy tunnel (URL target, dry-run ngrok)")
 			proxyTunnelCmd = startProxyTunnel(config, proxyServerName, base, "ngrok", argsJSON)
@@ -165,7 +165,7 @@ var _ = Describe("Proxy Tunnel E2E", Serial, func() {
 		})
 
 		It("starts a tunnel when target is a workload name", func() {
-			argsJSON := `{"ngrok-auth-token":"dummy-token","dry-run":true}`
+			argsJSON := `{"auth-token":"dummy-token","dry-run":true}`
 
 			By("Starting the proxy tunnel (workload target, dry-run ngrok)")
 			proxyTunnelCmd = startProxyTunnel(config, proxyServerName, osvServerName, "ngrok", argsJSON)

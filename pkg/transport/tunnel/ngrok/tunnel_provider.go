@@ -37,11 +37,6 @@ func loadTrafficPolicyFile(path string) (string, error) {
 	}
 
 	cleanPath := filepath.Clean(path)
-	// Prevent path traversal: reject any path containing ".." or absolute paths
-	if strings.Contains(cleanPath, "..") || filepath.IsAbs(cleanPath) {
-		return "", fmt.Errorf("traffic policy file path is invalid or attempts path traversal: %q", path)
-	}
-
 	b, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return "", fmt.Errorf("reading traffic policy file: %w", err)

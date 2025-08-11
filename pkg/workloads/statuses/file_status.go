@@ -1,4 +1,4 @@
-package workloads
+package statuses
 
 import (
 	"context"
@@ -15,11 +15,12 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 const (
 	// statusesPrefix is the prefix used for status files in the XDG data directory
-	statusesPrefix = "statuses"
+	statusesPrefix = "toolhive/statuses"
 	// lockTimeout is the maximum time to wait for a file lock
 	lockTimeout = 1 * time.Second
 	// lockRetryInterval is the interval between lock attempts
@@ -28,20 +29,22 @@ const (
 
 // NewFileStatusManager creates a new file-based StatusManager.
 // Status files will be stored in the XDG data directory under "statuses/".
-func NewFileStatusManager(runtime rt.Runtime) StatusManager {
+func NewFileStatusManager(runtime rt.Runtime) (StatusManager, error) {
 	// Get the base directory using XDG data directory
 	baseDir, err := xdg.DataFile(statusesPrefix)
 	if err != nil {
-		// Fallback to a basic path if XDG fails
-		baseDir = filepath.Join(os.TempDir(), "toolhive", statusesPrefix)
+		return nil, fmt.Errorf("failed to get directory for status files: %w", err)
 	}
-	// Remove the filename part to get just the directory
-	baseDir = filepath.Dir(baseDir)
+
+	// Ensure the base directory exists (equivalent to mkdir -p)
+	if err := os.MkdirAll(baseDir, 0750); err != nil {
+		return nil, fmt.Errorf("failed to create status directory %s: %w", baseDir, err)
+	}
 
 	return &fileStatusManager{
 		baseDir: baseDir,
 		runtime: runtime,
-	}
+	}, nil
 }
 
 // fileStatusManager is an implementation of StatusManager that persists
@@ -58,35 +61,6 @@ type workloadStatusFile struct {
 	StatusContext string            `json:"status_context,omitempty"`
 	CreatedAt     time.Time         `json:"created_at"`
 	UpdatedAt     time.Time         `json:"updated_at"`
-}
-
-// CreateWorkloadStatus creates the initial `starting` status for a new workload.
-// It will return an error if the workload already exists.
-func (f *fileStatusManager) CreateWorkloadStatus(ctx context.Context, workloadName string) error {
-	return f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
-		// Check if file already exists
-		if _, err := os.Stat(statusFilePath); err == nil {
-			return fmt.Errorf("workload %s already exists", workloadName)
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to check if workload %s exists: %w", workloadName, err)
-		}
-
-		// Create initial status
-		now := time.Now()
-		statusFile := workloadStatusFile{
-			Status:        rt.WorkloadStatusStarting,
-			StatusContext: "",
-			CreatedAt:     now,
-			UpdatedAt:     now,
-		}
-
-		if err := f.writeStatusFile(statusFilePath, statusFile); err != nil {
-			return fmt.Errorf("failed to write status file for workload %s: %w", workloadName, err)
-		}
-
-		logger.Debugf("workload %s created with starting status", workloadName)
-		return nil
-	})
 }
 
 // GetWorkload retrieves the status of a workload by its name.
@@ -147,7 +121,7 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 
 func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error) {
 	// Parse the filters into a format we can use for matching.
-	parsedFilters, err := parseLabelFilters(labelFilters)
+	parsedFilters, err := types.ParseLabelFilters(labelFilters)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse label filters: %v", err)
 	}
@@ -175,7 +149,7 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 
 	// First, add all runtime workloads
 	for _, container := range runtimeContainers {
-		workload, err := WorkloadFromContainerInfo(&container)
+		workload, err := types.WorkloadFromContainerInfo(&container)
 		if err != nil {
 			logger.Warnf("failed to convert container info for workload %s: %v", container.Name, err)
 			continue
@@ -208,7 +182,7 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 
 		// Apply label filters
 		if len(parsedFilters) > 0 {
-			if !matchesLabelFilters(workload.Labels, parsedFilters) {
+			if !types.MatchesLabelFilters(workload.Labels, parsedFilters) {
 				continue
 			}
 		}
@@ -220,32 +194,44 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 }
 
 // SetWorkloadStatus sets the status of a workload by its name.
-// This method will do nothing if the workload does not exist, following the interface contract.
 func (f *fileStatusManager) SetWorkloadStatus(
-	ctx context.Context, workloadName string, status rt.WorkloadStatus, contextMsg string,
-) {
+	ctx context.Context,
+	workloadName string,
+	status rt.WorkloadStatus,
+	contextMsg string,
+) error {
 	err := f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
 		// Check if file exists
+		fileExists := true
 		if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
-			// File doesn't exist, do nothing as per interface contract
-			logger.Debugf("workload %s does not exist, skipping status update", workloadName)
-			return nil
+			fileExists = false
 		} else if err != nil {
 			return fmt.Errorf("failed to check status file for workload %s: %w", workloadName, err)
 		}
 
-		// Read existing file to preserve created_at timestamp
-		statusFile, err := f.readStatusFile(statusFilePath)
-		if err != nil {
-			return fmt.Errorf("failed to read existing status for workload %s: %w", workloadName, err)
+		var statusFile *workloadStatusFile
+		var err error
+		now := time.Now()
+
+		if fileExists {
+			// Read existing file to preserve created_at timestamp
+			statusFile, err = f.readStatusFile(statusFilePath)
+			if err != nil {
+				return fmt.Errorf("failed to read existing status for workload %s: %w", workloadName, err)
+			}
+		} else {
+			// Create new status file with CreatedAt set
+			statusFile = &workloadStatusFile{
+				CreatedAt: now,
+			}
 		}
 
 		// Update status and context
 		statusFile.Status = status
 		statusFile.StatusContext = contextMsg
-		statusFile.UpdatedAt = time.Now()
+		statusFile.UpdatedAt = now
 
-		if err := f.writeStatusFile(statusFilePath, *statusFile); err != nil {
+		if err = f.writeStatusFile(statusFilePath, *statusFile); err != nil {
 			return fmt.Errorf("failed to write updated status for workload %s: %w", workloadName, err)
 		}
 
@@ -256,6 +242,7 @@ func (f *fileStatusManager) SetWorkloadStatus(
 	if err != nil {
 		logger.Errorf("error updating workload %s status: %v", workloadName, err)
 	}
+	return err
 }
 
 // DeleteWorkloadStatus removes the status of a workload by its name.
@@ -393,7 +380,7 @@ func (f *fileStatusManager) getWorkloadFromRuntime(ctx context.Context, workload
 		return core.Workload{}, fmt.Errorf("failed to get workload info from runtime: %w", err)
 	}
 
-	return WorkloadFromContainerInfo(&info)
+	return types.WorkloadFromContainerInfo(&info)
 }
 
 // getWorkloadsFromFiles retrieves all workloads from status files.

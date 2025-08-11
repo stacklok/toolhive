@@ -266,7 +266,10 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}
 
-	workloadManager := workloads.NewManagerFromRuntime(rt)
+	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
 	return workloadManager.RunWorkload(ctx, runConfig)
 }
 

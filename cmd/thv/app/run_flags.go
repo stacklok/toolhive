@@ -210,12 +210,12 @@ func BuildRunnerConfig(
 	}
 
 	// Get OTEL flag values with config fallbacks
-	config := cfg.GetConfig()
+	config := cfg.GetConfig(logger)
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(cmd, config,
 		runConfig.OtelEndpoint, runConfig.OtelSamplingRate, runConfig.OtelEnvironmentVariables)
 
 	// Create container runtime
-	rt, err := container.NewFactory().Create(ctx)
+	rt, err := container.NewFactory(logger).Create(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container runtime: %v", err)
 	}
@@ -226,9 +226,9 @@ func BuildRunnerConfig(
 	// we use the DetachedEnvVarValidator.
 	var envVarValidator runner.EnvVarValidator
 	if process.IsDetached() || runtime.IsKubernetesRuntime() {
-		envVarValidator = &runner.DetachedEnvVarValidator{}
+		envVarValidator = runner.NewDetachedEnvVarValidator(logger)
 	} else {
-		envVarValidator = &runner.CLIEnvVarValidator{}
+		envVarValidator = runner.NewCLIEnvVarValidator(logger)
 	}
 
 	// Image retrieval
@@ -241,7 +241,7 @@ func BuildRunnerConfig(
 		// Take the MCP server we were supplied and either fetch the image, or
 		// build it from a protocol scheme. If the server URI refers to an image
 		// in our trusted registry, we will also fetch the image metadata.
-		imageURL, imageMetadata, err = retriever.GetMCPServer(ctx, serverOrImage, runConfig.CACertPath, runConfig.VerifyImage)
+		imageURL, imageMetadata, err = retriever.GetMCPServer(ctx, serverOrImage, runConfig.CACertPath, runConfig.VerifyImage, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
 		}
@@ -257,7 +257,7 @@ func BuildRunnerConfig(
 	}
 
 	// Initialize a new RunConfig with values from command-line flags
-	return runner.NewRunConfigBuilder().
+	return runner.NewRunConfigBuilder(logger).
 		WithRuntime(rt).
 		WithCmdArgs(cmdArgs).
 		WithName(runConfig.Name).

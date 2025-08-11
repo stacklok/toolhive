@@ -6,9 +6,9 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 )
 
@@ -30,8 +30,8 @@ const (
 )
 
 // getRegistryInfo returns the registry type and the source
-func getRegistryInfo() (RegistryType, string) {
-	url, localPath, _, registryType := config.GetRegistryConfig()
+func getRegistryInfo(logger *zap.SugaredLogger) (RegistryType, string) {
+	url, localPath, _, registryType := config.GetRegistryConfig(logger)
 
 	switch registryType {
 	case "url":
@@ -45,8 +45,8 @@ func getRegistryInfo() (RegistryType, string) {
 }
 
 // getCurrentProvider returns the current registry provider
-func getCurrentProvider(w http.ResponseWriter) (registry.Provider, bool) {
-	provider, err := registry.GetDefaultProvider()
+func getCurrentProvider(w http.ResponseWriter, logger *zap.SugaredLogger) (registry.Provider, bool) {
+	provider, err := registry.GetDefaultProvider(logger)
 	if err != nil {
 		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
 		logger.Errorf("Failed to get registry provider: %v", err)
@@ -56,11 +56,15 @@ func getCurrentProvider(w http.ResponseWriter) (registry.Provider, bool) {
 }
 
 // RegistryRoutes defines the routes for the registry API.
-type RegistryRoutes struct{}
+type RegistryRoutes struct {
+	logger *zap.SugaredLogger
+}
 
 // RegistryRouter creates a new router for the registry API.
-func RegistryRouter() http.Handler {
-	routes := RegistryRoutes{}
+func RegistryRouter(logger *zap.SugaredLogger) http.Handler {
+	routes := RegistryRoutes{
+		logger: logger,
+	}
 
 	r := chi.NewRouter()
 	r.Get("/", routes.listRegistries)
@@ -85,8 +89,8 @@ func RegistryRouter() http.Handler {
 //		@Produce		json
 //		@Success		200	{object}	registryListResponse
 //		@Router			/api/v1beta/registry [get]
-func (*RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
-	provider, ok := getCurrentProvider(w)
+func (routes *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
+	provider, ok := getCurrentProvider(w, routes.logger)
 	if !ok {
 		return
 	}
@@ -97,7 +101,7 @@ func (*RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	registryType, source := getRegistryInfo()
+	registryType, source := getRegistryInfo(routes.logger)
 
 	registries := []registryInfo{
 		{
@@ -143,7 +147,7 @@ func (*RegistryRoutes) addRegistry(w http.ResponseWriter, _ *http.Request) {
 //		@Success		200	{object}	getRegistryResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name} [get]
-func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
+func (routes *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Only "default" registry is supported currently
@@ -152,7 +156,7 @@ func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, ok := getCurrentProvider(w)
+	provider, ok := getCurrentProvider(w, routes.logger)
 	if !ok {
 		return
 	}
@@ -163,7 +167,7 @@ func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	registryType, source := getRegistryInfo()
+	registryType, source := getRegistryInfo(routes.logger)
 
 	response := getRegistryResponse{
 		Name:        defaultRegistryName,
@@ -177,7 +181,7 @@ func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		routes.logger.Errorf("Failed to encode response: %v", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -196,7 +200,7 @@ func (*RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 //		@Failure		400		{string}	string	"Bad Request"
 //		@Failure		404		{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name} [put]
-func (*RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request) {
+func (routes *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Only "default" registry can be updated currently
@@ -222,8 +226,8 @@ func (*RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request) {
 
 	// Handle reset to default (no URL or LocalPath specified)
 	if req.URL == nil && req.LocalPath == nil {
-		if err := config.UnsetRegistry(); err != nil {
-			logger.Errorf("Failed to unset registry: %v", err)
+		if err := config.UnsetRegistry(routes.logger); err != nil {
+			routes.logger.Errorf("Failed to unset registry: %v", err)
 			http.Error(w, "Failed to reset registry configuration", http.StatusInternalServerError)
 			return
 		}
@@ -236,8 +240,8 @@ func (*RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request) {
 			allowPrivateIP = *req.AllowPrivateIP
 		}
 
-		if err := config.SetRegistryURL(*req.URL, allowPrivateIP); err != nil {
-			logger.Errorf("Failed to set registry URL: %v", err)
+		if err := config.SetRegistryURL(*req.URL, allowPrivateIP, routes.logger); err != nil {
+			routes.logger.Errorf("Failed to set registry URL: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to set registry URL: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -245,8 +249,8 @@ func (*RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request) {
 		message = fmt.Sprintf("Successfully set registry URL: %s", *req.URL)
 	} else if req.LocalPath != nil {
 		// Handle local path update
-		if err := config.SetRegistryFile(*req.LocalPath); err != nil {
-			logger.Errorf("Failed to set registry file: %v", err)
+		if err := config.SetRegistryFile(*req.LocalPath, routes.logger); err != nil {
+			routes.logger.Errorf("Failed to set registry file: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to set registry file: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -264,7 +268,7 @@ func (*RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		routes.logger.Errorf("Failed to encode response: %v", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -303,7 +307,7 @@ func (*RegistryRoutes) removeRegistry(w http.ResponseWriter, r *http.Request) {
 //		@Success		200	{object}	listServersResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name}/servers [get]
-func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
+func (routes *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 
 	// Only "default" registry is supported currently
@@ -312,7 +316,7 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, ok := getCurrentProvider(w)
+	provider, ok := getCurrentProvider(w, routes.logger)
 	if !ok {
 		return
 	}
@@ -320,7 +324,7 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	// Get the full registry to access both container and remote servers
 	reg, err := provider.GetRegistry()
 	if err != nil {
-		logger.Errorf("Failed to get registry: %v", err)
+		routes.logger.Errorf("Failed to get registry: %v", err)
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
@@ -343,7 +347,7 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		routes.logger.Errorf("Failed to encode response: %v", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
@@ -360,7 +364,7 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 //		@Success		200	{object}	getServerResponse
 //		@Failure		404	{string}	string	"Not Found"
 //		@Router			/api/v1beta/registry/{name}/servers/{serverName} [get]
-func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
+func (routes *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 	serverName := chi.URLParam(r, "serverName")
 
@@ -370,7 +374,7 @@ func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, ok := getCurrentProvider(w)
+	provider, ok := getCurrentProvider(w, routes.logger)
 	if !ok {
 		return
 	}
@@ -378,7 +382,7 @@ func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	// Try to get the server (could be container or remote)
 	server, err := provider.GetServer(serverName)
 	if err != nil {
-		logger.Errorf("Failed to get server '%s': %v", serverName, err)
+		routes.logger.Errorf("Failed to get server '%s': %v", serverName, err)
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
 	}
@@ -403,7 +407,7 @@ func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode response: %v", err)
+		routes.logger.Errorf("Failed to encode response: %v", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}

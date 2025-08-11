@@ -11,12 +11,12 @@ import (
 	"time"
 	"unicode"
 
+	"go.uber.org/zap"
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/httpsse"
@@ -52,6 +52,8 @@ type StdioTransport struct {
 
 	// Container monitor
 	monitor rt.Monitor
+
+	logger *zap.SugaredLogger
 }
 
 // NewStdioTransport creates a new stdio transport.
@@ -61,6 +63,7 @@ func NewStdioTransport(
 	deployer rt.Deployer,
 	debug bool,
 	prometheusHandler http.Handler,
+	logger *zap.SugaredLogger,
 	middlewares ...types.MiddlewareFunction,
 ) *StdioTransport {
 	return &StdioTransport{
@@ -72,6 +75,7 @@ func NewStdioTransport(
 		prometheusHandler: prometheusHandler,
 		shutdownCh:        make(chan struct{}),
 		proxyMode:         types.ProxyModeSSE, // default to SSE for backward compatibility
+		logger:            logger,
 	}
 }
 
@@ -119,7 +123,7 @@ func (t *StdioTransport) Setup(
 	containerOptions.IgnoreConfig = ignoreConfig
 
 	// Create the container
-	logger.Infof("Deploying workload %s from image %s...", containerName, image)
+	t.logger.Infof("Deploying workload %s from image %s...", containerName, image)
 	_, err := t.deployer.DeployWorkload(
 		ctx,
 		image,
@@ -135,7 +139,7 @@ func (t *StdioTransport) Setup(
 	if err != nil {
 		return fmt.Errorf("failed to create container: %v", err)
 	}
-	logger.Infof("Container created: %s", containerName)
+	t.logger.Infof("Container created: %s", containerName)
 
 	return nil
 }
@@ -167,17 +171,17 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	// Create and start the correct proxy with middlewares
 	switch t.proxyMode {
 	case types.ProxyModeStreamableHTTP:
-		t.httpProxy = streamable.NewHTTPProxy(t.host, t.proxyPort, t.containerName, t.prometheusHandler, t.middlewares...)
+		t.httpProxy = streamable.NewHTTPProxy(t.host, t.proxyPort, t.containerName, t.prometheusHandler, t.logger, t.middlewares...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
-		logger.Info("Streamable HTTP proxy started, processing messages...")
+		t.logger.Info("Streamable HTTP proxy started, processing messages...")
 	case types.ProxyModeSSE:
-		t.httpProxy = httpsse.NewHTTPSSEProxy(t.host, t.proxyPort, t.containerName, t.prometheusHandler, t.middlewares...)
+		t.httpProxy = httpsse.NewHTTPSSEProxy(t.host, t.proxyPort, t.containerName, t.prometheusHandler, t.logger, t.middlewares...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
-		logger.Info("HTTP SSE proxy started, processing messages...")
+		t.logger.Info("HTTP SSE proxy started, processing messages...")
 	default:
 		return fmt.Errorf("unsupported proxy mode: %v", t.proxyMode)
 	}
@@ -186,7 +190,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	go t.processMessages(ctx, t.stdin, t.stdout)
 
 	// Create a container monitor
-	monitorRuntime, err := container.NewFactory().Create(ctx)
+	monitorRuntime, err := container.NewFactory(t.logger).Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container monitor: %v", err)
 	}
@@ -240,14 +244,14 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 	// Stop the HTTP proxy
 	if t.httpProxy != nil {
 		if err := t.httpProxy.Stop(ctx); err != nil {
-			logger.Warnf("Warning: Failed to stop HTTP proxy: %v", err)
+			t.logger.Warnf("Warning: Failed to stop HTTP proxy: %v", err)
 		}
 	}
 
 	// Close stdin and stdout if they're open
 	if t.stdin != nil {
 		if err := t.stdin.Close(); err != nil {
-			logger.Warnf("Warning: Failed to close stdin: %v", err)
+			t.logger.Warnf("Warning: Failed to close stdin: %v", err)
 		}
 		t.stdin = nil
 	}
@@ -258,11 +262,11 @@ func (t *StdioTransport) Stop(ctx context.Context) error {
 		running, err := t.deployer.IsWorkloadRunning(ctx, t.containerName)
 		if err != nil {
 			// If there's an error checking the workload status, it might be gone already
-			logger.Warnf("Warning: Failed to check workload status: %v", err)
+			t.logger.Warnf("Warning: Failed to check workload status: %v", err)
 		} else if running {
 			// Only try to stop the workload if it's still running
 			if err := t.deployer.StopWorkload(ctx, t.containerName); err != nil {
-				logger.Warnf("Warning: Failed to stop workload: %v", err)
+				t.logger.Warnf("Warning: Failed to stop workload: %v", err)
 			}
 		}
 	}
@@ -310,11 +314,11 @@ func (t *StdioTransport) processMessages(ctx context.Context, stdin io.WriteClos
 		case <-ctx.Done():
 			return
 		case msg := <-messageCh:
-			logger.Info("Process incoming messages and sending message to container")
+			t.logger.Info("Process incoming messages and sending message to container")
 			if err := t.sendMessageToContainer(ctx, stdin, msg); err != nil {
-				logger.Errorf("Error sending message to container: %v", err)
+				t.logger.Errorf("Error sending message to container: %v", err)
 			}
-			logger.Info("Messages processed")
+			t.logger.Info("Messages processed")
 		}
 	}
 }
@@ -336,9 +340,9 @@ func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser
 			n, err := stdout.Read(readBuffer)
 			if err != nil {
 				if err == io.EOF {
-					logger.Info("Container stdout closed")
+					t.logger.Info("Container stdout closed")
 				} else {
-					logger.Errorf("Error reading from container stdout: %v", err)
+					t.logger.Errorf("Error reading from container stdout: %v", err)
 				}
 				return
 			}
@@ -421,9 +425,9 @@ func isSpace(r rune) bool {
 // parseAndForwardJSONRPC parses a JSON-RPC message and forwards it.
 func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string) {
 	// Log the raw line for debugging
-	logger.Infof("JSON-RPC raw: %s", line)
+	t.logger.Infof("JSON-RPC raw: %s", line)
 	jsonData := sanitizeJSONString(line)
-	logger.Infof("Sanitized JSON: %s", jsonData)
+	t.logger.Infof("Sanitized JSON: %s", jsonData)
 
 	if jsonData == "" || jsonData == "[]" {
 		return
@@ -432,24 +436,24 @@ func (t *StdioTransport) parseAndForwardJSONRPC(ctx context.Context, line string
 	// Try to parse the JSON
 	msg, err := jsonrpc2.DecodeMessage([]byte(jsonData))
 	if err != nil {
-		logger.Errorf("Error parsing JSON-RPC message: %v", err)
+		t.logger.Errorf("Error parsing JSON-RPC message: %v", err)
 		return
 	}
 
 	// Log the message
-	logger.Infof("Received JSON-RPC message: %T", msg)
+	t.logger.Infof("Received JSON-RPC message: %T", msg)
 
 	if err := t.httpProxy.ForwardResponseToClients(ctx, msg); err != nil {
 		if t.proxyMode == types.ProxyModeStreamableHTTP {
-			logger.Errorf("Error forwarding to streamable-http client: %v", err)
+			t.logger.Errorf("Error forwarding to streamable-http client: %v", err)
 		} else {
-			logger.Errorf("Error forwarding to SSE clients: %v", err)
+			t.logger.Errorf("Error forwarding to SSE clients: %v", err)
 		}
 	}
 }
 
 // sendMessageToContainer sends a JSON-RPC message to the container.
-func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer, msg jsonrpc2.Message) error {
+func (t *StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer, msg jsonrpc2.Message) error {
 	// Serialize the message
 	data, err := jsonrpc2.EncodeMessage(msg)
 	if err != nil {
@@ -460,11 +464,11 @@ func (*StdioTransport) sendMessageToContainer(_ context.Context, stdin io.Writer
 	data = append(data, '\n')
 
 	// Write to stdin
-	logger.Info("Writing to container stdin")
+	t.logger.Info("Writing to container stdin")
 	if _, err := stdin.Write(data); err != nil {
 		return fmt.Errorf("failed to write to container stdin: %w", err)
 	}
-	logger.Info("Wrote to container stdin")
+	t.logger.Info("Wrote to container stdin")
 
 	return nil
 }
@@ -477,17 +481,17 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 	case err, ok := <-t.errorCh:
 		// Check if the channel is closed
 		if !ok {
-			logger.Infof("Container monitor channel closed for %s", t.containerName)
+			t.logger.Infof("Container monitor channel closed for %s", t.containerName)
 			return
 		}
 
-		logger.Infof("Container %s exited: %v", t.containerName, err)
+		t.logger.Infof("Container %s exited: %v", t.containerName, err)
 
 		// Check if the transport is already stopped before trying to stop it
 		select {
 		case <-t.shutdownCh:
 			// Transport is already stopping or stopped
-			logger.Infof("Transport for %s is already stopping or stopped", t.containerName)
+			t.logger.Infof("Transport for %s is already stopping or stopped", t.containerName)
 			return
 		default:
 			// Transport is still running, stop it
@@ -496,7 +500,7 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 			defer cancel()
 
 			if stopErr := t.Stop(stopCtx); stopErr != nil {
-				logger.Errorf("Error stopping transport after container exit: %v", stopErr)
+				t.logger.Errorf("Error stopping transport after container exit: %v", stopErr)
 			}
 		}
 	}

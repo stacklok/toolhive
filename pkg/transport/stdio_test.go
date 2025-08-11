@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"golang.org/x/exp/jsonrpc2"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 // MockHTTPProxy is a mock implementation of types.Proxy
@@ -100,8 +100,6 @@ func TestSanitizeJSONString(t *testing.T) {
 
 func TestParseAndForwardJSONRPC(t *testing.T) {
 	t.Parallel()
-	// Initialize logger for testing
-	logger.Initialize()
 
 	tests := []struct {
 		name          string
@@ -148,6 +146,7 @@ func TestParseAndForwardJSONRPC(t *testing.T) {
 			// Create transport with mock proxy
 			transport := &StdioTransport{
 				httpProxy: mockProxy,
+				logger:    log.NewLogger(),
 			}
 
 			// Set up expectations if the message should be forwarded

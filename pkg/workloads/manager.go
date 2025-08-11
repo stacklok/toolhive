@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/client"
@@ -21,7 +22,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -67,6 +67,7 @@ type Manager interface {
 type defaultManager struct {
 	runtime  rt.Runtime
 	statuses statuses.StatusManager
+	logger   *zap.SugaredLogger
 }
 
 // ErrWorkloadNotRunning is returned when a container cannot be found by name.
@@ -78,13 +79,13 @@ const (
 )
 
 // NewManager creates a new container manager instance.
-func NewManager(ctx context.Context) (Manager, error) {
-	runtime, err := ct.NewFactory().Create(ctx)
+func NewManager(ctx context.Context, logger *zap.SugaredLogger) (Manager, error) {
+	runtime, err := ct.NewFactory(logger).Create(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	statusManager, err := statuses.NewStatusManager(runtime)
+	statusManager, err := statuses.NewStatusManager(runtime, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create status manager: %w", err)
 	}
@@ -92,12 +93,13 @@ func NewManager(ctx context.Context) (Manager, error) {
 	return &defaultManager{
 		runtime:  runtime,
 		statuses: statusManager,
+		logger:   logger,
 	}, nil
 }
 
 // NewManagerFromRuntime creates a new container manager instance from an existing runtime.
-func NewManagerFromRuntime(runtime rt.Runtime) (Manager, error) {
-	statusManager, err := statuses.NewStatusManager(runtime)
+func NewManagerFromRuntime(runtime rt.Runtime, logger *zap.SugaredLogger) (Manager, error) {
+	statusManager, err := statuses.NewStatusManager(runtime, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create status manager: %w", err)
 	}
@@ -105,6 +107,7 @@ func NewManagerFromRuntime(runtime rt.Runtime) (Manager, error) {
 	return &defaultManager{
 		runtime:  runtime,
 		statuses: statusManager,
+		logger:   logger,
 	}, nil
 }
 
@@ -139,7 +142,7 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 		if err != nil {
 			if errors.Is(err, rt.ErrWorkloadNotFound) {
 				// Log but don't fail the entire operation for not found containers
-				logger.Warnf("Warning: Failed to stop workload %s: %v", name, err)
+				d.logger.Warnf("Warning: Failed to stop workload %s: %v", name, err)
 				continue
 			}
 			return nil, fmt.Errorf("failed to find workload %s: %v", name, err)
@@ -148,13 +151,13 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 		running := container.IsRunning()
 		if !running {
 			// Log but don't fail the entire operation for not running containers
-			logger.Warnf("Warning: Failed to stop workload %s: %v", name, ErrWorkloadNotRunning)
+			d.logger.Warnf("Warning: Failed to stop workload %s: %v", name, ErrWorkloadNotRunning)
 			continue
 		}
 
 		// Transition workload to `stopping` state.
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
-			logger.Warnf("Failed to set workload %s status to stopping: %v", name, err)
+			d.logger.Warnf("Failed to set workload %s status to stopping: %v", name, err)
 		}
 		containers = append(containers, &container)
 	}
@@ -169,28 +172,28 @@ func (d *defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 		return fmt.Errorf("failed to create workload status: %v", err)
 	}
 
-	mcpRunner := runner.NewRunner(runConfig, d.statuses)
+	mcpRunner := runner.NewRunner(runConfig, d.statuses, d.logger)
 	err := mcpRunner.Run(ctx)
 	if err != nil {
 		// If the run failed, we should set the status to error.
 		if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, err.Error()); statusErr != nil {
-			logger.Warnf("Failed to set workload %s status to error: %v", runConfig.BaseName, statusErr)
+			d.logger.Warnf("Failed to set workload %s status to error: %v", runConfig.BaseName, statusErr)
 		}
 	}
 	return err
 }
 
-func validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig) error {
+func validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig, logger *zap.SugaredLogger) error {
 	// If there are run secrets, validate them
 	if len(runConfig.Secrets) > 0 {
-		cfg := config.GetConfig()
+		cfg := config.GetConfig(logger)
 
 		providerType, err := cfg.Secrets.GetProviderType()
 		if err != nil {
 			return fmt.Errorf("error determining secrets provider type: %w", err)
 		}
 
-		secretManager, err := secrets.CreateSecretProvider(providerType)
+		secretManager, err := secrets.CreateSecretProvider(providerType, logger)
 		if err != nil {
 			return fmt.Errorf("error instantiating secret manager: %w", err)
 		}
@@ -205,7 +208,7 @@ func validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig) 
 
 func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *runner.RunConfig) error {
 	// before running, validate the parameters for the workload
-	err := validateSecretParameters(ctx, runConfig)
+	err := validateSecretParameters(ctx, runConfig, d.logger)
 	if err != nil {
 		return fmt.Errorf("failed to validate workload parameters: %w", err)
 	}
@@ -224,10 +227,10 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// #nosec G304 - This is safe as baseName is generated by the application
 	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		logger.Warnf("Warning: Failed to create log file: %v", err)
+		d.logger.Warnf("Warning: Failed to create log file: %v", err)
 	} else {
 		defer logFile.Close()
-		logger.Infof("Logging to: %s", logFilePath)
+		d.logger.Infof("Logging to: %s", logFilePath)
 	}
 
 	// Use the restart command to start the detached process
@@ -245,8 +248,8 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// NOTE: This breaks the abstraction slightly since this is only relevant for the CLI, but there
 	// are checks inside `GetSecretsPassword` to ensure this does not get called in a detached process.
 	// This will be addressed in a future re-think of the secrets manager interface.
-	if needSecretsPassword(runConfig.Secrets) {
-		password, err := secrets.GetSecretsPassword("")
+	if needSecretsPassword(runConfig.Secrets, d.logger) {
+		password, err := secrets.GetSecretsPassword("", d.logger)
 		if err != nil {
 			return fmt.Errorf("failed to get secrets password: %v", err)
 		}
@@ -280,11 +283,11 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 
 	// Write the PID to a file so the stop command can kill the process
 	if err := process.WritePIDFile(runConfig.BaseName, detachedCmd.Process.Pid); err != nil {
-		logger.Warnf("Warning: Failed to write PID file: %v", err)
+		d.logger.Warnf("Warning: Failed to write PID file: %v", err)
 	}
 
-	logger.Infof("MCP server is running in the background (PID: %d)", detachedCmd.Process.Pid)
-	logger.Infof("Use 'thv stop %s' to stop the server", runConfig.ContainerName)
+	d.logger.Infof("MCP server is running in the background (PID: %d)", detachedCmd.Process.Pid)
+	d.logger.Infof("Use 'thv stop %s' to stop the server", runConfig.ContainerName)
 
 	return nil
 }
@@ -320,7 +323,7 @@ func (d *defaultManager) deleteWorkload(ctx context.Context, name string) error 
 
 	// Set status to removing
 	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusRemoving, ""); err != nil {
-		logger.Warnf("Failed to set workload %s status to removing: %v", name, err)
+		d.logger.Warnf("Failed to set workload %s status to removing: %v", name, err)
 	}
 
 	containerLabels := container.Labels
@@ -341,7 +344,7 @@ func (d *defaultManager) deleteWorkload(ctx context.Context, name string) error 
 
 	// Remove the workload status from the status store
 	if err := d.statuses.DeleteWorkloadStatus(ctx, name); err != nil {
-		logger.Warnf("failed to delete workload status for %s: %v", name, err)
+		d.logger.Warnf("failed to delete workload status for %s: %v", name, err)
 	}
 
 	return nil
@@ -353,11 +356,11 @@ func (d *defaultManager) getWorkloadContainer(childCtx, ctx context.Context, nam
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
 			// Log but don't fail the entire operation for not found containers
-			logger.Warnf("Warning: Failed to delete workload %s: %v", name, err)
+			d.logger.Warnf("Warning: Failed to delete workload %s: %v", name, err)
 			return nil, nil
 		}
 		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
-			logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
+			d.logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
 		}
 		return nil, fmt.Errorf("failed to find workload %s: %v", name, err)
 	}
@@ -365,19 +368,19 @@ func (d *defaultManager) getWorkloadContainer(childCtx, ctx context.Context, nam
 }
 
 // stopProxyIfNeeded stops the proxy process if the workload has a base name
-func (*defaultManager) stopProxyIfNeeded(name, baseName string) {
-	logger.Infof("Removing proxy process for %s...", name)
+func (d *defaultManager) stopProxyIfNeeded(name, baseName string) {
+	d.logger.Infof("Removing proxy process for %s...", name)
 	if baseName != "" {
-		proxy.StopProcess(baseName)
+		proxy.StopProcess(baseName, d.logger)
 	}
 }
 
 // removeContainer removes the container from the runtime
 func (d *defaultManager) removeContainer(childCtx, ctx context.Context, name string) error {
-	logger.Infof("Removing container %s...", name)
+	d.logger.Infof("Removing container %s...", name)
 	if err := d.runtime.RemoveWorkload(childCtx, name); err != nil {
 		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
-			logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
+			d.logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
 		}
 		return fmt.Errorf("failed to remove container: %v", err)
 	}
@@ -392,23 +395,23 @@ func (d *defaultManager) cleanupWorkloadResources(childCtx context.Context, name
 
 	// Clean up temporary permission profile
 	if err := d.cleanupTempPermissionProfile(childCtx, baseName); err != nil {
-		logger.Warnf("Warning: Failed to cleanup temporary permission profile: %v", err)
+		d.logger.Warnf("Warning: Failed to cleanup temporary permission profile: %v", err)
 	}
 
 	// Delete the saved state
-	if err := state.DeleteSavedRunConfig(childCtx, baseName); err != nil {
-		logger.Warnf("Warning: Failed to delete saved state: %v", err)
+	if err := state.DeleteSavedRunConfig(childCtx, baseName, d.logger); err != nil {
+		d.logger.Warnf("Warning: Failed to delete saved state: %v", err)
 	} else {
-		logger.Infof("Saved state for %s removed", baseName)
+		d.logger.Infof("Saved state for %s removed", baseName)
 	}
 
-	logger.Infof("Container %s removed", name)
+	d.logger.Infof("Container %s removed", name)
 
 	// Remove client configurations
-	if err := removeClientConfigurations(name); err != nil {
-		logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+	if err := removeClientConfigurations(name, d.logger); err != nil {
+		d.logger.Warnf("Warning: Failed to remove client configurations: %v", err)
 	} else {
-		logger.Infof("Client configurations for %s removed", name)
+		d.logger.Infof("Client configurations for %s removed", name)
 	}
 }
 
@@ -457,8 +460,8 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string, f
 			container, err := d.runtime.GetWorkloadInfo(childCtx, name)
 			if err != nil {
 				if errors.Is(err, rt.ErrWorkloadNotFound) {
-					logger.Warnf("Warning: Failed to find container: %v", err)
-					logger.Warnf("Trying to find state with name %s directly...", name)
+					d.logger.Warnf("Warning: Failed to find container: %v", err)
+					d.logger.Warnf("Trying to find state with name %s directly...", name)
 
 					// Try to use the provided name as the base name
 					containerBaseName = name
@@ -473,10 +476,10 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string, f
 			}
 
 			// Check if the proxy process is running
-			proxyRunning := proxy.IsRunning(containerBaseName)
+			proxyRunning := proxy.IsRunning(containerBaseName, d.logger)
 
 			if running && proxyRunning {
-				logger.Infof("Container %s and proxy are already running", name)
+				d.logger.Infof("Container %s and proxy are already running", name)
 				return nil
 			}
 
@@ -493,20 +496,20 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string, f
 			// At this point we're sure that the workload exists but is not running.
 			// Transition workload to `starting` state.
 			if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStarting, ""); err != nil {
-				logger.Warnf("Failed to set workload %s status to starting: %v", name, err)
+				d.logger.Warnf("Failed to set workload %s status to starting: %v", name, err)
 			}
-			logger.Infof("Loaded configuration from state for %s", containerBaseName)
+			d.logger.Infof("Loaded configuration from state for %s", containerBaseName)
 
 			// Run the tooling server inside a detached process.
-			logger.Infof("Starting tooling server %s...", name)
+			d.logger.Infof("Starting tooling server %s...", name)
 
 			// If the container is running but the proxy is not, stop the container first
 			if running { // && !proxyRunning was previously here but is implied by previous if statement.
-				logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
+				d.logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
 				if err = d.runtime.StopWorkload(childCtx, name); err != nil {
 					return fmt.Errorf("failed to stop container %s: %v", name, err)
 				}
-				logger.Infof("Container %s stopped", name)
+				d.logger.Infof("Container %s stopped", name)
 			}
 
 			if foreground {
@@ -521,7 +524,7 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string, f
 
 // TODO: Move to dedicated config management interface.
 // updateClientConfigurations updates client configuration files with the MCP server URL
-func removeClientConfigurations(containerName string) error {
+func removeClientConfigurations(containerName string, logger *zap.SugaredLogger) error {
 	// Get the workload's group by loading its run config
 	runConfig, err := runner.LoadState(context.Background(), containerName)
 	var group string
@@ -532,7 +535,7 @@ func removeClientConfigurations(containerName string) error {
 		group = runConfig.Group
 	}
 
-	clientManager, err := client.NewManager(context.Background())
+	clientManager, err := client.NewManager(context.Background(), logger)
 	if err != nil {
 		logger.Warnf("Warning: Failed to create client manager for %s, skipping client config removal: %v", containerName, err)
 		return nil
@@ -553,33 +556,33 @@ func (d *defaultManager) loadRunnerFromState(ctx context.Context, baseName strin
 	runConfig.Deployer = d.runtime
 
 	// Create a new runner with the loaded configuration
-	return runner.NewRunner(runConfig, d.statuses), nil
+	return runner.NewRunner(runConfig, d.statuses, d.logger), nil
 }
 
-func needSecretsPassword(secretOptions []string) bool {
+func needSecretsPassword(secretOptions []string, logger *zap.SugaredLogger) bool {
 	// If the user did not ask for any secrets, then don't attempt to instantiate
 	// the secrets manager.
 	if len(secretOptions) == 0 {
 		return false
 	}
 	// Ignore err - if the flag is not set, it's not needed.
-	providerType, _ := config.GetConfig().Secrets.GetProviderType()
+	providerType, _ := config.GetConfig(logger).Secrets.GetProviderType()
 	return providerType == secrets.EncryptedType
 }
 
 // cleanupTempPermissionProfile cleans up temporary permission profile files for a given base name
-func (*defaultManager) cleanupTempPermissionProfile(ctx context.Context, baseName string) error {
+func (d *defaultManager) cleanupTempPermissionProfile(ctx context.Context, baseName string) error {
 	// Try to load the saved configuration to get the permission profile path
 	runConfig, err := runner.LoadState(ctx, baseName)
 	if err != nil {
 		// If we can't load the state, there's nothing to clean up
-		logger.Debugf("Could not load state for %s, skipping permission profile cleanup: %v", baseName, err)
+		d.logger.Debugf("Could not load state for %s, skipping permission profile cleanup: %v", baseName, err)
 		return nil
 	}
 
 	// Clean up the temporary permission profile if it exists
 	if runConfig.PermissionProfileNameOrPath != "" {
-		if err := runner.CleanupTempPermissionProfile(runConfig.PermissionProfileNameOrPath); err != nil {
+		if err := runner.CleanupTempPermissionProfile(runConfig.PermissionProfileNameOrPath, d.logger); err != nil {
 			return fmt.Errorf("failed to cleanup temporary permission profile: %v", err)
 		}
 	}
@@ -598,27 +601,27 @@ func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.Cont
 
 			name := labels.GetContainerBaseName(workload.Labels)
 			// Stop the proxy process
-			proxy.StopProcess(name)
+			proxy.StopProcess(name, d.logger)
 
-			logger.Infof("Stopping containers for %s...", name)
+			d.logger.Infof("Stopping containers for %s...", name)
 			// Stop the container
 			if err := d.runtime.StopWorkload(childCtx, workload.Name); err != nil {
 				if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
-					logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
+					d.logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
 				}
 				return fmt.Errorf("failed to stop container: %w", err)
 			}
 
-			if err := removeClientConfigurations(name); err != nil {
-				logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+			if err := removeClientConfigurations(name, d.logger); err != nil {
+				d.logger.Warnf("Warning: Failed to remove client configurations: %v", err)
 			} else {
-				logger.Infof("Client configurations for %s removed", name)
+				d.logger.Infof("Client configurations for %s removed", name)
 			}
 
 			if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
-				logger.Warnf("Failed to set workload %s status to stopped: %v", name, err)
+				d.logger.Warnf("Failed to set workload %s status to stopped: %v", name, err)
 			}
-			logger.Infof("Successfully stopped %s...", name)
+			d.logger.Infof("Successfully stopped %s...", name)
 			return nil
 		})
 	}
@@ -627,7 +630,7 @@ func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.Cont
 }
 
 // MoveToDefaultGroup moves the specified workloads to the default group by updating their runconfig.
-func (*defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error {
+func (d *defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error {
 	for _, workloadName := range workloadNames {
 		// Validate workload name
 		if err := types.ValidateWorkloadName(workloadName); err != nil {
@@ -642,7 +645,7 @@ func (*defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []s
 
 		// Check if the workload is actually in the specified group
 		if runnerConfig.Group != groupName {
-			logger.Debugf("Workload %s is not in group %s (current group: %s), skipping",
+			d.logger.Debugf("Workload %s is not in group %s (current group: %s), skipping",
 				workloadName, groupName, runnerConfig.Group)
 			continue
 		}
@@ -651,11 +654,11 @@ func (*defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []s
 		runnerConfig.Group = groups.DefaultGroup
 
 		// Save the updated configuration
-		if err = runnerConfig.SaveState(ctx); err != nil {
+		if err = runnerConfig.SaveState(ctx, d.logger); err != nil {
 			return fmt.Errorf("failed to save updated configuration for workload %s: %w", workloadName, err)
 		}
 
-		logger.Infof("Moved workload %s to default group", workloadName)
+		d.logger.Infof("Moved workload %s to default group", workloadName)
 	}
 
 	return nil

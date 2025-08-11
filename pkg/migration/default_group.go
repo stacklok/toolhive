@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -14,6 +15,7 @@ import (
 type DefaultGroupMigrator struct {
 	groupManager     groups.Manager
 	workloadsManager workloads.Manager
+	logger           *zap.SugaredLogger
 }
 
 // Migrate performs the complete default group migration
@@ -47,7 +49,7 @@ func (m *DefaultGroupMigrator) Migrate(ctx context.Context) error {
 	// Mark default group migration as completed
 	err = config.UpdateConfig(func(c *config.Config) {
 		c.DefaultGroupMigration = true
-	})
+	}, m.logger)
 	if err != nil {
 		return fmt.Errorf("failed to update config during migration: %w", err)
 	}
@@ -59,12 +61,12 @@ func (m *DefaultGroupMigrator) Migrate(ctx context.Context) error {
 func (m *DefaultGroupMigrator) initManagers(ctx context.Context) error {
 	var err error
 
-	m.groupManager, err = groups.NewManager()
+	m.groupManager, err = groups.NewManager(m.logger)
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %w", err)
 	}
 
-	m.workloadsManager, err = workloads.NewManager(ctx)
+	m.workloadsManager, err = workloads.NewManager(ctx, m.logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workloads manager: %w", err)
 	}
@@ -74,7 +76,7 @@ func (m *DefaultGroupMigrator) initManagers(ctx context.Context) error {
 
 // createDefaultGroup creates the default group if it doesn't exist
 func (m *DefaultGroupMigrator) createDefaultGroup(ctx context.Context) error {
-	logger.Infof("Creating default group '%s'", groups.DefaultGroupName)
+	m.logger.Infof("Creating default group '%s'", groups.DefaultGroupName)
 	if err := m.groupManager.Create(ctx, groups.DefaultGroupName); err != nil {
 		return fmt.Errorf("failed to create default group: %w", err)
 	}
@@ -93,7 +95,7 @@ func (m *DefaultGroupMigrator) migrateWorkloadsToDefaultGroup(ctx context.Contex
 	for _, workloadName := range workloadsWithoutGroup {
 		// Move workload to default group
 		if err := m.workloadsManager.MoveToDefaultGroup(ctx, []string{workloadName}, ""); err != nil {
-			logger.Warnf("Failed to migrate workload %s to default group: %v", workloadName, err)
+			m.logger.Warnf("Failed to migrate workload %s to default group: %v", workloadName, err)
 			continue
 		}
 		migratedCount++
@@ -104,11 +106,11 @@ func (m *DefaultGroupMigrator) migrateWorkloadsToDefaultGroup(ctx context.Contex
 
 // migrateClientConfigs migrates client configurations from global config to default group
 func (m *DefaultGroupMigrator) migrateClientConfigs(ctx context.Context) error {
-	appConfig := config.GetConfig()
+	appConfig := config.GetConfig(m.logger)
 
 	// If there are no registered clients, nothing to migrate
 	if len(appConfig.Clients.RegisteredClients) == 0 {
-		logger.Infof("No client configurations to migrate")
+		m.logger.Infof("No client configurations to migrate")
 		return nil
 	}
 
@@ -134,7 +136,7 @@ func (m *DefaultGroupMigrator) migrateClientConfigs(ctx context.Context) error {
 
 		if !alreadyRegistered {
 			if err := m.groupManager.RegisterClients(ctx, []string{groups.DefaultGroupName}, []string{clientName}); err != nil {
-				logger.Warnf("Failed to register client %s to default group: %v", clientName, err)
+				m.logger.Warnf("Failed to register client %s to default group: %v", clientName, err)
 				continue
 			}
 			migratedCount++
@@ -147,14 +149,14 @@ func (m *DefaultGroupMigrator) migrateClientConfigs(ctx context.Context) error {
 		// Clear the global client configurations after successful migration
 		err = config.UpdateConfig(func(c *config.Config) {
 			c.Clients.RegisteredClients = []string{}
-		})
+		}, m.logger)
 		if err != nil {
-			logger.Warnf("Failed to clear global client configurations after migration: %v", err)
+			m.logger.Warnf("Failed to clear global client configurations after migration: %v", err)
 		} else {
-			logger.Infof("Cleared global client configurations")
+			m.logger.Infof("Cleared global client configurations")
 		}
 	} else {
-		logger.Infof("No client configurations needed migration")
+		m.logger.Infof("No client configurations needed migration")
 	}
 
 	return nil

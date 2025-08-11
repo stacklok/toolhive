@@ -4,9 +4,10 @@ package images
 import (
 	"context"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/container/docker/sdk"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // ImageManager defines the interface for managing container images.
@@ -26,7 +27,7 @@ type ImageManager interface {
 
 // NewImageManager creates an instance of ImageManager appropriate
 // for the current environment, or returns an error if it is not supported.
-func NewImageManager(ctx context.Context) ImageManager {
+func NewImageManager(ctx context.Context, logger *zap.SugaredLogger) ImageManager {
 	// Check if we are running in a Kubernetes environment
 	if runtime.IsKubernetesRuntime() {
 		logger.Debug("running in Kubernetes environment, using no-op image manager")
@@ -34,13 +35,13 @@ func NewImageManager(ctx context.Context) ImageManager {
 	}
 
 	// Check if we are running in a Docker or compatible environment
-	dockerClient, _, _, err := sdk.NewDockerClient(ctx)
+	dockerClient, _, _, err := sdk.NewDockerClient(ctx, logger)
 	if err != nil {
 		logger.Debug("no docker runtime found, using no-op image manager")
 		return &NoopImageManager{}
 	}
 
-	return NewRegistryImageManager(dockerClient)
+	return NewRegistryImageManager(dockerClient, logger)
 }
 
 // NoopImageManager is a no-op implementation of ImageManager.

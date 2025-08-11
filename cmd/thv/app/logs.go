@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/viper"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -82,7 +81,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 		return getProxyLogs(workloadName, follow)
 	}
 
-	manager, err := workloads.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
@@ -144,7 +143,7 @@ func getLogsDirectory() (string, error) {
 }
 
 func getManagedContainerNames(ctx context.Context) (map[string]bool, error) {
-	manager, err := workloads.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create status manager: %v", err)
 	}

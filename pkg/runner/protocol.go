@@ -9,11 +9,11 @@ import (
 	"time"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/certs"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/templates"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Protocol schemes
@@ -31,8 +31,9 @@ func HandleProtocolScheme(
 	imageManager images.ImageManager,
 	serverOrImage string,
 	caCertPath string,
+	logger *zap.SugaredLogger,
 ) (string, error) {
-	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", false)
+	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", false, logger)
 }
 
 // BuildFromProtocolSchemeWithName checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
@@ -47,13 +48,14 @@ func BuildFromProtocolSchemeWithName(
 	caCertPath string,
 	imageName string,
 	dryRun bool,
+	logger *zap.SugaredLogger,
 ) (string, error) {
 	transportType, packageName, err := parseProtocolScheme(serverOrImage)
 	if err != nil {
 		return "", err
 	}
 
-	templateData, err := createTemplateData(transportType, packageName, caCertPath)
+	templateData, err := createTemplateData(transportType, packageName, caCertPath, logger)
 	if err != nil {
 		return "", err
 	}
@@ -67,7 +69,7 @@ func BuildFromProtocolSchemeWithName(
 		return dockerfileContent, nil
 	}
 
-	return buildImageFromTemplateWithName(ctx, imageManager, transportType, packageName, templateData, imageName)
+	return buildImageFromTemplateWithName(ctx, imageManager, transportType, packageName, templateData, imageName, logger)
 }
 
 // parseProtocolScheme extracts the transport type and package name from the protocol scheme.
@@ -85,7 +87,12 @@ func parseProtocolScheme(serverOrImage string) (templates.TransportType, string,
 }
 
 // createTemplateData creates the template data with optional CA certificate.
-func createTemplateData(transportType templates.TransportType, packageName, caCertPath string) (templates.TemplateData, error) {
+func createTemplateData(
+	transportType templates.TransportType,
+	packageName,
+	caCertPath string,
+	logger *zap.SugaredLogger,
+) (templates.TemplateData, error) {
 	// Check if this is a local path (for Go packages only)
 	isLocalPath := transportType == templates.TransportTypeGO && isLocalGoPath(packageName)
 
@@ -96,7 +103,7 @@ func createTemplateData(transportType templates.TransportType, packageName, caCe
 	}
 
 	if caCertPath != "" {
-		if err := addCACertToTemplate(caCertPath, &templateData); err != nil {
+		if err := addCACertToTemplate(caCertPath, &templateData, logger); err != nil {
 			return templateData, err
 		}
 	}
@@ -105,7 +112,7 @@ func createTemplateData(transportType templates.TransportType, packageName, caCe
 }
 
 // addCACertToTemplate reads and validates a CA certificate, adding it to the template data.
-func addCACertToTemplate(caCertPath string, templateData *templates.TemplateData) error {
+func addCACertToTemplate(caCertPath string, templateData *templates.TemplateData, logger *zap.SugaredLogger) error {
 	logger.Debugf("Using custom CA certificate from: %s", caCertPath)
 
 	// Read the CA certificate file
@@ -116,7 +123,7 @@ func addCACertToTemplate(caCertPath string, templateData *templates.TemplateData
 	}
 
 	// Validate that the file contains a valid PEM certificate
-	if err := certs.ValidateCACertificate(caCertContent); err != nil {
+	if err := certs.ValidateCACertificate(caCertContent, logger); err != nil {
 		return fmt.Errorf("invalid CA certificate: %w", err)
 	}
 
@@ -135,15 +142,15 @@ type buildContext struct {
 
 // setupBuildContext sets up the appropriate build context directory based on whether
 // we're dealing with a local path or remote package.
-func setupBuildContext(packageName string, isLocalPath bool) (*buildContext, error) {
+func setupBuildContext(packageName string, isLocalPath bool, logger *zap.SugaredLogger) (*buildContext, error) {
 	if isLocalPath {
-		return setupLocalBuildContext(packageName)
+		return setupLocalBuildContext(packageName, logger)
 	}
-	return setupTempBuildContext()
+	return setupTempBuildContext(logger)
 }
 
 // setupLocalBuildContext sets up a build context using the local directory directly.
-func setupLocalBuildContext(packageName string) (*buildContext, error) {
+func setupLocalBuildContext(packageName string, logger *zap.SugaredLogger) (*buildContext, error) {
 	absPath, err := filepath.Abs(packageName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path for %s: %w", packageName, err)
@@ -186,7 +193,7 @@ func setupLocalBuildContext(packageName string) (*buildContext, error) {
 }
 
 // setupTempBuildContext sets up a temporary build context directory.
-func setupTempBuildContext() (*buildContext, error) {
+func setupTempBuildContext(logger *zap.SugaredLogger) (*buildContext, error) {
 	tempDir, err := os.MkdirTemp("", "toolhive-docker-build-")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
@@ -209,7 +216,7 @@ func setupTempBuildContext() (*buildContext, error) {
 
 // writeDockerfile writes the Dockerfile content to the build context.
 // For local paths, it checks if a Dockerfile already exists and avoids overwriting it.
-func writeDockerfile(dockerfilePath, dockerfileContent string, isLocalPath bool) error {
+func writeDockerfile(dockerfilePath, dockerfileContent string, isLocalPath bool, logger *zap.SugaredLogger) error {
 	if isLocalPath {
 		// Check if a Dockerfile already exists
 		if _, err := os.Stat(dockerfilePath); err == nil {
@@ -233,7 +240,7 @@ func writeDockerfile(dockerfilePath, dockerfileContent string, isLocalPath bool)
 }
 
 // writeCACertificate writes the CA certificate to the build context if provided.
-func writeCACertificate(buildContextDir, caCertContent string, isLocalPath bool) (func(), error) {
+func writeCACertificate(buildContextDir, caCertContent string, isLocalPath bool, logger *zap.SugaredLogger) (func(), error) {
 	if caCertContent == "" {
 		return func() {}, nil
 	}
@@ -279,6 +286,7 @@ func buildImageFromTemplateWithName(
 	packageName string,
 	templateData templates.TemplateData,
 	imageName string,
+	logger *zap.SugaredLogger,
 ) (string, error) {
 
 	// Get the Dockerfile content
@@ -288,19 +296,19 @@ func buildImageFromTemplateWithName(
 	}
 
 	// Set up the build context
-	buildCtx, err := setupBuildContext(packageName, templateData.IsLocalPath)
+	buildCtx, err := setupBuildContext(packageName, templateData.IsLocalPath, logger)
 	if err != nil {
 		return "", err
 	}
 	defer buildCtx.CleanupFunc()
 
 	// Write the Dockerfile
-	if err := writeDockerfile(buildCtx.DockerfilePath, dockerfileContent, templateData.IsLocalPath); err != nil {
+	if err := writeDockerfile(buildCtx.DockerfilePath, dockerfileContent, templateData.IsLocalPath, logger); err != nil {
 		return "", err
 	}
 
 	// Write CA certificate if provided
-	caCertCleanup, err := writeCACertificate(buildCtx.Dir, templateData.CACertContent, templateData.IsLocalPath)
+	caCertCleanup, err := writeCACertificate(buildCtx.Dir, templateData.CACertContent, templateData.IsLocalPath, logger)
 	if err != nil {
 		return "", err
 	}

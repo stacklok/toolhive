@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -112,7 +114,9 @@ func TestCreateMiddleware(t *testing.T) {
 	t.Parallel()
 	config := &Config{}
 
-	middleware, err := config.CreateMiddleware()
+	logger := log.NewLogger()
+
+	middleware, err := config.CreateMiddleware(logger)
 	assert.NoError(t, err)
 	assert.NotNil(t, middleware)
 }
@@ -235,8 +239,11 @@ func TestConfigMinimalJSON(t *testing.T) {
 
 func TestGetMiddlewareFromFileError(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	// Test with non-existent file
-	_, err := GetMiddlewareFromFile("/non/existent/file.json")
+	_, err := GetMiddlewareFromFile("/non/existent/file.json", logger)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to load audit config")
 }

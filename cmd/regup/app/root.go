@@ -3,7 +3,11 @@ package app
 
 import (
 	"github.com/spf13/cobra"
+
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
+
+var logger = log.NewLogger()
 
 var rootCmd = &cobra.Command{
 	Use:               "regup",

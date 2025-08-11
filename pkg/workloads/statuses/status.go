@@ -5,9 +5,10 @@ import (
 	"context"
 	"fmt"
 
+	"go.uber.org/zap"
+
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
@@ -28,20 +29,21 @@ type StatusManager interface {
 }
 
 // NewStatusManagerFromRuntime creates a new instance of StatusManager from an existing runtime.
-func NewStatusManagerFromRuntime(runtime rt.Runtime) StatusManager {
+func NewStatusManagerFromRuntime(runtime rt.Runtime, logger *zap.SugaredLogger) StatusManager {
 	return &runtimeStatusManager{
 		runtime: runtime,
+		logger:  logger,
 	}
 }
 
 // NewStatusManager creates a new status manager instance using the appropriate implementation
 // based on the runtime environment. If running in Kubernetes, it returns the runtime-based
 // implementation. Otherwise, it returns the file-based implementation.
-func NewStatusManager(runtime rt.Runtime) (StatusManager, error) {
+func NewStatusManager(runtime rt.Runtime, logger *zap.SugaredLogger) (StatusManager, error) {
 	if rt.IsKubernetesRuntime() {
-		return NewStatusManagerFromRuntime(runtime), nil
+		return NewStatusManagerFromRuntime(runtime, logger), nil
 	}
-	return NewFileStatusManager(runtime)
+	return NewFileStatusManager(runtime, logger)
 }
 
 // runtimeStatusManager is an implementation of StatusManager that uses the state
@@ -49,6 +51,7 @@ func NewStatusManager(runtime rt.Runtime) (StatusManager, error) {
 // ToolHive at the time of writing.
 type runtimeStatusManager struct {
 	runtime rt.Runtime
+	logger  *zap.SugaredLogger
 }
 
 func (r *runtimeStatusManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
@@ -97,14 +100,14 @@ func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, 
 	return workloads, nil
 }
 
-func (*runtimeStatusManager) SetWorkloadStatus(
+func (r *runtimeStatusManager) SetWorkloadStatus(
 	_ context.Context,
 	workloadName string,
 	status rt.WorkloadStatus,
 	contextMsg string,
 ) error {
 	// TODO: This will need to handle concurrent updates.
-	logger.Debugf("workload %s set to status %s (context: %s)", workloadName, status, contextMsg)
+	r.logger.Debugf("workload %s set to status %s (context: %s)", workloadName, status, contextMsg)
 	return nil
 }
 

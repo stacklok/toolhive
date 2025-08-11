@@ -6,10 +6,10 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -18,13 +18,15 @@ import (
 type GroupsRoutes struct {
 	groupManager    groups.Manager
 	workloadManager workloads.Manager
+	logger          *zap.SugaredLogger
 }
 
 // GroupsRouter creates a new GroupsRoutes instance.
-func GroupsRouter(groupManager groups.Manager, workloadManager workloads.Manager) http.Handler {
+func GroupsRouter(groupManager groups.Manager, workloadManager workloads.Manager, logger *zap.SugaredLogger) http.Handler {
 	routes := GroupsRoutes{
 		groupManager:    groupManager,
 		workloadManager: workloadManager,
+		logger:          logger,
 	}
 
 	r := chi.NewRouter()
@@ -55,7 +57,7 @@ func (s *GroupsRoutes) listGroups(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	groupList, err := s.groupManager.List(ctx)
 	if err != nil {
-		logger.Errorf("Failed to list groups: %v", err)
+		s.logger.Errorf("Failed to list groups: %v", err)
 		http.Error(w, "Failed to list groups", http.StatusInternalServerError)
 		return
 	}
@@ -63,7 +65,7 @@ func (s *GroupsRoutes) listGroups(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(groupListResponse{Groups: groupList})
 	if err != nil {
-		logger.Errorf("Failed to marshal group list: %v", err)
+		s.logger.Errorf("Failed to marshal group list: %v", err)
 		http.Error(w, "Failed to marshal group list", http.StatusInternalServerError)
 		return
 	}
@@ -87,21 +89,21 @@ func (s *GroupsRoutes) createGroup(w http.ResponseWriter, r *http.Request) {
 
 	var req createGroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logger.Errorf("Failed to decode create group request: %v", err)
+		s.logger.Errorf("Failed to decode create group request: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
 	// Validate group name
 	if err := validation.ValidateGroupName(req.Name); err != nil {
-		logger.Errorf("Invalid group name: %v", err)
+		s.logger.Errorf("Invalid group name: %v", err)
 		http.Error(w, fmt.Sprintf("Invalid group name: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	err := s.groupManager.Create(ctx, req.Name)
 	if err != nil {
-		logger.Errorf("Failed to create group: %v", err)
+		s.logger.Errorf("Failed to create group: %v", err)
 		if errors.IsGroupAlreadyExists(err) {
 			http.Error(w, err.Error(), http.StatusConflict)
 		} else {
@@ -114,7 +116,7 @@ func (s *GroupsRoutes) createGroup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	response := createGroupResponse(req)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to marshal create group response: %v", err)
+		s.logger.Errorf("Failed to marshal create group response: %v", err)
 		http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
 		return
 	}
@@ -137,21 +139,21 @@ func (s *GroupsRoutes) getGroup(w http.ResponseWriter, r *http.Request) {
 
 	// Validate group name
 	if err := validation.ValidateGroupName(name); err != nil {
-		logger.Errorf("Invalid group name: %v", err)
+		s.logger.Errorf("Invalid group name: %v", err)
 		http.Error(w, fmt.Sprintf("Invalid group name: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	group, err := s.groupManager.Get(ctx, name)
 	if err != nil {
-		logger.Errorf("Failed to get group %s: %v", name, err)
+		s.logger.Errorf("Failed to get group %s: %v", name, err)
 		http.Error(w, "Group not found", http.StatusNotFound)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(group); err != nil {
-		logger.Errorf("Failed to marshal group: %v", err)
+		s.logger.Errorf("Failed to marshal group: %v", err)
 		http.Error(w, "Failed to marshal group", http.StatusInternalServerError)
 		return
 	}
@@ -175,7 +177,7 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 
 	// Validate group name
 	if err := validation.ValidateGroupName(name); err != nil {
-		logger.Errorf("Invalid group name: %v", err)
+		s.logger.Errorf("Invalid group name: %v", err)
 		http.Error(w, fmt.Sprintf("Invalid group name: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -189,7 +191,7 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	// Check if group exists before deleting
 	exists, err := s.groupManager.Exists(ctx, name)
 	if err != nil {
-		logger.Errorf("Failed to check if group exists %s: %v", name, err)
+		s.logger.Errorf("Failed to check if group exists %s: %v", name, err)
 		http.Error(w, "Failed to check group existence", http.StatusInternalServerError)
 		return
 	}
@@ -205,7 +207,7 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	// Get all workloads in the group
 	groupWorkloads, err := s.workloadManager.ListWorkloadsInGroup(ctx, name)
 	if err != nil {
-		logger.Errorf("Failed to list workloads in group %s: %v", name, err)
+		s.logger.Errorf("Failed to list workloads in group %s: %v", name, err)
 		http.Error(w, "Failed to list workloads in group", http.StatusInternalServerError)
 		return
 	}
@@ -216,35 +218,35 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 			// Delete all workloads in the group
 			group, err := s.workloadManager.DeleteWorkloads(ctx, groupWorkloads)
 			if err != nil {
-				logger.Errorf("Failed to delete workloads in group %s: %v", name, err)
+				s.logger.Errorf("Failed to delete workloads in group %s: %v", name, err)
 				http.Error(w, "Failed to delete workloads in group", http.StatusInternalServerError)
 				return
 			}
 
 			// Wait for the deletion to complete
 			if err := group.Wait(); err != nil {
-				logger.Errorf("Failed to delete workloads in group %s: %v", name, err)
+				s.logger.Errorf("Failed to delete workloads in group %s: %v", name, err)
 				http.Error(w, "Failed to delete workloads in group", http.StatusInternalServerError)
 				return
 			}
 
-			logger.Infof("Deleted %d workload(s) from group '%s'", len(groupWorkloads), name)
+			s.logger.Infof("Deleted %d workload(s) from group '%s'", len(groupWorkloads), name)
 		} else {
 			// Move workloads to default group
 			if err := s.workloadManager.MoveToDefaultGroup(ctx, groupWorkloads, name); err != nil {
-				logger.Errorf("Failed to move workloads to default group: %v", err)
+				s.logger.Errorf("Failed to move workloads to default group: %v", err)
 				http.Error(w, "Failed to move workloads to default group", http.StatusInternalServerError)
 				return
 			}
 
-			logger.Infof("Moved %d workload(s) from group '%s' to default group", len(groupWorkloads), name)
+			s.logger.Infof("Moved %d workload(s) from group '%s' to default group", len(groupWorkloads), name)
 		}
 	}
 
 	// Delete the group
 	err = s.groupManager.Delete(ctx, name)
 	if err != nil {
-		logger.Errorf("Failed to delete group %s: %v", name, err)
+		s.logger.Errorf("Failed to delete group %s: %v", name, err)
 		http.Error(w, "Failed to delete group", http.StatusInternalServerError)
 		return
 	}

@@ -25,13 +25,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.uber.org/zap"
 
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -74,7 +74,7 @@ func setupUnixSocket(address string) (net.Listener, error) {
 	return listener, nil
 }
 
-func cleanupUnixSocket(address string) {
+func cleanupUnixSocket(address string, logger *zap.SugaredLogger) {
 	if err := os.Remove(address); err != nil && !os.IsNotExist(err) {
 		logger.Warnf("failed to remove socket file: %v", err)
 	}
@@ -90,7 +90,7 @@ func headersMiddleware(next http.Handler) http.Handler {
 }
 
 // updateCheckMiddleware triggers update checks for API usage
-func updateCheckMiddleware() func(next http.Handler) http.Handler {
+func updateCheckMiddleware(logger *zap.SugaredLogger) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			go func() {
@@ -141,6 +141,7 @@ func Serve(
 	debugMode bool,
 	enableDocs bool,
 	oidcConfig *auth.TokenValidatorConfig,
+	logger *zap.SugaredLogger,
 ) error {
 	r := chi.NewRouter()
 	r.Use(
@@ -151,33 +152,33 @@ func Serve(
 	)
 
 	// Add update check middleware
-	r.Use(updateCheckMiddleware())
+	r.Use(updateCheckMiddleware(logger))
 
 	// Add authentication middleware
-	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
 	r.Use(authMiddleware)
 
 	// Create container runtime
-	containerRuntime, err := container.NewFactory().Create(ctx)
+	containerRuntime, err := container.NewFactory(logger).Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
-	clientManager, err := client.NewManager(ctx)
+	clientManager, err := client.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create client manager: %v", err)
 	}
 
-	workloadManager, err := workloads.NewManagerFromRuntime(containerRuntime)
+	workloadManager, err := workloads.NewManagerFromRuntime(containerRuntime, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
 	// Create group manager
-	groupManager, err := groups.NewManager()
+	groupManager, err := groups.NewManager(logger)
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %v", err)
 	}
@@ -185,12 +186,12 @@ func Serve(
 	routers := map[string]http.Handler{
 		"/health":               v1.HealthcheckRouter(containerRuntime),
 		"/api/v1beta/version":   v1.VersionRouter(),
-		"/api/v1beta/workloads": v1.WorkloadRouter(workloadManager, containerRuntime, groupManager, debugMode),
-		"/api/v1beta/registry":  v1.RegistryRouter(),
-		"/api/v1beta/discovery": v1.DiscoveryRouter(),
-		"/api/v1beta/clients":   v1.ClientRouter(clientManager, workloadManager, groupManager),
-		"/api/v1beta/secrets":   v1.SecretsRouter(),
-		"/api/v1beta/groups":    v1.GroupsRouter(groupManager, workloadManager),
+		"/api/v1beta/workloads": v1.WorkloadRouter(workloadManager, containerRuntime, groupManager, debugMode, logger),
+		"/api/v1beta/registry":  v1.RegistryRouter(logger),
+		"/api/v1beta/discovery": v1.DiscoveryRouter(logger),
+		"/api/v1beta/clients":   v1.ClientRouter(clientManager, workloadManager, groupManager, logger),
+		"/api/v1beta/secrets":   v1.SecretsRouter(logger),
+		"/api/v1beta/groups":    v1.GroupsRouter(groupManager, workloadManager, logger),
 	}
 
 	// Only mount docs router if enabled
@@ -236,13 +237,13 @@ func Serve(
 	<-ctx.Done()
 	if err := srv.Shutdown(ctx); err != nil {
 		if isUnixSocket {
-			cleanupUnixSocket(address)
+			cleanupUnixSocket(address, logger)
 		}
 		return fmt.Errorf("server shutdown failed: %w", err)
 	}
 
 	if isUnixSocket {
-		cleanupUnixSocket(address)
+		cleanupUnixSocket(address, logger)
 	}
 
 	logger.Infof("%s server stopped", addrType)

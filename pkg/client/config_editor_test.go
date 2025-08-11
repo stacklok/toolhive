@@ -3,7 +3,6 @@ package client
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,13 +11,11 @@ import (
 	"github.com/tidwall/gjson"
 	"gotest.tools/assert"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestUpsertMCPServerConfig(t *testing.T) {
 	t.Parallel()
-
-	logger.Initialize()
 
 	tests := []struct {
 		mcpServerPatchPath string // the path used by the patch operation
@@ -40,6 +37,7 @@ func TestUpsertMCPServerConfig(t *testing.T) {
 			jsu := JSONConfigUpdater{
 				Path:                 configPath,
 				MCPServersPathPrefix: tt.mcpServerPatchPath,
+				logger:               log.NewLogger(),
 			}
 
 			mcpServer := MCPServer{
@@ -76,6 +74,7 @@ func TestUpsertMCPServerConfig(t *testing.T) {
 			jsu := JSONConfigUpdater{
 				Path:                 configPath,
 				MCPServersPathPrefix: tt.mcpServerPatchPath,
+				logger:               log.NewLogger(),
 			}
 
 			// add an MCP server so we can update it
@@ -117,8 +116,6 @@ func TestUpsertMCPServerConfig(t *testing.T) {
 func TestRemoveMCPServerConfigNew(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
-
 	tests := []struct {
 		mcpServerPatchPath string // the path used by the patch operation
 		mcpServerKeyPath   string // the path used to retrieve the value from the config file (for testing purposes)
@@ -138,6 +135,7 @@ func TestRemoveMCPServerConfigNew(t *testing.T) {
 			jsu := JSONConfigUpdater{
 				Path:                 configPath,
 				MCPServersPathPrefix: tt.mcpServerPatchPath,
+				logger:               log.NewLogger(),
 			}
 
 			// add an MCP server so we can remove it
@@ -160,7 +158,7 @@ func TestRemoveMCPServerConfigNew(t *testing.T) {
 			// read the config file and check that the mcp servers are removed
 			content, err := os.ReadFile(configPath)
 			if err != nil {
-				log.Fatalf("Failed to read file: %v", err)
+				t.Fatalf("Failed to read file: %v", err)
 			}
 
 			testMcpServerJson := gjson.GetBytes(content, tt.mcpServerKeyPath+"."+tt.mcpServerName).Raw
@@ -228,7 +226,7 @@ func getMCPServerFromFile(t *testing.T, configPath string, key string) MCPServer
 func TestEnsurePathExists(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	tests := []struct {
 		name           string
@@ -278,7 +276,7 @@ func TestEnsurePathExists(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := ensurePathExists(tt.content, tt.path)
+			result := ensurePathExists(tt.content, tt.path, logger)
 
 			assert.DeepEqual(t, tt.expectedResult, result)
 		})

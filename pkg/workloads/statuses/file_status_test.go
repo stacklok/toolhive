@@ -17,19 +17,17 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
-
-func init() {
-	// Initialize logger for all tests
-	logger.Initialize()
-}
 
 func TestFileStatusManager_SetWorkloadStatus_Create(t *testing.T) {
 	t.Parallel()
 	// Create temporary directory for tests
 	tempDir := t.TempDir()
-	manager := &fileStatusManager{baseDir: tempDir}
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		logger:  log.NewLogger(),
+	}
 	ctx := context.Background()
 
 	// Test creating a new workload status
@@ -57,7 +55,10 @@ func TestFileStatusManager_SetWorkloadStatus_Create(t *testing.T) {
 func TestFileStatusManager_SetWorkloadStatus_Update(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
-	manager := &fileStatusManager{baseDir: tempDir}
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		logger:  log.NewLogger(),
+	}
 	ctx := context.Background()
 
 	// Create workload first time
@@ -80,6 +81,7 @@ func TestFileStatusManager_GetWorkload(t *testing.T) {
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
+		logger:  log.NewLogger(),
 	}
 	ctx := context.Background()
 
@@ -106,6 +108,7 @@ func TestFileStatusManager_GetWorkload_NotFound(t *testing.T) {
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
+		logger:  log.NewLogger(),
 	}
 	ctx := context.Background()
 
@@ -129,6 +132,7 @@ func TestFileStatusManager_GetWorkload_RuntimeFallback(t *testing.T) {
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
+		logger:  log.NewLogger(),
 	}
 	ctx := context.Background()
 
@@ -168,6 +172,7 @@ func TestFileStatusManager_GetWorkload_FileAndRuntimeCombination(t *testing.T) {
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
+		logger:  log.NewLogger(),
 	}
 	ctx := context.Background()
 
@@ -210,7 +215,10 @@ func TestFileStatusManager_GetWorkload_FileAndRuntimeCombination(t *testing.T) {
 func TestFileStatusManager_SetWorkloadStatus(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
-	manager := &fileStatusManager{baseDir: tempDir}
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		logger:  log.NewLogger(),
+	}
 	ctx := context.Background()
 
 	// Create a workload status
@@ -244,7 +252,10 @@ func TestFileStatusManager_SetWorkloadStatus(t *testing.T) {
 func TestFileStatusManager_SetWorkloadStatus_NotFound(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
-	manager := &fileStatusManager{baseDir: tempDir}
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		logger:  log.NewLogger(),
+	}
 	ctx := context.Background()
 
 	// Try to set status for non-existent workload - creates file since no runtime check
@@ -272,7 +283,10 @@ func TestFileStatusManager_SetWorkloadStatus_NotFound(t *testing.T) {
 func TestFileStatusManager_DeleteWorkloadStatus(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
-	manager := &fileStatusManager{baseDir: tempDir}
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		logger:  log.NewLogger(),
+	}
 	ctx := context.Background()
 
 	// Create a workload status
@@ -293,7 +307,10 @@ func TestFileStatusManager_DeleteWorkloadStatus(t *testing.T) {
 func TestFileStatusManager_DeleteWorkloadStatus_NotFound(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
-	manager := &fileStatusManager{baseDir: tempDir}
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		logger:  log.NewLogger(),
+	}
 	ctx := context.Background()
 
 	// Try to delete non-existent workload - should not error
@@ -312,6 +329,7 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
+		logger:  log.NewLogger(),
 	}
 	ctx := context.Background()
 
@@ -352,6 +370,7 @@ func TestFileStatusManager_FullLifecycle(t *testing.T) {
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
+		logger:  log.NewLogger(),
 	}
 	ctx := context.Background()
 
@@ -600,6 +619,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			manager := &fileStatusManager{
 				baseDir: tempDir,
 				runtime: mockRuntime,
+				logger:  log.NewLogger(),
 			}
 
 			// Setup test data
@@ -635,6 +655,7 @@ func TestFileStatusManager_GetWorkload_UnhealthyDetection(t *testing.T) {
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
+		logger:  log.NewLogger(),
 	}
 	ctx := context.Background()
 
@@ -704,6 +725,7 @@ func TestFileStatusManager_GetWorkload_HealthyRunningWorkload(t *testing.T) {
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
+		logger:  log.NewLogger(),
 	}
 	ctx := context.Background()
 
@@ -752,6 +774,7 @@ func TestFileStatusManager_GetWorkload_ProxyNotRunning(t *testing.T) {
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
+		logger:  log.NewLogger(),
 	}
 	ctx := context.Background()
 
@@ -826,6 +849,7 @@ func TestFileStatusManager_GetWorkload_HealthyWithProxy(t *testing.T) {
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
+		logger:  log.NewLogger(),
 	}
 	ctx := context.Background()
 
@@ -873,6 +897,7 @@ func TestFileStatusManager_ListWorkloads_WithValidation(t *testing.T) {
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
+		logger:  log.NewLogger(),
 	}
 	ctx := context.Background()
 

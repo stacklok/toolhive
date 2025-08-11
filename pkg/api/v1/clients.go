@@ -7,12 +7,12 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -21,6 +21,7 @@ type ClientRoutes struct {
 	clientManager   client.Manager
 	workloadManager workloads.Manager
 	groupManager    groups.Manager
+	logger          *zap.SugaredLogger
 }
 
 // ClientRouter creates a new router for the client API.
@@ -28,11 +29,13 @@ func ClientRouter(
 	manager client.Manager,
 	workloadManager workloads.Manager,
 	groupManager groups.Manager,
+	logger *zap.SugaredLogger,
 ) http.Handler {
 	routes := ClientRoutes{
 		clientManager:   manager,
 		workloadManager: workloadManager,
 		groupManager:    groupManager,
+		logger:          logger,
 	}
 
 	r := chi.NewRouter()
@@ -56,7 +59,7 @@ func ClientRouter(
 func (c *ClientRoutes) listClients(w http.ResponseWriter, _ *http.Request) {
 	clients, err := c.clientManager.ListClients()
 	if err != nil {
-		logger.Errorf("Failed to list clients: %v", err)
+		c.logger.Errorf("Failed to list clients: %v", err)
 		http.Error(w, "Failed to list clients", http.StatusInternalServerError)
 		return
 	}
@@ -84,7 +87,7 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
 	var newClient createClientRequest
 	err := json.NewDecoder(r.Body).Decode(&newClient)
 	if err != nil {
-		logger.Errorf("Failed to decode request body: %v", err)
+		c.logger.Errorf("Failed to decode request body: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -93,7 +96,7 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
 	if len(newClient.Groups) == 0 {
 		defaultGroup, err := c.groupManager.Get(r.Context(), groups.DefaultGroupName)
 		if err != nil {
-			logger.Debugf("Failed to get default group: %v", err)
+			c.logger.Debugf("Failed to get default group: %v", err)
 		}
 		if defaultGroup != nil {
 			newClient.Groups = []string{groups.DefaultGroupName}
@@ -102,7 +105,7 @@ func (c *ClientRoutes) registerClient(w http.ResponseWriter, r *http.Request) {
 
 	err = c.performClientRegistration(r.Context(), []client.Client{{Name: newClient.Name}}, newClient.Groups)
 	if err != nil {
-		logger.Errorf("Failed to register client: %v", err)
+		c.logger.Errorf("Failed to register client: %v", err)
 		http.Error(w, "Failed to register client", http.StatusInternalServerError)
 		return
 	}
@@ -133,7 +136,7 @@ func (c *ClientRoutes) unregisterClient(w http.ResponseWriter, r *http.Request) 
 
 	err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, nil)
 	if err != nil {
-		logger.Errorf("Failed to unregister client: %v", err)
+		c.logger.Errorf("Failed to unregister client: %v", err)
 		http.Error(w, "Failed to unregister client", http.StatusInternalServerError)
 		return
 	}
@@ -168,7 +171,7 @@ func (c *ClientRoutes) unregisterClientFromGroup(w http.ResponseWriter, r *http.
 	// Remove client from the specific group
 	err := c.removeClient(r.Context(), []client.Client{{Name: client.MCPClient(clientName)}}, []string{groupName})
 	if err != nil {
-		logger.Errorf("Failed to unregister client from group: %v", err)
+		c.logger.Errorf("Failed to unregister client from group: %v", err)
 		http.Error(w, "Failed to unregister client from group", http.StatusInternalServerError)
 		return
 	}
@@ -191,7 +194,7 @@ func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Reques
 	var req bulkClientRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
-		logger.Errorf("Failed to decode request body: %v", err)
+		c.logger.Errorf("Failed to decode request body: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -208,7 +211,7 @@ func (c *ClientRoutes) registerClientsBulk(w http.ResponseWriter, r *http.Reques
 
 	err = c.performClientRegistration(r.Context(), clients, req.Groups)
 	if err != nil {
-		logger.Errorf("Failed to register clients: %v", err)
+		c.logger.Errorf("Failed to register clients: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -239,7 +242,7 @@ func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Requ
 	var req bulkClientRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
-		logger.Errorf("Failed to decode request body: %v", err)
+		c.logger.Errorf("Failed to decode request body: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -257,7 +260,7 @@ func (c *ClientRoutes) unregisterClientsBulk(w http.ResponseWriter, r *http.Requ
 
 	err = c.removeClient(r.Context(), clients, req.Groups)
 	if err != nil {
-		logger.Errorf("Failed to unregister clients: %v", err)
+		c.logger.Errorf("Failed to unregister clients: %v", err)
 		http.Error(w, "Failed to unregister clients", http.StatusInternalServerError)
 		return
 	}
@@ -293,7 +296,7 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 	}
 
 	if len(groupNames) > 0 {
-		logger.Infof("Filtering workloads to groups: %v", groupNames)
+		c.logger.Infof("Filtering workloads to groups: %v", groupNames)
 
 		filteredWorkloads, err := workloads.FilterByGroups(runningWorkloads, groupNames)
 		if err != nil {
@@ -320,21 +323,21 @@ func (c *ClientRoutes) performClientRegistration(ctx context.Context, clients []
 	} else {
 		// We should never reach this point once groups are enabled
 		for _, clientToRegister := range clients {
-			err := config.UpdateConfig(func(c *config.Config) {
-				for _, registeredClient := range c.Clients.RegisteredClients {
+			err := config.UpdateConfig(func(config *config.Config) {
+				for _, registeredClient := range config.Clients.RegisteredClients {
 					if registeredClient == string(clientToRegister.Name) {
-						logger.Infof("Client %s is already registered, skipping...", clientToRegister.Name)
+						c.logger.Infof("Client %s is already registered, skipping...", clientToRegister.Name)
 						return
 					}
 				}
 
-				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, string(clientToRegister.Name))
-			})
+				config.Clients.RegisteredClients = append(config.Clients.RegisteredClients, string(clientToRegister.Name))
+			}, c.logger)
 			if err != nil {
 				return fmt.Errorf("failed to update configuration for client %s: %w", clientToRegister.Name, err)
 			}
 
-			logger.Infof("Successfully registered client: %s\n", clientToRegister.Name)
+			c.logger.Infof("Successfully registered client: %s\n", clientToRegister.Name)
 		}
 
 		err = c.clientManager.RegisterClients(clients, runningWorkloads)
@@ -428,17 +431,17 @@ func (c *ClientRoutes) removeClientGlobally(
 
 	// Remove clients from global registered clients list
 	for _, clientToRemove := range clients {
-		err := config.UpdateConfig(func(c *config.Config) {
-			for i, registeredClient := range c.Clients.RegisteredClients {
+		err := config.UpdateConfig(func(config *config.Config) {
+			for i, registeredClient := range config.Clients.RegisteredClients {
 				if registeredClient == string(clientToRemove.Name) {
 					// Remove client from slice
-					c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
-					logger.Infof("Successfully unregistered client: %s\n", clientToRemove.Name)
+					config.Clients.RegisteredClients = append(config.Clients.RegisteredClients[:i], config.Clients.RegisteredClients[i+1:]...)
+					c.logger.Infof("Successfully unregistered client: %s\n", clientToRemove.Name)
 					return
 				}
 			}
-			logger.Warnf("Client %s was not found in registered clients list", clientToRemove.Name)
-		})
+			c.logger.Warnf("Client %s was not found in registered clients list", clientToRemove.Name)
+		}, c.logger)
 		if err != nil {
 			return fmt.Errorf("failed to update configuration for client %s: %w", clientToRemove.Name, err)
 		}

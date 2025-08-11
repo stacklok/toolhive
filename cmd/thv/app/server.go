@@ -59,7 +59,7 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
-		return s.Serve(ctx, address, isUnixSocket, debugMode, enableDocs, oidcConfig)
+		return s.Serve(ctx, address, isUnixSocket, debugMode, enableDocs, oidcConfig, logger)
 	},
 }
 

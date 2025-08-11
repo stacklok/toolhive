@@ -16,7 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
@@ -24,8 +24,7 @@ import (
 func TestGroupsRouter(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger to prevent panic
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	tests := []struct {
 		name           string
@@ -222,7 +221,7 @@ func TestGroupsRouter(t *testing.T) {
 			}
 
 			// Create router
-			router := GroupsRouter(mockGroupManager, mockWorkloadManager)
+			router := GroupsRouter(mockGroupManager, mockWorkloadManager, logger)
 
 			// Create request
 			var req *http.Request
@@ -269,18 +268,20 @@ func TestGroupsRouter(t *testing.T) {
 func TestGroupsRouter_Integration(t *testing.T) {
 	t.Parallel()
 
+	logger := log.NewLogger()
+
 	// Test with real managers (integration test)
-	groupManager, err := groups.NewManager()
+	groupManager, err := groups.NewManager(logger)
 	if err != nil {
 		t.Skip("Skipping integration test: failed to create group manager")
 	}
 
-	workloadManager, err := workloads.NewManager(context.Background())
+	workloadManager, err := workloads.NewManager(context.Background(), logger)
 	if err != nil {
 		t.Skip("Skipping integration test: failed to create workload manager")
 	}
 
-	router := GroupsRouter(groupManager, workloadManager)
+	router := GroupsRouter(groupManager, workloadManager, logger)
 
 	// Test creating a group
 	t.Run("create and list group", func(t *testing.T) {

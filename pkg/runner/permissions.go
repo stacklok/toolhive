@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
@@ -15,7 +16,7 @@ import (
 // It will likely be moved elsewhere in a future PR.
 
 // CreatePermissionProfileFile creates a temporary file with the permission profile
-func CreatePermissionProfileFile(serverName string, permProfile *permissions.Profile) (string, error) {
+func CreatePermissionProfileFile(serverName string, permProfile *permissions.Profile, logger *zap.SugaredLogger) (string, error) {
 	tempFile, err := os.CreateTemp("", fmt.Sprintf("toolhive-%s-permissions-*.json", serverName))
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary file: %v", err)
@@ -42,7 +43,7 @@ func CreatePermissionProfileFile(serverName string, permProfile *permissions.Pro
 }
 
 // CleanupTempPermissionProfile removes a temporary permission profile file if it was created by toolhive
-func CleanupTempPermissionProfile(permissionProfilePath string) error {
+func CleanupTempPermissionProfile(permissionProfilePath string, logger *zap.SugaredLogger) error {
 	if permissionProfilePath == "" {
 		return nil
 	}

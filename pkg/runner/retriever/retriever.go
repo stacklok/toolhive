@@ -7,11 +7,11 @@ import (
 	"fmt"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/verifier"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -38,17 +38,18 @@ func GetMCPServer(
 	serverOrImage string,
 	rawCACertPath string,
 	verificationType string,
+	logger *zap.SugaredLogger,
 ) (string, *registry.ImageMetadata, error) {
 	var imageMetadata *registry.ImageMetadata
 	var imageToUse string
 
-	imageManager := images.NewImageManager(ctx)
+	imageManager := images.NewImageManager(ctx, logger)
 	// Check if the serverOrImage is a protocol scheme, e.g., uvx://, npx://, or go://
 	if runner.IsImageProtocolScheme(serverOrImage) {
 		logger.Debugf("Detected protocol scheme: %s", serverOrImage)
 		// Process the protocol scheme and build the image
-		caCertPath := resolveCACertPath(rawCACertPath)
-		generatedImage, err := runner.HandleProtocolScheme(ctx, imageManager, serverOrImage, caCertPath)
+		caCertPath := resolveCACertPath(rawCACertPath, logger)
+		generatedImage, err := runner.HandleProtocolScheme(ctx, imageManager, serverOrImage, caCertPath, logger)
 		if err != nil {
 			return "", nil, errors.Join(ErrBadProtocolScheme, err)
 		}
@@ -58,7 +59,7 @@ func GetMCPServer(
 	} else {
 		logger.Debugf("No protocol scheme detected, using image: %s", serverOrImage)
 		// Try to find the server in the registry
-		provider, err := registry.GetDefaultProvider()
+		provider, err := registry.GetDefaultProvider(logger)
 		if err != nil {
 			return "", nil, fmt.Errorf("failed to get registry provider: %v", err)
 		}
@@ -88,12 +89,12 @@ func GetMCPServer(
 	}
 
 	// Verify the image against the expected provenance info (if applicable)
-	if err := verifyImage(imageToUse, imageMetadata, verificationType); err != nil {
+	if err := verifyImage(imageToUse, imageMetadata, verificationType, logger); err != nil {
 		return "", nil, err
 	}
 
 	// Pull the image if necessary
-	if err := pullImage(ctx, imageToUse, imageManager); err != nil {
+	if err := pullImage(ctx, imageToUse, imageManager, logger); err != nil {
 		return "", nil, fmt.Errorf("failed to retrieve or pull image: %v", err)
 	}
 
@@ -105,9 +106,9 @@ func GetMCPServer(
 // If the image has the latest tag, it will be pulled to ensure we have the most recent version.
 // however, if there is a failure in pulling the "latest" tag, it will check if the image exists locally
 // as it is possible that the image was locally built.
-func pullImage(ctx context.Context, image string, imageManager images.ImageManager) error {
+func pullImage(ctx context.Context, image string, imageManager images.ImageManager, logger *zap.SugaredLogger) error {
 	// Check if the image has the "latest" tag
-	isLatestTag := hasLatestTag(image)
+	isLatestTag := hasLatestTag(image, logger)
 
 	if isLatestTag {
 		// For "latest" tag, try to pull first
@@ -155,14 +156,14 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 }
 
 // resolveCACertPath determines the CA certificate path to use, prioritizing command-line flag over configuration
-func resolveCACertPath(flagValue string) string {
+func resolveCACertPath(flagValue string, logger *zap.SugaredLogger) string {
 	// If command-line flag is provided, use it (highest priority)
 	if flagValue != "" {
 		return flagValue
 	}
 
 	// Otherwise, check configuration
-	cfg := config.GetConfig()
+	cfg := config.GetConfig(logger)
 	if cfg.CACertificatePath != "" {
 		logger.Debugf("Using configured CA certificate: %s", cfg.CACertificatePath)
 		return cfg.CACertificatePath
@@ -173,13 +174,13 @@ func resolveCACertPath(flagValue string) string {
 }
 
 // verifyImage verifies the image using the specified verification setting (warn, enabled, or disabled)
-func verifyImage(image string, server *registry.ImageMetadata, verifySetting string) error {
+func verifyImage(image string, server *registry.ImageMetadata, verifySetting string, logger *zap.SugaredLogger) error {
 	switch verifySetting {
 	case VerifyImageDisabled:
 		logger.Warn("Image verification is disabled")
 	case VerifyImageWarn, VerifyImageEnabled:
 		// Create a new verifier
-		v, err := verifier.New(server)
+		v, err := verifier.New(server, logger)
 		if err != nil {
 			// This happens if we have no provenance entry in the registry for this server.
 			// Not finding provenance info in the registry is not a fatal error if the setting is "warn".
@@ -211,7 +212,7 @@ func verifyImage(image string, server *registry.ImageMetadata, verifySetting str
 }
 
 // hasLatestTag checks if the given image reference has the "latest" tag or no tag (which defaults to "latest")
-func hasLatestTag(imageRef string) bool {
+func hasLatestTag(imageRef string, logger *zap.SugaredLogger) bool {
 	ref, err := nameref.ParseReference(imageRef)
 	if err != nil {
 		// If we can't parse the reference, assume it's not "latest"

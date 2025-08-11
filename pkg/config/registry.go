@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
@@ -34,7 +36,7 @@ func DetectRegistryType(input string) (registryType string, cleanPath string) {
 }
 
 // SetRegistryURL validates and sets a registry URL
-func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
+func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool, logger *zap.SugaredLogger) error {
 	// Basic URL validation - check if it starts with http:// or https://
 	if registryURL != "" && !strings.HasPrefix(registryURL, "http://") && !strings.HasPrefix(registryURL, "https://") {
 		return fmt.Errorf("registry URL must start with http:// or https://")
@@ -56,7 +58,7 @@ func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
 		c.RegistryUrl = registryURL
 		c.LocalRegistryPath = "" // Clear local path when setting URL
 		c.AllowPrivateRegistryIp = allowPrivateRegistryIp
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -65,7 +67,7 @@ func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
 }
 
 // SetRegistryFile validates and sets a local registry file
-func SetRegistryFile(registryPath string) error {
+func SetRegistryFile(registryPath string, logger *zap.SugaredLogger) error {
 	// Validate that the file exists and is readable
 	if _, err := os.Stat(registryPath); err != nil {
 		return fmt.Errorf("local registry file not found or not accessible: %w", err)
@@ -93,7 +95,7 @@ func SetRegistryFile(registryPath string) error {
 	err = UpdateConfig(func(c *Config) {
 		c.LocalRegistryPath = registryPath
 		c.RegistryUrl = "" // Clear URL when setting local path
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -102,12 +104,12 @@ func SetRegistryFile(registryPath string) error {
 }
 
 // UnsetRegistry resets registry configuration to defaults
-func UnsetRegistry() error {
+func UnsetRegistry(logger *zap.SugaredLogger) error {
 	err := UpdateConfig(func(c *Config) {
 		c.RegistryUrl = ""
 		c.LocalRegistryPath = ""
 		c.AllowPrivateRegistryIp = false
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -115,8 +117,8 @@ func UnsetRegistry() error {
 }
 
 // GetRegistryConfig returns current registry configuration
-func GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string) {
-	cfg := GetConfig()
+func GetRegistryConfig(logger *zap.SugaredLogger) (url, localPath string, allowPrivateIP bool, registryType string) {
+	cfg := GetConfig(logger)
 
 	if cfg.RegistryUrl != "" {
 		return cfg.RegistryUrl, "", cfg.AllowPrivateRegistryIp, RegistryTypeURL

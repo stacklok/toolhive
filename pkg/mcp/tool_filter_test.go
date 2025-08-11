@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestProcessToolCallRequest(t *testing.T) {
@@ -584,6 +584,8 @@ func TestProcessSSEEvents_EdgeCases(t *testing.T) {
 func TestProcessToolCallRequest_EdgeCases(t *testing.T) {
 	t.Parallel()
 
+	logger := log.NewLogger()
+
 	tests := []struct {
 		name        string
 		filterTools map[string]struct{}
@@ -656,9 +658,6 @@ func TestProcessToolCallRequest_EdgeCases(t *testing.T) {
 func TestToolFilterWriter_Flush(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger to avoid panic
-	logger.Initialize()
-
 	tests := []struct {
 		name        string
 		writeData   []byte
@@ -730,6 +729,7 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 				ResponseWriter: mockWriter,
 				buffer:         []byte{},
 				filterTools:    tt.filterTools,
+				logger:         log.NewLogger(),
 			}
 
 			// Set status code using WriteHeader

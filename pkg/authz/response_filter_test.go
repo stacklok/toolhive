@@ -14,14 +14,14 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestResponseFilteringWriter(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger for tests
-	logger.Initialize()
+	// Setup logger
+	logger := log.NewLogger()
 
 	// Create a Cedar authorizer with specific tool permissions
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
@@ -31,7 +31,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, logger)
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	testCases := []struct {
@@ -211,13 +211,17 @@ func TestResponseFilteringWriter(t *testing.T) {
 
 func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 	t.Parallel()
+
+	// Setup logger
+	logger := log.NewLogger()
+
 	// Create a Cedar authorizer
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, logger)
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Test that non-list operations pass through unchanged
@@ -260,13 +264,17 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 
 func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 	t.Parallel()
+
+	// Setup logger
+	logger := log.NewLogger()
+
 	// Create a Cedar authorizer
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, logger)
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Create an error response

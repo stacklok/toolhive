@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // mockConfig creates a temporary config file with the provided configuration.
@@ -25,7 +24,7 @@ func mockConfig(t *testing.T, cfg *config.Config) func() {
 	err := os.MkdirAll(configDir, 0755)
 	require.NoError(t, err)
 	if cfg != nil {
-		err = config.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		err = config.UpdateConfig(func(c *config.Config) { *c = *cfg }, logger)
 		require.NoError(t, err)
 	}
 	return func() {
@@ -37,8 +36,6 @@ func mockConfig(t *testing.T, cfg *config.Config) func() {
 //nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
 func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 	// Initialize logger to prevent nil pointer dereference
-	logger.Initialize()
-
 	tests := []struct {
 		name                         string
 		setupFlags                   func(*cobra.Command)
@@ -159,7 +156,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				OTEL: tt.configOTEL,
 			})
 			defer cleanup()
-			configInstance := config.GetConfig()
+			configInstance := config.GetConfig(logger)
 			finalEndpoint, finalSamplingRate, finalEnvVars := getTelemetryFromFlags(
 				cmd,
 				configInstance,
@@ -180,7 +177,6 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	// This is a more complete integration test that tests telemetry processing
 	// within the full BuildRunnerConfig function context
-	logger.Initialize()
 	cmd := &cobra.Command{}
 	runFlags := &RunFlags{
 		Transport:         "sse",
@@ -204,7 +200,7 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	})
 	defer cleanup()
 
-	configInstance := config.GetConfig()
+	configInstance := config.GetConfig(logger)
 	finalEndpoint, finalSamplingRate, finalEnvVars := getTelemetryFromFlags(
 		cmd,
 		configInstance,

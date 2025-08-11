@@ -66,7 +66,7 @@ func groupCreateCmdFunc(cmd *cobra.Command, args []string) error {
 	groupName := args[0]
 	ctx := cmd.Context()
 
-	manager, err := groups.NewManager()
+	manager, err := groups.NewManager(logger)
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %w", err)
 	}
@@ -82,7 +82,7 @@ func groupCreateCmdFunc(cmd *cobra.Command, args []string) error {
 func groupListCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 
-	manager, err := groups.NewManager()
+	manager, err := groups.NewManager(logger)
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %w", err)
 	}
@@ -121,7 +121,7 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	if strings.EqualFold(groupName, groups.DefaultGroup) {
 		return fmt.Errorf("cannot delete the %s group", groups.DefaultGroup)
 	}
-	manager, err := groups.NewManager()
+	manager, err := groups.NewManager(logger)
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %w", err)
 	}
@@ -136,7 +136,7 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create workloads manager
-	workloadsManager, err := workloads.NewManager(ctx)
+	workloadsManager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workloads manager: %w", err)
 	}
@@ -223,7 +223,7 @@ func showWarningAndGetConfirmation(groupName string, groupWorkloads []string) (b
 
 func deleteWorkloadsInGroup(ctx context.Context, groupWorkloads []string, groupName string) error {
 	// Delete workloads
-	workloadManager, err := workloads.NewManager(ctx)
+	workloadManager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
@@ -246,7 +246,7 @@ func deleteWorkloadsInGroup(ctx context.Context, groupWorkloads []string, groupN
 // removeWorkloadsFromGroup removes the group membership from the workloads
 // in the group.
 func removeWorkloadsMembershipFromGroup(ctx context.Context, groupWorkloads []string, groupName string) error {
-	workloadManager, err := workloads.NewManager(ctx)
+	workloadManager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
 	}

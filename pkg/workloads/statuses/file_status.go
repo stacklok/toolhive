@@ -11,11 +11,11 @@ import (
 
 	"github.com/adrg/xdg"
 	"github.com/gofrs/flock"
+	"go.uber.org/zap"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/proxy"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -31,7 +31,7 @@ const (
 
 // NewFileStatusManager creates a new file-based StatusManager.
 // Status files will be stored in the XDG data directory under "statuses/".
-func NewFileStatusManager(runtime rt.Runtime) (StatusManager, error) {
+func NewFileStatusManager(runtime rt.Runtime, logger *zap.SugaredLogger) (StatusManager, error) {
 	// Get the base directory using XDG data directory
 	baseDir, err := xdg.DataFile(statusesPrefix)
 	if err != nil {
@@ -46,6 +46,7 @@ func NewFileStatusManager(runtime rt.Runtime) (StatusManager, error) {
 	return &fileStatusManager{
 		baseDir: baseDir,
 		runtime: runtime,
+		logger:  logger,
 	}, nil
 }
 
@@ -55,6 +56,7 @@ func NewFileStatusManager(runtime rt.Runtime) (StatusManager, error) {
 type fileStatusManager struct {
 	baseDir string
 	runtime rt.Runtime
+	logger  *zap.SugaredLogger
 }
 
 // workloadStatusFile represents the JSON structure stored on disk
@@ -140,7 +142,7 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 	for _, container := range runtimeContainers {
 		workload, err := types.WorkloadFromContainerInfo(&container)
 		if err != nil {
-			logger.Warnf("failed to convert container info for workload %s: %v", container.Name, err)
+			f.logger.Warnf("failed to convert container info for workload %s: %v", container.Name, err)
 			continue
 		}
 		workloadMap[container.Name] = workload
@@ -152,7 +154,7 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 			// Validate running workloads similar to GetWorkload
 			validatedWorkload, err := f.validateWorkloadInList(ctx, name, fileWorkload, runtimeContainer)
 			if err != nil {
-				logger.Warnf("failed to validate workload %s in list: %v", name, err)
+				f.logger.Warnf("failed to validate workload %s in list: %v", name, err)
 				// Fall back to basic merge without validation
 				runtimeWorkload := workloadMap[name]
 				runtimeWorkload.Status = fileWorkload.Status
@@ -231,12 +233,12 @@ func (f *fileStatusManager) SetWorkloadStatus(
 			return fmt.Errorf("failed to write updated status for workload %s: %w", workloadName, err)
 		}
 
-		logger.Debugf("workload %s set to status %s (context: %s)", workloadName, status, contextMsg)
+		f.logger.Debugf("workload %s set to status %s (context: %s)", workloadName, status, contextMsg)
 		return nil
 	})
 
 	if err != nil {
-		logger.Errorf("error updating workload %s status: %v", workloadName, err)
+		f.logger.Errorf("error updating workload %s status: %v", workloadName, err)
 	}
 	return err
 }
@@ -250,7 +252,7 @@ func (f *fileStatusManager) DeleteWorkloadStatus(ctx context.Context, workloadNa
 		}
 
 		// Remove lock file (best effort) - done by withFileLock after this function returns
-		logger.Debugf("workload %s status deleted", workloadName)
+		f.logger.Debugf("workload %s status deleted", workloadName)
 		return nil
 	})
 }
@@ -287,11 +289,11 @@ func (f *fileStatusManager) withFileLock(ctx context.Context, workloadName strin
 	fileLock := flock.New(lockFilePath)
 	defer func() {
 		if err := fileLock.Unlock(); err != nil {
-			logger.Warnf("failed to unlock file %s: %v", lockFilePath, err)
+			f.logger.Warnf("failed to unlock file %s: %v", lockFilePath, err)
 		}
 		// Attempt to remove lock file (best effort)
 		if err := os.Remove(lockFilePath); err != nil && !os.IsNotExist(err) {
-			logger.Warnf("failed to remove lock file for workload %s: %v", workloadName, err)
+			f.logger.Warnf("failed to remove lock file for workload %s: %v", workloadName, err)
 		}
 	}()
 
@@ -320,7 +322,7 @@ func (f *fileStatusManager) withFileReadLock(ctx context.Context, workloadName s
 	fileLock := flock.New(lockFilePath)
 	defer func() {
 		if err := fileLock.Unlock(); err != nil {
-			logger.Warnf("failed to unlock file %s: %v", lockFilePath, err)
+			f.logger.Warnf("failed to unlock file %s: %v", lockFilePath, err)
 		}
 	}()
 
@@ -400,7 +402,7 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 		// Read the status file
 		statusFile, err := f.readStatusFile(file)
 		if err != nil {
-			logger.Warnf("failed to read status file %s: %v", file, err)
+			f.logger.Warnf("failed to read status file %s: %v", file, err)
 			continue
 		}
 
@@ -449,7 +451,7 @@ func (f *fileStatusManager) handleRuntimeMismatch(
 ) (core.Workload, error) {
 	contextMsg := fmt.Sprintf("workload status mismatch: file indicates running, but runtime shows %s", containerInfo.State)
 	if err := f.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusUnhealthy, contextMsg); err != nil {
-		logger.Warnf("failed to update workload %s status to unhealthy: %v", workloadName, err)
+		f.logger.Warnf("failed to update workload %s status to unhealthy: %v", workloadName, err)
 	}
 
 	// Convert to workload and return unhealthy status
@@ -475,7 +477,7 @@ func (f *fileStatusManager) checkProxyHealth(
 		return core.Workload{}, false // No proxy check needed
 	}
 
-	proxyRunning := proxy.IsRunning(baseName)
+	proxyRunning := proxy.IsRunning(baseName, f.logger)
 	if proxyRunning {
 		return core.Workload{}, false // Proxy is healthy
 	}
@@ -484,13 +486,13 @@ func (f *fileStatusManager) checkProxyHealth(
 	contextMsg := fmt.Sprintf("proxy process not running: workload shows running but proxy process for %s is not active",
 		baseName)
 	if err := f.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusUnhealthy, contextMsg); err != nil {
-		logger.Warnf("failed to update workload %s status to unhealthy: %v", workloadName, err)
+		f.logger.Warnf("failed to update workload %s status to unhealthy: %v", workloadName, err)
 	}
 
 	// Convert to workload and return unhealthy status
 	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo)
 	if err != nil {
-		logger.Warnf("failed to convert container info for unhealthy workload %s: %v", workloadName, err)
+		f.logger.Warnf("failed to convert container info for unhealthy workload %s: %v", workloadName, err)
 		return core.Workload{}, false // Return false to avoid double error handling
 	}
 

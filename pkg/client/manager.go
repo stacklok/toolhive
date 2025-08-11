@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const (
@@ -39,16 +40,17 @@ type Manager interface {
 type defaultManager struct {
 	runtime      rt.Runtime
 	groupManager groups.Manager
+	logger       *zap.SugaredLogger
 }
 
 // NewManager creates a new client manager instance.
-func NewManager(ctx context.Context) (Manager, error) {
-	runtime, err := ct.NewFactory().Create(ctx)
+func NewManager(ctx context.Context, logger *zap.SugaredLogger) (Manager, error) {
+	runtime, err := ct.NewFactory(logger).Create(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	groupManager, err := groups.NewManager()
+	groupManager, err := groups.NewManager(logger)
 	if err != nil {
 		return nil, err
 	}
@@ -56,12 +58,13 @@ func NewManager(ctx context.Context) (Manager, error) {
 	return &defaultManager{
 		runtime:      runtime,
 		groupManager: groupManager,
+		logger:       logger,
 	}, nil
 }
 
-func (*defaultManager) ListClients() ([]Client, error) {
+func (m *defaultManager) ListClients() ([]Client, error) {
 	clients := []Client{}
-	appConfig := config.GetConfig()
+	appConfig := config.GetConfig(m.logger)
 
 	for _, clientName := range appConfig.Clients.RegisteredClients {
 		clients = append(clients, Client{Name: MCPClient(clientName)})
@@ -101,14 +104,14 @@ func (m *defaultManager) AddServerToClients(
 	targetClients := m.getTargetClients(ctx, serverName, group)
 
 	if len(targetClients) == 0 {
-		logger.Infof("No target clients found for server %s", serverName)
+		m.logger.Infof("No target clients found for server %s", serverName)
 		return nil
 	}
 
 	// Add the server to each target client
 	for _, clientName := range targetClients {
 		if err := m.updateClientWithServer(clientName, serverName, serverURL, transportType); err != nil {
-			logger.Warnf("Warning: Failed to update client %s: %v", clientName, err)
+			m.logger.Warnf("Warning: Failed to update client %s: %v", clientName, err)
 		}
 	}
 	return nil
@@ -121,14 +124,14 @@ func (m *defaultManager) RemoveServerFromClients(ctx context.Context, serverName
 	targetClients := m.getTargetClients(ctx, serverName, group)
 
 	if len(targetClients) == 0 {
-		logger.Infof("No target clients found for server %s", serverName)
+		m.logger.Infof("No target clients found for server %s", serverName)
 		return nil
 	}
 
 	// Remove the server from each target client
 	for _, clientName := range targetClients {
 		if err := m.removeServerFromClient(MCPClient(clientName), serverName); err != nil {
-			logger.Warnf("Warning: Failed to remove server from client %s: %v", clientName, err)
+			m.logger.Warnf("Warning: Failed to remove server from client %s: %v", clientName, err)
 		}
 	}
 
@@ -156,7 +159,7 @@ func (m *defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []
 			return fmt.Errorf("failed to add workload %s to client %s: %v", workload.Name, clientType, err)
 		}
 
-		logger.Infof("Added MCP server %s to client %s\n", workload.Name, clientType)
+		m.logger.Infof("Added MCP server %s to client %s\n", workload.Name, clientType)
 	}
 
 	return nil
@@ -185,8 +188,8 @@ func (m *defaultManager) removeWorkloadsFromClient(clientType MCPClient, workloa
 }
 
 // removeServerFromClient removes an MCP server from a single client configuration
-func (*defaultManager) removeServerFromClient(clientName MCPClient, serverName string) error {
-	clientConfig, err := FindClientConfig(clientName)
+func (m *defaultManager) removeServerFromClient(clientName MCPClient, serverName string) error {
+	clientConfig, err := FindClientConfig(clientName, m.logger)
 	if err != nil {
 		return fmt.Errorf("failed to find client configurations: %w", err)
 	}
@@ -196,17 +199,17 @@ func (*defaultManager) removeServerFromClient(clientName MCPClient, serverName s
 		return fmt.Errorf("failed to remove MCP server configuration from %s: %v", clientConfig.Path, err)
 	}
 
-	logger.Infof("Removed MCP server %s from client %s\n", serverName, clientName)
+	m.logger.Infof("Removed MCP server %s from client %s\n", serverName, clientName)
 	return nil
 }
 
 // updateClientWithServer updates a single client with an MCP server configuration, creating config if needed
-func (*defaultManager) updateClientWithServer(clientName, serverName, serverURL, transportType string) error {
-	clientConfig, err := FindClientConfig(MCPClient(clientName))
+func (m *defaultManager) updateClientWithServer(clientName, serverName, serverURL, transportType string) error {
+	clientConfig, err := FindClientConfig(MCPClient(clientName), m.logger)
 	if err != nil {
 		if errors.Is(err, ErrConfigFileNotFound) {
 			// Create a new client configuration if it doesn't exist
-			clientConfig, err = CreateClientConfig(MCPClient(clientName))
+			clientConfig, err = CreateClientConfig(MCPClient(clientName), m.logger)
 			if err != nil {
 				return fmt.Errorf("failed to create client configuration for %s: %w", clientName, err)
 			}
@@ -215,13 +218,13 @@ func (*defaultManager) updateClientWithServer(clientName, serverName, serverURL,
 		}
 	}
 
-	logger.Infof("Updating client configuration: %s", clientConfig.Path)
+	m.logger.Infof("Updating client configuration: %s", clientConfig.Path)
 
 	if err := Upsert(*clientConfig, serverName, serverURL, transportType); err != nil {
 		return fmt.Errorf("failed to update MCP server configuration in %s: %v", clientConfig.Path, err)
 	}
 
-	logger.Infof("Successfully updated client configuration: %s", clientConfig.Path)
+	m.logger.Infof("Successfully updated client configuration: %s", clientConfig.Path)
 	return nil
 }
 
@@ -231,14 +234,14 @@ func (m *defaultManager) getTargetClients(ctx context.Context, serverName, group
 	if groupName != "" {
 		group, err := m.groupManager.Get(ctx, groupName)
 		if err != nil {
-			logger.Warnf(
+			m.logger.Warnf(
 				"Warning: Failed to get group %s for server %s, skipping client config updates: %v",
 				group, serverName, err,
 			)
 			return nil
 		}
 
-		logger.Infof(
+		m.logger.Infof(
 			"Server %s belongs to group %s, updating %d registered client(s)",
 			serverName, group, len(group.RegisteredClients),
 		)
@@ -246,9 +249,9 @@ func (m *defaultManager) getTargetClients(ctx context.Context, serverName, group
 	}
 
 	// Server has no group - use backward compatible behavior (update all registered clients)
-	appConfig := config.GetConfig()
+	appConfig := config.GetConfig(m.logger)
 	targetClients := appConfig.Clients.RegisteredClients
-	logger.Infof(
+	m.logger.Infof(
 		"Server %s has no group, updating %d globally registered client(s) for backward compatibility",
 		serverName, len(targetClients),
 	)

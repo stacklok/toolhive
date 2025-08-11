@@ -54,7 +54,7 @@ func validateStopArgs(cmd *cobra.Command, args []string) error {
 func stopCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	workloadManager, err := workloads.NewManager(ctx)
+	workloadManager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}

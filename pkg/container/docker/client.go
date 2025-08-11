@@ -23,13 +23,13 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/container/docker/sdk"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	lb "github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
@@ -49,22 +49,24 @@ type Client struct {
 	socketPath   string
 	client       *client.Client
 	imageManager images.ImageManager
+	logger       *zap.SugaredLogger
 }
 
 // NewClient creates a new container client
-func NewClient(ctx context.Context) (*Client, error) {
-	dockerClient, socketPath, runtimeType, err := sdk.NewDockerClient(ctx)
+func NewClient(ctx context.Context, logger *zap.SugaredLogger) (*Client, error) {
+	dockerClient, socketPath, runtimeType, err := sdk.NewDockerClient(ctx, logger)
 	if err != nil {
 		return nil, err // there is already enough context in the error.
 	}
 
-	imageManager := images.NewRegistryImageManager(dockerClient)
+	imageManager := images.NewRegistryImageManager(dockerClient, logger)
 
 	c := &Client{
 		runtimeType:  runtimeType,
 		socketPath:   socketPath,
 		client:       dockerClient,
 		imageManager: imageManager,
+		logger:       logger,
 	}
 
 	return c, nil
@@ -156,7 +158,7 @@ func (c *Client) DeployWorkload(
 	}
 
 	// only remap if is not an auxiliary tool
-	newPortBindings, hostPort, err := generatePortBindings(labels, options.PortBindings)
+	newPortBindings, hostPort, err := generatePortBindings(labels, options.PortBindings, c.logger)
 	if err != nil {
 		return 0, fmt.Errorf("failed to generate port bindings: %v", err)
 	}
@@ -317,7 +319,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error 
 	// get container name from ID
 	containerResponse, err := c.inspectContainerByName(ctx, workloadName)
 	if err != nil {
-		logger.Warnf("Failed to inspect container %s: %v", workloadName, err)
+		c.logger.Warnf("Failed to inspect container %s: %v", workloadName, err)
 	}
 
 	// remove the / if it starts with it
@@ -346,7 +348,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error 
 	// This also deletes the external network if no other workloads are using it.
 	err = c.deleteNetworks(ctx, containerName)
 	if err != nil {
-		logger.Warnf("Failed to delete networks for container %s: %v", containerName, err)
+		c.logger.Warnf("Failed to delete networks for container %s: %v", containerName, err)
 	}
 	return nil
 }
@@ -374,7 +376,7 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 	if follow {
 		_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, logs)
 		if err != nil && err != io.EOF {
-			logger.Errorf("Error reading workload logs: %v", err)
+			c.logger.Errorf("Error reading workload logs: %v", err)
 			return "", NewContainerError(err, workloadName, fmt.Sprintf("failed to follow workload logs: %v", err))
 		}
 	}
@@ -423,7 +425,7 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runt
 			hostPort := 0
 			if _, err := fmt.Sscanf(binding.HostPort, "%d", &hostPort); err != nil {
 				// If we can't parse the port, just use 0
-				logger.Warnf("Warning: Failed to parse host port %s: %v", binding.HostPort, err)
+				c.logger.Warnf("Warning: Failed to parse host port %s: %v", binding.HostPort, err)
 			}
 
 			ports = append(ports, runtime.PortMapping{
@@ -482,7 +484,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 		// Use stdcopy to demultiplex the container streams
 		_, err := stdcopy.StdCopy(stdoutWriter, io.Discard, resp.Reader)
 		if err != nil && err != io.EOF {
-			logger.Errorf("Error demultiplexing container streams: %v", err)
+			c.logger.Errorf("Error demultiplexing container streams: %v", err)
 		}
 	}()
 
@@ -504,7 +506,7 @@ func (c *Client) IsRunning(ctx context.Context) error {
 // getPermissionConfigFromProfile converts a permission profile to a container permission config
 // with transport-specific settings (internal function)
 // addReadOnlyMounts adds read-only mounts to the permission config
-func (*Client) addReadOnlyMounts(
+func (c *Client) addReadOnlyMounts(
 	config *runtime.PermissionConfig,
 	mounts []permissions.MountDeclaration,
 	ignoreConfig *ignore.Config,
@@ -513,18 +515,18 @@ func (*Client) addReadOnlyMounts(
 		source, target, err := mountDecl.Parse()
 		if err != nil {
 			// Skip invalid mounts
-			logger.Warnf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err)
+			c.logger.Warnf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err)
 			continue
 		}
 
 		// Skip resource URIs for now (they need special handling)
 		if strings.Contains(source, "://") {
-			logger.Warnf("Warning: Resource URI mounts not yet supported: %s", source)
+			c.logger.Warnf("Warning: Resource URI mounts not yet supported: %s", source)
 			continue
 		}
 
 		// Convert relative paths to absolute paths
-		absPath, ok := convertRelativePathToAbsolute(source, mountDecl)
+		absPath, ok := convertRelativePathToAbsolute(source, mountDecl, c.logger)
 		if !ok {
 			continue
 		}
@@ -537,12 +539,12 @@ func (*Client) addReadOnlyMounts(
 		})
 
 		// Process ignore patterns and add tmpfs overlays
-		addIgnoreOverlays(config, absPath, target, ignoreConfig)
+		addIgnoreOverlays(config, absPath, target, ignoreConfig, c.logger)
 	}
 }
 
 // addReadWriteMounts adds read-write mounts to the permission config
-func (*Client) addReadWriteMounts(
+func (c *Client) addReadWriteMounts(
 	config *runtime.PermissionConfig,
 	mounts []permissions.MountDeclaration,
 	ignoreConfig *ignore.Config,
@@ -551,18 +553,18 @@ func (*Client) addReadWriteMounts(
 		source, target, err := mountDecl.Parse()
 		if err != nil {
 			// Skip invalid mounts
-			logger.Warnf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err)
+			c.logger.Warnf("Warning: Skipping invalid mount declaration: %s (%v)", mountDecl, err)
 			continue
 		}
 
 		// Skip resource URIs for now (they need special handling)
 		if strings.Contains(source, "://") {
-			logger.Warnf("Warning: Resource URI mounts not yet supported: %s", source)
+			c.logger.Warnf("Warning: Resource URI mounts not yet supported: %s", source)
 			continue
 		}
 
 		// Convert relative paths to absolute paths
-		absPath, ok := convertRelativePathToAbsolute(source, mountDecl)
+		absPath, ok := convertRelativePathToAbsolute(source, mountDecl, c.logger)
 		if !ok {
 			continue
 		}
@@ -589,19 +591,25 @@ func (*Client) addReadWriteMounts(
 		}
 
 		// Process ignore patterns and add tmpfs overlays
-		addIgnoreOverlays(config, absPath, target, ignoreConfig)
+		addIgnoreOverlays(config, absPath, target, ignoreConfig, c.logger)
 	}
 }
 
 // addIgnoreOverlays processes ignore patterns for a mount and adds overlay mounts
-func addIgnoreOverlays(config *runtime.PermissionConfig, sourceDir, containerPath string, ignoreConfig *ignore.Config) {
+func addIgnoreOverlays(
+	config *runtime.PermissionConfig,
+	sourceDir,
+	containerPath string,
+	ignoreConfig *ignore.Config,
+	logger *zap.SugaredLogger,
+) {
 	// Skip if no ignore configuration is provided
 	if ignoreConfig == nil {
 		return
 	}
 
 	// Create ignore processor with configuration
-	ignoreProcessor := ignore.NewProcessor(ignoreConfig)
+	ignoreProcessor := ignore.NewProcessor(ignoreConfig, logger)
 
 	// Load global ignore patterns if enabled
 	if ignoreConfig.LoadGlobal {
@@ -639,13 +647,18 @@ func addIgnoreOverlays(config *runtime.PermissionConfig, sourceDir, containerPat
 			ReadOnly: false,
 			Type:     mountType,
 		})
-		logger.Debugf("Added %s overlay for ignored path: %s -> %s", overlayMount.Type, source, overlayMount.ContainerPath)
+		logger.Debugf("Added %s overlay for ignored path: %s -> %s",
+			overlayMount.Type, source, overlayMount.ContainerPath)
 	}
 }
 
 // convertRelativePathToAbsolute converts a relative path to an absolute path
 // Returns the absolute path and a boolean indicating if the conversion was successful
-func convertRelativePathToAbsolute(source string, mountDecl permissions.MountDeclaration) (string, bool) {
+func convertRelativePathToAbsolute(
+	source string,
+	mountDecl permissions.MountDeclaration,
+	logger *zap.SugaredLogger,
+) (string, bool) {
 	// If it's already an absolute path, return it as is
 	if filepath.IsAbs(source) {
 		return source, true
@@ -1010,7 +1023,7 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 
 	// If the network does not exist, there is nothing to do here.
 	if len(networks) == 0 {
-		logger.Debugf("network %s not found, nothing to delete", name)
+		c.logger.Debugf("network %s not found, nothing to delete", name)
 		return nil
 	}
 
@@ -1061,7 +1074,7 @@ func (c *Client) removeProxyContainers(
 		containerName := fmt.Sprintf("%s-%s", containerName, suffix)
 		containerId, err := c.findExistingContainer(ctx, containerName)
 		if err != nil {
-			logger.Debugf("Failed to find %s container %s: %v", suffix, containerName, err)
+			c.logger.Debugf("Failed to find %s container %s: %v", suffix, containerName, err)
 			continue
 		}
 		if containerId == "" {
@@ -1215,7 +1228,7 @@ func (c *Client) createContainer(
 
 func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string,
 	attachStdio bool, networkName string, endpointsConfig map[string]*network.EndpointSettings) (string, string, error) {
-	logger.Infof("Setting up DNS container for %s with image %s...", dnsContainerName, DnsImage)
+	c.logger.Infof("Setting up DNS container for %s with image %s...", dnsContainerName, DnsImage)
 	dnsLabels := map[string]string{}
 	lb.AddStandardLabels(dnsLabels, dnsContainerName, dnsContainerName, "stdio", 80)
 	dnsLabels[ToolhiveAuxiliaryWorkloadLabel] = LabelValueTrue
@@ -1226,7 +1239,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 		// Check if the DNS image exists locally before failing
 		_, inspectErr := c.client.ImageInspect(ctx, DnsImage)
 		if inspectErr == nil {
-			logger.Infof("DNS image %s exists locally, continuing despite pull failure", DnsImage)
+			c.logger.Infof("DNS image %s exists locally, continuing despite pull failure", DnsImage)
 		} else {
 			return "", "", fmt.Errorf("failed to pull DNS image: %v", err)
 		}
@@ -1356,7 +1369,7 @@ func addEgressEnvVars(envVars map[string]string, egressContainerName string) map
 
 func (c *Client) createIngressContainer(ctx context.Context, containerName string, upstreamPort int, attachStdio bool,
 	externalEndpointsConfig map[string]*network.EndpointSettings) (int, error) {
-	squidPort, err := networking.FindOrUsePort(upstreamPort + 1)
+	squidPort, err := networking.FindOrUsePort(upstreamPort+1, c.logger)
 	if err != nil {
 		return 0, fmt.Errorf("failed to find or use port %d: %v", squidPort, err)
 	}
@@ -1421,7 +1434,7 @@ func (c *Client) createExternalNetworks(ctx context.Context) error {
 }
 
 func generatePortBindings(labels map[string]string,
-	portBindings map[string][]runtime.PortBinding) (map[string][]runtime.PortBinding, int, error) {
+	portBindings map[string][]runtime.PortBinding, logger *zap.SugaredLogger) (map[string][]runtime.PortBinding, int, error) {
 	var hostPort int
 	// check if we need to map to a random port of not
 	if _, ok := labels["toolhive-auxiliary"]; ok && labels["toolhive-auxiliary"] == "true" {
@@ -1439,7 +1452,7 @@ func generatePortBindings(labels map[string]string,
 		}
 	} else {
 		// bind to a random host port
-		hostPort = networking.FindAvailable()
+		hostPort = networking.FindAvailable(logger)
 		if hostPort == 0 {
 			return nil, 0, fmt.Errorf("could not find an available port")
 		}
@@ -1460,11 +1473,11 @@ func generatePortBindings(labels map[string]string,
 func (c *Client) stopProxyContainer(ctx context.Context, containerName string, timeoutSeconds int) {
 	containerId, err := c.findExistingContainer(ctx, containerName)
 	if err != nil {
-		logger.Debugf("Failed to find internal container %s: %v", containerName, err)
+		c.logger.Debugf("Failed to find internal container %s: %v", containerName, err)
 	} else {
 		err = c.client.ContainerStop(ctx, containerId, container.StopOptions{Timeout: &timeoutSeconds})
 		if err != nil {
-			logger.Debugf("Failed to stop internal container %s: %v", containerName, err)
+			c.logger.Debugf("Failed to stop internal container %s: %v", containerName, err)
 		}
 	}
 }
@@ -1483,14 +1496,14 @@ func (c *Client) deleteNetworks(ctx context.Context, containerName string) error
 	networkName := fmt.Sprintf("toolhive-%s-internal", containerName)
 	if err := c.deleteNetwork(ctx, networkName); err != nil {
 		// just log the error and continue
-		logger.Warnf("failed to delete network %q: %v", networkName, err)
+		c.logger.Warnf("failed to delete network %q: %v", networkName, err)
 	}
 
 	if len(toolHiveContainers) == 0 {
 		// remove external network
 		if err := c.deleteNetwork(ctx, "toolhive-external"); err != nil {
 			// just log the error and continue
-			logger.Warnf("failed to delete network %q: %v", "toolhive-external", err)
+			c.logger.Warnf("failed to delete network %q: %v", "toolhive-external", err)
 		}
 	}
 	return nil

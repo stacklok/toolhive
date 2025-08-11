@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestResourceOverrides(t *testing.T) {
@@ -263,6 +264,7 @@ func TestResourceOverrides(t *testing.T) {
 			r := &MCPServerReconciler{
 				Client: client,
 				Scheme: scheme,
+				logger: log.NewLogger(),
 			}
 
 			// Test deployment creation
@@ -366,6 +368,7 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 	r := &MCPServerReconciler{
 		Client: client,
 		Scheme: scheme,
+		logger: log.NewLogger(),
 	}
 
 	mcpServer := &mcpv1alpha1.MCPServer{
@@ -384,7 +387,7 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 	require.NotNil(t, deployment)
 
 	// Test with the current deployment - this should NOT need update
-	needsUpdate := deploymentNeedsUpdate(deployment, mcpServer)
+	needsUpdate := deploymentNeedsUpdate(deployment, mcpServer, r.logger)
 
 	// With the service account bug fixed, this should now return false
 	assert.False(t, needsUpdate, "deploymentNeedsUpdate should return false when deployment matches MCPServer spec")
@@ -400,6 +403,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 	r := &MCPServerReconciler{
 		Client: client,
 		Scheme: scheme,
+		logger: log.NewLogger(),
 	}
 
 	tests := []struct {
@@ -563,7 +567,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 			deployment.Spec.Template.Spec.Containers[0].Image = getToolhiveRunnerImage()
 
 			// Test if deployment needs update - should correlate with env change expectation
-			needsUpdate := deploymentNeedsUpdate(deployment, tt.mcpServer)
+			needsUpdate := deploymentNeedsUpdate(deployment, tt.mcpServer, r.logger)
 
 			if tt.expectEnvChange {
 				assert.True(t, needsUpdate, "Expected deployment update due to proxy env change")
@@ -588,6 +592,7 @@ func TestDeploymentNeedsUpdateToolsFilter(t *testing.T) {
 	r := &MCPServerReconciler{
 		Client: client,
 		Scheme: scheme,
+		logger: log.NewLogger(),
 	}
 
 	tests := []struct {
@@ -643,7 +648,7 @@ func TestDeploymentNeedsUpdateToolsFilter(t *testing.T) {
 
 			mcpServer.Spec.ToolsFilter = tt.newToolsFilter
 
-			needsUpdate := deploymentNeedsUpdate(deployment, mcpServer)
+			needsUpdate := deploymentNeedsUpdate(deployment, mcpServer, r.logger)
 			assert.Equal(t, tt.expectEnvChange, needsUpdate)
 		})
 	}

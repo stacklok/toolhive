@@ -9,9 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestGetClientStatus(t *testing.T) {
+	logger := log.NewLogger()
+
 	// Setup a temporary home directory for testing
 	tempHome, err := os.MkdirTemp("", "toolhive-test-home")
 	require.NoError(t, err)
@@ -25,7 +28,7 @@ func TestGetClientStatus(t *testing.T) {
 			RegisteredClients: []string{string(ClaudeCode)},
 		},
 	}
-	cleanup := MockConfig(t, mockConfig)
+	cleanup := MockConfig(t, mockConfig, logger)
 	defer cleanup()
 
 	// Create a mock Cursor config file
@@ -36,7 +39,7 @@ func TestGetClientStatus(t *testing.T) {
 	_, err = os.Create(filepath.Join(tempHome, ".claude.json"))
 	require.NoError(t, err)
 
-	statuses, err := GetClientStatus()
+	statuses, err := GetClientStatus(logger)
 	require.NoError(t, err)
 	require.NotNil(t, statuses)
 
@@ -63,6 +66,8 @@ func TestGetClientStatus(t *testing.T) {
 }
 
 func TestGetClientStatus_Sorting(t *testing.T) {
+	logger := log.NewLogger()
+
 	// Setup a temporary home directory for testing
 	origHome := os.Getenv("HOME")
 	tempHome, err := os.MkdirTemp("", "toolhive-test-home")
@@ -78,10 +83,10 @@ func TestGetClientStatus_Sorting(t *testing.T) {
 			RegisteredClients: []string{},
 		},
 	}
-	cleanup := MockConfig(t, mockConfig)
+	cleanup := MockConfig(t, mockConfig, logger)
 	defer cleanup()
 
-	statuses, err := GetClientStatus()
+	statuses, err := GetClientStatus(logger)
 	require.NoError(t, err)
 	require.NotNil(t, statuses)
 	require.Greater(t, len(statuses), 1, "Need at least 2 clients to test sorting")

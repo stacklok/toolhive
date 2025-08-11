@@ -7,8 +7,7 @@ import (
 	"os/user"
 
 	"github.com/golang-jwt/jwt/v5"
-
-	"github.com/stacklok/toolhive/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // GetClaimsFromContext retrieves the claims from the request context.
@@ -26,7 +25,7 @@ func GetClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool) {
 
 // GetAuthenticationMiddleware returns the appropriate authentication middleware based on the configuration.
 // If OIDC config is provided, it returns JWT middleware. Otherwise, it returns local user middleware.
-func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidatorConfig,
+func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidatorConfig, logger *zap.SugaredLogger,
 ) (func(http.Handler) http.Handler, http.Handler, error) {
 	if oidcConfig != nil {
 		logger.Info("OIDC validation enabled")
@@ -37,7 +36,7 @@ func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidator
 			return nil, nil, err
 		}
 
-		authInfoHandler := NewAuthInfoHandler(oidcConfig.Issuer, jwtValidator.jwksURL, oidcConfig.ResourceURL, nil)
+		authInfoHandler := NewAuthInfoHandler(oidcConfig.Issuer, jwtValidator.jwksURL, oidcConfig.ResourceURL, nil, logger)
 		return jwtValidator.Middleware, authInfoHandler, nil
 	}
 

@@ -5,19 +5,18 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
-
-func init() {
-	logger.Initialize() // ensure logging doesn't panic
-}
 
 func TestNewProcessor(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	processor := NewProcessor(&Config{
 		LoadGlobal:    true,
 		PrintOverlays: false,
-	})
+	}, logger)
 	if processor == nil {
 		t.Error("NewProcessor should return a non-nil processor")
 		return
@@ -32,6 +31,9 @@ func TestNewProcessor(t *testing.T) {
 
 func TestLoadIgnoreFile(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	testCases := []struct {
 		name          string
 		fileContent   string
@@ -94,7 +96,7 @@ temp/
 			processor := NewProcessor(&Config{
 				LoadGlobal:    true,
 				PrintOverlays: false,
-			})
+			}, logger)
 			patterns, err := processor.loadIgnoreFile(ignoreFile)
 
 			if tc.expectError {
@@ -115,6 +117,9 @@ temp/
 
 func TestLoadLocal(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	testCases := []struct {
 		name          string
 		createFile    bool
@@ -153,7 +158,7 @@ func TestLoadLocal(t *testing.T) {
 			processor := NewProcessor(&Config{
 				LoadGlobal:    true,
 				PrintOverlays: false,
-			})
+			}, logger)
 			err := processor.LoadLocal(tmpDir)
 
 			if tc.expectError {
@@ -174,6 +179,10 @@ func TestLoadLocal(t *testing.T) {
 
 func TestPatternMatchesInDirectory(t *testing.T) {
 	t.Parallel()
+
+	// Setup logger
+	logger := log.NewLogger()
+
 	// Create test directory structure
 	tmpDir := t.TempDir()
 
@@ -199,7 +208,7 @@ func TestPatternMatchesInDirectory(t *testing.T) {
 	processor := NewProcessor(&Config{
 		LoadGlobal:    true,
 		PrintOverlays: false,
-	})
+	}, logger)
 
 	testCases := []struct {
 		name     string
@@ -246,6 +255,9 @@ func TestPatternMatchesInDirectory(t *testing.T) {
 
 func TestGetOverlayPaths(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	// Create test directory structure
 	tmpDir := t.TempDir()
 
@@ -265,7 +277,7 @@ func TestGetOverlayPaths(t *testing.T) {
 	processor := NewProcessor(&Config{
 		LoadGlobal:    true,
 		PrintOverlays: false,
-	})
+	}, logger)
 	processor.GlobalPatterns = []string{"node_modules/", ".DS_Store"}
 	processor.LocalPatterns = []string{".ssh/", ".env"}
 
@@ -297,10 +309,13 @@ func TestGetOverlayPaths(t *testing.T) {
 
 func TestShouldIgnore(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	processor := NewProcessor(&Config{
 		LoadGlobal:    true,
 		PrintOverlays: false,
-	})
+	}, logger)
 	processor.GlobalPatterns = []string{"node_modules", "*.log"}
 	processor.LocalPatterns = []string{".ssh", ".env"}
 

@@ -11,9 +11,9 @@ import (
 
 	"github.com/adrg/xdg"
 	"github.com/zalando/go-keyring"
+	"go.uber.org/zap"
 	"golang.org/x/term"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 )
 
@@ -57,20 +57,25 @@ type SetupResult struct {
 }
 
 // ValidateProvider validates that a provider can be created and performs basic functionality tests
-func ValidateProvider(ctx context.Context, providerType ProviderType) *SetupResult {
-	return ValidateProviderWithPassword(ctx, providerType, "")
+func ValidateProvider(ctx context.Context, providerType ProviderType, logger *zap.SugaredLogger) *SetupResult {
+	return ValidateProviderWithPassword(ctx, providerType, "", logger)
 }
 
 // ValidateProviderWithPassword validates that a provider can be created and performs basic functionality tests.
 // If password is provided for encrypted provider, it uses that password instead of reading from stdin.
-func ValidateProviderWithPassword(ctx context.Context, providerType ProviderType, password string) *SetupResult {
+func ValidateProviderWithPassword(
+	ctx context.Context,
+	providerType ProviderType,
+	password string,
+	logger *zap.SugaredLogger,
+) *SetupResult {
 	result := &SetupResult{
 		ProviderType: providerType,
 		Success:      false,
 	}
 
 	// Test that we can create the provider
-	provider, err := CreateSecretProviderWithPassword(providerType, password)
+	provider, err := CreateSecretProviderWithPassword(providerType, password, logger)
 	if err != nil {
 		result.Error = fmt.Errorf("failed to create provider: %w", err)
 		result.Message = fmt.Sprintf("Failed to initialize %s provider", providerType)
@@ -175,14 +180,14 @@ func IsKeyringAvailable() bool {
 
 // CreateSecretProvider creates the specified type of secrets provider.
 // TODO CREATE function does not actually create anything, refactor or rename
-func CreateSecretProvider(managerType ProviderType) (Provider, error) {
-	return CreateSecretProviderWithPassword(managerType, "")
+func CreateSecretProvider(managerType ProviderType, logger *zap.SugaredLogger) (Provider, error) {
+	return CreateSecretProviderWithPassword(managerType, "", logger)
 }
 
 // CreateSecretProviderWithPassword creates the specified type of secrets provider with an optional password.
 // If password is empty, it uses the current functionality (read from keyring or stdin).
 // If password is provided, it uses that password and stores it in the keyring if not already setup.
-func CreateSecretProviderWithPassword(managerType ProviderType, password string) (Provider, error) {
+func CreateSecretProviderWithPassword(managerType ProviderType, password string, logger *zap.SugaredLogger) (Provider, error) {
 	switch managerType {
 	case EncryptedType:
 		// Enforce keyring availability for encrypted provider
@@ -190,7 +195,7 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 			return nil, ErrKeyringNotAvailable
 		}
 
-		secretsPassword, err := GetSecretsPassword(password)
+		secretsPassword, err := GetSecretsPassword(password, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get secrets password: %w", err)
 		}
@@ -213,7 +218,7 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 // GetSecretsPassword returns the password to use for encrypting and decrypting secrets.
 // If optionalPassword is provided and keyring is not yet setup, it uses that password and stores it.
 // Otherwise, it uses the current functionality (read from keyring or stdin).
-func GetSecretsPassword(optionalPassword string) ([]byte, error) {
+func GetSecretsPassword(optionalPassword string, logger *zap.SugaredLogger) ([]byte, error) {
 	// Attempt to load the password from the OS keyring.
 	keyringSecret, err := keyring.Get(keyringService, keyringService)
 	if err == nil {

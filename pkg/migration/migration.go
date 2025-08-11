@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"sync"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // migrationOnce ensures the migration only runs once
@@ -15,9 +16,9 @@ var migrationOnce sync.Once
 
 // CheckAndPerformDefaultGroupMigration checks if default group migration is needed and performs it
 // This is called once at application startup
-func CheckAndPerformDefaultGroupMigration() {
+func CheckAndPerformDefaultGroupMigration(logger *zap.SugaredLogger) {
 	migrationOnce.Do(func() {
-		appConfig := config.GetConfig()
+		appConfig := config.GetConfig(logger)
 
 		// Check if default group migration has already been performed
 		if appConfig.DefaultGroupMigration {

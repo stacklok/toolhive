@@ -2,7 +2,8 @@
 package proxy
 
 import (
-	"github.com/stacklok/toolhive/pkg/logger"
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/process"
 )
 
@@ -10,7 +11,7 @@ import (
 // have been moved to this package to keep proxy-related logic grouped together.
 
 // StopProcess stops the proxy process associated with the container
-func StopProcess(containerBaseName string) {
+func StopProcess(containerBaseName string, logger *zap.SugaredLogger) {
 	if containerBaseName == "" {
 		logger.Warnf("Warning: Could not find base container name in labels")
 		return
@@ -38,7 +39,7 @@ func StopProcess(containerBaseName string) {
 }
 
 // IsRunning checks if the proxy process is running
-func IsRunning(containerBaseName string) bool {
+func IsRunning(containerBaseName string, logger *zap.SugaredLogger) bool {
 	if containerBaseName == "" {
 		return false
 	}

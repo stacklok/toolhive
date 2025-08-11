@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"net"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	"go.uber.org/zap"
 )
 
 const (
@@ -21,7 +21,7 @@ const (
 )
 
 // IsAvailable checks if a port is available
-func IsAvailable(port int) bool {
+func IsAvailable(port int, logger *zap.SugaredLogger) bool {
 	// Check TCP
 	tcpAddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
@@ -91,7 +91,7 @@ func IsIPv6Available() bool {
 }
 
 // FindAvailable finds an available port
-func FindAvailable() int {
+func FindAvailable(logger *zap.SugaredLogger) int {
 	for i := 0; i < MaxAttempts; i++ {
 		// Generate a cryptographically secure random number
 		n, err := rand.Int(rand.Reader, big.NewInt(int64(MaxPort-MinPort)))
@@ -100,14 +100,14 @@ func FindAvailable() int {
 			break
 		}
 		port := int(n.Int64()) + MinPort
-		if IsAvailable(port) {
+		if IsAvailable(port, logger) {
 			return port
 		}
 	}
 
 	// If we can't find a random port, try sequential ports
 	for port := MinPort; port <= MaxPort; port++ {
-		if IsAvailable(port) {
+		if IsAvailable(port, logger) {
 			return port
 		}
 	}
@@ -120,22 +120,22 @@ func FindAvailable() int {
 // If port is 0, it will find an available port.
 // If port is not 0, it will check if the port is available.
 // Returns the selected port and an error if any.
-func FindOrUsePort(port int) (int, error) {
+func FindOrUsePort(port int, logger *zap.SugaredLogger) (int, error) {
 	if port == 0 {
 		// Find an available port
-		port = FindAvailable()
+		port = FindAvailable(logger)
 		if port == 0 {
 			return 0, fmt.Errorf("could not find an available port")
 		}
 		return port, nil
 	}
 
-	if IsAvailable(port) {
+	if IsAvailable(port, logger) {
 		return port, nil
 	}
 
 	// Requested port is busy — find an alternative
-	alt := FindAvailable()
+	alt := FindAvailable(logger)
 	if alt == 0 {
 		return 0, fmt.Errorf("failed to find an alternative port after requested port %d was unavailable", port)
 	}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestNewRegistryProvider(t *testing.T) {
@@ -215,7 +216,8 @@ func getTypeName(v interface{}) string {
 
 func TestGetRegistry(t *testing.T) {
 	t.Parallel()
-	provider, err := GetDefaultProvider()
+	logger := log.NewLogger()
+	provider, err := GetDefaultProvider(logger)
 	if err != nil {
 		t.Fatalf("Failed to get registry provider: %v", err)
 	}
@@ -244,8 +246,9 @@ func TestGetRegistry(t *testing.T) {
 
 func TestGetServer(t *testing.T) {
 	t.Parallel()
+	logger := log.NewLogger()
 	// Test getting an existing server
-	provider, err := GetDefaultProvider()
+	provider, err := GetDefaultProvider(logger)
 	if err != nil {
 		t.Fatalf("Failed to get registry provider: %v", err)
 	}
@@ -281,8 +284,9 @@ func TestGetServer(t *testing.T) {
 
 func TestSearchServers(t *testing.T) {
 	t.Parallel()
+	logger := log.NewLogger()
 	// Test searching for servers
-	provider, err := GetDefaultProvider()
+	provider, err := GetDefaultProvider(logger)
 	if err != nil {
 		t.Fatalf("Failed to get registry provider: %v", err)
 	}
@@ -308,7 +312,8 @@ func TestSearchServers(t *testing.T) {
 
 func TestListServers(t *testing.T) {
 	t.Parallel()
-	provider, err := GetDefaultProvider()
+	logger := log.NewLogger()
+	provider, err := GetDefaultProvider(logger)
 	if err != nil {
 		t.Fatalf("Failed to get registry provider: %v", err)
 	}

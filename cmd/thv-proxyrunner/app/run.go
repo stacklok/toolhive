@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -224,7 +223,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := "", 0.0, []string{}
 
 	// Create container runtime
-	rt, err := container.NewFactory().Create(ctx)
+	rt, err := container.NewFactory(logger).Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
@@ -233,12 +232,12 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// If we have called the CLI directly, we use the CLIEnvVarValidator.
 	// If we are running in detached mode, or the CLI is wrapped by the K8s operator,
 	// we use the DetachedEnvVarValidator.
-	envVarValidator := &runner.DetachedEnvVarValidator{}
+	envVarValidator := runner.NewDetachedEnvVarValidator(logger)
 
 	var imageMetadata *registry.ImageMetadata
 
 	// Initialize a new RunConfig with values from command-line flags
-	runConfig, err := runner.NewRunConfigBuilder().
+	runConfig, err := runner.NewRunConfigBuilder(logger).
 		WithRuntime(rt).
 		WithCmdArgs(cmdArgs).
 		WithName(runName).
@@ -266,7 +265,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}
 
-	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	workloadManager, err := workloads.NewManagerFromRuntime(rt, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}

@@ -14,7 +14,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -101,8 +100,8 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to find server: %v", err)
 	}
 
-	imageManager := images.NewImageManager(ctx)
-	processedImage, err := runner.HandleProtocolScheme(ctx, imageManager, inspector.Image, "")
+	imageManager := images.NewImageManager(ctx, logger)
+	processedImage, err := runner.HandleProtocolScheme(ctx, imageManager, inspector.Image, "", logger)
 	if err != nil {
 		return fmt.Errorf("failed to handle protocol scheme: %v", err)
 	}
@@ -114,7 +113,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	options := buildInspectorContainerOptions(uiPortStr, mcpPortStr)
 
 	// Create workload runtime
-	rt, err := container.NewFactory().Create(ctx)
+	rt, err := container.NewFactory(logger).Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload runtime: %v", err)
 	}
@@ -168,7 +167,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 
 func getServerPortAndTransport(ctx context.Context, serverName string) (int, types.TransportType, error) {
 	// Instantiate the status manager and list all workloads.
-	manager, err := workloads.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return 0, types.TransportTypeSSE, fmt.Errorf("failed to create status manager: %v", err)
 	}

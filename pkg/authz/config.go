@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"go.uber.org/zap"
 	"sigs.k8s.io/yaml"
 
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -119,7 +120,7 @@ func (c *Config) Validate() error {
 }
 
 // CreateMiddleware creates an HTTP middleware from the configuration.
-func (c *Config) CreateMiddleware() (types.MiddlewareFunction, error) {
+func (c *Config) CreateMiddleware(logger *zap.SugaredLogger) (types.MiddlewareFunction, error) {
 	// Create the appropriate middleware based on the configuration type
 	switch c.Type {
 	case ConfigTypeCedarV1:
@@ -127,7 +128,7 @@ func (c *Config) CreateMiddleware() (types.MiddlewareFunction, error) {
 		authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 			Policies:     c.Cedar.Policies,
 			EntitiesJSON: c.Cedar.EntitiesJSON,
-		})
+		}, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Cedar authorizer: %w", err)
 		}
@@ -140,7 +141,7 @@ func (c *Config) CreateMiddleware() (types.MiddlewareFunction, error) {
 }
 
 // GetMiddlewareFromFile loads the authorization configuration from a file and creates an HTTP middleware.
-func GetMiddlewareFromFile(path string) (func(http.Handler) http.Handler, error) {
+func GetMiddlewareFromFile(path string, logger *zap.SugaredLogger) (func(http.Handler) http.Handler, error) {
 	// Load the configuration
 	config, err := LoadConfig(path)
 	if err != nil {
@@ -148,5 +149,5 @@ func GetMiddlewareFromFile(path string) (func(http.Handler) http.Handler, error)
 	}
 
 	// Create the middleware
-	return config.CreateMiddleware()
+	return config.CreateMiddleware(logger)
 }

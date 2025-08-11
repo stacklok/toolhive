@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"time"
 
+	"go.uber.org/zap"
 	"golang.org/x/exp/jsonrpc2"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -36,6 +36,8 @@ type HTTPProxy struct {
 	responseCh chan jsonrpc2.Message
 
 	server *http.Server
+
+	logger *zap.SugaredLogger
 }
 
 // NewHTTPProxy creates a new HTTPProxy for streamable HTTP transport.
@@ -44,6 +46,7 @@ func NewHTTPProxy(
 	port int,
 	containerName string,
 	prometheusHandler http.Handler,
+	logger *zap.SugaredLogger,
 	middlewares ...types.MiddlewareFunction,
 ) *HTTPProxy {
 	return &HTTPProxy{
@@ -55,6 +58,7 @@ func NewHTTPProxy(
 		middlewares:       middlewares,
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		responseCh:        make(chan jsonrpc2.Message, 100),
+		logger:            logger,
 	}
 }
 
@@ -75,10 +79,10 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	}
 
 	go func() {
-		logger.Infof("Streamable HTTP proxy started for container %s on port %d", p.containerName, p.port)
-		logger.Infof("Streamable HTTP endpoint: http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint)
+		p.logger.Infof("Streamable HTTP proxy started for container %s on port %d", p.containerName, p.port)
+		p.logger.Infof("Streamable HTTP endpoint: http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint)
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Errorf("Streamable HTTP server error: %v", err)
+			p.logger.Errorf("Streamable HTTP server error: %v", err)
 		}
 	}()
 
@@ -153,7 +157,7 @@ func (p *HTTPProxy) handleBatchRequest(w http.ResponseWriter, body []byte) bool 
 	// Decode batch
 	var rawMessages []json.RawMessage
 	if err := json.Unmarshal(trimmed, &rawMessages); err != nil {
-		logger.Warnf("Failed to decode batch JSON-RPC: %s", string(body))
+		p.logger.Warnf("Failed to decode batch JSON-RPC: %s", string(body))
 		http.Error(w, "Invalid batch JSON-RPC", http.StatusBadRequest)
 		return true
 	}
@@ -162,13 +166,13 @@ func (p *HTTPProxy) handleBatchRequest(w http.ResponseWriter, body []byte) bool 
 	for _, raw := range rawMessages {
 		msg, err := jsonrpc2.DecodeMessage(raw)
 		if err != nil {
-			logger.Warnf("Skipping invalid message in batch: %s", string(raw))
+			p.logger.Warnf("Skipping invalid message in batch: %s", string(raw))
 			continue
 		}
 
 		// Send each message to the container
 		if err := p.SendMessageToDestination(msg); err != nil {
-			logger.Errorf("Failed to send message to destination: %v", err)
+			p.logger.Errorf("Failed to send message to destination: %v", err)
 			continue
 		}
 
@@ -178,13 +182,13 @@ func (p *HTTPProxy) handleBatchRequest(w http.ResponseWriter, body []byte) bool 
 			if r, ok := resp.(*jsonrpc2.Response); ok && r.ID.IsValid() {
 				data, err := jsonrpc2.EncodeMessage(r)
 				if err != nil {
-					logger.Errorf("Failed to encode JSON-RPC response: %v", err)
+					p.logger.Errorf("Failed to encode JSON-RPC response: %v", err)
 					continue
 				}
 				responses = append(responses, data)
 			}
 		case <-time.After(10 * time.Second):
-			logger.Warnf("Timeout waiting for response from container for batch message")
+			p.logger.Warnf("Timeout waiting for response from container for batch message")
 			// Optionally, append a JSON-RPC error response here
 		}
 	}
@@ -197,12 +201,12 @@ func (p *HTTPProxy) handleBatchRequest(w http.ResponseWriter, body []byte) bool 
 	}
 	respBytes, err := json.Marshal(responses)
 	if err != nil {
-		logger.Errorf("Failed to marshal batch response: %v", err)
+		p.logger.Errorf("Failed to marshal batch response: %v", err)
 		http.Error(w, "Failed to encode batch response", http.StatusInternalServerError)
 		return true
 	}
 	if _, err := w.Write(respBytes); err != nil {
-		logger.Errorf("Failed to write batch response: %v", err)
+		p.logger.Errorf("Failed to write batch response: %v", err)
 	}
 	return true
 }
@@ -224,7 +228,7 @@ func (p *HTTPProxy) handleStreamableRequest(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	msg, ok := decodeJSONRPCMessage(w, body)
+	msg, ok := decodeJSONRPCMessage(w, body, p.logger)
 	if !ok {
 		return
 	}
@@ -239,7 +243,7 @@ func (p *HTTPProxy) handleStreamableRequest(w http.ResponseWriter, r *http.Reque
 func (p *HTTPProxy) handleNotificationOrResponse(w http.ResponseWriter, msg jsonrpc2.Message) bool {
 	if isNotification(msg) || (func() bool { _, ok := msg.(*jsonrpc2.Response); return ok })() {
 		if err := p.SendMessageToDestination(msg); err != nil {
-			logger.Errorf("Failed to send message to destination: %v", err)
+			p.logger.Errorf("Failed to send message to destination: %v", err)
 		}
 		w.WriteHeader(http.StatusAccepted)
 		return true
@@ -258,18 +262,18 @@ func (p *HTTPProxy) handleRequestResponse(w http.ResponseWriter, msg jsonrpc2.Me
 			w.Header().Set("Content-Type", "application/json")
 			data, err := jsonrpc2.EncodeMessage(r)
 			if err != nil {
-				logger.Errorf("Failed to encode JSON-RPC response: %v", err)
+				p.logger.Errorf("Failed to encode JSON-RPC response: %v", err)
 				http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 				return
 			}
 			if _, err := w.Write(data); err != nil {
-				logger.Errorf("Failed to write response: %v", err)
+				p.logger.Errorf("Failed to write response: %v", err)
 			}
 		} else {
 			w.Header().Set("Content-Type", "application/json")
 			errResp := getInvalidJsonrpcError()
 			if err := json.NewEncoder(w).Encode(errResp); err != nil {
-				logger.Errorf("Failed to encode error response: %v", err)
+				p.logger.Errorf("Failed to encode error response: %v", err)
 			}
 		}
 	case <-time.After(10 * time.Second):
@@ -290,7 +294,7 @@ func getInvalidJsonrpcError() map[string]interface{} {
 }
 
 // decodeJSONRPCMessage decodes a JSON-RPC message from the request body.
-func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message, bool) {
+func decodeJSONRPCMessage(w http.ResponseWriter, body []byte, logger *zap.SugaredLogger) (jsonrpc2.Message, bool) {
 	msg, err := jsonrpc2.DecodeMessage(body)
 	if err != nil {
 		logger.Warnf("Skipping message that failed to decode: %s", string(body))

@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -81,10 +82,11 @@ var _ = Describe("Client Management", func() {
 	Describe("client list-registered command", func() {
 		BeforeEach(func() {
 			// Pre-populate temporary config with multiple registered clients in non-alphabetical order
+			logger := log.NewLogger()
 			testClients := []string{"vscode", "cursor", "roo-code", "cline", "claude-code"}
 			err := config.UpdateConfigAtPath(tempConfigPath, func(c *config.Config) {
 				c.Clients.RegisteredClients = testClients
-			})
+			}, logger)
 			Expect(err).ToNot(HaveOccurred())
 		})
 

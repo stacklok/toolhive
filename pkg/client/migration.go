@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"sync"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // migrationOnce ensures the migration only runs once
@@ -13,31 +14,30 @@ var migrationOnce sync.Once
 
 // CheckAndPerformAutoDiscoveryMigration checks if auto-discovery migration is needed and performs it
 // This is called once at application startup
-func CheckAndPerformAutoDiscoveryMigration() {
+func CheckAndPerformAutoDiscoveryMigration(logger *zap.SugaredLogger) {
 	migrationOnce.Do(func() {
-		appConfig := config.GetConfig()
-
+		appConfig := config.GetConfig(logger)
 		// Check if auto-discovery flag is set to true, use of deprecated object is expected here
 		if appConfig.Clients.AutoDiscovery {
-			performAutoDiscoveryMigration()
+			performAutoDiscoveryMigration(logger)
 		}
 	})
 }
 
 // performAutoDiscoveryMigration discovers and registers all installed clients
-func performAutoDiscoveryMigration() {
+func performAutoDiscoveryMigration(logger *zap.SugaredLogger) {
 	fmt.Println("Migrating from deprecated auto-discovery to manual client registration...")
 	fmt.Println()
 
 	// Get current client statuses to determine what to register
-	clientStatuses, err := GetClientStatus()
+	clientStatuses, err := GetClientStatus(logger)
 	if err != nil {
 		logger.Errorf("Error discovering clients during migration: %v", err)
 		return
 	}
 
 	// Get current config to see what's already registered
-	appConfig := config.GetConfig()
+	appConfig := config.GetConfig(logger)
 
 	var clientsToRegister []string
 	var alreadyRegistered = appConfig.Clients.RegisteredClients
@@ -69,7 +69,7 @@ func performAutoDiscoveryMigration() {
 
 		// Remove the auto-discovery flag during the same config update
 		c.Clients.AutoDiscovery = false
-	})
+	}, logger)
 
 	if err != nil {
 		logger.Errorf("Error updating config during migration: %v", err)

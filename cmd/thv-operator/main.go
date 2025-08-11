@@ -48,9 +48,6 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.Parse()
 
-	// Initialize the structured logger
-	logger.Initialize()
-
 	// Set the controller-runtime logger to use our structured logger
 	ctrl.SetLogger(logger.NewLogr())
 

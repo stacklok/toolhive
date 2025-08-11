@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -105,8 +107,8 @@ func (c *Config) ShouldAuditEvent(eventType string) bool {
 }
 
 // CreateMiddleware creates an HTTP middleware from the audit configuration.
-func (c *Config) CreateMiddleware() (types.MiddlewareFunction, error) {
-	auditor, err := NewAuditor(c)
+func (c *Config) CreateMiddleware(logger *zap.SugaredLogger) (types.MiddlewareFunction, error) {
+	auditor, err := NewAuditor(c, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auditor: %w", err)
 	}
@@ -114,7 +116,7 @@ func (c *Config) CreateMiddleware() (types.MiddlewareFunction, error) {
 }
 
 // GetMiddlewareFromFile loads the audit configuration from a file and creates an HTTP middleware.
-func GetMiddlewareFromFile(path string) (func(http.Handler) http.Handler, error) {
+func GetMiddlewareFromFile(path string, logger *zap.SugaredLogger) (func(http.Handler) http.Handler, error) {
 	// Load the configuration
 	config, err := LoadFromFile(path)
 	if err != nil {
@@ -122,7 +124,7 @@ func GetMiddlewareFromFile(path string) (func(http.Handler) http.Handler, error)
 	}
 
 	// Create the middleware
-	return config.CreateMiddleware()
+	return config.CreateMiddleware(logger)
 }
 
 // Validate validates the audit configuration.

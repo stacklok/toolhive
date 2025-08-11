@@ -15,7 +15,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
@@ -24,8 +24,9 @@ import (
 func TestIntegrationListFiltering(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger for tests
-	logger.Initialize()
+	// Setup logger
+	logger := log.NewLogger()
+
 	// Create a realistic Cedar authorizer with role-based policies
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 		Policies: []string{
@@ -48,7 +49,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 			`permit(principal, action == Action::"read_resource", resource) when { principal.claim_role == "admin" };`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, logger)
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	testCases := []struct {
@@ -323,6 +324,10 @@ func TestIntegrationListFiltering(t *testing.T) {
 // TestIntegrationNonListOperations verifies that non-list operations still work correctly
 func TestIntegrationNonListOperations(t *testing.T) {
 	t.Parallel()
+
+	//Setup logger
+	logger := log.NewLogger()
+
 	// Create a Cedar authorizer with specific permissions
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 		Policies: []string{
@@ -330,7 +335,7 @@ func TestIntegrationNonListOperations(t *testing.T) {
 			`permit(principal, action == Action::"call_tool", resource) when { principal.claim_role == "admin" };`,
 		},
 		EntitiesJSON: `[]`,
-	})
+	}, logger)
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	testCases := []struct {

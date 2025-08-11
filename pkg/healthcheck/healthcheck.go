@@ -8,7 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -64,13 +65,15 @@ type MCPPinger interface {
 type HealthChecker struct {
 	transport string
 	mcpPinger MCPPinger
+	logger    *zap.SugaredLogger
 }
 
 // NewHealthChecker creates a new health checker instance
-func NewHealthChecker(transport string, mcpPinger MCPPinger) *HealthChecker {
+func NewHealthChecker(transport string, mcpPinger MCPPinger, logger *zap.SugaredLogger) *HealthChecker {
 	return &HealthChecker{
 		transport: transport,
 		mcpPinger: mcpPinger,
+		logger:    logger,
 	}
 }
 
@@ -112,12 +115,12 @@ func (hc *HealthChecker) checkMCPStatus(ctx context.Context) *MCPStatus {
 	if err != nil {
 		status.Available = false
 		status.Error = err.Error()
-		logger.Debugf("MCP ping failed: %v", err)
+		hc.logger.Debugf("MCP ping failed: %v", err)
 	} else {
 		status.Available = true
 		responseTimeMs := duration.Milliseconds()
 		status.ResponseTime = &responseTimeMs
-		logger.Debugf("MCP ping successful: %v", duration)
+		hc.logger.Debugf("MCP ping successful: %v", duration)
 	}
 
 	return status
@@ -145,7 +148,7 @@ func (hc *HealthChecker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(health); err != nil {
-		logger.Warnf("Failed to encode health response: %v", err)
+		hc.logger.Warnf("Failed to encode health response: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
 }

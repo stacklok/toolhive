@@ -11,14 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state/mocks"
 )
-
-func init() {
-	// Initialize logger for tests
-	logger.Initialize()
-}
 
 const testGroupName = "testgroup"
 
@@ -458,6 +453,8 @@ func TestManager_Exists(t *testing.T) {
 func TestManager_RegisterClients(t *testing.T) {
 	t.Parallel()
 
+	logger := log.NewLogger()
+
 	tests := []struct {
 		name        string
 		groupName   string
@@ -519,7 +516,10 @@ func TestManager_RegisterClients(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{groupStore: mockStore}
+			manager := &manager{
+				groupStore: mockStore,
+				logger:     logger,
+			}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -541,6 +541,8 @@ func TestManager_RegisterClients(t *testing.T) {
 // TestManager_UnregisterClients tests client unregistration
 func TestManager_UnregisterClients(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
 
 	tests := []struct {
 		name        string
@@ -603,7 +605,10 @@ func TestManager_UnregisterClients(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{groupStore: mockStore}
+			manager := &manager{
+				groupStore: mockStore,
+				logger:     logger,
+			}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)

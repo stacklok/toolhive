@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,16 +16,11 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
-func init() {
-	// Initialize the logger for tests
-	logger.Initialize()
-}
-
 // mockWaitForStatefulSetReady is used to mock the waitForStatefulSetReady function in tests
-var mockWaitForStatefulSetReady = func(_ context.Context, _ kubernetes.Interface, _, _ string) error {
+var mockWaitForStatefulSetReady = func(_ context.Context, _ kubernetes.Interface, _, _ string, _ *zap.SugaredLogger) error {
 	return nil
 }
 
@@ -165,6 +161,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 				runtimeType:                 runtime.TypeKubernetes,
 				client:                      clientset,
 				waitForStatefulSetReadyFunc: mockWaitForStatefulSetReady,
+				logger:                      log.NewLogger(),
 			}
 			// Create workload options with the pod template patch
 			options := runtime.NewDeployWorkloadOptions()
@@ -663,6 +660,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 				runtimeType:                 runtime.TypeKubernetes,
 				client:                      clientset,
 				waitForStatefulSetReadyFunc: mockWaitForStatefulSetReady,
+				logger:                      log.NewLogger(),
 			}
 
 			// Deploy the workload

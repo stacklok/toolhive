@@ -36,7 +36,15 @@ Examples:
 
 Flags:
   --tunnel-provider string   The provider to use for the tunnel (e.g., "ngrok") - mandatory
-  --provider-args string     JSON object with provider-specific arguments (default "{}")
+  --provider-args string     JSON object with provider-specific arguments: auth-token (mandatory),
+  							 url, pooling, traffic-policy-file
+  --dry-run                  If set, only validate the configuration without starting the tunnel
+
+Examples:
+  thv proxy tunnel --tunnel-provider ngrok --provider-args '{"auth-token": "your-token",
+  "url": "https://example.com", "pooling": true}' http://localhost:8080 my-server
+  thv proxy tunnel --tunnel-provider ngrok --provider-args '{"auth-token": "your-token",
+  "traffic-policy-file": "/path/to/policy.yml"}' my-workload my-server
 `,
 	Args: cobra.ExactArgs(2),
 	RunE: proxyTunnelCmdFunc,

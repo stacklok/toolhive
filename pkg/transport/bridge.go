@@ -25,6 +25,7 @@ type StdioBridge struct {
 	mode             string
 	wg               sync.WaitGroup
 	cancel           context.CancelFunc
+	InitReady        chan struct{}
 }
 
 // NewStdioBridge creates a new StdioBridge instance.
@@ -73,54 +74,28 @@ func (b *StdioBridge) loop(ctx context.Context) {
 
 // Header include Mcp-Session-Id if needed
 func (b *StdioBridge) detectTransport(ctx context.Context) (string, error) {
-	// 1) Probe for legacy SSE without sending any JSON-RPC
-	getReq, err := http.NewRequestWithContext(ctx, "GET", b.baseURL.String(), nil)
+	body, err := buildJSONRPCInitializeRequest()
+	if err != nil {
+		logger.Errorf("failed to marshal initialization request: %v", err)
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", b.baseURL.String(), bytes.NewReader(body))
+	if err != nil {
+		logger.Errorf("failed to create HTTP request: %v", err)
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	copyHeaders(req.Header, b.headers)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}
-	getReq.Header.Set("Accept", "text/event-stream")
-	copyHeaders(getReq.Header, b.headers)
-
-	getResp, err := http.DefaultClient.Do(getReq)
-	if err == nil {
-		ct := getResp.Header.Get("Content-Type")
-		err = getResp.Body.Close() // we’re only peeking at headers here
-		if err != nil {
-			return "", fmt.Errorf("failed to close GET response body: %w", err)
-		}
-		if strings.HasPrefix(ct, "text/event-stream") {
-			// Legacy SSE: runLegacyReader will open the real stream.
-			return "legacy-sse", nil
-		}
-	}
-
-	// 2) Not SSE -> treat as streamable HTTP and do a proper initialize
-	body, err := buildJSONRPCInitializeRequest() // keep if your server expects initialize for streamable
-	if err != nil {
-		return "", err
-	}
-	postReq, err := http.NewRequestWithContext(ctx, "POST", b.baseURL.String(), bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	postReq.Header.Set("Content-Type", "application/json")
-	postReq.Header.Set("Accept", "application/json, text/event-stream")
-	copyHeaders(postReq.Header, b.headers)
-
-	postResp, err := http.DefaultClient.Do(postReq)
-	if err != nil {
-		return "", err
-	}
-	defer postResp.Body.Close()
-
-	// If a streamable server returns info + Mcp-Session-Id, great.
-	// Some legacy gateways might reply 4xx to POST at base URL.
-	if postResp.StatusCode >= 400 && postResp.StatusCode < 500 {
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 		return "legacy-sse", nil
 	}
-
-	// Streamable: capture session headers and emit the response payload.
-	b.handleInitializeResponse(postResp)
+	b.handleInitializeResponse(resp)
 	return "streamable-http", nil
 }
 
@@ -130,24 +105,24 @@ func (b *StdioBridge) handleInitializeResponse(resp *http.Response) {
 			b.headers = make(http.Header)
 		}
 		b.headers.Set("Mcp-Session-Id", sid)
+		logger.Infof("Streamable HTTP session ID: %s", sid)
 	}
-	data, err := io.ReadAll(resp.Body)
+
+	// Read and discard body; DO NOT emit to stdout. This was only a probe.
+	_, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("failed to read response body: %v", err)
 		return
-	}
-	payload := strings.TrimSpace(string(data))
-	ct := resp.Header.Get("Content-Type")
-	if strings.HasPrefix(ct, "application/json") {
-		emitJSON(payload)
-	} else if strings.HasPrefix(ct, "text/event-stream") {
-		parseSSE(bytes.NewReader(data))
 	}
 }
 
 // Streamable HTTP handlers
 func (b *StdioBridge) runStreamableReader(ctx context.Context) {
 	defer b.wg.Done()
+	if b.InitReady != nil {
+		// Wait until main signals that the writer is ready
+		<-b.InitReady
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL.String(), nil)
 	if err != nil {
 		logger.Errorf("Failed to create GET request: %v", err)
@@ -170,6 +145,7 @@ func (b *StdioBridge) runStreamableReader(ctx context.Context) {
 
 func (b *StdioBridge) runStreamableWriter(ctx context.Context) {
 	defer b.wg.Done()
+
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 4096), 10*1024*1024)
 	for scanner.Scan() {
@@ -332,26 +308,20 @@ func (b *StdioBridge) updatePostURL(path string) {
 		return
 	}
 	b.postURL = u
+	logger.Infof("POST URL updated to %s", b.postURL)
 }
 
 func buildJSONRPCInitializeRequest() ([]byte, error) {
-	req := map[string]interface{}{
+	req := map[string]any{
 		"jsonrpc": "2.0",
-		"id":      1,
+		"id":      -1,
 		"method":  "initialize",
-		"params": map[string]interface{}{
-			"protocolVersion": "2024-02-01",
-			"capabilities": map[string]interface{}{
-				"prompts": true,
-				"tools":   true,
-				"resources": map[string]interface{}{
-					"subscribe":   true,
-					"unsubscribe": true,
-				},
-			},
-			"clientInfo": map[string]interface{}{
-				"name":    "toolhive-stdio-bridge",
-				"version": "0.1.0",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo": map[string]string{
+				"name":    "ToolHive MCP Client",
+				"version": "1.0.0",
 			},
 		},
 	}

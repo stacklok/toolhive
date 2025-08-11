@@ -45,9 +45,11 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create stdio bridge: %w", err)
 	}
+	bridge.InitReady = make(chan struct{})
 	bridge.Start(ctx)
 
 	// Consume until interrupt
+	close(bridge.InitReady)
 	<-ctx.Done()
 	logger.Info("Shutting down bridge")
 	bridge.Shutdown()

@@ -364,12 +364,10 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 
 				logger.Infof("Container %s removed", name)
 
-				if shouldRemoveClientConfig() {
-					if err := removeClientConfigurations(name); err != nil {
-						logger.Warnf("Warning: Failed to remove client configurations: %v", err)
-					} else {
-						logger.Infof("Client configurations for %s removed", name)
-					}
+				if err := removeClientConfigurations(name); err != nil {
+					logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+				} else {
+					logger.Infof("Client configurations for %s removed", name)
 				}
 			}
 
@@ -470,37 +468,26 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string, f
 	return group, nil
 }
 
-func shouldRemoveClientConfig() bool {
-	c := config.GetConfig()
-	return len(c.Clients.RegisteredClients) > 0
-}
-
 // TODO: Move to dedicated config management interface.
 // updateClientConfigurations updates client configuration files with the MCP server URL
 func removeClientConfigurations(containerName string) error {
-	// Find client configuration files
-	configs, err := client.FindRegisteredClientConfigs()
+	// Get the workload's group by loading its run config
+	runConfig, err := runner.LoadState(context.Background(), containerName)
+	var group string
 	if err != nil {
-		return fmt.Errorf("failed to find client configurations: %w", err)
+		logger.Warnf("Warning: Failed to load run config for %s, will use backward compatible behavior: %v", containerName, err)
+		// Continue with empty group (backward compatibility)
+	} else {
+		group = runConfig.Group
 	}
 
-	if len(configs) == 0 {
-		logger.Info("No client configuration files found")
+	clientManager, err := client.NewManager(context.Background())
+	if err != nil {
+		logger.Warnf("Warning: Failed to create client manager for %s, skipping client config removal: %v", containerName, err)
 		return nil
 	}
 
-	for _, c := range configs {
-		logger.Infof("Removing MCP server from client configuration: %s", c.Path)
-
-		if err := c.ConfigUpdater.Remove(containerName); err != nil {
-			logger.Warnf("Warning: Failed to remove MCP server from client configuration %s: %v", c.Path, err)
-			continue
-		}
-
-		logger.Infof("Successfully removed MCP server from client configuration: %s", c.Path)
-	}
-
-	return nil
+	return clientManager.RemoveServerFromClients(context.Background(), containerName, group)
 }
 
 // loadRunnerFromState attempts to load a Runner from the state store
@@ -569,12 +556,10 @@ func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.Cont
 				return fmt.Errorf("failed to stop container: %w", err)
 			}
 
-			if shouldRemoveClientConfig() {
-				if err := removeClientConfigurations(name); err != nil {
-					logger.Warnf("Warning: Failed to remove client configurations: %v", err)
-				} else {
-					logger.Infof("Client configurations for %s removed", name)
-				}
+			if err := removeClientConfigurations(name); err != nil {
+				logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+			} else {
+				logger.Infof("Client configurations for %s removed", name)
 			}
 
 			d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, "")

@@ -36,7 +36,13 @@ func loadTrafficPolicyFile(path string) (string, error) {
 		return "", fmt.Errorf("traffic policy file must be .yml or .yaml, got %q", ext)
 	}
 
-	b, err := os.ReadFile(path) // #nosec G304 -- path comes from a trusted local config file and we validate it
+	cleanPath := filepath.Clean(path)
+	// Prevent path traversal: reject any path containing ".." or absolute paths
+	if strings.Contains(cleanPath, "..") || filepath.IsAbs(cleanPath) {
+		return "", fmt.Errorf("traffic policy file path is invalid or attempts path traversal: %q", path)
+	}
+
+	b, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return "", fmt.Errorf("reading traffic policy file: %w", err)
 	}

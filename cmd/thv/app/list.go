@@ -14,10 +14,11 @@ import (
 )
 
 var listCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List running MCP servers",
-	Long:  `List all MCP servers managed by ToolHive, including their status and configuration.`,
-	RunE:  listCmdFunc,
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List running MCP servers",
+	Long:    `List all MCP servers managed by ToolHive, including their status and configuration.`,
+	RunE:    listCmdFunc,
 }
 
 var (

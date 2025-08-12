@@ -115,4 +115,5 @@ thv proxy [flags] SERVER_NAME
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
+* [thv proxy tunnel](thv_proxy_tunnel.md)	 - Create a tunnel proxy for exposing internal endpoints
 

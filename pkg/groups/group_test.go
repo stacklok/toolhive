@@ -454,56 +454,6 @@ func TestManager_Exists(t *testing.T) {
 	}
 }
 
-// TestManager_GetWorkloadGroup tests the GetWorkloadGroup method
-func TestManager_GetWorkloadGroup(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		workloadName  string
-		expectError   bool
-		expectedGroup *Group
-		errorMsg      string
-	}{
-		{
-			name:          "workload not found",
-			workloadName:  "nonexistent-workload",
-			expectError:   false,
-			expectedGroup: nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-
-			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{groupStore: mockStore}
-
-			// Call the method
-			group, err := manager.GetWorkloadGroup(context.Background(), tt.workloadName)
-
-			// Assert results
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorMsg != "" {
-					assert.Contains(t, err.Error(), tt.errorMsg)
-				}
-			} else {
-				assert.NoError(t, err)
-				if tt.expectedGroup != nil {
-					assert.Equal(t, tt.expectedGroup.Name, group.Name)
-				} else {
-					assert.Nil(t, group)
-				}
-			}
-		})
-	}
-}
-
 // TestManager_RegisterClients tests client registration
 func TestManager_RegisterClients(t *testing.T) {
 	t.Parallel()
@@ -576,6 +526,90 @@ func TestManager_RegisterClients(t *testing.T) {
 
 			// Execute operation
 			err := manager.RegisterClients(context.Background(), []string{tt.groupName}, []string{tt.clientName})
+
+			// Verify results
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestManager_UnregisterClients tests client unregistration
+func TestManager_UnregisterClients(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		groupName   string
+		clientName  string
+		setupMock   func(*mocks.MockStore)
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:       "successful client unregistration",
+			groupName:  testGroupName,
+			clientName: "test-client",
+			setupMock: func(mock *mocks.MockStore) {
+				// First call to Get() - return group with registered client
+				groupData := `{"name": "` + testGroupName + `", "registered_clients": ["test-client"]}`
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(io.NopCloser(strings.NewReader(groupData)), nil)
+
+				// Second call to saveGroup()
+				mock.EXPECT().
+					GetWriter(gomock.Any(), testGroupName).
+					Return(&mockWriteCloser{}, nil)
+			},
+			expectError: false,
+		},
+		{
+			name:       "client not registered",
+			groupName:  testGroupName,
+			clientName: "nonexistent-client",
+			setupMock: func(mock *mocks.MockStore) {
+				// Return group without the client
+				groupData := `{"name": "` + testGroupName + `", "registered_clients": ["other-client"]}`
+				mock.EXPECT().
+					GetReader(gomock.Any(), testGroupName).
+					Return(io.NopCloser(strings.NewReader(groupData)), nil)
+			},
+			expectError: false, // Not an error - client is simply not in the group
+		},
+		{
+			name:       "group not found",
+			groupName:  "nonexistent-group",
+			clientName: "test-client",
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					GetReader(gomock.Any(), "nonexistent-group").
+					Return(nil, &os.PathError{Op: "open", Path: "nonexistent-group", Err: os.ErrNotExist})
+			},
+			expectError: true,
+			errorMsg:    "failed to get group",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStore := mocks.NewMockStore(ctrl)
+			manager := &manager{groupStore: mockStore}
+
+			// Set up mock expectations
+			tt.setupMock(mockStore)
+
+			// Execute operation
+			err := manager.UnregisterClients(context.Background(), []string{tt.groupName}, []string{tt.clientName})
 
 			// Verify results
 			if tt.expectError {

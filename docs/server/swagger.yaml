@@ -307,8 +307,39 @@ components:
             If true, the value will be stored as a secret rather than as a plain environment variable
           type: boolean
       type: object
+    registry.Header:
+      properties:
+        choices:
+          description: Choices provides a list of valid values for the header (optional)
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        default:
+          description: |-
+            Default is the value to use if the header is not explicitly provided
+            Only used for non-required headers
+          type: string
+        description:
+          description: Description is a human-readable explanation of the header's
+            purpose
+          type: string
+        name:
+          description: Name is the header name (e.g., X-API-Key, Authorization)
+          type: string
+        required:
+          description: |-
+            Required indicates whether this header must be provided
+            If true and not provided via command line or secrets, the user will be prompted for a value
+          type: boolean
+        secret:
+          description: |-
+            Secret indicates whether this header contains sensitive information
+            If true, the value will be stored as a secret rather than as plain text
+          type: boolean
+      type: object
     registry.ImageMetadata:
-      description: Server details
+      description: Container server details (if it's a container server)
       properties:
         args:
           description: |-
@@ -349,7 +380,7 @@ components:
         name:
           description: |-
             Name is the identifier for the MCP server, used when referencing the server in commands
-            If not provided, it will be auto-generated from the image name
+            If not provided, it will be auto-generated from the registry key
           type: string
         permissions:
           $ref: '#/components/schemas/permissions.Profile'
@@ -360,8 +391,8 @@ components:
             the server
           type: string
         status:
-          description: The Status indicates whether the server is currently active
-            or deprecated
+          description: Status indicates whether the server is currently active or
+            deprecated
           type: string
         tags:
           description: Tags are categorization labels for the server to aid in discovery
@@ -376,7 +407,7 @@ components:
           type: integer
         tier:
           description: Tier represents the tier classification level of the server,
-            e.g., "official" or "community" driven
+            e.g., "Official" or "Community"
           type: string
         tools:
           description: Tools is a list of tool names provided by this MCP server
@@ -385,8 +416,10 @@ components:
           type: array
           uniqueItems: false
         transport:
-          description: Transport defines the communication protocol for the server
-            (stdio, sse, or streamable-http)
+          description: |-
+            Transport defines the communication protocol for the server
+            For containers: stdio, sse, or streamable-http
+            For remote servers: sse or streamable-http (stdio not supported)
           type: string
       type: object
     registry.Metadata:
@@ -404,6 +437,43 @@ components:
           description: Stars represents the popularity rating or number of stars for
             the server
           type: integer
+      type: object
+    registry.OAuthConfig:
+      description: |-
+        OAuthConfig provides OAuth/OIDC configuration for authentication to the remote server
+        Used with the thv proxy command's --remote-auth flags
+      properties:
+        authorize_url:
+          description: |-
+            AuthorizeURL is the OAuth authorization endpoint URL
+            Used for non-OIDC OAuth flows when issuer is not provided
+          type: string
+        client_id:
+          description: ClientID is the OAuth client ID for authentication
+          type: string
+        issuer:
+          description: |-
+            Issuer is the OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
+            Used for OIDC discovery to find authorization and token endpoints
+          type: string
+        scopes:
+          description: |-
+            Scopes are the OAuth scopes to request
+            If not specified, defaults to ["openid", "profile", "email"] for OIDC
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        token_url:
+          description: |-
+            TokenURL is the OAuth token endpoint URL
+            Used for non-OIDC OAuth flows when issuer is not provided
+          type: string
+        use_pkce:
+          description: |-
+            UsePKCE indicates whether to use PKCE for the OAuth flow
+            Defaults to true for enhanced security
+          type: boolean
       type: object
     registry.Provenance:
       description: Provenance contains verification and signing metadata
@@ -430,6 +500,13 @@ components:
           description: LastUpdated is the timestamp when the registry was last updated,
             in RFC3339 format
           type: string
+        remote_servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
+          description: |-
+            RemoteServers is a map of server names to their corresponding remote server definitions
+            These are MCP servers accessed via HTTP/HTTPS using the thv proxy command
+          type: object
         servers:
           additionalProperties:
             $ref: '#/components/schemas/registry.ImageMetadata'
@@ -438,6 +515,77 @@ components:
           type: object
         version:
           description: Version is the schema version of the registry
+          type: string
+      type: object
+    registry.RemoteServerMetadata:
+      description: Remote server details (if it's a remote server)
+      properties:
+        custom_metadata:
+          additionalProperties: {}
+          description: CustomMetadata allows for additional user-defined metadata
+          type: object
+        description:
+          description: Description is a human-readable description of the server's
+            purpose and functionality
+          type: string
+        env_vars:
+          description: |-
+            EnvVars defines environment variables that can be passed to configure the client
+            These might be needed for client-side configuration when connecting to the remote server
+          items:
+            $ref: '#/components/schemas/registry.EnvVar'
+          type: array
+          uniqueItems: false
+        headers:
+          description: |-
+            Headers defines HTTP headers that can be passed to the remote server for authentication
+            These are used with the thv proxy command's authentication features
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+          uniqueItems: false
+        metadata:
+          $ref: '#/components/schemas/registry.Metadata'
+        name:
+          description: |-
+            Name is the identifier for the MCP server, used when referencing the server in commands
+            If not provided, it will be auto-generated from the registry key
+          type: string
+        oauth_config:
+          $ref: '#/components/schemas/registry.OAuthConfig'
+        repository_url:
+          description: RepositoryURL is the URL to the source code repository for
+            the server
+          type: string
+        status:
+          description: Status indicates whether the server is currently active or
+            deprecated
+          type: string
+        tags:
+          description: Tags are categorization labels for the server to aid in discovery
+            and filtering
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        tier:
+          description: Tier represents the tier classification level of the server,
+            e.g., "Official" or "Community"
+          type: string
+        tools:
+          description: Tools is a list of tool names provided by this MCP server
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport:
+          description: |-
+            Transport defines the communication protocol for the server
+            For containers: stdio, sse, or streamable-http
+            For remote servers: sse or streamable-http (stdio not supported)
+          type: string
+        url:
+          description: URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)
           type: string
       type: object
     registry.VerifiedAttestation:
@@ -946,6 +1094,11 @@ components:
     v1.getServerResponse:
       description: Response containing server details
       properties:
+        is_remote:
+          description: Indicates if this is a remote server
+          type: boolean
+        remote_server:
+          $ref: '#/components/schemas/registry.RemoteServerMetadata'
         server:
           $ref: '#/components/schemas/registry.ImageMetadata'
       type: object
@@ -971,8 +1124,14 @@ components:
     v1.listServersResponse:
       description: Response containing a list of servers
       properties:
+        remote_servers:
+          description: List of remote servers in the registry (if any)
+          items:
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
+          type: array
+          uniqueItems: false
         servers:
-          description: List of servers in the registry
+          description: List of container servers in the registry
           items:
             $ref: '#/components/schemas/registry.ImageMetadata'
           type: array
@@ -1197,6 +1356,40 @@ paths:
                 type: string
           description: Invalid request
       summary: Unregister a client
+      tags:
+      - clients
+  /api/v1beta/clients/{name}/groups/{group}:
+    delete:
+      description: Unregister a client from a specific group in ToolHive
+      parameters:
+      - description: Client name to unregister
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      - description: Group name to remove client from
+        in: path
+        name: group
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Client or group not found
+      summary: Unregister a client from a specific group
       tags:
       - clients
   /api/v1beta/clients/register:

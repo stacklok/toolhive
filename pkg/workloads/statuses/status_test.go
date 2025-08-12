@@ -1,8 +1,9 @@
-package workloads
+package statuses
 
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 const testWorkloadName = "test-workload"
@@ -21,9 +23,8 @@ func init() {
 	logger.Initialize()
 }
 
+//nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
 func TestNewStatusManagerFromRuntime(t *testing.T) {
-	t.Parallel()
-
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -48,7 +49,7 @@ func TestRuntimeStatusManager_CreateWorkloadStatus(t *testing.T) {
 
 	ctx := context.Background()
 
-	err := manager.CreateWorkloadStatus(ctx, testWorkloadName)
+	err := manager.SetWorkloadStatus(ctx, testWorkloadName, rt.WorkloadStatusStarting, "")
 	assert.NoError(t, err)
 }
 
@@ -334,7 +335,7 @@ func TestParseLabelFilters(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := parseLabelFilters(tt.labelFilters)
+			result, err := types.ParseLabelFilters(tt.labelFilters)
 
 			if tt.expectedError != "" {
 				assert.Error(t, err)
@@ -410,8 +411,65 @@ func TestMatchesLabelFilters(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := matchesLabelFilters(workloadLabels, tt.filters)
+			result := types.MatchesLabelFilters(workloadLabels, tt.filters)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestNewStatusManager(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockRuntime := mocks.NewMockRuntime(ctrl)
+
+	tests := []struct {
+		name         string
+		isKubernetes bool
+		expectedType interface{}
+	}{
+		{
+			name:         "returns runtime status manager in Kubernetes",
+			isKubernetes: true,
+			expectedType: &runtimeStatusManager{},
+		},
+		{
+			name:         "returns runtime status manager outside Kubernetes (temporary behavior)",
+			isKubernetes: false,
+			expectedType: &runtimeStatusManager{}, // Currently always returns runtime manager
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Mock the IsKubernetesRuntime function by setting/unsetting the environment variable
+			originalEnv := ""
+			if currentEnv := os.Getenv("KUBERNETES_SERVICE_HOST"); currentEnv != "" {
+				originalEnv = currentEnv
+			}
+			t.Cleanup(func() {
+				if originalEnv != "" {
+					os.Setenv("KUBERNETES_SERVICE_HOST", originalEnv)
+				} else {
+					os.Unsetenv("KUBERNETES_SERVICE_HOST")
+				}
+			})
+
+			if tt.isKubernetes {
+				os.Setenv("KUBERNETES_SERVICE_HOST", "test-service")
+			} else {
+				os.Unsetenv("KUBERNETES_SERVICE_HOST")
+			}
+
+			manager, err := NewStatusManager(mockRuntime)
+
+			assert.NoError(t, err)
+			assert.NotNil(t, manager)
+			assert.IsType(t, tt.expectedType, manager)
 		})
 	}
 }
@@ -440,7 +498,7 @@ func TestValidateWorkloadName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := validateWorkloadName(tt.testWorkloadName)
+			err := types.ValidateWorkloadName(tt.testWorkloadName)
 
 			if tt.expectError {
 				assert.Error(t, err)

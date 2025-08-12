@@ -9,7 +9,6 @@ import (
 
 	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/state"
 )
 
@@ -20,8 +19,7 @@ const (
 
 // manager implements the Manager interface
 type manager struct {
-	groupStore     state.Store
-	runconfigStore state.Store
+	groupStore state.Store
 }
 
 // NewManager creates a new group manager
@@ -30,12 +28,8 @@ func NewManager() (Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create group state store: %w", err)
 	}
-	runConfigStore, err := state.NewRunConfigStore("toolhive")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create runconfig store: %w", err)
-	}
 
-	return &manager{groupStore: store, runconfigStore: runConfigStore}, nil
+	return &manager{groupStore: store}, nil
 }
 
 // Create creates a new group with the given name
@@ -106,53 +100,6 @@ func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
 	return m.groupStore.Exists(ctx, name)
 }
 
-// GetWorkloadGroup returns the group that a workload belongs to, if any
-func (m *manager) GetWorkloadGroup(ctx context.Context, workloadName string) (*Group, error) {
-	runConfig, err := runner.LoadState(ctx, workloadName)
-	if err != nil {
-		if thverrors.IsRunConfigNotFound(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	// If the workload has no group, return nil
-	if runConfig.Group == "" {
-		return nil, nil
-	}
-
-	// Get the group details
-	return m.Get(ctx, runConfig.Group)
-}
-
-// ListWorkloadsInGroup returns all workload names that belong to the specified group
-func (m *manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error) {
-	// List all workload names
-	workloadNames, err := m.runconfigStore.List(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list runconfigs: %w", err)
-	}
-
-	// Filter workloads that belong to the specified group
-	var groupWorkloads []string
-
-	for _, workloadName := range workloadNames {
-		// Load the workload
-		runConfig, err := runner.LoadState(ctx, workloadName)
-		if err != nil {
-			logger.Warnf("Failed to load workload %s: %v", workloadName, err)
-			continue
-		}
-
-		// Check if this workload belongs to the specified group
-		if runConfig.Group == groupName {
-			groupWorkloads = append(groupWorkloads, workloadName)
-		}
-	}
-
-	return groupWorkloads, nil
-}
-
 // RegisterClients registers multiple clients with multiple groups
 func (m *manager) RegisterClients(ctx context.Context, groupNames []string, clientNames []string) error {
 	for _, groupName := range groupNames {
@@ -182,6 +129,41 @@ func (m *manager) RegisterClients(ctx context.Context, groupNames []string, clie
 			group.RegisteredClients = append(group.RegisteredClients, clientName)
 			groupModified = true
 			logger.Infof("Successfully registered client %s with group %s", clientName, groupName)
+		}
+
+		// Only save if the group was actually modified
+		if groupModified {
+			err = m.saveGroup(ctx, group)
+			if err != nil {
+				return fmt.Errorf("failed to save group %s: %w", groupName, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// UnregisterClients removes multiple clients from multiple groups
+func (m *manager) UnregisterClients(ctx context.Context, groupNames []string, clientNames []string) error {
+	for _, groupName := range groupNames {
+		// Get the existing group
+		group, err := m.Get(ctx, groupName)
+		if err != nil {
+			return fmt.Errorf("failed to get group %s: %w", groupName, err)
+		}
+
+		groupModified := false
+		for _, clientName := range clientNames {
+			// Find and remove the client from the group
+			for i, existingClient := range group.RegisteredClients {
+				if existingClient == clientName {
+					// Remove client from slice
+					group.RegisteredClients = append(group.RegisteredClients[:i], group.RegisteredClients[i+1:]...)
+					groupModified = true
+					logger.Infof("Successfully unregistered client %s from group %s", clientName, groupName)
+					break
+				}
+			}
 		}
 
 		// Only save if the group was actually modified

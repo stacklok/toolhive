@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
@@ -137,7 +139,17 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
-	err := validateGroup(ctx, serverOrImage)
+	// Create container runtime
+	rt, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container runtime: %v", err)
+	}
+	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
+
+	err = validateGroup(ctx, workloadManager, serverOrImage)
 	if err != nil {
 		return err
 	}
@@ -147,13 +159,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	// Create container runtime
-	rt, err := container.NewFactory().Create(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
-	}
-	workloadManager := workloads.NewManagerFromRuntime(rt)
 
 	// Always save the run config to disk before starting (both foreground and detached modes)
 	// NOTE: Save before secrets processing to avoid storing secrets in the state store
@@ -193,7 +198,7 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 	}
 }
 
-func validateGroup(ctx context.Context, serverOrImage string) error {
+func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serverOrImage string) error {
 	workloadName := runFlags.Name
 	if workloadName == "" {
 		workloadName = serverOrImage
@@ -206,12 +211,14 @@ func validateGroup(ctx context.Context, serverOrImage string) error {
 	}
 
 	// Check if the workload is already in a group
-	group, err := groupManager.GetWorkloadGroup(ctx, workloadName)
+	workload, err := workloadsManager.GetWorkload(ctx, workloadName)
 	if err != nil {
-		return fmt.Errorf("failed to get workload group: %v", err)
-	}
-	if group != nil && group.Name != runFlags.Group {
-		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, group.Name)
+		// If the workload does not exist, we can proceed to create it
+		if !errors.Is(err, runtime.ErrWorkloadNotFound) {
+			return fmt.Errorf("failed to get workload: %v", err)
+		}
+	} else if workload.Group != "" && workload.Group != runFlags.Group {
+		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, workload.Group)
 	}
 
 	if runFlags.Group != "" {
@@ -294,7 +301,10 @@ func runFromConfigFile(ctx context.Context) error {
 	runConfig.Deployer = rt
 
 	// Create workload manager
-	workloadManager := workloads.NewManagerFromRuntime(rt)
+	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
 
 	// Run the workload based on foreground flag
 	if runFlags.Foreground {

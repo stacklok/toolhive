@@ -22,39 +22,39 @@ const (
 // Profile represents a permission profile for a container
 type Profile struct {
 	// Name is the name of the profile
-	Name string `json:"name,omitempty"`
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 
 	// Read is a list of mount declarations that the container can read from
 	// These can be in the following formats:
 	// - A single path: The same path will be mounted from host to container
 	// - host-path:container-path: Different paths for host and container
 	// - resource-uri:container-path: Mount a resource identified by URI to a container path
-	Read []MountDeclaration `json:"read,omitempty"`
+	Read []MountDeclaration `json:"read,omitempty" yaml:"read,omitempty"`
 
 	// Write is a list of mount declarations that the container can write to
 	// These follow the same format as Read mounts but with write permissions
-	Write []MountDeclaration `json:"write,omitempty"`
+	Write []MountDeclaration `json:"write,omitempty" yaml:"write,omitempty"`
 
 	// Network defines network permissions
-	Network *NetworkPermissions `json:"network,omitempty"`
+	Network *NetworkPermissions `json:"network,omitempty" yaml:"network,omitempty"`
 }
 
 // NetworkPermissions defines network permissions for a container
 type NetworkPermissions struct {
 	// Outbound defines outbound network permissions
-	Outbound *OutboundNetworkPermissions `json:"outbound,omitempty"`
+	Outbound *OutboundNetworkPermissions `json:"outbound,omitempty" yaml:"outbound,omitempty"`
 }
 
 // OutboundNetworkPermissions defines outbound network permissions
 type OutboundNetworkPermissions struct {
 	// InsecureAllowAll allows all outbound network connections
-	InsecureAllowAll bool `json:"insecure_allow_all,omitempty"`
+	InsecureAllowAll bool `json:"insecure_allow_all,omitempty" yaml:"insecure_allow_all,omitempty"`
 
 	// AllowHost is a list of allowed hosts
-	AllowHost []string `json:"allow_host,omitempty"`
+	AllowHost []string `json:"allow_host,omitempty" yaml:"allow_host,omitempty"`
 
 	// AllowPort is a list of allowed ports
-	AllowPort []int `json:"allow_port,omitempty"`
+	AllowPort []int `json:"allow_port,omitempty" yaml:"allow_port,omitempty"`
 }
 
 // NewProfile creates a new permission profile

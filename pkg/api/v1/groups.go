@@ -16,13 +16,15 @@ import (
 
 // GroupsRoutes defines the routes for group management.
 type GroupsRoutes struct {
-	groupManager groups.Manager
+	groupManager    groups.Manager
+	workloadManager workloads.Manager
 }
 
 // GroupsRouter creates a new GroupsRoutes instance.
-func GroupsRouter(groupManager groups.Manager) http.Handler {
+func GroupsRouter(groupManager groups.Manager, workloadManager workloads.Manager) http.Handler {
 	routes := GroupsRoutes{
-		groupManager: groupManager,
+		groupManager:    groupManager,
+		workloadManager: workloadManager,
 	}
 
 	r := chi.NewRouter()
@@ -201,7 +203,7 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	withWorkloads := r.URL.Query().Get("with-workloads") == "true"
 
 	// Get all workloads in the group
-	groupWorkloads, err := s.groupManager.ListWorkloadsInGroup(ctx, name)
+	groupWorkloads, err := s.workloadManager.ListWorkloadsInGroup(ctx, name)
 	if err != nil {
 		logger.Errorf("Failed to list workloads in group %s: %v", name, err)
 		http.Error(w, "Failed to list workloads in group", http.StatusInternalServerError)
@@ -210,16 +212,9 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 
 	// Handle workloads if any exist
 	if len(groupWorkloads) > 0 {
-		workloadManager, err := workloads.NewManager(ctx)
-		if err != nil {
-			logger.Errorf("Failed to create workload manager: %v", err)
-			http.Error(w, "Failed to create workload manager", http.StatusInternalServerError)
-			return
-		}
-
 		if withWorkloads {
 			// Delete all workloads in the group
-			group, err := workloadManager.DeleteWorkloads(ctx, groupWorkloads)
+			group, err := s.workloadManager.DeleteWorkloads(ctx, groupWorkloads)
 			if err != nil {
 				logger.Errorf("Failed to delete workloads in group %s: %v", name, err)
 				http.Error(w, "Failed to delete workloads in group", http.StatusInternalServerError)
@@ -236,7 +231,7 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 			logger.Infof("Deleted %d workload(s) from group '%s'", len(groupWorkloads), name)
 		} else {
 			// Move workloads to default group
-			if err := workloadManager.MoveToDefaultGroup(ctx, groupWorkloads, name); err != nil {
+			if err := s.workloadManager.MoveToDefaultGroup(ctx, groupWorkloads, name); err != nil {
 				logger.Errorf("Failed to move workloads to default group: %v", err)
 				http.Error(w, "Failed to move workloads to default group", http.StatusInternalServerError)
 				return

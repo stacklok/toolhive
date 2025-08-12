@@ -119,7 +119,7 @@ func restartWorkloadsByGroup(ctx context.Context, workloadManager workloads.Mana
 	}
 
 	// Get all workload names in the group
-	workloadNames, err := groupManager.ListWorkloadsInGroup(ctx, groupName)
+	workloadNames, err := workloadManager.ListWorkloadsInGroup(ctx, groupName)
 	if err != nil {
 		return fmt.Errorf("failed to list workloads in group '%s': %v", groupName, err)
 	}

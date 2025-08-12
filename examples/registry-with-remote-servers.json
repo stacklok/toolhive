@@ -1,0 +1,39 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2025-01-12T00:00:00Z",
+  "servers": {
+    "example-container": {
+      "image": "example/mcp-server:latest",
+      "description": "Example container-based MCP server",
+      "tier": "community",
+      "status": "active",
+      "transport": "stdio",
+      "tools": ["example-tool"],
+      "tags": ["example", "container"]
+    }
+  },
+  "remote_servers": {
+    "example-remote": {
+      "url": "https://api.example.com/mcp",
+      "description": "Example remote MCP server accessed via HTTP",
+      "tier": "community",
+      "status": "active",
+      "transport": "sse",
+      "tools": ["remote-tool"],
+      "tags": ["example", "remote"],
+      "headers": [
+        {
+          "name": "X-API-Key",
+          "description": "API key for authentication",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "oauth_config": {
+        "issuer": "https://accounts.example.com",
+        "client_id": "example-client-id",
+        "scopes": ["openid", "profile", "email"]
+      }
+    }
+  }
+}

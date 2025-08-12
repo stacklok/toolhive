@@ -23,6 +23,17 @@ tasks:
     cmds:
       - swag init -g pkg/api/server.go --v3.1 -o docs/server
 
+  mock-install:
+    desc: Install the mockgen tool for mock generation
+    cmds:
+      - go install go.uber.org/mock/mockgen@latest
+
+  mock-gen:
+    desc: Generate mock files using go generate
+    deps: [mock-install]
+    cmds:
+      - go generate ./...
+
   lint:
     desc: Run linting tools
     cmds:
@@ -34,28 +45,94 @@ tasks:
     cmds:
       - golangci-lint run --fix ./...
 
-  test:
-    desc: Run unit tests (excluding e2e tests)
+  test-unixlike:
+    desc: Run unit tests (excluding e2e tests) on Linux and macOS
+    platforms: [linux, darwin]
+    internal: true
     cmds:
       - go test -v $(go list ./... | grep -v '/test/e2e')
 
-  test-coverage:
-    desc: Run unit tests with coverage analysis (excluding e2e tests)
+  test-windows:
+    desc: Run unit tests (excluding e2e tests) on Windows
+    platforms: [windows]
+    internal: true
+    vars:
+      DIR_LIST:
+        sh: go list ./... | findstr -V "\/test\/e2e"
     cmds:
-      - mkdir -p coverage
+      - go test -v {{.DIR_LIST | catLines}}
+
+  test:
+    desc: Run unit tests (excluding e2e tests)
+    deps: [mock-gen]
+    cmds:
+      - task: test-unixlike
+        platforms: [linux, darwin]
+      - task: test-windows
+        platforms: [windows]
+
+  test-coverage-unixlike:
+    desc: Run unit tests with coverage analysis (excluding e2e tests) on Linux and macOS
+    platforms: [linux, darwin]
+    internal: true
+    cmds:
+      - cmd: mkdir -p coverage
+        platforms: [linux, darwin]
       - go test -coverprofile=coverage/coverage.out $(go list ./... | grep -v '/test/e2e')
       - go tool cover -func=coverage/coverage.out
       - echo "Generating HTML coverage report in coverage/coverage.html"
       - go tool cover -html=coverage/coverage.out -o coverage/coverage.html
 
-  test-e2e:
-    desc: Run end-to-end tests
-    deps: [build]
+  test-coverage-windows:
+    desc: Run unit tests with coverage analysis (excluding e2e tests) on Windows
+    platforms: [windows]
+    internal: true
+    vars:
+      DIR_LIST:
+        sh: go list ./... | findstr -V "\/test\/e2e"
+    cmds:
+      - cmd: cmd.exe /c mkdir coverage
+        ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
+      - go test -coverprofile=coverage/coverage.out {{.DIR_LIST | catLines}}
+      - go tool cover -func=coverage/coverage.out
+      - echo "Generating HTML coverage report in coverage/coverage.html"
+      - go tool cover -html=coverage/coverage.out -o coverage/coverage.html
+
+  test-coverage:
+    desc: Run unit tests with coverage analysis (excluding e2e tests)
+    cmds:
+      - task: test-coverage-unixlike
+        platforms: [linux, darwin]
+      - task: test-coverage-windows
+        platforms: [windows]
+
+  test-e2e-unixlike:
+    desc: Run end-to-end tests on Linux and macOS
+    platforms: [linux, darwin]
+    internal: true
     env:
       THV_BINARY: "{{.PWD}}/bin/thv"
     cmds:
-      - go install github.com/onsi/ginkgo/v2/ginkgo
       - ./test/e2e/run_tests.sh
+
+  test-e2e-windows:
+    desc: Run end-to-end tests on Windows
+    platforms: [windows]
+    internal: true
+    env:
+      THV_BINARY: "{{.ROOT_DIR}}\\bin\\thv.exe"
+    cmds:
+      - cmd: .\\test\\e2e\\run_tests.bat
+
+  test-e2e:
+    desc: Run end-to-end tests
+    deps: [build]
+    cmds:
+      - go install github.com/onsi/ginkgo/v2/ginkgo
+      - task: test-e2e-unixlike
+        platforms: [linux, darwin]
+      - task: test-e2e-windows
+        platforms: [windows]
 
   test-all:
     desc: Run all tests (unit and e2e)
@@ -63,17 +140,23 @@ tasks:
 
   build:
     desc: Build the binary
+    deps: [mock-gen]
     vars:
       VERSION:
         sh: git describe --tags --always --dirty --match "v*" || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
-      BUILD_DATE:
-        sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
     cmds:
-      - mkdir -p bin
-      - go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/thv ./cmd/thv
-
+      - cmd: mkdir -p bin
+        platforms: [linux, darwin]
+      - cmd: go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/thv ./cmd/thv
+        platforms: [linux, darwin]
+      - cmd: cmd.exe /c mkdir bin
+        platforms: [windows]
+        ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
+      - cmd: go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/thv.exe ./cmd/thv
+        platforms: [windows]
 
   install:
     desc: Install the thv binary to GOPATH/bin
@@ -82,8 +165,7 @@ tasks:
         sh: git describe --tags --always --dirty --match "v*" || echo "dev"
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
-      BUILD_DATE:
-        sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
     cmds:
       - go install -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv
 

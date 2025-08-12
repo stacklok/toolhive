@@ -99,21 +99,6 @@ func (mr *MockManagerMockRecorder) Get(ctx, name any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockManager)(nil).Get), ctx, name)
 }
 
-// GetWorkloadGroup mocks base method.
-func (m *MockManager) GetWorkloadGroup(ctx context.Context, workloadName string) (*groups.Group, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetWorkloadGroup", ctx, workloadName)
-	ret0, _ := ret[0].(*groups.Group)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetWorkloadGroup indicates an expected call of GetWorkloadGroup.
-func (mr *MockManagerMockRecorder) GetWorkloadGroup(ctx, workloadName any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadGroup", reflect.TypeOf((*MockManager)(nil).GetWorkloadGroup), ctx, workloadName)
-}
-
 // List mocks base method.
 func (m *MockManager) List(ctx context.Context) ([]*groups.Group, error) {
 	m.ctrl.T.Helper()
@@ -129,21 +114,6 @@ func (mr *MockManagerMockRecorder) List(ctx any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockManager)(nil).List), ctx)
 }
 
-// ListWorkloadsInGroup mocks base method.
-func (m *MockManager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListWorkloadsInGroup", ctx, groupName)
-	ret0, _ := ret[0].([]string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ListWorkloadsInGroup indicates an expected call of ListWorkloadsInGroup.
-func (mr *MockManagerMockRecorder) ListWorkloadsInGroup(ctx, groupName any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloadsInGroup", reflect.TypeOf((*MockManager)(nil).ListWorkloadsInGroup), ctx, groupName)
-}
-
 // RegisterClients mocks base method.
 func (m *MockManager) RegisterClients(ctx context.Context, groupNames, clientNames []string) error {
 	m.ctrl.T.Helper()
@@ -156,4 +126,18 @@ func (m *MockManager) RegisterClients(ctx context.Context, groupNames, clientNam
 func (mr *MockManagerMockRecorder) RegisterClients(ctx, groupNames, clientNames any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterClients", reflect.TypeOf((*MockManager)(nil).RegisterClients), ctx, groupNames, clientNames)
+}
+
+// UnregisterClients mocks base method.
+func (m *MockManager) UnregisterClients(ctx context.Context, groupNames, clientNames []string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnregisterClients", ctx, groupNames, clientNames)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UnregisterClients indicates an expected call of UnregisterClients.
+func (mr *MockManagerMockRecorder) UnregisterClients(ctx, groupNames, clientNames any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnregisterClients", reflect.TypeOf((*MockManager)(nil).UnregisterClients), ctx, groupNames, clientNames)
 }

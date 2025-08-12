@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
-  "last_updated": "2025-08-08T00:24:08Z",
+  "last_updated": "2025-08-12T00:22:27Z",
   "servers": {
     "atlassian": {
       "args": [],
@@ -86,11 +86,11 @@
           "required": false
         }
       ],
-      "image": "ghcr.io/sooperset/mcp-atlassian:latest",
+      "image": "ghcr.io/sooperset/mcp-atlassian:0.11.9",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:01Z",
-        "pulls": 12189,
-        "stars": 2720
+        "last_updated": "2025-08-12T00:22:21Z",
+        "pulls": 12629,
+        "stars": 2762
       },
       "permissions": {
         "network": {
@@ -168,88 +168,6 @@
       ],
       "transport": "stdio"
     },
-    "aws-cost-analysis": {
-      "args": [],
-      "description": "Generate upfront AWS service cost estimates and cost insights. This server is deprecated, use aws-pricing instead.",
-      "env_vars": [
-        {
-          "description": "AWS access key ID with access to the AWS Pricing API",
-          "name": "AWS_ACCESS_KEY_ID",
-          "required": false,
-          "secret": true
-        },
-        {
-          "description": "AWS secret access key",
-          "name": "AWS_SECRET_ACCESS_KEY",
-          "required": false,
-          "secret": true
-        },
-        {
-          "description": "AWS sesison token for temporary credentials",
-          "name": "AWS_SESSION_TOKEN",
-          "required": false,
-          "secret": true
-        },
-        {
-          "default": "us-east-1",
-          "description": "AWS region for the Pricing API endpoint (us-east-1, eu-central-1, ap-southeast-1)",
-          "name": "AWS_REGION",
-          "required": false
-        },
-        {
-          "default": "ERROR",
-          "description": "Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
-          "name": "FASTMCP_LOG_LEVEL",
-          "required": false
-        }
-      ],
-      "image": "public.ecr.aws/f3y8w4n0/awslabs/cost-analysis-mcp-server:1.0.4",
-      "metadata": {
-        "last_updated": "2025-08-08T00:24:07Z",
-        "pulls": 7923,
-        "stars": 5245
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [
-              "aws.amazon.com",
-              "pricing.us-east-1.amazonaws.com",
-              "api.pricing.us-east-1.amazonaws.com",
-              "api.pricing.eu-central-1.amazonaws.com",
-              "api.pricing.ap-southeast-1.amazonaws.com"
-            ],
-            "allow_port": [
-              443
-            ],
-            "insecure_allow_all": false
-          }
-        },
-        "read": [],
-        "write": []
-      },
-      "repository_url": "https://github.com/awslabs/mcp",
-      "status": "Deprecated",
-      "tags": [
-        "aws",
-        "cost-analysis",
-        "pricing",
-        "estimates",
-        "cost-insights",
-        "aws-costs",
-        "aws-pricing"
-      ],
-      "tier": "Official",
-      "tools": [
-        "analyze_cdk_project",
-        "analyze_terraform_project",
-        "get_pricing_from_web",
-        "get_pricing_from_api",
-        "get_bedrock_patterns",
-        "generate_cost_report"
-      ],
-      "transport": "stdio"
-    },
     "aws-diagram": {
       "args": [],
       "description": "Generate AWS diagrams, sequence diagrams, flow diagrams, and class diagrams using Python code.",
@@ -261,11 +179,11 @@
           "required": false
         }
       ],
-      "image": "mcp/aws-diagram:latest",
+      "image": "docker.io/mcp/aws-diagram:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:07Z",
-        "pulls": 6988,
-        "stars": 5245
+        "last_updated": "2025-08-12T00:22:27Z",
+        "pulls": 7192,
+        "stars": 5297
       },
       "permissions": {
         "network": {
@@ -313,11 +231,11 @@
           "required": false
         }
       ],
-      "image": "mcp/aws-documentation:latest",
+      "image": "docker.io/mcp/aws-documentation:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:06Z",
-        "pulls": 9683,
-        "stars": 5245
+        "last_updated": "2025-08-12T00:22:26Z",
+        "pulls": 10195,
+        "stars": 5297
       },
       "permissions": {
         "network": {
@@ -368,7 +286,7 @@
           "secret": true
         },
         {
-          "description": "AWS sesison token for temporary credentials",
+          "description": "AWS session token for temporary credentials",
           "name": "AWS_SESSION_TOKEN",
           "required": false,
           "secret": true
@@ -386,11 +304,11 @@
           "required": false
         }
       ],
-      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:latest",
+      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.8",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:02Z",
-        "pulls": 7735,
-        "stars": 5245
+        "last_updated": "2025-08-12T00:22:21Z",
+        "pulls": 8031,
+        "stars": 5297
       },
       "permissions": {
         "network": {
@@ -476,9 +394,9 @@
       ],
       "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.1",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:01Z",
-        "pulls": 1203,
-        "stars": 1074
+        "last_updated": "2025-08-12T00:22:20Z",
+        "pulls": 1607,
+        "stars": 1081
       },
       "permissions": {
         "network": {
@@ -566,11 +484,11 @@
           "required": false
         }
       ],
-      "image": "ghcr.io/buildkite/buildkite-mcp-server:latest",
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.5.8",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:06Z",
-        "pulls": 2782,
-        "stars": 24
+        "last_updated": "2025-08-12T00:22:24Z",
+        "pulls": 3210,
+        "stars": 25
       },
       "permissions": {
         "network": {
@@ -628,6 +546,49 @@
       ],
       "transport": "stdio"
     },
+    "context7": {
+      "args": [],
+      "description": "Context7 MCP pulls up-to-date, version-specific documentation and code examples straight from the source — and places them directly into your prompt",
+      "env_vars": [],
+      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.14",
+      "metadata": {
+        "last_updated": "2025-08-12T07:43:43Z",
+        "pulls": 157,
+        "stars": 25201
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [],
+            "allow_port": [
+              443
+            ],
+            "insecure_allow_all": true
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
+      "repository_url": "https://github.com/upstash/context7",
+      "status": "Active",
+      "tags": [
+        "documentation",
+        "modelcontextprotocol"
+      ],
+      "tier": "Community",
+      "tools": [
+        "resolve-library-id",
+        "get-library-docs"
+      ],
+      "transport": "stdio"
+    },
     "crowdstrike-falcon": {
       "args": [
         "--transport",
@@ -669,8 +630,8 @@
       ],
       "image": "quay.io/crowdstrike/falcon-mcp:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:07Z",
-        "pulls": 3033,
+        "last_updated": "2025-08-12T00:22:25Z",
+        "pulls": 3525,
         "stars": 33
       },
       "permissions": {
@@ -783,11 +744,11 @@
           "required": false
         }
       ],
-      "image": "mcp/elasticsearch:latest",
+      "image": "docker.io/mcp/elasticsearch:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:05Z",
-        "pulls": 10269,
-        "stars": 398
+        "last_updated": "2025-08-12T00:22:24Z",
+        "pulls": 10753,
+        "stars": 404
       },
       "permissions": {
         "network": {
@@ -830,11 +791,11 @@
       "args": [],
       "description": "This MCP server attempts to exercise all the features of the MCP protocol",
       "env_vars": [],
-      "image": "mcp/everything:latest",
+      "image": "docker.io/mcp/everything:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:05Z",
-        "pulls": 16161,
-        "stars": 63356
+        "last_updated": "2025-08-12T00:22:24Z",
+        "pulls": 16733,
+        "stars": 63828
       },
       "permissions": {
         "network": {
@@ -877,11 +838,11 @@
       "args": [],
       "description": "Allows you to fetch content from the web",
       "env_vars": [],
-      "image": "ghcr.io/stackloklabs/gofetch/server:latest",
+      "image": "ghcr.io/stackloklabs/gofetch/server:0.0.4",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:08Z",
-        "pulls": 11958,
-        "stars": 16
+        "last_updated": "2025-08-12T00:22:26Z",
+        "pulls": 12246,
+        "stars": 17
       },
       "permissions": {
         "network": {
@@ -929,11 +890,11 @@
       ],
       "description": "Allows you to do filesystem operations. Mount paths under /projects using --volume.",
       "env_vars": [],
-      "image": "mcp/filesystem:latest",
+      "image": "docker.io/mcp/filesystem:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:03Z",
-        "pulls": 19761,
-        "stars": 63356
+        "last_updated": "2025-08-12T00:22:22Z",
+        "pulls": 20333,
+        "stars": 63828
       },
       "permissions": {
         "network": {
@@ -1022,11 +983,11 @@
           "required": false
         }
       ],
-      "image": "mcp/firecrawl:latest",
+      "image": "docker.io/mcp/firecrawl:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:01Z",
-        "pulls": 11990,
-        "stars": 4045
+        "last_updated": "2025-08-12T00:22:21Z",
+        "pulls": 12426,
+        "stars": 4107
       },
       "permissions": {
         "network": {
@@ -1076,11 +1037,11 @@
       "args": [],
       "description": "A comprehensive MCP server for database operations that provides tools for connecting to and interacting with various database systems with advanced features like connection pooling, authentication, and observability. Mount and configured via tools.yaml",
       "env_vars": [],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:latest",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.11.0",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:03Z",
-        "pulls": 1892,
-        "stars": 9030
+        "last_updated": "2025-08-12T00:22:21Z",
+        "pulls": 2236,
+        "stars": 9146
       },
       "permissions": {
         "network": {
@@ -1120,11 +1081,11 @@
       "args": [],
       "description": "Provides support for interacting with Git repositories",
       "env_vars": [],
-      "image": "mcp/git:latest",
+      "image": "docker.io/mcp/git:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:04Z",
-        "pulls": 9960,
-        "stars": 63356
+        "last_updated": "2025-08-12T00:22:22Z",
+        "pulls": 10256,
+        "stars": 63828
       },
       "permissions": {
         "network": {
@@ -1183,11 +1144,11 @@
           "required": false
         }
       ],
-      "image": "ghcr.io/github/github-mcp-server:latest",
+      "image": "ghcr.io/github/github-mcp-server:v0.10.0",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:02Z",
+        "last_updated": "2025-08-12T00:22:22Z",
         "pulls": 5000,
-        "stars": 20382
+        "stars": 20618
       },
       "permissions": {
         "network": {
@@ -1325,11 +1286,11 @@
           "secret": true
         }
       ],
-      "image": "mcp/grafana:latest",
+      "image": "docker.io/mcp/grafana:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:06Z",
-        "pulls": 7700,
-        "stars": 1346
+        "last_updated": "2025-08-12T00:22:26Z",
+        "pulls": 7980,
+        "stars": 1370
       },
       "permissions": {
         "network": {
@@ -1424,11 +1385,11 @@
           "secret": true
         }
       ],
-      "image": "voska/hass-mcp:latest",
+      "image": "docker.io/voska/hass-mcp:0.1.1",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:06Z",
-        "pulls": 16206,
-        "stars": 145
+        "last_updated": "2025-08-12T00:22:25Z",
+        "pulls": 16790,
+        "stars": 149
       },
       "permissions": {
         "network": {
@@ -1481,10 +1442,10 @@
           "required": false
         }
       ],
-      "image": "ghcr.io/stackloklabs/mkp/server:latest",
+      "image": "ghcr.io/stackloklabs/mkp/server:0.0.10",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:04Z",
-        "pulls": 13184,
+        "last_updated": "2025-08-12T00:22:25Z",
+        "pulls": 13696,
         "stars": 43
       },
       "permissions": {
@@ -1538,11 +1499,11 @@
           "required": false
         }
       ],
-      "image": "ghcr.io/nirmata/kyverno-mcp:latest",
+      "image": "ghcr.io/nirmata/kyverno-mcp:v0.2.2",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:00Z",
-        "pulls": 4154,
-        "stars": 5
+        "last_updated": "2025-08-12T00:22:21Z",
+        "pulls": 4682,
+        "stars": 6
       },
       "permissions": {
         "network": {
@@ -1598,11 +1559,11 @@
           "required": false
         }
       ],
-      "image": "mcp/memory:latest",
+      "image": "docker.io/mcp/memory:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:01Z",
-        "pulls": 15164,
-        "stars": 63356
+        "last_updated": "2025-08-12T00:22:20Z",
+        "pulls": 15624,
+        "stars": 63828
       },
       "permissions": {
         "network": {
@@ -1700,11 +1661,11 @@
           "required": false
         }
       ],
-      "image": "mongodb/mongodb-mcp-server:latest",
+      "image": "docker.io/mongodb/mongodb-mcp-server:0.2.0",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:01Z",
-        "pulls": 4508,
-        "stars": 540
+        "last_updated": "2025-08-12T00:22:20Z",
+        "pulls": 4876,
+        "stars": 553
       },
       "permissions": {
         "network": {
@@ -1791,10 +1752,10 @@
           "required": false
         }
       ],
-      "image": "aantti/mcp-netbird:latest",
+      "image": "docker.io/aantti/mcp-netbird:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:05Z",
-        "pulls": 10340,
+        "last_updated": "2025-08-12T00:22:26Z",
+        "pulls": 10716,
         "stars": 38
       },
       "permissions": {
@@ -1848,11 +1809,11 @@
           "secret": true
         }
       ],
-      "image": "mcp/notion:latest",
+      "image": "docker.io/mcp/notion:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:05Z",
-        "pulls": 5629,
-        "stars": 2901
+        "last_updated": "2025-08-12T00:22:25Z",
+        "pulls": 6081,
+        "stars": 2924
       },
       "permissions": {
         "network": {
@@ -1921,10 +1882,10 @@
           "secret": true
         }
       ],
-      "image": "ghcr.io/stackloklabs/ocireg-mcp/server:latest",
+      "image": "ghcr.io/stackloklabs/ocireg-mcp/server:0.0.4",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:08Z",
-        "pulls": 7435,
+        "last_updated": "2025-08-12T00:22:27Z",
+        "pulls": 7831,
         "stars": 9
       },
       "permissions": {
@@ -1973,11 +1934,11 @@
       "args": [],
       "description": "Provides access to the OSV (Open Source Vulnerabilities) database. Allows LLM-powered applications to query the OSV database for vulnerability information about packages and commits.",
       "env_vars": [],
-      "image": "ghcr.io/stackloklabs/osv-mcp/server:latest",
+      "image": "ghcr.io/stackloklabs/osv-mcp/server:0.0.7",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:03Z",
-        "pulls": 9754,
-        "stars": 15
+        "last_updated": "2025-08-12T00:22:23Z",
+        "pulls": 10130,
+        "stars": 17
       },
       "permissions": {
         "network": {
@@ -2034,11 +1995,11 @@
           "secret": true
         }
       ],
-      "image": "mcp/perplexity-ask:latest",
+      "image": "docker.io/mcp/perplexity-ask:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:05Z",
-        "pulls": 14444,
-        "stars": 1478
+        "last_updated": "2025-08-12T00:22:23Z",
+        "pulls": 14940,
+        "stars": 1489
       },
       "permissions": {
         "network": {
@@ -2077,11 +2038,11 @@
       ],
       "description": "Provides browser automation capabilities using Playwright",
       "env_vars": [],
-      "image": "mcr.microsoft.com/playwright/mcp",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.32",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:07Z",
-        "pulls": 22728,
-        "stars": 16469
+        "last_updated": "2025-08-12T00:22:27Z",
+        "pulls": 23324,
+        "stars": 16727
       },
       "permissions": {
         "network": {
@@ -2139,10 +2100,10 @@
       "args": [],
       "description": "Provides plotting capabilities for visualizing data in various formats.",
       "env_vars": [],
-      "image": "ghcr.io/stackloklabs/plotting-mcp:latest",
+      "image": "ghcr.io/stackloklabs/plotting-mcp:v0.0.2",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:04Z",
-        "pulls": 528,
+        "last_updated": "2025-08-12T00:22:24Z",
+        "pulls": 1052,
         "stars": 0
       },
       "permissions": {
@@ -2205,9 +2166,9 @@
       ],
       "image": "crystaldba/postgres-mcp:0.3.0",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:01Z",
-        "pulls": 9899,
-        "stars": 862
+        "last_updated": "2025-08-12T00:22:20Z",
+        "pulls": 10235,
+        "stars": 893
       },
       "permissions": {
         "network": {
@@ -2320,11 +2281,11 @@
           "required": false
         }
       ],
-      "image": "mcp/redis:latest",
+      "image": "docker.io/mcp/redis:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:05Z",
-        "pulls": 9856,
-        "stars": 191
+        "last_updated": "2025-08-12T00:22:23Z",
+        "pulls": 10196,
+        "stars": 197
       },
       "permissions": {
         "network": {
@@ -2413,11 +2374,11 @@
           "secret": true
         }
       ],
-      "image": "ghcr.io/semgrep/mcp:latest",
+      "image": "ghcr.io/semgrep/mcp:0.4.1",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:04Z",
-        "pulls": 11550,
-        "stars": 391
+        "last_updated": "2025-08-12T00:22:24Z",
+        "pulls": 11970,
+        "stars": 408
       },
       "permissions": {
         "network": {
@@ -2464,11 +2425,11 @@
       "args": [],
       "description": "Enables dynamic problem-solving with a structured, reflective approach that can adapt and evolve as understanding deepens.",
       "env_vars": [],
-      "image": "mcp/sequentialthinking:latest",
+      "image": "docker.io/mcp/sequentialthinking:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:05Z",
-        "pulls": 14261,
-        "stars": 63356
+        "last_updated": "2025-08-12T00:22:23Z",
+        "pulls": 14633,
+        "stars": 63828
       },
       "permissions": {
         "network": {
@@ -2507,10 +2468,10 @@
       "args": [],
       "description": "Provides tools and resources for querying SQLite databases.",
       "env_vars": [],
-      "image": "ghcr.io/stackloklabs/sqlite-mcp/server:latest",
+      "image": "ghcr.io/stackloklabs/sqlite-mcp/server:0.0.1",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:02Z",
-        "pulls": 3564,
+        "last_updated": "2025-08-12T00:22:21Z",
+        "pulls": 3996,
         "stars": 9
       },
       "permissions": {
@@ -2546,11 +2507,11 @@
       "args": [],
       "description": "Provides integration with the Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.",
       "env_vars": [],
-      "image": "hashicorp/terraform-mcp-server:latest",
+      "image": "docker.io/hashicorp/terraform-mcp-server:0.2.2",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:06Z",
-        "pulls": 8832,
-        "stars": 793
+        "last_updated": "2025-08-12T00:22:25Z",
+        "pulls": 9344,
+        "stars": 804
       },
       "permissions": {
         "network": {
@@ -2597,11 +2558,11 @@
       "args": [],
       "description": "Provides time information and IANA timezone conversions with auto system timezone detection.",
       "env_vars": [],
-      "image": "mcp/time:latest",
+      "image": "docker.io/mcp/time:latest",
       "metadata": {
-        "last_updated": "2025-08-08T00:24:03Z",
-        "pulls": 10500,
-        "stars": 63356
+        "last_updated": "2025-08-12T00:22:22Z",
+        "pulls": 10824,
+        "stars": 63828
       },
       "permissions": {
         "network": {

@@ -171,7 +171,10 @@ func Serve(
 		return fmt.Errorf("failed to create client manager: %v", err)
 	}
 
-	workloadManager := workloads.NewManagerFromRuntime(containerRuntime)
+	workloadManager, err := workloads.NewManagerFromRuntime(containerRuntime)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
 
 	// Create group manager
 	groupManager, err := groups.NewManager()
@@ -187,7 +190,7 @@ func Serve(
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(clientManager, workloadManager, groupManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
-		"/api/v1beta/groups":    v1.GroupsRouter(groupManager),
+		"/api/v1beta/groups":    v1.GroupsRouter(groupManager, workloadManager),
 	}
 
 	// Only mount docs router if enabled

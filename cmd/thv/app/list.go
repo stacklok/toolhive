@@ -14,10 +14,11 @@ import (
 )
 
 var listCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List running MCP servers",
-	Long:  `List all MCP servers managed by ToolHive, including their status and configuration.`,
-	RunE:  listCmdFunc,
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List running MCP servers",
+	Long:    `List all MCP servers managed by ToolHive, including their status and configuration.`,
+	RunE:    listCmdFunc,
 }
 
 var (
@@ -53,7 +54,7 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 
 	// Apply group filtering if specified
 	if listGroupFilter != "" {
-		workloadList, err = workloads.FilterByGroup(ctx, workloadList, listGroupFilter)
+		workloadList, err = workloads.FilterByGroup(workloadList, listGroupFilter)
 		if err != nil {
 			return fmt.Errorf("failed to filter workloads by group: %v", err)
 		}

@@ -565,8 +565,10 @@ func TestRunConfigBuilder(t *testing.T) {
 	name := "test-server"
 	imageURL := "test-image:latest"
 	imageMetadata := &registry.ImageMetadata{
-		Name:       "test-metadata-name",
-		Transport:  "sse",
+		BaseServerMetadata: registry.BaseServerMetadata{
+			Name:      "test-metadata-name",
+			Transport: "sse",
+		},
 		TargetPort: 9090,
 		Args:       []string{"--metadata-arg"},
 	}
@@ -785,7 +787,9 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 			userTransport:  "",
 			userTargetPort: 0,
 			metadata: &registry.ImageMetadata{
-				Transport:  "streamable-http",
+				BaseServerMetadata: registry.BaseServerMetadata{
+					Transport: "streamable-http",
+				},
 				TargetPort: 3000,
 			},
 			expectedTransport:  types.TransportTypeStreamableHTTP,
@@ -796,7 +800,9 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 			userTransport:  "stdio",
 			userTargetPort: 0,
 			metadata: &registry.ImageMetadata{
-				Transport:  "sse",
+				BaseServerMetadata: registry.BaseServerMetadata{
+					Transport: "sse",
+				},
 				TargetPort: 3000,
 			},
 			expectedTransport:  types.TransportTypeStdio,
@@ -807,7 +813,9 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 			userTransport:  "sse",
 			userTargetPort: 4000,
 			metadata: &registry.ImageMetadata{
-				Transport:  "sse",
+				BaseServerMetadata: registry.BaseServerMetadata{
+					Transport: "sse",
+				},
 				TargetPort: 3000,
 			},
 			expectedTransport:  types.TransportTypeSSE,

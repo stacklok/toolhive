@@ -15,7 +15,8 @@ require (
 	github.com/gofrs/flock v0.12.1
 	github.com/google/go-containerregistry v0.20.6
 	github.com/google/uuid v1.6.0
-	github.com/lestrrat-go/jwx/v2 v2.1.6
+	github.com/lestrrat-go/httprc/v3 v3.0.0
+	github.com/lestrrat-go/jwx/v3 v3.0.10
 	github.com/lmittmann/tint v1.1.2
 	github.com/mark3labs/mcp-go v0.37.0
 	github.com/olekukonko/tablewriter v1.0.9
@@ -38,7 +39,8 @@ require (
 	go.opentelemetry.io/otel/sdk v1.37.0
 	go.opentelemetry.io/otel/sdk/metric v1.37.0
 	go.uber.org/mock v0.5.2
-	golang.org/x/exp/jsonrpc2 v0.0.0-20250718183923-645b1fa84792
+	golang.ngrok.com/ngrok/v2 v2.0.0
+	golang.org/x/exp/jsonrpc2 v0.0.0-20250811191247-51f88131bc50
 	golang.org/x/mod v0.27.0
 	golang.org/x/oauth2 v0.30.0
 	golang.org/x/sync v0.16.0
@@ -118,6 +120,7 @@ require (
 	github.com/go-openapi/strfmt v0.23.0 // indirect
 	github.com/go-openapi/swag v0.23.1 // indirect
 	github.com/go-openapi/validate v0.24.0 // indirect
+	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.3.0 // indirect
 	github.com/gobuffalo/pop/v6 v6.1.1 // indirect
@@ -142,11 +145,15 @@ require (
 	github.com/ianlancetaylor/demangle v0.0.0-20250417193237-f615e6bd150b // indirect
 	github.com/in-toto/attestation v1.1.2 // indirect
 	github.com/in-toto/in-toto-golang v0.9.0 // indirect
+	github.com/inconshreveable/log15 v3.0.0-testing.5+incompatible // indirect
+	github.com/inconshreveable/log15/v3 v3.0.0-testing.5 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jedisct1/go-minisign v0.0.0-20211028175153-1c139d1cc84b // indirect
 	github.com/josharian/intern v1.0.0 // indirect
+	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
+	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
 	github.com/letsencrypt/boulder v0.0.0-20240620165639-de9c06129bec // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
@@ -233,7 +240,8 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/exp/event v0.0.0-20250620022241-b7579e27df2b // indirect
+	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
+	golang.org/x/exp/event v0.0.0-20250718183923-645b1fa84792 // indirect
 	golang.org/x/net v0.42.0 // indirect
 	golang.org/x/text v0.27.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
@@ -273,10 +281,8 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/lestrrat-go/blackmagic v1.0.3 // indirect
+	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
 	github.com/lestrrat-go/httpcc v1.0.1 // indirect
-	github.com/lestrrat-go/httprc v1.0.6 // indirect
-	github.com/lestrrat-go/iter v1.0.2 // indirect
 	github.com/lestrrat-go/option v1.0.1 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0

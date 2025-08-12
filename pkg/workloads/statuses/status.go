@@ -1,4 +1,5 @@
-package workloads
+// Package statuses provides an interface and implementation for managing workload statuses.
+package statuses
 
 import (
 	"context"
@@ -6,16 +7,14 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 // StatusManager is an interface for fetching and retrieving workload statuses.
+//
+//go:generate mockgen -destination=mocks/mock_status_manager.go -package=mocks -source=status.go StatusManager
 type StatusManager interface {
-	// CreateWorkloadStatus creates the initial `starting` status for a new workload.
-	// Unlike SetWorkloadStatus, this will create a new entry in the status store,
-	// but will do nothing if the workload already exists.
-	CreateWorkloadStatus(ctx context.Context, workloadName string) error
 	// GetWorkload retrieves details of a workload by its name.
 	GetWorkload(ctx context.Context, workloadName string) (core.Workload, error)
 	// ListWorkloads returns details of all workloads.
@@ -23,7 +22,7 @@ type StatusManager interface {
 	// SetWorkloadStatus sets the status of a workload by its name.
 	// Note that this does not return errors, but logs them instead.
 	// This method will do nothing if the workload does not exist.
-	SetWorkloadStatus(ctx context.Context, workloadName string, status rt.WorkloadStatus, contextMsg string)
+	SetWorkloadStatus(ctx context.Context, workloadName string, status rt.WorkloadStatus, contextMsg string) error
 	// DeleteWorkloadStatus removes the status of a workload by its name.
 	DeleteWorkloadStatus(ctx context.Context, workloadName string) error
 }
@@ -35,6 +34,20 @@ func NewStatusManagerFromRuntime(runtime rt.Runtime) StatusManager {
 	}
 }
 
+// NewStatusManager creates a new status manager instance using the appropriate implementation
+// based on the runtime environment. If running in Kubernetes, it returns the runtime-based
+// implementation. Otherwise, it returns the file-based implementation.
+func NewStatusManager(runtime rt.Runtime) (StatusManager, error) {
+	/*
+		if rt.IsKubernetesRuntime() {
+			return NewStatusManagerFromRuntime(runtime), nil
+		}
+		return NewFileStatusManager(runtime)
+	*/
+	// For now, we only support the runtime-based implementation.
+	return NewStatusManagerFromRuntime(runtime), nil
+}
+
 // runtimeStatusManager is an implementation of StatusManager that uses the state
 // returned by the underlying runtime. This reflects the existing behaviour of
 // ToolHive at the time of writing.
@@ -42,14 +55,8 @@ type runtimeStatusManager struct {
 	runtime rt.Runtime
 }
 
-func (*runtimeStatusManager) CreateWorkloadStatus(_ context.Context, workloadName string) error {
-	// TODO: This will need to handle concurrent updates.
-	logger.Debugf("workload %s created", workloadName)
-	return nil
-}
-
 func (r *runtimeStatusManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
-	if err := validateWorkloadName(workloadName); err != nil {
+	if err := types.ValidateWorkloadName(workloadName); err != nil {
 		return core.Workload{}, err
 	}
 
@@ -59,7 +66,7 @@ func (r *runtimeStatusManager) GetWorkload(ctx context.Context, workloadName str
 		return core.Workload{}, err
 	}
 
-	return WorkloadFromContainerInfo(&info)
+	return types.WorkloadFromContainerInfo(&info)
 }
 
 func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error) {
@@ -70,7 +77,7 @@ func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, 
 	}
 
 	// Parse the filters into a format we can use for matching.
-	parsedFilters, err := parseLabelFilters(labelFilters)
+	parsedFilters, err := types.ParseLabelFilters(labelFilters)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse label filters: %v", err)
 	}
@@ -80,12 +87,12 @@ func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, 
 	for _, c := range containers {
 		// If the caller did not set `listAll` to true, only include running containers.
 		if c.IsRunning() || listAll {
-			workload, err := WorkloadFromContainerInfo(&c)
+			workload, err := types.WorkloadFromContainerInfo(&c)
 			if err != nil {
 				return nil, err
 			}
 			// If label filters are provided, check if the workload matches them.
-			if matchesLabelFilters(workload.Labels, parsedFilters) {
+			if types.MatchesLabelFilters(workload.Labels, parsedFilters) {
 				workloads = append(workloads, workload)
 			}
 		}
@@ -99,37 +106,14 @@ func (*runtimeStatusManager) SetWorkloadStatus(
 	workloadName string,
 	status rt.WorkloadStatus,
 	contextMsg string,
-) {
+) error {
 	// TODO: This will need to handle concurrent updates.
 	logger.Debugf("workload %s set to status %s (context: %s)", workloadName, status, contextMsg)
+	return nil
 }
 
 func (*runtimeStatusManager) DeleteWorkloadStatus(_ context.Context, _ string) error {
 	// TODO: This will need to handle concurrent updates.
 	// Noop
 	return nil
-}
-
-// parseLabelFilters parses label filters from a slice of strings and validates them.
-func parseLabelFilters(labelFilters []string) (map[string]string, error) {
-	filters := make(map[string]string, len(labelFilters))
-	for _, filter := range labelFilters {
-		key, value, err := labels.ParseLabel(filter)
-		if err != nil {
-			return nil, fmt.Errorf("invalid label filter '%s': %v", filter, err)
-		}
-		filters[key] = value
-	}
-	return filters, nil
-}
-
-// matchesLabelFilters checks if workload labels match all the specified filters
-func matchesLabelFilters(workloadLabels, filters map[string]string) bool {
-	for filterKey, filterValue := range filters {
-		workloadValue, exists := workloadLabels[filterKey]
-		if !exists || workloadValue != filterValue {
-			return false
-		}
-	}
-	return true
 }

@@ -101,6 +101,17 @@ func (*CLIEnvVarValidator) Validate(
 			}
 
 			if envVar.Required {
+
+				if envVar.Secret {
+					value, err := secretsManager.GetSecret(ctx, envVar.Name)
+					if err != nil {
+						logger.Warnf("Unable to find secret %s in the secrets manager: %v", envVar.Name, err)
+					} else {
+						addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
+						continue
+					}
+				}
+
 				value, err := promptForEnvironmentVariable(envVar)
 				if err != nil {
 					logger.Warnf("Warning: Failed to read input for %s: %v", envVar.Name, err)

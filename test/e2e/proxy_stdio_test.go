@@ -222,6 +222,58 @@ var _ = Describe("Proxy Stdio E2E", Serial, func() {
 			proxyCmd.Wait()
 		})
 	})
+
+	Context("testing proxy stdio with stdio protocol+streamable-http proxy mode", func() {
+		BeforeEach(func() {
+			transportType = types.TransportTypeStdio
+			proxyMode = "streamable-http"
+			mcpServerName = "time"
+		})
+		It("should proxy MCP requests successfully", func() {
+			By("Getting time server URL")
+			timeServerURL, err := e2e.GetMCPServerURL(config, workloadName)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("Extracting base URL for transparent proxy")
+			// URL will be like: http://127.0.0.1:21929/mcp#container-name
+			baseURL := strings.Split(timeServerURL, "#")[0]
+			baseURL = strings.TrimSuffix(baseURL, "/mcp")
+			GinkgoWriter.Printf("Original server URL: %s\n", timeServerURL)
+			GinkgoWriter.Printf("Base URL for proxy: %s\n", baseURL)
+
+			By("Starting the stdio proxy")
+			proxyCmd, stdin, outputBuffer := startProxyStdioForMCP(
+				config,
+				workloadName,
+			)
+
+			// Ensure the proxy started
+			Eventually(func() string {
+				return outputBuffer.String()
+			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("Starting stdio proxy"))
+
+			By("Sending JSON-RPC initialize message through the proxy stdin")
+			message := `{"jsonrpc":"2.0","id":-1,"method":"initialize","params":{}}` + "\n"
+			_, err = stdin.Write([]byte(message))
+			Expect(err).ToNot(HaveOccurred())
+
+			By("Validating response is received through stdout (proxied)")
+			Eventually(func() string {
+				return outputBuffer.String()
+			}, 15*time.Second, 1*time.Second).Should(ContainSubstring(`"id":-1`))
+			Eventually(func() string {
+				return outputBuffer.String()
+			}, 15*time.Second, 1*time.Second).Should(ContainSubstring(`"jsonrpc":"2.0"`))
+
+			By("Validating that response came from the streamable-http server via proxy")
+			Expect(outputBuffer.String()).To(ContainSubstring("result"))
+
+			By("Shutting down proxy")
+			proxyCmd.Process.Kill()
+			proxyCmd.Wait()
+		})
+	})
+
 })
 
 // Helper functions

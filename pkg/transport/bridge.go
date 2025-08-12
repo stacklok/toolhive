@@ -1,404 +1,237 @@
 package transport
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"sync"
 
-	"golang.org/x/exp/jsonrpc2"
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
-// StdioBridge implements a bridge for MCP servers using stdio transport.
+// StdioBridge connects stdin/stdout to a target MCP server using the specified transport type.
 type StdioBridge struct {
-	baseURL, postURL *url.URL
-	headers          http.Header
-	mode             string
-	wg               sync.WaitGroup
-	cancel           context.CancelFunc
-	InitReady        chan struct{}
+	mode      types.TransportType
+	rawTarget string // upstream base URL
+
+	up  *client.Client
+	srv *server.MCPServer
+
+	wg     sync.WaitGroup
+	cancel context.CancelFunc
 }
 
-// NewStdioBridge creates a new StdioBridge instance.
-func NewStdioBridge(rawURL string) (*StdioBridge, error) {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
-	}
-	return &StdioBridge{baseURL: u, postURL: u}, nil
+// NewStdioBridge creates a new StdioBridge instance for the given target URL and transport type.
+func NewStdioBridge(rawURL string, mode types.TransportType) (*StdioBridge, error) {
+	return &StdioBridge{mode: mode, rawTarget: rawURL}, nil
 }
 
-// Start begins the transport loop for the StdioBridge.
+// Start initializes the bridge and connects to the upstream MCP server.
 func (b *StdioBridge) Start(ctx context.Context) {
 	ctx, b.cancel = context.WithCancel(ctx)
 	b.wg.Add(1)
-	go b.loop(ctx)
+	go b.run(ctx)
 }
 
-func (b *StdioBridge) loop(ctx context.Context) {
-	defer b.wg.Done()
-	for {
-		mode, err := b.detectTransport(ctx)
-		if err != nil {
-			logger.Errorf("transport detection failed: %v", err)
-			return
-		}
-		b.mode = mode
-		b.wg.Add(2)
-		if mode == "streamable-http" {
-			go b.runStreamableReader(ctx)
-			go b.runStreamableWriter(ctx)
-		} else { // legacy SSE
-			b.postURL = b.baseURL // reset
-			go b.runLegacyReader(ctx)
-			go b.runLegacyWriter(ctx)
-		}
-		b.wg.Wait()
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			logger.Info("Session ended; restarting transport detection")
-		}
-	}
-}
-
-// Header include Mcp-Session-Id if needed
-func (b *StdioBridge) detectTransport(ctx context.Context) (string, error) {
-	body, err := buildJSONRPCInitializeRequest()
-	if err != nil {
-		logger.Errorf("failed to marshal initialization request: %v", err)
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", b.baseURL.String(), bytes.NewReader(body))
-	if err != nil {
-		logger.Errorf("failed to create HTTP request: %v", err)
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	copyHeaders(req.Header, b.headers)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		return "legacy-sse", nil
-	}
-	b.handleInitializeResponse(resp)
-	return "streamable-http", nil
-}
-
-func (b *StdioBridge) handleInitializeResponse(resp *http.Response) {
-	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
-		if b.headers == nil {
-			b.headers = make(http.Header)
-		}
-		b.headers.Set("Mcp-Session-Id", sid)
-		logger.Infof("Streamable HTTP session ID: %s", sid)
-	}
-
-	// Read and discard body; DO NOT emit to stdout. This was only a probe.
-	_, err := io.ReadAll(resp.Body)
-	if err != nil {
-		logger.Errorf("failed to read response body: %v", err)
-		return
-	}
-}
-
-// Streamable HTTP handlers
-func (b *StdioBridge) runStreamableReader(ctx context.Context) {
-	defer b.wg.Done()
-	if b.InitReady != nil {
-		// Wait until main signals that the writer is ready
-		<-b.InitReady
-	}
-	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL.String(), nil)
-	if err != nil {
-		logger.Errorf("Failed to create GET request: %v", err)
-		return
-	}
-	req.Header.Set("Accept", "text/event-stream")
-	copyHeaders(req.Header, b.headers)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		logger.Errorf("Streamable GET error: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		logger.Error("Session expired (404 on GET)")
-		return
-	}
-	parseSSE(resp.Body)
-}
-
-func (b *StdioBridge) runStreamableWriter(ctx context.Context) {
-	defer b.wg.Done()
-
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 4096), 10*1024*1024)
-	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return
-		}
-		raw := scanner.Text()
-		if strings.TrimSpace(raw) == "" {
-			continue
-		}
-		var tmp json.RawMessage
-		if err := json.Unmarshal([]byte(raw), &tmp); err != nil {
-			logger.Errorf("Invalid JSON input: %v", err)
-			continue
-		}
-		req, err := http.NewRequestWithContext(ctx, "POST", b.baseURL.String(), strings.NewReader(raw))
-		if err != nil {
-			logger.Errorf("Failed to create HTTP request: %v", err)
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		copyHeaders(req.Header, b.headers)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			logger.Errorf("POST error: %v", err)
-			continue
-		}
-		ct := resp.Header.Get("Content-Type")
-		data, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if err != nil {
-			logger.Errorf("Error reading response body: %v", err)
-			continue
-		}
-		payload := strings.TrimSpace(string(data))
-		if resp.StatusCode == http.StatusNotFound {
-			b.cancel()
-			return
-		}
-		if strings.HasPrefix(ct, "application/json") {
-			emitJSON(payload)
-		} else if strings.HasPrefix(ct, "text/event-stream") {
-			parseSSE(bytes.NewReader(data))
-		}
-	}
-}
-
-func (b *StdioBridge) runLegacyReader(ctx context.Context) {
-	defer b.wg.Done()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", b.baseURL.String(), nil)
-	if err != nil {
-		logger.Errorf("Failed to create GET request: %v", err)
-		return
-	}
-	req.Header.Set("Accept", "text/event-stream")
-	copyHeaders(req.Header, b.headers)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		logger.Errorf("SSE connect error: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	scanner := bufio.NewScanner(resp.Body)
-	var (
-		eventName string
-		dataLines []string
-	)
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if strings.HasPrefix(line, "event:") {
-			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimPrefix(strings.TrimSpace(line), "data:"))
-			continue
-		}
-		if line == "" {
-			payload := strings.Join(dataLines, "\n")
-			dataLines = dataLines[:0]
-
-			switch eventName {
-			case "endpoint":
-				if payload != "" {
-					b.updatePostURL(payload)
-					b.sendInitialize(ctx)
-				}
-			default:
-				if isJSON(payload) {
-					emitJSON(payload)
-				} else {
-					logger.Debugf("Skipping non-JSON SSE event (%q): %q", eventName, payload)
-				}
-			}
-			eventName = ""
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		logger.Errorf("SSE read error: %v", err)
-	}
-}
-
-func isJSON(s string) bool {
-	s = strings.TrimLeft(s, " \r\n\t")
-	return len(s) > 0 && (s[0] == '{' || s[0] == '[')
-}
-
-func (b *StdioBridge) runLegacyWriter(ctx context.Context) {
-	defer b.wg.Done()
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 4096), 10*1024*1024)
-	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return
-		}
-		raw := scanner.Text()
-		if strings.TrimSpace(raw) == "" {
-			continue
-		}
-		var tmp json.RawMessage
-		if err := json.Unmarshal([]byte(raw), &tmp); err != nil {
-			logger.Errorf("Invalid JSON input: %v", err)
-			continue
-		}
-		req, err := http.NewRequestWithContext(ctx, "POST", b.postURL.String(), strings.NewReader(raw))
-		if err != nil {
-			logger.Errorf("Failed to create HTTP request: %v", err)
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		copyHeaders(req.Header, b.headers)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			logger.Errorf("POST error: %v", err)
-			continue
-		}
-		err = resp.Body.Close()
-		if err != nil {
-			logger.Errorf("Failed to close response body: %v", err)
-			continue
-		}
-	}
-}
-
-func (b *StdioBridge) updatePostURL(path string) {
-	ep := strings.TrimSpace(path)
-	if !strings.HasPrefix(ep, "http") {
-		ep = b.baseURL.Scheme + "://" + b.baseURL.Host + ep
-	}
-	u, err := url.Parse(ep)
-	if err != nil {
-		logger.Errorf("Invalid SSE endpoint path: %q", path)
-		return
-	}
-	b.postURL = u
-	logger.Infof("POST URL updated to %s", b.postURL)
-}
-
-func buildJSONRPCInitializeRequest() ([]byte, error) {
-	req := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      -1,
-		"method":  "initialize",
-		"params": map[string]any{
-			"protocolVersion": "2025-06-18",
-			"capabilities":    map[string]any{},
-			"clientInfo": map[string]string{
-				"name":    "ToolHive MCP Client",
-				"version": "1.0.0",
-			},
-		},
-	}
-	return json.Marshal(req)
-}
-
-func (b *StdioBridge) sendInitialize(ctx context.Context) {
-	reqBody, err := buildJSONRPCInitializeRequest()
-	if err != nil {
-		logger.Errorf("Failed to marshal initialize request body: %v", err)
-		return
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", b.postURL.String(), bytes.NewReader(reqBody))
-	if err != nil {
-		logger.Errorf("Failed to create HTTP request: %v", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	copyHeaders(req.Header, b.headers)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		logger.Errorf("POST initialize error: %v", err)
-		return
-	}
-	err = resp.Body.Close()
-	if err != nil {
-		logger.Errorf("Failed to close response body: %v", err)
-		return
-	}
-}
-
-// Shared utilities:
-func parseSSE(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	var sb strings.Builder
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "data:") {
-			sb.WriteString(strings.TrimPrefix(line, "data:"))
-		}
-		if line == "" {
-			raw := strings.TrimSpace(sb.String())
-			sb.Reset()
-			if raw != "" {
-				emitJSON(raw)
-			}
-		}
-	}
-}
-
-func emitJSON(raw string) {
-	msg, err := jsonrpc2.DecodeMessage([]byte(raw))
-	if err != nil {
-		logger.Errorf("JSON-RPC decode error: %v", err)
-		return
-	}
-	out, err := jsonrpc2.EncodeMessage(msg)
-	if err != nil {
-		logger.Errorf("JSON-RPC encode error: %v", err)
-		return
-	}
-	fmt.Fprintln(os.Stdout, string(out))
-}
-
-func copyHeaders(dst, src http.Header) {
-	for k, vs := range src {
-		for _, v := range vs {
-			dst.Add(k, v)
-		}
-	}
-}
-
-// Shutdown stops the transport and waits for all goroutines to finish.
+// Shutdown gracefully stops the bridge, closing connections and waiting for cleanup.
 func (b *StdioBridge) Shutdown() {
 	if b.cancel != nil {
 		b.cancel()
 	}
+	if b.up != nil {
+		_ = b.up.Close()
+	}
 	b.wg.Wait()
+}
+
+func (b *StdioBridge) run(ctx context.Context) {
+	logger.Infof("Starting StdioBridge for %s in mode %s", b.rawTarget, b.mode)
+	defer b.wg.Done()
+
+	up, err := b.connectUpstream(ctx)
+	if err != nil {
+		logger.Errorf("upstream connect failed: %v", err)
+		return
+	}
+	b.up = up
+	logger.Infof("Connected to upstream %s", b.rawTarget)
+
+	if err := b.initializeUpstream(ctx); err != nil {
+		logger.Errorf("upstream initialize failed: %v", err)
+		return
+	}
+	logger.Infof("Upstream initialized successfully")
+
+	// Tiny local stdio server
+	b.srv = server.NewMCPServer(
+		"toolhive-stdio-bridge",
+		"0.1.0",
+		server.WithToolCapabilities(true),
+		server.WithResourceCapabilities(true, true),
+		server.WithPromptCapabilities(true),
+	)
+	logger.Infof("Starting local stdio server")
+
+	b.up.OnConnectionLost(func(err error) { logger.Warnf("upstream lost: %v", err) })
+
+	// Handle upstream notifications
+	b.up.OnNotification(func(n mcp.JSONRPCNotification) {
+		logger.Infof("🔔 upstream → downstream notify: %s %v", n.Method, n.Params)
+		// Convert the Params struct to JSON and back to a generic map
+		var params map[string]any
+		if buf, err := json.Marshal(n.Params); err != nil {
+			logger.Warnf("Failed to marshal params: %v", err)
+			params = map[string]any{}
+		} else if err := json.Unmarshal(buf, &params); err != nil {
+			logger.Warnf("Failed to unmarshal to map: %v", err)
+			params = map[string]any{}
+		}
+
+		b.srv.SendNotificationToAllClients(n.Method, params)
+		logger.Infof("🔔 upstream → downstream notify: %s %v", n.Method, params)
+	})
+
+	// Forwarders (register once; no pagination/refresh to keep it simple)
+	b.forwardAll(ctx)
+
+	// Serve stdio (blocks)
+	if err := server.ServeStdio(b.srv); err != nil {
+		logger.Errorf("stdio server error: %v", err)
+	}
+}
+
+func (b *StdioBridge) connectUpstream(_ context.Context) (*client.Client, error) {
+	logger.Infof("Connecting to upstream %s using mode %s", b.rawTarget, b.mode)
+
+	switch b.mode {
+	case types.TransportTypeStreamableHTTP:
+		c, err := client.NewStreamableHttpClient(
+			b.rawTarget,
+			transport.WithHTTPTimeout(0),
+			transport.WithContinuousListening(),
+		)
+		if err != nil {
+			return nil, err
+		}
+		// use separate, never-ending context for the client
+		if err := c.Start(context.Background()); err != nil {
+			return nil, err
+		}
+		return c, nil
+	case types.TransportTypeSSE:
+		c, err := client.NewSSEMCPClient(
+			b.rawTarget,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.Start(context.Background()); err != nil {
+			return nil, err
+		}
+		return c, nil
+	case types.TransportTypeStdio:
+		// if url contains sse it's sse else streamable-http
+		var c *client.Client
+		var err error
+		if strings.Contains(b.rawTarget, "sse") {
+			c, err = client.NewSSEMCPClient(
+				b.rawTarget,
+			)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			c, err = client.NewStreamableHttpClient(
+				b.rawTarget,
+			)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if err := c.Start(context.Background()); err != nil {
+			return nil, err
+		}
+		return c, nil
+	case types.TransportTypeInspector:
+		fallthrough
+	default:
+		return nil, fmt.Errorf("unsupported mode %q", b.mode)
+	}
+}
+
+func (b *StdioBridge) initializeUpstream(ctx context.Context) error {
+	logger.Infof("Initializing upstream %s", b.rawTarget)
+	_, err := b.up.Initialize(ctx, mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ClientInfo:      mcp.Implementation{Name: "toolhive-bridge", Version: "0.1.0"},
+			Capabilities:    mcp.ClientCapabilities{},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (b *StdioBridge) forwardAll(ctx context.Context) {
+	logger.Infof("Forwarding all upstream data to local stdio server")
+	// Tools -> straight passthrough
+	logger.Infof("Forwarding tools from upstream to local stdio server")
+	if lt, err := b.up.ListTools(ctx, mcp.ListToolsRequest{}); err == nil {
+		for _, tool := range lt.Tools {
+			toolCopy := tool
+			b.srv.AddTool(toolCopy, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return b.up.CallTool(ctx, req)
+			})
+		}
+	}
+
+	// Resources -> return []mcp.ResourceContents
+	logger.Infof("Forwarding resources from upstream to local stdio server")
+	if lr, err := b.up.ListResources(ctx, mcp.ListResourcesRequest{}); err == nil {
+		for _, res := range lr.Resources {
+			resCopy := res
+			b.srv.AddResource(resCopy, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+				out, err := b.up.ReadResource(ctx, req)
+				if err != nil {
+					return nil, err
+				}
+				return out.Contents, nil
+			})
+		}
+	}
+
+	// Resource templates -> same return type as resources
+	logger.Infof("Forwarding resource templates from upstream to local stdio server")
+	if lt, err := b.up.ListResourceTemplates(ctx, mcp.ListResourceTemplatesRequest{}); err == nil {
+		for _, tpl := range lt.ResourceTemplates {
+			tplCopy := tpl
+			b.srv.AddResourceTemplate(tplCopy, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+				out, err := b.up.ReadResource(ctx, req)
+				if err != nil {
+					return nil, err
+				}
+				return out.Contents, nil
+			})
+		}
+	}
+
+	// Prompts -> straight passthrough
+	logger.Infof("Forwarding prompts from upstream to local stdio server")
+	if lp, err := b.up.ListPrompts(ctx, mcp.ListPromptsRequest{}); err == nil {
+		for _, p := range lp.Prompts {
+			pCopy := p
+			b.srv.AddPrompt(pCopy, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+				return b.up.GetPrompt(ctx, req)
+			})
+		}
+	}
 }

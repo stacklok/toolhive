@@ -261,6 +261,56 @@ func TestCheckLatestVersion(t *testing.T) {
 		mockClient.AssertExpectations(t)
 	})
 
+	t.Run("handles corrupted update file by recreating it", func(t *testing.T) {
+		t.Parallel()
+		// Setup
+		mockClient := setupMockVersionClient(t)
+		componentName := testComponentCLI
+		newVersion := testLatestVersion
+
+		// Create a corrupted file with invalid JSON
+		tempDir, err := os.MkdirTemp("", "toolhive-test-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(tempDir)
+
+		tempFile := filepath.Join(tempDir, "updates.json")
+		corruptedData := []byte(`{"instance_id": "test-id", "components": {invalid json}}`)
+		err = os.WriteFile(tempFile, corruptedData, 0600)
+		require.NoError(t, err)
+
+		// Mock client methods
+		mockClient.On("GetLatestVersion", mock.AnythingOfType("string"), testCurrentVersion).Return(newVersion, nil)
+
+		// Create checker manually with temp file path
+		checker := &defaultUpdateChecker{
+			instanceID:          testInstanceID,
+			currentVersion:      testCurrentVersion,
+			updateFilePath:      tempFile,
+			versionClient:       mockClient,
+			previousAPIResponse: "",
+			component:           componentName,
+		}
+
+		// Execute - should handle corrupted file gracefully
+		err = checker.CheckLatestVersion()
+
+		// Verify
+		require.NoError(t, err)
+		mockClient.AssertExpectations(t)
+
+		// Verify the file was recreated with valid JSON
+		data, err := os.ReadFile(tempFile)
+		require.NoError(t, err)
+
+		var updatedFile updateFile
+		err = json.Unmarshal(data, &updatedFile)
+		require.NoError(t, err)
+		assert.Equal(t, testInstanceID, updatedFile.InstanceID)
+		assert.Equal(t, newVersion, updatedFile.LatestVersion)
+		assert.NotNil(t, updatedFile.Components)
+		assert.Contains(t, updatedFile.Components, componentName)
+	})
+
 	t.Run("error when GetLatestVersion fails", func(t *testing.T) {
 		t.Parallel()
 		// Setup

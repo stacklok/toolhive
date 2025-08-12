@@ -106,17 +106,24 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 		}
 	} else {
 		if err := json.Unmarshal(rawContents, &currentFile); err != nil {
-			return fmt.Errorf("failed to deserialize update file: %w", err)
-		}
+			// If the file is corrupted/mangled, recreate it
+			// This handles cases where the JSON structure is invalid
+			currentFile = updateFile{
+				InstanceID: d.instanceID,
+				Components: make(map[string]componentInfo),
+			}
+			// Remove the corrupted file so it will be recreated
+			_ = os.Remove(d.updateFilePath)
+		} else {
+			// Initialize components map if it doesn't exist (for backward compatibility)
+			if currentFile.Components == nil {
+				currentFile.Components = make(map[string]componentInfo)
+			}
 
-		// Initialize components map if it doesn't exist (for backward compatibility)
-		if currentFile.Components == nil {
-			currentFile.Components = make(map[string]componentInfo)
-		}
-
-		// Use the instance ID from file, but fallback to the one we generated
-		if currentFile.InstanceID == "" {
-			currentFile.InstanceID = d.instanceID
+			// Use the instance ID from file, but fallback to the one we generated
+			if currentFile.InstanceID == "" {
+				currentFile.InstanceID = d.instanceID
+			}
 		}
 	}
 

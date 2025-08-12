@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -63,10 +62,8 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to list servers: %v", err)
 	}
 
-	// Sort servers by name
-	sort.Slice(servers, func(i, j int) bool {
-		return servers[i].Name < servers[j].Name
-	})
+	// Sort servers by name using the utility function
+	registry.SortServersByName(servers)
 
 	// Output based on format
 	switch registryFormat {
@@ -101,9 +98,15 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 // printJSONServers prints servers in JSON format
-func printJSONServers(servers []*registry.ImageMetadata) error {
+func printJSONServers(servers []registry.ServerMetadata) error {
+	// Build a slice of raw implementations to maintain backward compatibility
+	rawServers := make([]any, 0, len(servers))
+	for _, server := range servers {
+		rawServers = append(rawServers, server.GetRawImplementation())
+	}
+
 	// Marshal to JSON
-	jsonData, err := json.MarshalIndent(servers, "", "  ")
+	jsonData, err := json.MarshalIndent(rawServers, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}
@@ -114,9 +117,9 @@ func printJSONServers(servers []*registry.ImageMetadata) error {
 }
 
 // printJSONServer prints a single server in JSON format
-func printJSONServer(server *registry.ImageMetadata) error {
-	// Marshal to JSON
-	jsonData, err := json.MarshalIndent(server, "", "  ")
+func printJSONServer(server registry.ServerMetadata) error {
+	// Marshal the raw implementation to maintain backward compatibility
+	jsonData, err := json.MarshalIndent(server.GetRawImplementation(), "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}
@@ -127,29 +130,30 @@ func printJSONServer(server *registry.ImageMetadata) error {
 }
 
 // printTextServers prints servers in text format
-func printTextServers(servers []*registry.ImageMetadata) {
+func printTextServers(servers []registry.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESCRIPTION\tTIER\tSTARS\tPULLS")
+	fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTIER\tSTARS\tPULLS")
 
 	// Print server information
 	for _, server := range servers {
 		stars := 0
 		pulls := 0
-		if server.Metadata != nil {
-			stars = server.Metadata.Stars
-			pulls = server.Metadata.Pulls
+		if metadata := server.GetMetadata(); metadata != nil {
+			stars = metadata.Stars
+			pulls = metadata.Pulls
 		}
 
-		desc := server.Description
-		if server.Status == "Deprecated" {
+		desc := server.GetDescription()
+		if server.GetStatus() == "Deprecated" {
 			desc = "**DEPRECATED** " + desc
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n",
-			server.Name,
-			truncateString(desc, 60),
-			server.Tier,
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
+			server.GetName(),
+			getServerType(server),
+			truncateString(desc, 50),
+			server.GetTier(),
 			stars,
 			pulls,
 		)
@@ -161,41 +165,137 @@ func printTextServers(servers []*registry.ImageMetadata) {
 	}
 }
 
+// getServerType returns the type of server (container or remote)
+func getServerType(server registry.ServerMetadata) string {
+	if server.IsRemote() {
+		return "remote"
+	}
+	return "container"
+}
+
 // printTextServerInfo prints detailed information about a server in text format
 // nolint:gocyclo
-func printTextServerInfo(name string, server *registry.ImageMetadata) {
-	fmt.Printf("Name: %s\n", server.Name)
-	fmt.Printf("Image: %s\n", server.Image)
-	fmt.Printf("Description: %s\n", server.Description)
-	fmt.Printf("Tier: %s\n", server.Tier)
-	fmt.Printf("Status: %s\n", server.Status)
-	fmt.Printf("Transport: %s\n", server.Transport)
-	if (server.Transport == "sse" || server.Transport == "streamable-http") && server.TargetPort > 0 {
-		fmt.Printf("Target Port: %d\n", server.TargetPort)
-	}
-	fmt.Printf("Repository URL: %s\n", server.RepositoryURL)
-	fmt.Printf("Has Provenance: %s\n", map[bool]string{true: "Yes", false: "No"}[server.Provenance != nil])
+func printTextServerInfo(name string, server registry.ServerMetadata) {
+	fmt.Printf("Name: %s\n", server.GetName())
+	fmt.Printf("Type: %s\n", getServerType(server))
+	fmt.Printf("Description: %s\n", server.GetDescription())
+	fmt.Printf("Tier: %s\n", server.GetTier())
+	fmt.Printf("Status: %s\n", server.GetStatus())
+	fmt.Printf("Transport: %s\n", server.GetTransport())
 
-	if server.Metadata != nil {
-		fmt.Printf("Popularity: %d stars, %d pulls\n", server.Metadata.Stars, server.Metadata.Pulls)
-		fmt.Printf("Last Updated: %s\n", server.Metadata.LastUpdated)
+	// Type-specific information
+	if !server.IsRemote() {
+		// Container server
+		if img, ok := server.(*registry.ImageMetadata); ok {
+			fmt.Printf("Image: %s\n", img.Image)
+			if (img.Transport == "sse" || img.Transport == "streamable-http") && img.TargetPort > 0 {
+				fmt.Printf("Target Port: %d\n", img.TargetPort)
+			}
+			fmt.Printf("Has Provenance: %s\n", map[bool]string{true: "Yes", false: "No"}[img.Provenance != nil])
+
+			// Print permissions
+			if img.Permissions != nil {
+				fmt.Println("\nPermissions:")
+
+				// Print read permissions
+				if len(img.Permissions.Read) > 0 {
+					fmt.Println("  Read:")
+					for _, path := range img.Permissions.Read {
+						fmt.Printf("    - %s\n", path)
+					}
+				}
+
+				// Print write permissions
+				if len(img.Permissions.Write) > 0 {
+					fmt.Println("  Write:")
+					for _, path := range img.Permissions.Write {
+						fmt.Printf("    - %s\n", path)
+					}
+				}
+
+				// Print network permissions
+				if img.Permissions.Network != nil && img.Permissions.Network.Outbound != nil {
+					fmt.Println("  Network:")
+					outbound := img.Permissions.Network.Outbound
+
+					if outbound.InsecureAllowAll {
+						fmt.Println("    Insecure Allow All: true")
+					}
+
+					if len(outbound.AllowHost) > 0 {
+						fmt.Printf("    Allow Host: %s\n", strings.Join(outbound.AllowHost, ", "))
+					}
+
+					if len(outbound.AllowPort) > 0 {
+						ports := make([]string, len(outbound.AllowPort))
+						for i, port := range outbound.AllowPort {
+							ports[i] = fmt.Sprintf("%d", port)
+						}
+						fmt.Printf("    Allow Port: %s\n", strings.Join(ports, ", "))
+					}
+				}
+			}
+		}
+	} else {
+		// Remote server
+		if remote, ok := server.(*registry.RemoteServerMetadata); ok {
+			fmt.Printf("URL: %s\n", remote.URL)
+
+			// Print headers
+			if len(remote.Headers) > 0 {
+				fmt.Println("\nHeaders:")
+				for _, header := range remote.Headers {
+					required := ""
+					if header.Required {
+						required = " (required)"
+					}
+					defaultValue := ""
+					if header.Default != "" {
+						defaultValue = fmt.Sprintf(" [default: %s]", header.Default)
+					}
+					fmt.Printf("  - %s%s%s: %s\n", header.Name, required, defaultValue, header.Description)
+				}
+			}
+
+			// Print OAuth config
+			if remote.OAuthConfig != nil {
+				fmt.Println("\nOAuth Configuration:")
+				if remote.OAuthConfig.Issuer != "" {
+					fmt.Printf("  Issuer: %s\n", remote.OAuthConfig.Issuer)
+				}
+				if remote.OAuthConfig.ClientID != "" {
+					fmt.Printf("  Client ID: %s\n", remote.OAuthConfig.ClientID)
+				}
+				if len(remote.OAuthConfig.Scopes) > 0 {
+					fmt.Printf("  Scopes: %s\n", strings.Join(remote.OAuthConfig.Scopes, ", "))
+				}
+			}
+		}
+	}
+
+	fmt.Printf("Repository URL: %s\n", server.GetRepositoryURL())
+
+	// Print metadata
+	if metadata := server.GetMetadata(); metadata != nil {
+		fmt.Printf("Popularity: %d stars, %d pulls\n", metadata.Stars, metadata.Pulls)
+		fmt.Printf("Last Updated: %s\n", metadata.LastUpdated)
 	} else {
 		fmt.Printf("Popularity: 0 stars, 0 pulls\n")
 		fmt.Printf("Last Updated: N/A\n")
 	}
 
 	// Print tools
-	if len(server.Tools) > 0 {
-		fmt.Println("Tools:")
-		for _, tool := range server.Tools {
+	if tools := server.GetTools(); len(tools) > 0 {
+		fmt.Println("\nTools:")
+		for _, tool := range tools {
 			fmt.Printf("  - %s\n", tool)
 		}
 	}
 
 	// Print environment variables
-	if len(server.EnvVars) > 0 {
+	if envVars := server.GetEnvVars(); len(envVars) > 0 {
 		fmt.Println("\nEnvironment Variables:")
-		for _, envVar := range server.EnvVars {
+		for _, envVar := range envVars {
 			required := ""
 			if envVar.Required {
 				required = " (required)"
@@ -209,57 +309,18 @@ func printTextServerInfo(name string, server *registry.ImageMetadata) {
 	}
 
 	// Print tags
-	if len(server.Tags) > 0 {
-		fmt.Println("Tags:")
-		fmt.Printf("  %s\n", strings.Join(server.Tags, ", "))
-	}
-
-	// Print permissions
-	if server.Permissions != nil {
-		fmt.Println("Permissions:")
-
-		// Print read permissions
-		if len(server.Permissions.Read) > 0 {
-			fmt.Println("  Read:")
-			for _, path := range server.Permissions.Read {
-				fmt.Printf("    - %s\n", path)
-			}
-		}
-
-		// Print write permissions
-		if len(server.Permissions.Write) > 0 {
-			fmt.Println("  Write:")
-			for _, path := range server.Permissions.Write {
-				fmt.Printf("    - %s\n", path)
-			}
-		}
-
-		// Print network permissions
-		if server.Permissions.Network != nil && server.Permissions.Network.Outbound != nil {
-			fmt.Println("  Network:")
-			outbound := server.Permissions.Network.Outbound
-
-			if outbound.InsecureAllowAll {
-				fmt.Println("    Insecure Allow All: true")
-			}
-
-			if len(outbound.AllowHost) > 0 {
-				fmt.Printf("    Allow Host: %s\n", strings.Join(outbound.AllowHost, ", "))
-			}
-
-			if len(outbound.AllowPort) > 0 {
-				ports := make([]string, len(outbound.AllowPort))
-				for i, port := range outbound.AllowPort {
-					ports[i] = fmt.Sprintf("%d", port)
-				}
-				fmt.Printf("    Allow Port: %s\n", strings.Join(ports, ", "))
-			}
-		}
+	if tags := server.GetTags(); len(tags) > 0 {
+		fmt.Println("\nTags:")
+		fmt.Printf("  %s\n", strings.Join(tags, ", "))
 	}
 
 	// Print example command
-	fmt.Println("Example Command:")
-	fmt.Printf("  thv run %s\n", name)
+	fmt.Println("\nExample Command:")
+	if server.IsRemote() {
+		fmt.Printf("  thv proxy %s\n", name)
+	} else {
+		fmt.Printf("  thv run %s\n", name)
+	}
 }
 
 // truncateString truncates a string to the specified length and adds "..." if truncated

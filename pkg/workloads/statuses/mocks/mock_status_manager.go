@@ -42,20 +42,6 @@ func (m *MockStatusManager) EXPECT() *MockStatusManagerMockRecorder {
 	return m.recorder
 }
 
-// CreateWorkloadStatus mocks base method.
-func (m *MockStatusManager) CreateWorkloadStatus(ctx context.Context, workloadName string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CreateWorkloadStatus", ctx, workloadName)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// CreateWorkloadStatus indicates an expected call of CreateWorkloadStatus.
-func (mr *MockStatusManagerMockRecorder) CreateWorkloadStatus(ctx, workloadName any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateWorkloadStatus", reflect.TypeOf((*MockStatusManager)(nil).CreateWorkloadStatus), ctx, workloadName)
-}
-
 // DeleteWorkloadStatus mocks base method.
 func (m *MockStatusManager) DeleteWorkloadStatus(ctx context.Context, workloadName string) error {
 	m.ctrl.T.Helper()
@@ -101,9 +87,11 @@ func (mr *MockStatusManagerMockRecorder) ListWorkloads(ctx, listAll, labelFilter
 }
 
 // SetWorkloadStatus mocks base method.
-func (m *MockStatusManager) SetWorkloadStatus(ctx context.Context, workloadName string, status runtime.WorkloadStatus, contextMsg string) {
+func (m *MockStatusManager) SetWorkloadStatus(ctx context.Context, workloadName string, status runtime.WorkloadStatus, contextMsg string) error {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "SetWorkloadStatus", ctx, workloadName, status, contextMsg)
+	ret := m.ctrl.Call(m, "SetWorkloadStatus", ctx, workloadName, status, contextMsg)
+	ret0, _ := ret[0].(error)
+	return ret0
 }
 
 // SetWorkloadStatus indicates an expected call of SetWorkloadStatus.

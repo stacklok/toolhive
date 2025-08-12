@@ -144,7 +144,10 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
-	workloadManager := workloads.NewManagerFromRuntime(rt)
+	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
 
 	err = validateGroup(ctx, workloadManager, serverOrImage)
 	if err != nil {
@@ -298,7 +301,10 @@ func runFromConfigFile(ctx context.Context) error {
 	runConfig.Deployer = rt
 
 	// Create workload manager
-	workloadManager := workloads.NewManagerFromRuntime(rt)
+	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
 
 	// Run the workload based on foreground flag
 	if runFlags.Foreground {

@@ -1,4 +1,4 @@
-package workloads
+package statuses
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ func init() {
 	logger.Initialize()
 }
 
-func TestFileStatusManager_CreateWorkloadStatus(t *testing.T) {
+func TestFileStatusManager_SetWorkloadStatus_Create(t *testing.T) {
 	t.Parallel()
 	// Create temporary directory for tests
 	tempDir := t.TempDir()
@@ -32,7 +33,7 @@ func TestFileStatusManager_CreateWorkloadStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// Test creating a new workload status
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	// Verify file was created
@@ -53,20 +54,19 @@ func TestFileStatusManager_CreateWorkloadStatus(t *testing.T) {
 	assert.False(t, statusFileData.UpdatedAt.IsZero())
 }
 
-func TestFileStatusManager_CreateWorkloadStatus_AlreadyExists(t *testing.T) {
+func TestFileStatusManager_SetWorkloadStatus_Update(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
 	manager := &fileStatusManager{baseDir: tempDir}
 	ctx := context.Background()
 
 	// Create workload first time
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
-	// Try to create again - should fail
-	err = manager.CreateWorkloadStatus(ctx, "test-workload")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "already exists")
+	// Create again - should just update, not fail
+	err = manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "updated")
+	assert.NoError(t, err)
 }
 
 func TestFileStatusManager_GetWorkload(t *testing.T) {
@@ -84,7 +84,7 @@ func TestFileStatusManager_GetWorkload(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a workload status
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	// Get the workload (no runtime call expected for starting workload)
@@ -172,7 +172,7 @@ func TestFileStatusManager_GetWorkload_FileAndRuntimeCombination(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a workload status file and set it to running
-	err := manager.CreateWorkloadStatus(ctx, "running-workload")
+	err := manager.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 	manager.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusRunning, "container started")
 
@@ -214,7 +214,7 @@ func TestFileStatusManager_SetWorkloadStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a workload status
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	// Update the status
@@ -247,12 +247,26 @@ func TestFileStatusManager_SetWorkloadStatus_NotFound(t *testing.T) {
 	manager := &fileStatusManager{baseDir: tempDir}
 	ctx := context.Background()
 
-	// Try to set status for non-existent workload - should not error but do nothing
-	manager.SetWorkloadStatus(ctx, "non-existent", rt.WorkloadStatusRunning, "test")
+	// Try to set status for non-existent workload - creates file since no runtime check
+	err := manager.SetWorkloadStatus(ctx, "non-existent", rt.WorkloadStatusRunning, "test")
+	require.NoError(t, err)
 
-	// Verify no file was created
+	// Verify file was created (current behavior creates files regardless)
 	statusFile := filepath.Join(tempDir, "non-existent.json")
-	assert.NoFileExists(t, statusFile)
+	assert.FileExists(t, statusFile)
+
+	// Verify file contents
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, "test", statusFileData.StatusContext)
+	assert.False(t, statusFileData.CreatedAt.IsZero())
+	assert.False(t, statusFileData.UpdatedAt.IsZero())
 }
 
 func TestFileStatusManager_DeleteWorkloadStatus(t *testing.T) {
@@ -262,7 +276,7 @@ func TestFileStatusManager_DeleteWorkloadStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a workload status
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	statusFile := filepath.Join(tempDir, "test-workload.json")
@@ -302,7 +316,7 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a workload status
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	// Test concurrent reads - should not conflict
@@ -344,7 +358,7 @@ func TestFileStatusManager_FullLifecycle(t *testing.T) {
 	workloadName := "lifecycle-test"
 
 	// 1. Create workload
-	err := manager.CreateWorkloadStatus(ctx, workloadName)
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	// 2. Update to running
@@ -396,7 +410,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			name: "single starting workload",
 			setup: func(f *fileStatusManager) error {
 				ctx := context.Background()
-				return f.CreateWorkloadStatus(ctx, "test-workload")
+				return f.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 			},
 			listAll: true,
 			setupRuntimeMock: func(m *mocks.MockRuntime) {
@@ -414,11 +428,11 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			setup: func(f *fileStatusManager) error {
 				ctx := context.Background()
 				// Create a starting workload
-				if err := f.CreateWorkloadStatus(ctx, "starting-workload"); err != nil {
+				if err := f.SetWorkloadStatus(ctx, "starting-workload", rt.WorkloadStatusStarting, ""); err != nil {
 					return err
 				}
 				// Create a running workload
-				if err := f.CreateWorkloadStatus(ctx, "running-workload"); err != nil {
+				if err := f.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusStarting, ""); err != nil {
 					return err
 				}
 				f.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusRunning, "container started")
@@ -453,11 +467,11 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			setup: func(f *fileStatusManager) error {
 				ctx := context.Background()
 				// Create a starting workload
-				if err := f.CreateWorkloadStatus(ctx, "starting-workload"); err != nil {
+				if err := f.SetWorkloadStatus(ctx, "starting-workload", rt.WorkloadStatusStarting, ""); err != nil {
 					return err
 				}
 				// Create a running workload
-				if err := f.CreateWorkloadStatus(ctx, "running-workload"); err != nil {
+				if err := f.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusStarting, ""); err != nil {
 					return err
 				}
 				f.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusRunning, "container started")
@@ -487,7 +501,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			name: "invalid label filter",
 			setup: func(f *fileStatusManager) error {
 				ctx := context.Background()
-				return f.CreateWorkloadStatus(ctx, "test-workload")
+				return f.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 			},
 			listAll:      true,
 			labelFilters: []string{"invalid-filter"},
@@ -501,7 +515,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			setup: func(f *fileStatusManager) error {
 				ctx := context.Background()
 				// Create file workload that will merge with runtime
-				if err := f.CreateWorkloadStatus(ctx, "merge-workload"); err != nil {
+				if err := f.SetWorkloadStatus(ctx, "merge-workload", rt.WorkloadStatusStarting, ""); err != nil {
 					return err
 				}
 				f.SetWorkloadStatus(ctx, "merge-workload", rt.WorkloadStatusStopping, "shutting down")
@@ -608,4 +622,339 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFileStatusManager_GetWorkload_UnhealthyDetection(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tempDir := t.TempDir()
+	mockRuntime := mocks.NewMockRuntime(ctrl)
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		runtime: mockRuntime,
+	}
+	ctx := context.Background()
+
+	// First, set the workload status to running in the file
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
+
+	// Mock the runtime to return a stopped workload (mismatch with file)
+	stoppedInfo := rt.ContainerInfo{
+		Name:    "test-workload",
+		Image:   "test-image:latest",
+		Status:  "Exited (0) 2 minutes ago",
+		State:   rt.WorkloadStatusStopped, // Runtime says stopped
+		Created: time.Now().Add(-10 * time.Minute),
+		Labels: map[string]string{
+			"toolhive":      "true",
+			"toolhive-name": "test-workload",
+		},
+	}
+
+	mockRuntime.EXPECT().
+		GetWorkloadInfo(gomock.Any(), "test-workload").
+		Return(stoppedInfo, nil)
+
+	// Mock the call to SetWorkloadStatus that will be made to update to unhealthy
+	// This is tricky because we need to intercept the call but allow it to proceed
+	// For simplicity, we'll just allow the call to succeed
+	mockRuntime.EXPECT().
+		GetWorkloadInfo(gomock.Any(), "test-workload").
+		Return(stoppedInfo, nil).
+		AnyTimes() // Allow multiple calls during the SetWorkloadStatus operation
+
+	// Get the workload - this should detect the mismatch and return unhealthy status
+	workload, err := manager.GetWorkload(ctx, "test-workload")
+	require.NoError(t, err)
+
+	// Verify the workload is marked as unhealthy
+	assert.Equal(t, "test-workload", workload.Name)
+	assert.Equal(t, rt.WorkloadStatusUnhealthy, workload.Status)
+	assert.Contains(t, workload.StatusContext, "workload status mismatch")
+	assert.Contains(t, workload.StatusContext, "file indicates running")
+	assert.Contains(t, workload.StatusContext, "runtime shows stopped")
+	assert.Equal(t, "test-image:latest", workload.Package)
+
+	// Verify the file was updated to unhealthy status
+	// Get the workload again (this time without runtime mismatch since status is now unhealthy)
+	statusFilePath := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFilePath)
+	require.NoError(t, err)
+
+	var statusFile workloadStatusFile
+	err = json.Unmarshal(data, &statusFile)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusUnhealthy, statusFile.Status)
+	assert.Contains(t, statusFile.StatusContext, "workload status mismatch")
+}
+
+func TestFileStatusManager_GetWorkload_HealthyRunningWorkload(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tempDir := t.TempDir()
+	mockRuntime := mocks.NewMockRuntime(ctrl)
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		runtime: mockRuntime,
+	}
+	ctx := context.Background()
+
+	// Set the workload status to running in the file
+	err := manager.SetWorkloadStatus(ctx, "healthy-workload", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
+
+	// Mock the runtime to return a running workload (matches file)
+	runningInfo := rt.ContainerInfo{
+		Name:    "healthy-workload",
+		Image:   "test-image:latest",
+		Status:  "Up 5 minutes",
+		State:   rt.WorkloadStatusRunning, // Runtime says running (matches file)
+		Created: time.Now().Add(-10 * time.Minute),
+		Labels: map[string]string{
+			"toolhive":      "true",
+			"toolhive-name": "healthy-workload",
+		},
+	}
+
+	mockRuntime.EXPECT().
+		GetWorkloadInfo(gomock.Any(), "healthy-workload").
+		Return(runningInfo, nil)
+
+	// Get the workload - this should remain running since file and runtime match
+	workload, err := manager.GetWorkload(ctx, "healthy-workload")
+	require.NoError(t, err)
+
+	// Verify the workload remains running
+	assert.Equal(t, "healthy-workload", workload.Name)
+	assert.Equal(t, rt.WorkloadStatusRunning, workload.Status)
+	assert.Equal(t, "container started", workload.StatusContext) // Original file context preserved
+	assert.Equal(t, "test-image:latest", workload.Package)
+}
+
+func TestFileStatusManager_GetWorkload_ProxyNotRunning(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tempDir := t.TempDir()
+	mockRuntime := mocks.NewMockRuntime(ctrl)
+
+	// Create file status manager directly instead of using NewFileStatusManager
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		runtime: mockRuntime,
+	}
+	ctx := context.Background()
+
+	// First, create a status file manually to ensure file is found
+	statusFile := workloadStatusFile{
+		Status:        rt.WorkloadStatusRunning,
+		StatusContext: "container started",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	statusFilePath := filepath.Join(tempDir, "proxy-down-workload.json")
+	statusData, err := json.Marshal(statusFile)
+	require.NoError(t, err)
+	err = os.WriteFile(statusFilePath, statusData, 0644)
+	require.NoError(t, err)
+
+	// Mock the runtime to return a running workload with proper labels
+	runningInfo := rt.ContainerInfo{
+		Name:    "proxy-down-workload",
+		Image:   "test-image:latest",
+		Status:  "Up 5 minutes",
+		State:   rt.WorkloadStatusRunning, // Runtime says running (matches file)
+		Created: time.Now().Add(-10 * time.Minute),
+		Labels: map[string]string{
+			"toolhive":          "true",
+			"toolhive-name":     "proxy-down-workload",
+			"toolhive-basename": "proxy-down-workload", // This is the base name for proxy
+		},
+	}
+
+	// Mock the GetWorkloadInfo call that will be made during the proxy check
+	mockRuntime.EXPECT().
+		GetWorkloadInfo(gomock.Any(), "proxy-down-workload").
+		Return(runningInfo, nil).
+		AnyTimes() // Allow multiple calls during the SetWorkloadStatus operation as well
+
+	// Note: proxy.IsRunning will check the actual system, but since there's no proxy
+	// process running for "proxy-down-workload", it will return false
+
+	// Get the workload - this should detect the proxy is not running and return unhealthy
+	workload, err := manager.GetWorkload(ctx, "proxy-down-workload")
+	require.NoError(t, err)
+
+	// Verify the workload is marked as unhealthy due to proxy not running
+	assert.Equal(t, "proxy-down-workload", workload.Name)
+	assert.Equal(t, rt.WorkloadStatusUnhealthy, workload.Status)
+	assert.Contains(t, workload.StatusContext, "proxy process not running")
+	assert.Contains(t, workload.StatusContext, "proxy-down-workload")
+	assert.Contains(t, workload.StatusContext, "not active")
+	assert.Equal(t, "test-image:latest", workload.Package)
+
+	// Verify the file was updated to unhealthy status
+	data, err := os.ReadFile(statusFilePath)
+	require.NoError(t, err)
+
+	var updatedStatusFile workloadStatusFile
+	err = json.Unmarshal(data, &updatedStatusFile)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusUnhealthy, updatedStatusFile.Status)
+	assert.Contains(t, updatedStatusFile.StatusContext, "proxy process not running")
+}
+
+func TestFileStatusManager_GetWorkload_HealthyWithProxy(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tempDir := t.TempDir()
+	mockRuntime := mocks.NewMockRuntime(ctrl)
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		runtime: mockRuntime,
+	}
+	ctx := context.Background()
+
+	// Set the workload status to running in the file
+	err := manager.SetWorkloadStatus(ctx, "healthy-with-proxy", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
+
+	// Mock the runtime to return a running workload without base name (no proxy check)
+	runningInfo := rt.ContainerInfo{
+		Name:    "healthy-with-proxy",
+		Image:   "test-image:latest",
+		Status:  "Up 5 minutes",
+		State:   rt.WorkloadStatusRunning,
+		Created: time.Now().Add(-10 * time.Minute),
+		Labels: map[string]string{
+			"toolhive":      "true",
+			"toolhive-name": "healthy-with-proxy",
+			// No toolhive-base-name label, so proxy check will be skipped
+		},
+	}
+
+	mockRuntime.EXPECT().
+		GetWorkloadInfo(gomock.Any(), "healthy-with-proxy").
+		Return(runningInfo, nil)
+
+	// Get the workload - this should remain running since there's no base name for proxy check
+	workload, err := manager.GetWorkload(ctx, "healthy-with-proxy")
+	require.NoError(t, err)
+
+	// Verify the workload remains running (no proxy check due to missing base name)
+	assert.Equal(t, "healthy-with-proxy", workload.Name)
+	assert.Equal(t, rt.WorkloadStatusRunning, workload.Status)
+	assert.Equal(t, "container started", workload.StatusContext) // Original file context preserved
+	assert.Equal(t, "test-image:latest", workload.Package)
+}
+
+func TestFileStatusManager_ListWorkloads_WithValidation(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tempDir := t.TempDir()
+	mockRuntime := mocks.NewMockRuntime(ctrl)
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		runtime: mockRuntime,
+	}
+	ctx := context.Background()
+
+	// Create file workloads - one healthy running, one with runtime mismatch, one with proxy down
+	err := manager.SetWorkloadStatus(ctx, "healthy-workload", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadStatus(ctx, "runtime-mismatch", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadStatus(ctx, "proxy-down", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
+
+	// Mock runtime containers
+	runtimeContainers := []rt.ContainerInfo{
+		{
+			Name:   "healthy-workload",
+			Image:  "healthy:latest",
+			Status: "Up 5 minutes",
+			State:  rt.WorkloadStatusRunning,
+			Labels: map[string]string{
+				"toolhive":      "true",
+				"toolhive-name": "healthy-workload",
+			},
+		},
+		{
+			Name:   "runtime-mismatch",
+			Image:  "mismatch:latest",
+			Status: "Exited (0) 1 minute ago",
+			State:  rt.WorkloadStatusStopped, // Runtime says stopped, file says running
+			Labels: map[string]string{
+				"toolhive":      "true",
+				"toolhive-name": "runtime-mismatch",
+			},
+		},
+		{
+			Name:   "proxy-down",
+			Image:  "proxy:latest",
+			Status: "Up 3 minutes",
+			State:  rt.WorkloadStatusRunning,
+			Labels: map[string]string{
+				"toolhive":          "true",
+				"toolhive-name":     "proxy-down",
+				"toolhive-basename": "proxy-down", // This will trigger proxy check
+			},
+		},
+	}
+
+	mockRuntime.EXPECT().ListWorkloads(gomock.Any()).Return(runtimeContainers, nil)
+
+	// List all workloads
+	workloads, err := manager.ListWorkloads(ctx, true, nil)
+	require.NoError(t, err)
+
+	// Should have 3 workloads
+	require.Len(t, workloads, 3)
+
+	// Create a map for easier assertion
+	workloadMap := make(map[string]core.Workload)
+	for _, w := range workloads {
+		workloadMap[w.Name] = w
+	}
+
+	// Verify healthy workload remains running
+	healthyWorkload, exists := workloadMap["healthy-workload"]
+	require.True(t, exists)
+	assert.Equal(t, rt.WorkloadStatusRunning, healthyWorkload.Status)
+
+	// Verify runtime mismatch workload is marked unhealthy (status might be updated async)
+	// We'll check for either unhealthy or the original status with mismatch context
+	runtimeMismatch, exists := workloadMap["runtime-mismatch"]
+	require.True(t, exists)
+	// The workload should either be marked unhealthy or have a status context indicating the issue
+	isValidatedUnhealthy := runtimeMismatch.Status == rt.WorkloadStatusUnhealthy ||
+		strings.Contains(runtimeMismatch.StatusContext, "mismatch")
+	assert.True(t, isValidatedUnhealthy, "Runtime mismatch workload should be detected as unhealthy")
+
+	// Verify proxy down workload is detected (proxy.IsRunning will return false for non-existent proxy)
+	proxyDown, exists := workloadMap["proxy-down"]
+	require.True(t, exists)
+	// Similar check - should be unhealthy or have proxy-related context
+	isProxyValidated := proxyDown.Status == rt.WorkloadStatusUnhealthy ||
+		strings.Contains(proxyDown.StatusContext, "proxy")
+	assert.True(t, isProxyValidated, "Proxy down workload should be detected as unhealthy")
 }

@@ -49,4 +49,7 @@ type Manager interface {
 
 	// RegisterClients registers multiple clients with multiple groups.
 	RegisterClients(ctx context.Context, groupNames []string, clientNames []string) error
+
+	// UnregisterClients removes multiple clients from multiple groups.
+	UnregisterClients(ctx context.Context, groupNames []string, clientNames []string) error
 }

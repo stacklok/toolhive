@@ -144,10 +144,29 @@ func (c *RunConfig) WriteJSON(w io.Writer) error {
 // ReadJSON deserializes the RunConfig from JSON read from the provided reader
 func ReadJSON(r io.Reader) (*RunConfig, error) {
 	var config RunConfig
-	decoder := json.NewDecoder(r)
-	if err := decoder.Decode(&config); err != nil {
+	if err := state.ReadJSON(r, &config); err != nil {
 		return nil, err
 	}
+
+	// Initialize maps if they're nil after deserialization
+	if config.EnvVars == nil {
+		config.EnvVars = make(map[string]string)
+	}
+	if config.ContainerLabels == nil {
+		config.ContainerLabels = make(map[string]string)
+	}
+
+	// Initialize slices if they're nil after deserialization
+	if config.CmdArgs == nil {
+		config.CmdArgs = []string{}
+	}
+	if config.Volumes == nil {
+		config.Volumes = []string{}
+	}
+	if config.Secrets == nil {
+		config.Secrets = []string{}
+	}
+
 	return &config, nil
 }
 
@@ -313,38 +332,17 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 	return c
 }
 
+// GetBaseName returns the base name for the run configuration
+func (c *RunConfig) GetBaseName() string {
+	return c.BaseName
+}
+
 // SaveState saves the run configuration to the state store
 func (c *RunConfig) SaveState(ctx context.Context) error {
-	// Create a state store
-	store, err := state.NewRunConfigStore(state.DefaultAppName)
-	if err != nil {
-		return fmt.Errorf("failed to create state store: %w", err)
-	}
-
-	// Get a writer for the state
-	writer, err := store.GetWriter(ctx, c.BaseName)
-	if err != nil {
-		return fmt.Errorf("failed to get writer for state: %w", err)
-	}
-	defer writer.Close()
-
-	// Serialize the configuration to JSON and write it directly to the state store
-	if err := c.WriteJSON(writer); err != nil {
-		return fmt.Errorf("failed to write run configuration: %w", err)
-	}
-
-	logger.Infof("Saved run configuration for %s", c.BaseName)
-	return nil
+	return state.SaveRunConfig(ctx, c)
 }
 
 // LoadState loads a run configuration from the state store
 func LoadState(ctx context.Context, name string) (*RunConfig, error) {
-	reader, err := state.LoadRunConfigJSON(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	defer reader.Close()
-
-	// Deserialize the configuration
-	return ReadJSON(reader)
+	return state.LoadRunConfig(ctx, name, ReadJSON)
 }

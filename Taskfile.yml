@@ -23,6 +23,17 @@ tasks:
     cmds:
       - swag init -g pkg/api/server.go --v3.1 -o docs/server
 
+  mock-install:
+    desc: Install the mockgen tool for mock generation
+    cmds:
+      - go install go.uber.org/mock/mockgen@latest
+
+  mock-gen:
+    desc: Generate mock files using go generate
+    deps: [mock-install]
+    cmds:
+      - go generate ./...
+
   lint:
     desc: Run linting tools
     cmds:
@@ -53,6 +64,7 @@ tasks:
 
   test:
     desc: Run unit tests (excluding e2e tests)
+    deps: [mock-gen]
     cmds:
       - task: test-unixlike
         platforms: [linux, darwin]
@@ -128,6 +140,7 @@ tasks:
 
   build:
     desc: Build the binary
+    deps: [mock-gen]
     vars:
       VERSION:
         sh: git describe --tags --always --dirty --match "v*" || echo "dev"

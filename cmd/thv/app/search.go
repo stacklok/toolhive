@@ -64,20 +64,8 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 
 // printJSONSearchResults prints servers in JSON format
 func printJSONSearchResults(servers []registry.ServerMetadata) error {
-	// Build a slice of raw implementations to maintain backward compatibility
-	rawServers := make([]any, 0, len(servers))
-	for _, server := range servers {
-		// Use type assertion to get the underlying type for backward-compatible JSON
-		switch s := server.(type) {
-		case *registry.ImageMetadata:
-			rawServers = append(rawServers, s)
-		case *registry.RemoteServerMetadata:
-			rawServers = append(rawServers, s)
-		}
-	}
-
 	// Marshal to JSON
-	jsonData, err := json.MarshalIndent(rawServers, "", "  ")
+	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}

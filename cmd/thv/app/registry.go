@@ -100,20 +100,8 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 
 // printJSONServers prints servers in JSON format
 func printJSONServers(servers []registry.ServerMetadata) error {
-	// Build a slice of raw implementations to maintain backward compatibility
-	rawServers := make([]any, 0, len(servers))
-	for _, server := range servers {
-		// Use type assertion to get the underlying type for backward-compatible JSON
-		switch s := server.(type) {
-		case *registry.ImageMetadata:
-			rawServers = append(rawServers, s)
-		case *registry.RemoteServerMetadata:
-			rawServers = append(rawServers, s)
-		}
-	}
-
 	// Marshal to JSON
-	jsonData, err := json.MarshalIndent(rawServers, "", "  ")
+	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}
@@ -125,18 +113,7 @@ func printJSONServers(servers []registry.ServerMetadata) error {
 
 // printJSONServer prints a single server in JSON format
 func printJSONServer(server registry.ServerMetadata) error {
-	// Use type assertion to get the underlying type for backward-compatible JSON
-	var rawServer any
-	switch s := server.(type) {
-	case *registry.ImageMetadata:
-		rawServer = s
-	case *registry.RemoteServerMetadata:
-		rawServer = s
-	default:
-		rawServer = server
-	}
-
-	jsonData, err := json.MarshalIndent(rawServer, "", "  ")
+	jsonData, err := json.MarshalIndent(server, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}

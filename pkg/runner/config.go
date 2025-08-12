@@ -147,6 +147,26 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	if err := state.ReadJSON(r, &config); err != nil {
 		return nil, err
 	}
+
+	// Initialize maps if they're nil after deserialization
+	if config.EnvVars == nil {
+		config.EnvVars = make(map[string]string)
+	}
+	if config.ContainerLabels == nil {
+		config.ContainerLabels = make(map[string]string)
+	}
+
+	// Initialize slices if they're nil after deserialization
+	if config.CmdArgs == nil {
+		config.CmdArgs = []string{}
+	}
+	if config.Volumes == nil {
+		config.Volumes = []string{}
+	}
+	if config.Secrets == nil {
+		config.Secrets = []string{}
+	}
+
 	return &config, nil
 }
 

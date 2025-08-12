@@ -14,7 +14,9 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
+	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/proxy"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
@@ -92,22 +94,9 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		return core.Workload{}, err
 	}
 
-	// If file was found and workload is running, get additional info from runtime
+	// If file was found and workload is running, validate against runtime
 	if fileFound && result.Status == rt.WorkloadStatusRunning {
-		// TODO: Find discrepancies between the file and runtime workload.
-		runtimeResult, err := f.getWorkloadFromRuntime(ctx, workloadName)
-		if err != nil {
-			return core.Workload{}, err
-		}
-		// Use runtime data but preserve file-based status info
-		fileStatus := result.Status
-		fileStatusContext := result.StatusContext
-		fileCreatedAt := result.CreatedAt
-		result = runtimeResult
-		result.Status = fileStatus               // Keep the file status
-		result.StatusContext = fileStatusContext // Keep the file status context
-		result.CreatedAt = fileCreatedAt         // Keep the file created time
-		return result, nil
+		return f.validateRunningWorkload(ctx, workloadName, result)
 	}
 
 	// If file was found and workload is not running, return file data
@@ -420,4 +409,100 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 	}
 
 	return workloads, nil
+}
+
+// validateRunningWorkload validates that a workload marked as running in the file
+// is actually running in the runtime and has a healthy proxy process if applicable.
+func (f *fileStatusManager) validateRunningWorkload(
+	ctx context.Context, workloadName string, result core.Workload,
+) (core.Workload, error) {
+	// Get raw container info from runtime (before label filtering)
+	containerInfo, err := f.runtime.GetWorkloadInfo(ctx, workloadName)
+	if err != nil {
+		return core.Workload{}, err
+	}
+
+	// Check if runtime status matches file status
+	if containerInfo.State != rt.WorkloadStatusRunning {
+		return f.handleRuntimeMismatch(ctx, workloadName, result, containerInfo)
+	}
+
+	// Check if proxy process is running when workload is running
+	if unhealthyWorkload, isUnhealthy := f.checkProxyHealth(ctx, workloadName, result, containerInfo); isUnhealthy {
+		return unhealthyWorkload, nil
+	}
+
+	// Runtime and proxy confirm workload is healthy - merge runtime data with file status
+	return f.mergeHealthyWorkloadData(containerInfo, result)
+}
+
+// handleRuntimeMismatch handles the case where file indicates running but runtime shows different status
+func (f *fileStatusManager) handleRuntimeMismatch(
+	ctx context.Context, workloadName string, result core.Workload, containerInfo rt.ContainerInfo,
+) (core.Workload, error) {
+	contextMsg := fmt.Sprintf("workload status mismatch: file indicates running, but runtime shows %s", containerInfo.State)
+	if err := f.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusUnhealthy, contextMsg); err != nil {
+		logger.Warnf("failed to update workload %s status to unhealthy: %v", workloadName, err)
+	}
+
+	// Convert to workload and return unhealthy status
+	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo)
+	if err != nil {
+		return core.Workload{}, err
+	}
+
+	runtimeResult.Status = rt.WorkloadStatusUnhealthy
+	runtimeResult.StatusContext = contextMsg
+	runtimeResult.CreatedAt = result.CreatedAt // Keep the original file created time
+	return runtimeResult, nil
+}
+
+// checkProxyHealth checks if the proxy process is running for the workload.
+// Returns (unhealthyWorkload, true) if proxy is not running, (emptyWorkload, false) if proxy is healthy or not applicable.
+func (f *fileStatusManager) checkProxyHealth(
+	ctx context.Context, workloadName string, result core.Workload, containerInfo rt.ContainerInfo,
+) (core.Workload, bool) {
+	// Use original container labels (before filtering) to get base name
+	baseName := labels.GetContainerBaseName(containerInfo.Labels)
+	if baseName == "" {
+		return core.Workload{}, false // No proxy check needed
+	}
+
+	proxyRunning := proxy.IsRunning(baseName)
+	if proxyRunning {
+		return core.Workload{}, false // Proxy is healthy
+	}
+
+	// Proxy is not running, but workload should be running
+	contextMsg := fmt.Sprintf("proxy process not running: workload shows running but proxy process for %s is not active",
+		baseName)
+	if err := f.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusUnhealthy, contextMsg); err != nil {
+		logger.Warnf("failed to update workload %s status to unhealthy: %v", workloadName, err)
+	}
+
+	// Convert to workload and return unhealthy status
+	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo)
+	if err != nil {
+		logger.Warnf("failed to convert container info for unhealthy workload %s: %v", workloadName, err)
+		return core.Workload{}, false // Return false to avoid double error handling
+	}
+
+	runtimeResult.Status = rt.WorkloadStatusUnhealthy
+	runtimeResult.StatusContext = contextMsg
+	runtimeResult.CreatedAt = result.CreatedAt // Keep the original file created time
+	return runtimeResult, true
+}
+
+// mergeHealthyWorkloadData merges runtime container data with file-based status information
+func (*fileStatusManager) mergeHealthyWorkloadData(containerInfo rt.ContainerInfo, result core.Workload) (core.Workload, error) {
+	// Runtime and proxy confirm workload is healthy - use runtime data but preserve file-based status info
+	runtimeResult, err := types.WorkloadFromContainerInfo(&containerInfo)
+	if err != nil {
+		return core.Workload{}, err
+	}
+
+	runtimeResult.Status = result.Status               // Keep the file status (running)
+	runtimeResult.StatusContext = result.StatusContext // Keep the file status context
+	runtimeResult.CreatedAt = result.CreatedAt         // Keep the file created time
+	return runtimeResult, nil
 }

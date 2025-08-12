@@ -146,15 +146,22 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 		workloadMap[container.Name] = workload
 	}
 
-	// Then, merge with file workloads, preferring file status
+	// Then, merge with file workloads, validating running workloads
 	for name, fileWorkload := range fileWorkloads {
-		if runtimeWorkload, exists := workloadMap[name]; exists {
-			// Merge: use runtime data but prefer file status
-			merged := runtimeWorkload
-			merged.Status = fileWorkload.Status
-			merged.StatusContext = fileWorkload.StatusContext
-			merged.CreatedAt = fileWorkload.CreatedAt
-			workloadMap[name] = merged
+		if runtimeContainer, exists := runtimeWorkloadMap[name]; exists {
+			// Validate running workloads similar to GetWorkload
+			validatedWorkload, err := f.validateWorkloadInList(ctx, name, fileWorkload, runtimeContainer)
+			if err != nil {
+				logger.Warnf("failed to validate workload %s in list: %v", name, err)
+				// Fall back to basic merge without validation
+				runtimeWorkload := workloadMap[name]
+				runtimeWorkload.Status = fileWorkload.Status
+				runtimeWorkload.StatusContext = fileWorkload.StatusContext
+				runtimeWorkload.CreatedAt = fileWorkload.CreatedAt
+				workloadMap[name] = runtimeWorkload
+			} else {
+				workloadMap[name] = validatedWorkload
+			}
 		} else {
 			// File-only workload (runtime not available)
 			workloadMap[name] = fileWorkload
@@ -505,4 +512,37 @@ func (*fileStatusManager) mergeHealthyWorkloadData(containerInfo rt.ContainerInf
 	runtimeResult.StatusContext = result.StatusContext // Keep the file status context
 	runtimeResult.CreatedAt = result.CreatedAt         // Keep the file created time
 	return runtimeResult, nil
+}
+
+// validateWorkloadInList validates a workload during list operations, similar to validateRunningWorkload
+// but with different error handling to avoid disrupting the entire list operation.
+func (f *fileStatusManager) validateWorkloadInList(
+	ctx context.Context, workloadName string, fileWorkload core.Workload, containerInfo rt.ContainerInfo,
+) (core.Workload, error) {
+	// Only validate if file shows running status
+	if fileWorkload.Status != rt.WorkloadStatusRunning {
+		// For non-running workloads, just merge runtime data with file status
+		runtimeWorkload, err := types.WorkloadFromContainerInfo(&containerInfo)
+		if err != nil {
+			return core.Workload{}, err
+		}
+		runtimeWorkload.Status = fileWorkload.Status
+		runtimeWorkload.StatusContext = fileWorkload.StatusContext
+		runtimeWorkload.CreatedAt = fileWorkload.CreatedAt
+		return runtimeWorkload, nil
+	}
+
+	// For running workloads, apply full validation
+	// Check if runtime status matches file status
+	if containerInfo.State != rt.WorkloadStatusRunning {
+		return f.handleRuntimeMismatch(ctx, workloadName, fileWorkload, containerInfo)
+	}
+
+	// Check if proxy process is running when workload is running
+	if unhealthyWorkload, isUnhealthy := f.checkProxyHealth(ctx, workloadName, fileWorkload, containerInfo); isUnhealthy {
+		return unhealthyWorkload, nil
+	}
+
+	// Runtime and proxy confirm workload is healthy - merge runtime data with file status
+	return f.mergeHealthyWorkloadData(containerInfo, fileWorkload)
 }

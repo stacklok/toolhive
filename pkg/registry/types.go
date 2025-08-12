@@ -53,7 +53,7 @@ type BaseServerMetadata struct {
 
 // ImageMetadata represents the metadata for an MCP server image stored in our registry.
 type ImageMetadata struct {
-	BaseServerMetadata
+	BaseServerMetadata `yaml:",inline"`
 	// Image is the Docker image reference for the MCP server
 	Image string `json:"image" yaml:"image"`
 	// TargetPort is the port for the container to expose (only applicable to SSE and Streamable HTTP transports)
@@ -149,7 +149,7 @@ type OAuthConfig struct {
 // RemoteServerMetadata represents the metadata for a remote MCP server accessed via HTTP/HTTPS.
 // Remote servers are accessed through the thv proxy command which handles authentication and tunneling.
 type RemoteServerMetadata struct {
-	BaseServerMetadata
+	BaseServerMetadata `yaml:",inline"`
 	// URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)
 	URL string `json:"url" yaml:"url"`
 	// Headers defines HTTP headers that can be passed to the remote server for authentication

@@ -14,12 +14,9 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
-	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
-	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -299,110 +296,32 @@ func (h *toolHiveHandler) searchRegistry(_ context.Context, request mcp.CallTool
 
 // runServer runs an MCP server
 func (h *toolHiveHandler) runServer(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// Parse arguments using BindArguments
-	args := struct {
-		Server string            `json:"server"`
-		Name   string            `json:"name,omitempty"`
-		Env    map[string]string `json:"env,omitempty"`
-	}{}
-
-	if err := request.BindArguments(&args); err != nil {
+	// Parse and validate arguments
+	args, err := parseRunServerArgs(request)
+	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
 	}
 
-	// Use custom name if provided, otherwise use server name
-	containerName := args.Name
-	if containerName == "" {
-		containerName = args.Server
-	}
-
 	// Use retriever to properly fetch and prepare the MCP server
-	// Pass "disabled" for verification since we're in a controlled environment
+	// TODO: make this configurable so we could warn or even fail
 	imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
 	}
 
-	// Create container runtime for the run configuration
-	rt, err := container.NewFactory().Create(ctx)
+	// Build run configuration
+	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to create container runtime: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to build run configuration: %v", err)), nil
 	}
 
-	// Create run configuration
-	runConfig := &runner.RunConfig{
-		Image:         imageURL,
-		Name:          args.Server,
-		ContainerName: containerName,
-		BaseName:      containerName,
-		EnvVars:       make(map[string]string),
-		Deployer:      rt,
-	}
-
-	// Add user-provided environment variables
-	if args.Env != nil {
-		for k, v := range args.Env {
-			runConfig.EnvVars[k] = v
-		}
-	}
-
-	// If we have metadata from the registry, use it
-	if imageMetadata != nil {
-		runConfig.Transport = transporttypes.TransportType(imageMetadata.Transport)
-		runConfig.CmdArgs = imageMetadata.Args
-		runConfig.PermissionProfile = imageMetadata.Permissions
-
-		// Merge environment variables (user-provided ones override defaults)
-		if imageMetadata.EnvVars != nil {
-			if runConfig.EnvVars == nil {
-				runConfig.EnvVars = make(map[string]string)
-			}
-			for _, envVar := range imageMetadata.EnvVars {
-				// Only set default values if not already provided by user
-				if _, exists := runConfig.EnvVars[envVar.Name]; !exists && envVar.Default != "" {
-					runConfig.EnvVars[envVar.Name] = envVar.Default
-				}
-			}
-		}
-	} else {
-		// Default to SSE transport if no metadata
-		runConfig.Transport = transporttypes.TransportTypeSSE
-	}
-
-	// Save the run configuration state before starting
-	if err := runConfig.SaveState(ctx); err != nil {
-		logger.Warnf("Failed to save run configuration for %s: %v", containerName, err)
-		// Continue anyway, as this is not critical for running
-	}
-
-	// Run the workload in detached mode
-	if err := h.workloadManager.RunWorkloadDetached(ctx, runConfig); err != nil {
+	// Save and run the server
+	if err := h.saveAndRunServer(ctx, runConfig, args.Name); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to run server: %v", err)), nil
 	}
 
-	// Get workload info to return port and URL
-	workload, err := h.workloadManager.GetWorkload(ctx, containerName)
-	if err != nil {
-		// Server started but we couldn't get info - still return success
-		return mcp.NewToolResultStructured(map[string]interface{}{
-			"status": "running",
-			"name":   containerName,
-			"server": args.Server,
-		}, fmt.Sprintf("Server '%s' started successfully", containerName)), nil
-	}
-
-	result := map[string]interface{}{
-		"status": "running",
-		"name":   containerName,
-		"server": args.Server,
-	}
-
-	// Add port information if available
-	if workload.Port > 0 {
-		result["port"] = workload.Port
-		result["url"] = fmt.Sprintf("http://localhost:%d", workload.Port)
-	}
-
+	// Build and return result
+	result := h.getServerResult(ctx, args)
 	return mcp.NewToolResultStructuredOnly(result), nil
 }
 

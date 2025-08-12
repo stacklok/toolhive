@@ -42,8 +42,8 @@ func newMCPServeCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Start an MCP server to control ToolHive",
-		Long: `Start an MCP (Model Context Protocol) server that allows external clients to control ToolHive.
+		Short: "🧪 EXPERIMENTAL: Start an MCP server to control ToolHive",
+		Long: `🧪 EXPERIMENTAL: Start an MCP (Model Context Protocol) server that allows external clients to control ToolHive.
 The server provides tools to search the registry, run MCP servers, and remove servers.
 The server runs in privileged mode and can access the Docker socket directly.
 

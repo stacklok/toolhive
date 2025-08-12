@@ -11,11 +11,11 @@ mdx:
 
 ## thv mcp serve
 
-Start an MCP server to control ToolHive
+🧪 EXPERIMENTAL: Start an MCP server to control ToolHive
 
 ### Synopsis
 
-Start an MCP (Model Context Protocol) server that allows external clients to control ToolHive.
+🧪 EXPERIMENTAL: Start an MCP (Model Context Protocol) server that allows external clients to control ToolHive.
 The server provides tools to search the registry, run MCP servers, and remove servers.
 The server runs in privileged mode and can access the Docker socket directly.
 

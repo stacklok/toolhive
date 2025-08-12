@@ -103,7 +103,13 @@ func printJSONServers(servers []registry.ServerMetadata) error {
 	// Build a slice of raw implementations to maintain backward compatibility
 	rawServers := make([]any, 0, len(servers))
 	for _, server := range servers {
-		rawServers = append(rawServers, server.GetRawImplementation())
+		// Use type assertion to get the underlying type for backward-compatible JSON
+		switch s := server.(type) {
+		case *registry.ImageMetadata:
+			rawServers = append(rawServers, s)
+		case *registry.RemoteServerMetadata:
+			rawServers = append(rawServers, s)
+		}
 	}
 
 	// Marshal to JSON
@@ -119,8 +125,18 @@ func printJSONServers(servers []registry.ServerMetadata) error {
 
 // printJSONServer prints a single server in JSON format
 func printJSONServer(server registry.ServerMetadata) error {
-	// Marshal the raw implementation to maintain backward compatibility
-	jsonData, err := json.MarshalIndent(server.GetRawImplementation(), "", "  ")
+	// Use type assertion to get the underlying type for backward-compatible JSON
+	var rawServer any
+	switch s := server.(type) {
+	case *registry.ImageMetadata:
+		rawServer = s
+	case *registry.RemoteServerMetadata:
+		rawServer = s
+	default:
+		rawServer = server
+	}
+
+	jsonData, err := json.MarshalIndent(rawServer, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}

@@ -204,8 +204,6 @@ type ServerMetadata interface {
 	IsRemote() bool
 	// GetEnvVars returns environment variables
 	GetEnvVars() []*EnvVar
-	// GetRawImplementation returns the underlying implementation (either *ImageMetadata or *RemoteServerMetadata)
-	GetRawImplementation() any
 }
 
 // Implement ServerMetadata interface for ImageMetadata
@@ -268,11 +266,6 @@ func (*ImageMetadata) IsRemote() bool {
 // GetEnvVars returns environment variables
 func (i *ImageMetadata) GetEnvVars() []*EnvVar {
 	return i.EnvVars
-}
-
-// GetRawImplementation returns the underlying ImageMetadata pointer
-func (i *ImageMetadata) GetRawImplementation() any {
-	return i
 }
 
 // Implement ServerMetadata interface for RemoteServerMetadata

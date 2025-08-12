@@ -171,7 +171,10 @@ func Serve(
 		return fmt.Errorf("failed to create client manager: %v", err)
 	}
 
-	workloadManager := workloads.NewManagerFromRuntime(containerRuntime)
+	workloadManager, err := workloads.NewManagerFromRuntime(containerRuntime)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
 
 	// Create group manager
 	groupManager, err := groups.NewManager()

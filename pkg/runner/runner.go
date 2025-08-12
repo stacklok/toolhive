@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
@@ -20,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
 
 // Runner is responsible for running an MCP server with the provided configuration
@@ -32,12 +34,15 @@ type Runner struct {
 
 	// supportedMiddleware is a map of supported middleware types to their factory functions.
 	supportedMiddleware map[string]types.MiddlewareFactory
+
+	statusManager statuses.StatusManager
 }
 
 // NewRunner creates a new Runner with the provided configuration
-func NewRunner(runConfig *RunConfig) *Runner {
+func NewRunner(runConfig *RunConfig, statusManager statuses.StatusManager) *Runner {
 	return &Runner{
-		Config: runConfig,
+		Config:        runConfig,
+		statusManager: statusManager,
 	}
 }
 
@@ -293,6 +298,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			time.Sleep(1 * time.Second)
 		}
 	}()
+
+	// At this point, we can consider the workload started successfully.
+	if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.ContainerName, rt.WorkloadStatusRunning, ""); err != nil {
+		// If we can't set the status to `running` - treat it as a fatal error.
+		return fmt.Errorf("failed to set workload status: %v", err)
+	}
 
 	// Wait for either a signal or the done channel to be closed
 	select {

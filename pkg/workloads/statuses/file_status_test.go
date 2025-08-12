@@ -1,4 +1,4 @@
-package workloads
+package statuses
 
 import (
 	"context"
@@ -24,7 +24,7 @@ func init() {
 	logger.Initialize()
 }
 
-func TestFileStatusManager_CreateWorkloadStatus(t *testing.T) {
+func TestFileStatusManager_SetWorkloadStatus_Create(t *testing.T) {
 	t.Parallel()
 	// Create temporary directory for tests
 	tempDir := t.TempDir()
@@ -32,7 +32,7 @@ func TestFileStatusManager_CreateWorkloadStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// Test creating a new workload status
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	// Verify file was created
@@ -53,20 +53,19 @@ func TestFileStatusManager_CreateWorkloadStatus(t *testing.T) {
 	assert.False(t, statusFileData.UpdatedAt.IsZero())
 }
 
-func TestFileStatusManager_CreateWorkloadStatus_AlreadyExists(t *testing.T) {
+func TestFileStatusManager_SetWorkloadStatus_Update(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
 	manager := &fileStatusManager{baseDir: tempDir}
 	ctx := context.Background()
 
 	// Create workload first time
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
-	// Try to create again - should fail
-	err = manager.CreateWorkloadStatus(ctx, "test-workload")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "already exists")
+	// Create again - should just update, not fail
+	err = manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "updated")
+	assert.NoError(t, err)
 }
 
 func TestFileStatusManager_GetWorkload(t *testing.T) {
@@ -84,7 +83,7 @@ func TestFileStatusManager_GetWorkload(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a workload status
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	// Get the workload (no runtime call expected for starting workload)
@@ -172,7 +171,7 @@ func TestFileStatusManager_GetWorkload_FileAndRuntimeCombination(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a workload status file and set it to running
-	err := manager.CreateWorkloadStatus(ctx, "running-workload")
+	err := manager.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 	manager.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusRunning, "container started")
 
@@ -214,7 +213,7 @@ func TestFileStatusManager_SetWorkloadStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a workload status
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	// Update the status
@@ -247,12 +246,26 @@ func TestFileStatusManager_SetWorkloadStatus_NotFound(t *testing.T) {
 	manager := &fileStatusManager{baseDir: tempDir}
 	ctx := context.Background()
 
-	// Try to set status for non-existent workload - should not error but do nothing
-	manager.SetWorkloadStatus(ctx, "non-existent", rt.WorkloadStatusRunning, "test")
+	// Try to set status for non-existent workload - creates file since no runtime check
+	err := manager.SetWorkloadStatus(ctx, "non-existent", rt.WorkloadStatusRunning, "test")
+	require.NoError(t, err)
 
-	// Verify no file was created
+	// Verify file was created (current behavior creates files regardless)
 	statusFile := filepath.Join(tempDir, "non-existent.json")
-	assert.NoFileExists(t, statusFile)
+	assert.FileExists(t, statusFile)
+
+	// Verify file contents
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, "test", statusFileData.StatusContext)
+	assert.False(t, statusFileData.CreatedAt.IsZero())
+	assert.False(t, statusFileData.UpdatedAt.IsZero())
 }
 
 func TestFileStatusManager_DeleteWorkloadStatus(t *testing.T) {
@@ -262,7 +275,7 @@ func TestFileStatusManager_DeleteWorkloadStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a workload status
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	statusFile := filepath.Join(tempDir, "test-workload.json")
@@ -302,7 +315,7 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a workload status
-	err := manager.CreateWorkloadStatus(ctx, "test-workload")
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	// Test concurrent reads - should not conflict
@@ -344,7 +357,7 @@ func TestFileStatusManager_FullLifecycle(t *testing.T) {
 	workloadName := "lifecycle-test"
 
 	// 1. Create workload
-	err := manager.CreateWorkloadStatus(ctx, workloadName)
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	// 2. Update to running
@@ -396,7 +409,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			name: "single starting workload",
 			setup: func(f *fileStatusManager) error {
 				ctx := context.Background()
-				return f.CreateWorkloadStatus(ctx, "test-workload")
+				return f.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 			},
 			listAll: true,
 			setupRuntimeMock: func(m *mocks.MockRuntime) {
@@ -414,11 +427,11 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			setup: func(f *fileStatusManager) error {
 				ctx := context.Background()
 				// Create a starting workload
-				if err := f.CreateWorkloadStatus(ctx, "starting-workload"); err != nil {
+				if err := f.SetWorkloadStatus(ctx, "starting-workload", rt.WorkloadStatusStarting, ""); err != nil {
 					return err
 				}
 				// Create a running workload
-				if err := f.CreateWorkloadStatus(ctx, "running-workload"); err != nil {
+				if err := f.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusStarting, ""); err != nil {
 					return err
 				}
 				f.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusRunning, "container started")
@@ -453,11 +466,11 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			setup: func(f *fileStatusManager) error {
 				ctx := context.Background()
 				// Create a starting workload
-				if err := f.CreateWorkloadStatus(ctx, "starting-workload"); err != nil {
+				if err := f.SetWorkloadStatus(ctx, "starting-workload", rt.WorkloadStatusStarting, ""); err != nil {
 					return err
 				}
 				// Create a running workload
-				if err := f.CreateWorkloadStatus(ctx, "running-workload"); err != nil {
+				if err := f.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusStarting, ""); err != nil {
 					return err
 				}
 				f.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusRunning, "container started")
@@ -487,7 +500,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			name: "invalid label filter",
 			setup: func(f *fileStatusManager) error {
 				ctx := context.Background()
-				return f.CreateWorkloadStatus(ctx, "test-workload")
+				return f.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 			},
 			listAll:      true,
 			labelFilters: []string{"invalid-filter"},
@@ -501,7 +514,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			setup: func(f *fileStatusManager) error {
 				ctx := context.Background()
 				// Create file workload that will merge with runtime
-				if err := f.CreateWorkloadStatus(ctx, "merge-workload"); err != nil {
+				if err := f.SetWorkloadStatus(ctx, "merge-workload", rt.WorkloadStatusStarting, ""); err != nil {
 					return err
 				}
 				f.SetWorkloadStatus(ctx, "merge-workload", rt.WorkloadStatusStopping, "shutting down")

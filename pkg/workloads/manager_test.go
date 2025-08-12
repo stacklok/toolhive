@@ -10,7 +10,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/workloads/mocks"
+	statusMocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
 )
 
 func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
@@ -22,7 +22,7 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 		mockWorkloads  []core.Workload
 		expectedNames  []string
 		expectError    bool
-		setupStatusMgr func(*mocks.MockStatusManager)
+		setupStatusMgr func(*statusMocks.MockStatusManager)
 	}{
 		{
 			name:      "non existent group returns empty list",
@@ -33,7 +33,7 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 			},
 			expectedNames: []string{},
 			expectError:   false,
-			setupStatusMgr: func(sm *mocks.MockStatusManager) {
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
 				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return([]core.Workload{
 					{Name: "workload1", Group: "other-group"},
 					{Name: "workload2", Group: "another-group"},
@@ -51,7 +51,7 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 			},
 			expectedNames: []string{"workload1", "workload3", "workload4"},
 			expectError:   false,
-			setupStatusMgr: func(sm *mocks.MockStatusManager) {
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
 				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return([]core.Workload{
 					{Name: "workload1", Group: "test-group"},
 					{Name: "workload2", Group: "other-group"},
@@ -70,7 +70,7 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 			},
 			expectedNames: []string{"workload1", "workload3"},
 			expectError:   false,
-			setupStatusMgr: func(sm *mocks.MockStatusManager) {
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
 				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return([]core.Workload{
 					{Name: "workload1", Group: ""},
 					{Name: "workload2", Group: "test-group"},
@@ -88,7 +88,7 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 			},
 			expectedNames: []string{"running-workload", "stopped-workload"},
 			expectError:   false,
-			setupStatusMgr: func(sm *mocks.MockStatusManager) {
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
 				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return([]core.Workload{
 					{Name: "running-workload", Group: "test-group", Status: runtime.WorkloadStatusRunning},
 					{Name: "stopped-workload", Group: "test-group", Status: runtime.WorkloadStatusStopped},
@@ -101,7 +101,7 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 			groupName:     "test-group",
 			expectedNames: nil,
 			expectError:   true,
-			setupStatusMgr: func(sm *mocks.MockStatusManager) {
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
 				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return(nil, assert.AnError)
 			},
 		},
@@ -111,7 +111,7 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 			mockWorkloads: []core.Workload{},
 			expectedNames: []string{},
 			expectError:   false,
-			setupStatusMgr: func(sm *mocks.MockStatusManager) {
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
 				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return([]core.Workload{}, nil)
 			},
 		},
@@ -124,7 +124,7 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			mockStatusMgr := mocks.NewMockStatusManager(ctrl)
+			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
 			tt.setupStatusMgr(mockStatusMgr)
 
 			manager := &defaultManager{

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -859,4 +860,101 @@ func TestFileStatusManager_GetWorkload_HealthyWithProxy(t *testing.T) {
 	assert.Equal(t, rt.WorkloadStatusRunning, workload.Status)
 	assert.Equal(t, "container started", workload.StatusContext) // Original file context preserved
 	assert.Equal(t, "test-image:latest", workload.Package)
+}
+
+func TestFileStatusManager_ListWorkloads_WithValidation(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tempDir := t.TempDir()
+	mockRuntime := mocks.NewMockRuntime(ctrl)
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		runtime: mockRuntime,
+	}
+	ctx := context.Background()
+
+	// Create file workloads - one healthy running, one with runtime mismatch, one with proxy down
+	err := manager.SetWorkloadStatus(ctx, "healthy-workload", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadStatus(ctx, "runtime-mismatch", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadStatus(ctx, "proxy-down", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
+
+	// Mock runtime containers
+	runtimeContainers := []rt.ContainerInfo{
+		{
+			Name:   "healthy-workload",
+			Image:  "healthy:latest",
+			Status: "Up 5 minutes",
+			State:  rt.WorkloadStatusRunning,
+			Labels: map[string]string{
+				"toolhive":      "true",
+				"toolhive-name": "healthy-workload",
+			},
+		},
+		{
+			Name:   "runtime-mismatch",
+			Image:  "mismatch:latest",
+			Status: "Exited (0) 1 minute ago",
+			State:  rt.WorkloadStatusStopped, // Runtime says stopped, file says running
+			Labels: map[string]string{
+				"toolhive":      "true",
+				"toolhive-name": "runtime-mismatch",
+			},
+		},
+		{
+			Name:   "proxy-down",
+			Image:  "proxy:latest",
+			Status: "Up 3 minutes",
+			State:  rt.WorkloadStatusRunning,
+			Labels: map[string]string{
+				"toolhive":          "true",
+				"toolhive-name":     "proxy-down",
+				"toolhive-basename": "proxy-down", // This will trigger proxy check
+			},
+		},
+	}
+
+	mockRuntime.EXPECT().ListWorkloads(gomock.Any()).Return(runtimeContainers, nil)
+
+	// List all workloads
+	workloads, err := manager.ListWorkloads(ctx, true, nil)
+	require.NoError(t, err)
+
+	// Should have 3 workloads
+	require.Len(t, workloads, 3)
+
+	// Create a map for easier assertion
+	workloadMap := make(map[string]core.Workload)
+	for _, w := range workloads {
+		workloadMap[w.Name] = w
+	}
+
+	// Verify healthy workload remains running
+	healthyWorkload, exists := workloadMap["healthy-workload"]
+	require.True(t, exists)
+	assert.Equal(t, rt.WorkloadStatusRunning, healthyWorkload.Status)
+
+	// Verify runtime mismatch workload is marked unhealthy (status might be updated async)
+	// We'll check for either unhealthy or the original status with mismatch context
+	runtimeMismatch, exists := workloadMap["runtime-mismatch"]
+	require.True(t, exists)
+	// The workload should either be marked unhealthy or have a status context indicating the issue
+	isValidatedUnhealthy := runtimeMismatch.Status == rt.WorkloadStatusUnhealthy ||
+		strings.Contains(runtimeMismatch.StatusContext, "mismatch")
+	assert.True(t, isValidatedUnhealthy, "Runtime mismatch workload should be detected as unhealthy")
+
+	// Verify proxy down workload is detected (proxy.IsRunning will return false for non-existent proxy)
+	proxyDown, exists := workloadMap["proxy-down"]
+	require.True(t, exists)
+	// Similar check - should be unhealthy or have proxy-related context
+	isProxyValidated := proxyDown.Status == rt.WorkloadStatusUnhealthy ||
+		strings.Contains(proxyDown.StatusContext, "proxy")
+	assert.True(t, isProxyValidated, "Proxy down workload should be detected as unhealthy")
 }

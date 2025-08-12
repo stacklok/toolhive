@@ -13,7 +13,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/lestrrat-go/httprc/v3"
+	"github.com/lestrrat-go/jwx/v3/jwk"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -195,10 +196,15 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 	config.httpClient = httpClient
 
 	// Create a new JWKS client with auto-refresh
-	cache := jwk.NewCache(ctx)
+	// In jwx v3, NewCache requires an httprc.Client
+	httprcClient := httprc.NewClient(httprc.WithHTTPClient(httpClient))
+	cache, err := jwk.NewCache(ctx, httprcClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create JWKS cache: %w", err)
+	}
 
-	// Register the JWKS URL with the cache using custom HTTP client
-	err = cache.Register(jwksURL, jwk.WithHTTPClient(httpClient))
+	// Register the JWKS URL with the cache
+	err = cache.Register(ctx, jwksURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register JWKS URL: %w", err)
 	}
@@ -229,9 +235,10 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 	}
 
 	// Get the key set from the JWKS
-	keySet, err := v.jwksClient.Get(ctx, v.jwksURL)
+	// In jwx v3, Get is replaced with Lookup
+	keySet, err := v.jwksClient.Lookup(ctx, v.jwksURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get JWKS: %w", err)
+		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
 	}
 
 	// Get the key with the matching key ID
@@ -241,9 +248,10 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 	}
 
 	// Get the raw key
+	// In jwx v3, Raw method is replaced with Export function
 	var rawKey interface{}
-	if err := key.Raw(&rawKey); err != nil {
-		return nil, fmt.Errorf("failed to get raw key: %w", err)
+	if err := jwk.Export(key, &rawKey); err != nil {
+		return nil, fmt.Errorf("failed to export raw key: %w", err)
 	}
 
 	return rawKey, nil

@@ -37,6 +37,9 @@ type RunFlags struct {
 	Volumes           []string
 	Secrets           []string
 
+	// Remote MCP server support
+	RemoteURL string
+
 	// Security and audit
 	AuthzConfig string
 	AuditConfig string
@@ -127,6 +130,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		[]string{},
 		"Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)",
 	)
+	cmd.Flags().StringVar(&config.RemoteURL, "remote", "", "URL of remote MCP server to run as a workload")
 	cmd.Flags().StringVar(&config.AuthzConfig, "authz-config", "", "Path to the authorization configuration file")
 	cmd.Flags().StringVar(&config.AuditConfig, "audit-config", "", "Path to the audit configuration file")
 	cmd.Flags().BoolVar(&config.EnableAudit, "enable-audit", false, "Enable audit logging with default configuration")
@@ -231,19 +235,28 @@ func BuildRunnerConfig(
 		envVarValidator = &runner.CLIEnvVarValidator{}
 	}
 
-	// Image retrieval
+	// Handle remote MCP server
 	var imageMetadata *registry.ImageMetadata
 	imageURL := serverOrImage
-	// Only pull image if we are not running in Kubernetes mode.
-	// This split will go away if we implement a separate command or binary
-	// for running MCP servers in Kubernetes.
-	if !runtime.IsKubernetesRuntime() {
-		// Take the MCP server we were supplied and either fetch the image, or
-		// build it from a protocol scheme. If the server URI refers to an image
-		// in our trusted registry, we will also fetch the image metadata.
-		imageURL, imageMetadata, err = retriever.GetMCPServer(ctx, serverOrImage, runConfig.CACertPath, runConfig.VerifyImage)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+	transportType := runConfig.Transport
+
+	// If --remote flag is provided, use SSE transport and set the remote URL as the image
+	if runConfig.RemoteURL != "" {
+		transportType = "sse" // Remote servers use SSE transport
+		imageURL = runConfig.RemoteURL
+		// For remote servers, we don't need to pull image metadata
+		imageMetadata = nil
+	} else {
+		// Only pull image if we are not running in Kubernetes mode.
+		// In Kubernetes mode, the image is pulled by the container runtime.
+		if !runtime.IsKubernetesRuntime() {
+			// Take the MCP server we were supplied and either fetch the image, or
+			// build it from a protocol scheme. If the server URI refers to an image
+			// in our trusted registry, we will also fetch the image metadata.
+			imageURL, imageMetadata, err = retriever.GetMCPServer(ctx, serverOrImage, runConfig.CACertPath, runConfig.VerifyImage)
+			if err != nil {
+				return nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+			}
 		}
 	}
 
@@ -262,6 +275,7 @@ func BuildRunnerConfig(
 		WithCmdArgs(cmdArgs).
 		WithName(runConfig.Name).
 		WithImage(imageURL).
+		WithRemoteURL(runConfig.RemoteURL).
 		WithHost(validatedHost).
 		WithTargetHost(runConfig.TargetHost).
 		WithDebug(debugMode).
@@ -273,7 +287,7 @@ func BuildRunnerConfig(
 		WithNetworkIsolation(runConfig.IsolateNetwork).
 		WithK8sPodPatch(runConfig.K8sPodPatch).
 		WithProxyMode(types.ProxyMode(runConfig.ProxyMode)).
-		WithTransportAndPorts(runConfig.Transport, runConfig.ProxyPort, runConfig.TargetPort).
+		WithTransportAndPorts(transportType, runConfig.ProxyPort, runConfig.TargetPort).
 		WithAuditEnabled(runConfig.EnableAudit, runConfig.AuditConfig).
 		WithLabels(runConfig.Labels).
 		WithGroup(runConfig.Group).

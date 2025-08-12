@@ -30,6 +30,9 @@ type RunConfig struct {
 	// Image is the Docker image to run
 	Image string `json:"image" yaml:"image"`
 
+	// RemoteURL is the URL of the remote MCP server (if running remotely)
+	RemoteURL string `json:"remote_url,omitempty" yaml:"remote_url,omitempty"`
+
 	// CmdArgs are the arguments to pass to the container
 	CmdArgs []string `json:"cmd_args,omitempty" yaml:"cmd_args,omitempty"`
 
@@ -37,10 +40,10 @@ type RunConfig struct {
 	Name string `json:"name" yaml:"name"`
 
 	// ContainerName is the name of the container
-	ContainerName string `json:"container_name" yaml:"container_name"`
+	ContainerName string `json:"container_name,omitempty" yaml:"container_name,omitempty"`
 
 	// BaseName is the base name used for the container (without prefixes)
-	BaseName string `json:"base_name" yaml:"base_name"`
+	BaseName string `json:"base_name,omitempty" yaml:"base_name,omitempty"`
 
 	// Transport is the transport mode (stdio, sse, or streamable-http)
 	Transport types.TransportType `json:"transport" yaml:"transport"`

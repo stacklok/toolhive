@@ -498,8 +498,13 @@ func (d *defaultManager) loadRunnerFromState(ctx context.Context, baseName strin
 		return nil, err
 	}
 
-	// Update the runtime in the loaded configuration
-	runConfig.Deployer = d.runtime
+	if runConfig.RemoteURL != "" {
+		// For remote workloads, we don't need a deployer
+		runConfig.Deployer = nil
+	} else {
+		// Update the runtime in the loaded configuration
+		runConfig.Deployer = d.runtime
+	}
 
 	// Create a new runner with the loaded configuration
 	return runner.NewRunner(runConfig), nil

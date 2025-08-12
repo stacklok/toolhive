@@ -37,6 +37,9 @@ type HTTPTransport struct {
 	prometheusHandler http.Handler
 	authInfoHandler   http.Handler
 
+	// Remote MCP server support
+	remoteURL string
+
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
@@ -88,6 +91,13 @@ func NewHTTPTransport(
 	}
 }
 
+// SetRemoteURL sets the remote URL for the transport
+func (t *HTTPTransport) SetRemoteURL(url string) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	t.remoteURL = url
+}
+
 // Mode returns the transport mode.
 func (t *HTTPTransport) Mode() types.TransportType {
 	return t.transportType
@@ -112,6 +122,12 @@ func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containe
 
 	t.deployer = runtime
 	t.containerName = containerName
+
+	// For remote MCP servers, we don't need to create a container
+	if t.remoteURL != "" {
+		logger.Infof("Remote transport setup complete for %s -> %s", containerName, t.remoteURL)
+		return nil
+	}
 
 	env, ok := transportEnvMap[t.transportType]
 	if !ok {
@@ -207,38 +223,53 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return errors.ErrContainerNameNotSet
 	}
 
-	if t.deployer == nil {
+	if t.deployer == nil && t.remoteURL == "" {
 		return fmt.Errorf("container deployer not set")
 	}
 
 	// Create and start the transparent proxy
-	// The SSE transport forwards requests from the host port to the container's target port
-	// In a Docker bridge network, we need to use the specified target host
-	// We ignore containerIP even if it's set, as it's not directly accessible from the host
-	targetHost := t.targetHost
+	var targetURI string
 
-	// Check if target port is set
-	if t.targetPort <= 0 {
-		return fmt.Errorf("target port not set for HTTP transport")
+	if t.remoteURL != "" {
+		// For remote MCP servers, use the remote URL directly
+		targetURI = t.remoteURL
+		logger.Infof("Setting up transparent proxy to forward from host port %d to remote URL %s",
+			t.proxyPort, targetURI)
+	} else {
+		// For local containers, forward to the container's target port
+		// The SSE transport forwards requests from the host port to the container's target port
+		// In a Docker bridge network, we need to use the specified target host
+		// We ignore containerIP even if it's set, as it's not directly accessible from the host
+		targetHost := t.targetHost
+
+		// Check if target port is set
+		if t.targetPort <= 0 {
+			return fmt.Errorf("target port not set for HTTP transport")
+		}
+
+		// Use the target port for the container
+		containerPort := t.targetPort
+		targetURI = fmt.Sprintf("http://%s:%d", targetHost, containerPort)
+		logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
+			t.proxyPort, targetURI)
 	}
-
-	// Use the target port for the container
-	containerPort := t.targetPort
-	targetURI := fmt.Sprintf("http://%s:%d", targetHost, containerPort)
-	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
-		t.proxyPort, targetURI)
 
 	// Create the transparent proxy with middlewares
 	t.proxy = transparent.NewTransparentProxy(
 		t.host, t.proxyPort, t.containerName, targetURI,
 		t.prometheusHandler, t.authInfoHandler,
-		true,
+		t.remoteURL == "", // Disable health check for remote servers
 		t.middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}
 
-	logger.Infof("HTTP transport started for container %s on port %d", t.containerName, t.proxyPort)
+	logger.Infof("HTTP transport started for %s on port %d", t.containerName, t.proxyPort)
+
+	// For remote MCP servers, we don't need container monitoring
+	if t.remoteURL != "" {
+		return nil
+	}
 
 	// Create a container monitor
 	monitorRuntime, err := container.NewFactory().Create(ctx)
@@ -267,23 +298,26 @@ func (t *HTTPTransport) Stop(ctx context.Context) error {
 	// Signal shutdown
 	close(t.shutdownCh)
 
-	// Stop the monitor if it's running
-	if t.monitor != nil {
-		t.monitor.StopMonitoring()
-		t.monitor = nil
+	// For remote MCP servers, we don't need container monitoring
+	if t.remoteURL == "" {
+		// Stop the monitor if it's running
+		if t.monitor != nil {
+			t.monitor.StopMonitoring()
+			t.monitor = nil
+		}
+
+		// Stop the container if deployer is available
+		if t.deployer != nil && t.containerName != "" {
+			if err := t.deployer.StopWorkload(ctx, t.containerName); err != nil {
+				return fmt.Errorf("failed to stop workload: %w", err)
+			}
+		}
 	}
 
 	// Stop the transparent proxy
 	if t.proxy != nil {
 		if err := t.proxy.Stop(ctx); err != nil {
 			logger.Warnf("Warning: Failed to stop proxy: %v", err)
-		}
-	}
-
-	// Stop the container if deployer is available
-	if t.deployer != nil && t.containerName != "" {
-		if err := t.deployer.StopWorkload(ctx, t.containerName); err != nil {
-			return fmt.Errorf("failed to stop workload: %w", err)
 		}
 	}
 

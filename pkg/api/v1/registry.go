@@ -317,15 +317,31 @@ func (*RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	servers, err := provider.ListServers()
+	// Get the full registry to access both container and remote servers
+	reg, err := provider.GetRegistry()
 	if err != nil {
-		logger.Errorf("Failed to list servers: %v", err)
-		http.Error(w, "Failed to list servers", http.StatusInternalServerError)
+		logger.Errorf("Failed to get registry: %v", err)
+		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
 		return
 	}
 
+	// Build response with both container and remote servers
+	response := listServersResponse{
+		Servers:       make([]*registry.ImageMetadata, 0, len(reg.Servers)),
+		RemoteServers: make([]*registry.RemoteServerMetadata, 0, len(reg.RemoteServers)),
+	}
+
+	// Add container servers
+	for _, server := range reg.Servers {
+		response.Servers = append(response.Servers, server)
+	}
+
+	// Add remote servers
+	for _, server := range reg.RemoteServers {
+		response.RemoteServers = append(response.RemoteServers, server)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	response := listServersResponse{Servers: servers}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logger.Errorf("Failed to encode response: %v", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
@@ -359,15 +375,33 @@ func (*RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Try to get the server (could be container or remote)
 	server, err := provider.GetServer(serverName)
 	if err != nil {
 		logger.Errorf("Failed to get server '%s': %v", serverName, err)
-		http.Error(w, "ImageMetadata not found", http.StatusNotFound)
+		http.Error(w, "Server not found", http.StatusNotFound)
 		return
 	}
 
+	// Build response based on server type
+	var response getServerResponse
+	if server.IsRemote() {
+		if remote, ok := server.(*registry.RemoteServerMetadata); ok {
+			response = getServerResponse{
+				RemoteServer: remote,
+				IsRemote:     true,
+			}
+		}
+	} else {
+		if img, ok := server.(*registry.ImageMetadata); ok {
+			response = getServerResponse{
+				Server:   img,
+				IsRemote: false,
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	response := getServerResponse{Server: server}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logger.Errorf("Failed to encode response: %v", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
@@ -427,16 +461,22 @@ type getRegistryResponse struct {
 //
 //	@Description	Response containing a list of servers
 type listServersResponse struct {
-	// List of servers in the registry
+	// List of container servers in the registry
 	Servers []*registry.ImageMetadata `json:"servers"`
+	// List of remote servers in the registry (if any)
+	RemoteServers []*registry.RemoteServerMetadata `json:"remote_servers,omitempty"`
 }
 
 // getServerResponse represents the response for getting a server from a registry
 //
 //	@Description	Response containing server details
 type getServerResponse struct {
-	// Server details
-	Server *registry.ImageMetadata `json:"server"`
+	// Container server details (if it's a container server)
+	Server *registry.ImageMetadata `json:"server,omitempty"`
+	// Remote server details (if it's a remote server)
+	RemoteServer *registry.RemoteServerMetadata `json:"remote_server,omitempty"`
+	// Indicates if this is a remote server
+	IsRemote bool `json:"is_remote"`
 }
 
 // UpdateRegistryRequest represents the request for updating a registry

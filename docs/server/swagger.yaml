@@ -339,7 +339,7 @@ components:
           type: boolean
       type: object
     registry.ImageMetadata:
-      description: Server details
+      description: Container server details (if it's a container server)
       properties:
         args:
           description: |-
@@ -518,6 +518,7 @@ components:
           type: string
       type: object
     registry.RemoteServerMetadata:
+      description: Remote server details (if it's a remote server)
       properties:
         custom_metadata:
           additionalProperties: {}
@@ -1093,6 +1094,11 @@ components:
     v1.getServerResponse:
       description: Response containing server details
       properties:
+        is_remote:
+          description: Indicates if this is a remote server
+          type: boolean
+        remote_server:
+          $ref: '#/components/schemas/registry.RemoteServerMetadata'
         server:
           $ref: '#/components/schemas/registry.ImageMetadata'
       type: object
@@ -1118,8 +1124,14 @@ components:
     v1.listServersResponse:
       description: Response containing a list of servers
       properties:
+        remote_servers:
+          description: List of remote servers in the registry (if any)
+          items:
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
+          type: array
+          uniqueItems: false
         servers:
-          description: List of servers in the registry
+          description: List of container servers in the registry
           items:
             $ref: '#/components/schemas/registry.ImageMetadata'
           type: array

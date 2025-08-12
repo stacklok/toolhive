@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/registry"
+	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 var registryCmd = &cobra.Command{
@@ -188,7 +189,9 @@ func printTextServerInfo(name string, server registry.ServerMetadata) {
 		// Container server
 		if img, ok := server.(*registry.ImageMetadata); ok {
 			fmt.Printf("Image: %s\n", img.Image)
-			if (img.Transport == "sse" || img.Transport == "streamable-http") && img.TargetPort > 0 {
+			isHTTPTransport := img.Transport == transtypes.TransportTypeSSE.String() ||
+				img.Transport == transtypes.TransportTypeStreamableHTTP.String()
+			if isHTTPTransport && img.TargetPort > 0 {
 				fmt.Printf("Target Port: %d\n", img.TargetPort)
 			}
 			fmt.Printf("Has Provenance: %s\n", map[bool]string{true: "Yes", false: "No"}[img.Provenance != nil])

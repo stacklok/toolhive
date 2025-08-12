@@ -38,14 +38,10 @@ func NewStatusManagerFromRuntime(runtime rt.Runtime) StatusManager {
 // based on the runtime environment. If running in Kubernetes, it returns the runtime-based
 // implementation. Otherwise, it returns the file-based implementation.
 func NewStatusManager(runtime rt.Runtime) (StatusManager, error) {
-	/*
-		if rt.IsKubernetesRuntime() {
-			return NewStatusManagerFromRuntime(runtime), nil
-		}
-		return NewFileStatusManager(runtime)
-	*/
-	// For now, we only support the runtime-based implementation.
-	return NewStatusManagerFromRuntime(runtime), nil
+	if rt.IsKubernetesRuntime() {
+		return NewStatusManagerFromRuntime(runtime), nil
+	}
+	return NewFileStatusManager(runtime)
 }
 
 // runtimeStatusManager is an implementation of StatusManager that uses the state

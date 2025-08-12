@@ -13,14 +13,14 @@ import (
 )
 
 var proxyStdioCmd = &cobra.Command{
-	Use:   "stdio WORKLOAD-NAME SERVER_NAME",
+	Use:   "stdio WORKLOAD-NAME",
 	Short: "Create a stdio-based proxy for an MCP server",
 	Long: `Create a stdio-based proxy that connects stdin/stdout to a target MCP server.
 
 Example:
-  thv proxy stdio my-workload my-server-proxy
+  thv proxy stdio my-workload
 `,
-	Args: cobra.ExactArgs(2),
+	Args: cobra.ExactArgs(1),
 	RunE: proxyStdioCmdFunc,
 }
 
@@ -29,8 +29,6 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	workloadName := args[0]
-	serverName := args[1]
-
 	workloadManager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
@@ -39,7 +37,7 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get workload %q: %w", workloadName, err)
 	}
-	logger.Infof("Starting stdio proxy for server=%q -> %s", serverName, workloadName)
+	logger.Infof("Starting stdio proxy for workload=%q", workloadName)
 
 	bridge, err := transport.NewStdioBridge(stdioWorkload.URL)
 	if err != nil {

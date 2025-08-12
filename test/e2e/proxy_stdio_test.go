@@ -22,13 +22,12 @@ func generateUniqueProxyStdioServerName(prefix string) string {
 
 var _ = Describe("Proxy Stdio E2E", Serial, func() {
 	var (
-		config          *e2e.TestConfig
-		proxyCmd        *exec.Cmd
-		mcpServerName   string
-		workloadName    string
-		proxyServerName string
-		transportType   types.TransportType
-		proxyMode       string // e.g. "sse" or "streamable-http"
+		config        *e2e.TestConfig
+		proxyCmd      *exec.Cmd
+		mcpServerName string
+		workloadName  string
+		transportType types.TransportType
+		proxyMode     string // e.g. "sse" or "streamable-http"
 	)
 
 	BeforeEach(func() {
@@ -36,7 +35,6 @@ var _ = Describe("Proxy Stdio E2E", Serial, func() {
 		err := e2e.CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred())
 		workloadName = generateUniqueProxyStdioServerName("mcpserver-proxy-stdio--target")
-		proxyServerName = generateUniqueProxyStdioServerName("mcpserver-proxy-test")
 	})
 
 	JustBeforeEach(func() {
@@ -94,7 +92,6 @@ var _ = Describe("Proxy Stdio E2E", Serial, func() {
 			proxyCmd, stdin, outputBuffer := startProxyStdioForMCP(
 				config,
 				workloadName,
-				proxyServerName,
 			)
 
 			// Ensure the proxy started
@@ -146,7 +143,6 @@ var _ = Describe("Proxy Stdio E2E", Serial, func() {
 			proxyCmd, stdin, outputBuffer := startProxyStdioForMCP(
 				config,
 				workloadName,
-				proxyServerName,
 			)
 
 			// Ensure the proxy started
@@ -198,7 +194,6 @@ var _ = Describe("Proxy Stdio E2E", Serial, func() {
 			proxyCmd, stdin, outputBuffer := startProxyStdioForMCP(
 				config,
 				workloadName,
-				proxyServerName,
 			)
 
 			// Ensure the proxy started
@@ -230,12 +225,11 @@ var _ = Describe("Proxy Stdio E2E", Serial, func() {
 })
 
 // Helper functions
-func startProxyStdioForMCP(config *e2e.TestConfig, workloadName string, proxyServerName string) (*exec.Cmd, io.WriteCloser, *bytes.Buffer) {
+func startProxyStdioForMCP(config *e2e.TestConfig, workloadName string) (*exec.Cmd, io.WriteCloser, *bytes.Buffer) {
 	args := []string{
 		"proxy",
 		"stdio",
 		workloadName,
-		proxyServerName,
 	}
 
 	// Log the command for debugging

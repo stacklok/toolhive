@@ -243,3 +243,32 @@ func StartDockerCommand(args ...string) *exec.Cmd {
 	cmd.Env = os.Environ()
 	return cmd
 }
+
+// WaitForWorkloadUnhealthy waits for a workload to be marked as unhealthy
+func WaitForWorkloadUnhealthy(config *TestConfig, serverName string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for workload %s to be marked as unhealthy", serverName)
+		case <-ticker.C:
+			stdout, _, err := NewTHVCommand(config, "list", "--all").Run()
+			if err != nil {
+				continue
+			}
+
+			// Check if the server is listed and marked as unhealthy
+			lines := strings.Split(stdout, "\n")
+			for _, line := range lines {
+				if strings.Contains(line, serverName) && strings.Contains(line, "unhealthy") {
+					return nil
+				}
+			}
+		}
+	}
+}

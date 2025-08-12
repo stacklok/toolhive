@@ -1358,6 +1358,40 @@ paths:
       summary: Unregister a client
       tags:
       - clients
+  /api/v1beta/clients/{name}/groups/{group}:
+    delete:
+      description: Unregister a client from a specific group in ToolHive
+      parameters:
+      - description: Client name to unregister
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      - description: Group name to remove client from
+        in: path
+        name: group
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Client or group not found
+      summary: Unregister a client from a specific group
+      tags:
+      - clients
   /api/v1beta/clients/register:
     post:
       description: Register multiple clients with ToolHive

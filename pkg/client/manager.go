@@ -10,7 +10,6 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -29,8 +28,8 @@ type Manager interface {
 	ListClients() ([]Client, error)
 	// RegisterClients registers multiple clients with ToolHive for the specified workloads.
 	RegisterClients(clients []Client, workloads []core.Workload) error
-	// UnregisterClients unregisters multiple clients from ToolHive.
-	UnregisterClients(ctx context.Context, clients []Client) error
+	// UnregisterClients unregisters multiple clients from ToolHive for the specified workloads.
+	UnregisterClients(ctx context.Context, clients []Client, workloads []core.Workload) error
 	// AddServerToClients adds an MCP server to the appropriate client configurations.
 	AddServerToClients(ctx context.Context, serverName, serverURL, transportType, group string) error
 	// RemoveServerFromClients removes an MCP server from the appropriate client configurations.
@@ -82,27 +81,12 @@ func (m *defaultManager) RegisterClients(clients []Client, workloads []core.Work
 	return nil
 }
 
-// UnregisterClients unregisters multiple clients from ToolHive.
-func (m *defaultManager) UnregisterClients(ctx context.Context, clients []Client) error {
+// UnregisterClients unregisters multiple clients from ToolHive for the specified workloads.
+func (m *defaultManager) UnregisterClients(_ context.Context, clients []Client, workloads []core.Workload) error {
 	for _, client := range clients {
-		err := config.UpdateConfig(func(c *config.Config) {
-			// Find and remove the client from registered clients list
-			for i, registeredClient := range c.Clients.RegisteredClients {
-				if registeredClient == string(client.Name) {
-					// Remove client from slice
-					c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
-					logger.Infof("Successfully unregistered client: %s\n", client.Name)
-					return
-				}
-			}
-			logger.Warnf("Client %s was not found in registered clients list", client.Name)
-		})
-		if err != nil {
-			return fmt.Errorf("failed to update configuration for client %s: %w", client.Name, err)
-		}
-		// Remove MCPs from client configuration
-		if err := m.removeMCPsFromClient(ctx, client.Name); err != nil {
-			logger.Warnf("Warning: Failed to remove MCPs from client %s: %v", client.Name, err)
+		// Remove specified workloads from the client
+		if err := m.removeWorkloadsFromClient(client.Name, workloads); err != nil {
+			return fmt.Errorf("failed to remove workloads from client %s: %v", client.Name, err)
 		}
 	}
 	return nil
@@ -151,52 +135,6 @@ func (m *defaultManager) RemoveServerFromClients(ctx context.Context, serverName
 	return nil
 }
 
-// removeMCPsFromClient removes currently running MCP servers from the specified client's configuration
-func (m *defaultManager) removeMCPsFromClient(ctx context.Context, clientType MCPClient) error {
-	// List workloads
-	containers, err := m.runtime.ListWorkloads(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Filter containers to only show those managed by ToolHive and running
-	var runningContainers []rt.ContainerInfo
-	for _, c := range containers {
-		if labels.IsToolHiveContainer(c.Labels) && c.State == "running" {
-			runningContainers = append(runningContainers, c)
-		}
-	}
-
-	if len(runningContainers) == 0 {
-		// No running servers, nothing to do
-		return nil
-	}
-
-	// For each running container, remove it from the client configuration
-	for _, c := range runningContainers {
-		// Get container name from labels
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
-
-		// Get tool type from labels
-		toolType := labels.GetToolType(c.Labels)
-
-		// Only include containers with tool type "mcp"
-		if toolType != mcpToolType {
-			continue
-		}
-
-		if err := m.removeServerFromClient(clientType, name); err != nil {
-			logger.Warnf("Warning: %v", err)
-			continue
-		}
-	}
-
-	return nil
-}
-
 // addWorkloadsToClient adds the specified workloads to the client's configuration
 func (m *defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []core.Workload) error {
 	if len(workloads) == 0 {
@@ -219,6 +157,28 @@ func (m *defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []
 		}
 
 		logger.Infof("Added MCP server %s to client %s\n", workload.Name, clientType)
+	}
+
+	return nil
+}
+
+// removeWorkloadsFromClient removes the specified workloads from the client's configuration
+func (m *defaultManager) removeWorkloadsFromClient(clientType MCPClient, workloads []core.Workload) error {
+	if len(workloads) == 0 {
+		// No workloads to remove, nothing to do
+		return nil
+	}
+
+	// For each workload, remove it from the client configuration
+	for _, workload := range workloads {
+		if workload.ToolType != mcpToolType {
+			continue
+		}
+
+		err := m.removeServerFromClient(clientType, workload.Name)
+		if err != nil {
+			return fmt.Errorf("failed to remove workload %s from client %s: %v", workload.Name, clientType, err)
+		}
 	}
 
 	return nil

@@ -39,7 +39,7 @@ func proxyStdioCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	logger.Infof("Starting stdio proxy for workload=%q", workloadName)
 
-	bridge, err := transport.NewStdioBridge(stdioWorkload.URL, stdioWorkload.TransportType)
+	bridge, err := transport.NewStdioBridge(workloadName, stdioWorkload.URL, stdioWorkload.TransportType)
 	if err != nil {
 		return fmt.Errorf("failed to create stdio bridge: %w", err)
 	}

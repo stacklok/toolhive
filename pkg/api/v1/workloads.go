@@ -593,7 +593,7 @@ type updateRequest struct {
 	// Port to expose from the container
 	TargetPort int `json:"target_port"`
 	// Environment variables to set in the container
-	EnvVars []string `json:"env_vars"`
+	EnvVars map[string]string `json:"env_vars"`
 	// Secret parameters to inject
 	Secrets []secrets.SecretParameter `json:"secrets"`
 	// Volume mounts

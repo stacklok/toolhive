@@ -976,11 +976,10 @@ components:
           type: array
           uniqueItems: false
         env_vars:
-          description: Environment variables to set in the container
-          items:
+          additionalProperties:
             type: string
-          type: array
-          uniqueItems: false
+          description: Environment variables to set in the container
+          type: object
         host:
           description: Host to bind to
           type: string

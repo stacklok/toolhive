@@ -242,19 +242,14 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	return c, nil
 }
 
-// WithEnvironmentVariables parses and sets environment variables
-func (c *RunConfig) WithEnvironmentVariables(envVarStrings []string) (*RunConfig, error) {
-	envVars, err := environment.ParseEnvironmentVariables(envVarStrings)
-	if err != nil {
-		return c, fmt.Errorf("failed to parse environment variables: %v", err)
-	}
-
+// WithEnvironmentVariables sets environment variables
+func (c *RunConfig) WithEnvironmentVariables(envVars map[string]string) (*RunConfig, error) {
 	// Initialize EnvVars if it's nil
 	if c.EnvVars == nil {
 		c.EnvVars = make(map[string]string)
 	}
 
-	// Merge the parsed environment variables with existing ones
+	// Merge the provided environment variables with existing ones
 	for key, value := range envVars {
 		c.EnvVars[key] = value
 	}

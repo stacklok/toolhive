@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -237,6 +238,12 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	var imageMetadata *registry.ImageMetadata
 
+	// Parse environment variables from slice to map
+	envVarsMap, err := environment.ParseEnvironmentVariables(runEnv)
+	if err != nil {
+		return fmt.Errorf("failed to parse environment variables: %v", err)
+	}
+
 	// Initialize a new RunConfig with values from command-line flags
 	runConfig, err := runner.NewRunConfigBuilder().
 		WithRuntime(rt).
@@ -261,7 +268,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		WithTelemetryConfig(finalOtelEndpoint, runOtelEnablePrometheusMetricsPath, runOtelServiceName,
 			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
 		WithToolsFilter(runToolsFilter).
-		Build(ctx, imageMetadata, runEnv, envVarValidator)
+		Build(ctx, imageMetadata, envVarsMap, envVarValidator)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}

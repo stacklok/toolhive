@@ -66,11 +66,11 @@ func buildServerConfig(
 	builder = builder.WithTransportAndPorts(transport, 0, 0)
 
 	// Prepare environment variables
-	envVarsList := prepareEnvironmentVariables(imageMetadata, args.Env)
+	envVars := prepareEnvironmentVariables(imageMetadata, args.Env)
 
 	// Build the configuration
 	envVarValidator := &runner.DetachedEnvVarValidator{}
-	return builder.Build(ctx, imageMetadata, envVarsList, envVarValidator)
+	return builder.Build(ctx, imageMetadata, envVars, envVarValidator)
 }
 
 // configureTransport sets up transport configuration from metadata
@@ -88,7 +88,7 @@ func configureTransport(builder *runner.RunConfigBuilder, imageMetadata *registr
 }
 
 // prepareEnvironmentVariables merges default and user environment variables
-func prepareEnvironmentVariables(imageMetadata *registry.ImageMetadata, userEnv map[string]string) []string {
+func prepareEnvironmentVariables(imageMetadata *registry.ImageMetadata, userEnv map[string]string) map[string]string {
 	envVarsMap := make(map[string]string)
 
 	// Add default environment variables from metadata
@@ -105,13 +105,7 @@ func prepareEnvironmentVariables(imageMetadata *registry.ImageMetadata, userEnv 
 		envVarsMap[k] = v
 	}
 
-	// Convert map to []string format
-	var envVarsList []string
-	for k, v := range envVarsMap {
-		envVarsList = append(envVarsList, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	return envVarsList
+	return envVarsMap
 }
 
 // saveAndRunServer saves the configuration and runs the server

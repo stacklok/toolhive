@@ -19,12 +19,12 @@ jobs:
   e2e-tests:
     name: E2E Tests
     uses: ./.github/workflows/e2e-tests.yml
-  swagger:
-    name: Swagger
-    uses: ./.github/workflows/verify-swagger.yml
+  codegen:
+    name: Codegen
+    uses: ./.github/workflows/verify-gen.yml
   image-build-and-push:
     name: Build and Sign Image
-    needs: [ linting, tests, e2e-tests, swagger ]
+    needs: [ linting, tests, e2e-tests, codegen ]
     permissions:
       contents: write
       packages: write

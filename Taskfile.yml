@@ -8,20 +8,27 @@ includes:
 tasks:
   docs:
     desc: Regenerate the docs
+    deps: [swagger-install]
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
+      - swag init -g pkg/api/server.go --v3.1 -o docs/server
 
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
     cmds:
       - go install github.com/swaggo/swag/v2/cmd/swag@latest
 
-  swagger-gen:
-    desc: Generate OpenAPI/Swagger documentation
-    deps: [swagger-install]
+  mock-install:
+    desc: Install the mockgen tool for mock generation
     cmds:
-      - swag init -g pkg/api/server.go --v3.1 -o docs/server
+      - go install go.uber.org/mock/mockgen@latest
+
+  gen:
+    desc: Generate mock files using go generate
+    deps: [mock-install]
+    cmds:
+      - go generate ./...
 
   lint:
     desc: Run linting tools
@@ -53,6 +60,7 @@ tasks:
 
   test:
     desc: Run unit tests (excluding e2e tests)
+    deps: [gen]
     cmds:
       - task: test-unixlike
         platforms: [linux, darwin]
@@ -128,6 +136,7 @@ tasks:
 
   build:
     desc: Build the binary
+    deps: [gen]
     vars:
       VERSION:
         sh: git describe --tags --always --dirty --match "v*" || echo "dev"

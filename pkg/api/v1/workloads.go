@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
+	wt "github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 // WorkloadRoutes defines the routes for workload management.
@@ -135,7 +136,7 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, runtime.ErrWorkloadNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)
 			return
-		} else if errors.Is(err, workloads.ErrInvalidWorkloadName) {
+		} else if errors.Is(err, wt.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -169,7 +170,7 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 	// Use the bulk method with a single workload
 	_, err := s.workloadManager.StopWorkloads(ctx, []string{name})
 	if err != nil {
-		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
+		if errors.Is(err, wt.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -198,7 +199,7 @@ func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request)
 	// Note: In the API, we always assume that the restart is a background operation
 	_, err := s.workloadManager.RestartWorkloads(ctx, []string{name}, false)
 	if err != nil {
-		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
+		if errors.Is(err, wt.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -226,7 +227,7 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 	// Use the bulk method with a single workload
 	_, err := s.workloadManager.DeleteWorkloads(ctx, []string{name})
 	if err != nil {
-		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
+		if errors.Is(err, wt.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -366,7 +367,7 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 	// The request is not blocked on completion.
 	_, err = s.workloadManager.StopWorkloads(ctx, workloadNames)
 	if err != nil {
-		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
+		if errors.Is(err, wt.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -412,7 +413,7 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 	// Note: In the API, we always assume that the restart is a background operation.
 	_, err = s.workloadManager.RestartWorkloads(ctx, workloadNames, false)
 	if err != nil {
-		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
+		if errors.Is(err, wt.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -457,7 +458,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 	// The request is not blocked on completion.
 	_, err = s.workloadManager.DeleteWorkloads(ctx, workloadNames)
 	if err != nil {
-		if errors.Is(err, workloads.ErrInvalidWorkloadName) {
+		if errors.Is(err, wt.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
 			return
 		}

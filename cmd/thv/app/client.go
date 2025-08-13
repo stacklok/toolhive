@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -104,6 +105,8 @@ func init() {
 	// TODO: Re-enable when group functionality is complete
 	//clientRegisterCmd.Flags().StringSliceVar(
 	//	&groupNames, "group", []string{"default"}, "Only register workloads from specified groups")
+	//clientRemoveCmd.Flags().StringSliceVar(
+	//	&groupNames, "group", []string{}, "Remove client from specified groups (if not set, removes all workloads from the client)")
 }
 
 func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
@@ -208,21 +211,7 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 			clientType)
 	}
 
-	ctx := cmd.Context()
-
-	manager, err := client.NewManager(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create client manager: %w", err)
-	}
-
-	err = manager.UnregisterClients(ctx, []client.Client{
-		{Name: client.MCPClient(clientType)},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to remove client %s: %w", clientType, err)
-	}
-
-	return nil
+	return performClientRemoval(cmd.Context(), client.Client{Name: client.MCPClient(clientType)}, groupNames)
 }
 
 func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
@@ -335,6 +324,117 @@ func registerClientsGlobally(
 	err := clientManager.RegisterClients(clients, runningWorkloads)
 	if err != nil {
 		return fmt.Errorf("failed to register clients: %w", err)
+	}
+
+	return nil
+}
+
+func performClientRemoval(ctx context.Context, clientToRemove client.Client, groupNames []string) error {
+	clientManager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	workloadManager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %w", err)
+	}
+
+	runningWorkloads, err := workloadManager.ListWorkloads(ctx, false)
+	if err != nil {
+		return fmt.Errorf("failed to list running workloads: %w", err)
+	}
+
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create group manager: %w", err)
+	}
+
+	if len(groupNames) > 0 {
+		return removeClientFromGroups(ctx, clientToRemove, groupNames, runningWorkloads, groupManager, clientManager)
+	}
+
+	return removeClientGlobally(ctx, clientToRemove, runningWorkloads, groupManager, clientManager)
+}
+
+func removeClientFromGroups(
+	ctx context.Context,
+	clientToRemove client.Client,
+	groupNames []string,
+	runningWorkloads []core.Workload,
+	groupManager groups.Manager,
+	clientManager client.Manager,
+) error {
+	fmt.Printf("Filtering workloads to groups: %v\n", groupNames)
+
+	// Remove client from specific groups only
+	filteredWorkloads, err := workloads.FilterByGroups(runningWorkloads, groupNames)
+	if err != nil {
+		return fmt.Errorf("failed to filter workloads by groups: %w", err)
+	}
+
+	// Remove the workloads from the client's configuration file
+	err = clientManager.UnregisterClients(ctx, []client.Client{clientToRemove}, filteredWorkloads)
+	if err != nil {
+		return fmt.Errorf("failed to unregister client: %w", err)
+	}
+
+	// Remove the client from the groups
+	err = groupManager.UnregisterClients(ctx, groupNames, []string{string(clientToRemove.Name)})
+	if err != nil {
+		return fmt.Errorf("failed to unregister client from groups: %w", err)
+	}
+
+	fmt.Printf("Successfully removed client %s from groups: %v\n", clientToRemove.Name, groupNames)
+
+	return nil
+}
+
+func removeClientGlobally(
+	ctx context.Context,
+	clientToRemove client.Client,
+	runningWorkloads []core.Workload,
+	groupManager groups.Manager,
+	clientManager client.Manager,
+) error {
+	// Remove the workloads from the client's configuration file
+	err := clientManager.UnregisterClients(ctx, []client.Client{clientToRemove}, runningWorkloads)
+	if err != nil {
+		return fmt.Errorf("failed to unregister client: %w", err)
+	}
+
+	allGroups, err := groupManager.List(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list groups: %w", err)
+	}
+
+	if len(allGroups) > 0 {
+		// Remove client from all groups first
+		allGroupNames := make([]string, len(allGroups))
+		for i, group := range allGroups {
+			allGroupNames[i] = group.Name
+		}
+
+		err = groupManager.UnregisterClients(ctx, allGroupNames, []string{string(clientToRemove.Name)})
+		if err != nil {
+			return fmt.Errorf("failed to unregister client from groups: %w", err)
+		}
+	}
+
+	// Remove client from global registered clients list
+	err = config.UpdateConfig(func(c *config.Config) {
+		for i, registeredClient := range c.Clients.RegisteredClients {
+			if registeredClient == string(clientToRemove.Name) {
+				// Remove client from slice
+				c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
+				logger.Infof("Successfully unregistered client: %s\n", clientToRemove.Name)
+				return
+			}
+		}
+		logger.Warnf("Client %s was not found in registered clients list", clientToRemove.Name)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration for client %s: %w", clientToRemove.Name, err)
 	}
 
 	return nil

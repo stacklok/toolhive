@@ -211,7 +211,7 @@ func BuildRunnerConfig(
 
 	// Get OTEL flag values with config fallbacks
 	config := cfg.GetConfig()
-	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(nil, config,
+	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(cmd, config,
 		runConfig.OtelEndpoint, runConfig.OtelSamplingRate, runConfig.OtelEnvironmentVariables)
 
 	// Create container runtime
@@ -306,17 +306,17 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 	otelEnvironmentVariables []string) (string, float64, []string) {
 	// Use config values as fallbacks for OTEL flags if not explicitly set
 	finalOtelEndpoint := otelEndpoint
-	if cmd != nil && !cmd.Flags().Changed("otel-endpoint") && config.OTEL.Endpoint != "" {
+	if !cmd.Flags().Changed("otel-endpoint") && config.OTEL.Endpoint != "" {
 		finalOtelEndpoint = config.OTEL.Endpoint
 	}
 
 	finalOtelSamplingRate := otelSamplingRate
-	if cmd != nil && !cmd.Flags().Changed("otel-sampling-rate") && config.OTEL.SamplingRate != 0.0 {
+	if !cmd.Flags().Changed("otel-sampling-rate") && config.OTEL.SamplingRate != 0.0 {
 		finalOtelSamplingRate = config.OTEL.SamplingRate
 	}
 
 	finalOtelEnvironmentVariables := otelEnvironmentVariables
-	if cmd != nil && !cmd.Flags().Changed("otel-env-vars") && len(config.OTEL.EnvVars) > 0 {
+	if !cmd.Flags().Changed("otel-env-vars") && len(config.OTEL.EnvVars) > 0 {
 		finalOtelEnvironmentVariables = config.OTEL.EnvVars
 	}
 

@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
@@ -191,6 +193,30 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)
+
+	// For remote MCP servers, set the remote URL on HTTP transports before setup
+	if r.Config.RemoteURL != "" {
+		if httpTransport, ok := transportHandler.(interface{ SetRemoteURL(string) }); ok {
+			httpTransport.SetRemoteURL(r.Config.RemoteURL)
+		}
+
+		// Handle remote authentication if configured
+		if r.Config.RemoteAuthConfig != nil && (r.Config.RemoteAuthConfig.EnableRemoteAuth || r.Config.RemoteAuthConfig.BearerToken != "" || r.Config.RemoteAuthConfig.ClientID != "") {
+			tokenSource, err := r.handleRemoteAuthentication(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to authenticate to remote server: %w", err)
+			}
+
+			// Set the token source on the HTTP transport
+			if httpTransport, ok := transportHandler.(interface{ SetTokenSource(*oauth2.TokenSource) }); ok {
+				httpTransport.SetTokenSource(tokenSource)
+			}
+		}
+
+		// For remote workloads, we don't need a deployer
+		r.Config.Deployer = nil
+	}
+
 	if err := transportHandler.Setup(
 		ctx, r.Config.Deployer, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
 		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile, r.Config.K8sPodTemplatePatch,
@@ -309,6 +335,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// handleRemoteAuthentication handles authentication for remote MCP servers
+func (r *Runner) handleRemoteAuthentication(ctx context.Context) (*oauth2.TokenSource, error) {
+	if r.Config.RemoteAuthConfig == nil {
+		return nil, nil
+	}
+
+	// Create remote authentication handler
+	authHandler := NewRemoteAuthHandler(r.Config.RemoteAuthConfig)
+
+	// Perform authentication
+	tokenSource, err := authHandler.Authenticate(ctx, r.Config.Image)
+	if err != nil {
+		return nil, fmt.Errorf("remote authentication failed: %w", err)
+	}
+
+	return tokenSource, nil
 }
 
 // Cleanup performs cleanup operations for the runner, including shutting down telemetry.

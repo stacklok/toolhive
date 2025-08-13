@@ -7,8 +7,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -17,7 +15,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -199,28 +196,30 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 }
 
 func runForeground(ctx context.Context, workloadManager workloads.Manager, runnerConfig *runner.RunConfig) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	return workloadManager.RunWorkload(ctx, runnerConfig)
+	/*
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(sigCh)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- workloadManager.RunWorkload(ctx, runnerConfig)
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- workloadManager.RunWorkload(ctx, runnerConfig)
+		}()
 
-	select {
-	case sig := <-sigCh:
-		if !process.IsDetached() {
-			logger.Infof("Received signal: %v, stopping server %q", sig, runnerConfig.BaseName)
-			cleanupAndWait(workloadManager, runnerConfig.BaseName, cancel, errCh)
-		}
-		return nil
-	case err := <-errCh:
-		return err
-	}
+		select {
+		case sig := <-sigCh:
+			if !process.IsDetached() {
+				logger.Infof("Received signal: %v, stopping server %q", sig, runnerConfig.BaseName)
+				cleanupAndWait(workloadManager, runnerConfig.BaseName, cancel, errCh)
+			}
+			return nil
+		case err := <-errCh:
+			return err
+		} */
 }
 
 func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serverOrImage string) error {

@@ -125,7 +125,77 @@ func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
 	return tr.RoundTrip(req)
 }
 
+// manualForward manually forwards a request to the remote server using an HTTP client
+func (t *tracingTransport) manualForward(req *http.Request) (*http.Response, error) {
+	// Create a new request to the target URL
+	targetURL := t.p.targetURI + req.URL.Path
+	if req.URL.RawQuery != "" {
+		targetURL += "?" + req.URL.RawQuery
+	}
+
+	newReq, err := http.NewRequest(req.Method, targetURL, req.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new request: %w", err)
+	}
+
+	// Copy headers from the original request
+	for name, values := range req.Header {
+		for _, value := range values {
+			newReq.Header.Add(name, value)
+		}
+	}
+
+	// Create HTTP client and make the request
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	return client.Do(newReq)
+}
+
 func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// For remote servers, skip request body reading to avoid interfering with request forwarding
+	if strings.HasPrefix(t.p.targetURI, "https://") || strings.HasPrefix(t.p.targetURI, "http://") {
+		logger.Infof("Transparent proxy forwarding request to remote server: %s %s (URL: %s)", req.Method, req.URL.Path, req.URL.String())
+
+		// Log all headers being sent
+		logger.Infof("Request headers:")
+		for name, values := range req.Header {
+			for _, value := range values {
+				logger.Infof("  %s: %s", name, value)
+			}
+		}
+
+		// Log request body if present
+		if req.Body != nil {
+			bodyBytes, err := io.ReadAll(req.Body)
+			if err != nil {
+				logger.Errorf("Failed to read request body: %v", err)
+			} else {
+				logger.Infof("Request body: %s", string(bodyBytes))
+				// Restore the body for forwarding
+				req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			}
+		} else {
+			logger.Infof("Request body: nil")
+		}
+
+		// Use manual HTTP client instead of reverse proxy for remote URLs
+		resp, err := t.manualForward(req)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				// Expected during shutdown or client disconnect—silently ignore
+				return nil, err
+			}
+			logger.Errorf("Failed to forward request: %v", err)
+			return nil, err
+		}
+
+		logger.Infof("Transparent proxy received response from remote server: status=%d, content-type=%s", resp.StatusCode, resp.Header.Get("Content-Type"))
+		return resp, nil
+	}
+
+	// Original logic for local containers
 	reqBody := readRequestBody(req)
 
 	path := req.URL.Path
@@ -263,9 +333,19 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		return p.modifyForSessionID(resp)
 	}
 
-	// Create a handler that logs requests
+	// Create a handler that logs requests and strips /mcp path for remote servers
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger.Infof("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, targetURL)
+		// For remote servers, strip the /mcp path since they expect requests at the root
+		if strings.HasPrefix(r.URL.Path, "/mcp") {
+			// Strip /mcp from the path for remote servers
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/mcp")
+			if r.URL.Path == "" {
+				r.URL.Path = "/"
+			}
+			logger.Infof("Transparent proxy: %s %s -> %s (stripped /mcp)", r.Method, r.URL.Path, targetURL)
+		} else {
+			logger.Infof("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, targetURL)
+		}
 		proxy.ServeHTTP(w, r)
 	})
 

@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -39,6 +40,9 @@ type HTTPTransport struct {
 
 	// Remote MCP server support
 	remoteURL string
+
+	// tokenSource is the OAuth token source for remote authentication
+	tokenSource *oauth2.TokenSource
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -91,11 +95,35 @@ func NewHTTPTransport(
 	}
 }
 
-// SetRemoteURL sets the remote URL for the transport
+// SetRemoteURL sets the remote URL for the MCP server
 func (t *HTTPTransport) SetRemoteURL(url string) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
 	t.remoteURL = url
+}
+
+// SetTokenSource sets the OAuth token source for remote authentication
+func (t *HTTPTransport) SetTokenSource(tokenSource *oauth2.TokenSource) {
+	t.tokenSource = tokenSource
+}
+
+// createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
+func (t *HTTPTransport) createTokenInjectionMiddleware() types.MiddlewareFunction {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if t.tokenSource != nil {
+				token, err := (*t.tokenSource).Token()
+				if err != nil {
+					logger.Warnf("Unable to retrieve OAuth token: %v", err)
+					// Continue without token rather than failing
+				} else {
+					logger.Debugf("Injecting Bearer token into request to %s", r.URL.Path)
+					r.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken))
+				}
+			} else {
+				logger.Debugf("No token source available for request to %s", r.URL.Path)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // Mode returns the transport mode.
@@ -114,20 +142,31 @@ var transportEnvMap = map[types.TransportType]string{
 }
 
 // Setup prepares the transport for use.
-func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containerName string, image string, cmdArgs []string,
-	envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
-	isolateNetwork bool, ignoreConfig *ignore.Config) error {
+func (t *HTTPTransport) Setup(
+	ctx context.Context,
+	runtime rt.Deployer,
+	containerName string,
+	image string,
+	cmdArgs []string,
+	envVars map[string]string,
+	labels map[string]string,
+	permissionProfile *permissions.Profile,
+	k8sPodTemplatePatch string,
+	isolateNetwork bool,
+	ignoreConfig *ignore.Config,
+) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	t.deployer = runtime
-	t.containerName = containerName
-
-	// For remote MCP servers, we don't need to create a container
+	// For remote MCP servers, we don't need a deployer
 	if t.remoteURL != "" {
+		t.containerName = containerName
 		logger.Infof("Remote transport setup complete for %s -> %s", containerName, t.remoteURL)
 		return nil
 	}
+
+	t.deployer = runtime
+	t.containerName = containerName
 
 	env, ok := transportEnvMap[t.transportType]
 	if !ok {
@@ -254,12 +293,24 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			t.proxyPort, targetURI)
 	}
 
-	// Create the transparent proxy with middlewares
+	// Create middlewares slice
+	var middlewares []types.MiddlewareFunction
+
+	// Add the transport's existing middlewares
+	middlewares = append(middlewares, t.middlewares...)
+
+	// Add OAuth token injection middleware for remote authentication if we have a token source
+	if t.remoteURL != "" && t.tokenSource != nil {
+		tokenMiddleware := t.createTokenInjectionMiddleware()
+		middlewares = append(middlewares, tokenMiddleware)
+	}
+
+	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxy(
 		t.host, t.proxyPort, t.containerName, targetURI,
 		t.prometheusHandler, t.authInfoHandler,
-		t.remoteURL == "", // Disable health check for remote servers
-		t.middlewares...)
+		t.remoteURL == "",
+		middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}

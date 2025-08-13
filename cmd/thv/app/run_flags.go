@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -85,11 +86,22 @@ type RunFlags struct {
 	// Ignore functionality
 	IgnoreGlobally bool
 	PrintOverlays  bool
+
+	// Remote authentication
+	EnableRemoteAuth           bool
+	RemoteAuthClientID         string
+	RemoteAuthClientSecret     string
+	RemoteAuthClientSecretFile string
+	RemoteAuthScopes           []string
+	RemoteAuthSkipBrowser      bool
+	RemoteAuthTimeout          time.Duration
+	RemoteAuthCallbackPort     int
+	RemoteAuthBearerToken      string
 }
 
 // AddRunFlags adds all the run flags to a command
 func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
-	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
+	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport type to use (stdio, sse, streamable-http)")
 	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	// TODO: Re-enable when group functionality is complete
@@ -146,6 +158,17 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Path to file containing bearer token for authenticating JWKS/OIDC requests")
 	cmd.Flags().BoolVar(&config.JWKSAllowPrivateIP, "jwks-allow-private-ip", false,
 		"Allow JWKS/OIDC endpoints on private IP addresses (use with caution)")
+
+	// Remote authentication flags
+	cmd.Flags().BoolVar(&config.EnableRemoteAuth, "remote-auth", false, "Enable automatic OAuth authentication for remote MCP servers")
+	cmd.Flags().StringVar(&config.RemoteAuthClientID, "remote-auth-client-id", "", "OAuth client ID for remote server authentication")
+	cmd.Flags().StringVar(&config.RemoteAuthClientSecret, "remote-auth-client-secret", "", "OAuth client secret for remote server authentication")
+	cmd.Flags().StringVar(&config.RemoteAuthClientSecretFile, "remote-auth-client-secret-file", "", "Path to file containing OAuth client secret")
+	cmd.Flags().StringSliceVar(&config.RemoteAuthScopes, "remote-auth-scopes", []string{}, "OAuth scopes to request for remote server authentication")
+	cmd.Flags().BoolVar(&config.RemoteAuthSkipBrowser, "remote-auth-skip-browser", false, "Skip opening browser for remote server OAuth flow")
+	cmd.Flags().DurationVar(&config.RemoteAuthTimeout, "remote-auth-timeout", 5*time.Minute, "Timeout for OAuth authentication flow")
+	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", 8666, "Port for OAuth callback server during remote authentication")
+	cmd.Flags().StringVar(&config.RemoteAuthBearerToken, "remote-auth-bearer-token", "", "Bearer token for remote server authentication (alternative to OAuth)")
 
 	// OAuth discovery configuration
 	cmd.Flags().StringVar(&config.ResourceURL, "resource-url", "",
@@ -240,9 +263,11 @@ func BuildRunnerConfig(
 	imageURL := serverOrImage
 	transportType := runConfig.Transport
 
-	// If --remote flag is provided, use SSE transport and set the remote URL as the image
+	// If --remote flag is provided, use the specified transport type or default to streamable-http
 	if runConfig.RemoteURL != "" {
-		transportType = "sse" // Remote servers use SSE transport
+		if transportType == "" {
+			transportType = "streamable-http" // Default for remote servers
+		}
 		imageURL = runConfig.RemoteURL
 		// For remote servers, we don't need to pull image metadata
 		imageMetadata = nil
@@ -257,6 +282,22 @@ func BuildRunnerConfig(
 			if err != nil {
 				return nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
 			}
+		}
+	}
+
+	// Build remote auth config if enabled
+	var remoteAuthConfig *runner.RemoteAuthConfig
+	if runConfig.EnableRemoteAuth || runConfig.RemoteAuthClientID != "" || runConfig.RemoteAuthBearerToken != "" {
+		remoteAuthConfig = &runner.RemoteAuthConfig{
+			EnableRemoteAuth: runConfig.EnableRemoteAuth,
+			ClientID:         runConfig.RemoteAuthClientID,
+			ClientSecret:     runConfig.RemoteAuthClientSecret,
+			ClientSecretFile: runConfig.RemoteAuthClientSecretFile,
+			Scopes:           runConfig.RemoteAuthScopes,
+			SkipBrowser:      runConfig.RemoteAuthSkipBrowser,
+			Timeout:          runConfig.RemoteAuthTimeout,
+			CallbackPort:     runConfig.RemoteAuthCallbackPort,
+			BearerToken:      runConfig.RemoteAuthBearerToken,
 		}
 	}
 
@@ -300,6 +341,7 @@ func BuildRunnerConfig(
 			LoadGlobal:    runConfig.IgnoreGlobally,
 			PrintOverlays: runConfig.PrintOverlays,
 		}).
+		WithRemoteAuth(remoteAuthConfig).
 		Build(ctx, imageMetadata, runConfig.Env, envVarValidator)
 }
 

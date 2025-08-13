@@ -193,5 +193,9 @@ Follow conventional commit format:
 
 ## Development Best Practices
 
-- **Linting**: 
+- **Linting**:
   - Prefer `lint-fix` to `lint` since `lint-fix` will fix problems automatically.
+- **Commit messages and PR titles**:
+  - Refer to the `CONTRIBUTING.md` file for guidelines on commit message format
+    conventions.
+  - Do not use "Conventional Commits", e.g. starting with `feat`, `fix`, `chore`, etc.

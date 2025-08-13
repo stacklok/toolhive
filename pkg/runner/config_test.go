@@ -9,14 +9,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/authz"
-	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
-	"github.com/stacklok/toolhive/pkg/secrets"
+	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -251,51 +252,6 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 	}
 }
 
-// TODO: Use mockgen for this
-// mockSecretManager is a mock implementation of a secret manager
-type mockSecretManager struct {
-	secrets map[string]string
-}
-
-func (m *mockSecretManager) GetSecret(_ context.Context, name string) (string, error) {
-	if value, ok := m.secrets[name]; ok {
-		return value, nil
-	}
-	return "", fmt.Errorf("secret %s not found", name)
-}
-
-func (m *mockSecretManager) SetSecret(_ context.Context, name, value string) error {
-	m.secrets[name] = value
-	return nil
-}
-
-func (m *mockSecretManager) DeleteSecret(_ context.Context, name string) error {
-	delete(m.secrets, name)
-	return nil
-}
-
-func (m *mockSecretManager) ListSecrets(_ context.Context) ([]secrets.SecretDescription, error) {
-	keys := make([]secrets.SecretDescription, 0, len(m.secrets))
-	for k := range m.secrets {
-		keys = append(keys, secrets.SecretDescription{Key: k})
-	}
-	return keys, nil
-}
-
-func (*mockSecretManager) Cleanup() error {
-	return nil
-}
-
-func (*mockSecretManager) Capabilities() secrets.ProviderCapabilities {
-	return secrets.ProviderCapabilities{
-		CanRead:    true,
-		CanWrite:   true,
-		CanDelete:  true,
-		CanList:    true,
-		CanCleanup: true,
-	}
-}
-
 func TestRunConfig_WithSecrets(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
@@ -387,16 +343,27 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
 			// Create a mock secret manager
-			secretManager := &mockSecretManager{
-				secrets: tc.mockSecrets,
+			secretManager := secretsmocks.NewMockProvider(ctrl)
+
+			// Set up mock expectations
+			for secretName, secretValue := range tc.mockSecrets {
+				secretManager.EXPECT().GetSecret(gomock.Any(), secretName).Return(secretValue, nil).AnyTimes()
+			}
+
+			// For the "Secret not found" test case, we need to mock the error
+			if tc.name == "Secret not found" {
+				secretManager.EXPECT().GetSecret(gomock.Any(), "nonexistent").Return("", fmt.Errorf("secret nonexistent not found")).AnyTimes()
 			}
 
 			// Set the secrets in the config
 			tc.config.Secrets = tc.secrets
 
 			// Call the function
-			result, err := tc.config.WithSecrets(t.Context(), secretManager)
+			result, err := tc.config.WithSecrets(context.Background(), secretManager)
 
 			if tc.expectError {
 				assert.Error(t, err, "WithSecrets should return an error")
@@ -553,7 +520,7 @@ func TestRunConfigBuilder(t *testing.T) {
 
 	// Needed to prevent a nil pointer dereference in the logger.
 	logger.Initialize()
-	runtime := &mocks.MockRuntime{}
+	runtime := &runtimemocks.MockRuntime{}
 	cmdArgs := []string{"arg1", "arg2"}
 	name := "test-server"
 	imageURL := "test-image:latest"
@@ -829,7 +796,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			runtime := &mocks.MockRuntime{}
+			runtime := &runtimemocks.MockRuntime{}
 			validator := &mockEnvVarValidator{}
 
 			config, err := NewRunConfigBuilder().
@@ -876,7 +843,7 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 
 	// Needed to prevent a nil pointer dereference in the logger.
 	logger.Initialize()
-	runtime := &mocks.MockRuntime{}
+	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
 	config, err := NewRunConfigBuilder().
@@ -923,7 +890,7 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 	// Needed to prevent a nil pointer dereference in the logger.
 	logger.Initialize()
 
-	runtime := &mocks.MockRuntime{}
+	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
 	userArgs := []string{"--user-arg1", "--user-arg2"}
@@ -977,7 +944,7 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 	// Needed to prevent a nil pointer dereference in the logger.
 	logger.Initialize()
 
-	runtime := &mocks.MockRuntime{}
+	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
 	// No user args provided
@@ -1029,7 +996,7 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 
 	// Needed to prevent a nil pointer dereference in the logger.
 	logger.Initialize()
-	runtime := &mocks.MockRuntime{}
+	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
 	volumes := []string{
@@ -1099,7 +1066,7 @@ func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 	// Needed to prevent a nil pointer dereference in the logger.
 	logger.Initialize()
 
-	runtime := &mocks.MockRuntime{}
+	runtime := &runtimemocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
 	// Simulate the filesystem MCP registry configuration

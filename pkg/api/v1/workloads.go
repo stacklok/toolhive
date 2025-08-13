@@ -771,12 +771,6 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 		// Ignore invalid secrets rather than failing the entire conversion
 	}
 
-	// Convert environment variables map to slice
-	envVarSlice := make([]string, 0, len(runConfig.EnvVars))
-	for key, value := range runConfig.EnvVars {
-		envVarSlice = append(envVarSlice, fmt.Sprintf("%s=%s", key, value))
-	}
-
 	// Get OIDC fields from RunConfig
 	var oidcConfig oidcOptions
 	if runConfig.OIDCConfig != nil {
@@ -798,7 +792,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			Host:              runConfig.Host,
 			CmdArguments:      runConfig.CmdArgs,
 			TargetPort:        runConfig.TargetPort,
-			EnvVars:           envVarSlice,
+			EnvVars:           runConfig.EnvVars,
 			Secrets:           secretParams,
 			Volumes:           runConfig.Volumes,
 			Transport:         string(runConfig.Transport),

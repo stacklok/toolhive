@@ -344,6 +344,53 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 	assert.True(t, debugModeArgFound, "DEBUG_MODE should be passed as --env flag")
 }
 
+func TestProxyRunnerSecurityContext(t *testing.T) {
+	t.Parallel()
+
+	// Create a test MCPServer
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-mcp-server-env",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "stdio",
+			Port:      8080,
+		},
+	}
+
+	// Register the scheme
+	s := scheme.Scheme
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+
+	// Create a reconciler with the scheme
+	r := &MCPServerReconciler{
+		Scheme: s,
+	}
+
+	// Generate the deployment
+	deployment := r.deploymentForMCPServer(mcpServer)
+	require.NotNil(t, deployment, "Deployment should not be nil")
+
+	// Check that the ProxyRunner's pod and container security context are set
+	proxyRunnerPodSecurityContext := deployment.Spec.Template.Spec.SecurityContext
+	require.NotNil(t, proxyRunnerPodSecurityContext, "ProxyRunner pod security context should not be nil")
+	assert.True(t, *proxyRunnerPodSecurityContext.RunAsNonRoot, "ProxyRunner pod RunAsNonRoot should be true")
+	assert.Equal(t, int64(1000), *proxyRunnerPodSecurityContext.RunAsUser, "ProxyRunner pod RunAsUser should be 1000")
+	assert.Equal(t, int64(1000), *proxyRunnerPodSecurityContext.RunAsGroup, "ProxyRunner pod RunAsGroup should be 1000")
+	assert.Equal(t, int64(1000), *proxyRunnerPodSecurityContext.FSGroup, "ProxyRunner pod FSGroup should be 1000")
+
+	proxyRunnerContainerSecurityContext := deployment.Spec.Template.Spec.Containers[0].SecurityContext
+	require.NotNil(t, proxyRunnerContainerSecurityContext, "ProxyRunner container security context should not be nil")
+	assert.False(t, *proxyRunnerContainerSecurityContext.Privileged, "ProxyRunner container Privileged should be false")
+	assert.True(t, *proxyRunnerContainerSecurityContext.RunAsNonRoot, "ProxyRunner container RunAsNonRoot should be true")
+	assert.Equal(t, int64(1000), *proxyRunnerContainerSecurityContext.RunAsUser, "ProxyRunner container RunAsUser should be 1000")
+	assert.Equal(t, int64(1000), *proxyRunnerContainerSecurityContext.RunAsGroup, "ProxyRunner container RunAsGroup should be 1000")
+	assert.False(t, *proxyRunnerContainerSecurityContext.AllowPrivilegeEscalation, "ProxyRunner container AllowPrivilegeEscalation should be false")
+}
+
 // Helper functions
 func boolPtr(b bool) *bool {
 	return &b

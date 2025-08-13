@@ -350,13 +350,12 @@ func TestRunConfig_WithSecrets(t *testing.T) {
 			secretManager := secretsmocks.NewMockProvider(ctrl)
 
 			// Set up mock expectations
-			for secretName, secretValue := range tc.mockSecrets {
-				secretManager.EXPECT().GetSecret(gomock.Any(), secretName).Return(secretValue, nil).AnyTimes()
-			}
-
-			// For the "Secret not found" test case, we need to mock the error
-			if tc.name == "Secret not found" {
+			if len(tc.mockSecrets) == 0 {
 				secretManager.EXPECT().GetSecret(gomock.Any(), "nonexistent").Return("", fmt.Errorf("secret nonexistent not found")).AnyTimes()
+			} else {
+				for secretName, secretValue := range tc.mockSecrets {
+					secretManager.EXPECT().GetSecret(gomock.Any(), secretName).Return(secretValue, nil).AnyTimes()
+				}
 			}
 
 			// Set the secrets in the config

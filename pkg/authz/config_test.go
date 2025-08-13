@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
@@ -205,6 +206,10 @@ func TestValidateConfig(t *testing.T) {
 
 func TestCreateMiddleware(t *testing.T) {
 	t.Parallel()
+
+	// Setup logger
+	logger := log.NewLogger()
+
 	// Create a valid configuration
 	config := &Config{
 		Version: "1.0",
@@ -218,7 +223,7 @@ func TestCreateMiddleware(t *testing.T) {
 	}
 
 	// Create the middleware
-	middleware, err := config.CreateMiddleware()
+	middleware, err := config.CreateMiddleware(logger)
 	require.NoError(t, err, "Failed to create middleware")
 	require.NotNil(t, middleware, "Middleware is nil")
 

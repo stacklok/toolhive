@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestNewNoneManager(t *testing.T) {
@@ -115,7 +117,10 @@ func TestNoneManager_Capabilities(t *testing.T) {
 
 func TestCreateSecretProvider_None(t *testing.T) {
 	t.Parallel()
-	provider, err := CreateSecretProvider(NoneType)
+
+	logger := log.NewLogger()
+
+	provider, err := CreateSecretProvider(NoneType, logger)
 	require.NoError(t, err)
 	assert.NotNil(t, provider)
 

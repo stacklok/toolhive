@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -15,7 +17,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -207,7 +208,7 @@ func (c *RunConfig) WithTransport(t string) (*RunConfig, error) {
 }
 
 // WithPorts configures the host and target ports
-func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
+func (c *RunConfig) WithPorts(proxyPort, targetPort int, logger *zap.SugaredLogger) (*RunConfig, error) {
 	var selectedPort int
 	var err error
 
@@ -215,14 +216,14 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	// If not available - treat as an error, since picking a random port here
 	// is going to lead to confusion.
 	if proxyPort != 0 {
-		if !networking.IsAvailable(proxyPort) {
+		if !networking.IsAvailable(proxyPort, logger) {
 			return c, fmt.Errorf("requested proxy port %d is not available", proxyPort)
 		}
 		logger.Debugf("Using requested port: %d", proxyPort)
 		selectedPort = proxyPort
 	} else {
 		// Otherwise - pick a random available port.
-		selectedPort, err = networking.FindOrUsePort(proxyPort)
+		selectedPort, err = networking.FindOrUsePort(proxyPort, logger)
 		if err != nil {
 			return c, err
 		}
@@ -231,7 +232,7 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 
 	// Select a target port for the container if using SSE or Streamable HTTP transport
 	if c.Transport == types.TransportTypeSSE || c.Transport == types.TransportTypeStreamableHTTP {
-		selectedTargetPort, err := networking.FindOrUsePort(targetPort)
+		selectedTargetPort, err := networking.FindOrUsePort(targetPort, logger)
 		if err != nil {
 			return c, fmt.Errorf("target port error: %w", err)
 		}
@@ -338,8 +339,8 @@ func (c *RunConfig) GetBaseName() string {
 }
 
 // SaveState saves the run configuration to the state store
-func (c *RunConfig) SaveState(ctx context.Context) error {
-	return state.SaveRunConfig(ctx, c)
+func (c *RunConfig) SaveState(ctx context.Context, logger *zap.SugaredLogger) error {
+	return state.SaveRunConfig(ctx, c, logger)
 }
 
 // LoadState loads a run configuration from the state store

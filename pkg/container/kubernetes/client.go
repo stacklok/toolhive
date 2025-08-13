@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
+	"go.uber.org/zap"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -29,7 +30,6 @@ import (
 	"k8s.io/client-go/tools/watch"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -47,11 +47,18 @@ type Client struct {
 	runtimeType runtime.Type
 	client      kubernetes.Interface
 	// waitForStatefulSetReadyFunc is used for testing to mock the waitForStatefulSetReady function
-	waitForStatefulSetReadyFunc func(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error
+	waitForStatefulSetReadyFunc func(
+		ctx context.Context,
+		clientset kubernetes.Interface,
+		namespace,
+		name string,
+		logger *zap.SugaredLogger,
+	) error
+	logger *zap.SugaredLogger
 }
 
 // NewClient creates a new container client
-func NewClient(_ context.Context) (*Client, error) {
+func NewClient(_ context.Context, logger *zap.SugaredLogger) (*Client, error) {
 	// creates the in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -66,6 +73,7 @@ func NewClient(_ context.Context) (*Client, error) {
 	return &Client{
 		runtimeType: runtime.TypeKubernetes,
 		client:      clientset,
+		logger:      logger,
 	}, nil
 }
 
@@ -117,7 +125,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 		return nil, nil, fmt.Errorf("failed to create SPDY executor: %v", err)
 	}
 
-	logger.Infof("Attaching to pod %s workload %s...", podName, workloadName)
+	c.logger.Infof("Attaching to pod %s workload %s...", podName, workloadName)
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
@@ -140,23 +148,23 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 			backoff.WithBackOff(expBackoff),
 			backoff.WithMaxTries(5),
 			backoff.WithNotify(func(err error, duration time.Duration) {
-				logger.Errorf("Error attaching to workload %s: %v. Retrying in %s...", workloadName, err, duration)
+				c.logger.Errorf("Error attaching to workload %s: %v. Retrying in %s...", workloadName, err, duration)
 			}),
 		)
 		if err != nil {
 			if statusErr, ok := err.(*errors.StatusError); ok {
-				logger.Errorf("Kubernetes API error: Status=%s, Message=%s, Reason=%s, Code=%d",
+				c.logger.Errorf("Kubernetes API error: Status=%s, Message=%s, Reason=%s, Code=%d",
 					statusErr.ErrStatus.Status,
 					statusErr.ErrStatus.Message,
 					statusErr.ErrStatus.Reason,
 					statusErr.ErrStatus.Code)
 
 				if statusErr.ErrStatus.Code == 0 && statusErr.ErrStatus.Message == "" {
-					logger.Info("Empty status error - this typically means the connection was closed unexpectedly")
-					logger.Info("This often happens when the container terminates or doesn't read from stdin")
+					c.logger.Info("Empty status error - this typically means the connection was closed unexpectedly")
+					c.logger.Info("This often happens when the container terminates or doesn't read from stdin")
 				}
 			} else {
-				logger.Errorf("Non-status error: %v", err)
+				c.logger.Errorf("Non-status error: %v", err)
 			}
 		}
 	}()
@@ -285,7 +293,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		return 0, fmt.Errorf("failed to apply statefulset: %v", err)
 	}
 
-	logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
+	c.logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
 
 	if transportTypeRequiresHeadlessService(transportType) && options != nil {
 		// Create a headless service for SSE transport
@@ -300,7 +308,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	if c.waitForStatefulSetReadyFunc != nil {
 		waitFunc = c.waitForStatefulSetReadyFunc
 	}
-	err = waitFunc(ctx, c.client, namespace, createdStatefulSet.Name)
+	err = waitFunc(ctx, c.client, namespace, createdStatefulSet.Name, c.logger)
 	if err != nil {
 		return 0, fmt.Errorf("statefulset applied but failed to become ready: %w", err)
 	}
@@ -463,13 +471,13 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error 
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// If the statefulset doesn't exist, that's fine
-			logger.Infof("Statefulset %s not found, nothing to remove", workloadName)
+			c.logger.Infof("Statefulset %s not found, nothing to remove", workloadName)
 			return nil
 		}
 		return fmt.Errorf("failed to delete statefulset %s: %w", workloadName, err)
 	}
 
-	logger.Infof("Deleted statefulset %s", workloadName)
+	c.logger.Infof("Deleted statefulset %s", workloadName)
 	return nil
 }
 
@@ -492,7 +500,13 @@ func (c *Client) IsRunning(ctx context.Context) error {
 }
 
 // waitForStatefulSetReady waits for a statefulset to be ready using the watch API
-func waitForStatefulSetReady(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error {
+func waitForStatefulSetReady(
+	ctx context.Context,
+	clientset kubernetes.Interface,
+	namespace,
+	name string,
+	logger *zap.SugaredLogger,
+) error {
 	// Create a field selector to watch only this specific statefulset
 	fieldSelector := fmt.Sprintf("metadata.name=%s", name)
 
@@ -731,7 +745,7 @@ func (c *Client) createHeadlessService(
 
 	// If no ports were configured, don't create a service
 	if len(servicePorts) == 0 {
-		logger.Info("No ports configured for SSE transport, skipping service creation")
+		c.logger.Info("No ports configured for SSE transport, skipping service creation")
 		return nil
 	}
 
@@ -771,7 +785,7 @@ func (c *Client) createHeadlessService(
 		return fmt.Errorf("failed to apply service: %v", err)
 	}
 
-	logger.Infof("Created headless service %s for SSE transport", containerName)
+	c.logger.Infof("Created headless service %s for SSE transport", containerName)
 
 	options.SSEHeadlessServiceName = svcName
 	return nil

@@ -12,9 +12,9 @@ import (
 
 	"github.com/adrg/xdg"
 	"github.com/gofrs/flock"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -132,14 +132,14 @@ func applyBackwardCompatibility(config *Config) error {
 
 // LoadOrCreateConfig fetches the application configuration.
 // If it does not already exist - it will create a new config file with default values.
-func LoadOrCreateConfig() (*Config, error) {
-	return LoadOrCreateConfigWithPath("")
+func LoadOrCreateConfig(logger *zap.SugaredLogger) (*Config, error) {
+	return LoadOrCreateConfigWithPath("", logger)
 }
 
 // LoadOrCreateConfigWithPath fetches the application configuration from a specific path.
 // If configPath is empty, it uses the default path.
 // If it does not already exist - it will create a new config file with default values.
-func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
+func LoadOrCreateConfigWithPath(configPath string, logger *zap.SugaredLogger) (*Config, error) {
 	var config Config
 	var err error
 
@@ -225,14 +225,14 @@ func (c *Config) saveToPath(configPath string) error {
 
 // UpdateConfig locks a separate lock file, reads from disk, applies the changes
 // from the anonymous function, writes to disk and unlocks the file.
-func UpdateConfig(updateFn func(*Config)) error {
-	return UpdateConfigAtPath("", updateFn)
+func UpdateConfig(updateFn func(*Config), logger *zap.SugaredLogger) error {
+	return UpdateConfigAtPath("", updateFn, logger)
 }
 
 // UpdateConfigAtPath locks a separate lock file, reads from disk, applies the changes
 // from the anonymous function, writes to disk and unlocks the file.
 // If configPath is empty, it uses the default path.
-func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
+func UpdateConfigAtPath(configPath string, updateFn func(*Config), logger *zap.SugaredLogger) error {
 	if configPath == "" {
 		var err error
 		configPath, err = getConfigPath()
@@ -258,7 +258,7 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 	defer fileLock.Unlock()
 
 	// Load the config after acquiring the lock to avoid race conditions
-	c, err := LoadOrCreateConfigWithPath(configPath)
+	c, err := LoadOrCreateConfigWithPath(configPath, logger)
 	if err != nil {
 		return fmt.Errorf("failed to load config from disk: %w", err)
 	}

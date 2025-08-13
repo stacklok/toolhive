@@ -34,7 +34,7 @@ func init() {
 func searchCmdFunc(_ *cobra.Command, args []string) error {
 	// Search for servers
 	query := args[0]
-	provider, err := registry.GetDefaultProvider()
+	provider, err := registry.GetDefaultProvider(logger)
 	if err != nil {
 		return fmt.Errorf("failed to get registry provider: %v", err)
 	}

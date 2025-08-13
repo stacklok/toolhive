@@ -14,7 +14,6 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -225,13 +224,13 @@ type toolHiveHandler struct {
 // newToolHiveHandler creates a new ToolHive handler
 func newToolHiveHandler(ctx context.Context) (*toolHiveHandler, error) {
 	// Create workload manager
-	workloadManager, err := workloads.NewManager(ctx)
+	workloadManager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
 	// Create registry provider
-	registryProvider, err := registry.GetDefaultProvider()
+	registryProvider, err := registry.GetDefaultProvider(logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get registry provider: %w", err)
 	}
@@ -304,7 +303,7 @@ func (h *toolHiveHandler) runServer(ctx context.Context, request mcp.CallToolReq
 
 	// Use retriever to properly fetch and prepare the MCP server
 	// TODO: make this configurable so we could warn or even fail
-	imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled")
+	imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled", logger)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
 	}

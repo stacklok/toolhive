@@ -6,13 +6,14 @@ import (
 	"slices"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -28,15 +29,18 @@ type RunConfigBuilder struct {
 	// Store ports separately for proper validation
 	port       int
 	targetPort int
+
+	logger *zap.SugaredLogger
 }
 
 // NewRunConfigBuilder creates a new RunConfigBuilder with default values
-func NewRunConfigBuilder() *RunConfigBuilder {
+func NewRunConfigBuilder(logger *zap.SugaredLogger) *RunConfigBuilder {
 	return &RunConfigBuilder{
 		config: &RunConfig{
 			ContainerLabels: make(map[string]string),
 			EnvVars:         make(map[string]string),
 		},
+		logger: logger,
 	}
 }
 
@@ -175,7 +179,7 @@ func (b *RunConfigBuilder) WithLabels(labelStrings []string) *RunConfigBuilder {
 	for _, labelString := range labelStrings {
 		key, value, err := labels.ParseLabelWithValidation(labelString)
 		if err != nil {
-			logger.Warnf("Skipping invalid label: %s (%v)", labelString, err)
+			b.logger.Warnf("Skipping invalid label: %s (%v)", labelString, err)
 			continue
 		}
 		b.config.ContainerLabels[key] = value
@@ -343,10 +347,10 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	mcpTransport := b.transportString
 	if mcpTransport == "" {
 		if imageMetadata != nil && imageMetadata.Transport != "" {
-			logger.Debugf("Using registry mcpTransport: %s", imageMetadata.Transport)
+			b.logger.Debugf("Using registry mcpTransport: %s", imageMetadata.Transport)
 			mcpTransport = imageMetadata.Transport
 		} else {
-			logger.Debugf("Defaulting mcpTransport to stdio")
+			b.logger.Debugf("Defaulting mcpTransport to stdio")
 			mcpTransport = types.TransportTypeStdio.String()
 		}
 	}
@@ -361,12 +365,12 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 		isHTTPServer := mcpTransport == types.TransportTypeSSE.String() ||
 			mcpTransport == types.TransportTypeStreamableHTTP.String()
 		if targetPort == 0 && isHTTPServer && imageMetadata.TargetPort > 0 {
-			logger.Debugf("Using registry target port: %d", imageMetadata.TargetPort)
+			b.logger.Debugf("Using registry target port: %d", imageMetadata.TargetPort)
 			targetPort = imageMetadata.TargetPort
 		}
 	}
 	// Configure ports and target host
-	if _, err = c.WithPorts(b.port, targetPort); err != nil {
+	if _, err = c.WithPorts(b.port, targetPort, b.logger); err != nil {
 		return err
 	}
 
@@ -410,13 +414,13 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	if imageMetadata != nil && len(imageMetadata.Args) > 0 {
 		if len(c.CmdArgs) == 0 {
 			// No user args provided, use registry defaults
-			logger.Debugf("Using registry default args: %v", imageMetadata.Args)
+			b.logger.Debugf("Using registry default args: %v", imageMetadata.Args)
 			c.CmdArgs = append(c.CmdArgs, imageMetadata.Args...)
 		}
 	}
 
 	if c.ToolsFilter != nil && imageMetadata != nil && imageMetadata.Tools != nil {
-		logger.Debugf("Using tools filter: %v", c.ToolsFilter)
+		b.logger.Debugf("Using tools filter: %v", c.ToolsFilter)
 		for _, tool := range c.ToolsFilter {
 			if !slices.Contains(imageMetadata.Tools, tool) {
 				return fmt.Errorf("tool %s not found in registry", tool)
@@ -449,12 +453,12 @@ func (b *RunConfigBuilder) loadPermissionProfile(imageMetadata *registry.ImageMe
 	// If a profile was not set by name or path, check the image metadata.
 	if imageMetadata != nil && imageMetadata.Permissions != nil {
 
-		logger.Debugf("Using registry permission profile: %v", imageMetadata.Permissions)
+		b.logger.Debugf("Using registry permission profile: %v", imageMetadata.Permissions)
 		return imageMetadata.Permissions, nil
 	}
 
 	// If no metadata is available, use the network permission profile as default.
-	logger.Debugf("Using default permission profile: %s", permissions.ProfileNetwork)
+	b.logger.Debugf("Using default permission profile: %s", permissions.ProfileNetwork)
 	return permissions.BuiltinNetworkProfile(), nil
 }
 
@@ -504,7 +508,7 @@ func (b *RunConfigBuilder) processVolumeMounts() error {
 
 		// Check for duplicate mount target
 		if existingSource, isDuplicate := existingMounts[target]; isDuplicate {
-			logger.Warnf("Skipping duplicate mount target: %s (already mounted from %s)",
+			b.logger.Warnf("Skipping duplicate mount target: %s (already mounted from %s)",
 				target, existingSource)
 			continue
 		}
@@ -519,7 +523,7 @@ func (b *RunConfigBuilder) processVolumeMounts() error {
 		// Add to the map of existing mounts
 		existingMounts[target] = source
 
-		logger.Infof("Adding volume mount: %s -> %s (%s)",
+		b.logger.Infof("Adding volume mount: %s -> %s (%s)",
 			source, target,
 			map[bool]string{true: "read-only", false: "read-write"}[readOnly])
 	}

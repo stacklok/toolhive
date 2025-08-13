@@ -6,13 +6,13 @@ import (
 	"sort"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -110,7 +110,7 @@ func init() {
 }
 
 func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
-	clientStatuses, err := client.GetClientStatus()
+	clientStatuses, err := client.GetClientStatus(logger)
 	if err != nil {
 		return fmt.Errorf("failed to get client status: %w", err)
 	}
@@ -118,7 +118,8 @@ func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
-	clientStatuses, err := client.GetClientStatus()
+	clientStatuses, err := client.GetClientStatus(logger)
+
 	if err != nil {
 		return fmt.Errorf("failed to get client status: %w", err)
 	}
@@ -128,7 +129,7 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 	// Get available groups for the UI
-	groupManager, err := groups.NewManager()
+	groupManager, err := groups.NewManager(logger)
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %w", err)
 	}
@@ -211,11 +212,11 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 			clientType)
 	}
 
-	return performClientRemoval(cmd.Context(), client.Client{Name: client.MCPClient(clientType)}, groupNames)
+	return performClientRemoval(cmd.Context(), client.Client{Name: client.MCPClient(clientType)}, groupNames, logger)
 }
 
 func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	cfg := config.GetConfig(logger)
 	if len(cfg.Clients.RegisteredClients) == 0 {
 		fmt.Println("No clients are currently registered.")
 		return nil
@@ -234,12 +235,12 @@ func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func performClientRegistration(ctx context.Context, clients []client.Client, groupNames []string) error {
-	clientManager, err := client.NewManager(ctx)
+	clientManager, err := client.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create client manager: %w", err)
 	}
 
-	workloadManager, err := workloads.NewManager(ctx)
+	workloadManager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
@@ -266,7 +267,7 @@ func registerClientsWithGroups(
 ) error {
 	fmt.Printf("Filtering workloads to groups: %v\n", groupNames)
 
-	groupManager, err := groups.NewManager()
+	groupManager, err := groups.NewManager(logger)
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %w", err)
 	}
@@ -312,7 +313,7 @@ func registerClientsGlobally(
 			}
 
 			c.Clients.RegisteredClients = append(c.Clients.RegisteredClients, string(clientToRegister.Name))
-		})
+		}, logger)
 		if err != nil {
 			return fmt.Errorf("failed to update configuration for client %s: %w", clientToRegister.Name, err)
 		}
@@ -329,13 +330,18 @@ func registerClientsGlobally(
 	return nil
 }
 
-func performClientRemoval(ctx context.Context, clientToRemove client.Client, groupNames []string) error {
-	clientManager, err := client.NewManager(ctx)
+func performClientRemoval(
+	ctx context.Context,
+	clientToRemove client.Client,
+	groupNames []string,
+	logger *zap.SugaredLogger,
+) error {
+	clientManager, err := client.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create client manager: %w", err)
 	}
 
-	workloadManager, err := workloads.NewManager(ctx)
+	workloadManager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
@@ -345,7 +351,7 @@ func performClientRemoval(ctx context.Context, clientToRemove client.Client, gro
 		return fmt.Errorf("failed to list running workloads: %w", err)
 	}
 
-	groupManager, err := groups.NewManager()
+	groupManager, err := groups.NewManager(logger)
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %w", err)
 	}
@@ -354,7 +360,7 @@ func performClientRemoval(ctx context.Context, clientToRemove client.Client, gro
 		return removeClientFromGroups(ctx, clientToRemove, groupNames, runningWorkloads, groupManager, clientManager)
 	}
 
-	return removeClientGlobally(ctx, clientToRemove, runningWorkloads, groupManager, clientManager)
+	return removeClientGlobally(ctx, clientToRemove, runningWorkloads, groupManager, clientManager, logger)
 }
 
 func removeClientFromGroups(
@@ -396,6 +402,7 @@ func removeClientGlobally(
 	runningWorkloads []core.Workload,
 	groupManager groups.Manager,
 	clientManager client.Manager,
+	logger *zap.SugaredLogger,
 ) error {
 	// Remove the workloads from the client's configuration file
 	err := clientManager.UnregisterClients(ctx, []client.Client{clientToRemove}, runningWorkloads)
@@ -432,7 +439,7 @@ func removeClientGlobally(
 			}
 		}
 		logger.Warnf("Client %s was not found in registered clients list", clientToRemove.Name)
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration for client %s: %w", clientToRemove.Name, err)
 	}

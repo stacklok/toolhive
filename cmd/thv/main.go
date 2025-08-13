@@ -7,16 +7,14 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv/app"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func main() {
-	// Initialize the logger
-	logger.Initialize()
-
+	logger := log.NewLogger()
 	// Check and perform auto-discovery migration if needed
 	// Handles the auto-discovery flag depreciation, only executes once on old config files
-	client.CheckAndPerformAutoDiscoveryMigration()
+	client.CheckAndPerformAutoDiscoveryMigration(logger)
 
 	// Check and perform default group migration if needed
 	// Migrates existing workloads to the default group, only executes once

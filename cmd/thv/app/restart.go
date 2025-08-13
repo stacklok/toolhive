@@ -52,7 +52,7 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create workload managers.
-	workloadManager, err := workloads.NewManager(ctx)
+	workloadManager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
@@ -104,7 +104,7 @@ func restartAllContainers(ctx context.Context, workloadManager workloads.Manager
 
 func restartWorkloadsByGroup(ctx context.Context, workloadManager workloads.Manager, groupName string, foreground bool) error {
 	// Create a groups manager to list workloads in the group
-	groupManager, err := groups.NewManager()
+	groupManager, err := groups.NewManager(logger)
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %v", err)
 	}

@@ -12,9 +12,10 @@ import (
 	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -74,7 +75,7 @@ func createMockClientConfigs() []mcpClientConfig {
 
 // MockConfig creates a temporary config file with the provided configuration.
 // It returns a cleanup function that should be deferred.
-func MockConfig(t *testing.T, cfg *config.Config) func() {
+func MockConfig(t *testing.T, cfg *config.Config, logger *zap.SugaredLogger) func() {
 	t.Helper()
 
 	// Create a temporary directory for the test
@@ -93,7 +94,7 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 
 	// Write the config file if one is provided
 	if cfg != nil {
-		err = config.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		err = config.UpdateConfig(func(c *config.Config) { *c = *cfg }, logger)
 		require.NoError(t, err)
 	}
 
@@ -104,8 +105,6 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 }
 
 func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environment variables
-	logger.Initialize()
-
 	// Setup a temporary home directory for testing
 	originalHome := os.Getenv("HOME")
 	tempHome := t.TempDir()
@@ -137,8 +136,8 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 		r, w, _ := os.Pipe()
 		os.Stderr = w
 
-		// Re-initialize logger to use the captured stderr
-		logger.Initialize()
+		// Setup logger
+		logger := log.NewLogger()
 
 		// Create an invalid JSON file
 		invalidPath := filepath.Join(tempHome, ".cursor", "invalid.json")
@@ -179,12 +178,12 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 			},
 		}
 
-		cleanup := MockConfig(t, testConfig)
+		cleanup := MockConfig(t, testConfig, logger)
 		defer cleanup()
 
 		// Find client configs - this should NOT fail due to the invalid JSON
 		// Instead, it should log a warning and continue
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(logger)
 		assert.NoError(t, err, "FindRegisteredClientConfigs should not return an error for invalid config files")
 
 		// The invalid client should be skipped, so we should get configs for valid clients only
@@ -207,7 +206,8 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 }
 
 func TestSuccessfulClientConfigOperations(t *testing.T) {
-	logger.Initialize()
+	// Setup logger
+	logger := log.NewLogger()
 
 	// Setup a temporary home directory for testing
 	originalHome := os.Getenv("HOME")
@@ -251,11 +251,11 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 		},
 	}
 
-	cleanup := MockConfig(t, testConfig)
+	cleanup := MockConfig(t, testConfig, logger)
 	defer cleanup()
 
 	t.Run("FindAllConfiguredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(logger)
 		require.NoError(t, err)
 		assert.Len(t, configs, len(supportedClientIntegrations), "Should find all mock client configs")
 
@@ -272,7 +272,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	})
 
 	t.Run("VerifyConfigFileContents", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(logger)
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
 
@@ -326,7 +326,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	})
 
 	t.Run("AddAndVerifyMCPServer", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(logger)
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
 

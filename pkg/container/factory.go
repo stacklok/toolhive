@@ -5,30 +5,34 @@ package container
 import (
 	"context"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/container/docker"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
 // Factory creates container runtimes
-type Factory struct{}
+type Factory struct {
+	logger *zap.SugaredLogger
+}
 
 // NewFactory creates a new container factory
-func NewFactory() *Factory {
-	return &Factory{}
+func NewFactory(logger *zap.SugaredLogger) *Factory {
+	return &Factory{logger}
 }
 
 // Create creates a container runtime
-func (*Factory) Create(ctx context.Context) (runtime.Runtime, error) {
+func (f *Factory) Create(ctx context.Context) (runtime.Runtime, error) {
 	if !runtime.IsKubernetesRuntime() {
-		client, err := docker.NewClient(ctx)
+		client, err := docker.NewClient(ctx, f.logger)
 		if err != nil {
 			return nil, err
 		}
 		return client, nil
 	}
 
-	client, err := kubernetes.NewClient(ctx)
+	client, err := kubernetes.NewClient(ctx, f.logger)
 	if err != nil {
 		return nil, err
 	}

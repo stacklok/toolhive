@@ -5,7 +5,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/updates"
 )
 
@@ -24,9 +23,6 @@ container-based isolation for running MCP servers.`,
 		if err := cmd.Help(); err != nil {
 			logger.Errorf("Error displaying help: %v", err)
 		}
-	},
-	PersistentPreRun: func(_ *cobra.Command, _ []string) {
-		logger.Initialize()
 	},
 }
 

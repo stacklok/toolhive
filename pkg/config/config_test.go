@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -41,7 +41,8 @@ func SetupTestConfig(t *testing.T, configContent *Config) (string, string) {
 
 func TestLoadOrCreateConfig(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+
+	logger := log.NewLogger()
 
 	t.Run("TestLoadOrCreateConfigWithMockConfig", func(t *testing.T) {
 		t.Parallel()
@@ -55,7 +56,7 @@ func TestLoadOrCreateConfig(t *testing.T) {
 		})
 
 		// Load the config
-		config, err := LoadOrCreateConfigWithPath(configPath)
+		config, err := LoadOrCreateConfigWithPath(configPath, logger)
 		require.NoError(t, err)
 
 		// Verify the loaded config matches our mock
@@ -75,7 +76,7 @@ func TestLoadOrCreateConfig(t *testing.T) {
 		tempDir, configPath := SetupTestConfig(t, nil)
 
 		// Load the config - this should create a new one since none exists
-		config, err := LoadOrCreateConfigWithPath(configPath)
+		config, err := LoadOrCreateConfigWithPath(configPath, logger)
 		require.NoError(t, err)
 
 		// Verify the default values
@@ -93,7 +94,6 @@ func TestLoadOrCreateConfig(t *testing.T) {
 
 func TestSave(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	t.Run("TestSave", func(t *testing.T) {
 		t.Parallel()
@@ -143,7 +143,8 @@ func TestSave(t *testing.T) {
 
 func TestRegistryURLConfig(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+
+	logger := log.NewLogger()
 
 	t.Run("TestSetAndGetRegistryURL", func(t *testing.T) {
 		t.Parallel()
@@ -161,22 +162,22 @@ func TestRegistryURLConfig(t *testing.T) {
 		testURL := "https://example.com/registry.json"
 		err := UpdateConfigAtPath(configPath, func(c *Config) {
 			c.RegistryUrl = testURL
-		})
+		}, logger)
 		require.NoError(t, err)
 
 		// Load the config and verify the URL was set
-		config, err := LoadOrCreateConfigWithPath(configPath)
+		config, err := LoadOrCreateConfigWithPath(configPath, logger)
 		require.NoError(t, err)
 		assert.Equal(t, testURL, config.RegistryUrl)
 
 		// Test unsetting the registry URL
 		err = UpdateConfigAtPath(configPath, func(c *Config) {
 			c.RegistryUrl = ""
-		})
+		}, logger)
 		require.NoError(t, err)
 
 		// Load the config and verify the URL was unset
-		config, err = LoadOrCreateConfigWithPath(configPath)
+		config, err = LoadOrCreateConfigWithPath(configPath, logger)
 		require.NoError(t, err)
 		assert.Equal(t, "", config.RegistryUrl)
 
@@ -196,11 +197,11 @@ func TestRegistryURLConfig(t *testing.T) {
 		// Set the registry URL
 		err := UpdateConfigAtPath(configPath, func(c *Config) {
 			c.RegistryUrl = testURL
-		})
+		}, logger)
 		require.NoError(t, err)
 
 		// Load config again to verify persistence
-		config, err := LoadOrCreateConfigWithPath(configPath)
+		config, err := LoadOrCreateConfigWithPath(configPath, logger)
 		require.NoError(t, err)
 		assert.Equal(t, testURL, config.RegistryUrl)
 
@@ -227,22 +228,22 @@ func TestRegistryURLConfig(t *testing.T) {
 		// Test enabling
 		err := UpdateConfigAtPath(configPath, func(c *Config) {
 			c.AllowPrivateRegistryIp = true
-		})
+		}, logger)
 		require.NoError(t, err)
 
 		// Load the config and verify the setting was toggled to true
-		config, err := LoadOrCreateConfigWithPath(configPath)
+		config, err := LoadOrCreateConfigWithPath(configPath, logger)
 		require.NoError(t, err)
 		assert.Equal(t, true, config.AllowPrivateRegistryIp)
 
 		// Test toggling setting to false
 		err = UpdateConfigAtPath(configPath, func(c *Config) {
 			c.AllowPrivateRegistryIp = false
-		})
+		}, logger)
 		require.NoError(t, err)
 
 		// Load the config and verify the setting was toggled to false
-		config, err = LoadOrCreateConfigWithPath(configPath)
+		config, err = LoadOrCreateConfigWithPath(configPath, logger)
 		require.NoError(t, err)
 		assert.Equal(t, false, config.AllowPrivateRegistryIp)
 
@@ -256,7 +257,6 @@ func TestRegistryURLConfig(t *testing.T) {
 
 func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
 
 	// Save original env value and restore at the end
 	originalEnv := os.Getenv(secrets.ProviderEnvVar)

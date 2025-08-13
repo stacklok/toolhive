@@ -126,7 +126,7 @@ func setOtelEndpointCmdFunc(_ *cobra.Command, args []string) error {
 	// Update the configuration
 	err := config.UpdateConfig(func(c *config.Config) {
 		c.OTEL.Endpoint = endpoint
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -136,7 +136,7 @@ func setOtelEndpointCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 func getOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	cfg := config.GetConfig(logger)
 
 	if cfg.OTEL.Endpoint == "" {
 		fmt.Println("No OpenTelemetry endpoint is currently configured.")
@@ -148,7 +148,7 @@ func getOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	cfg := config.GetConfig(logger)
 
 	if cfg.OTEL.Endpoint == "" {
 		fmt.Println("No OpenTelemetry endpoint is currently configured.")
@@ -158,7 +158,7 @@ func unsetOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
 	// Update the configuration
 	err := config.UpdateConfig(func(c *config.Config) {
 		c.OTEL.Endpoint = ""
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -181,7 +181,7 @@ func setOtelSamplingRateCmdFunc(_ *cobra.Command, args []string) error {
 	// Update the configuration
 	err = config.UpdateConfig(func(c *config.Config) {
 		c.OTEL.SamplingRate = rate
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -191,7 +191,7 @@ func setOtelSamplingRateCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 func getOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	cfg := config.GetConfig(logger)
 
 	if cfg.OTEL.SamplingRate == 0.0 {
 		fmt.Println("No OpenTelemetry sampling rate is currently configured.")
@@ -203,7 +203,7 @@ func getOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	cfg := config.GetConfig(logger)
 
 	if cfg.OTEL.SamplingRate == 0.0 {
 		fmt.Println("No OpenTelemetry sampling rate is currently configured.")
@@ -213,7 +213,7 @@ func unsetOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
 	// Update the configuration
 	err := config.UpdateConfig(func(c *config.Config) {
 		c.OTEL.SamplingRate = 0.0
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -233,7 +233,7 @@ func setOtelEnvVarsCmdFunc(_ *cobra.Command, args []string) error {
 	// Update the configuration
 	err := config.UpdateConfig(func(c *config.Config) {
 		c.OTEL.EnvVars = vars
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -243,7 +243,7 @@ func setOtelEnvVarsCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 func getOtelEnvVarsCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	cfg := config.GetConfig(logger)
 
 	if len(cfg.OTEL.EnvVars) == 0 {
 		fmt.Println("No OpenTelemetry environment variables are currently configured.")
@@ -255,7 +255,7 @@ func getOtelEnvVarsCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetOtelEnvVarsCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	cfg := config.GetConfig(logger)
 
 	if len(cfg.OTEL.EnvVars) == 0 {
 		fmt.Println("No OpenTelemetry environment variables are currently configured.")
@@ -265,7 +265,7 @@ func unsetOtelEnvVarsCmdFunc(_ *cobra.Command, _ []string) error {
 	// Update the configuration
 	err := config.UpdateConfig(func(c *config.Config) {
 		c.OTEL.EnvVars = []string{}
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}

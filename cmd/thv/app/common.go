@@ -5,11 +5,15 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
+
+var logger *zap.SugaredLogger = log.NewLogger()
 
 // AddOIDCFlags adds OIDC validation flags to the provided command.
 func AddOIDCFlags(cmd *cobra.Command) {
@@ -64,7 +68,7 @@ func SetSecretsProvider(provider secrets.ProviderType) error {
 
 	// Validate that the provider can be created and works correctly
 	ctx := context.Background()
-	result := secrets.ValidateProvider(ctx, provider)
+	result := secrets.ValidateProvider(ctx, provider, logger)
 	if !result.Success {
 		return fmt.Errorf("provider validation failed: %w", result.Error)
 	}
@@ -73,7 +77,7 @@ func SetSecretsProvider(provider secrets.ProviderType) error {
 	err := config.UpdateConfig(func(c *config.Config) {
 		c.Secrets.ProviderType = string(provider)
 		c.Secrets.SetupCompleted = true
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -94,7 +98,7 @@ func completeMCPServerNames(cmd *cobra.Command, args []string, _ string) ([]stri
 	ctx := cmd.Context()
 
 	// Create status manager
-	manager, err := workloads.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
 	}
@@ -126,7 +130,7 @@ func completeLogsArgs(cmd *cobra.Command, args []string, _ string) ([]string, co
 	ctx := cmd.Context()
 
 	// Create status manager
-	manager, err := workloads.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return []string{"prune"}, cobra.ShellCompDirectiveNoFileComp
 	}

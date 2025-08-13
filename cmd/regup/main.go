@@ -5,12 +5,11 @@ import (
 	"os"
 
 	"github.com/stacklok/toolhive/cmd/regup/app"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func main() {
-	// Initialize the logger system
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	if err := app.NewRootCmd().Execute(); err != nil {
 		logger.Errorf("%v", err)

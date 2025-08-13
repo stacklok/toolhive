@@ -7,9 +7,9 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -42,7 +42,7 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 
 	// Instantiate the status manager.
-	manager, err := workloads.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create status manager: %v", err)
 	}
@@ -76,7 +76,7 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	case "mcpservers":
 		return printMCPServersOutput(workloadList)
 	default:
-		printTextOutput(workloadList)
+		printTextOutput(workloadList, logger)
 		return nil
 	}
 }
@@ -122,7 +122,7 @@ func printMCPServersOutput(workloadList []core.Workload) error {
 }
 
 // printTextOutput prints workload information in text format
-func printTextOutput(workloadList []core.Workload) {
+func printTextOutput(workloadList []core.Workload, logger *zap.SugaredLogger) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tTOOL TYPE\tGROUP\tCREATED AT")

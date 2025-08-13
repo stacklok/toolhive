@@ -18,13 +18,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestMain(m *testing.M) {
-	// Initialize logger for tests
-	logger.Initialize()
-
 	// Run tests
 	code := m.Run()
 
@@ -34,6 +31,9 @@ func TestMain(m *testing.M) {
 
 func TestNewFlow(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	tests := []struct {
 		name        string
 		config      *Config
@@ -99,7 +99,7 @@ func TestNewFlow(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			flow, err := NewFlow(tt.config)
+			flow, err := NewFlow(tt.config, logger)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -201,6 +201,9 @@ func TestGenerateState(t *testing.T) {
 
 func TestBuildAuthURL(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	tests := []struct {
 		name     string
 		config   *Config
@@ -262,7 +265,7 @@ func TestBuildAuthURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			flow, err := NewFlow(tt.config)
+			flow, err := NewFlow(tt.config, logger)
 			require.NoError(t, err)
 
 			authURL := flow.buildAuthURL()
@@ -275,6 +278,9 @@ func TestBuildAuthURL(t *testing.T) {
 
 func TestHandleCallback_SecurityValidation(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	config := &Config{
 		ClientID: "test-client",
 		AuthURL:  "https://example.com/auth",
@@ -282,7 +288,7 @@ func TestHandleCallback_SecurityValidation(t *testing.T) {
 		UsePKCE:  true,
 	}
 
-	flow, err := NewFlow(config)
+	flow, err := NewFlow(config, logger)
 	require.NoError(t, err)
 
 	tokenChan := make(chan *oauth2.Token, 1)
@@ -466,6 +472,10 @@ func TestWriteErrorPage_XSSPrevention(t *testing.T) {
 
 func TestProcessToken(t *testing.T) {
 	t.Parallel()
+
+	// Setup logger
+	logger := log.NewLogger()
+
 	// Create a proper flow with config to avoid nil pointer issues
 	config := &Config{
 		ClientID: "test-client",
@@ -473,7 +483,7 @@ func TestProcessToken(t *testing.T) {
 		TokenURL: "https://example.com/token",
 	}
 
-	flow, err := NewFlow(config)
+	flow, err := NewFlow(config, logger)
 	require.NoError(t, err)
 
 	// Test with a valid OAuth2 token
@@ -608,6 +618,9 @@ func TestStateSecurityProperties(t *testing.T) {
 
 func TestStart(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	tests := []struct {
 		name        string
 		config      *Config
@@ -640,7 +653,7 @@ func TestStart(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			flow, err := NewFlow(tt.config)
+			flow, err := NewFlow(tt.config, logger)
 			require.NoError(t, err)
 
 			// Generate the auth URL before starting the flow
@@ -730,6 +743,10 @@ func TestWriteSuccessPage(t *testing.T) {
 
 func TestHandleCallback_SuccessfulFlow(t *testing.T) {
 	t.Parallel()
+
+	// Setup logger
+	logger := log.NewLogger()
+
 	// Create a mock token server
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
@@ -774,7 +791,7 @@ func TestHandleCallback_SuccessfulFlow(t *testing.T) {
 		UsePKCE:      true,
 	}
 
-	flow, err := NewFlow(config)
+	flow, err := NewFlow(config, logger)
 	require.NoError(t, err)
 
 	tokenChan := make(chan *oauth2.Token, 1)
@@ -811,13 +828,16 @@ func TestHandleCallback_SuccessfulFlow(t *testing.T) {
 
 func TestProcessToken_WithJWTClaims(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	config := &Config{
 		ClientID: "test-client",
 		AuthURL:  "https://example.com/auth",
 		TokenURL: "https://example.com/token",
 	}
 
-	flow, err := NewFlow(config)
+	flow, err := NewFlow(config, logger)
 	require.NoError(t, err)
 
 	// Create a test JWT token
@@ -859,13 +879,16 @@ func TestProcessToken_WithJWTClaims(t *testing.T) {
 
 func TestProcessToken_WithOpaqueToken(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	config := &Config{
 		ClientID: "test-client",
 		AuthURL:  "https://example.com/auth",
 		TokenURL: "https://example.com/token",
 	}
 
-	flow, err := NewFlow(config)
+	flow, err := NewFlow(config, logger)
 	require.NoError(t, err)
 
 	// Test with opaque access token

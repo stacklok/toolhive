@@ -17,6 +17,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	log "github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/test/e2e"
 )
@@ -38,6 +39,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 		clientID        = "test-client"
 		clientSecret    = "test-secret"
 		mockOIDCBaseURL string
+		logger          = log.NewLogger()
 	)
 
 	BeforeEach(func() {
@@ -52,10 +54,10 @@ var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
 		proxyServerName = generateUniqueOIDCServerName("proxy-oauth-test")
 
 		// Find available ports for our mock servers using networking utilities
-		mockOIDCPort, err = networking.FindOrUsePort(0)
+		mockOIDCPort, err = networking.FindOrUsePort(0, logger)
 		Expect(err).ToNot(HaveOccurred())
 
-		proxyPort, err = networking.FindOrUsePort(0)
+		proxyPort, err = networking.FindOrUsePort(0, logger)
 		Expect(err).ToNot(HaveOccurred())
 
 		mockOIDCBaseURL = fmt.Sprintf("http://localhost:%d", mockOIDCPort)

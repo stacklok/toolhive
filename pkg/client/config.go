@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/tailscale/hujson"
+	"go.uber.org/zap"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -339,9 +339,9 @@ type MCPServerConfig struct {
 }
 
 // FindClientConfig returns the client configuration file for a given client type.
-func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
+func FindClientConfig(clientType MCPClient, logger *zap.SugaredLogger) (*ConfigFile, error) {
 	// retrieve the metadata of the config files
-	configFile, err := retrieveConfigFileMetadata(clientType)
+	configFile, err := retrieveConfigFileMetadata(clientType, logger)
 	if err != nil {
 		if errors.Is(err, ErrConfigFileNotFound) {
 			// Propagate the error if the file is not found
@@ -359,8 +359,8 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 }
 
 // FindRegisteredClientConfigs finds all registered client configs and creates them if they don't exist.
-func FindRegisteredClientConfigs() ([]ConfigFile, error) {
-	clientStatuses, err := GetClientStatus()
+func FindRegisteredClientConfigs(logger *zap.SugaredLogger) ([]ConfigFile, error) {
+	clientStatuses, err := GetClientStatus(logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client status: %w", err)
 	}
@@ -370,11 +370,11 @@ func FindRegisteredClientConfigs() ([]ConfigFile, error) {
 		if !clientStatus.Installed || !clientStatus.Registered {
 			continue
 		}
-		cf, err := FindClientConfig(clientStatus.ClientType)
+		cf, err := FindClientConfig(clientStatus.ClientType, logger)
 		if err != nil {
 			if errors.Is(err, ErrConfigFileNotFound) {
 				logger.Infof("Client config file not found for %s, creating it...", clientStatus.ClientType)
-				cf, err = CreateClientConfig(clientStatus.ClientType)
+				cf, err = CreateClientConfig(clientStatus.ClientType, logger)
 				if err != nil {
 					logger.Warnf("Unable to create client config for %s: %v", clientStatus.ClientType, err)
 					continue
@@ -392,7 +392,7 @@ func FindRegisteredClientConfigs() ([]ConfigFile, error) {
 }
 
 // CreateClientConfig creates a new client configuration file for a given client type.
-func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
+func CreateClientConfig(clientType MCPClient, logger *zap.SugaredLogger) (*ConfigFile, error) {
 	// Get home directory
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -427,7 +427,7 @@ func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
 		return nil, fmt.Errorf("failed to create client config file: %w", err)
 	}
 
-	return FindClientConfig(clientType)
+	return FindClientConfig(clientType, logger)
 }
 
 // Upsert updates/inserts an MCP server in a client configuration file
@@ -459,7 +459,7 @@ func Upsert(cf ConfigFile, name string, url string, transportType string) error 
 }
 
 // retrieveConfigFileMetadata retrieves the metadata for client configuration files for a given client type.
-func retrieveConfigFileMetadata(clientType MCPClient) (*ConfigFile, error) {
+func retrieveConfigFileMetadata(clientType MCPClient, logger *zap.SugaredLogger) (*ConfigFile, error) {
 	// Get home directory
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -491,6 +491,7 @@ func retrieveConfigFileMetadata(clientType MCPClient) (*ConfigFile, error) {
 	configUpdater := &JSONConfigUpdater{
 		Path:                 path,
 		MCPServersPathPrefix: clientCfg.MCPServersPathPrefix,
+		logger:               logger,
 	}
 
 	// Return the configuration file metadata

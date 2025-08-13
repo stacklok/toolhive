@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/docker/docker/client"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 /*
@@ -41,14 +41,14 @@ const (
 var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
 
 // NewDockerClient creates a new container client
-func NewDockerClient(ctx context.Context) (*client.Client, string, runtime.Type, error) {
+func NewDockerClient(ctx context.Context, logger *zap.SugaredLogger) (*client.Client, string, runtime.Type, error) {
 	var lastErr error
 
 	// We try to find a container socket for the given runtime
 	// We try Podman first, then Docker as fallback
 	for _, sp := range supportedSocketPaths {
 		// Try to find a container socket for the given runtime
-		socketPath, runtimeType, err := findContainerSocket(sp)
+		socketPath, runtimeType, err := findContainerSocket(sp, logger)
 		if err != nil {
 			logger.Debugf("Failed to find socket for %s: %v", sp, err)
 			lastErr = err
@@ -93,7 +93,7 @@ func newClientWithSocketPath(ctx context.Context, socketPath string) (*client.Cl
 }
 
 // findContainerSocket finds a container socket path, preferring Podman over Docker
-func findContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
+func findContainerSocket(rt runtime.Type, logger *zap.SugaredLogger) (string, runtime.Type, error) {
 	// Use platform-specific implementation
-	return findPlatformContainerSocket(rt)
+	return findPlatformContainerSocket(rt, logger)
 }

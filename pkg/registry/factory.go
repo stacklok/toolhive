@@ -3,6 +3,8 @@ package registry
 import (
 	"sync"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/config"
 )
 
@@ -25,9 +27,9 @@ func NewRegistryProvider(cfg *config.Config) Provider {
 
 // GetDefaultProvider returns the default registry provider instance
 // This maintains backward compatibility with the existing singleton pattern
-func GetDefaultProvider() (Provider, error) {
+func GetDefaultProvider(logger *zap.SugaredLogger) (Provider, error) {
 	defaultProviderOnce.Do(func() {
-		cfg, err := config.LoadOrCreateConfig()
+		cfg, err := config.LoadOrCreateConfig(logger)
 		if err != nil {
 			defaultProviderErr = err
 			return

@@ -10,6 +10,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/verify"
+	"go.uber.org/zap"
 )
 
 //go:embed tufroots
@@ -112,13 +113,14 @@ func embeddedRootJson(tufRootURL string) ([]byte, error) {
 func getSigstoreBundles(
 	imageRef string,
 	keychain authn.Keychain,
+	logger *zap.SugaredLogger,
 ) ([]sigstoreBundle, error) {
 	// Try to build a bundle from a Sigstore signed image
-	bundles, err := bundleFromSigstoreSignedImage(imageRef, keychain)
+	bundles, err := bundleFromSigstoreSignedImage(imageRef, keychain, logger)
 	if errors.Is(err, ErrProvenanceNotFoundOrIncomplete) {
 		// If we get this error, it means that the image is not signed
 		// or the signature is incomplete. Let's try to see if we can find attestation for the image.
-		return bundleFromAttestation(imageRef, keychain)
+		return bundleFromAttestation(imageRef, keychain, logger)
 	} else if err != nil {
 		return nil, err
 	}

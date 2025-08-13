@@ -4,9 +4,12 @@ package app
 import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"go.uber.org/zap"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
+
+var logger *zap.SugaredLogger = log.NewLogger()
 
 var rootCmd = &cobra.Command{
 	Use:               "thv-proxyrunner",
@@ -19,9 +22,6 @@ It is written in Go and has extensive test coverage—including input validation
 		if err := cmd.Help(); err != nil {
 			logger.Errorf("Error displaying help: %v", err)
 		}
-	},
-	PersistentPreRun: func(_ *cobra.Command, _ []string) {
-		logger.Initialize()
 	},
 }
 

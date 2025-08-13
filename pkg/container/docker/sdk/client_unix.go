@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 
 	"github.com/docker/docker/client"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // ErrRuntimeNotFound is returned when a container runtime is not found
@@ -42,7 +42,7 @@ func newPlatformClient(socketPath string) (*http.Client, []client.Opt) {
 }
 
 // findPlatformContainerSocket finds a container socket path on Unix systems
-func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
+func findPlatformContainerSocket(rt runtime.Type, logger *zap.SugaredLogger) (string, runtime.Type, error) {
 	// First check for custom socket paths via environment variables
 	if customSocketPath := os.Getenv(PodmanSocketEnv); customSocketPath != "" {
 		logger.Debugf("Using Podman socket from env: %s", customSocketPath)
@@ -63,14 +63,14 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 	}
 
 	if rt == runtime.TypePodman {
-		socketPath, err := findPodmanSocket()
+		socketPath, err := findPodmanSocket(logger)
 		if err == nil {
 			return socketPath, runtime.TypePodman, nil
 		}
 	}
 
 	if rt == runtime.TypeDocker {
-		socketPath, err := findDockerSocket()
+		socketPath, err := findDockerSocket(logger)
 		if err == nil {
 			return socketPath, runtime.TypeDocker, nil
 		}
@@ -80,7 +80,7 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 }
 
 // findPodmanSocket attempts to locate a Podman socket
-func findPodmanSocket() (string, error) {
+func findPodmanSocket(logger *zap.SugaredLogger) (string, error) {
 	// Check standard Podman location
 	_, err := os.Stat(PodmanSocketPath)
 	if err == nil {
@@ -120,7 +120,7 @@ func findPodmanSocket() (string, error) {
 }
 
 // findDockerSocket attempts to locate a Docker socket
-func findDockerSocket() (string, error) {
+func findDockerSocket(logger *zap.SugaredLogger) (string, error) {
 	// Try Docker socket as fallback
 	_, err := os.Stat(DockerSocketPath)
 

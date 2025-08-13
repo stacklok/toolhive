@@ -5,16 +5,19 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/client"
 )
 
 // DiscoveryRoutes defines the routes for the client discovery API.
-type DiscoveryRoutes struct{}
+type DiscoveryRoutes struct {
+	logger *zap.SugaredLogger
+}
 
 // DiscoveryRouter creates a new router for the client discovery API.
-func DiscoveryRouter() http.Handler {
-	routes := DiscoveryRoutes{}
+func DiscoveryRouter(logger *zap.SugaredLogger) http.Handler {
+	routes := DiscoveryRoutes{logger}
 
 	r := chi.NewRouter()
 	r.Get("/clients", routes.discoverClients)
@@ -29,8 +32,8 @@ func DiscoveryRouter() http.Handler {
 //	@Produce		json
 //	@Success		200	{object}	clientStatusResponse
 //	@Router			/api/v1beta/discovery/clients [get]
-func (*DiscoveryRoutes) discoverClients(w http.ResponseWriter, _ *http.Request) {
-	clients, err := client.GetClientStatus()
+func (d *DiscoveryRoutes) discoverClients(w http.ResponseWriter, _ *http.Request) {
+	clients, err := client.GetClientStatus(d.logger)
 	if err != nil {
 		// TODO: Error should be JSON marshaled
 		http.Error(w, "Failed to get client status", http.StatusInternalServerError)

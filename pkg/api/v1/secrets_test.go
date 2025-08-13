@@ -13,19 +13,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 func TestSecretsRouter(t *testing.T) {
 	t.Parallel()
-	router := SecretsRouter()
+	logger := log.NewLogger()
+	router := SecretsRouter(logger)
 	assert.NotNil(t, router)
 }
 
 func TestSetupSecretsProvider_ValidRequests(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	tests := []struct {
 		name         string
@@ -53,7 +54,7 @@ func TestSetupSecretsProvider_ValidRequests(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 
-			routes := &SecretsRoutes{}
+			routes := &SecretsRoutes{logger}
 			routes.setupSecretsProvider(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
@@ -72,7 +73,7 @@ func TestSetupSecretsProvider_ValidRequests(t *testing.T) {
 
 func TestSetupSecretsProvider_InvalidRequests(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	tests := []struct {
 		name         string
@@ -114,7 +115,7 @@ func TestSetupSecretsProvider_InvalidRequests(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 
-			routes := &SecretsRoutes{}
+			routes := &SecretsRoutes{logger}
 			routes.setupSecretsProvider(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
@@ -125,7 +126,7 @@ func TestSetupSecretsProvider_InvalidRequests(t *testing.T) {
 
 func TestCreateSecret_InvalidRequests(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	tests := []struct {
 		name         string
@@ -177,7 +178,7 @@ func TestCreateSecret_InvalidRequests(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 
-			routes := &SecretsRoutes{}
+			routes := &SecretsRoutes{logger}
 			routes.createSecret(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
@@ -188,7 +189,7 @@ func TestCreateSecret_InvalidRequests(t *testing.T) {
 
 func TestUpdateSecret_InvalidRequests(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	tests := []struct {
 		name         string
@@ -249,7 +250,7 @@ func TestUpdateSecret_InvalidRequests(t *testing.T) {
 
 			w := httptest.NewRecorder()
 
-			routes := &SecretsRoutes{}
+			routes := &SecretsRoutes{logger}
 			routes.updateSecret(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
@@ -260,7 +261,7 @@ func TestUpdateSecret_InvalidRequests(t *testing.T) {
 
 func TestDeleteSecret_InvalidRequests(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	tests := []struct {
 		name         string
@@ -291,7 +292,7 @@ func TestDeleteSecret_InvalidRequests(t *testing.T) {
 
 			w := httptest.NewRecorder()
 
-			routes := &SecretsRoutes{}
+			routes := &SecretsRoutes{logger}
 			routes.deleteSecret(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
@@ -401,8 +402,7 @@ func TestRequestResponseTypes(t *testing.T) {
 
 func TestErrorHandling(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
-
+	logger := log.NewLogger()
 	t.Run("malformed json request", func(t *testing.T) {
 		t.Parallel()
 		malformedJSON := `{"provider_type": "encrypted", "invalid": json}`
@@ -410,7 +410,7 @@ func TestErrorHandling(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		routes := &SecretsRoutes{}
+		routes := &SecretsRoutes{logger}
 		routes.setupSecretsProvider(w, req)
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -423,7 +423,7 @@ func TestErrorHandling(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		routes := &SecretsRoutes{}
+		routes := &SecretsRoutes{logger}
 		routes.createSecret(w, req)
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -435,7 +435,7 @@ func TestErrorHandling(t *testing.T) {
 		// Deliberately not setting Content-Type header
 		w := httptest.NewRecorder()
 
-		routes := &SecretsRoutes{}
+		routes := &SecretsRoutes{logger}
 		routes.setupSecretsProvider(w, req)
 
 		// Should still work as the handler doesn't strictly require content-type
@@ -445,11 +445,12 @@ func TestErrorHandling(t *testing.T) {
 
 func TestRouterIntegration(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+
+	logger := log.NewLogger()
 
 	t.Run("router setup test", func(t *testing.T) {
 		t.Parallel()
-		router := SecretsRouter()
+		router := SecretsRouter(logger)
 
 		// Test POST / endpoint
 		setupReq := setupSecretsRequest{

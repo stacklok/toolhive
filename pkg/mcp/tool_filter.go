@@ -9,7 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -73,7 +74,7 @@ func NewToolFilterMiddleware(filterTools []string) (types.MiddlewareFunction, er
 // This middleware is designed to be used ONLY when tool filtering is enabled,
 // and expects the list of tools to be "correct" (i.e. not empty and not
 // containing nonexisting tools).
-func NewToolCallFilterMiddleware(filterTools []string) (types.MiddlewareFunction, error) {
+func NewToolCallFilterMiddleware(filterTools []string, logger *zap.SugaredLogger) (types.MiddlewareFunction, error) {
 	if len(filterTools) == 0 {
 		return nil, fmt.Errorf("tools list for filtering is empty")
 	}
@@ -138,6 +139,7 @@ type toolFilterWriter struct {
 	http.ResponseWriter
 	buffer      []byte
 	filterTools map[string]struct{}
+	logger      *zap.SugaredLogger
 }
 
 // WriteHeader captures the status code
@@ -159,19 +161,19 @@ func (rw *toolFilterWriter) Flush() {
 		if mimeType == "" {
 			_, err := rw.ResponseWriter.Write(rw.buffer)
 			if err != nil {
-				logger.Errorf("Error writing buffer: %v", err)
+				rw.logger.Errorf("Error writing buffer: %v", err)
 			}
 			return
 		}
 
 		var b bytes.Buffer
 		if err := processBuffer(rw.filterTools, rw.buffer, mimeType, &b); err != nil {
-			logger.Errorf("Error flushing response: %v", err)
+			rw.logger.Errorf("Error flushing response: %v", err)
 		}
 
 		_, err := rw.ResponseWriter.Write(b.Bytes())
 		if err != nil {
-			logger.Errorf("Error writing buffer: %v", err)
+			rw.logger.Errorf("Error writing buffer: %v", err)
 		}
 		rw.buffer = rw.buffer[:0] // Reset buffer
 	}

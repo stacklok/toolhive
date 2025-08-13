@@ -27,13 +27,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
-
-func init() {
-	// Initialize logger for tests
-	logger.Initialize()
-}
 
 func TestGenerateOIDCArgs(t *testing.T) {
 	t.Parallel()
@@ -230,6 +225,7 @@ func TestGenerateOIDCArgs(t *testing.T) {
 			reconciler := &MCPServerReconciler{
 				Client: fakeClient,
 				Scheme: scheme,
+				logger: log.NewLogger(),
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -245,7 +241,9 @@ func TestGenerateOIDCArgs(t *testing.T) {
 func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 	t.Parallel()
 
-	reconciler := &MCPServerReconciler{}
+	reconciler := &MCPServerReconciler{
+		logger: log.NewLogger(),
+	}
 
 	tests := []struct {
 		name         string
@@ -357,7 +355,9 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 func TestGenerateInlineOIDCArgs(t *testing.T) {
 	t.Parallel()
 
-	reconciler := &MCPServerReconciler{}
+	reconciler := &MCPServerReconciler{
+		logger: log.NewLogger(),
+	}
 
 	tests := []struct {
 		name         string

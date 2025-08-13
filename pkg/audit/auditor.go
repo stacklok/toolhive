@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 )
 
@@ -40,7 +41,7 @@ type Auditor struct {
 }
 
 // NewAuditor creates a new Auditor with the given configuration.
-func NewAuditor(config *Config) (*Auditor, error) {
+func NewAuditor(config *Config, logger *zap.SugaredLogger) (*Auditor, error) {
 	var logWriter io.Writer = os.Stdout // default to stdout
 
 	if config != nil {

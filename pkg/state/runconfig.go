@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"io"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/errors"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // LoadRunConfigJSON loads a run configuration from the state store and returns the raw reader
@@ -37,7 +38,7 @@ func LoadRunConfigJSON(ctx context.Context, name string) (io.ReadCloser, error) 
 }
 
 // DeleteSavedRunConfig deletes a saved run configuration
-func DeleteSavedRunConfig(ctx context.Context, name string) error {
+func DeleteSavedRunConfig(ctx context.Context, name string, logger *zap.SugaredLogger) error {
 	// Create a state store
 	store, err := NewRunConfigStore(DefaultAppName)
 	if err != nil {
@@ -74,7 +75,7 @@ type RunConfigPersister interface {
 type ReadJSONFunc[T any] func(r io.Reader) (T, error)
 
 // SaveRunConfig saves a run configuration to the state store
-func SaveRunConfig[T RunConfigPersister](ctx context.Context, config T) error {
+func SaveRunConfig[T RunConfigPersister](ctx context.Context, config T, logger *zap.SugaredLogger) error {
 	// Create a state store
 	store, err := NewRunConfigStore(DefaultAppName)
 	if err != nil {

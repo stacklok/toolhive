@@ -7,8 +7,9 @@ import (
 	"sort"
 	"strings"
 
+	"go.uber.org/zap"
+
 	thverrors "github.com/stacklok/toolhive/pkg/errors"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state"
 )
 
@@ -20,16 +21,20 @@ const (
 // manager implements the Manager interface
 type manager struct {
 	groupStore state.Store
+	logger     *zap.SugaredLogger
 }
 
 // NewManager creates a new group manager
-func NewManager() (Manager, error) {
+func NewManager(logger *zap.SugaredLogger) (Manager, error) {
 	store, err := state.NewGroupConfigStore("toolhive")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create group state store: %w", err)
 	}
 
-	return &manager{groupStore: store}, nil
+	return &manager{
+		groupStore: store,
+		logger:     logger,
+	}, nil
 }
 
 // Create creates a new group with the given name
@@ -121,14 +126,14 @@ func (m *manager) RegisterClients(ctx context.Context, groupNames []string, clie
 			}
 
 			if alreadyRegistered {
-				logger.Infof("Client %s is already registered with group %s, skipping", clientName, groupName)
+				m.logger.Infof("Client %s is already registered with group %s, skipping", clientName, groupName)
 				continue
 			}
 
 			// Add the client to the group
 			group.RegisteredClients = append(group.RegisteredClients, clientName)
 			groupModified = true
-			logger.Infof("Successfully registered client %s with group %s", clientName, groupName)
+			m.logger.Infof("Successfully registered client %s with group %s", clientName, groupName)
 		}
 
 		// Only save if the group was actually modified
@@ -160,7 +165,7 @@ func (m *manager) UnregisterClients(ctx context.Context, groupNames []string, cl
 					// Remove client from slice
 					group.RegisteredClients = append(group.RegisteredClients[:i], group.RegisteredClients[i+1:]...)
 					groupModified = true
-					logger.Infof("Successfully unregistered client %s from group %s", clientName, groupName)
+					m.logger.Infof("Successfully unregistered client %s from group %s", clientName, groupName)
 					break
 				}
 			}

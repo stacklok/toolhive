@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -74,11 +74,19 @@ type HTTPSSEProxy struct {
 
 	// Health checker
 	healthChecker *healthcheck.HealthChecker
+
+	// Logger
+	logger *zap.SugaredLogger
 }
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
 func NewHTTPSSEProxy(
-	host string, port int, containerName string, prometheusHandler http.Handler, middlewares ...types.MiddlewareFunction,
+	host string,
+	port int,
+	containerName string,
+	prometheusHandler http.Handler,
+	logger *zap.SugaredLogger,
+	middlewares ...types.MiddlewareFunction,
 ) *HTTPSSEProxy {
 	proxy := &HTTPSSEProxy{
 		middlewares:       middlewares,
@@ -90,11 +98,12 @@ func NewHTTPSSEProxy(
 		sseClients:        make(map[string]*ssecommon.SSEClient),
 		pendingMessages:   []*ssecommon.PendingSSEMessage{},
 		prometheusHandler: prometheusHandler,
+		logger:            logger,
 	}
 
 	// Create MCP pinger and health checker
 	mcpPinger := NewMCPPinger(proxy)
-	proxy.healthChecker = healthcheck.NewHealthChecker("stdio", mcpPinger)
+	proxy.healthChecker = healthcheck.NewHealthChecker("stdio", mcpPinger, logger)
 
 	return proxy
 }
@@ -135,7 +144,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
-		logger.Info("Prometheus metrics endpoint enabled at /metrics")
+		p.logger.Info("Prometheus metrics endpoint enabled at /metrics")
 	}
 
 	// Create the server
@@ -147,12 +156,12 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 
 	// Start the server in a goroutine
 	go func() {
-		logger.Infof("HTTP proxy started for container %s on port %d", p.containerName, p.port)
-		logger.Infof("SSE endpoint: http://%s:%d%s", p.host, p.port, ssecommon.HTTPSSEEndpoint)
-		logger.Infof("JSON-RPC endpoint: http://%s:%d%s", p.host, p.port, ssecommon.HTTPMessagesEndpoint)
+		p.logger.Infof("HTTP proxy started for container %s on port %d", p.containerName, p.port)
+		p.logger.Infof("SSE endpoint: http://%s:%d%s", p.host, p.port, ssecommon.HTTPSSEEndpoint)
+		p.logger.Infof("JSON-RPC endpoint: http://%s:%d%s", p.host, p.port, ssecommon.HTTPMessagesEndpoint)
 
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Errorf("HTTP server error: %v", err)
+			p.logger.Errorf("HTTP server error: %v", err)
 		}
 	}()
 
@@ -285,7 +294,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 		delete(p.sseClients, clientID)
 		p.sseClientsMutex.Unlock()
 		close(messageCh)
-		logger.Infof("Client %s disconnected", clientID)
+		p.logger.Infof("Client %s disconnected", clientID)
 	}()
 
 	// Send messages to the client
@@ -348,7 +357,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Log the message
-	logger.Infof("Received JSON-RPC message: %T", msg)
+	p.logger.Infof("Received JSON-RPC message: %T", msg)
 
 	// Send the message to the destination
 	if err := p.SendMessageToDestination(msg); err != nil {
@@ -359,7 +368,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	// Return a success response
 	w.WriteHeader(http.StatusAccepted)
 	if _, err := w.Write([]byte("Accepted")); err != nil {
-		logger.Warnf("Warning: Failed to write response: %v", err)
+		p.logger.Warnf("Warning: Failed to write response: %v", err)
 	}
 }
 
@@ -380,7 +389,7 @@ func (p *HTTPSSEProxy) sendSSEEvent(msg *ssecommon.SSEMessage) error {
 			// Channel is full or closed, remove the client
 			delete(p.sseClients, clientID)
 			close(client.MessageCh)
-			logger.Infof("Client %s removed (channel full or closed)", clientID)
+			p.logger.Infof("Client %s removed (channel full or closed)", clientID)
 		}
 	}
 
@@ -407,7 +416,7 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 			// Message sent successfully
 		default:
 			// Channel is full, stop sending
-			logger.Errorf("Failed to send pending message to client %s (channel full)", clientID)
+			p.logger.Errorf("Failed to send pending message to client %s (channel full)", clientID)
 			return
 		}
 	}

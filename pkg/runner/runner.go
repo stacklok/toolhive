@@ -9,12 +9,13 @@ import (
 	"syscall"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -36,13 +37,16 @@ type Runner struct {
 	supportedMiddleware map[string]types.MiddlewareFactory
 
 	statusManager statuses.StatusManager
+
+	logger *zap.SugaredLogger
 }
 
 // NewRunner creates a new Runner with the provided configuration
-func NewRunner(runConfig *RunConfig, statusManager statuses.StatusManager) *Runner {
+func NewRunner(runConfig *RunConfig, statusManager statuses.StatusManager, logger *zap.SugaredLogger) *Runner {
 	return &Runner{
 		Config:        runConfig,
 		statusManager: statusManager,
+		logger:        logger,
 	}
 }
 
@@ -78,7 +82,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Ensure middleware is cleaned up on shutdown.
 		defer func() {
 			if err := middleware.Close(); err != nil {
-				logger.Warnf("Failed to close middleware of type %s: %v", middlewareConfig.Type, err)
+				r.logger.Warnf("Failed to close middleware of type %s: %v", middlewareConfig.Type, err)
 			}
 		}()
 		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware.Handler())
@@ -91,14 +95,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsFilterMiddleware)
 
-		toolsCallFilterMiddleware, err := mcp.NewToolCallFilterMiddleware(r.Config.ToolsFilter)
+		toolsCallFilterMiddleware, err := mcp.NewToolCallFilterMiddleware(r.Config.ToolsFilter, r.logger)
 		if err != nil {
 			return fmt.Errorf("failed to create tools call filter middleware: %v", err)
 		}
 		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsCallFilterMiddleware)
 	}
 
-	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
+	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig, r.logger)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
@@ -106,12 +110,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.AuthInfoHandler = authInfoHandler
 
 	// Add MCP parsing middleware after authentication
-	logger.Info("MCP parsing middleware enabled for transport")
+	r.logger.Info("MCP parsing middleware enabled for transport")
 	transportConfig.Middlewares = append(transportConfig.Middlewares, mcp.ParsingMiddleware)
 
 	// Add telemetry middleware if telemetry configuration is provided
 	if r.Config.TelemetryConfig != nil {
-		logger.Info("OpenTelemetry instrumentation enabled for transport")
+		r.logger.Info("OpenTelemetry instrumentation enabled for transport")
 
 		// Create telemetry provider
 		telemetryProvider, err := telemetry.NewProvider(ctx, *r.Config.TelemetryConfig)
@@ -126,7 +130,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Add Prometheus handler to transport config if metrics port is configured
 		if r.Config.TelemetryConfig.EnablePrometheusMetricsPath {
 			transportConfig.PrometheusHandler = telemetryProvider.PrometheusHandler()
-			logger.Infof("Prometheus metrics will be exposed on port %d at /metrics", r.Config.Port)
+			r.logger.Infof("Prometheus metrics will be exposed on port %d at /metrics", r.Config.Port)
 		}
 
 		// Store provider for cleanup
@@ -135,10 +139,10 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Add authorization middleware if authorization configuration is provided
 	if r.Config.AuthzConfig != nil {
-		logger.Info("Authorization enabled for transport")
+		r.logger.Info("Authorization enabled for transport")
 
 		// Get the middleware from the configuration
-		middleware, err := r.Config.AuthzConfig.CreateMiddleware()
+		middleware, err := r.Config.AuthzConfig.CreateMiddleware(r.logger)
 		if err != nil {
 			return fmt.Errorf("failed to get authorization middleware: %v", err)
 		}
@@ -149,7 +153,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Add audit middleware if audit configuration is provided
 	if r.Config.AuditConfig != nil {
-		logger.Info("Audit logging enabled for transport")
+		r.logger.Info("Audit logging enabled for transport")
 
 		// Set the component name if not already set
 		if r.Config.AuditConfig.Component == "" {
@@ -157,7 +161,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Get the middleware from the configuration
-		middleware, err := r.Config.AuditConfig.CreateMiddleware()
+		middleware, err := r.Config.AuditConfig.CreateMiddleware(r.logger)
 		if err != nil {
 			return fmt.Errorf("failed to create audit middleware: %w", err)
 		}
@@ -169,21 +173,21 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode
 
-	transportHandler, err := transport.NewFactory().Create(transportConfig)
+	transportHandler, err := transport.NewFactory(r.logger).Create(transportConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create transport: %v", err)
 	}
 
 	// Process secrets if provided
 	if len(r.Config.Secrets) > 0 {
-		cfg := config.GetConfig()
+		cfg := config.GetConfig(r.logger)
 
 		providerType, err := cfg.Secrets.GetProviderType()
 		if err != nil {
 			return fmt.Errorf("error determining secrets provider type: %w", err)
 		}
 
-		secretManager, err := secrets.CreateSecretProvider(providerType)
+		secretManager, err := secrets.CreateSecretProvider(providerType, r.logger)
 		if err != nil {
 			return fmt.Errorf("error instantiating secret manager %v", err)
 		}
@@ -195,7 +199,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Set up the transport
-	logger.Infof("Setting up %s transport...", r.Config.Transport)
+	r.logger.Infof("Setting up %s transport...", r.Config.Transport)
 	if err := transportHandler.Setup(
 		ctx, r.Config.Deployer, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
 		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile, r.Config.K8sPodTemplatePatch,
@@ -205,61 +209,61 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Start the transport (which also starts the container and monitoring)
-	logger.Infof("Starting %s transport for %s...", r.Config.Transport, r.Config.ContainerName)
+	r.logger.Infof("Starting %s transport for %s...", r.Config.Transport, r.Config.ContainerName)
 	if err := transportHandler.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start transport: %v", err)
 	}
 
-	logger.Infof("MCP server %s started successfully", r.Config.ContainerName)
+	r.logger.Infof("MCP server %s started successfully", r.Config.ContainerName)
 
 	// Update client configurations with the MCP server URL.
 	// Note that this function checks the configuration to determine which
 	// clients should be updated, if any.
-	clientManager, err := client.NewManager(ctx)
+	clientManager, err := client.NewManager(ctx, r.logger)
 	if err != nil {
-		logger.Warnf("Warning: Failed to create client manager: %v", err)
+		r.logger.Warnf("Warning: Failed to create client manager: %v", err)
 	} else {
 		transportType := labels.GetTransportType(r.Config.ContainerLabels)
 		serverURL := transport.GenerateMCPServerURL(transportType, "localhost", r.Config.Port, r.Config.ContainerName)
 
 		if err := clientManager.AddServerToClients(ctx, r.Config.ContainerName, serverURL, transportType, r.Config.Group); err != nil {
-			logger.Warnf("Warning: Failed to add server to client configurations: %v", err)
+			r.logger.Warnf("Warning: Failed to add server to client configurations: %v", err)
 		}
 	}
 
 	// Define a function to stop the MCP server
 	stopMCPServer := func(reason string) {
-		logger.Infof("Stopping MCP server: %s", reason)
+		r.logger.Infof("Stopping MCP server: %s", reason)
 
 		// Stop the transport (which also stops the container, monitoring, and handles removal)
-		logger.Infof("Stopping %s transport...", r.Config.Transport)
+		r.logger.Infof("Stopping %s transport...", r.Config.Transport)
 		if err := transportHandler.Stop(ctx); err != nil {
-			logger.Warnf("Warning: Failed to stop transport: %v", err)
+			r.logger.Warnf("Warning: Failed to stop transport: %v", err)
 		}
 
 		// Cleanup telemetry provider
 		if err := r.Cleanup(ctx); err != nil {
-			logger.Warnf("Warning: Failed to cleanup telemetry: %v", err)
+			r.logger.Warnf("Warning: Failed to cleanup telemetry: %v", err)
 		}
 
 		// Remove the PID file if it exists
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to remove PID file: %v", err)
+			r.logger.Warnf("Warning: Failed to remove PID file: %v", err)
 		}
 
-		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
+		r.logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
 	if process.IsDetached() {
 		// We're a detached process running in foreground mode
 		// Write the PID to a file so the stop command can kill the process
 		if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to write PID file: %v", err)
+			r.logger.Warnf("Warning: Failed to write PID file: %v", err)
 		}
 
-		logger.Infof("Running as detached process (PID: %d)", os.Getpid())
+		r.logger.Infof("Running as detached process (PID: %d)", os.Getpid())
 	} else {
-		logger.Info("Press Ctrl+C to stop or wait for container to exit")
+		r.logger.Info("Press Ctrl+C to stop or wait for container to exit")
 	}
 
 	// Set up signal handling
@@ -274,7 +278,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		for {
 			// Safely check if transportHandler is nil
 			if transportHandler == nil {
-				logger.Info("Transport handler is nil, exiting monitoring routine...")
+				r.logger.Info("Transport handler is nil, exiting monitoring routine...")
 				close(doneCh)
 				return
 			}
@@ -282,14 +286,14 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Check if the transport is still running
 			running, err := transportHandler.IsRunning(ctx)
 			if err != nil {
-				logger.Errorf("Error checking transport status: %v", err)
+				r.logger.Errorf("Error checking transport status: %v", err)
 				// Don't exit immediately on error, try again after pause
 				time.Sleep(1 * time.Second)
 				continue
 			}
 			if !running {
 				// Transport is no longer running (container exited or was stopped)
-				logger.Info("Transport is no longer running, exiting...")
+				r.logger.Info("Transport is no longer running, exiting...")
 				close(doneCh)
 				return
 			}
@@ -313,10 +317,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		// The transport has already been stopped (likely by the container monitor)
 		// Clean up the PID file and state
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to remove PID file: %v", err)
+			r.logger.Warnf("Warning: Failed to remove PID file: %v", err)
 		}
 
-		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
+		r.logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
 	return nil
@@ -325,9 +329,9 @@ func (r *Runner) Run(ctx context.Context) error {
 // Cleanup performs cleanup operations for the runner, including shutting down telemetry.
 func (r *Runner) Cleanup(ctx context.Context) error {
 	if r.telemetryProvider != nil {
-		logger.Debug("Shutting down telemetry provider")
+		r.logger.Debug("Shutting down telemetry provider")
 		if err := r.telemetryProvider.Shutdown(ctx); err != nil {
-			logger.Warnf("Warning: Failed to shutdown telemetry provider: %v", err)
+			r.logger.Warnf("Warning: Failed to shutdown telemetry provider: %v", err)
 			return err
 		}
 	}

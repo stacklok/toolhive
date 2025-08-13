@@ -113,14 +113,14 @@ func setCACertCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Validate the certificate format
-	if err := certs.ValidateCACertificate(certContent); err != nil {
+	if err := certs.ValidateCACertificate(certContent, logger); err != nil {
 		return fmt.Errorf("invalid CA certificate: %w", err)
 	}
 
 	// Update the configuration
 	err = config.UpdateConfig(func(c *config.Config) {
 		c.CACertificatePath = certPath
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -130,7 +130,7 @@ func setCACertCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 func getCACertCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	cfg := config.GetConfig(logger)
 
 	if cfg.CACertificatePath == "" {
 		fmt.Println("No CA certificate is currently configured.")
@@ -148,7 +148,7 @@ func getCACertCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	cfg := config.GetConfig(logger)
 
 	if cfg.CACertificatePath == "" {
 		fmt.Println("No CA certificate is currently configured.")
@@ -158,7 +158,7 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 	// Update the configuration
 	err := config.UpdateConfig(func(c *config.Config) {
 		c.CACertificatePath = ""
-	})
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
@@ -173,7 +173,7 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 
 	switch registryType {
 	case config.RegistryTypeURL:
-		err := config.SetRegistryURL(cleanPath, allowPrivateRegistryIp)
+		err := config.SetRegistryURL(cleanPath, allowPrivateRegistryIp, logger)
 		if err != nil {
 			return err
 		}
@@ -188,14 +188,14 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 		}
 		return nil
 	case config.RegistryTypeFile:
-		return config.SetRegistryFile(cleanPath)
+		return config.SetRegistryFile(cleanPath, logger)
 	default:
 		return fmt.Errorf("unsupported registry type")
 	}
 }
 
 func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	url, localPath, _, registryType := config.GetRegistryConfig()
+	url, localPath, _, registryType := config.GetRegistryConfig(logger)
 
 	switch registryType {
 	case config.RegistryTypeURL:
@@ -213,14 +213,14 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	url, localPath, _, registryType := config.GetRegistryConfig()
+	url, localPath, _, registryType := config.GetRegistryConfig(logger)
 
 	if registryType == "default" {
 		fmt.Println("No custom registry is currently configured.")
 		return nil
 	}
 
-	err := config.UnsetRegistry()
+	err := config.UnsetRegistry(logger)
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}

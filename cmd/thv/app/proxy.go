@@ -17,7 +17,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
@@ -195,7 +194,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Select a port for the HTTP proxy (host port)
-	port, err := networking.FindOrUsePort(proxyPort)
+	port, err := networking.FindOrUsePort(proxyPort, logger)
 	if err != nil {
 		return err
 	}
@@ -245,7 +244,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get authentication middleware for incoming requests
-	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
+	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
@@ -266,6 +265,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		proxyHost, port, serverName, proxyTargetURI,
 		nil, authInfoHandler,
 		false,
+		logger,
 		middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %v", err)
@@ -436,7 +436,7 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 	}
 
 	// Create OAuth flow
-	flow, err := oauth.NewFlow(oauthConfig)
+	flow, err := oauth.NewFlow(oauthConfig, logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create OAuth flow: %w", err)
 	}

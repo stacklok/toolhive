@@ -9,15 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 // TestNewCedarAuthorizer tests the creation of a new Cedar authorizer with different configurations.
 func TestNewCedarAuthorizer(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger for tests
-	logger.Initialize()
+	logger := log.NewLogger()
+
 	// Test cases
 	testCases := []struct {
 		name         string
@@ -73,7 +73,7 @@ func TestNewCedarAuthorizer(t *testing.T) {
 			authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 				Policies:     tc.policies,
 				EntitiesJSON: tc.entitiesJSON,
-			})
+			}, logger)
 
 			// Check error expectations
 			if tc.expectError {
@@ -95,6 +95,9 @@ func TestNewCedarAuthorizer(t *testing.T) {
 // TestAuthorizeWithJWTClaims tests the AuthorizeWithJWTClaims function with different roles in claims.
 func TestAuthorizeWithJWTClaims(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	// Test cases
 	testCases := []struct {
 		name             string
@@ -317,7 +320,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 				Policies:     []string{tc.policy},
 				EntitiesJSON: `[]`,
-			})
+			}, logger)
 			require.NoError(t, err, "Failed to create Cedar authorizer")
 
 			// Create a context with JWT claims
@@ -334,6 +337,9 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 // TestAuthorizeWithJWTClaimsErrors tests error cases for AuthorizeWithJWTClaims.
 func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	// Create a context
 	ctx := context.Background()
 
@@ -341,7 +347,7 @@ func TestAuthorizeWithJWTClaimsErrors(t *testing.T) {
 	authorizer, err := NewCedarAuthorizer(CedarAuthorizerConfig{
 		Policies:     []string{`permit(principal, action, resource);`},
 		EntitiesJSON: `[]`,
-	})
+	}, logger)
 	require.NoError(t, err, "Failed to create Cedar authorizer")
 
 	// Test cases

@@ -53,7 +53,7 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create workload manager.
-	manager, err := workloads.NewManager(ctx)
+	manager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
@@ -75,7 +75,7 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 
 func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 	// Create group manager
-	groupManager, err := groups.NewManager()
+	groupManager, err := groups.NewManager(logger)
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %v", err)
 	}
@@ -90,7 +90,7 @@ func deleteAllWorkloadsInGroup(ctx context.Context, groupName string) error {
 	}
 
 	// Create workload manager
-	workloadManager, err := workloads.NewManager(ctx)
+	workloadManager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}

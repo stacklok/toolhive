@@ -10,8 +10,7 @@ import (
 	"strings"
 
 	"github.com/adrg/xdg"
-
-	"github.com/stacklok/toolhive/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // Processor handles loading and processing ignore patterns
@@ -20,6 +19,7 @@ type Processor struct {
 	LocalPatterns   []string
 	Config          *Config
 	sharedEmptyFile string // Cached path to a single shared empty file
+	logger          *zap.SugaredLogger
 }
 
 // Config holds configuration for ignore processing
@@ -31,17 +31,19 @@ type Config struct {
 const ignoreFileName = ".thvignore"
 
 // NewProcessor creates a new Processor instance with the given configuration
-func NewProcessor(config *Config) *Processor {
+func NewProcessor(config *Config, logger *zap.SugaredLogger) *Processor {
 	if config == nil {
 		config = &Config{
 			LoadGlobal:    true,
 			PrintOverlays: false,
 		}
 	}
+
 	return &Processor{
 		GlobalPatterns: make([]string, 0),
 		LocalPatterns:  make([]string, 0),
 		Config:         config,
+		logger:         logger,
 	}
 }
 
@@ -49,27 +51,27 @@ func NewProcessor(config *Config) *Processor {
 func (p *Processor) LoadGlobal() error {
 	// Skip loading global patterns if disabled in config
 	if !p.Config.LoadGlobal {
-		logger.Debugf("Global ignore patterns disabled by configuration")
+		p.logger.Debug("Global ignore patterns disabled by configuration")
 		return nil
 	}
 
 	globalIgnoreFile, err := xdg.ConfigFile("toolhive/thvignore")
 	if err != nil {
-		logger.Debugf("Failed to get XDG config file path: %v", err)
+		p.logger.Debugf("Failed to get XDG config file path: %v", err)
 		return nil // Not a fatal error, continue without global patterns
 	}
 
 	patterns, err := p.loadIgnoreFile(globalIgnoreFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			logger.Debugf("Global ignore file not found: %s", globalIgnoreFile)
+			p.logger.Debugf("Global ignore file not found: %s", globalIgnoreFile)
 			return nil // Not a fatal error
 		}
 		return fmt.Errorf("failed to load global ignore file: %w", err)
 	}
 
 	p.GlobalPatterns = patterns
-	logger.Debugf("Loaded %d global ignore patterns from %s", len(patterns), globalIgnoreFile)
+	p.logger.Debugf("Loaded %d global ignore patterns from %s", len(patterns), globalIgnoreFile)
 	return nil
 }
 
@@ -79,14 +81,14 @@ func (p *Processor) LoadLocal(sourceDir string) error {
 	patterns, err := p.loadIgnoreFile(localIgnoreFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			logger.Debugf("Local ignore file not found: %s", localIgnoreFile)
+			p.logger.Debugf("Local ignore file not found: %s", localIgnoreFile)
 			return nil // Not a fatal error
 		}
 		return fmt.Errorf("failed to load local ignore file: %w", err)
 	}
 
 	p.LocalPatterns = append(p.LocalPatterns, patterns...)
-	logger.Debugf("Loaded %d local ignore patterns from %s", len(patterns), localIgnoreFile)
+	p.logger.Debugf("Loaded %d local ignore patterns from %s", len(patterns), localIgnoreFile)
 	return nil
 }
 
@@ -165,7 +167,7 @@ func (p *Processor) createOverlayMount(
 	// Calculate relative path from bind mount to matched path
 	relPath, err := filepath.Rel(bindMount, matchPath)
 	if err != nil {
-		logger.Debugf("Failed to calculate relative path for %s: %v", matchPath, err)
+		p.logger.Debugf("Failed to calculate relative path for %s: %v", matchPath, err)
 		return nil
 	}
 
@@ -181,13 +183,13 @@ func (p *Processor) createOverlayMount(
 	// Check if the matched path is a directory or file
 	info, err := os.Stat(matchPath)
 	if err != nil {
-		logger.Debugf("Failed to stat path %s: %v", matchPath, err)
+		p.logger.Debugf("Failed to stat path %s: %v", matchPath, err)
 		return nil
 	}
 
 	if info.IsDir() {
 		// For directories, use tmpfs mount
-		logger.Debugf("Adding tmpfs overlay for directory pattern '%s' at container path: %s", pattern, containerOverlayPath)
+		p.logger.Debugf("Adding tmpfs overlay for directory pattern '%s' at container path: %s", pattern, containerOverlayPath)
 		return &OverlayMount{
 			ContainerPath: containerOverlayPath,
 			HostPath:      "", // tmpfs doesn't need host path
@@ -198,11 +200,11 @@ func (p *Processor) createOverlayMount(
 	// For files, create empty file and bind mount it
 	emptyFilePath, err := p.createEmptyFile()
 	if err != nil {
-		logger.Debugf("Failed to create empty file for pattern '%s': %v", pattern, err)
+		p.logger.Debugf("Failed to create empty file for pattern '%s': %v", pattern, err)
 		return nil
 	}
 
-	logger.Debugf("Adding bind overlay for file pattern '%s' at container path: %s (host: %s)",
+	p.logger.Debugf("Adding bind overlay for file pattern '%s' at container path: %s (host: %s)",
 		pattern, containerOverlayPath, emptyFilePath)
 	return &OverlayMount{
 		ContainerPath: containerOverlayPath,
@@ -214,12 +216,12 @@ func (p *Processor) createOverlayMount(
 // printOverlays prints resolved overlays if requested
 func (p *Processor) printOverlays(overlayMounts []OverlayMount, bindMount, containerPath string) {
 	if p.Config.PrintOverlays && len(overlayMounts) > 0 {
-		logger.Infof("Resolved overlays for mount %s -> %s:", bindMount, containerPath)
+		p.logger.Infof("Resolved overlays for mount %s -> %s:", bindMount, containerPath)
 		for _, overlay := range overlayMounts {
 			if overlay.Type == "tmpfs" {
-				logger.Infof("  - %s (tmpfs)", overlay.ContainerPath)
+				p.logger.Infof("  - %s (tmpfs)", overlay.ContainerPath)
 			} else {
-				logger.Infof("  - %s (bind: %s)", overlay.ContainerPath, overlay.HostPath)
+				p.logger.Infof("  - %s (bind: %s)", overlay.ContainerPath, overlay.HostPath)
 			}
 		}
 	}
@@ -248,7 +250,7 @@ func (p *Processor) createEmptyFile() (string, error) {
 
 	// Cache the path for reuse
 	p.sharedEmptyFile = tmpFile.Name()
-	logger.Debugf("Created shared empty file for bind mounting: %s", p.sharedEmptyFile)
+	p.logger.Debugf("Created shared empty file for bind mounting: %s", p.sharedEmptyFile)
 
 	return p.sharedEmptyFile, nil
 }
@@ -257,10 +259,10 @@ func (p *Processor) createEmptyFile() (string, error) {
 func (p *Processor) Cleanup() error {
 	if p.sharedEmptyFile != "" {
 		if err := os.Remove(p.sharedEmptyFile); err != nil && !os.IsNotExist(err) {
-			logger.Debugf("Failed to remove shared empty file %s: %v", p.sharedEmptyFile, err)
+			p.logger.Debugf("Failed to remove shared empty file %s: %v", p.sharedEmptyFile, err)
 			return fmt.Errorf("failed to remove shared empty file: %w", err)
 		}
-		logger.Debugf("Cleaned up shared empty file: %s", p.sharedEmptyFile)
+		p.logger.Debugf("Cleaned up shared empty file: %s", p.sharedEmptyFile)
 		p.sharedEmptyFile = ""
 	}
 	return nil
@@ -280,7 +282,7 @@ func (p *Processor) GetOverlayPaths(bindMount, containerPath string) []string {
 }
 
 // getMatchingPaths returns all paths that match the given pattern in the directory
-func (*Processor) getMatchingPaths(dir, pattern string) []string {
+func (p *Processor) getMatchingPaths(dir, pattern string) []string {
 	var matchingPaths []string
 
 	// Handle directory patterns (ending with /)
@@ -303,7 +305,7 @@ func (*Processor) getMatchingPaths(dir, pattern string) []string {
 	// Handle glob patterns
 	matches, err := filepath.Glob(filepath.Join(dir, pattern))
 	if err != nil {
-		logger.Debugf("Error matching pattern '%s': %v", pattern, err)
+		p.logger.Debugf("Error matching pattern '%s': %v", pattern, err)
 		return matchingPaths
 	}
 

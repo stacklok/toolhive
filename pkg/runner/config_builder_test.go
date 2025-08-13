@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 )
@@ -17,8 +17,8 @@ import (
 func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
+	// Setup logger
+	logger := log.NewLogger()
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -177,7 +177,7 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 			t.Parallel()
 
 			// Create a new builder and apply the setup
-			builder := tc.setupBuilder(NewRunConfigBuilder())
+			builder := tc.setupBuilder(NewRunConfigBuilder(logger))
 			require.NotNil(t, builder, "Builder should not be nil")
 
 			// Create a temporary profile file if needed
@@ -234,8 +234,8 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 	t.Parallel()
 
-	// Initialize logger to prevent nil pointer dereference when processing volume mounts
-	logger.Initialize()
+	// Setup logger
+	logger := log.NewLogger()
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
@@ -314,7 +314,7 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 			t.Parallel()
 
 			// Create a new builder and apply the setup
-			builder := tc.setupBuilder(NewRunConfigBuilder())
+			builder := tc.setupBuilder(NewRunConfigBuilder(logger))
 			require.NotNil(t, builder, "Builder should not be nil")
 
 			// Save original read/write mounts count if there's a permission profile

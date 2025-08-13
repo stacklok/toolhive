@@ -5,12 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestIsTempPermissionProfile(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+
 	tests := []struct {
 		name     string
 		filePath string
@@ -66,7 +66,10 @@ func TestIsTempPermissionProfile(t *testing.T) {
 
 func TestCleanupTempPermissionProfile(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+
+	// Create logger
+	logger := log.NewLogger()
+
 	// Create a temporary file that matches our pattern
 	tempFile, err := os.CreateTemp("", "toolhive-test-permissions-*.json")
 	if err != nil {
@@ -81,7 +84,7 @@ func TestCleanupTempPermissionProfile(t *testing.T) {
 	}
 
 	// Clean up the temp file
-	err = CleanupTempPermissionProfile(tempPath)
+	err = CleanupTempPermissionProfile(tempPath, logger)
 	if err != nil {
 		t.Fatalf("CleanupTempPermissionProfile failed: %v", err)
 	}
@@ -94,12 +97,15 @@ func TestCleanupTempPermissionProfile(t *testing.T) {
 
 func TestCleanupTempPermissionProfile_NonTempFile(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+
+	// Create logger
+	logger := log.NewLogger()
+
 	// Test with a non-temp file path
 	nonTempPath := "/home/user/my-permissions.json"
 
 	// This should not fail and should not attempt to remove the file
-	err := CleanupTempPermissionProfile(nonTempPath)
+	err := CleanupTempPermissionProfile(nonTempPath, logger)
 	if err != nil {
 		t.Errorf("CleanupTempPermissionProfile should not fail for non-temp files: %v", err)
 	}
@@ -107,12 +113,15 @@ func TestCleanupTempPermissionProfile_NonTempFile(t *testing.T) {
 
 func TestCleanupTempPermissionProfile_NonExistentFile(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
+
+	// Create logger
+	logger := log.NewLogger()
+
 	// Test with a temp file pattern that doesn't exist
 	nonExistentPath := filepath.Join(os.TempDir(), "toolhive-nonexistent-permissions-999.json")
 
 	// This should not fail
-	err := CleanupTempPermissionProfile(nonExistentPath)
+	err := CleanupTempPermissionProfile(nonExistentPath, logger)
 	if err != nil {
 		t.Errorf("CleanupTempPermissionProfile should not fail for non-existent files: %v", err)
 	}

@@ -167,7 +167,7 @@ Note that some providers (like 1Password) are read-only and do not support setti
 
 			// Check if the provider supports writing secrets
 			if !manager.Capabilities().CanWrite {
-				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				providerType, _ := config.GetConfig(logger).Secrets.GetProviderType()
 				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support setting secrets (read-only)\n", providerType)
 				return
 			}
@@ -250,7 +250,7 @@ If your provider is read-only or doesn't support deletion, this command returns 
 
 			// Check if the provider supports deleting secrets
 			if !manager.Capabilities().CanDelete {
-				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				providerType, _ := config.GetConfig(logger).Secrets.GetProviderType()
 				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support deleting secrets\n", providerType)
 				return
 			}
@@ -284,7 +284,7 @@ If descriptions exist for the secrets, the command displays them alongside the n
 
 			// Check if the provider supports listing secrets
 			if !manager.Capabilities().CanList {
-				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				providerType, _ := config.GetConfig(logger).Secrets.GetProviderType()
 				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support listing secrets\n", providerType)
 				return
 			}
@@ -344,7 +344,7 @@ This command only works with the 'encrypted' secrets provider.`,
 }
 
 func getSecretsManager() (secrets.Provider, error) {
-	cfg := config.GetConfig()
+	cfg := config.GetConfig(logger)
 
 	// Check if secrets setup has been completed
 	if !cfg.Secrets.SetupCompleted {
@@ -356,7 +356,7 @@ func getSecretsManager() (secrets.Provider, error) {
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateSecretProvider(providerType)
+	manager, err := secrets.CreateSecretProvider(providerType, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets manager: %w", err)
 	}

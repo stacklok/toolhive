@@ -6,10 +6,10 @@ import (
 	"os"
 	"strings"
 
+	"go.uber.org/zap"
 	"golang.org/x/term"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -32,11 +32,18 @@ type EnvVarValidator interface {
 // DetachedEnvVarValidator implements the EnvVarValidator interface for
 // scenarios where the user cannot be prompted for input. Any missing,
 // mandatory variables will result in an error being returned.
-type DetachedEnvVarValidator struct{}
+type DetachedEnvVarValidator struct {
+	logger *zap.SugaredLogger
+}
+
+// NewDetachedEnvVarValidator creates a new DetachedEnvVarValidator instance
+func NewDetachedEnvVarValidator(logger *zap.SugaredLogger) *DetachedEnvVarValidator {
+	return &DetachedEnvVarValidator{logger}
+}
 
 // Validate checks that all required environment variables and secrets are provided
 // and returns the processed environment variables to be set.
-func (*DetachedEnvVarValidator) Validate(
+func (v *DetachedEnvVarValidator) Validate(
 	_ context.Context,
 	metadata *registry.ImageMetadata,
 	runConfig *RunConfig,
@@ -54,7 +61,7 @@ func (*DetachedEnvVarValidator) Validate(
 			} else if envVar.Secret {
 				return nil, fmt.Errorf("missing required secret environment variable: %s", envVar.Name)
 			} else if envVar.Default != "" {
-				addAsEnvironmentVariable(envVar, envVar.Default, &suppliedEnvVars)
+				addAsEnvironmentVariable(envVar, envVar.Default, &suppliedEnvVars, v.logger)
 			}
 		}
 	}
@@ -65,11 +72,18 @@ func (*DetachedEnvVarValidator) Validate(
 // CLIEnvVarValidator implements the EnvVarValidator interface for
 // CLI usage. If any missing, mandatory variables are found, this code will
 // prompt the user to supply them through stdin.
-type CLIEnvVarValidator struct{}
+type CLIEnvVarValidator struct {
+	logger *zap.SugaredLogger
+}
+
+// NewCLIEnvVarValidator creates a new CLIEnvVarValidator instance
+func NewCLIEnvVarValidator(logger *zap.SugaredLogger) *CLIEnvVarValidator {
+	return &CLIEnvVarValidator{logger}
+}
 
 // Validate checks that all required environment variables and secrets are provided
 // and returns the processed environment variables to be set.
-func (*CLIEnvVarValidator) Validate(
+func (v *CLIEnvVarValidator) Validate(
 	ctx context.Context,
 	metadata *registry.ImageMetadata,
 	runConfig *RunConfig,
@@ -92,7 +106,7 @@ func (*CLIEnvVarValidator) Validate(
 		// Create a new slice with capacity for all env vars
 
 		// Initialize secrets manager if needed
-		secretsManager := initializeSecretsManagerIfNeeded(registryEnvVars)
+		secretsManager := initializeSecretsManagerIfNeeded(registryEnvVars, v.logger)
 
 		// Process each environment variable from the registry
 		for _, envVar := range registryEnvVars {
@@ -101,27 +115,26 @@ func (*CLIEnvVarValidator) Validate(
 			}
 
 			if envVar.Required {
-
 				if envVar.Secret {
 					value, err := secretsManager.GetSecret(ctx, envVar.Name)
 					if err != nil {
-						logger.Warnf("Unable to find secret %s in the secrets manager: %v", envVar.Name, err)
+						v.logger.Warnf("Unable to find secret %s in the secrets manager: %v", envVar.Name, err)
 					} else {
-						addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
+						addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList, v.logger)
 						continue
 					}
 				}
 
-				value, err := promptForEnvironmentVariable(envVar)
+				value, err := promptForEnvironmentVariable(envVar, v.logger)
 				if err != nil {
-					logger.Warnf("Warning: Failed to read input for %s: %v", envVar.Name, err)
+					v.logger.Warnf("Warning: Failed to read input for %s: %v", envVar.Name, err)
 					continue
 				}
 				if value != "" {
-					addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
+					addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList, v.logger)
 				}
 			} else if envVar.Default != "" {
-				addNewVariable(ctx, envVar, envVar.Default, secretsManager, &envVars, &secretsList)
+				addNewVariable(ctx, envVar, envVar.Default, secretsManager, &envVars, &secretsList, v.logger)
 			}
 		}
 
@@ -132,7 +145,7 @@ func (*CLIEnvVarValidator) Validate(
 }
 
 // promptForEnvironmentVariable prompts the user for an environment variable value
-func promptForEnvironmentVariable(envVar *registry.EnvVar) (string, error) {
+func promptForEnvironmentVariable(envVar *registry.EnvVar, logger *zap.SugaredLogger) (string, error) {
 	var byteValue []byte
 	var err error
 	if envVar.Secret {
@@ -167,11 +180,12 @@ func addNewVariable(
 	secretsManager secrets.Provider,
 	envVars *[]string,
 	secretsList *[]string,
+	logger *zap.SugaredLogger,
 ) {
 	if envVar.Secret && secretsManager != nil {
-		addAsSecret(ctx, envVar, value, secretsManager, secretsList, envVars)
+		addAsSecret(ctx, envVar, value, secretsManager, secretsList, envVars, logger)
 	} else {
-		addAsEnvironmentVariable(envVar, value, envVars)
+		addAsEnvironmentVariable(envVar, value, envVars, logger)
 	}
 }
 
@@ -183,6 +197,7 @@ func addAsSecret(
 	secretsManager secrets.Provider,
 	secretsList *[]string,
 	envVars *[]string,
+	logger *zap.SugaredLogger,
 ) {
 	var secretName string
 	if envVar.Required {
@@ -209,7 +224,7 @@ func addAsSecret(
 }
 
 // initializeSecretsManagerIfNeeded initializes the secrets manager if there are secret environment variables
-func initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secrets.Provider {
+func initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar, logger *zap.SugaredLogger) secrets.Provider {
 	// Check if we have any secret environment variables
 	hasSecrets := false
 	for _, envVar := range registryEnvVars {
@@ -223,7 +238,7 @@ func initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secret
 		return nil
 	}
 
-	secretsManager, err := getSecretsManager()
+	secretsManager, err := getSecretsManager(logger)
 	if err != nil {
 		logger.Warnf("Warning: Failed to initialize secrets manager: %v", err)
 		logger.Warnf("Secret environment variables will be stored as regular environment variables")
@@ -235,8 +250,8 @@ func initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secret
 
 // Duplicated from cmd/thv/app/app.go
 // It may be possible to de-duplicate this in future.
-func getSecretsManager() (secrets.Provider, error) {
-	cfg := config.GetConfig()
+func getSecretsManager(logger *zap.SugaredLogger) (secrets.Provider, error) {
+	cfg := config.GetConfig(logger)
 
 	// Check if secrets setup has been completed
 	if !cfg.Secrets.SetupCompleted {
@@ -248,7 +263,7 @@ func getSecretsManager() (secrets.Provider, error) {
 		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
 	}
 
-	manager, err := secrets.CreateSecretProvider(providerType)
+	manager, err := secrets.CreateSecretProvider(providerType, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secrets manager: %w", err)
 	}
@@ -304,6 +319,7 @@ func addAsEnvironmentVariable(
 	envVar *registry.EnvVar,
 	value string,
 	envVars *[]string,
+	logger *zap.SugaredLogger,
 ) {
 	*envVars = append(*envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
 

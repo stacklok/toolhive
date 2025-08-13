@@ -9,14 +9,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 //nolint:paralleltest // This test manages temporary directories and cannot run in parallel
 func TestUpdateCmdFunc(t *testing.T) {
-	// Initialize logger for tests
-	logger.Initialize()
 
 	tests := []struct {
 		name        string

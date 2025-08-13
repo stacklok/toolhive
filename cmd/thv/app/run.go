@@ -15,7 +15,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -140,11 +139,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
 	// Create container runtime
-	rt, err := container.NewFactory().Create(ctx)
+	rt, err := container.NewFactory(logger).Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
-	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	workloadManager, err := workloads.NewManagerFromRuntime(rt, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
@@ -162,7 +161,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Always save the run config to disk before starting (both foreground and detached modes)
 	// NOTE: Save before secrets processing to avoid storing secrets in the state store
-	if err := runnerConfig.SaveState(ctx); err != nil {
+	if err := runnerConfig.SaveState(ctx, logger); err != nil {
 		return fmt.Errorf("failed to save run configuration: %v", err)
 	}
 
@@ -205,7 +204,7 @@ func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serv
 	}
 
 	// Create group manager
-	groupManager, err := groups.NewManager()
+	groupManager, err := groups.NewManager(logger)
 	if err != nil {
 		return fmt.Errorf("failed to create group manager: %v", err)
 	}
@@ -292,7 +291,7 @@ func runFromConfigFile(ctx context.Context) error {
 	}
 
 	// Create container runtime
-	rt, err := container.NewFactory().Create(ctx)
+	rt, err := container.NewFactory(logger).Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
@@ -301,7 +300,7 @@ func runFromConfigFile(ctx context.Context) error {
 	runConfig.Deployer = rt
 
 	// Create workload manager
-	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	workloadManager, err := workloads.NewManagerFromRuntime(rt, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}

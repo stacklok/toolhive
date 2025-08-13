@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container/verifier"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 )
 
@@ -304,7 +303,7 @@ func verifyServerProvenance(name string, server *registry.ImageMetadata) error {
 	logger.Infof("Verifying provenance for server %s with image %s", name, server.Image)
 
 	// Create verifier
-	v, err := verifier.New(server)
+	v, err := verifier.New(server, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create verifier: %w", err)
 	}

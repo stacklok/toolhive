@@ -69,7 +69,7 @@ func createWithTimeout(ctx context.Context) (runtime.Runtime, error) {
 		err error
 	}, 1)
 	go func() {
-		rt, err := container.NewFactory().Create(ctx)
+		rt, err := container.NewFactory(logger).Create(ctx)
 		done <- struct {
 			rt  runtime.Runtime
 			err error

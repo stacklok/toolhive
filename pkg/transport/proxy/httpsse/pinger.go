@@ -10,7 +10,6 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // MCPPinger implements healthcheck.MCPPinger for HTTP SSE proxies
@@ -51,7 +50,7 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	// Send the ping request
 	select {
 	case messageCh <- pingRequest:
-		logger.Debugf("Sent MCP ping request with ID: %s", pingID)
+		p.proxy.logger.Debugf("Sent MCP ping request with ID: %s", pingID)
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	default:
@@ -64,6 +63,6 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 	// In a real implementation, you might want to set up a response listener
 	duration := time.Since(start)
 
-	logger.Debugf("MCP ping request sent in %v", duration)
+	p.proxy.logger.Debugf("MCP ping request sent in %v", duration)
 	return duration, nil
 }

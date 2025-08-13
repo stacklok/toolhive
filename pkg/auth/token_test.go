@@ -16,6 +16,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v3/jwk"
+
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 const testKeyID = "test-key-1"
@@ -764,6 +766,8 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 func TestNewAuthInfoHandler(t *testing.T) {
 	t.Parallel()
 
+	logger := log.NewLogger()
+
 	testCases := []struct {
 		name         string
 		issuer       string
@@ -843,7 +847,7 @@ func TestNewAuthInfoHandler(t *testing.T) {
 			t.Parallel()
 
 			// Create the handler
-			handler := NewAuthInfoHandler(tc.issuer, tc.jwksURL, tc.resourceURL, tc.scopes)
+			handler := NewAuthInfoHandler(tc.issuer, tc.jwksURL, tc.resourceURL, tc.scopes, logger)
 
 			// Create test request
 			req := httptest.NewRequest(tc.method, "/", nil)

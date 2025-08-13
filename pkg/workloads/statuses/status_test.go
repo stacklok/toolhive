@@ -13,23 +13,21 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 const testWorkloadName = "test-workload"
 
-func init() {
-	logger.Initialize()
-}
-
 //nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
 func TestNewStatusManagerFromRuntime(t *testing.T) {
+	logger := log.NewLogger()
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
 	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := NewStatusManagerFromRuntime(mockRuntime)
+	manager := NewStatusManagerFromRuntime(mockRuntime, logger)
 
 	assert.NotNil(t, manager)
 	assert.IsType(t, &runtimeStatusManager{}, manager)
@@ -45,7 +43,10 @@ func TestRuntimeStatusManager_CreateWorkloadStatus(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &runtimeStatusManager{runtime: mockRuntime}
+	manager := &runtimeStatusManager{
+		runtime: mockRuntime,
+		logger:  log.NewLogger(),
+	}
 
 	ctx := context.Background()
 
@@ -266,7 +267,10 @@ func TestRuntimeStatusManager_SetWorkloadStatus(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &runtimeStatusManager{runtime: mockRuntime}
+	manager := &runtimeStatusManager{
+		runtime: mockRuntime,
+		logger:  log.NewLogger(),
+	}
 
 	ctx := context.Background()
 	status := rt.WorkloadStatusRunning
@@ -420,6 +424,8 @@ func TestMatchesLabelFilters(t *testing.T) {
 func TestNewStatusManager(t *testing.T) {
 	t.Parallel()
 
+	logger := log.NewLogger()
+
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
@@ -465,7 +471,7 @@ func TestNewStatusManager(t *testing.T) {
 				os.Unsetenv("KUBERNETES_SERVICE_HOST")
 			}
 
-			manager, err := NewStatusManager(mockRuntime)
+			manager, err := NewStatusManager(mockRuntime, logger)
 
 			assert.NoError(t, err)
 			assert.NotNil(t, manager)

@@ -10,9 +10,9 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
+	"go.uber.org/zap"
 
 	"github.com/stacklok/toolhive/pkg/container/images"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 )
 
@@ -29,6 +29,7 @@ const (
 type Sigstore struct {
 	verifier *verify.Verifier
 	keychain authn.Keychain
+	logger   *zap.SugaredLogger
 }
 
 // Result is the result of the verification
@@ -39,7 +40,7 @@ type Result struct {
 }
 
 // New creates a new Sigstore verifier
-func New(serverInfo *registry.ImageMetadata) (*Sigstore, error) {
+func New(serverInfo *registry.ImageMetadata, logger *zap.SugaredLogger) (*Sigstore, error) {
 	// Fail the verification early if the server information is not set
 	if serverInfo == nil || serverInfo.Provenance == nil {
 		return nil, ErrProvenanceServerInformationNotSet
@@ -73,6 +74,7 @@ func New(serverInfo *registry.ImageMetadata) (*Sigstore, error) {
 	return &Sigstore{
 		verifier: sev,
 		keychain: images.NewCompositeKeychain(),
+		logger:   logger,
 	}, nil
 }
 
@@ -87,12 +89,12 @@ func (s *Sigstore) GetVerificationResults(
 	imageRef string,
 ) ([]*verify.VerificationResult, error) {
 	// Construct the bundle(s) for the image reference
-	bundles, err := getSigstoreBundles(imageRef, s.keychain)
+	bundles, err := getSigstoreBundles(imageRef, s.keychain, s.logger)
 	if err != nil && !errors.Is(err, ErrProvenanceNotFoundOrIncomplete) {
 		// We got some other unexpected error prior to querying for the signature/attestation
 		return nil, err
 	}
-	logger.Debugf("Number of sigstore bundles we managed to construct is %d", len(bundles))
+	s.logger.Debugf("Number of sigstore bundles we managed to construct is %d", len(bundles))
 
 	// If we didn't manage to construct any valid bundles, it probably means that the image is not signed.
 	if len(bundles) == 0 || errors.Is(err, ErrProvenanceNotFoundOrIncomplete) {
@@ -100,7 +102,7 @@ func (s *Sigstore) GetVerificationResults(
 	}
 
 	// Construct the verification result for each bundle we managed to generate.
-	return getVerifiedResults(s.verifier, bundles), nil
+	return getVerifiedResults(s.verifier, bundles, s.logger), nil
 }
 
 // getVerifiedResults verifies the artifact using the bundles against the configured sigstore instance
@@ -108,6 +110,7 @@ func (s *Sigstore) GetVerificationResults(
 func getVerifiedResults(
 	sev *verify.Verifier,
 	bundles []sigstoreBundle,
+	logger *zap.SugaredLogger,
 ) []*verify.VerificationResult {
 	var results []*verify.VerificationResult
 
@@ -144,7 +147,7 @@ func (s *Sigstore) VerifyServer(imageRef string, serverInfo *registry.ImageMetad
 
 	// Compare the server information with the verification results
 	for _, res := range results {
-		if !isVerificationResultMatchingServerProvenance(res, serverInfo.Provenance) {
+		if !isVerificationResultMatchingServerProvenance(res, serverInfo.Provenance, s.logger) {
 			// The server information does not match the verification result, fail the verification
 			return false, nil
 		}
@@ -153,13 +156,17 @@ func (s *Sigstore) VerifyServer(imageRef string, serverInfo *registry.ImageMetad
 	return true, nil
 }
 
-func isVerificationResultMatchingServerProvenance(r *verify.VerificationResult, p *registry.Provenance) bool {
+func isVerificationResultMatchingServerProvenance(
+	r *verify.VerificationResult,
+	p *registry.Provenance,
+	logger *zap.SugaredLogger,
+) bool {
 	if r == nil || p == nil || r.Signature == nil || r.Signature.Certificate == nil {
 		return false
 	}
 
 	// Compare the base properties of the verification result and the server provenance
-	if !compareBaseProperties(r, p) {
+	if !compareBaseProperties(r, p, logger) {
 		return false
 	}
 
@@ -175,7 +182,7 @@ func isVerificationResultMatchingServerProvenance(r *verify.VerificationResult, 
 }
 
 // compareBaseProperties compares the base properties of the verification result and the server provenance
-func compareBaseProperties(r *verify.VerificationResult, p *registry.Provenance) bool {
+func compareBaseProperties(r *verify.VerificationResult, p *registry.Provenance, logger *zap.SugaredLogger) bool {
 	// Extract the signer identity from the certificate
 	siIdentity, err := signerIdentityFromCertificate(r.Signature.Certificate)
 	if err != nil {

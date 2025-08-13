@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestGetClaimsFromContext(t *testing.T) {
@@ -104,12 +104,12 @@ func TestGetClaimsFromContextWithDifferentClaimTypes(t *testing.T) {
 func TestGetAuthenticationMiddleware(t *testing.T) {
 	t.Parallel()
 	// Initialize logger for testing
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	ctx := context.Background()
 
 	// Test with nil OIDC config (should return local user middleware)
-	middleware, _, err := GetAuthenticationMiddleware(ctx, nil)
+	middleware, _, err := GetAuthenticationMiddleware(ctx, nil, logger)
 	require.NoError(t, err, "Expected no error when OIDC config is nil")
 	require.NotNil(t, middleware, "Expected middleware to be returned")
 

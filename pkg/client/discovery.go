@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"sort"
 
+	"go.uber.org/zap"
+
 	"github.com/stacklok/toolhive/pkg/config"
 )
 
@@ -23,7 +25,7 @@ type MCPClientStatus struct {
 }
 
 // GetClientStatus returns the installation status of all supported MCP clients
-func GetClientStatus() ([]MCPClientStatus, error) {
+func GetClientStatus(logger *zap.SugaredLogger) ([]MCPClientStatus, error) {
 	var statuses []MCPClientStatus
 
 	// Get home directory
@@ -33,7 +35,7 @@ func GetClientStatus() ([]MCPClientStatus, error) {
 	}
 
 	// Get app configuration to check for registered clients
-	appConfig := config.GetConfig()
+	appConfig := config.GetConfig(logger)
 	registeredClients := make(map[string]bool)
 
 	// Create a map of registered clients for quick lookup

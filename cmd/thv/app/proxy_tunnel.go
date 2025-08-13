@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -111,7 +110,7 @@ func resolveTarget(ctx context.Context, target string) (string, error) {
 	}
 
 	// Otherwise treat as workload name
-	workloadManager, err := workloads.NewManager(ctx)
+	workloadManager, err := workloads.NewManager(ctx, logger)
 	if err != nil {
 		return "", fmt.Errorf("failed to create workload manager: %w", err)
 	}

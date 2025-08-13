@@ -20,8 +20,7 @@ import (
 	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
 	protorekor "github.com/sigstore/protobuf-specs/gen/pb-go/rekor/v1"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
-
-	"github.com/stacklok/toolhive/pkg/logger"
+	"go.uber.org/zap"
 )
 
 type sigstoreBundle struct {
@@ -31,7 +30,11 @@ type sigstoreBundle struct {
 }
 
 // bundleFromSigstoreSignedImage returns a bundle from a Sigstore signed image
-func bundleFromSigstoreSignedImage(imageRef string, keychain authn.Keychain) ([]sigstoreBundle, error) {
+func bundleFromSigstoreSignedImage(
+	imageRef string,
+	keychain authn.Keychain,
+	logger *zap.SugaredLogger,
+) ([]sigstoreBundle, error) {
 	// Get the signature manifest from the OCI image reference
 	signatureRef, err := getSignatureReferenceFromOCIImage(imageRef, keychain)
 	if err != nil {

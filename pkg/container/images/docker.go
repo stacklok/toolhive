@@ -13,21 +13,22 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
-
-	"github.com/stacklok/toolhive/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // DockerImageManager implements the ImageManager interface for Docker,
 // or compatible runtimes such as Podman.
 type DockerImageManager struct {
 	client *client.Client
+	logger *zap.SugaredLogger
 }
 
 // NewDockerImageManager creates a new DockerImageManager instance
 // This is intended for the Docker runtime implementation.
-func NewDockerImageManager(dockerClient *client.Client) *DockerImageManager {
+func NewDockerImageManager(dockerClient *client.Client, logger *zap.SugaredLogger) *DockerImageManager {
 	return &DockerImageManager{
 		client: dockerClient,
+		logger: logger,
 	}
 }
 
@@ -49,12 +50,12 @@ func (d *DockerImageManager) ImageExists(ctx context.Context, imageName string) 
 
 // BuildImage builds a Docker image from a Dockerfile in the specified context directory
 func (d *DockerImageManager) BuildImage(ctx context.Context, contextDir, imageName string) error {
-	return buildDockerImage(ctx, d.client, contextDir, imageName)
+	return buildDockerImage(ctx, d.client, contextDir, imageName, d.logger)
 }
 
 // PullImage pulls an image from a registry
 func (d *DockerImageManager) PullImage(ctx context.Context, imageName string) error {
-	logger.Infof("Pulling image: %s", imageName)
+	d.logger.Infof("Pulling image: %s", imageName)
 
 	// Pull the image
 	reader, err := d.client.ImagePull(ctx, imageName, dockerimage.PullOptions{})
@@ -72,8 +73,14 @@ func (d *DockerImageManager) PullImage(ctx context.Context, imageName string) er
 }
 
 // buildDockerImage builds a Docker image using the Docker client API
-func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextDir, imageName string) error {
-	logger.Infof("Building image %s from context directory %s", imageName, contextDir)
+func buildDockerImage(
+	ctx context.Context,
+	dockerClient *client.Client,
+	contextDir,
+	imageName string,
+	logger *zap.SugaredLogger,
+) error {
+	logger.Infof("Building image %s from context directory %s", imageName, contextDir, logger)
 
 	// Create a tar archive of the context directory
 	tarFile, err := os.CreateTemp("", "docker-build-context-*.tar")

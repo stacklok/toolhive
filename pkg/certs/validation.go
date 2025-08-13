@@ -6,11 +6,11 @@ import (
 	"encoding/pem"
 	"fmt"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // ValidateCACertificate validates that the provided data contains a valid PEM-encoded certificate
-func ValidateCACertificate(certData []byte) error {
+func ValidateCACertificate(certData []byte, logger *zap.SugaredLogger) error {
 	// Check if the data contains PEM blocks
 	block, _ := pem.Decode(certData)
 	if block == nil {

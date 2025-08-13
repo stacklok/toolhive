@@ -11,8 +11,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/tailscale/hujson"
 	"github.com/tidwall/gjson"
-
-	"github.com/stacklok/toolhive/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // ConfigUpdater defines the interface for types which can edit MCP client config files.
@@ -33,6 +32,7 @@ type MCPServer struct {
 type JSONConfigUpdater struct {
 	Path                 string
 	MCPServersPathPrefix string
+	logger               *zap.SugaredLogger
 }
 
 // Upsert inserts or updates an MCP server in the MCP client config file
@@ -56,7 +56,7 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 
 	content, err := os.ReadFile(jcu.Path)
 	if err != nil {
-		logger.Errorf("Failed to read file: %v", err)
+		jcu.logger.Errorf("Failed to read file: %v", err)
 	}
 
 	if len(content) == 0 {
@@ -64,32 +64,32 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 		content = []byte("{}")
 	}
 
-	content = ensurePathExists(content, jcu.MCPServersPathPrefix)
+	content = ensurePathExists(content, jcu.MCPServersPathPrefix, jcu.logger)
 
 	v, _ := hujson.Parse(content)
 
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
-		logger.Errorf("Unable to marshal the MCPServer into JSON: %v", err)
+		jcu.logger.Errorf("Unable to marshal the MCPServer into JSON: %v", err)
 	}
 
 	patch := fmt.Sprintf(`[{ "op": "add", "path": "%s/%s", "value": %s } ]`, jcu.MCPServersPathPrefix, serverName, dataJSON)
 	err = v.Patch([]byte(patch))
 	if err != nil {
-		logger.Errorf("Failed to patch file: %v", err)
+		jcu.logger.Errorf("Failed to patch file: %v", err)
 	}
 
 	formatted, _ := hujson.Format(v.Pack())
 	if err != nil {
-		logger.Errorf("Failed to format the patched file: %v", err)
+		jcu.logger.Errorf("Failed to format the patched file: %v", err)
 	}
 
 	// Write back to the file
 	if err := os.WriteFile(jcu.Path, formatted, 0600); err != nil {
-		logger.Errorf("Failed to write file: %v", err)
+		jcu.logger.Errorf("Failed to write file: %v", err)
 	}
 
-	logger.Infof("Successfully updated the client config file for MCPServer %s", serverName)
+	jcu.logger.Infof("Successfully updated the client config file for MCPServer %s", serverName)
 
 	return nil
 }
@@ -115,7 +115,7 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 
 	content, err := os.ReadFile(jcu.Path)
 	if err != nil {
-		logger.Errorf("Failed to read file: %v", err)
+		jcu.logger.Errorf("Failed to read file: %v", err)
 	}
 
 	if len(content) == 0 {
@@ -128,17 +128,17 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 	patch := fmt.Sprintf(`[{ "op": "remove", "path": "%s/%s" } ]`, jcu.MCPServersPathPrefix, serverName)
 	err = v.Patch([]byte(patch))
 	if err != nil {
-		logger.Errorf("Failed to patch file: %v", err)
+		jcu.logger.Errorf("Failed to patch file: %v", err)
 	}
 
 	formatted, _ := hujson.Format(v.Pack())
 
 	// Write back to the file
 	if err := os.WriteFile(jcu.Path, formatted, 0600); err != nil {
-		logger.Errorf("Failed to write file: %v", err)
+		jcu.logger.Errorf("Failed to write file: %v", err)
 	}
 
-	logger.Infof("Successfully removed the MCPServer %s from the client config file", serverName)
+	jcu.logger.Infof("Successfully removed the MCPServer %s from the client config file", serverName)
 
 	return nil
 }
@@ -155,7 +155,7 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 //
 // This is necessary because the MCP client config file is a JSON object,
 // and we need to ensure that the path exists before we can add a new key to it.
-func ensurePathExists(content []byte, path string) []byte {
+func ensurePathExists(content []byte, path string, logger *zap.SugaredLogger) []byte {
 	// Special case: if path is root ("/"), just return everything (formatted)
 	if path == "/" {
 		v, _ := hujson.Parse(content)

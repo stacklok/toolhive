@@ -15,18 +15,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
-
-func init() {
-	// Initialize logger for tests
-	logger.Initialize()
-}
 
 func TestNewAuditor(t *testing.T) {
 	t.Parallel()
+	logger := log.NewLogger()
 	config := &Config{}
-	auditor, err := NewAuditor(config)
+	auditor, err := NewAuditor(config, logger)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, auditor)
@@ -35,8 +31,9 @@ func TestNewAuditor(t *testing.T) {
 
 func TestAuditorMiddlewareDisabled(t *testing.T) {
 	t.Parallel()
+	logger := log.NewLogger()
 	config := &Config{}
-	auditor, err := NewAuditor(config)
+	auditor, err := NewAuditor(config, logger)
 	require.NoError(t, err)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -57,11 +54,12 @@ func TestAuditorMiddlewareDisabled(t *testing.T) {
 
 func TestAuditorMiddlewareWithRequestData(t *testing.T) {
 	t.Parallel()
+	logger := log.NewLogger()
 	config := &Config{
 		IncludeRequestData: true,
 		MaxDataSize:        1024,
 	}
-	auditor, err := NewAuditor(config)
+	auditor, err := NewAuditor(config, logger)
 	require.NoError(t, err)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,11 +85,12 @@ func TestAuditorMiddlewareWithRequestData(t *testing.T) {
 
 func TestAuditorMiddlewareWithResponseData(t *testing.T) {
 	t.Parallel()
+	logger := log.NewLogger()
 	config := &Config{
 		IncludeResponseData: true,
 		MaxDataSize:         1024,
 	}
-	auditor, err := NewAuditor(config)
+	auditor, err := NewAuditor(config, logger)
 	require.NoError(t, err)
 
 	responseData := `{"result": "success"}`
@@ -114,7 +113,8 @@ func TestAuditorMiddlewareWithResponseData(t *testing.T) {
 
 func TestDetermineEventType(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	logger := log.NewLogger()
+	auditor, err := NewAuditor(&Config{}, logger)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -155,6 +155,7 @@ func TestDetermineEventType(t *testing.T) {
 
 func TestMapMCPMethodToEventType(t *testing.T) {
 	t.Parallel()
+	logger := log.NewLogger()
 	tests := []struct {
 		mcpMethod string
 		expected  string
@@ -174,7 +175,7 @@ func TestMapMCPMethodToEventType(t *testing.T) {
 		{"unknown_method", "mcp_request"},
 	}
 
-	auditor, err := NewAuditor(&Config{})
+	auditor, err := NewAuditor(&Config{}, logger)
 	require.NoError(t, err)
 	for _, tt := range tests {
 		t.Run(tt.mcpMethod, func(t *testing.T) {
@@ -187,7 +188,8 @@ func TestMapMCPMethodToEventType(t *testing.T) {
 
 func TestDetermineOutcome(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	logger := log.NewLogger()
+	auditor, err := NewAuditor(&Config{}, logger)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -218,7 +220,8 @@ func TestDetermineOutcome(t *testing.T) {
 
 func TestGetClientIP(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	logger := log.NewLogger()
+	auditor, err := NewAuditor(&Config{}, logger)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -268,7 +271,8 @@ func TestGetClientIP(t *testing.T) {
 
 func TestExtractSubjects(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	logger := log.NewLogger()
+	auditor, err := NewAuditor(&Config{}, logger)
 	require.NoError(t, err)
 
 	t.Run("with JWT claims", func(t *testing.T) {
@@ -339,10 +343,11 @@ func TestExtractSubjects(t *testing.T) {
 
 func TestDetermineComponent(t *testing.T) {
 	t.Parallel()
+	logger := log.NewLogger()
 	t.Run("with configured component", func(t *testing.T) {
 		t.Parallel()
 		config := &Config{Component: "custom-component"}
-		auditor, err := NewAuditor(config)
+		auditor, err := NewAuditor(config, logger)
 		require.NoError(t, err)
 
 		req := httptest.NewRequest("GET", "/test", nil)
@@ -354,7 +359,7 @@ func TestDetermineComponent(t *testing.T) {
 	t.Run("without configured component", func(t *testing.T) {
 		t.Parallel()
 		config := &Config{}
-		auditor, err := NewAuditor(config)
+		auditor, err := NewAuditor(config, logger)
 		require.NoError(t, err)
 
 		req := httptest.NewRequest("GET", "/test", nil)
@@ -366,7 +371,8 @@ func TestDetermineComponent(t *testing.T) {
 
 func TestExtractTarget(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	logger := log.NewLogger()
+	auditor, err := NewAuditor(&Config{}, logger)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -423,7 +429,8 @@ func TestExtractTarget(t *testing.T) {
 
 func TestAddMetadata(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	logger := log.NewLogger()
+	auditor, err := NewAuditor(&Config{}, logger)
 	require.NoError(t, err)
 
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
@@ -444,13 +451,14 @@ func TestAddMetadata(t *testing.T) {
 
 func TestAddEventData(t *testing.T) {
 	t.Parallel()
+	logger := log.NewLogger()
 	t.Run("with request and response data", func(t *testing.T) {
 		t.Parallel()
 		config := &Config{
 			IncludeRequestData:  true,
 			IncludeResponseData: true,
 		}
-		auditor, err := NewAuditor(config)
+		auditor, err := NewAuditor(config, logger)
 		require.NoError(t, err)
 
 		event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
@@ -483,7 +491,7 @@ func TestAddEventData(t *testing.T) {
 			IncludeRequestData:  true,
 			IncludeResponseData: true,
 		}
-		auditor, err := NewAuditor(config)
+		auditor, err := NewAuditor(config, logger)
 		require.NoError(t, err)
 
 		event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
@@ -511,7 +519,7 @@ func TestAddEventData(t *testing.T) {
 			IncludeRequestData:  false,
 			IncludeResponseData: false,
 		}
-		auditor, err := NewAuditor(config)
+		auditor, err := NewAuditor(config, logger)
 		require.NoError(t, err)
 
 		event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
@@ -527,11 +535,12 @@ func TestAddEventData(t *testing.T) {
 
 func TestResponseWriterCapture(t *testing.T) {
 	t.Parallel()
+	logger := log.NewLogger()
 	config := &Config{
 		IncludeResponseData: true,
 		MaxDataSize:         10, // Small limit for testing
 	}
-	auditor, err := NewAuditor(config)
+	auditor, err := NewAuditor(config, logger)
 	require.NoError(t, err)
 
 	rw := &responseWriter{
@@ -568,7 +577,8 @@ func TestResponseWriterStatusCode(t *testing.T) {
 
 func TestExtractSourceWithHeaders(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	logger := log.NewLogger()
+	auditor, err := NewAuditor(&Config{}, logger)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("GET", "/test", nil)

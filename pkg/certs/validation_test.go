@@ -6,13 +6,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func TestValidateCACertificate(t *testing.T) {
 	t.Parallel()
-	// Initialize logger for testing
-	logger.Initialize()
+
+	logger := log.NewLogger()
 
 	tests := []struct {
 		name        string
@@ -108,7 +108,7 @@ aW52YWxpZCBjZXJ0aWZpY2F0ZSBkYXRh
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := ValidateCACertificate(tt.certData)
+			err := ValidateCACertificate(tt.certData, logger)
 
 			if tt.wantErr {
 				require.Error(t, err, "ValidateCACertificate() should return an error")

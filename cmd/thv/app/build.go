@@ -7,7 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container/images"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -70,11 +69,12 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create image manager (even for dry-run, we pass it but it won't be used)
-	imageManager := images.NewImageManager(ctx)
+	imageManager := images.NewImageManager(ctx, logger)
 
 	// If dry-run or output is specified, just generate the Dockerfile
 	if buildFlags.DryRun || buildFlags.Output != "" {
-		dockerfileContent, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, true)
+		dockerfileContent, err := runner.BuildFromProtocolSchemeWithName(
+			ctx, imageManager, protocolScheme, "", buildFlags.Tag, true, logger)
 		if err != nil {
 			return fmt.Errorf("failed to generate Dockerfile for %s: %v", protocolScheme, err)
 		}
@@ -96,7 +96,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 	logger.Infof("Building container for protocol scheme: %s", protocolScheme)
 
 	// Build the image using the new protocol handler with custom name
-	imageName, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, false)
+	imageName, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, false, logger)
 	if err != nil {
 		return fmt.Errorf("failed to build container for %s: %v", protocolScheme, err)
 	}

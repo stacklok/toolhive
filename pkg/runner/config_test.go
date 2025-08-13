@@ -13,7 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/ignore"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -84,6 +84,9 @@ func TestRunConfig_WithTransport(t *testing.T) {
 // Note: This test uses actual port finding logic, so it may fail if ports are in use
 func TestRunConfig_WithPorts(t *testing.T) {
 	t.Parallel()
+
+	logger := log.NewLogger()
+
 	testCases := []struct {
 		name        string
 		config      *RunConfig
@@ -121,12 +124,10 @@ func TestRunConfig_WithPorts(t *testing.T) {
 		},
 	}
 
-	logger.Initialize()
-
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			result, err := tc.config.WithPorts(tc.port, tc.targetPort)
+			result, err := tc.config.WithPorts(tc.port, tc.targetPort, logger)
 
 			if tc.expectError {
 				assert.Error(t, err, "WithPorts should return an error")
@@ -558,8 +559,7 @@ func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadat
 func TestRunConfigBuilder(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
+	logger := log.NewLogger()
 	runtime := &mocks.MockRuntime{}
 	cmdArgs := []string{"arg1", "arg2"}
 	name := "test-server"
@@ -590,7 +590,7 @@ func TestRunConfigBuilder(t *testing.T) {
 	k8sPodPatch := `{"spec":{"containers":[{"name":"test","resources":{"limits":{"memory":"512Mi"}}}]}}`
 	envVarValidator := &mockEnvVarValidator{}
 
-	config, err := NewRunConfigBuilder().
+	config, err := NewRunConfigBuilder(logger).
 		WithRuntime(runtime).
 		WithCmdArgs(cmdArgs).
 		WithName(name).
@@ -771,8 +771,7 @@ func TestCommaSeparatedEnvVars(t *testing.T) {
 func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	tests := []struct {
 		name               string
@@ -838,7 +837,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 			runtime := &mocks.MockRuntime{}
 			validator := &mockEnvVarValidator{}
 
-			config, err := NewRunConfigBuilder().
+			config, err := NewRunConfigBuilder(logger).
 				WithRuntime(runtime).
 				WithCmdArgs(nil).
 				WithName("test-server").
@@ -880,12 +879,11 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
+	logger := log.NewLogger()
 	runtime := &mocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
-	config, err := NewRunConfigBuilder().
+	config, err := NewRunConfigBuilder(logger).
 		WithRuntime(runtime).
 		WithCmdArgs(nil).
 		WithName("test-server").
@@ -926,9 +924,7 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
-
+	logger := log.NewLogger()
 	runtime := &mocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
@@ -937,7 +933,7 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 		Args: []string{"--metadata-arg1", "--metadata-arg2"},
 	}
 
-	config, err := NewRunConfigBuilder().
+	config, err := NewRunConfigBuilder(logger).
 		WithRuntime(runtime).
 		WithCmdArgs(userArgs).
 		WithName("test-server").
@@ -980,8 +976,7 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	runtime := &mocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
@@ -992,7 +987,7 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 		Args: []string{"--metadata-arg1", "--metadata-arg2"},
 	}
 
-	config, err := NewRunConfigBuilder().
+	config, err := NewRunConfigBuilder(logger).
 		WithRuntime(runtime).
 		WithCmdArgs(userArgs).
 		WithName("test-server").
@@ -1033,8 +1028,7 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
+	logger := log.NewLogger()
 	runtime := &mocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
 
@@ -1043,7 +1037,7 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 		"/host/write:/container/write",
 	}
 
-	config, err := NewRunConfigBuilder().
+	config, err := NewRunConfigBuilder(logger).
 		WithRuntime(runtime).
 		WithCmdArgs(nil).
 		WithName("test-server").
@@ -1102,8 +1096,7 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 	t.Parallel()
 
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	runtime := &mocks.MockRuntime{}
 	validator := &mockEnvVarValidator{}
@@ -1116,7 +1109,7 @@ func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 	// Simulate user providing their own arguments
 	userArgs := []string{"/Users/testuser/repos/github.com/stacklok/toolhive"}
 
-	config, err := NewRunConfigBuilder().
+	config, err := NewRunConfigBuilder(logger).
 		WithRuntime(runtime).
 		WithCmdArgs(userArgs).
 		WithName("filesystem").

@@ -7,7 +7,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -49,13 +48,13 @@ func buildServerConfig(
 	imageMetadata *registry.ImageMetadata,
 ) (*runner.RunConfig, error) {
 	// Create container runtime
-	rt, err := container.NewFactory().Create(ctx)
+	rt, err := container.NewFactory(logger).Create(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container runtime: %w", err)
 	}
 
 	// Build configuration using the builder pattern
-	builder := runner.NewRunConfigBuilder().
+	builder := runner.NewRunConfigBuilder(logger).
 		WithRuntime(rt).
 		WithImage(imageURL).
 		WithName(args.Name).
@@ -117,7 +116,7 @@ func prepareEnvironmentVariables(imageMetadata *registry.ImageMetadata, userEnv 
 // saveAndRunServer saves the configuration and runs the server
 func (h *toolHiveHandler) saveAndRunServer(ctx context.Context, runConfig *runner.RunConfig, name string) error {
 	// Save the run configuration state before starting
-	if err := runConfig.SaveState(ctx); err != nil {
+	if err := runConfig.SaveState(ctx, logger); err != nil {
 		logger.Warnf("Failed to save run configuration for %s: %v", name, err)
 		// Continue anyway, as this is not critical for running
 	}

@@ -15,8 +15,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v3/jwk"
+	"go.uber.org/zap"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -474,7 +474,7 @@ type RFC9728AuthInfo struct {
 }
 
 // NewAuthInfoHandler creates an HTTP handler that returns RFC-9728 compliant OAuth Protected Resource metadata
-func NewAuthInfoHandler(issuer, jwksURL, resourceURL string, scopes []string) http.Handler {
+func NewAuthInfoHandler(issuer, jwksURL, resourceURL string, scopes []string, logger *zap.SugaredLogger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers for all requests
 		origin := r.Header.Get("Origin")

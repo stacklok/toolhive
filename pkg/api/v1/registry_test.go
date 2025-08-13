@@ -16,11 +16,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/logger"
+	log "github.com/stacklok/toolhive/pkg/logger"
 )
 
 func MockConfig(t *testing.T, cfg *config.Config) func() {
 	t.Helper()
+
+	// Setup logger
+	logger := log.NewLogger()
 
 	// Create a temporary directory for the test
 	tempDir := t.TempDir()
@@ -38,7 +41,7 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 
 	// Write the config file if one is provided
 	if cfg != nil {
-		err = config.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		err = config.UpdateConfig(func(c *config.Config) { *c = *cfg }, logger)
 		require.NoError(t, err)
 	}
 
@@ -50,15 +53,15 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 func TestRegistryRouter(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
+	logger := log.NewLogger()
 
-	router := RegistryRouter()
+	router := RegistryRouter(logger)
 	assert.NotNil(t, router)
 }
 
 //nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
 func TestGetRegistryInfo(t *testing.T) {
-	logger.Initialize()
+	logger := log.NewLogger()
 
 	// Setup temporary config to avoid modifying user's real config
 	cleanup := MockConfig(t, nil)
@@ -73,7 +76,7 @@ func TestGetRegistryInfo(t *testing.T) {
 		{
 			name: "default registry",
 			setupConfig: func() {
-				_ = config.UnsetRegistry()
+				_ = config.UnsetRegistry(logger)
 			},
 			expectedType:   RegistryTypeDefault,
 			expectedSource: "",
@@ -81,7 +84,7 @@ func TestGetRegistryInfo(t *testing.T) {
 		{
 			name: "URL registry",
 			setupConfig: func() {
-				_ = config.SetRegistryURL("https://test.com/registry.json", false)
+				_ = config.SetRegistryURL("https://test.com/registry.json", false, logger)
 			},
 			expectedType:   RegistryTypeURL,
 			expectedSource: "https://test.com/registry.json",
@@ -89,10 +92,10 @@ func TestGetRegistryInfo(t *testing.T) {
 		{
 			name: "file registry",
 			setupConfig: func() {
-				_ = config.UnsetRegistry()
+				_ = config.UnsetRegistry(logger)
 				_ = config.UpdateConfig(func(c *config.Config) {
 					c.LocalRegistryPath = "/tmp/test-registry.json"
-				})
+				}, logger)
 			},
 			expectedType:   RegistryTypeFile,
 			expectedSource: "/tmp/test-registry.json",
@@ -105,7 +108,7 @@ func TestGetRegistryInfo(t *testing.T) {
 				tt.setupConfig()
 			}
 
-			registryType, source := getRegistryInfo()
+			registryType, source := getRegistryInfo(logger)
 			assert.Equal(t, tt.expectedType, registryType, "Registry type should match expected")
 			assert.Equal(t, tt.expectedSource, source, "Registry source should match expected")
 		})
@@ -115,9 +118,9 @@ func TestGetRegistryInfo(t *testing.T) {
 func TestRegistryAPI_PutEndpoint(t *testing.T) {
 	t.Parallel()
 
-	logger.Initialize()
+	logger := log.NewLogger()
 
-	routes := &RegistryRoutes{}
+	routes := &RegistryRoutes{logger}
 
 	tests := []struct {
 		name         string

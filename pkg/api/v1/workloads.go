@@ -579,7 +579,6 @@ type workloadListResponse struct {
 	Workloads []core.Workload `json:"workloads"`
 }
 
-
 // updateRequest represents the request to update an existing workload
 //
 //	@Description	Request to update an existing workload (name cannot be changed)

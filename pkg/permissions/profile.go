@@ -37,6 +37,11 @@ type Profile struct {
 
 	// Network defines network permissions
 	Network *NetworkPermissions `json:"network,omitempty" yaml:"network,omitempty"`
+
+	// Privileged indicates whether the container should run in privileged mode
+	// When true, the container has access to all host devices and capabilities
+	// Use with extreme caution as this removes most security isolation
+	Privileged bool `json:"privileged,omitempty" yaml:"privileged,omitempty"`
 }
 
 // NetworkPermissions defines network permissions for a container
@@ -70,6 +75,7 @@ func NewProfile() *Profile {
 				AllowPort:        []int{},
 			},
 		},
+		Privileged: false,
 	}
 }
 
@@ -104,6 +110,7 @@ func BuiltinNoneProfile() *Profile {
 				AllowPort:        []int{},
 			},
 		},
+		Privileged: false,
 	}
 }
 
@@ -120,6 +127,7 @@ func BuiltinNetworkProfile() *Profile {
 				AllowPort:        []int{},
 			},
 		},
+		Privileged: false,
 	}
 }
 

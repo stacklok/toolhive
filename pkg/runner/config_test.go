@@ -12,7 +12,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
-	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -160,14 +159,14 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 	testCases := []struct {
 		name        string
 		config      *RunConfig
-		envVars     []string
+		envVars     map[string]string
 		expectError bool
 		expected    map[string]string
 	}{
 		{
 			name:        "Empty environment variables",
 			config:      &RunConfig{Transport: types.TransportTypeSSE, TargetPort: 9000},
-			envVars:     []string{},
+			envVars:     map[string]string{},
 			expectError: false,
 			expected: map[string]string{
 				"MCP_TRANSPORT": "sse",
@@ -177,7 +176,7 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 		{
 			name:        "Valid environment variables",
 			config:      &RunConfig{Transport: types.TransportTypeSSE, TargetPort: 9000},
-			envVars:     []string{"KEY1=value1", "KEY2=value2"},
+			envVars:     map[string]string{"KEY1": "value1", "KEY2": "value2"},
 			expectError: false,
 			expected: map[string]string{
 				"KEY1":          "value1",
@@ -195,7 +194,7 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 					"EXISTING_VAR": "existing_value",
 				},
 			},
-			envVars:     []string{"KEY1=value1"},
+			envVars:     map[string]string{"KEY1": "value1"},
 			expectError: false,
 			expected: map[string]string{
 				"EXISTING_VAR":  "existing_value",
@@ -213,7 +212,7 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 					"KEY1": "original_value",
 				},
 			},
-			envVars:     []string{"KEY1=new_value"},
+			envVars:     map[string]string{"KEY1": "new_value"},
 			expectError: false,
 			expected: map[string]string{
 				"KEY1":          "new_value",
@@ -222,15 +221,9 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 			},
 		},
 		{
-			name:        "Invalid environment variable format",
-			config:      &RunConfig{Transport: types.TransportTypeSSE, TargetPort: 9000},
-			envVars:     []string{"INVALID_FORMAT"},
-			expectError: true,
-		},
-		{
 			name:        "Stdio transport",
 			config:      &RunConfig{Transport: types.TransportTypeStdio},
-			envVars:     []string{},
+			envVars:     map[string]string{},
 			expectError: false,
 			expected: map[string]string{
 				"MCP_TRANSPORT": "stdio",
@@ -241,17 +234,10 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			// Convert environment variables from slice to map
-			envVarsMap, parseErr := environment.ParseEnvironmentVariables(tc.envVars)
-			if parseErr != nil && !tc.expectError {
-				t.Fatalf("Failed to parse test environment variables: %v", parseErr)
-			}
-
-			result, err := tc.config.WithEnvironmentVariables(envVarsMap)
+			result, err := tc.config.WithEnvironmentVariables(tc.envVars)
 
 			if tc.expectError {
 				assert.Error(t, err, "WithEnvironmentVariables should return an error")
-				assert.Contains(t, err.Error(), "failed to parse environment variables", "Error message should mention parsing failure")
 			} else {
 				assert.NoError(t, err, "WithEnvironmentVariables should not return an error")
 				assert.Equal(t, tc.config, result, "WithEnvironmentVariables should return the same config instance")
@@ -589,9 +575,7 @@ func TestRunConfigBuilder(t *testing.T) {
 	mcpTransport := "sse"
 	proxyPort := 60000
 	targetPort := 9000
-	envVarsSlice := []string{"TEST_ENV=test_value"}
-	envVars, err := environment.ParseEnvironmentVariables(envVarsSlice)
-	require.NoError(t, err, "Failed to parse environment variables")
+	envVars := map[string]string{"TEST_ENV": "test_value"}
 
 	oidcIssuer := "https://issuer.example.com"
 	oidcAudience := "test-audience"
@@ -922,10 +906,7 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 			LoadGlobal:    false,
 			PrintOverlays: false,
 		}).
-		Build(context.Background(), nil, func() map[string]string {
-			envVars, _ := environment.ParseEnvironmentVariables([]string{"USER_VAR=value"})
-			return envVars
-		}(), validator)
+		Build(context.Background(), nil, map[string]string{"USER_VAR": "value"}, validator)
 
 	require.NoError(t, err)
 

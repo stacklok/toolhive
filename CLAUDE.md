@@ -41,8 +41,8 @@ task test-e2e
 # Run all tests (unit and e2e)
 task test-all
 
-# Generate OpenAPI/Swagger documentation
-task swagger-gen
+# Generate mocks
+task gen
 
 # Generate CLI documentation
 task docs

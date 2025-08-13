@@ -436,9 +436,9 @@ func TestNewStatusManager(t *testing.T) {
 			expectedType: &runtimeStatusManager{},
 		},
 		{
-			name:         "returns runtime status manager outside Kubernetes (temporary behavior)",
+			name:         "returns file status manager outside Kubernetes",
 			isKubernetes: false,
-			expectedType: &runtimeStatusManager{}, // Currently always returns runtime manager
+			expectedType: &fileStatusManager{},
 		},
 	}
 

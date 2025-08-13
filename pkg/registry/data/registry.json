@@ -807,6 +807,87 @@
       ],
       "transport": "stdio"
     },
+    "cloud-run": {
+      "args": [],
+      "description": "Deploy apps to Google Cloud Run directly from AI assistants. Enables deployment of containerized applications, local files, and folders to Cloud Run with integrated logging and service management.",
+      "env_vars": [
+        {
+          "description": "Path to Google Cloud credentials JSON file",
+          "name": "GOOGLE_APPLICATION_CREDENTIALS",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "Google Cloud project ID for deployments",
+          "name": "GOOGLE_CLOUD_PROJECT",
+          "required": false
+        },
+        {
+          "description": "Default Google Cloud region for deployments",
+          "name": "GOOGLE_CLOUD_REGION",
+          "required": false
+        },
+        {
+          "description": "Default Cloud Run service name",
+          "name": "DEFAULT_SERVICE_NAME",
+          "required": false
+        },
+        {
+          "description": "Skip IAM permission checks (true/false)",
+          "name": "SKIP_IAM_CHECK",
+          "required": false
+        }
+      ],
+      "image": "docker.io/mcp/cloud-run-mcp:latest",
+      "metadata": {
+        "last_updated": "2025-08-13T06:16:55Z",
+        "pulls": 273,
+        "stars": 316
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              "run.googleapis.com",
+              "cloudbuild.googleapis.com",
+              "storage.googleapis.com",
+              "logging.googleapis.com",
+              "cloudresourcemanager.googleapis.com"
+            ],
+            "allow_port": [
+              443
+            ],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/GoogleCloudPlatform/cloud-run-mcp",
+      "status": "Active",
+      "tags": [
+        "google-cloud",
+        "cloud-run",
+        "deployment",
+        "gcp",
+        "serverless",
+        "containers",
+        "devops"
+      ],
+      "tier": "Official",
+      "tools": [
+        "deploy_file_contents",
+        "deploy_local_files",
+        "deploy_local_folder",
+        "deploy_container_image",
+        "list_services",
+        "get_service",
+        "get_service_log",
+        "list_projects",
+        "create_project"
+      ],
+      "transport": "stdio"
+    },
     "context7": {
       "args": [],
       "description": "Context7 MCP pulls up-to-date, version-specific documentation and code examples straight from the source — and places them directly into your prompt",

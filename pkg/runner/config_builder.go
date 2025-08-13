@@ -297,8 +297,12 @@ func (b *RunConfigBuilder) WithIgnoreConfig(ignoreConfig *ignore.Config) *RunCon
 }
 
 // Build creates the final RunConfig instance with validation and processing
-func (b *RunConfigBuilder) Build(ctx context.Context, imageMetadata *registry.ImageMetadata,
-	envVars []string, envVarValidator EnvVarValidator) (*RunConfig, error) {
+func (b *RunConfigBuilder) Build(
+	ctx context.Context,
+	imageMetadata *registry.ImageMetadata,
+	envVars map[string]string,
+	envVarValidator EnvVarValidator,
+) (*RunConfig, error) {
 	// When using the CLI validation strategy, this is where the prompting for
 	// missing environment variables will happen.
 	processedEnvVars, err := envVarValidator.Validate(ctx, imageMetadata, b.config, envVars)

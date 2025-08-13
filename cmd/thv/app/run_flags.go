@@ -9,6 +9,7 @@ import (
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
@@ -184,16 +185,16 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 // BuildRunnerConfig creates a runner.RunConfig from the configuration
 func BuildRunnerConfig(
 	ctx context.Context,
-	runConfig *RunFlags,
+	runFlags *RunFlags,
 	serverOrImage string,
 	cmdArgs []string,
 	debugMode bool,
 	cmd *cobra.Command,
 ) (*runner.RunConfig, error) {
 	// Validate the host flag
-	validatedHost, err := ValidateAndNormaliseHostFlag(runConfig.Host)
+	validatedHost, err := ValidateAndNormaliseHostFlag(runFlags.Host)
 	if err != nil {
-		return nil, fmt.Errorf("invalid host: %s", runConfig.Host)
+		return nil, fmt.Errorf("invalid host: %s", runFlags.Host)
 	}
 
 	// Get OIDC flags
@@ -212,7 +213,7 @@ func BuildRunnerConfig(
 	// Get OTEL flag values with config fallbacks
 	config := cfg.GetConfig()
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(cmd, config,
-		runConfig.OtelEndpoint, runConfig.OtelSamplingRate, runConfig.OtelEnvironmentVariables)
+		runFlags.OtelEndpoint, runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables)
 
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
@@ -220,7 +221,7 @@ func BuildRunnerConfig(
 		return nil, fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
-	// Select an env var validation strategy depending on how the CLI is run:
+	// Select an envVars var validation strategy depending on how the CLI is run:
 	// If we have called the CLI directly, we use the CLIEnvVarValidator.
 	// If we are running in detached mode, or the CLI is wrapped by the K8s operator,
 	// we use the DetachedEnvVarValidator.
@@ -241,52 +242,58 @@ func BuildRunnerConfig(
 		// Take the MCP server we were supplied and either fetch the image, or
 		// build it from a protocol scheme. If the server URI refers to an image
 		// in our trusted registry, we will also fetch the image metadata.
-		imageURL, imageMetadata, err = retriever.GetMCPServer(ctx, serverOrImage, runConfig.CACertPath, runConfig.VerifyImage)
+		imageURL, imageMetadata, err = retriever.GetMCPServer(ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
 		}
 	}
 
 	// Validate proxy mode early
-	if !types.IsValidProxyMode(runConfig.ProxyMode) {
-		if runConfig.ProxyMode == "" {
-			runConfig.ProxyMode = types.ProxyModeSSE.String() // default to SSE for backward compatibility
+	if !types.IsValidProxyMode(runFlags.ProxyMode) {
+		if runFlags.ProxyMode == "" {
+			runFlags.ProxyMode = types.ProxyModeSSE.String() // default to SSE for backward compatibility
 		} else {
-			return nil, fmt.Errorf("invalid value for --proxy-mode: %s", runConfig.ProxyMode)
+			return nil, fmt.Errorf("invalid value for --proxy-mode: %s", runFlags.ProxyMode)
 		}
+	}
+
+	// Parse the environment variables from a list of strings to a map.
+	envVars, err := environment.ParseEnvironmentVariables(runFlags.Env)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse environment variables: %v", err)
 	}
 
 	// Initialize a new RunConfig with values from command-line flags
 	return runner.NewRunConfigBuilder().
 		WithRuntime(rt).
 		WithCmdArgs(cmdArgs).
-		WithName(runConfig.Name).
+		WithName(runFlags.Name).
 		WithImage(imageURL).
 		WithHost(validatedHost).
-		WithTargetHost(runConfig.TargetHost).
+		WithTargetHost(runFlags.TargetHost).
 		WithDebug(debugMode).
-		WithVolumes(runConfig.Volumes).
-		WithSecrets(runConfig.Secrets).
-		WithAuthzConfigPath(runConfig.AuthzConfig).
-		WithAuditConfigPath(runConfig.AuditConfig).
-		WithPermissionProfileNameOrPath(runConfig.PermissionProfile).
-		WithNetworkIsolation(runConfig.IsolateNetwork).
-		WithK8sPodPatch(runConfig.K8sPodPatch).
-		WithProxyMode(types.ProxyMode(runConfig.ProxyMode)).
-		WithTransportAndPorts(runConfig.Transport, runConfig.ProxyPort, runConfig.TargetPort).
-		WithAuditEnabled(runConfig.EnableAudit, runConfig.AuditConfig).
-		WithLabels(runConfig.Labels).
-		WithGroup(runConfig.Group).
+		WithVolumes(runFlags.Volumes).
+		WithSecrets(runFlags.Secrets).
+		WithAuthzConfigPath(runFlags.AuthzConfig).
+		WithAuditConfigPath(runFlags.AuditConfig).
+		WithPermissionProfileNameOrPath(runFlags.PermissionProfile).
+		WithNetworkIsolation(runFlags.IsolateNetwork).
+		WithK8sPodPatch(runFlags.K8sPodPatch).
+		WithProxyMode(types.ProxyMode(runFlags.ProxyMode)).
+		WithTransportAndPorts(runFlags.Transport, runFlags.ProxyPort, runFlags.TargetPort).
+		WithAuditEnabled(runFlags.EnableAudit, runFlags.AuditConfig).
+		WithLabels(runFlags.Labels).
+		WithGroup(runFlags.Group).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-			runConfig.ThvCABundle, runConfig.JWKSAuthTokenFile, runConfig.ResourceURL, runConfig.JWKSAllowPrivateIP).
-		WithTelemetryConfig(finalOtelEndpoint, runConfig.OtelEnablePrometheusMetricsPath, runConfig.OtelServiceName,
-			finalOtelSamplingRate, runConfig.OtelHeaders, runConfig.OtelInsecure, finalOtelEnvironmentVariables).
-		WithToolsFilter(runConfig.ToolsFilter).
+			runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP).
+		WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelServiceName,
+			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables).
+		WithToolsFilter(runFlags.ToolsFilter).
 		WithIgnoreConfig(&ignore.Config{
-			LoadGlobal:    runConfig.IgnoreGlobally,
-			PrintOverlays: runConfig.PrintOverlays,
+			LoadGlobal:    runFlags.IgnoreGlobally,
+			PrintOverlays: runFlags.PrintOverlays,
 		}).
-		Build(ctx, imageMetadata, runConfig.Env, envVarValidator)
+		Build(ctx, imageMetadata, envVars, envVarValidator)
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags

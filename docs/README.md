@@ -96,6 +96,12 @@ To see a list of all available development tasks, run:
 task --list
 ```
 
+## Note on EXPERIMENTAL features
+
+From time to time, ToolHive may include features marked as EXPERIMENTAL.
+These features are not yet fully stable and may be subject to change or removal
+in future releases. They are provided for early testing and feedback.
+
 ## Contributing
 
 We welcome contributions to ToolHive! If you want to contribute, please review

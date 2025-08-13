@@ -215,6 +215,8 @@ type PermissionConfig struct {
 	CapAdd []string
 	// SecurityOpt is the list of security options
 	SecurityOpt []string
+	// Privileged indicates whether the container should run in privileged mode
+	Privileged bool
 }
 
 // DeployWorkloadOptions represents configuration options for deploying a workload.

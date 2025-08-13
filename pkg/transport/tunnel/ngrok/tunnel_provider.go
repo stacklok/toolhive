@@ -4,8 +4,12 @@ package ngrok
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"golang.ngrok.com/ngrok/v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -17,24 +21,59 @@ type TunnelProvider struct {
 
 // TunnelConfig holds configuration options for the ngrok tunnel provider.
 type TunnelConfig struct {
-	AuthToken string
-	Domain    string // Optional: specify custom domain
-	DryRun    bool
+	AuthToken      string
+	URL            string // Optional: specify custom URL
+	TrafficPolicy  string // Optional: specify traffic policy
+	PoolingEnabled bool   // Optional: enable pooling
+	DryRun         bool
+}
+
+// loadTrafficPolicyFile reads a YAML file, ensures it's .yml/.yaml,
+// validates its contents, and returns its text.
+func loadTrafficPolicyFile(path string) (string, error) {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext != ".yml" && ext != ".yaml" {
+		return "", fmt.Errorf("traffic policy file must be .yml or .yaml, got %q", ext)
+	}
+
+	cleanPath := filepath.Clean(path)
+	b, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return "", fmt.Errorf("reading traffic policy file: %w", err)
+	}
+
+	var tmp any
+	if err := yaml.Unmarshal(b, &tmp); err != nil {
+		return "", fmt.Errorf("invalid YAML in traffic policy file: %w", err)
+	}
+
+	return string(b), nil
 }
 
 // ParseConfig parses the configuration for the ngrok tunnel provider from a map.
 func (p *TunnelProvider) ParseConfig(raw map[string]any) error {
-	token, ok := raw["ngrok-auth-token"].(string)
+	token, ok := raw["auth-token"].(string)
 	if !ok || token == "" {
-		return fmt.Errorf("ngrok-auth-token is required")
+		return fmt.Errorf("auth-token is required")
 	}
 
 	cfg := TunnelConfig{
 		AuthToken: token,
 	}
 
-	if domain, ok := raw["ngrok-domain"].(string); ok {
-		cfg.Domain = domain
+	// optional settings: url, traffic policy, pooling
+	if url, ok := raw["url"].(string); ok {
+		cfg.URL = url
+	}
+	if path, ok := raw["traffic-policy-file"].(string); ok && path != "" {
+		policyText, err := loadTrafficPolicyFile(path)
+		if err != nil {
+			return err
+		}
+		cfg.TrafficPolicy = policyText
+	}
+	if pooling, ok := raw["pooling"].(bool); ok {
+		cfg.PoolingEnabled = pooling
 	}
 
 	p.config = cfg
@@ -42,6 +81,7 @@ func (p *TunnelProvider) ParseConfig(raw map[string]any) error {
 	if dr, ok := raw["dry-run"].(bool); ok {
 		p.config.DryRun = dr
 	}
+
 	return nil
 }
 
@@ -69,8 +109,14 @@ func (p *TunnelProvider) StartTunnel(ctx context.Context, name, targetURI string
 	endpointOpts := []ngrok.EndpointOption{
 		ngrok.WithDescription("tunnel proxy for " + name),
 	}
-	if p.config.Domain != "" {
-		endpointOpts = append(endpointOpts, ngrok.WithURL(p.config.Domain))
+	if p.config.URL != "" {
+		endpointOpts = append(endpointOpts, ngrok.WithURL(p.config.URL))
+	}
+	if p.config.TrafficPolicy != "" {
+		endpointOpts = append(endpointOpts, ngrok.WithTrafficPolicy(p.config.TrafficPolicy))
+	}
+	if p.config.PoolingEnabled {
+		endpointOpts = append(endpointOpts, ngrok.WithPoolingEnabled(true))
 	}
 
 	forwarder, err := agent.Forward(ctx,

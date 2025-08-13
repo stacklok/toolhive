@@ -1,4 +1,4 @@
-name: Swagger
+name: Codegen
 
 on:
   workflow_call:
@@ -8,11 +8,11 @@ permissions:
 
 jobs:
   swagger:
-    name: Verify Swagger
+    name: Verify code generation
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
         with:
           go-version-file: go.mod
@@ -21,16 +21,16 @@ jobs:
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Install swagger
-        run: task swagger-install
-      - name: Generate swagger files
-        run: task swagger-gen
+      - name: Install mockgen
+        run: task mock-install
+      - name: Generate code files
+        run: task gen
       - name: Check for changes
         run: |
           if ! git diff --exit-code docs/server/; then
-            echo "❌ Swagger files are not up to date!"
-            echo "Please run 'task swagger-gen' or 'swag init -g pkg/api/server.go --v3.1 -o docs/server' and commit the changes."
+            echo "❌ Generated code files are not up to date!"
+            echo "Please run 'task gen' and commit the changes."
             exit 1
           else
-            echo "✅ Swagger files are up to date!"
+            echo "✅ Generated code files are up to date!"
           fi

@@ -9,6 +9,7 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/workloads"
+	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 var stopCmd = &cobra.Command{
@@ -100,7 +101,7 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 			// If the workload is not found or not running, treat as a non-fatal error.
 			if errors.Is(err, rt.ErrWorkloadNotFound) ||
 				errors.Is(err, workloads.ErrWorkloadNotRunning) ||
-				errors.Is(err, workloads.ErrInvalidWorkloadName) {
+				errors.Is(err, types.ErrInvalidWorkloadName) {
 				fmt.Printf("workload %s is not running\n", workloadName)
 				return nil
 			}

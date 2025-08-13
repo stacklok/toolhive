@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"time"
 
@@ -93,7 +92,7 @@ var _ = Describe("Telemetry Middleware E2E", Serial, func() {
 
 		It("should capture telemetry data for MCP requests", func() {
 			By("Starting the stdio proxy with telemetry enabled")
-			_, stdin, outputBuffer := startProxyStdioForTelemetryTest(
+			stdin, outputBuffer := startProxyStdioForTelemetryTest(
 				config,
 				workloadName,
 			)
@@ -147,14 +146,14 @@ var _ = Describe("Telemetry Middleware E2E", Serial, func() {
 			By("Verifying telemetry data was captured in logs")
 			// Check that telemetry-related log entries exist
 			logOutput := outputBuffer.String()
-			
+
 			// Look for telemetry indicators in the logs
 			// The exact format may vary, but we should see some telemetry-related activity
-			hasInitializeSpan := strings.Contains(logOutput, "initialize") || 
+			hasInitializeSpan := strings.Contains(logOutput, "initialize") ||
 				strings.Contains(logOutput, "mcp.initialize") ||
 				strings.Contains(logOutput, "span")
-			
-			hasToolsListSpan := strings.Contains(logOutput, "tools/list") || 
+
+			hasToolsListSpan := strings.Contains(logOutput, "tools/list") ||
 				strings.Contains(logOutput, "mcp.tools/list") ||
 				strings.Contains(logOutput, "tools")
 
@@ -183,7 +182,7 @@ var _ = Describe("Telemetry Middleware E2E", Serial, func() {
 			}()
 
 			By("Starting proxy with Prometheus metrics enabled")
-			_, stdin, outputBuffer := startProxyStdioForTelemetryTest(
+			stdin, outputBuffer := startProxyStdioForTelemetryTest(
 				config,
 				workloadName,
 			)
@@ -231,7 +230,7 @@ var _ = Describe("Telemetry Middleware E2E", Serial, func() {
 					if err == nil && len(body) > 0 {
 						metricsContent := string(body)
 						GinkgoWriter.Printf("Found metrics on port %s:\n%s\n", port, metricsContent)
-						
+
 						// Look for ToolHive-specific metrics
 						if strings.Contains(metricsContent, "toolhive_mcp") {
 							metricsFound = true
@@ -245,7 +244,7 @@ var _ = Describe("Telemetry Middleware E2E", Serial, func() {
 			// The actual metrics endpoint testing would require more specific setup
 			logOutput := outputBuffer.String()
 			Expect(strings.Contains(logOutput, "Starting stdio proxy")).To(BeTrue())
-			
+
 			if metricsFound {
 				GinkgoWriter.Println("Successfully found ToolHive metrics endpoint")
 			} else {
@@ -265,7 +264,7 @@ var _ = Describe("Telemetry Middleware E2E", Serial, func() {
 			}()
 
 			By("Starting proxy with environment variable telemetry")
-			_, stdin, outputBuffer := startProxyStdioForTelemetryTest(
+			stdin, outputBuffer := startProxyStdioForTelemetryTest(
 				config,
 				workloadName,
 			)
@@ -302,9 +301,9 @@ var _ = Describe("Telemetry Middleware E2E", Serial, func() {
 
 // startProxyStdioForTelemetryTest starts a stdio proxy for telemetry testing
 // and returns the command, stdin pipe, and output buffer for monitoring
-func startProxyStdioForTelemetryTest(config *e2e.TestConfig, workloadName string) (*exec.Cmd, io.WriteCloser, *SafeBuffer) {
+func startProxyStdioForTelemetryTest(config *e2e.TestConfig, workloadName string) (io.WriteCloser, *SafeBuffer) {
 	By("Starting stdio proxy with telemetry")
-	
+
 	// Get the server URL first
 	serverURL, err := e2e.GetMCPServerURL(config, workloadName)
 	Expect(err).ToNot(HaveOccurred())
@@ -355,7 +354,7 @@ func startProxyStdioForTelemetryTest(config *e2e.TestConfig, workloadName string
 		}
 	}()
 
-	return cmd, stdin, outputBuffer
+	return stdin, outputBuffer
 }
 
 // SafeBuffer is a thread-safe string buffer for capturing output
@@ -376,49 +375,3 @@ func (sb *SafeBuffer) String() string {
 }
 
 // Additional helper functions for telemetry verification
-
-// extractSpanNamesFromLogs extracts span names from telemetry logs
-func extractSpanNamesFromLogs(logOutput string) []string {
-	// This regex looks for common telemetry span patterns
-	spanRegex := regexp.MustCompile(`(?:span[:\s]+|mcp\.)([a-zA-Z/_]+)`)
-	matches := spanRegex.FindAllStringSubmatch(logOutput, -1)
-	
-	var spans []string
-	for _, match := range matches {
-		if len(match) > 1 {
-			spans = append(spans, match[1])
-		}
-	}
-	
-	return spans
-}
-
-// extractMetricNamesFromLogs extracts metric names from telemetry logs
-func extractMetricNamesFromLogs(logOutput string) []string {
-	// Look for metric patterns in logs
-	metricRegex := regexp.MustCompile(`(?:metric[:\s]+|counter[:\s]+|histogram[:\s]+)([a-zA-Z_]+)`)
-	matches := metricRegex.FindAllStringSubmatch(logOutput, -1)
-	
-	var metrics []string
-	for _, match := range matches {
-		if len(match) > 1 {
-			metrics = append(metrics, match[1])
-		}
-	}
-	
-	return metrics
-}
-
-// verifyTelemetryConfiguration checks if telemetry is configured correctly
-func verifyTelemetryConfiguration() {
-	telemetryEnabled := os.Getenv("TOOLHIVE_TELEMETRY_ENABLED") == "true"
-	serviceName := os.Getenv("TOOLHIVE_TELEMETRY_SERVICE_NAME")
-	serviceVersion := os.Getenv("TOOLHIVE_TELEMETRY_SERVICE_VERSION")
-	
-	if telemetryEnabled {
-		GinkgoWriter.Printf("Telemetry Configuration:\n")
-		GinkgoWriter.Printf("  Enabled: %v\n", telemetryEnabled)
-		GinkgoWriter.Printf("  Service Name: %s\n", serviceName)
-		GinkgoWriter.Printf("  Service Version: %s\n", serviceVersion)
-	}
-}

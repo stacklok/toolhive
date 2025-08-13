@@ -60,6 +60,7 @@ func WorkloadRouter(
 	r.Post("/restart", routes.restartWorkloadsBulk)
 	r.Post("/delete", routes.deleteWorkloadsBulk)
 	r.Get("/{name}", routes.getWorkload)
+	r.Put("/{name}", routes.updateWorkload)
 	r.Post("/{name}/stop", routes.stopWorkload)
 	r.Post("/{name}/restart", routes.restartWorkload)
 	r.Get("/{name}/logs", routes.getLogsForWorkload)
@@ -124,7 +125,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 //	@Tags			workloads
 //	@Produce		json
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		200		{object}	core.Workload
+//	@Success		200		{object}	workloadDetailsResponse
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [get]
 func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
@@ -145,9 +146,24 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(workload)
+	// Try to load the workload configuration for editing
+	runConfig, err := runner.LoadState(ctx, name)
+	var config *createRequest
 	if err != nil {
+		// Log warning but don't fail - we can still return basic workload info
+		logger.Warnf("Failed to load workload configuration for %s: %v", name, err)
+		config = nil
+	} else {
+		config = runConfigToCreateRequest(runConfig)
+	}
+
+	response := workloadDetailsResponse{
+		Workload: workload,
+		Config:   config,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "Failed to marshal workload details", http.StatusInternalServerError)
 		return
 	}
@@ -258,71 +274,86 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Fetch or build the requested image
-	// TODO: Make verification configurable and return errors over the API.
-	imageURL, imageMetadata, err := retriever.GetMCPServer(
-		ctx,
-		req.Image,
-		"", // We do not let the user specify a CA cert path here.
-		retriever.VerifyImageWarn,
-	)
+	// Create the workload using shared logic
+	runConfig, err := s.createWorkloadFromRequest(ctx, &req)
 	if err != nil {
-		if errors.Is(err, retriever.ErrImageNotFound) {
-			http.Error(w, "MCP server image not found", http.StatusNotFound)
+		// Error messages already logged in createWorkloadFromRequest
+		if errors.Is(err, retriever.ErrImageNotFound) || err.Error() == "MCP server image not found" {
+			http.Error(w, err.Error(), http.StatusNotFound)
 		} else {
-			http.Error(w, fmt.Sprintf("Failed to retrieve MCP server image: %v", err), http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
-		return
-	}
-
-	// NOTE: None of the k8s-related config logic is included here.
-	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
-	runConfig, err := runner.NewRunConfigBuilder().
-		WithRuntime(s.containerRuntime).
-		WithCmdArgs(req.CmdArguments).
-		WithName(req.Name).
-		WithImage(imageURL).
-		WithHost(req.Host).
-		WithTargetHost(transport.LocalhostIPv4).
-		WithDebug(s.debugMode).
-		WithVolumes(req.Volumes).
-		WithSecrets(runSecrets).
-		WithAuthzConfigPath(req.AuthzConfig).
-		WithAuditConfigPath("").
-		WithPermissionProfile(req.PermissionProfile).
-		WithNetworkIsolation(req.NetworkIsolation).
-		WithK8sPodPatch("").
-		WithProxyMode(types.ProxyMode(req.ProxyMode)).
-		WithTransportAndPorts(req.Transport, 0, req.TargetPort).
-		WithAuditEnabled(false, "").
-		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
-										"", "", "", "", "", false). // JWKS auth parameters not exposed through API yet
-		WithTelemetryConfig("", false, "", 0.0, nil, false, nil). // Not exposed through API yet.
-		WithToolsFilter(req.ToolsFilter).
-		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
-	if err != nil {
-		logger.Errorf("Failed to create run config: %v", err)
-		http.Error(w, "Failed to create run config", http.StatusBadRequest)
-		return
-	}
-
-	if err := runConfig.SaveState(ctx); err != nil {
-		logger.Errorf("Failed to save workload config: %v", err)
-		http.Error(w, "Failed to save workload config", http.StatusInternalServerError)
-		return
-	}
-
-	// Start workload with specified RunConfig.
-	err = s.workloadManager.RunWorkloadDetached(ctx, runConfig)
-	if err != nil {
-		logger.Errorf("Failed to start workload: %v", err)
-		http.Error(w, "Failed to start workload", http.StatusInternalServerError)
 		return
 	}
 
 	// Return name so that the client will get the auto-generated name.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	resp := createWorkloadResponse{
+		Name: runConfig.ContainerName,
+		Port: runConfig.Port,
+	}
+	if err = json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, "Failed to marshal workload details", http.StatusInternalServerError)
+		return
+	}
+}
+
+// updateWorkload
+//
+//	@Summary		Update workload
+//	@Description	Update an existing workload configuration
+//	@Tags			workloads
+//	@Accept			json
+//	@Produce		json
+//	@Param			name		path		string			true	"Workload name"
+//	@Param			request		body		createRequest	true	"Update workload request"
+//	@Success		200			{object}	createWorkloadResponse
+//	@Failure		400			{string}	string	"Bad Request"
+//	@Failure		404			{string}	string	"Not Found"
+//	@Router			/api/v1beta/workloads/{name} [put]
+func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := chi.URLParam(r, "name")
+
+	// Parse request body
+	var req createRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Check if workload exists
+	_, err := s.workloadManager.GetWorkload(ctx, name)
+	if err != nil {
+		logger.Errorf("Failed to get workload: %v", err)
+		http.Error(w, "Workload not found", http.StatusNotFound)
+		return
+	}
+
+	// Stop the existing workload
+	if _, err = s.workloadManager.StopWorkloads(ctx, []string{name}); err != nil {
+		logger.Errorf("Failed to stop workload %s: %v", name, err)
+		http.Error(w, "Failed to stop workload", http.StatusInternalServerError)
+		return
+	}
+
+	// Delete the existing workload
+	if _, err = s.workloadManager.DeleteWorkloads(ctx, []string{name}); err != nil {
+		logger.Errorf("Failed to delete workload %s: %v", name, err)
+		http.Error(w, "Failed to delete workload", http.StatusInternalServerError)
+		return
+	}
+
+	// Create the new workload using shared logic
+	runConfig, err := s.createWorkloadFromRequest(ctx, &req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return the same response format as create
+	w.Header().Set("Content-Type", "application/json")
 	resp := createWorkloadResponse{
 		Name: runConfig.ContainerName,
 		Port: runConfig.Port,
@@ -547,6 +578,16 @@ type workloadListResponse struct {
 	Workloads []core.Workload `json:"workloads"`
 }
 
+// workloadDetailsResponse combines workload runtime state with editable configuration
+//
+//	@Description	Response containing workload details and editable configuration
+type workloadDetailsResponse struct {
+	// Current workload runtime state
+	Workload core.Workload `json:"workload"`
+	// Editable configuration (null if config cannot be loaded)
+	Config *createRequest `json:"config,omitempty"`
+}
+
 // createRequest represents the request to create a new workload
 //
 //	@Description	Request to create a new workload
@@ -656,4 +697,117 @@ func (s *WorkloadRoutes) getWorkloadNamesFromRequest(ctx context.Context, req bu
 	}
 
 	return workloadNames, nil
+}
+
+// createWorkloadFromRequest creates a workload from a request
+func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
+	// Fetch or build the requested image
+	imageURL, imageMetadata, err := retriever.GetMCPServer(
+		ctx,
+		req.Image,
+		"", // We do not let the user specify a CA cert path here.
+		retriever.VerifyImageWarn,
+	)
+	if err != nil {
+		if errors.Is(err, retriever.ErrImageNotFound) {
+			return nil, fmt.Errorf("MCP server image not found")
+		}
+		return nil, fmt.Errorf("failed to retrieve MCP server image: %v", err)
+	}
+
+	// Build RunConfig
+	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
+	runConfig, err := runner.NewRunConfigBuilder().
+		WithRuntime(s.containerRuntime).
+		WithCmdArgs(req.CmdArguments).
+		WithName(req.Name).
+		WithImage(imageURL).
+		WithHost(req.Host).
+		WithTargetHost(transport.LocalhostIPv4).
+		WithDebug(s.debugMode).
+		WithVolumes(req.Volumes).
+		WithSecrets(runSecrets).
+		WithAuthzConfigPath(req.AuthzConfig).
+		WithAuditConfigPath("").
+		WithPermissionProfile(req.PermissionProfile).
+		WithNetworkIsolation(req.NetworkIsolation).
+		WithK8sPodPatch("").
+		WithProxyMode(types.ProxyMode(req.ProxyMode)).
+		WithTransportAndPorts(req.Transport, 0, req.TargetPort).
+		WithAuditEnabled(false, "").
+		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
+			"", "", "", "", "", false).
+		WithTelemetryConfig("", false, "", 0.0, nil, false, nil).
+		WithToolsFilter(req.ToolsFilter).
+		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
+	if err != nil {
+		logger.Errorf("Failed to build run config: %v", err)
+		return nil, fmt.Errorf("invalid configuration: %v", err)
+	}
+
+	// Save the workload state
+	if err := runConfig.SaveState(ctx); err != nil {
+		logger.Errorf("Failed to save workload config: %v", err)
+		return nil, fmt.Errorf("failed to save workload config")
+	}
+
+	// Start workload
+	if err := s.workloadManager.RunWorkloadDetached(ctx, runConfig); err != nil {
+		logger.Errorf("Failed to start workload: %v", err)
+		return nil, fmt.Errorf("failed to start workload")
+	}
+
+	return runConfig, nil
+}
+
+// runConfigToCreateRequest converts a RunConfig to createRequest for API responses
+func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
+	// Convert CLI secrets ([]string) back to SecretParameters
+	secretParams := make([]secrets.SecretParameter, 0, len(runConfig.Secrets))
+	for _, secretStr := range runConfig.Secrets {
+		// Parse the CLI format: "<name>,target=<target>"
+		if secretParam, err := secrets.ParseSecretParameter(secretStr); err == nil {
+			secretParams = append(secretParams, secretParam)
+		}
+		// Ignore invalid secrets rather than failing the entire conversion
+	}
+
+	// Convert environment variables map to slice
+	envVarSlice := make([]string, 0, len(runConfig.EnvVars))
+	for key, value := range runConfig.EnvVars {
+		envVarSlice = append(envVarSlice, fmt.Sprintf("%s=%s", key, value))
+	}
+
+	// Get OIDC fields from RunConfig
+	var oidcConfig oidcOptions
+	if runConfig.OIDCConfig != nil {
+		oidcConfig = oidcOptions{
+			Issuer:           runConfig.OIDCConfig.Issuer,
+			Audience:         runConfig.OIDCConfig.Audience,
+			JwksURL:          runConfig.OIDCConfig.JWKSURL,
+			IntrospectionURL: runConfig.OIDCConfig.IntrospectionURL,
+			ClientID:         runConfig.OIDCConfig.ClientID,
+			ClientSecret:     runConfig.OIDCConfig.ClientSecret,
+		}
+	}
+
+	authzConfigPath := ""
+
+	return &createRequest{
+		Name:              runConfig.Name,
+		Image:             runConfig.Image,
+		Host:              runConfig.Host,
+		CmdArguments:      runConfig.CmdArgs,
+		TargetPort:        runConfig.TargetPort,
+		EnvVars:           envVarSlice,
+		Secrets:           secretParams,
+		Volumes:           runConfig.Volumes,
+		Transport:         string(runConfig.Transport),
+		AuthzConfig:       authzConfigPath,
+		OIDC:              oidcConfig,
+		PermissionProfile: runConfig.PermissionProfile,
+		ProxyMode:         string(runConfig.ProxyMode),
+		NetworkIsolation:  runConfig.IsolateNetwork,
+		ToolsFilter:       runConfig.ToolsFilter,
+	}
 }

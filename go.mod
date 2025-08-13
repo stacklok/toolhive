@@ -40,7 +40,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.37.0
 	go.uber.org/mock v0.5.2
 	golang.ngrok.com/ngrok/v2 v2.0.0
-	golang.org/x/exp/jsonrpc2 v0.0.0-20250811191247-51f88131bc50
+	golang.org/x/exp/jsonrpc2 v0.0.0-20250813145105-42675adae3e6
 	golang.org/x/mod v0.27.0
 	golang.org/x/oauth2 v0.30.0
 	golang.org/x/sync v0.16.0
@@ -49,6 +49,7 @@ require (
 	gotest.tools v2.2.0+incompatible
 	k8s.io/api v0.33.3
 	k8s.io/apimachinery v0.33.3
+	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
 	sigs.k8s.io/controller-runtime v0.21.0
 	sigs.k8s.io/yaml v1.6.0
 )
@@ -261,7 +262,6 @@ require (
 	k8s.io/apiextensions-apiserver v0.33.0 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250318190949-c8a335a9a2ff // indirect
-	k8s.io/utils v0.0.0-20241104100929-3ea5e8cea738 // indirect
 	sigs.k8s.io/json v0.0.0-20241010143419-9aa6b5e7a4b3 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.6.0 // indirect

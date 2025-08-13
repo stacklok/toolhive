@@ -12,6 +12,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -240,7 +241,13 @@ func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			result, err := tc.config.WithEnvironmentVariables(tc.envVars)
+			// Convert environment variables from slice to map
+			envVarsMap, parseErr := environment.ParseEnvironmentVariables(tc.envVars)
+			if parseErr != nil && !tc.expectError {
+				t.Fatalf("Failed to parse test environment variables: %v", parseErr)
+			}
+
+			result, err := tc.config.WithEnvironmentVariables(envVarsMap)
 
 			if tc.expectError {
 				assert.Error(t, err, "WithEnvironmentVariables should return an error")
@@ -550,7 +557,7 @@ func TestRunConfig_WithAuthz(t *testing.T) {
 // mockEnvVarValidator implements the EnvVarValidator interface for testing
 type mockEnvVarValidator struct{}
 
-func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadata, _ *RunConfig, suppliedEnvVars []string) ([]string, error) {
+func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadata, _ *RunConfig, suppliedEnvVars map[string]string) (map[string]string, error) {
 	// For testing, just return the supplied environment variables as-is
 	return suppliedEnvVars, nil
 }
@@ -582,7 +589,10 @@ func TestRunConfigBuilder(t *testing.T) {
 	mcpTransport := "sse"
 	proxyPort := 60000
 	targetPort := 9000
-	envVars := []string{"TEST_ENV=test_value"}
+	envVarsSlice := []string{"TEST_ENV=test_value"}
+	envVars, err := environment.ParseEnvironmentVariables(envVarsSlice)
+	require.NoError(t, err, "Failed to parse environment variables")
+
 	oidcIssuer := "https://issuer.example.com"
 	oidcAudience := "test-audience"
 	oidcJwksURL := "https://issuer.example.com/.well-known/jwks.json"
@@ -912,7 +922,10 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 			LoadGlobal:    false,
 			PrintOverlays: false,
 		}).
-		Build(context.Background(), nil, []string{"USER_VAR=value"}, validator)
+		Build(context.Background(), nil, func() map[string]string {
+			envVars, _ := environment.ParseEnvironmentVariables([]string{"USER_VAR=value"})
+			return envVars
+		}(), validator)
 
 	require.NoError(t, err)
 

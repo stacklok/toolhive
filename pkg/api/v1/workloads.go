@@ -125,14 +125,15 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 //	@Tags			workloads
 //	@Produce		json
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		200		{object}	workloadDetailsResponse
+//	@Success		200		{object}	createRequest
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [get]
 func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
-	workload, err := s.workloadManager.GetWorkload(ctx, name)
+	// Check if workload exists first
+	_, err := s.workloadManager.GetWorkload(ctx, name)
 	if err != nil {
 		if errors.Is(err, runtime.ErrWorkloadNotFound) {
 			http.Error(w, "Workload not found", http.StatusNotFound)
@@ -146,25 +147,19 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to load the workload configuration for editing
+	// Load the workload configuration
 	runConfig, err := runner.LoadState(ctx, name)
-	var config *createRequest
 	if err != nil {
-		// Log warning but don't fail - we can still return basic workload info
-		logger.Warnf("Failed to load workload configuration for %s: %v", name, err)
-		config = nil
-	} else {
-		config = runConfigToCreateRequest(runConfig)
+		logger.Errorf("Failed to load workload configuration for %s: %v", name, err)
+		http.Error(w, "Workload configuration not found", http.StatusNotFound)
+		return
 	}
 
-	response := workloadDetailsResponse{
-		Workload: workload,
-		Config:   config,
-	}
+	config := runConfigToCreateRequest(runConfig)
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "Failed to marshal workload details", http.StatusInternalServerError)
+	if err := json.NewEncoder(w).Encode(config); err != nil {
+		http.Error(w, "Failed to marshal workload configuration", http.StatusInternalServerError)
 		return
 	}
 }
@@ -584,15 +579,6 @@ type workloadListResponse struct {
 	Workloads []core.Workload `json:"workloads"`
 }
 
-// workloadDetailsResponse combines workload runtime state with editable configuration
-//
-//	@Description	Response containing workload details and editable configuration
-type workloadDetailsResponse struct {
-	// Current workload runtime state
-	Workload core.Workload `json:"workload"`
-	// Editable configuration (null if config cannot be loaded)
-	Config *createRequest `json:"config,omitempty"`
-}
 
 // updateRequest represents the request to update an existing workload
 //

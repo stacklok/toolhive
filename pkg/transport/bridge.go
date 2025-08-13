@@ -83,7 +83,7 @@ func (b *StdioBridge) run(ctx context.Context) {
 
 	// Handle upstream notifications
 	b.up.OnNotification(func(n mcp.JSONRPCNotification) {
-		logger.Infof("🔔 upstream → downstream notify: %s %v", n.Method, n.Params)
+		logger.Infof("upstream → downstream notify: %s %v", n.Method, n.Params)
 		// Convert the Params struct to JSON and back to a generic map
 		var params map[string]any
 		if buf, err := json.Marshal(n.Params); err != nil {
@@ -95,7 +95,6 @@ func (b *StdioBridge) run(ctx context.Context) {
 		}
 
 		b.srv.SendNotificationToAllClients(n.Method, params)
-		logger.Infof("🔔 upstream → downstream notify: %s %v", n.Method, params)
 	})
 
 	// Forwarders (register once; no pagination/refresh to keep it simple)

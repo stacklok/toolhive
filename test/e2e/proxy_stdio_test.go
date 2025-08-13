@@ -34,7 +34,7 @@ var _ = Describe("Proxy Stdio E2E", Serial, func() {
 		config = e2e.NewTestConfig()
 		err := e2e.CheckTHVBinaryAvailable(config)
 		Expect(err).ToNot(HaveOccurred())
-		workloadName = generateUniqueProxyStdioServerName("mcpserver-proxy-stdio--target")
+		workloadName = generateUniqueProxyStdioServerName("mcpserver-proxy-stdio-target")
 	})
 
 	JustBeforeEach(func() {

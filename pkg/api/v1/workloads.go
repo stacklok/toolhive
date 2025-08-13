@@ -60,7 +60,7 @@ func WorkloadRouter(
 	r.Post("/restart", routes.restartWorkloadsBulk)
 	r.Post("/delete", routes.deleteWorkloadsBulk)
 	r.Get("/{name}", routes.getWorkload)
-	r.Put("/{name}", routes.updateWorkload)
+	r.Post("/{name}/edit", routes.updateWorkload)
 	r.Post("/{name}/stop", routes.stopWorkload)
 	r.Post("/{name}/restart", routes.restartWorkload)
 	r.Get("/{name}/logs", routes.getLogsForWorkload)
@@ -307,18 +307,18 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Accept			json
 //	@Produce		json
 //	@Param			name		path		string			true	"Workload name"
-//	@Param			request		body		createRequest	true	"Update workload request"
+//	@Param			request		body		updateRequest	true	"Update workload request"
 //	@Success		200			{object}	createWorkloadResponse
 //	@Failure		400			{string}	string	"Bad Request"
 //	@Failure		404			{string}	string	"Not Found"
-//	@Router			/api/v1beta/workloads/{name} [put]
+//	@Router			/api/v1beta/workloads/{name}/edit [post]
 func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
 	// Parse request body
-	var req createRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var updateReq updateRequest
+	if err := json.NewDecoder(r.Body).Decode(&updateReq); err != nil {
 		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -329,6 +329,12 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		logger.Errorf("Failed to get workload: %v", err)
 		http.Error(w, "Workload not found", http.StatusNotFound)
 		return
+	}
+
+	// Convert updateRequest to createRequest with the existing workload name
+	createReq := createRequest{
+		updateRequest: updateReq,
+		Name:          name, // Use the name from URL path, not from request body
 	}
 
 	// Stop the existing workload
@@ -346,7 +352,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Create the new workload using shared logic
-	runConfig, err := s.createWorkloadFromRequest(ctx, &req)
+	runConfig, err := s.createWorkloadFromRequest(ctx, &createReq)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -588,12 +594,10 @@ type workloadDetailsResponse struct {
 	Config *createRequest `json:"config,omitempty"`
 }
 
-// createRequest represents the request to create a new workload
+// updateRequest represents the request to update an existing workload
 //
-//	@Description	Request to create a new workload
-type createRequest struct {
-	// Name of the workload
-	Name string `json:"name"`
+//	@Description	Request to update an existing workload (name cannot be changed)
+type updateRequest struct {
 	// Docker image to use
 	Image string `json:"image"`
 	// Host to bind to
@@ -622,6 +626,15 @@ type createRequest struct {
 	NetworkIsolation bool `json:"network_isolation"`
 	// Tools filter
 	ToolsFilter []string `json:"tools"`
+}
+
+// createRequest represents the request to create a new workload
+//
+//	@Description	Request to create a new workload
+type createRequest struct {
+	updateRequest
+	// Name of the workload
+	Name string `json:"name"`
 }
 
 // oidcOptions represents OIDC configuration options
@@ -794,20 +807,22 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 	authzConfigPath := ""
 
 	return &createRequest{
-		Name:              runConfig.Name,
-		Image:             runConfig.Image,
-		Host:              runConfig.Host,
-		CmdArguments:      runConfig.CmdArgs,
-		TargetPort:        runConfig.TargetPort,
-		EnvVars:           envVarSlice,
-		Secrets:           secretParams,
-		Volumes:           runConfig.Volumes,
-		Transport:         string(runConfig.Transport),
-		AuthzConfig:       authzConfigPath,
-		OIDC:              oidcConfig,
-		PermissionProfile: runConfig.PermissionProfile,
-		ProxyMode:         string(runConfig.ProxyMode),
-		NetworkIsolation:  runConfig.IsolateNetwork,
-		ToolsFilter:       runConfig.ToolsFilter,
+		updateRequest: updateRequest{
+			Image:             runConfig.Image,
+			Host:              runConfig.Host,
+			CmdArguments:      runConfig.CmdArgs,
+			TargetPort:        runConfig.TargetPort,
+			EnvVars:           envVarSlice,
+			Secrets:           secretParams,
+			Volumes:           runConfig.Volumes,
+			Transport:         string(runConfig.Transport),
+			AuthzConfig:       authzConfigPath,
+			OIDC:              oidcConfig,
+			PermissionProfile: runConfig.PermissionProfile,
+			ProxyMode:         string(runConfig.ProxyMode),
+			NetworkIsolation:  runConfig.IsolateNetwork,
+			ToolsFilter:       runConfig.ToolsFilter,
+		},
+		Name: runConfig.Name,
 	}
 }

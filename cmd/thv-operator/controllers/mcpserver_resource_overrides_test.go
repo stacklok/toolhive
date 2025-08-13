@@ -378,9 +378,8 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:     "test-image",
-			Port:      8080,
-			Transport: "stdio",
+			Image: "test-image",
+			Port:  8080,
 		},
 	}
 
@@ -639,7 +638,6 @@ func TestDeploymentNeedsUpdateToolsFilter(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:       "test-image",
 					Port:        8080,
-					Transport:   "stdio",
 					ToolsFilter: tt.initialToolsFilter,
 				},
 			}

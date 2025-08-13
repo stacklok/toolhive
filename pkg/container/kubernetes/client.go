@@ -1027,14 +1027,14 @@ func configureContainer(
 	envVars []*corev1apply.EnvVarApplyConfiguration,
 	platform Platform,
 ) {
-	logger.Infof("Configuring container %s with image %s", *container.Name, image)
-	logger.Infof("Command: ")
+	logger.Debugf("Configuring container %s with image %s", *container.Name, image)
+	logger.Debugf("Command: ")
 	for _, arg := range command {
-		logger.Infof("Arg: %s", arg)
+		logger.Debugf("Arg: %s", arg)
 	}
-	logger.Infof("AttachStdio: %v", attachStdio)
+	logger.Debugf("AttachStdio: %v", attachStdio)
 	for _, envVar := range envVars {
-		logger.Infof("EnvVar: %s=%s", *envVar.Name, *envVar.Value)
+		logger.Debugf("EnvVar: %s=%s", *envVar.Name, *envVar.Value)
 	}
 
 	container.WithImage(image).

@@ -16,6 +16,10 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
+const (
+	osvServerName = "osv"
+)
+
 func generateUniqueProxyStdioServerName(prefix string) string {
 	return fmt.Sprintf("%s-%d-%d-%d", prefix, os.Getpid(), time.Now().UnixNano(), GinkgoRandomSeed())
 }
@@ -74,7 +78,7 @@ var _ = Describe("Proxy Stdio E2E", Serial, func() {
 	Context("testing proxy stdio with sse protocol", func() {
 		BeforeEach(func() {
 			transportType = types.TransportTypeSSE
-			mcpServerName = "osv"
+			mcpServerName = osvServerName
 		})
 		It("should proxy MCP requests successfully", func() {
 			By("Getting OSV server URL")
@@ -124,7 +128,7 @@ var _ = Describe("Proxy Stdio E2E", Serial, func() {
 	Context("testing proxy stdio with streamable-http protocol", func() {
 		BeforeEach(func() {
 			transportType = types.TransportTypeStreamableHTTP
-			mcpServerName = "osv"
+			mcpServerName = osvServerName
 		})
 
 		It("should proxy MCP requests successfully", func() {

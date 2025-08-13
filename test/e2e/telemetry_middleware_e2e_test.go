@@ -313,7 +313,7 @@ func startProxyStdioForTelemetryTest(config *e2e.TestConfig, workloadName string
 	GinkgoWriter.Printf("Base URL for telemetry proxy: %s\n", baseURL)
 
 	// Start the proxy command
-	cmd := exec.Command(config.THVBinary, "proxy", "stdio", baseURL) //nolint:gosec
+	cmd := exec.Command(config.THVBinary, "proxy", "stdio", workloadName) //nolint:gosec
 	cmd.Env = os.Environ()
 
 	// Create pipes for stdin and stdout/stderr

@@ -14,10 +14,12 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/versions"
 )
 
 // StdioBridge connects stdin/stdout to a target MCP server using the specified transport type.
 type StdioBridge struct {
+	name      string
 	mode      types.TransportType
 	rawTarget string // upstream base URL
 
@@ -29,8 +31,12 @@ type StdioBridge struct {
 }
 
 // NewStdioBridge creates a new StdioBridge instance for the given target URL and transport type.
-func NewStdioBridge(rawURL string, mode types.TransportType) (*StdioBridge, error) {
-	return &StdioBridge{mode: mode, rawTarget: rawURL}, nil
+func NewStdioBridge(name, rawURL string, mode types.TransportType) (*StdioBridge, error) {
+	return &StdioBridge{
+		name:      name,
+		mode:      mode,
+		rawTarget: rawURL,
+	}, nil
 }
 
 // Start initializes the bridge and connects to the upstream MCP server.
@@ -71,8 +77,8 @@ func (b *StdioBridge) run(ctx context.Context) {
 
 	// Tiny local stdio server
 	b.srv = server.NewMCPServer(
-		"toolhive-stdio-bridge",
-		"0.1.0",
+		fmt.Sprintf("thv-%s", b.name),
+		versions.Version,
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),

@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
-  "last_updated": "2025-08-13T08:42:55Z",
+  "last_updated": "2025-08-14T06:59:15Z",
   "servers": {
     "arxiv-mcp-server": {
       "args": [
@@ -18,9 +18,9 @@
       ],
       "image": "ghcr.io/stacklok/dockyard/uvx/arxiv-mcp-server:0.3.0",
       "metadata": {
-        "last_updated": "2025-08-13T08:42:29Z",
-        "pulls": 77,
-        "stars": 1559
+        "last_updated": "2025-08-14T06:56:18Z",
+        "pulls": 154,
+        "stars": 1564
       },
       "permissions": {
         "network": {
@@ -840,9 +840,9 @@
       ],
       "image": "docker.io/mcp/cloud-run-mcp:latest",
       "metadata": {
-        "last_updated": "2025-08-13T06:16:55Z",
-        "pulls": 273,
-        "stars": 316
+        "last_updated": "2025-08-14T06:56:08Z",
+        "pulls": 344,
+        "stars": 317
       },
       "permissions": {
         "network": {
@@ -2127,8 +2127,8 @@
       ],
       "image": "ghcr.io/stackloklabs/mkp/server:0.0.10",
       "metadata": {
-        "last_updated": "2025-08-13T08:42:49Z",
-        "pulls": 13952,
+        "last_updated": "2025-08-14T06:58:09Z",
+        "pulls": 14080,
         "stars": 44
       },
       "permissions": {
@@ -3823,8 +3823,8 @@
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/sqlite-mcp/server:0.0.1",
       "metadata": {
-        "last_updated": "2025-08-13T08:42:38Z",
-        "pulls": 4212,
+        "last_updated": "2025-08-14T06:59:15Z",
+        "pulls": 4428,
         "stars": 9
       },
       "permissions": {
@@ -3837,6 +3837,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/StacklokLabs/sqlite-mcp",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/release.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/StacklokLabs/sqlite-mcp",
       "status": "Active",

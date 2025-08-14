@@ -74,11 +74,6 @@ type MCPServerSpec struct {
 	// ToolsFilter is the filter on tools applied to the MCP server
 	// +optional
 	ToolsFilter []string `json:"tools,omitempty"`
-
-	// ResourceURL is the explicit resource URL for OAuth discovery endpoint (RFC 9728)
-	// If not specified, defaults to the in-cluster Kubernetes service URL
-	// +optional
-	ResourceURL string `json:"resourceUrl,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -276,6 +271,11 @@ type OIDCConfigRef struct {
 	// +kubebuilder:validation:Enum=kubernetes;configMap;inline
 	// +kubebuilder:default=kubernetes
 	Type string `json:"type"`
+
+	// ResourceURL is the explicit resource URL for OAuth discovery endpoint (RFC 9728)
+	// If not specified, defaults to the in-cluster Kubernetes service URL
+	// +optional
+	ResourceURL string `json:"resourceUrl,omitempty"`
 
 	// Kubernetes configures OIDC for Kubernetes service account token validation
 	// Only used when Type is "kubernetes"

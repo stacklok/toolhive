@@ -8424,6 +8424,11 @@ spec:
                 items:
                   type: string
                 type: array
+              resourceUrl:
+                description: ResourceURL is the explicit resource URL for OAuth discovery
+                  endpoint (RFC 9728) If not specified, defaults to the in-cluster Kubernetes
+                  service URL
+                type: string
               transport:
                 default: stdio
                 description: Transport is the transport method for the MCP server

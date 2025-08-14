@@ -321,6 +321,9 @@ func (b *RunConfigBuilder) Build(
 		return nil, fmt.Errorf("failed to set environment variables: %v", err)
 	}
 
+	// Set schema version.
+	b.config.SchemaVersion = CurrentSchemaVersion
+
 	return b.config, nil
 }
 

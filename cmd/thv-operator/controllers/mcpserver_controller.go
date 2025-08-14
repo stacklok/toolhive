@@ -431,7 +431,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		args = append(args, oidcArgs...)
 
 		// Add OAuth discovery resource URL for RFC 9728 compliance
-		resourceURL := createServiceURL(m.Name, m.Namespace, m.Spec.Port)
+		resourceURL := m.Spec.OIDCConfig.ResourceURL
+		if resourceURL == "" {
+			resourceURL = createServiceURL(m.Name, m.Namespace, m.Spec.Port)
+		}
 		args = append(args, fmt.Sprintf("--resource-url=%s", resourceURL))
 	}
 

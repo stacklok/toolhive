@@ -228,6 +228,11 @@ spec:
                           Defaults to true if not specified
                         type: boolean
                     type: object
+                  resourceUrl:
+                    description: |-
+                      ResourceURL is the explicit resource URL for OAuth discovery endpoint (RFC 9728)
+                      If not specified, defaults to the in-cluster Kubernetes service URL
+                    type: string
                   type:
                     default: kubernetes
                     description: Type is the type of OIDC configuration

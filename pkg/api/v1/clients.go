@@ -437,7 +437,6 @@ func (c *ClientRoutes) removeClientGlobally(
 					return
 				}
 			}
-			logger.Warnf("Client %s was not found in registered clients list", clientToRemove.Name)
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update configuration for client %s: %w", clientToRemove.Name, err)

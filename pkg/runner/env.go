@@ -25,8 +25,8 @@ type EnvVarValidator interface {
 		ctx context.Context,
 		metadata *registry.ImageMetadata,
 		runConfig *RunConfig,
-		suppliedEnvVars []string,
-	) ([]string, error)
+		suppliedEnvVars map[string]string,
+	) (map[string]string, error)
 }
 
 // DetachedEnvVarValidator implements the EnvVarValidator interface for
@@ -40,8 +40,8 @@ func (*DetachedEnvVarValidator) Validate(
 	_ context.Context,
 	metadata *registry.ImageMetadata,
 	runConfig *RunConfig,
-	suppliedEnvVars []string,
-) ([]string, error) {
+	suppliedEnvVars map[string]string,
+) (map[string]string, error) {
 	// Check variables in metadata if we are processing an image from our registry.
 	if metadata != nil {
 		secretsList := runConfig.Secrets
@@ -73,23 +73,25 @@ func (*CLIEnvVarValidator) Validate(
 	ctx context.Context,
 	metadata *registry.ImageMetadata,
 	runConfig *RunConfig,
-	suppliedEnvVars []string,
-) ([]string, error) {
-	envVars := suppliedEnvVars
+	suppliedEnvVars map[string]string,
+) (map[string]string, error) {
+	envVars := make(map[string]string)
+
+	// Copy the supplied environment variables
+	for k, v := range suppliedEnvVars {
+		envVars[k] = v
+	}
 
 	// If we are processing an image from our registry, we need to check the
 	// variables defined in the metadata.
 	if metadata != nil {
 		secretsConfig := runConfig.Secrets
-		// Create new slices for extra secrets and environment variables.
+		// Create new slice for extra secrets
 		secretsList := make([]string, 0, len(secretsConfig))
-		envVars = make([]string, 0, len(suppliedEnvVars))
 
-		// Copy existing env vars and secrets
-		envVars = append(envVars, suppliedEnvVars...)
+		// Copy existing secrets
 		secretsList = append(secretsList, secretsConfig...)
 		registryEnvVars := metadata.EnvVars
-		// Create a new slice with capacity for all env vars
 
 		// Initialize secrets manager if needed
 		secretsManager := initializeSecretsManagerIfNeeded(registryEnvVars)
@@ -165,7 +167,7 @@ func addNewVariable(
 	envVar *registry.EnvVar,
 	value string,
 	secretsManager secrets.Provider,
-	envVars *[]string,
+	envVars *map[string]string,
 	secretsList *[]string,
 ) {
 	if envVar.Secret && secretsManager != nil {
@@ -182,7 +184,7 @@ func addAsSecret(
 	value string,
 	secretsManager secrets.Provider,
 	secretsList *[]string,
-	envVars *[]string,
+	envVars *map[string]string,
 ) {
 	var secretName string
 	if envVar.Required {
@@ -194,7 +196,7 @@ func addAsSecret(
 	if err := secretsManager.SetSecret(ctx, secretName, value); err != nil {
 		logger.Warnf("Warning: Failed to store secret %s: %v", secretName, err)
 		logger.Warnf("Falling back to environment variable for %s", envVar.Name)
-		*envVars = append(*envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
+		(*envVars)[envVar.Name] = value
 		logger.Debugf("Added environment variable (secret fallback): %s", envVar.Name)
 	} else {
 		// Create secret reference for RunConfig
@@ -259,12 +261,10 @@ func getSecretsManager() (secrets.Provider, error) {
 // Shared Logic follows
 
 // isEnvVarProvided checks if an environment variable is already provided
-func isEnvVarProvided(name string, envVars []string, secretsConfig []string) bool {
+func isEnvVarProvided(name string, envVars map[string]string, secretsConfig []string) bool {
 	// Check if the environment variable is already provided in the command line
-	for _, env := range envVars {
-		if strings.HasPrefix(env, name+"=") {
-			return true
-		}
+	if _, exists := envVars[name]; exists {
+		return true
 	}
 
 	// Check if the environment variable is provided as a secret
@@ -303,9 +303,9 @@ func isSecretReferenceEnvVar(secret, envVarName string) bool {
 func addAsEnvironmentVariable(
 	envVar *registry.EnvVar,
 	value string,
-	envVars *[]string,
+	envVars *map[string]string,
 ) {
-	*envVars = append(*envVars, fmt.Sprintf("%s=%s", envVar.Name, value))
+	(*envVars)[envVar.Name] = value
 
 	if envVar.Secret {
 		if envVar.Required {

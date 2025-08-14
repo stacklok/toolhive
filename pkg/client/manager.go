@@ -196,7 +196,7 @@ func (*defaultManager) removeServerFromClient(clientName MCPClient, serverName s
 		return fmt.Errorf("failed to remove MCP server configuration from %s: %v", clientConfig.Path, err)
 	}
 
-	logger.Infof("Removed MCP server %s from client %s\n", serverName, clientName)
+	logger.Infof("Removed MCP server %s from client %s", serverName, clientName)
 	return nil
 }
 
@@ -240,7 +240,7 @@ func (m *defaultManager) getTargetClients(ctx context.Context, serverName, group
 
 		logger.Infof(
 			"Server %s belongs to group %s, updating %d registered client(s)",
-			serverName, group, len(group.RegisteredClients),
+			serverName, group.Name, len(group.RegisteredClients),
 		)
 		return group.RegisteredClients
 	}

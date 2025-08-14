@@ -24,9 +24,18 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+// CurrentSchemaVersion is the current version of the RunConfig schema
+// TODO: Set to "v1.0.0" when we clean up the middleware configuration.
+const CurrentSchemaVersion = "v0.1.0"
+
 // RunConfig contains all the configuration needed to run an MCP server
 // It is serializable to JSON and YAML
+// NOTE: This format is importable and exportable, and as a result should be
+// considered part of ToolHive's API contract.
 type RunConfig struct {
+	// SchemaVersion is the version of the RunConfig schema
+	SchemaVersion string `json:"schema_version" yaml:"schema_version"`
+
 	// Image is the Docker image to run
 	Image string `json:"image" yaml:"image"`
 
@@ -136,6 +145,10 @@ type RunConfig struct {
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
 func (c *RunConfig) WriteJSON(w io.Writer) error {
+	// Ensure the schema version is set
+	if c.SchemaVersion == "" {
+		c.SchemaVersion = CurrentSchemaVersion
+	}
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(c)
@@ -165,6 +178,11 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	}
 	if config.Secrets == nil {
 		config.Secrets = []string{}
+	}
+
+	// Set the default schema version if not set
+	if config.SchemaVersion == "" {
+		config.SchemaVersion = CurrentSchemaVersion
 	}
 
 	return &config, nil
@@ -242,19 +260,14 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	return c, nil
 }
 
-// WithEnvironmentVariables parses and sets environment variables
-func (c *RunConfig) WithEnvironmentVariables(envVarStrings []string) (*RunConfig, error) {
-	envVars, err := environment.ParseEnvironmentVariables(envVarStrings)
-	if err != nil {
-		return c, fmt.Errorf("failed to parse environment variables: %v", err)
-	}
-
+// WithEnvironmentVariables sets environment variables
+func (c *RunConfig) WithEnvironmentVariables(envVars map[string]string) (*RunConfig, error) {
 	// Initialize EnvVars if it's nil
 	if c.EnvVars == nil {
 		c.EnvVars = make(map[string]string)
 	}
 
-	// Merge the parsed environment variables with existing ones
+	// Merge the provided environment variables with existing ones
 	for key, value := range envVars {
 		c.EnvVars[key] = value
 	}

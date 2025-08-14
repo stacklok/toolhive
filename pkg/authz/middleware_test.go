@@ -6,17 +6,21 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
 
 func TestMiddleware(t *testing.T) {
@@ -281,4 +285,225 @@ func TestMiddlewareWithGETRequest(t *testing.T) {
 	// Check that the handler was called and the response is OK
 	assert.True(t, handlerCalled, "Handler should be called for GET requests")
 	assert.Equal(t, http.StatusOK, rr.Code, "Response status code should be OK")
+}
+
+func TestFactoryCreateMiddleware(t *testing.T) {
+	t.Parallel()
+
+	// Initialize logger for tests
+	logger.Initialize()
+
+	t.Run("create middleware with config data", func(t *testing.T) {
+		t.Parallel()
+
+		// Create config data
+		configData := &Config{
+			Version: "1.0",
+			Type:    ConfigTypeCedarV1,
+			Cedar: &CedarConfig{
+				Policies: []string{
+					`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+				},
+				EntitiesJSON: "[]",
+			},
+		}
+
+		// Create middleware parameters with ConfigData
+		params := FactoryMiddlewareParams{
+			ConfigData: configData,
+		}
+
+		// Create middleware config
+		middlewareConfig, err := types.NewMiddlewareConfig(MiddlewareType, params)
+		require.NoError(t, err)
+
+		// Create mock runner
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+
+		// Test CreateMiddleware
+		err = CreateMiddleware(middlewareConfig, mockRunner)
+		assert.NoError(t, err)
+	})
+
+	t.Run("create middleware with config path (backwards compatibility)", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a temporary config file
+		configData := &Config{
+			Version: "1.0",
+			Type:    ConfigTypeCedarV1,
+			Cedar: &CedarConfig{
+				Policies: []string{
+					`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+				},
+				EntitiesJSON: "[]",
+			},
+		}
+
+		tmpFile, err := os.CreateTemp("", "authz_config_*.json")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+
+		configJSON, err := json.Marshal(configData)
+		require.NoError(t, err)
+
+		_, err = tmpFile.Write(configJSON)
+		require.NoError(t, err)
+		tmpFile.Close()
+
+		// Create middleware parameters with ConfigPath
+		params := FactoryMiddlewareParams{
+			ConfigPath: tmpFile.Name(),
+		}
+
+		// Create middleware config
+		middlewareConfig, err := types.NewMiddlewareConfig(MiddlewareType, params)
+		require.NoError(t, err)
+
+		// Create mock runner
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+
+		// Test CreateMiddleware
+		err = CreateMiddleware(middlewareConfig, mockRunner)
+		assert.NoError(t, err)
+	})
+
+	t.Run("config data takes precedence over config path", func(t *testing.T) {
+		t.Parallel()
+
+		// Create config data
+		configData := &Config{
+			Version: "1.0",
+			Type:    ConfigTypeCedarV1,
+			Cedar: &CedarConfig{
+				Policies: []string{
+					`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+				},
+				EntitiesJSON: "[]",
+			},
+		}
+
+		// Create middleware parameters with both ConfigData and ConfigPath
+		// ConfigData should take precedence, so ConfigPath can be invalid
+		params := FactoryMiddlewareParams{
+			ConfigData: configData,
+			ConfigPath: "/nonexistent/path/should/not/be/used.json",
+		}
+
+		// Create middleware config
+		middlewareConfig, err := types.NewMiddlewareConfig(MiddlewareType, params)
+		require.NoError(t, err)
+
+		// Create mock runner
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+
+		// Test CreateMiddleware - should succeed even with invalid path because ConfigData takes precedence
+		err = CreateMiddleware(middlewareConfig, mockRunner)
+		assert.NoError(t, err)
+	})
+
+	t.Run("error when neither config data nor path provided", func(t *testing.T) {
+		t.Parallel()
+
+		// Create middleware parameters without ConfigData or ConfigPath
+		params := FactoryMiddlewareParams{}
+
+		// Create middleware config
+		middlewareConfig, err := types.NewMiddlewareConfig(MiddlewareType, params)
+		require.NoError(t, err)
+
+		// Create mock runner
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		// Should not call AddMiddleware since creation should fail
+
+		// Test CreateMiddleware - should fail
+		err = CreateMiddleware(middlewareConfig, mockRunner)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "either config_data or config_path is required")
+	})
+
+	t.Run("error when config path is invalid", func(t *testing.T) {
+		t.Parallel()
+
+		// Create middleware parameters with invalid ConfigPath
+		params := FactoryMiddlewareParams{
+			ConfigPath: "/nonexistent/invalid/path.json",
+		}
+
+		// Create middleware config
+		middlewareConfig, err := types.NewMiddlewareConfig(MiddlewareType, params)
+		require.NoError(t, err)
+
+		// Create mock runner
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		// Should not call AddMiddleware since creation should fail
+
+		// Test CreateMiddleware - should fail
+		err = CreateMiddleware(middlewareConfig, mockRunner)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to load authorization configuration")
+	})
+
+	t.Run("error when config data is invalid", func(t *testing.T) {
+		t.Parallel()
+
+		// Create invalid config data (missing required fields)
+		configData := &Config{
+			// Missing Version and Type
+		}
+
+		// Create middleware parameters with invalid ConfigData
+		params := FactoryMiddlewareParams{
+			ConfigData: configData,
+		}
+
+		// Create middleware config
+		middlewareConfig, err := types.NewMiddlewareConfig(MiddlewareType, params)
+		require.NoError(t, err)
+
+		// Create mock runner
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		// Should not call AddMiddleware since creation should fail
+
+		// Test CreateMiddleware - should fail
+		err = CreateMiddleware(middlewareConfig, mockRunner)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to create authorization middleware")
+	})
+
+	t.Run("error with malformed middleware config parameters", func(t *testing.T) {
+		t.Parallel()
+
+		// Create middleware config with invalid parameters
+		middlewareConfig := &types.MiddlewareConfig{
+			Type:       MiddlewareType,
+			Parameters: []byte(`{"invalid_json": `), // Malformed JSON
+		}
+
+		// Create mock runner
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		// Should not call AddMiddleware since creation should fail
+
+		// Test CreateMiddleware - should fail
+		err := CreateMiddleware(middlewareConfig, mockRunner)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to unmarshal authorization middleware parameters")
+	})
 }

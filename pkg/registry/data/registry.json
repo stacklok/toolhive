@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
-  "last_updated": "2025-08-13T08:42:55Z",
+  "last_updated": "2025-08-14T06:59:15Z",
   "servers": {
     "arxiv-mcp-server": {
       "args": [
@@ -18,9 +18,9 @@
       ],
       "image": "ghcr.io/stacklok/dockyard/uvx/arxiv-mcp-server:0.3.0",
       "metadata": {
-        "last_updated": "2025-08-13T08:42:29Z",
-        "pulls": 77,
-        "stars": 1559
+        "last_updated": "2025-08-14T06:56:18Z",
+        "pulls": 154,
+        "stars": 1564
       },
       "permissions": {
         "network": {
@@ -38,6 +38,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/blazickjp/arxiv-mcp-server",
       "status": "Active",
@@ -578,6 +585,13 @@
         "read": [],
         "write": []
       },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
       "repository_url": "https://github.com/brightdata/brightdata-mcp",
       "status": "Active",
       "tags": [
@@ -804,6 +818,87 @@
         "access_token",
         "current_user",
         "user_token_organization"
+      ],
+      "transport": "stdio"
+    },
+    "cloud-run": {
+      "args": [],
+      "description": "Deploy apps to Google Cloud Run directly from AI assistants. Enables deployment of containerized applications, local files, and folders to Cloud Run with integrated logging and service management.",
+      "env_vars": [
+        {
+          "description": "Path to Google Cloud credentials JSON file",
+          "name": "GOOGLE_APPLICATION_CREDENTIALS",
+          "required": false,
+          "secret": true
+        },
+        {
+          "description": "Google Cloud project ID for deployments",
+          "name": "GOOGLE_CLOUD_PROJECT",
+          "required": false
+        },
+        {
+          "description": "Default Google Cloud region for deployments",
+          "name": "GOOGLE_CLOUD_REGION",
+          "required": false
+        },
+        {
+          "description": "Default Cloud Run service name",
+          "name": "DEFAULT_SERVICE_NAME",
+          "required": false
+        },
+        {
+          "description": "Skip IAM permission checks (true/false)",
+          "name": "SKIP_IAM_CHECK",
+          "required": false
+        }
+      ],
+      "image": "docker.io/mcp/cloud-run-mcp:latest",
+      "metadata": {
+        "last_updated": "2025-08-14T06:56:08Z",
+        "pulls": 344,
+        "stars": 317
+      },
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              "run.googleapis.com",
+              "cloudbuild.googleapis.com",
+              "storage.googleapis.com",
+              "logging.googleapis.com",
+              "cloudresourcemanager.googleapis.com"
+            ],
+            "allow_port": [
+              443
+            ],
+            "insecure_allow_all": false
+          }
+        },
+        "read": [],
+        "write": []
+      },
+      "repository_url": "https://github.com/GoogleCloudPlatform/cloud-run-mcp",
+      "status": "Active",
+      "tags": [
+        "google-cloud",
+        "cloud-run",
+        "deployment",
+        "gcp",
+        "serverless",
+        "containers",
+        "devops"
+      ],
+      "tier": "Official",
+      "tools": [
+        "deploy_file_contents",
+        "deploy_local_files",
+        "deploy_local_folder",
+        "deploy_container_image",
+        "list_services",
+        "get_service",
+        "get_service_log",
+        "list_projects",
+        "create_project"
       ],
       "transport": "stdio"
     },
@@ -1983,6 +2078,13 @@
         "read": [],
         "write": []
       },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
       "repository_url": "https://github.com/mrexodia/ida-pro-mcp",
       "status": "Active",
       "tags": [
@@ -2046,8 +2148,8 @@
       ],
       "image": "ghcr.io/stackloklabs/mkp/server:0.0.10",
       "metadata": {
-        "last_updated": "2025-08-13T08:42:49Z",
-        "pulls": 13952,
+        "last_updated": "2025-08-14T06:58:09Z",
+        "pulls": 14080,
         "stars": 44
       },
       "permissions": {
@@ -2184,6 +2286,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/21st-dev/magic-mcp",
       "status": "Active",
@@ -2349,6 +2458,13 @@
         "read": [],
         "write": []
       },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
       "repository_url": "https://github.com/JetBrains/mcp-jetbrains",
       "status": "Active",
       "tags": [
@@ -2410,6 +2526,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "status": "Active",
@@ -2487,6 +2610,13 @@
         "read": [],
         "write": []
       },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "status": "Active",
       "tags": [
@@ -2555,6 +2685,13 @@
         "read": [],
         "write": []
       },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "status": "Active",
       "tags": [
@@ -2591,7 +2728,7 @@
           "secret": true
         }
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-server-box:0.1.2",
+      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-server-box:0.1.1",
       "metadata": {
         "last_updated": "2025-08-13T08:42:34Z",
         "pulls": 52,
@@ -2698,6 +2835,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/neondatabase-labs/mcp-server-neon",
       "status": "Active",
@@ -3742,8 +3886,8 @@
       "env_vars": [],
       "image": "ghcr.io/stackloklabs/sqlite-mcp/server:0.0.1",
       "metadata": {
-        "last_updated": "2025-08-13T08:42:38Z",
-        "pulls": 4212,
+        "last_updated": "2025-08-14T06:59:15Z",
+        "pulls": 4428,
         "stars": 9
       },
       "permissions": {
@@ -3756,6 +3900,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/StacklokLabs/sqlite-mcp",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/release.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/StacklokLabs/sqlite-mcp",
       "status": "Active",
@@ -3893,6 +4044,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/tavily-ai/tavily-mcp",
       "status": "Active",

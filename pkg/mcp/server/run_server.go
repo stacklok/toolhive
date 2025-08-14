@@ -1,4 +1,4 @@
-package app
+package server
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -19,6 +20,54 @@ type runServerArgs struct {
 	Name   string            `json:"name,omitempty"`
 	Host   string            `json:"host,omitempty"`
 	Env    map[string]string `json:"env,omitempty"`
+}
+
+// RunServer runs an MCP server
+func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// Parse and validate arguments
+	args, err := parseRunServerArgs(request)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
+	}
+
+	// Use retriever to properly fetch and prepare the MCP server
+	// TODO: make this configurable so we could warn or even fail
+	imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
+	}
+
+	// Build run configuration
+	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to build run configuration: %v", err)), nil
+	}
+
+	// Save and run the server
+	if err := h.saveAndRunServer(ctx, runConfig, args.Name); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to run server: %v", err)), nil
+	}
+
+	// Get the actual workload status
+	workload, err := h.workloadManager.GetWorkload(ctx, args.Name)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get server status: %v", err)), nil
+	}
+
+	// Build result with actual status
+	result := map[string]interface{}{
+		"status": string(workload.Status),
+		"name":   args.Name,
+		"server": args.Server,
+	}
+
+	// Add port and URL if available
+	if workload.Port > 0 {
+		result["port"] = workload.Port
+		result["url"] = fmt.Sprintf("http://localhost:%d", workload.Port)
+	}
+
+	return mcp.NewToolResultStructuredOnly(result), nil
 }
 
 // parseRunServerArgs parses and validates the arguments for runServer
@@ -66,11 +115,11 @@ func buildServerConfig(
 	builder = builder.WithTransportAndPorts(transport, 0, 0)
 
 	// Prepare environment variables
-	envVarsList := prepareEnvironmentVariables(imageMetadata, args.Env)
+	envVars := prepareEnvironmentVariables(imageMetadata, args.Env)
 
 	// Build the configuration
 	envVarValidator := &runner.DetachedEnvVarValidator{}
-	return builder.Build(ctx, imageMetadata, envVarsList, envVarValidator)
+	return builder.Build(ctx, imageMetadata, envVars, envVarValidator)
 }
 
 // configureTransport sets up transport configuration from metadata
@@ -88,7 +137,7 @@ func configureTransport(builder *runner.RunConfigBuilder, imageMetadata *registr
 }
 
 // prepareEnvironmentVariables merges default and user environment variables
-func prepareEnvironmentVariables(imageMetadata *registry.ImageMetadata, userEnv map[string]string) []string {
+func prepareEnvironmentVariables(imageMetadata *registry.ImageMetadata, userEnv map[string]string) map[string]string {
 	envVarsMap := make(map[string]string)
 
 	// Add default environment variables from metadata
@@ -105,17 +154,11 @@ func prepareEnvironmentVariables(imageMetadata *registry.ImageMetadata, userEnv 
 		envVarsMap[k] = v
 	}
 
-	// Convert map to []string format
-	var envVarsList []string
-	for k, v := range envVarsMap {
-		envVarsList = append(envVarsList, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	return envVarsList
+	return envVarsMap
 }
 
 // saveAndRunServer saves the configuration and runs the server
-func (h *toolHiveHandler) saveAndRunServer(ctx context.Context, runConfig *runner.RunConfig, name string) error {
+func (h *Handler) saveAndRunServer(ctx context.Context, runConfig *runner.RunConfig, name string) error {
 	// Save the run configuration state before starting
 	if err := runConfig.SaveState(ctx); err != nil {
 		logger.Warnf("Failed to save run configuration for %s: %v", name, err)
@@ -124,22 +167,4 @@ func (h *toolHiveHandler) saveAndRunServer(ctx context.Context, runConfig *runne
 
 	// Run the workload in detached mode
 	return h.workloadManager.RunWorkloadDetached(ctx, runConfig)
-}
-
-// getServerResult builds the result object with server information
-func (h *toolHiveHandler) getServerResult(ctx context.Context, args *runServerArgs) map[string]interface{} {
-	result := map[string]interface{}{
-		"status": "running",
-		"name":   args.Name,
-		"server": args.Server,
-	}
-
-	// Try to get workload info for port and URL
-	workload, err := h.workloadManager.GetWorkload(ctx, args.Name)
-	if err == nil && workload.Port > 0 {
-		result["port"] = workload.Port
-		result["url"] = fmt.Sprintf("http://localhost:%d", workload.Port)
-	}
-
-	return result
 }

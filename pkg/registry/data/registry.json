@@ -2537,7 +2537,7 @@
             "allow_host": [
               "api.neo4j.io",
               "console.neo4j.io",
-              "*.neo4j.io"
+              ".neo4j.io"
             ],
             "allow_port": [
               443,
@@ -2617,8 +2617,8 @@
           "outbound": {
             "allow_host": [
               "localhost",
-              "*.neo4j.io",
-              "*.databases.neo4j.io"
+              ".neo4j.io",
+              ".databases.neo4j.io"
             ],
             "allow_port": [
               7687,
@@ -2692,8 +2692,8 @@
           "outbound": {
             "allow_host": [
               "localhost",
-              "*.neo4j.io",
-              "*.databases.neo4j.io"
+              ".neo4j.io",
+              ".databases.neo4j.io"
             ],
             "allow_port": [
               7687,

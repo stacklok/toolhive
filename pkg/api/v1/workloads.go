@@ -275,6 +275,17 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// check if the workload already exists
+	exists, err := s.workloadManager.DoesWorkloadExist(ctx, req.Name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to check if workload exists: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if exists {
+		http.Error(w, fmt.Sprintf("Workload with name %s already exists", req.Name), http.StatusConflict)
+		return
+	}
+
 	// NOTE: None of the k8s-related config logic is included here.
 	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
 	runConfig, err := runner.NewRunConfigBuilder().

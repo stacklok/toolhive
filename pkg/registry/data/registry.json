@@ -2672,7 +2672,7 @@
           "secret": true
         }
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-server-box:0.1.2",
+      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-server-box:0.1.1",
       "metadata": {
         "last_updated": "2025-08-13T08:42:34Z",
         "pulls": 52,

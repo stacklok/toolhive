@@ -115,8 +115,7 @@ func cleanupAndWait(workloadManager workloads.Manager, name string, cancel conte
 }
 
 func doesWorkloadExist(ctx context.Context, workloadManager workloads.Manager, name string) bool {
-	workload, err := workloadManager.GetWorkload(ctx, name)
-	fmt.Println("workload is", workload) // Debugging line, can be removed later
+	_, err := workloadManager.GetWorkload(ctx, name)
 	return err == nil
 }
 

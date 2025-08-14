@@ -2,6 +2,7 @@
 package registry
 
 import (
+	"sort"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/permissions"
@@ -52,7 +53,7 @@ type BaseServerMetadata struct {
 
 // ImageMetadata represents the metadata for an MCP server image stored in our registry.
 type ImageMetadata struct {
-	BaseServerMetadata
+	BaseServerMetadata `yaml:",inline"`
 	// Image is the Docker image reference for the MCP server
 	Image string `json:"image" yaml:"image"`
 	// TargetPort is the port for the container to expose (only applicable to SSE and Streamable HTTP transports)
@@ -154,7 +155,7 @@ type OAuthConfig struct {
 // RemoteServerMetadata represents the metadata for a remote MCP server accessed via HTTP/HTTPS.
 // Remote servers are accessed through the thv proxy command which handles authentication and tunneling.
 type RemoteServerMetadata struct {
-	BaseServerMetadata
+	BaseServerMetadata `yaml:",inline"`
 	// URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)
 	URL string `json:"url" yaml:"url"`
 	// Headers defines HTTP headers that can be passed to the remote server for authentication
@@ -181,4 +182,200 @@ type Metadata struct {
 // ParsedTime returns the LastUpdated field as a time.Time
 func (m *Metadata) ParsedTime() (time.Time, error) {
 	return time.Parse(time.RFC3339, m.LastUpdated)
+}
+
+// ServerMetadata is an interface that both ImageMetadata and RemoteServerMetadata implement
+type ServerMetadata interface {
+	// GetName returns the server name
+	GetName() string
+	// GetDescription returns the server description
+	GetDescription() string
+	// GetTier returns the server tier
+	GetTier() string
+	// GetStatus returns the server status
+	GetStatus() string
+	// GetTransport returns the server transport
+	GetTransport() string
+	// GetTools returns the list of tools provided by the server
+	GetTools() []string
+	// GetMetadata returns the server metadata
+	GetMetadata() *Metadata
+	// GetRepositoryURL returns the repository URL
+	GetRepositoryURL() string
+	// GetTags returns the server tags
+	GetTags() []string
+	// GetCustomMetadata returns custom metadata
+	GetCustomMetadata() map[string]any
+	// IsRemote returns true if this is a remote server
+	IsRemote() bool
+	// GetEnvVars returns environment variables
+	GetEnvVars() []*EnvVar
+}
+
+// Implement ServerMetadata interface for ImageMetadata
+
+// GetName returns the server name
+func (i *ImageMetadata) GetName() string {
+	return i.Name
+}
+
+// GetDescription returns the server description
+func (i *ImageMetadata) GetDescription() string {
+	return i.Description
+}
+
+// GetTier returns the server tier
+func (i *ImageMetadata) GetTier() string {
+	return i.Tier
+}
+
+// GetStatus returns the server status
+func (i *ImageMetadata) GetStatus() string {
+	return i.Status
+}
+
+// GetTransport returns the server transport
+func (i *ImageMetadata) GetTransport() string {
+	return i.Transport
+}
+
+// GetTools returns the list of tools provided by the server
+func (i *ImageMetadata) GetTools() []string {
+	return i.Tools
+}
+
+// GetMetadata returns the server metadata
+func (i *ImageMetadata) GetMetadata() *Metadata {
+	return i.Metadata
+}
+
+// GetRepositoryURL returns the repository URL
+func (i *ImageMetadata) GetRepositoryURL() string {
+	return i.RepositoryURL
+}
+
+// GetTags returns the server tags
+func (i *ImageMetadata) GetTags() []string {
+	return i.Tags
+}
+
+// GetCustomMetadata returns custom metadata
+func (i *ImageMetadata) GetCustomMetadata() map[string]any {
+	return i.CustomMetadata
+}
+
+// IsRemote returns false for container servers
+func (*ImageMetadata) IsRemote() bool {
+	return false
+}
+
+// GetEnvVars returns environment variables
+func (i *ImageMetadata) GetEnvVars() []*EnvVar {
+	return i.EnvVars
+}
+
+// Implement ServerMetadata interface for RemoteServerMetadata
+
+// GetName returns the server name
+func (r *RemoteServerMetadata) GetName() string {
+	return r.Name
+}
+
+// GetDescription returns the server description
+func (r *RemoteServerMetadata) GetDescription() string {
+	return r.Description
+}
+
+// GetTier returns the server tier
+func (r *RemoteServerMetadata) GetTier() string {
+	return r.Tier
+}
+
+// GetStatus returns the server status
+func (r *RemoteServerMetadata) GetStatus() string {
+	return r.Status
+}
+
+// GetTransport returns the server transport
+func (r *RemoteServerMetadata) GetTransport() string {
+	return r.Transport
+}
+
+// GetTools returns the list of tools provided by the server
+func (r *RemoteServerMetadata) GetTools() []string {
+	return r.Tools
+}
+
+// GetMetadata returns the server metadata
+func (r *RemoteServerMetadata) GetMetadata() *Metadata {
+	return r.Metadata
+}
+
+// GetRepositoryURL returns the repository URL
+func (r *RemoteServerMetadata) GetRepositoryURL() string {
+	return r.RepositoryURL
+}
+
+// GetTags returns the server tags
+func (r *RemoteServerMetadata) GetTags() []string {
+	return r.Tags
+}
+
+// GetCustomMetadata returns custom metadata
+func (r *RemoteServerMetadata) GetCustomMetadata() map[string]any {
+	return r.CustomMetadata
+}
+
+// IsRemote returns true for remote servers
+func (*RemoteServerMetadata) IsRemote() bool {
+	return true
+}
+
+// GetEnvVars returns environment variables
+func (r *RemoteServerMetadata) GetEnvVars() []*EnvVar {
+	return r.EnvVars
+}
+
+// GetRawImplementation returns the underlying RemoteServerMetadata pointer
+func (r *RemoteServerMetadata) GetRawImplementation() any {
+	return r
+}
+
+// GetAllServers returns all servers (both container and remote) as a unified list
+func (reg *Registry) GetAllServers() []ServerMetadata {
+	servers := make([]ServerMetadata, 0, len(reg.Servers)+len(reg.RemoteServers))
+
+	// Add container servers
+	for _, server := range reg.Servers {
+		servers = append(servers, server)
+	}
+
+	// Add remote servers
+	for _, server := range reg.RemoteServers {
+		servers = append(servers, server)
+	}
+
+	return servers
+}
+
+// GetServerByName returns a server by name (either container or remote)
+func (reg *Registry) GetServerByName(name string) (ServerMetadata, bool) {
+	// Check container servers first
+	if server, ok := reg.Servers[name]; ok {
+		return server, true
+	}
+
+	// Check remote servers
+	if server, ok := reg.RemoteServers[name]; ok {
+		return server, true
+	}
+
+	return nil, false
+}
+
+// SortServersByName sorts a slice of ServerMetadata by name
+func SortServersByName(servers []ServerMetadata) {
+	sort.Slice(servers, func(i, j int) bool {
+		return servers[i].GetName() < servers[j].GetName()
+	})
 }

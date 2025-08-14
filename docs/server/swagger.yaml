@@ -262,6 +262,12 @@ components:
           type: string
         network:
           $ref: '#/components/schemas/permissions.NetworkPermissions'
+        privileged:
+          description: |-
+            Privileged indicates whether the container should run in privileged mode
+            When true, the container has access to all host devices and capabilities
+            Use with extreme caution as this removes most security isolation
+          type: boolean
         read:
           description: |-
             Read is a list of mount declarations that the container can read from
@@ -339,7 +345,7 @@ components:
           type: boolean
       type: object
     registry.ImageMetadata:
-      description: Server details
+      description: Container server details (if it's a container server)
       properties:
         args:
           description: |-
@@ -518,6 +524,7 @@ components:
           type: string
       type: object
     registry.RemoteServerMetadata:
+      description: Remote server details (if it's a remote server)
       properties:
         custom_metadata:
           additionalProperties: {}
@@ -969,11 +976,10 @@ components:
           type: array
           uniqueItems: false
         env_vars:
-          description: Environment variables to set in the container
-          items:
+          additionalProperties:
             type: string
-          type: array
-          uniqueItems: false
+          description: Environment variables to set in the container
+          type: object
         host:
           description: Host to bind to
           type: string
@@ -1093,6 +1099,11 @@ components:
     v1.getServerResponse:
       description: Response containing server details
       properties:
+        is_remote:
+          description: Indicates if this is a remote server
+          type: boolean
+        remote_server:
+          $ref: '#/components/schemas/registry.RemoteServerMetadata'
         server:
           $ref: '#/components/schemas/registry.ImageMetadata'
       type: object
@@ -1118,8 +1129,14 @@ components:
     v1.listServersResponse:
       description: Response containing a list of servers
       properties:
+        remote_servers:
+          description: List of remote servers in the registry (if any)
+          items:
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
+          type: array
+          uniqueItems: false
         servers:
-          description: List of servers in the registry
+          description: List of container servers in the registry
           items:
             $ref: '#/components/schemas/registry.ImageMetadata'
           type: array
@@ -1344,6 +1361,40 @@ paths:
                 type: string
           description: Invalid request
       summary: Unregister a client
+      tags:
+      - clients
+  /api/v1beta/clients/{name}/groups/{group}:
+    delete:
+      description: Unregister a client from a specific group in ToolHive
+      parameters:
+      - description: Client name to unregister
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      - description: Group name to remove client from
+        in: path
+        name: group
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Client or group not found
+      summary: Unregister a client from a specific group
       tags:
       - clients
   /api/v1beta/clients/register:

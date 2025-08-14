@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -49,10 +48,8 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Sort servers by name
-	sort.Slice(servers, func(i, j int) bool {
-		return servers[i].Name < servers[j].Name
-	})
+	// Sort servers by name using the utility function
+	registry.SortServersByName(servers)
 
 	// Output based on format
 	switch searchFormat {
@@ -66,7 +63,7 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 // printJSONSearchResults prints servers in JSON format
-func printJSONSearchResults(servers []*registry.ImageMetadata) error {
+func printJSONSearchResults(servers []registry.ServerMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
@@ -79,20 +76,33 @@ func printJSONSearchResults(servers []*registry.ImageMetadata) error {
 }
 
 // printTextSearchResults prints servers in text format
-func printTextSearchResults(servers []*registry.ImageMetadata) {
+func printTextSearchResults(servers []registry.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS")
+	fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS")
 
 	// Print server information
 	for _, server := range servers {
+		stars := 0
+		pulls := 0
+		if metadata := server.GetMetadata(); metadata != nil {
+			stars = metadata.Stars
+			pulls = metadata.Pulls
+		}
+
+		serverType := "container"
+		if server.IsRemote() {
+			serverType = "remote"
+		}
+
 		// Print server information
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n",
-			server.Name,
-			truncateSearchString(server.Description, 60),
-			server.Transport,
-			server.Metadata.Stars,
-			server.Metadata.Pulls,
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
+			server.GetName(),
+			serverType,
+			truncateSearchString(server.GetDescription(), 50),
+			server.GetTransport(),
+			stars,
+			pulls,
 		)
 	}
 

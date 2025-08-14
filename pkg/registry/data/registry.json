@@ -39,6 +39,13 @@
         "read": [],
         "write": []
       },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
       "repository_url": "https://github.com/blazickjp/arxiv-mcp-server",
       "status": "Active",
       "tags": [
@@ -577,6 +584,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/brightdata/brightdata-mcp",
       "status": "Active",
@@ -2064,6 +2078,13 @@
         "read": [],
         "write": []
       },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
       "repository_url": "https://github.com/mrexodia/ida-pro-mcp",
       "status": "Active",
       "tags": [
@@ -2266,6 +2287,13 @@
         "read": [],
         "write": []
       },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
       "repository_url": "https://github.com/21st-dev/magic-mcp",
       "status": "Active",
       "tags": [
@@ -2430,6 +2458,13 @@
         "read": [],
         "write": []
       },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
       "repository_url": "https://github.com/JetBrains/mcp-jetbrains",
       "status": "Active",
       "tags": [
@@ -2491,6 +2526,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "status": "Active",
@@ -2568,6 +2610,13 @@
         "read": [],
         "write": []
       },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
+      },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "status": "Active",
       "tags": [
@@ -2635,6 +2684,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "status": "Active",
@@ -2779,6 +2835,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/neondatabase-labs/mcp-server-neon",
       "status": "Active",
@@ -3974,6 +4037,13 @@
         },
         "read": [],
         "write": []
+      },
+      "provenance": {
+        "cert_issuer": "https://token.actions.githubusercontent.com",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "runner_environment": "github-hosted",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
       },
       "repository_url": "https://github.com/tavily-ai/tavily-mcp",
       "status": "Active",

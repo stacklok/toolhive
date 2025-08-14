@@ -62,6 +62,8 @@ type Manager interface {
 	MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group, including stopped workloads.
 	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error)
+	// DoesWorkloadExist checks if a workload with the given name exists.
+	DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error)
 }
 
 type defaultManager struct {
@@ -112,6 +114,23 @@ func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (
 	// For the sake of minimizing changes, delegate to the status manager.
 	// Whether this method should still belong to the workload manager is TBD.
 	return d.statuses.GetWorkload(ctx, workloadName)
+}
+
+func (d *defaultManager) DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
+	// check if workload exists by trying to get it
+	workload, err := d.statuses.GetWorkload(ctx, workloadName)
+	if err != nil {
+		if errors.Is(err, rt.ErrWorkloadNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check if workload exists: %w", err)
+	}
+
+	// now check if the workload is not in error
+	if workload.Status == rt.WorkloadStatusError {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]core.Workload, error) {

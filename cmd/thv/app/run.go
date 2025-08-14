@@ -114,11 +114,6 @@ func cleanupAndWait(workloadManager workloads.Manager, name string, cancel conte
 	}
 }
 
-func doesWorkloadExist(ctx context.Context, workloadManager workloads.Manager, name string) bool {
-	_, err := workloadManager.GetWorkload(ctx, name)
-	return err == nil
-}
-
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
@@ -154,7 +149,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
-	if doesWorkloadExist(ctx, workloadManager, runFlags.Name) {
+	exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
+	if err != nil {
+		return fmt.Errorf("failed to check if workload exists: %v", err)
+	}
+	if exists {
 		return fmt.Errorf("workload with name '%s' already exists", runFlags.Name)
 	}
 	err = validateGroup(ctx, workloadManager, serverOrImage)

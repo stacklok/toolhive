@@ -958,3 +958,202 @@ func TestFileStatusManager_ListWorkloads_WithValidation(t *testing.T) {
 		strings.Contains(proxyDown.StatusContext, "proxy")
 	assert.True(t, isProxyValidated, "Proxy down workload should be detected as unhealthy")
 }
+
+func TestFileStatusManager_GetWorkload_vs_ListWorkloads_Consistency(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tempDir := t.TempDir()
+	mockRuntime := mocks.NewMockRuntime(ctrl)
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		runtime: mockRuntime,
+	}
+	ctx := context.Background()
+
+	// Create a workload status file
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
+	require.NoError(t, err)
+
+	// Mock runtime to return empty (workload exists only in file)
+	mockRuntime.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
+
+	// GetWorkload for a starting workload doesn't call runtime (only running workloads are validated)
+	workload, err := manager.GetWorkload(ctx, "test-workload")
+	require.NoError(t, err)
+	assert.Equal(t, "test-workload", workload.Name)
+	assert.Equal(t, rt.WorkloadStatusStarting, workload.Status)
+
+	// ListWorkloads should include the same file-based workload
+	workloads, err := manager.ListWorkloads(ctx, true, nil)
+	require.NoError(t, err)
+
+	// Should find the file-based workload in the list
+	require.Len(t, workloads, 1)
+	assert.Equal(t, "test-workload", workloads[0].Name)
+	assert.Equal(t, rt.WorkloadStatusStarting, workloads[0].Status)
+
+	// Both operations should return the same workload data for consistency
+	assert.Equal(t, workload.Name, workloads[0].Name)
+	assert.Equal(t, workload.Status, workloads[0].Status)
+	assert.Equal(t, workload.StatusContext, workloads[0].StatusContext)
+}
+
+func TestFileStatusManager_ListWorkloads_CorruptedFile(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tempDir := t.TempDir()
+	mockRuntime := mocks.NewMockRuntime(ctrl)
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		runtime: mockRuntime,
+	}
+	ctx := context.Background()
+
+	// Create a valid workload first
+	err := manager.SetWorkloadStatus(ctx, "good-workload", rt.WorkloadStatusStarting, "")
+	require.NoError(t, err)
+
+	// Create a corrupted status file manually
+	corruptedFile := filepath.Join(tempDir, "corrupted-workload.json")
+	err = os.WriteFile(corruptedFile, []byte(`{"invalid": json content`), 0644)
+	require.NoError(t, err)
+
+	// Create an empty status file
+	emptyFile := filepath.Join(tempDir, "empty-workload.json")
+	err = os.WriteFile(emptyFile, []byte(``), 0644)
+	require.NoError(t, err)
+
+	// Mock runtime to return empty
+	mockRuntime.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
+
+	// ListWorkloads should handle corrupted files gracefully
+	workloads, err := manager.ListWorkloads(ctx, true, nil)
+	require.NoError(t, err)
+
+	// Should only return the good workload, corrupted ones should be skipped with warnings
+	require.Len(t, workloads, 1)
+	assert.Equal(t, "good-workload", workloads[0].Name)
+}
+
+func TestFileStatusManager_ListWorkloads_MissingRequiredFields(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tempDir := t.TempDir()
+	mockRuntime := mocks.NewMockRuntime(ctrl)
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		runtime: mockRuntime,
+	}
+	ctx := context.Background()
+
+	// Create a status file missing required fields
+	invalidStatusFile := workloadStatusFile{
+		// Missing Status field
+		StatusContext: "some context",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	statusFilePath := filepath.Join(tempDir, "invalid-fields.json")
+	data, err := json.MarshalIndent(invalidStatusFile, "", "  ")
+	require.NoError(t, err)
+	err = os.WriteFile(statusFilePath, data, 0644)
+	require.NoError(t, err)
+
+	// Create a status file missing created_at
+	invalidStatusFile2 := workloadStatusFile{
+		Status:        rt.WorkloadStatusRunning,
+		StatusContext: "some context",
+		// Missing CreatedAt field (will be zero value)
+		UpdatedAt: time.Now(),
+	}
+	statusFilePath2 := filepath.Join(tempDir, "missing-created.json")
+	data2, err := json.MarshalIndent(invalidStatusFile2, "", "  ")
+	require.NoError(t, err)
+	err = os.WriteFile(statusFilePath2, data2, 0644)
+	require.NoError(t, err)
+
+	// Mock runtime to return empty
+	mockRuntime.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
+
+	// ListWorkloads should handle files with missing required fields gracefully
+	workloads, err := manager.ListWorkloads(ctx, true, nil)
+	require.NoError(t, err)
+
+	// Should return empty since both files are invalid
+	assert.Len(t, workloads, 0)
+}
+
+func TestFileStatusManager_ReadStatusFile_Validation(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+
+	tests := []struct {
+		name        string
+		fileContent string
+		expectError string
+	}{
+		{
+			name:        "empty file",
+			fileContent: "",
+			expectError: "status file is empty",
+		},
+		{
+			name:        "invalid json",
+			fileContent: `{"invalid": json}`,
+			expectError: "status file contains invalid JSON",
+		},
+		{
+			name:        "missing status field",
+			fileContent: `{"status_context": "test", "created_at": "2023-01-01T00:00:00Z", "updated_at": "2023-01-01T00:00:00Z"}`,
+			expectError: "status file missing required 'status' field",
+		},
+		{
+			name:        "missing created_at field",
+			fileContent: `{"status": "running", "status_context": "test", "updated_at": "2023-01-01T00:00:00Z"}`,
+			expectError: "status file missing or invalid 'created_at' field",
+		},
+		{
+			name:        "valid file",
+			fileContent: `{"status": "running", "status_context": "test", "created_at": "2023-01-01T00:00:00Z", "updated_at": "2023-01-01T00:00:00Z"}`,
+			expectError: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create test file
+			testFile := filepath.Join(tempDir, tt.name+".json")
+			err := os.WriteFile(testFile, []byte(tt.fileContent), 0644)
+			require.NoError(t, err)
+
+			// Test readStatusFile
+			statusFile, err := manager.readStatusFile(testFile)
+
+			if tt.expectError != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectError)
+				assert.Nil(t, statusFile)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, statusFile)
+				assert.Equal(t, rt.WorkloadStatusRunning, statusFile.Status)
+			}
+
+			// Clean up
+			os.Remove(testFile)
+		})
+	}
+}

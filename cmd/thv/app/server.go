@@ -68,7 +68,7 @@ var serveCmd = &cobra.Command{
 
 		// Optionally start MCP server if experimental flag is enabled
 		if enableMCPServer {
-			logger.Info("🧪 EXPERIMENTAL: Starting embedded MCP server")
+			logger.Info("EXPERIMENTAL: Starting embedded MCP server")
 
 			// Create MCP server configuration
 			mcpConfig := &mcpserver.Config{
@@ -113,11 +113,11 @@ func init() {
 
 	// Add experimental MCP server flags
 	serveCmd.Flags().BoolVar(&enableMCPServer, "experimental-mcp", false,
-		"🧪 EXPERIMENTAL: Enable embedded MCP server for controlling ToolHive")
+		"EXPERIMENTAL: Enable embedded MCP server for controlling ToolHive")
 	serveCmd.Flags().StringVar(&mcpServerPort, "experimental-mcp-port", mcpserver.DefaultMCPPort,
-		"🧪 EXPERIMENTAL: Port for the embedded MCP server")
+		"EXPERIMENTAL: Port for the embedded MCP server")
 	serveCmd.Flags().StringVar(&mcpServerHost, "experimental-mcp-host", "localhost",
-		"🧪 EXPERIMENTAL: Host for the embedded MCP server")
+		"EXPERIMENTAL: Host for the embedded MCP server")
 
 	// Add OIDC validation flags
 	AddOIDCFlags(serveCmd)

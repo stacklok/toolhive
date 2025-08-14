@@ -24,9 +24,9 @@ thv serve [flags]
 ### Options
 
 ```
-      --experimental-mcp                🧪 EXPERIMENTAL: Enable embedded MCP server for controlling ToolHive
-      --experimental-mcp-host string    🧪 EXPERIMENTAL: Host for the embedded MCP server (default "localhost")
-      --experimental-mcp-port string    🧪 EXPERIMENTAL: Port for the embedded MCP server (default "4483")
+      --experimental-mcp                EXPERIMENTAL: Enable embedded MCP server for controlling ToolHive
+      --experimental-mcp-host string    EXPERIMENTAL: Host for the embedded MCP server (default "localhost")
+      --experimental-mcp-port string    EXPERIMENTAL: Port for the embedded MCP server (default "4483")
   -h, --help                            help for serve
       --host string                     Host address to bind the server to (default "127.0.0.1")
       --oidc-audience string            Expected audience for the token

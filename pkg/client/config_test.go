@@ -4,6 +4,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -184,7 +185,7 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 
 		// Find client configs - this should NOT fail due to the invalid JSON
 		// Instead, it should log a warning and continue
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(context.Background())
 		assert.NoError(t, err, "FindRegisteredClientConfigs should not return an error for invalid config files")
 
 		// The invalid client should be skipped, so we should get configs for valid clients only
@@ -255,7 +256,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	defer cleanup()
 
 	t.Run("FindAllConfiguredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(context.Background())
 		require.NoError(t, err)
 		assert.Len(t, configs, len(supportedClientIntegrations), "Should find all mock client configs")
 
@@ -272,7 +273,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	})
 
 	t.Run("VerifyConfigFileContents", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(context.Background())
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
 
@@ -326,7 +327,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	})
 
 	t.Run("AddAndVerifyMCPServer", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(context.Background())
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
 

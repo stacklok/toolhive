@@ -119,7 +119,7 @@ func getVerifiedResults(
 			verify.WithoutIdentitiesUnsafe(),
 		))
 		if err != nil {
-			logger.Info("bundle verification failed: %v", err)
+			logger.Infof("bundle verification failed: %v", err)
 			continue
 		}
 		// We've successfully verified and extracted the artifact provenance information

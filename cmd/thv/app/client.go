@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -110,8 +109,8 @@ func init() {
 	//	&groupRmNames, "group", []string{}, "Remove client from specified groups (if not set, removes all workloads from the client)")
 }
 
-func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
-	clientStatuses, err := client.GetClientStatus()
+func clientStatusCmdFunc(cmd *cobra.Command, _ []string) error {
+	clientStatuses, err := client.GetClientStatus(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("failed to get client status: %w", err)
 	}
@@ -119,7 +118,7 @@ func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
-	clientStatuses, err := client.GetClientStatus()
+	clientStatuses, err := client.GetClientStatus(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("failed to get client status: %w", err)
 	}
@@ -215,23 +214,55 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 	return performClientRemoval(cmd.Context(), client.Client{Name: client.MCPClient(clientType)}, groupRmNames)
 }
 
-func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
+func listRegisteredClientsCmdFunc(cmd *cobra.Command, _ []string) error {
 	cfg := config.GetConfig()
-	if len(cfg.Clients.RegisteredClients) == 0 {
-		fmt.Println("No clients are currently registered.")
-		return nil
+
+	// Check if we have groups configured
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create group manager: %w", err)
 	}
 
-	// Create a copy of the registered clients and sort it alphabetically
-	registeredClients := make([]string, len(cfg.Clients.RegisteredClients))
-	copy(registeredClients, cfg.Clients.RegisteredClients)
-	sort.Strings(registeredClients)
-
-	fmt.Println("Registered clients:")
-	for _, clientName := range registeredClients {
-		fmt.Printf("  - %s\n", clientName)
+	allGroups, err := groupManager.List(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to list groups: %w", err)
 	}
-	return nil
+
+	hasGroups := len(allGroups) > 0
+	clientGroups := make(map[string][]string) // client -> groups
+	allRegisteredClients := make(map[string]bool)
+
+	if hasGroups {
+		// Collect clients from all groups
+		for _, group := range allGroups {
+			for _, clientName := range group.RegisteredClients {
+				allRegisteredClients[clientName] = true
+				clientGroups[clientName] = append(clientGroups[clientName], group.Name)
+			}
+		}
+	}
+
+	// Add clients from global config that might not be in any group
+	for _, clientName := range cfg.Clients.RegisteredClients {
+		if !allRegisteredClients[clientName] {
+			allRegisteredClients[clientName] = true
+			if hasGroups {
+				clientGroups[clientName] = []string{} // no groups
+			}
+		}
+	}
+
+	// Convert to slice for table rendering
+	var registeredClients []ui.RegisteredClient
+	for clientName := range allRegisteredClients {
+		registered := ui.RegisteredClient{
+			Name:   clientName,
+			Groups: clientGroups[clientName],
+		}
+		registeredClients = append(registeredClients, registered)
+	}
+
+	return ui.RenderRegisteredClientsTable(registeredClients, hasGroups)
 }
 
 func performClientRegistration(ctx context.Context, clients []client.Client, groupNames []string) error {

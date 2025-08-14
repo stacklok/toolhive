@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -30,7 +31,7 @@ func performAutoDiscoveryMigration() {
 	fmt.Println()
 
 	// Get current client statuses to determine what to register
-	clientStatuses, err := GetClientStatus()
+	clientStatuses, err := GetClientStatus(context.Background())
 	if err != nil {
 		logger.Errorf("Error discovering clients during migration: %v", err)
 		return

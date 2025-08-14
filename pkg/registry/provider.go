@@ -1,5 +1,7 @@
 package registry
 
+//go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=provider.go Provider
+
 // Provider defines the interface for registry storage implementations
 type Provider interface {
 	// GetRegistry returns the complete registry data

@@ -36,8 +36,14 @@ func ValidateRegistrySchema(registryData []byte) error {
 		// Walk up the directory tree to find the schema
 		for {
 			testPath := filepath.Join(wd, schemaPath)
-			if _, err := os.Stat(testPath); err == nil {
-				schemaData, err = os.ReadFile(testPath)
+			// Clean and validate the path to prevent directory traversal attacks
+			cleanPath := filepath.Clean(testPath)
+			if !strings.HasSuffix(cleanPath, "docs/registry/schema.json") {
+				return fmt.Errorf("invalid schema path detected: %s", cleanPath)
+			}
+
+			if _, err := os.Stat(cleanPath); err == nil {
+				schemaData, err = os.ReadFile(cleanPath)
 				if err != nil {
 					return fmt.Errorf("failed to read registry schema: %w", err)
 				}

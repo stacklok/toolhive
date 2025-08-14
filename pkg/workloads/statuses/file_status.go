@@ -347,9 +347,29 @@ func (*fileStatusManager) readStatusFile(statusFilePath string) (*workloadStatus
 		return nil, fmt.Errorf("failed to read status file: %w", err)
 	}
 
+	// Validate file content before parsing
+	if len(data) == 0 {
+		return nil, fmt.Errorf("status file is empty")
+	}
+
+	// Basic JSON structure validation
+	if !json.Valid(data) {
+		return nil, fmt.Errorf("status file contains invalid JSON")
+	}
+
 	var statusFile workloadStatusFile
 	if err := json.Unmarshal(data, &statusFile); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal status file: %w", err)
+	}
+
+	// Validate essential fields
+	if statusFile.Status == "" {
+		return nil, fmt.Errorf("status file missing required 'status' field")
+	}
+
+	// Validate timestamps
+	if statusFile.CreatedAt.IsZero() {
+		return nil, fmt.Errorf("status file missing or invalid 'created_at' field")
 	}
 
 	return &statusFile, nil
@@ -393,26 +413,52 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 	}
 
 	workloads := make(map[string]core.Workload)
+	ctx := context.Background() // Create context for file locking
+
 	for _, file := range files {
 		// Extract workload name from filename (remove .json extension)
 		workloadName := strings.TrimSuffix(filepath.Base(file), ".json")
 
-		// Read the status file
-		statusFile, err := f.readStatusFile(file)
+		// Use proper file locking like GetWorkload does
+		err := f.withFileReadLock(ctx, workloadName, func(statusFilePath string) error {
+			// Check if file exists first
+			if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
+				logger.Debugf("status file for workload %s no longer exists, skipping", workloadName)
+				return nil // Not an error, file was removed
+			} else if err != nil {
+				return fmt.Errorf("failed to check status file: %w", err)
+			}
+
+			// Read the status file with proper error handling
+			statusFile, err := f.readStatusFile(statusFilePath)
+			if err != nil {
+				// Distinguish between different types of errors
+				if os.IsPermission(err) {
+					return fmt.Errorf("permission denied reading status file: %w", err)
+				}
+				// For JSON parsing errors or corrupted files, log details
+				logger.Errorf("failed to read or parse status file %s for workload %s: %v", statusFilePath, workloadName, err)
+				return fmt.Errorf("corrupted or invalid status file: %w", err)
+			}
+
+			// Create workload from file data
+			workload := core.Workload{
+				Name:          workloadName,
+				Status:        statusFile.Status,
+				StatusContext: statusFile.StatusContext,
+				CreatedAt:     statusFile.CreatedAt,
+			}
+
+			workloads[workloadName] = workload
+			return nil
+		})
+
 		if err != nil {
-			logger.Warnf("failed to read status file %s: %v", file, err)
+			// Log the specific error but continue processing other workloads
+			// This maintains the existing behavior but with better diagnostics
+			logger.Warnf("failed to process status file for workload %s: %v", workloadName, err)
 			continue
 		}
-
-		// Create workload from file data
-		workload := core.Workload{
-			Name:          workloadName,
-			Status:        statusFile.Status,
-			StatusContext: statusFile.StatusContext,
-			CreatedAt:     statusFile.CreatedAt,
-		}
-
-		workloads[workloadName] = workload
 	}
 
 	return workloads, nil

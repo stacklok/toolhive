@@ -149,6 +149,13 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
+	exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
+	if err != nil {
+		return fmt.Errorf("failed to check if workload exists: %v", err)
+	}
+	if exists {
+		return fmt.Errorf("workload with name '%s' already exists", runFlags.Name)
+	}
 	err = validateGroup(ctx, workloadManager, serverOrImage)
 	if err != nil {
 		return err

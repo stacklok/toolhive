@@ -272,6 +272,11 @@ type OIDCConfigRef struct {
 	// +kubebuilder:default=kubernetes
 	Type string `json:"type"`
 
+	// ResourceURL is the explicit resource URL for OAuth discovery endpoint (RFC 9728)
+	// If not specified, defaults to the in-cluster Kubernetes service URL
+	// +optional
+	ResourceURL string `json:"resourceUrl,omitempty"`
+
 	// Kubernetes configures OIDC for Kubernetes service account token validation
 	// Only used when Type is "kubernetes"
 	// +optional

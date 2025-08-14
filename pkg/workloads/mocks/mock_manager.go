@@ -58,6 +58,21 @@ func (mr *MockManagerMockRecorder) DeleteWorkloads(ctx, names any) *gomock.Call 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteWorkloads", reflect.TypeOf((*MockManager)(nil).DeleteWorkloads), ctx, names)
 }
 
+// DoesWorkloadExist mocks base method.
+func (m *MockManager) DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DoesWorkloadExist", ctx, workloadName)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DoesWorkloadExist indicates an expected call of DoesWorkloadExist.
+func (mr *MockManagerMockRecorder) DoesWorkloadExist(ctx, workloadName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DoesWorkloadExist", reflect.TypeOf((*MockManager)(nil).DoesWorkloadExist), ctx, workloadName)
+}
+
 // GetLogs mocks base method.
 func (m *MockManager) GetLogs(ctx context.Context, containerName string, follow bool) (string, error) {
 	m.ctrl.T.Helper()

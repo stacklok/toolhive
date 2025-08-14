@@ -62,6 +62,8 @@ type Manager interface {
 	MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group, including stopped workloads.
 	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error)
+	// DoesWorkloadExist checks if a workload with the given name exists.
+	DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error)
 }
 
 type defaultManager struct {
@@ -112,6 +114,23 @@ func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (
 	// For the sake of minimizing changes, delegate to the status manager.
 	// Whether this method should still belong to the workload manager is TBD.
 	return d.statuses.GetWorkload(ctx, workloadName)
+}
+
+func (d *defaultManager) DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
+	// check if workload exists by trying to get it
+	workload, err := d.statuses.GetWorkload(ctx, workloadName)
+	if err != nil {
+		if errors.Is(err, rt.ErrWorkloadNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check if workload exists: %w", err)
+	}
+
+	// now check if the workload is not in error
+	if workload.Status == rt.WorkloadStatusError {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]core.Workload, error) {
@@ -275,6 +294,10 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 
 	// Start the detached process
 	if err := detachedCmd.Start(); err != nil {
+		// If the start failed, we need to set the status to error before returning.
+		if err := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, ""); err != nil {
+			logger.Warnf("Failed to set workload %s status to error: %v", runConfig.BaseName, err)
+		}
 		return fmt.Errorf("failed to start detached process: %v", err)
 	}
 
@@ -395,7 +418,14 @@ func (d *defaultManager) cleanupWorkloadResources(childCtx context.Context, name
 		logger.Warnf("Warning: Failed to cleanup temporary permission profile: %v", err)
 	}
 
-	// Delete the saved state
+	// Remove client configurations
+	if err := removeClientConfigurations(name); err != nil {
+		logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+	} else {
+		logger.Infof("Client configurations for %s removed", name)
+	}
+
+	// Delete the saved state last
 	if err := state.DeleteSavedRunConfig(childCtx, baseName); err != nil {
 		logger.Warnf("Warning: Failed to delete saved state: %v", err)
 	} else {
@@ -403,13 +433,6 @@ func (d *defaultManager) cleanupWorkloadResources(childCtx context.Context, name
 	}
 
 	logger.Infof("Container %s removed", name)
-
-	// Remove client configurations
-	if err := removeClientConfigurations(name); err != nil {
-		logger.Warnf("Warning: Failed to remove client configurations: %v", err)
-	} else {
-		logger.Infof("Client configurations for %s removed", name)
-	}
 }
 
 func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
@@ -444,79 +467,130 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string, f
 
 	for _, name := range names {
 		group.Go(func() error {
-			// Create a child context with a longer timeout
-			childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
-			defer cancel()
-
-			// NOTE: Once we have the status manager implemented, we can use it
-			// to ensure that the workload exists and is in the `stopped` state
-			// before restarting.
-			var containerBaseName string
-			var running bool
-			// Try to find the container.
-			container, err := d.runtime.GetWorkloadInfo(childCtx, name)
-			if err != nil {
-				if errors.Is(err, rt.ErrWorkloadNotFound) {
-					logger.Warnf("Warning: Failed to find container: %v", err)
-					logger.Warnf("Trying to find state with name %s directly...", name)
-
-					// Try to use the provided name as the base name
-					containerBaseName = name
-					running = false
-				} else {
-					return fmt.Errorf("failed to find workload %s: %v", name, err)
-				}
-			} else {
-				// Container found, check if it's running and get the base name,
-				running = container.IsRunning()
-				containerBaseName = labels.GetContainerBaseName(container.Labels)
-			}
-
-			// Check if the proxy process is running
-			proxyRunning := proxy.IsRunning(containerBaseName)
-
-			if running && proxyRunning {
-				logger.Infof("Container %s and proxy are already running", name)
-				return nil
-			}
-
-			// Load the configuration from the state store
-			// This is done synchronously since it is relatively inexpensive operation
-			// and it allows for better error handling.
-			mcpRunner, err := d.loadRunnerFromState(childCtx, containerBaseName)
-			if err != nil {
-				// TODO: If the state file has gone missing, we should delete
-				// the workload - since there is no chance of recovery.
-				return fmt.Errorf("failed to load state for %s: %v", containerBaseName, err)
-			}
-
-			// At this point we're sure that the workload exists but is not running.
-			// Transition workload to `starting` state.
-			if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStarting, ""); err != nil {
-				logger.Warnf("Failed to set workload %s status to starting: %v", name, err)
-			}
-			logger.Infof("Loaded configuration from state for %s", containerBaseName)
-
-			// Run the tooling server inside a detached process.
-			logger.Infof("Starting tooling server %s...", name)
-
-			// If the container is running but the proxy is not, stop the container first
-			if running { // && !proxyRunning was previously here but is implied by previous if statement.
-				logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
-				if err = d.runtime.StopWorkload(childCtx, name); err != nil {
-					return fmt.Errorf("failed to stop container %s: %v", name, err)
-				}
-				logger.Infof("Container %s stopped", name)
-			}
-
-			if foreground {
-				return d.RunWorkload(ctx, mcpRunner.Config)
-			}
-			return d.RunWorkloadDetached(ctx, mcpRunner.Config)
+			return d.restartSingleWorkload(ctx, name, foreground)
 		})
 	}
 
 	return group, nil
+}
+
+// restartSingleWorkload handles the restart logic for a single workload
+func (d *defaultManager) restartSingleWorkload(ctx context.Context, name string, foreground bool) error {
+	// Create a child context with a longer timeout
+	childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
+	defer cancel()
+
+	// Get workload state information
+	workloadState, err := d.getWorkloadState(childCtx, name)
+	if err != nil {
+		return err
+	}
+
+	// Check if already running
+	if d.isWorkloadAlreadyRunning(name, workloadState) {
+		return nil
+	}
+
+	// Load runner configuration from state
+	mcpRunner, err := d.loadRunnerFromState(childCtx, workloadState.BaseName)
+	if err != nil {
+		return fmt.Errorf("failed to load state for %s: %v", workloadState.BaseName, err)
+	}
+
+	// Set workload status to starting
+	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStarting, ""); err != nil {
+		logger.Warnf("Failed to set workload %s status to starting: %v", name, err)
+	}
+	logger.Infof("Loaded configuration from state for %s", workloadState.BaseName)
+
+	// Stop container if running but proxy is not
+	if err := d.stopContainerIfNeeded(childCtx, ctx, name, workloadState); err != nil {
+		return err
+	}
+
+	// Start the workload
+	return d.startWorkload(ctx, name, mcpRunner, foreground)
+}
+
+// workloadState holds the current state of a workload for restart operations
+type workloadState struct {
+	BaseName     string
+	Running      bool
+	ProxyRunning bool
+}
+
+// getWorkloadState retrieves the current state of a workload
+func (d *defaultManager) getWorkloadState(ctx context.Context, name string) (*workloadState, error) {
+	workloadSt := &workloadState{}
+
+	// Try to find the container
+	container, err := d.runtime.GetWorkloadInfo(ctx, name)
+	if err != nil {
+		if errors.Is(err, rt.ErrWorkloadNotFound) {
+			logger.Warnf("Warning: Failed to find container: %v", err)
+			logger.Warnf("Trying to find state with name %s directly...", name)
+			// Try to use the provided name as the base name
+			workloadSt.BaseName = name
+			workloadSt.Running = false
+		} else {
+			return nil, fmt.Errorf("failed to find workload %s: %v", name, err)
+		}
+	} else {
+		// Container found, check if it's running and get the base name
+		workloadSt.Running = container.IsRunning()
+		workloadSt.BaseName = labels.GetContainerBaseName(container.Labels)
+	}
+
+	// Check if the proxy process is running
+	workloadSt.ProxyRunning = proxy.IsRunning(workloadSt.BaseName)
+
+	return workloadSt, nil
+}
+
+// isWorkloadAlreadyRunning checks if the workload is already fully running
+func (*defaultManager) isWorkloadAlreadyRunning(name string, workloadSt *workloadState) bool {
+	if workloadSt.Running && workloadSt.ProxyRunning {
+		logger.Infof("Container %s and proxy are already running", name)
+		return true
+	}
+	return false
+}
+
+// stopContainerIfNeeded stops the container if it's running but proxy is not
+func (d *defaultManager) stopContainerIfNeeded(childCtx, ctx context.Context, name string, workloadSt *workloadState) error {
+	if !workloadSt.Running {
+		return nil
+	}
+
+	logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
+	if err := d.runtime.StopWorkload(childCtx, name); err != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, ""); statusErr != nil {
+			logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
+		}
+		return fmt.Errorf("failed to stop container %s: %v", name, err)
+	}
+	logger.Infof("Container %s stopped", name)
+	return nil
+}
+
+// startWorkload starts the workload in either foreground or background mode
+func (d *defaultManager) startWorkload(ctx context.Context, name string, mcpRunner *runner.Runner, foreground bool) error {
+	logger.Infof("Starting tooling server %s...", name)
+
+	var err error
+	if foreground {
+		err = d.RunWorkload(ctx, mcpRunner.Config)
+	} else {
+		err = d.RunWorkloadDetached(ctx, mcpRunner.Config)
+	}
+
+	if err != nil {
+		// If we could not start the workload, set the status to error before returning
+		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, ""); statusErr != nil {
+			logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
+		}
+	}
+	return err
 }
 
 // TODO: Move to dedicated config management interface.

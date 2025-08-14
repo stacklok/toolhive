@@ -199,3 +199,4 @@ Follow conventional commit format:
   - Refer to the `CONTRIBUTING.md` file for guidelines on commit message format
     conventions.
   - Do not use "Conventional Commits", e.g. starting with `feat`, `fix`, `chore`, etc.
+  - Use mockgen for creating mocks instead of generating mocks by hand.

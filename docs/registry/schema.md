@@ -15,9 +15,9 @@ This can also be used to validate a custom registry file to be used with the
 
 ## Schema location
 
-- **File**: [`docs/registry/schema.json`](schema.json)
+- **File**: [`pkg/registry/data/schema.json`](../../pkg/registry/data/schema.json)
 - **Schema ID**:
-  `https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json`
+  `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json`
 
 ## Usage
 
@@ -78,7 +78,7 @@ Validate the registry with full format validation:
 
 ```bash
 # Run from the root of the repository
-check-jsonschema --schemafile docs/registry/schema.json pkg/registry/data/registry.json
+check-jsonschema --schemafile pkg/registry/data/schema.json pkg/registry/data/registry.json
 ```
 
 #### Using ajv-cli
@@ -93,7 +93,7 @@ Validate the registry with format validation:
 
 ```bash
 # Run from the root of the repository
-ajv validate -c ajv-formats -s docs/registry/schema.json -d pkg/registry/data/registry.json
+ajv validate -c ajv-formats -s pkg/registry/data/schema.json -d pkg/registry/data/registry.json
 ```
 
 #### Using VS Code
@@ -103,7 +103,7 @@ to the top of any registry JSON file:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
+  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   ...
 }
 ```

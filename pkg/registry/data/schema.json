@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
+  "$id": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "title": "ToolHive MCP Server Registry Schema",
   "description": "JSON Schema for the ToolHive MCP server registry. This schema validates the structure and content of registry.json entries for MCP servers. See docs/registry/management.md and docs/registry/heuristics.md for inclusion criteria and management processes.",
   "type": "object",

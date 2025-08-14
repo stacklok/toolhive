@@ -1,22 +1,23 @@
 package registry
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
+//go:embed data/schema.json
+var embeddedSchemaFS embed.FS
+
 // ValidateRegistrySchema validates registry JSON data against the registry schema
 func ValidateRegistrySchema(registryData []byte) error {
-	// Load the schema from the docs directory relative to this package
-	schemaPath := "../../docs/registry/schema.json"
-
-	schemaData, err := os.ReadFile(schemaPath)
+	// Load the schema from the embedded filesystem
+	schemaData, err := embeddedSchemaFS.ReadFile("data/schema.json")
 	if err != nil {
-		return fmt.Errorf("failed to read registry schema: %w", err)
+		return fmt.Errorf("failed to read embedded registry schema: %w", err)
 	}
 
 	// Compile the schema

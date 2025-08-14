@@ -4,6 +4,7 @@ go 1.24.1
 
 require (
 	github.com/1password/onepassword-sdk-go v0.3.1
+	github.com/aws/smithy-go v1.22.3
 	github.com/cedar-policy/cedar-go v1.2.6
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/charmbracelet/bubbletea v1.3.6

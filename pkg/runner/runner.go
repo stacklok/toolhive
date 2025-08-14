@@ -32,8 +32,9 @@ type Runner struct {
 	// telemetryProvider is the OpenTelemetry provider for cleanup
 	telemetryProvider *telemetry.Provider
 
+	// TODO: REINSTATE IN NEXT PR.
 	// supportedMiddleware is a map of supported middleware types to their factory functions.
-	supportedMiddleware map[string]types.MiddlewareFactory
+	//supportedMiddleware map[string]types.MiddlewareFactory
 
 	statusManager statuses.StatusManager
 }
@@ -62,7 +63,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
-	for _, middlewareConfig := range r.Config.MiddlewareConfigs {
+	// TODO: REINSTATE IN NEXT PR.
+	/*for _, middlewareConfig := range r.Config.MiddlewareConfigs {
 		// First, get the correct factory function for the middleware type.
 		factory, ok := r.supportedMiddleware[middlewareConfig.Type]
 		if !ok {
@@ -70,19 +72,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Create the middleware instance using the factory function.
-		middleware, err := factory(&middlewareConfig)
+		err := factory(&middlewareConfig, r)
 		if err != nil {
 			return fmt.Errorf("failed to create middleware of type %s: %v", middlewareConfig.Type, err)
 		}
-
-		// Ensure middleware is cleaned up on shutdown.
-		defer func() {
-			if err := middleware.Close(); err != nil {
-				logger.Warnf("Failed to close middleware of type %s: %v", middlewareConfig.Type, err)
-			}
-		}()
-		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware.Handler())
-	}
+	}*/
 
 	if len(r.Config.ToolsFilter) > 0 {
 		toolsFilterMiddleware, err := mcp.NewToolFilterMiddleware(r.Config.ToolsFilter)

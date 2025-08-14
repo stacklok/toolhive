@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/spf13/viper"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
@@ -285,6 +286,11 @@ type Mount struct {
 // IsKubernetesRuntime returns true if the runtime is Kubernetes
 // isn't the best way to do this, but for now it's good enough
 func IsKubernetesRuntime() bool {
+	// Check explicit flag first
+	if runtimeFlag := viper.GetString("runtime"); runtimeFlag != "" {
+		return runtimeFlag == "kubernetes"
+	}
+	// Fall back to environment detection (original logic)
 	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
 }
 

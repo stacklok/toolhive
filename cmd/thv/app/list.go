@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -26,12 +27,14 @@ var (
 	listFormat      string
 	listLabelFilter []string
 	listGroupFilter string
+	listRuntime     string
 )
 
 func init() {
 	listCmd.Flags().BoolVarP(&listAll, "all", "a", false, "Show all workloads (default shows just running)")
 	listCmd.Flags().StringVar(&listFormat, "format", FormatText, "Output format (json, text, or mcpservers)")
 	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
+	listCmd.Flags().StringVar(&listRuntime, "runtime", "", "Container runtime to use (docker, kubernetes)")
 	// TODO: Re-enable when group functionality is complete
 	// listCmd.Flags().StringVar(&listGroupFilter, "group", "", "Filter workloads by group")
 
@@ -40,6 +43,11 @@ func init() {
 
 func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
+
+	// Set runtime flag in viper if specified for this command
+	if listRuntime != "" {
+		viper.Set("runtime", listRuntime)
+	}
 
 	// Instantiate the status manager.
 	manager, err := workloads.NewManager(ctx)

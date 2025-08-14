@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +14,7 @@ import (
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -164,6 +166,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 			client := &Client{
 				runtimeType:                 runtime.TypeKubernetes,
 				client:                      clientset,
+				config:                      &rest.Config{},
 				waitForStatefulSetReadyFunc: mockWaitForStatefulSetReady,
 			}
 			// Create workload options with the pod template patch
@@ -662,6 +665,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 			client := &Client{
 				runtimeType:                 runtime.TypeKubernetes,
 				client:                      clientset,
+				config:                      &rest.Config{},
 				waitForStatefulSetReadyFunc: mockWaitForStatefulSetReady,
 			}
 
@@ -716,4 +720,34 @@ func TestCreateContainerWithMCP(t *testing.T) {
 			assert.Equal(t, tc.expectedEnvVarCount, len(mcpContainer.Env))
 		})
 	}
+}
+
+// TestNewClientConfigFallback tests that NewClient properly falls back to remote config when in-cluster config fails
+func TestNewClientConfigFallback(t *testing.T) {
+	t.Parallel()
+
+	// Test that NewClient handles the fallback gracefully
+	// This test will fail to create in-cluster config (expected) and should fall back to remote config
+	// Since we're not in a real cluster, both should fail, but we can verify the error messages
+
+	// Save original environment variables
+	originalKubeconfig := os.Getenv("KUBECONFIG")
+	defer func() {
+		if originalKubeconfig != "" {
+			os.Setenv("KUBECONFIG", originalKubeconfig)
+		} else {
+			os.Unsetenv("KUBECONFIG")
+		}
+	}()
+
+	// Set a non-existent kubeconfig to ensure remote config fails
+	os.Setenv("KUBECONFIG", "/non/existent/path")
+
+	// Try to create a client - this should fail with both in-cluster and remote config
+	_, err := NewClient(context.Background())
+
+	// The error should indicate that both in-cluster and remote config failed
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create both in-cluster and remote cluster config")
+	assert.Contains(t, err.Error(), "kubeconfig file not found")
 }

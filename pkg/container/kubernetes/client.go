@@ -25,6 +25,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/tools/watch"
 
@@ -46,17 +47,31 @@ const (
 type Client struct {
 	runtimeType runtime.Type
 	client      kubernetes.Interface
+	config      *rest.Config
 	// waitForStatefulSetReadyFunc is used for testing to mock the waitForStatefulSetReady function
 	waitForStatefulSetReadyFunc func(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error
 }
 
 // NewClient creates a new container client
 func NewClient(_ context.Context) (*Client, error) {
-	// creates the in-cluster config
-	config, err := rest.InClusterConfig()
+	var config *rest.Config
+	var err error
+
+	// First, try to create an in-cluster config
+	config, err = rest.InClusterConfig()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create in-cluster config: %v", err)
+		logger.Debugf("Failed to create in-cluster config: %v, trying remote cluster configuration", err)
+
+		// Fall back to remote cluster configuration
+		config, err = createRemoteClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create both in-cluster and remote cluster config: %v", err)
+		}
+		logger.Info("Successfully created remote cluster configuration")
+	} else {
+		logger.Info("Successfully created in-cluster configuration")
 	}
+
 	// creates the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -66,7 +81,75 @@ func NewClient(_ context.Context) (*Client, error) {
 	return &Client{
 		runtimeType: runtime.TypeKubernetes,
 		client:      clientset,
+		config:      config,
 	}, nil
+}
+
+// createRemoteClusterConfig creates a Kubernetes config for remote cluster access
+func createRemoteClusterConfig() (*rest.Config, error) {
+	// Get the kubeconfig path from environment variable or use default
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		// Use default kubeconfig path
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get user home directory: %w", err)
+		}
+		kubeconfigPath = homeDir + "/.kube/config"
+	}
+
+	// Check if the kubeconfig file exists
+	if _, err := os.Stat(kubeconfigPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("kubeconfig file not found at %s", kubeconfigPath)
+	}
+
+	// Load the kubeconfig
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build config from kubeconfig file %s: %w", kubeconfigPath, err)
+	}
+
+	return config, nil
+}
+
+// getNamespaceFromServiceAccount attempts to read the namespace from the service account token file
+func getNamespaceFromServiceAccount() (string, error) {
+	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	if err != nil {
+		return "", fmt.Errorf("failed to read namespace file: %w", err)
+	}
+	return string(data), nil
+}
+
+// getNamespaceFromEnv attempts to get the namespace from environment variables
+func getNamespaceFromEnv() (string, error) {
+	ns := os.Getenv("POD_NAMESPACE")
+	if ns == "" {
+		return "", fmt.Errorf("POD_NAMESPACE environment variable not set")
+	}
+	return ns, nil
+}
+
+// getCurrentNamespace returns the namespace the pod is running in.
+// It tries multiple methods in order:
+// 1. Reading from the service account token file
+// 2. Getting the namespace from environment variables
+// 3. Falling back to "default" if both methods fail
+func getCurrentNamespace() string {
+	// Method 1: Try to read from the service account namespace file
+	ns, err := getNamespaceFromServiceAccount()
+	if err == nil {
+		return ns
+	}
+
+	// Method 2: Try to get the namespace from environment variables
+	ns, err = getNamespaceFromEnv()
+	if err == nil {
+		return ns
+	}
+
+	// Method 3: Fall back to default
+	return "default"
 }
 
 // AttachToWorkload implements runtime.Runtime.
@@ -107,12 +190,8 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 		SubResource("attach").
 		VersionedParams(attachOpts, scheme.ParameterCodec)
 
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		panic(fmt.Errorf("failed to create k8s config: %v", err))
-	}
-	// Create a SPDY executor
-	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
+	// Create a SPDY executor using the stored config
+	exec, err := remotecommand.NewSPDYExecutor(c.config, "POST", req.URL())
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create SPDY executor: %v", err)
 	}
@@ -401,6 +480,7 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 
 	// List pods with the toolhive label
 	namespace := getCurrentNamespace()
+	fmt.Printf("listing pods in namespace %s", namespace)
 	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
@@ -1077,44 +1157,4 @@ func configureMCPContainer(
 	}
 
 	return nil
-}
-
-// getNamespaceFromServiceAccount attempts to read the namespace from the service account token file
-func getNamespaceFromServiceAccount() (string, error) {
-	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-	if err != nil {
-		return "", fmt.Errorf("failed to read namespace file: %w", err)
-	}
-	return string(data), nil
-}
-
-// getNamespaceFromEnv attempts to get the namespace from environment variables
-func getNamespaceFromEnv() (string, error) {
-	ns := os.Getenv("POD_NAMESPACE")
-	if ns == "" {
-		return "", fmt.Errorf("POD_NAMESPACE environment variable not set")
-	}
-	return ns, nil
-}
-
-// getCurrentNamespace returns the namespace the pod is running in.
-// It tries multiple methods in order:
-// 1. Reading from the service account token file
-// 2. Getting the namespace from environment variables
-// 3. Falling back to "default" if both methods fail
-func getCurrentNamespace() string {
-	// Method 1: Try to read from the service account namespace file
-	ns, err := getNamespaceFromServiceAccount()
-	if err == nil {
-		return ns
-	}
-
-	// Method 2: Try to get the namespace from environment variables
-	ns, err = getNamespaceFromEnv()
-	if err == nil {
-		return ns
-	}
-
-	// Method 3: Fall back to default
-	return "default"
 }

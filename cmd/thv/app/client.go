@@ -17,7 +17,8 @@ import (
 )
 
 var (
-	groupNames []string
+	groupAddNames []string
+	groupRmNames  []string
 )
 
 var clientCmd = &cobra.Command{
@@ -104,9 +105,9 @@ func init() {
 
 	// TODO: Re-enable when group functionality is complete
 	//clientRegisterCmd.Flags().StringSliceVar(
-	//	&groupNames, "group", []string{"default"}, "Only register workloads from specified groups")
+	//	&groupAddNames, "group", []string{groups.DefaultGroup}, "Only register workloads from specified groups")
 	//clientRemoveCmd.Flags().StringSliceVar(
-	//	&groupNames, "group", []string{}, "Remove client from specified groups (if not set, removes all workloads from the client)")
+	//	&groupRmNames, "group", []string{}, "Remove client from specified groups (if not set, removes all workloads from the client)")
 }
 
 func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
@@ -193,7 +194,7 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 			clientType)
 	}
 
-	return performClientRegistration(cmd.Context(), []client.Client{{Name: client.MCPClient(clientType)}}, groupNames)
+	return performClientRegistration(cmd.Context(), []client.Client{{Name: client.MCPClient(clientType)}}, groupAddNames)
 }
 
 func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
@@ -211,7 +212,7 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 			clientType)
 	}
 
-	return performClientRemoval(cmd.Context(), client.Client{Name: client.MCPClient(clientType)}, groupNames)
+	return performClientRemoval(cmd.Context(), client.Client{Name: client.MCPClient(clientType)}, groupRmNames)
 }
 
 func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
@@ -431,7 +432,6 @@ func removeClientGlobally(
 				return
 			}
 		}
-		logger.Warnf("Client %s was not found in registered clients list", clientToRemove.Name)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration for client %s: %w", clientToRemove.Name, err)

@@ -418,7 +418,14 @@ func (d *defaultManager) cleanupWorkloadResources(childCtx context.Context, name
 		logger.Warnf("Warning: Failed to cleanup temporary permission profile: %v", err)
 	}
 
-	// Delete the saved state
+	// Remove client configurations
+	if err := removeClientConfigurations(name); err != nil {
+		logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+	} else {
+		logger.Infof("Client configurations for %s removed", name)
+	}
+
+	// Delete the saved state last
 	if err := state.DeleteSavedRunConfig(childCtx, baseName); err != nil {
 		logger.Warnf("Warning: Failed to delete saved state: %v", err)
 	} else {
@@ -426,13 +433,6 @@ func (d *defaultManager) cleanupWorkloadResources(childCtx context.Context, name
 	}
 
 	logger.Infof("Container %s removed", name)
-
-	// Remove client configurations
-	if err := removeClientConfigurations(name); err != nil {
-		logger.Warnf("Warning: Failed to remove client configurations: %v", err)
-	} else {
-		logger.Infof("Client configurations for %s removed", name)
-	}
 }
 
 func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {

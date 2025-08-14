@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
@@ -12,50 +11,12 @@ import (
 
 // ValidateRegistrySchema validates registry JSON data against the registry schema
 func ValidateRegistrySchema(registryData []byte) error {
-	// Load the schema from the docs directory
-	// We need to find the schema file relative to the current working directory
-	schemaPath := "docs/registry/schema.json"
+	// Load the schema from the docs directory relative to this package
+	schemaPath := "../../docs/registry/schema.json"
 
-	// Try to find the schema file
-	var schemaData []byte
-	var err error
-
-	// First try the direct path
-	if _, err := os.Stat(schemaPath); err == nil {
-		schemaData, err = os.ReadFile(schemaPath)
-		if err != nil {
-			return fmt.Errorf("failed to read registry schema: %w", err)
-		}
-	} else {
-		// Try to find it relative to the module root
-		wd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("failed to get working directory: %w", err)
-		}
-
-		// Walk up the directory tree to find the schema
-		for {
-			testPath := filepath.Join(wd, schemaPath)
-			// Clean and validate the path to prevent directory traversal attacks
-			cleanPath := filepath.Clean(testPath)
-			if !strings.HasSuffix(cleanPath, "docs/registry/schema.json") {
-				return fmt.Errorf("invalid schema path detected: %s", cleanPath)
-			}
-
-			if _, err := os.Stat(cleanPath); err == nil {
-				schemaData, err = os.ReadFile(cleanPath)
-				if err != nil {
-					return fmt.Errorf("failed to read registry schema: %w", err)
-				}
-				break
-			}
-
-			parent := filepath.Dir(wd)
-			if parent == wd {
-				return fmt.Errorf("registry schema not found: %s", schemaPath)
-			}
-			wd = parent
-		}
+	schemaData, err := os.ReadFile(schemaPath)
+	if err != nil {
+		return fmt.Errorf("failed to read registry schema: %w", err)
 	}
 
 	// Compile the schema

@@ -10,6 +10,9 @@ import (
 
 // Updates to the registry schema should be reflected in the JSON schema file located at docs/registry/schema.json.
 // The schema is used for validation and documentation purposes.
+//
+// The embedded registry.json is automatically validated against the schema during tests.
+// See pkg/registry/schema_validation_test.go for the validation implementation.
 
 // Registry represents the top-level structure of the MCP registry
 type Registry struct {

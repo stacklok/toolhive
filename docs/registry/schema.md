@@ -21,7 +21,44 @@ This can also be used to validate a custom registry file to be used with the
 
 ## Usage
 
-### Local validation
+### Automated validation (Go tests)
+
+The registry is automatically validated against the schema during development
+and CI/CD through Go tests. This ensures that any changes to the registry data
+are immediately validated.
+
+The validation is implemented in
+[`pkg/registry/schema_validation.go`](../../pkg/registry/schema_validation.go)
+and tested in
+[`pkg/registry/schema_validation_test.go`](../../pkg/registry/schema_validation_test.go).
+
+**Key tests:**
+
+- `TestEmbeddedRegistrySchemaValidation` - Validates the embedded
+  `registry.json` against the schema
+- `TestRegistrySchemaValidation` - Comprehensive test suite with valid and
+  invalid registry examples
+
+**Running the validation:**
+
+```bash
+# Run all schema validation tests
+go test -v ./pkg/registry -run ".*Schema.*"
+
+# Run just the embedded registry validation
+go test -v ./pkg/registry -run TestEmbeddedRegistrySchemaValidation
+
+# Run all registry tests (includes schema validation)
+go test -v ./pkg/registry
+```
+
+This validation runs automatically as part of:
+
+- Local development (`go test`)
+- CI/CD pipeline (GitHub Actions)
+- Pre-commit hooks (if configured)
+
+### Manual validation
 
 #### Using check-jsonschema
 

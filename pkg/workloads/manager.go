@@ -117,7 +117,22 @@ func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (
 func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]core.Workload, error) {
 	// For the sake of minimizing changes, delegate to the status manager.
 	// Whether this method should still belong to the workload manager is TBD.
-	return d.statuses.ListWorkloads(ctx, listAll, labelFilters)
+	containerWorkloads, err := d.statuses.ListWorkloads(ctx, listAll, labelFilters)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get remote workloads from the state store
+	remoteWorkloads, err := d.getRemoteWorkloadsFromState(ctx, listAll, labelFilters)
+	if err != nil {
+		logger.Warnf("Failed to get remote workloads from state: %v", err)
+		// Continue with container workloads only
+	} else {
+		// Combine container and remote workloads
+		containerWorkloads = append(containerWorkloads, remoteWorkloads...)
+	}
+
+	return containerWorkloads, nil
 }
 
 func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
@@ -682,4 +697,73 @@ func (d *defaultManager) ListWorkloadsInGroup(ctx context.Context, groupName str
 	}
 
 	return groupWorkloads, nil
+}
+
+// getRemoteWorkloadsFromState retrieves remote servers from the state store
+func (d *defaultManager) getRemoteWorkloadsFromState(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error) {
+	// Create a state store
+	store, err := state.NewRunConfigStore(state.DefaultAppName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create state store: %w", err)
+	}
+
+	// List all configurations
+	configNames, err := store.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list configurations: %w", err)
+	}
+
+	// Parse the filters into a format we can use for matching
+	parsedFilters, err := types.ParseLabelFilters(labelFilters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse label filters: %v", err)
+	}
+
+	var remoteWorkloads []core.Workload
+
+	for _, name := range configNames {
+		// Load the run configuration
+		reader, err := store.GetReader(ctx, name)
+		if err != nil {
+			logger.Warnf("failed to read configuration for %s: %v", name, err)
+			continue
+		}
+
+		// Parse the run configuration
+		runConfig, err := runner.ReadJSON(reader)
+		reader.Close()
+		if err != nil {
+			logger.Warnf("failed to parse configuration for %s: %v", name, err)
+			continue
+		}
+
+		// Only include remote servers (those with RemoteURL set)
+		if runConfig.RemoteURL == "" {
+			continue
+		}
+
+		// Use the transport type directly since it's already parsed
+		transportType := runConfig.Transport
+
+		// Create a workload from the run configuration
+		workload := core.Workload{
+			Name:          name,
+			Package:       "remote",
+			Status:        rt.WorkloadStatusRunning, // Remote servers are always considered running
+			URL:           runConfig.RemoteURL,
+			Port:          0, // Remote servers don't have a local port
+			TransportType: transportType,
+			ToolType:      "remote",
+			Group:         runConfig.Group,
+			CreatedAt:     time.Now(), // Use current time since RunConfig doesn't store creation time
+			Labels:        runConfig.ContainerLabels,
+		}
+
+		// Apply label filtering
+		if types.MatchesLabelFilters(workload.Labels, parsedFilters) {
+			remoteWorkloads = append(remoteWorkloads, workload)
+		}
+	}
+
+	return remoteWorkloads, nil
 }

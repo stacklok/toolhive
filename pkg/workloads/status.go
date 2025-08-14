@@ -3,11 +3,14 @@ package workloads
 import (
 	"context"
 	"fmt"
+	"time"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/state"
 )
 
 // StatusManager is an interface for fetching and retrieving workload statuses.
@@ -93,6 +96,22 @@ func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, 
 		}
 	}
 
+	// Also include remote servers from the state store
+	remoteWorkloads, err := r.getRemoteWorkloadsFromState(ctx)
+	if err != nil {
+		logger.Warnf("Failed to get remote workloads from state: %v", err)
+	} else {
+		// Apply the same filtering logic to remote workloads
+		for _, workload := range remoteWorkloads {
+			// Remote servers are always considered running, so only apply listAll filter
+			if listAll {
+				workloads = append(workloads, workload)
+			} else if matchesLabelFilters(workload.Labels, parsedFilters) {
+				workloads = append(workloads, workload)
+			}
+		}
+	}
+
 	return workloads, nil
 }
 
@@ -110,6 +129,63 @@ func (*runtimeStatusManager) DeleteWorkloadStatus(_ context.Context, _ string) e
 	// TODO: This will need to handle concurrent updates.
 	// Noop
 	return nil
+}
+
+// getRemoteWorkloadsFromState retrieves remote servers from the state store
+func (r *runtimeStatusManager) getRemoteWorkloadsFromState(ctx context.Context) ([]core.Workload, error) {
+	// Create a state store
+	store, err := state.NewRunConfigStore(state.DefaultAppName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create state store: %w", err)
+	}
+
+	// List all configurations
+	configNames, err := store.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list configurations: %w", err)
+	}
+
+	var remoteWorkloads []core.Workload
+
+	for _, name := range configNames {
+		// Load the run configuration
+		reader, err := store.GetReader(ctx, name)
+		if err != nil {
+			logger.Warnf("failed to read configuration for %s: %v", name, err)
+			continue
+		}
+
+		// Parse the run configuration
+		runConfig, err := runner.ReadJSON(reader)
+		reader.Close()
+		if err != nil {
+			logger.Warnf("failed to parse configuration for %s: %v", name, err)
+			continue
+		}
+
+		// Only include remote servers (those with RemoteURL set)
+		if runConfig.RemoteURL == "" {
+			continue
+		}
+
+		// Create a workload from the run configuration
+		workload := core.Workload{
+			Name:          name,
+			Package:       "remote",
+			Status:        rt.WorkloadStatusRunning, // Remote servers are always considered running
+			URL:           runConfig.RemoteURL,
+			Port:          0, // Remote servers don't have a local port
+			TransportType: runConfig.Transport,
+			ToolType:      "remote",
+			Group:         runConfig.Group,
+			CreatedAt:     time.Now(), // Use current time since RunConfig doesn't store creation time
+			Labels:        runConfig.ContainerLabels,
+		}
+
+		remoteWorkloads = append(remoteWorkloads, workload)
+	}
+
+	return remoteWorkloads, nil
 }
 
 // parseLabelFilters parses label filters from a slice of strings and validates them.

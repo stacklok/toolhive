@@ -59,6 +59,11 @@ func (p *RemoteRegistryProvider) GetRegistry() (*Registry, error) {
 		server.Name = name
 	}
 
+	// Set name field on each remote server based on map key
+	for name, server := range registry.RemoteServers {
+		server.Name = name
+	}
+
 	return registry, nil
 }
 
@@ -125,4 +130,99 @@ func (p *RemoteRegistryProvider) ListServers() ([]*ImageMetadata, error) {
 	}
 
 	return servers, nil
+}
+
+// GetRemoteServer returns a specific remote server by name
+func (p *RemoteRegistryProvider) GetRemoteServer(name string) (*RemoteServerMetadata, error) {
+	reg, err := p.GetRegistry()
+	if err != nil {
+		return nil, err
+	}
+
+	server, ok := reg.RemoteServers[name]
+	if !ok {
+		return nil, fmt.Errorf("remote server not found: %s", name)
+	}
+
+	return server, nil
+}
+
+// SearchRemoteServers searches for remote servers matching the query
+func (p *RemoteRegistryProvider) SearchRemoteServers(query string) ([]*RemoteServerMetadata, error) {
+	reg, err := p.GetRegistry()
+	if err != nil {
+		return nil, err
+	}
+
+	query = strings.ToLower(query)
+	var results []*RemoteServerMetadata
+
+	for name, server := range reg.RemoteServers {
+		// Search in name
+		if strings.Contains(strings.ToLower(name), query) {
+			results = append(results, server)
+			continue
+		}
+
+		// Search in description
+		if strings.Contains(strings.ToLower(server.Description), query) {
+			results = append(results, server)
+			continue
+		}
+
+		// Search in tags
+		for _, tag := range server.Tags {
+			if strings.Contains(strings.ToLower(tag), query) {
+				results = append(results, server)
+				break
+			}
+		}
+	}
+
+	return results, nil
+}
+
+// ListRemoteServers returns all available remote servers
+func (p *RemoteRegistryProvider) ListRemoteServers() ([]*RemoteServerMetadata, error) {
+	reg, err := p.GetRegistry()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []*RemoteServerMetadata
+	for _, server := range reg.RemoteServers {
+		results = append(results, server)
+	}
+
+	return results, nil
+}
+
+// GetAllServers returns all container and remote servers
+func (p *RemoteRegistryProvider) GetAllServers() ([]*ImageMetadata, []*RemoteServerMetadata, error) {
+	containerServers, err := p.ListServers()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	remoteServers, err := p.ListRemoteServers()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return containerServers, remoteServers, nil
+}
+
+// SearchAllServers searches for both container and remote servers matching the query
+func (p *RemoteRegistryProvider) SearchAllServers(query string) ([]*ImageMetadata, []*RemoteServerMetadata, error) {
+	containerServers, err := p.SearchServers(query)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	remoteServers, err := p.SearchRemoteServers(query)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return containerServers, remoteServers, nil
 }

@@ -367,4 +367,12 @@ type RemoteAuthConfig struct {
 	Timeout          time.Duration
 	CallbackPort     int
 	BearerToken      string // Add Bearer token support
+
+	// OAuth endpoint configuration (from registry)
+	Issuer       string
+	AuthorizeURL string
+	TokenURL     string
+
+	// OAuth parameters for server-specific customization
+	OAuthParams map[string]string
 }

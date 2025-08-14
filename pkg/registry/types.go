@@ -143,6 +143,12 @@ type OAuthConfig struct {
 	// UsePKCE indicates whether to use PKCE for the OAuth flow
 	// Defaults to true for enhanced security
 	UsePKCE bool `json:"use_pkce,omitempty" yaml:"use_pkce,omitempty"`
+	// OAuthParams contains additional OAuth parameters to include in the authorization request
+	// These are server-specific parameters like "prompt", "response_mode", etc.
+	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
+	// CallbackPort is the specific port to use for the OAuth callback server
+	// If not specified, a random available port will be used
+	CallbackPort int `json:"callback_port,omitempty" yaml:"callback_port,omitempty"`
 }
 
 // RemoteServerMetadata represents the metadata for a remote MCP server accessed via HTTP/HTTPS.

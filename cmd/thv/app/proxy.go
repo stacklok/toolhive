@@ -417,6 +417,7 @@ func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string
 			scopes,
 			true, // Enable PKCE by default for security
 			remoteAuthCallbackPort,
+			nil, // No OAuth params for proxy command
 		)
 	} else {
 		// Fall back to OIDC discovery

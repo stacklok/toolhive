@@ -1086,146 +1086,34 @@
       "transport": "stdio"
     },
     "github": {
-      "args": [],
-      "description": "Provides integration with GitHub's APIs",
+      "name": "github",
+      "description": "GitHub Copilot MCP server for code generation and AI assistance",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "tools": ["github_copilot", "code_generation", "code_completion", "code_explanation"],
+      "tags": ["ai", "code", "copilot", "github", "programming"],
+      "oauth_config": {
+        "authorize_url": "https://github.com/login/oauth/select_account",
+        "token_url": "https://github.com/login/oauth/access_token",
+        "scopes": ["gist", "notifications", "public_repo", "read:gpg_key", "read:org", "repo", "repo:status", "repo_deployment", "user", "user:email", "user:follow"],
+        "oauth_params": {
+          "prompt": "select_account"
+        },
+        "callback_port": 8666
+      },
       "env_vars": [
         {
-          "description": "GitHub personal access token with appropriate permissions",
-          "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
-          "required": true,
+          "name": "GITHUB_TOKEN",
+          "description": "GitHub personal access token for authentication",
+          "required": false,
           "secret": true
-        },
-        {
-          "description": "GitHub Enterprise Server hostname (optional)",
-          "name": "GH_HOST",
-          "required": false
         }
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.10.0",
       "metadata": {
-        "last_updated": "2025-08-11T00:24:55Z",
-        "pulls": 5000,
-        "stars": 20543
-      },
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [
-              ".github.com",
-              ".githubusercontent.com"
-            ],
-            "allow_port": [
-              443
-            ],
-            "insecure_allow_all": false
-          }
-        },
-        "read": [],
-        "write": []
-      },
-      "provenance": {
-        "cert_issuer": "https://token.actions.githubusercontent.com",
-        "repository_uri": "https://github.com/github/github-mcp-server",
-        "runner_environment": "github-hosted",
-        "signer_identity": "/.github/workflows/docker-publish.yml",
-        "sigstore_url": "tuf-repo-cdn.sigstore.dev"
-      },
-      "repository_url": "https://github.com/github/github-mcp-server",
-      "status": "Active",
-      "tags": [
-        "api",
-        "create",
-        "fork",
-        "github",
-        "list",
-        "pull-request",
-        "push",
-        "repository",
-        "search",
-        "update",
-        "issues"
-      ],
-      "tier": "Official",
-      "tools": [
-        "add_comment_to_pending_review",
-        "add_issue_comment",
-        "add_sub_issue",
-        "assign_copilot_to_issue",
-        "cancel_workflow_run",
-        "create_and_submit_pull_request_review",
-        "create_branch",
-        "create_issue",
-        "create_or_update_file",
-        "create_pending_pull_request_review",
-        "create_pull_request",
-        "create_repository",
-        "delete_file",
-        "delete_pending_pull_request_review",
-        "delete_workflow_run_logs",
-        "dismiss_notification",
-        "download_workflow_run_artifact",
-        "fork_repository",
-        "get_code_scanning_alert",
-        "get_commit",
-        "get_dependabot_alert",
-        "get_discussion",
-        "get_discussion_comment",
-        "get_file_contents",
-        "get_issue",
-        "get_issue_comments",
-        "get_job_logs",
-        "get_me",
-        "get_notification_details",
-        "get_pull_request",
-        "get_pull_request_comments",
-        "get_pull_request_diff",
-        "get_pull_request_files",
-        "get_pull_request_reviews",
-        "get_pull_request_status",
-        "get_secret_scanning_alert",
-        "get_tag",
-        "get_workflow_run",
-        "get_workflow_run_logs",
-        "get_workflow_run_usage",
-        "list_branches",
-        "list_code_scanning_alerts",
-        "list_commits",
-        "list_dependabot_alerts",
-        "list_discussion_categories",
-        "list_discussions",
-        "list_issues",
-        "list_notifications",
-        "list_pull_requests",
-        "list_secret_scanning_alerts",
-        "list_sub_issues",
-        "list_tags",
-        "list_workflow_jobs",
-        "list_workflow_run_artifacts",
-        "list_workflow_runs",
-        "list_workflows",
-        "manage_notification_subscription",
-        "manage_repository_notification_subscription",
-        "mark_all_notifications_read",
-        "merge_pull_request",
-        "push_files",
-        "remove_sub_issue",
-        "reprioritize_sub_issue",
-        "request_copilot_review",
-        "rerun_failed_jobs",
-        "rerun_workflow_run",
-        "run_workflow",
-        "search_code",
-        "search_issues",
-        "search_orgs",
-        "search_pull_requests",
-        "search_repositories",
-        "search_users",
-        "submit_pending_pull_request_review",
-        "update_issue",
-        "update_pull_request",
-        "update_pull_request_branch"
-      ],
-      "transport": "stdio"
+        "last_updated": "2025-08-13T12:00:00Z"
+      }
     },
     "grafana": {
       "args": [],
@@ -2552,6 +2440,94 @@
         "convert_time"
       ],
       "transport": "stdio"
+    }
+  },
+  "remote_servers": {
+    "stripe": {
+      "name": "stripe",
+      "description": "Stripe MCP server for payment processing and financial operations",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "url": "https://mcp.stripe.com",
+      "tools": ["stripe_payments", "stripe_customers", "stripe_products", "stripe_subscriptions"],
+      "tags": ["payments", "finance", "ecommerce"],
+      "oauth_config": {
+        "issuer": "https://connect.stripe.com",
+        "scopes": ["read", "write"]
+      },
+      "env_vars": [
+        {
+          "name": "STRIPE_PUBLISHABLE_KEY",
+          "description": "Stripe publishable key for client-side operations",
+          "required": false
+        },
+        {
+          "name": "STRIPE_SECRET_KEY",
+          "description": "Stripe secret key for server-side operations",
+          "required": false,
+          "secret": true
+        }
+      ],
+      "metadata": {
+        "last_updated": "2025-08-13T10:00:00Z"
+      }
+    },
+    "paypal": {
+      "name": "paypal",
+      "description": "PayPal MCP server for payment processing and order management",
+      "tier": "Official", 
+      "status": "Active",
+      "transport": "sse",
+      "url": "http://mcp.sandbox.paypal.com/sse",
+      "tools": ["paypal_payments", "paypal_orders", "paypal_subscriptions"],
+      "tags": ["payments", "finance", "ecommerce"],
+      "oauth_config": {
+        "authorize_url": "https://www.sandbox.paypal.com/connect",
+        "token_url": "https://api.sandbox.paypal.com/v1/identity/openidconnect/tokenservice"
+      },
+      "env_vars": [
+        {
+          "name": "PAYPAL_CLIENT_ID",
+          "description": "PayPal client ID for OAuth authentication",
+          "required": false
+        },
+        {
+          "name": "PAYPAL_CLIENT_SECRET",
+          "description": "PayPal client secret for OAuth authentication",
+          "required": false,
+          "secret": true
+        }
+      ],
+      "metadata": {
+        "last_updated": "2025-08-13T10:00:00Z"
+      }
+    },
+    "github": {
+      "name": "github",
+      "description": "GitHub Copilot MCP server for code generation and AI assistance",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "tools": ["github_copilot", "code_generation", "code_completion", "code_explanation"],
+      "tags": ["ai", "code", "copilot", "github", "programming"],
+      "oauth_config": {
+        "authorize_url": "https://github.com/login/oauth/select_account",
+        "token_url": "https://github.com/login/oauth/access_token",
+        "scopes": ["gist", "notifications", "public_repo", "read:gpg_key", "read:org", "repo", "repo:status", "repo_deployment", "user", "user:email", "user:follow"]
+      },
+      "env_vars": [
+        {
+          "name": "GITHUB_TOKEN",
+          "description": "GitHub personal access token for authentication",
+          "required": false,
+          "secret": true
+        }
+      ],
+      "metadata": {
+        "last_updated": "2025-08-13T12:00:00Z"
+      }
     }
   },
   "version": "1.0.0"

@@ -41,6 +41,15 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 	logger.V(1).Info("Authenticate called", "remoteURL", remoteURL)
 	logger.V(1).Info("RemoteAuthConfig", "enableRemoteAuth", h.config.EnableRemoteAuth, "hasBearerToken", h.config.BearerToken != "")
 
+	if h.config != nil {
+		logger.V(1).Info("OAuth configuration",
+			"clientID", h.config.ClientID,
+			"hasAuthorizeURL", h.config.AuthorizeURL != "",
+			"hasTokenURL", h.config.TokenURL != "",
+			"hasIssuer", h.config.Issuer != "",
+			"scopes", h.config.Scopes)
+	}
+
 	// If we have a Bearer token configured, use it regardless of server authentication requirements
 	if h.config != nil && h.config.BearerToken != "" {
 		logger.Info("Using configured Bearer token for authentication")
@@ -212,6 +221,12 @@ func (h *RemoteAuthHandler) handleBearerAuthentication(ctx context.Context, auth
 	if h.config != nil && h.config.ClientID != "" {
 		logger.Info("Attempting OAuth authentication flow")
 
+		// Check if we have manual OAuth endpoints from registry
+		if h.config.AuthorizeURL != "" && h.config.TokenURL != "" {
+			logger.Info("Using manual OAuth endpoints from registry, no issuer needed")
+			return h.performOAuthFlow(ctx, "") // Empty issuer for manual endpoints
+		}
+
 		// Determine the issuer/realm for OAuth discovery
 		issuer := authInfo.Realm
 		if authInfo.ResourceMetadata != "" {
@@ -276,11 +291,25 @@ func (h *RemoteAuthHandler) performOAuthFlow(ctx context.Context, issuer string)
 	var oauthConfig *oauth.Config
 	var err error
 
-	// Check if we have manual OAuth endpoints configured
-	if h.config != nil && h.config.ClientSecret != "" {
-		// For now, we'll use OIDC discovery
-		// Could be extended to support manual OAuth endpoints
-		logger.Info("Using OIDC discovery")
+	// Check if we have manual OAuth endpoints configured from registry
+	if h.config != nil && h.config.AuthorizeURL != "" && h.config.TokenURL != "" {
+		logger.Info("Using manual OAuth endpoints from registry",
+			"authorize_url", h.config.AuthorizeURL,
+			"token_url", h.config.TokenURL)
+
+		oauthConfig, err = oauth.CreateOAuthConfigManual(
+			h.config.ClientID,
+			h.config.ClientSecret,
+			h.config.AuthorizeURL,
+			h.config.TokenURL,
+			h.config.Scopes,
+			true, // Enable PKCE
+			h.config.CallbackPort,
+			h.config.OAuthParams,
+		)
+	} else if h.config != nil && h.config.ClientSecret != "" {
+		// Use OIDC discovery with client secret
+		logger.Info("Using OIDC discovery with client secret")
 		oauthConfig, err = oauth.CreateOAuthConfigFromOIDC(
 			ctx,
 			issuer,
@@ -384,6 +413,7 @@ func (h *RemoteAuthHandler) performOAuthFlowFallback(ctx context.Context, issuer
 			h.config.Scopes,
 			true, // Enable PKCE
 			h.config.CallbackPort,
+			h.config.OAuthParams,
 		)
 
 		if err != nil {

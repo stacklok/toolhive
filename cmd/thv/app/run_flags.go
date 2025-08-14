@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -97,6 +98,17 @@ type RunFlags struct {
 	RemoteAuthTimeout          time.Duration
 	RemoteAuthCallbackPort     int
 	RemoteAuthBearerToken      string
+
+	// Additional remote auth fields for registry-based servers
+	RemoteAuthIssuer       string
+	RemoteAuthAuthorizeURL string
+	RemoteAuthTokenURL     string
+
+	// Environment variables for remote servers
+	EnvVars map[string]string
+
+	// OAuth parameters for remote servers
+	OAuthParams map[string]string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -260,18 +272,91 @@ func BuildRunnerConfig(
 
 	// Handle remote MCP server
 	var imageMetadata *registry.ImageMetadata
+	var remoteServerMetadata *registry.RemoteServerMetadata
 	imageURL := serverOrImage
 	transportType := runConfig.Transport
 
-	// If --remote flag is provided, use the specified transport type or default to streamable-http
+	// If --remote flag is provided, use it as the serverOrImage
 	if runConfig.RemoteURL != "" {
+		serverOrImage = runConfig.RemoteURL
+		imageURL = runConfig.RemoteURL
+	}
+
+	// Try to get server from registry (container or remote) or direct URL
+	imageURL, imageMetadata, remoteServerMetadata, err = retriever.GetMCPServerOrRemote(
+		ctx, serverOrImage, runConfig.CACertPath, runConfig.VerifyImage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+	}
+
+	if remoteServerMetadata != nil {
+		// Handle registry-based remote server
+		runConfig.RemoteURL = remoteServerMetadata.URL
+		if transportType == "" {
+			transportType = remoteServerMetadata.Transport
+		}
+
+		// Set up OAuth config if provided
+		if remoteServerMetadata.OAuthConfig != nil {
+			runConfig.EnableRemoteAuth = true
+			// Only set ClientID from registry if not provided via command line
+			if runConfig.RemoteAuthClientID == "" {
+				runConfig.RemoteAuthClientID = remoteServerMetadata.OAuthConfig.ClientID
+			}
+			runConfig.RemoteAuthIssuer = remoteServerMetadata.OAuthConfig.Issuer
+			runConfig.RemoteAuthAuthorizeURL = remoteServerMetadata.OAuthConfig.AuthorizeURL
+			runConfig.RemoteAuthTokenURL = remoteServerMetadata.OAuthConfig.TokenURL
+			runConfig.RemoteAuthScopes = remoteServerMetadata.OAuthConfig.Scopes
+
+			// Set OAuth parameters and callback port from registry
+			if remoteServerMetadata.OAuthConfig.OAuthParams != nil {
+				runConfig.OAuthParams = remoteServerMetadata.OAuthConfig.OAuthParams
+			}
+			if remoteServerMetadata.OAuthConfig.CallbackPort != 0 {
+				runConfig.RemoteAuthCallbackPort = remoteServerMetadata.OAuthConfig.CallbackPort
+			}
+		}
+
+		// Set up headers if provided
+		for _, header := range remoteServerMetadata.Headers {
+			if header.Secret {
+				runConfig.Secrets = append(runConfig.Secrets, fmt.Sprintf("%s,target=%s", header.Name, header.Name))
+			} else {
+				if runConfig.EnvVars == nil {
+					runConfig.EnvVars = make(map[string]string)
+				}
+				runConfig.EnvVars[header.Name] = header.Default
+			}
+		}
+
+		// Set up environment variables if provided
+		for _, envVar := range remoteServerMetadata.EnvVars {
+			if envVar.Secret {
+				// Only add secrets if no authentication method is provided
+				hasAuth := runConfig.RemoteAuthBearerToken != "" ||
+					runConfig.RemoteAuthClientID != "" ||
+					remoteServerMetadata.OAuthConfig != nil
+				if !hasAuth {
+					runConfig.Secrets = append(runConfig.Secrets, fmt.Sprintf("%s,target=%s", envVar.Name, envVar.Name))
+				}
+			} else {
+				if runConfig.EnvVars == nil {
+					runConfig.EnvVars = make(map[string]string)
+				}
+				runConfig.EnvVars[envVar.Name] = envVar.Default
+			}
+		}
+	} else if isURL(imageURL) {
+		// Handle direct URL approach
+		runConfig.RemoteURL = imageURL
+		if transportType == "" {
+			transportType = "streamable-http" // Default for direct URLs
+		}
+	} else {
+		// Handle container server (existing logic)
 		if transportType == "" {
 			transportType = "streamable-http" // Default for remote servers
 		}
-		imageURL = runConfig.RemoteURL
-		// For remote servers, we don't need to pull image metadata
-		imageMetadata = nil
-	} else {
 		// Only pull image if we are not running in Kubernetes mode.
 		// In Kubernetes mode, the image is pulled by the container runtime.
 		if !runtime.IsKubernetesRuntime() {
@@ -298,6 +383,10 @@ func BuildRunnerConfig(
 			Timeout:          runConfig.RemoteAuthTimeout,
 			CallbackPort:     runConfig.RemoteAuthCallbackPort,
 			BearerToken:      runConfig.RemoteAuthBearerToken,
+			Issuer:           runConfig.RemoteAuthIssuer,
+			AuthorizeURL:     runConfig.RemoteAuthAuthorizeURL,
+			TokenURL:         runConfig.RemoteAuthTokenURL,
+			OAuthParams:      runConfig.OAuthParams,
 		}
 	}
 
@@ -377,4 +466,9 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 	}
 
 	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables
+}
+
+// isURL checks if the input is a URL
+func isURL(input string) bool {
+	return strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://")
 }

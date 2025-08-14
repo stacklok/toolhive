@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
@@ -83,6 +84,46 @@ func GetMCPServer(
 	}
 
 	return imageToUse, imageMetadata, nil
+}
+
+// GetMCPServerOrRemote retrieves the MCP server definition from the registry, supporting both container and remote servers
+func GetMCPServerOrRemote(
+	ctx context.Context,
+	serverOrImage string,
+	rawCACertPath string,
+	verificationType string,
+) (string, *registry.ImageMetadata, *registry.RemoteServerMetadata, error) {
+
+	// First, check if it's a direct URL (existing --remote behavior)
+	if isURL(serverOrImage) {
+		// Direct URL approach - return as remote server
+		return serverOrImage, nil, nil, nil
+	}
+
+	// Second, try to find as a remote server in registry
+	provider, err := registry.GetDefaultProvider()
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("failed to get registry provider: %v", err)
+	}
+
+	remoteServer, err := provider.GetRemoteServer(serverOrImage)
+	if err == nil {
+		// Found a remote server in registry
+		return remoteServer.URL, nil, remoteServer, nil
+	}
+
+	// Third, try as container server (existing logic)
+	imageURL, imageMetadata, err := GetMCPServer(ctx, serverOrImage, rawCACertPath, verificationType)
+	if err != nil {
+		return "", nil, nil, err
+	}
+
+	return imageURL, imageMetadata, nil, nil
+}
+
+// isURL checks if the input is a URL
+func isURL(input string) bool {
+	return strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://")
 }
 
 // pullImage pulls an image from a remote registry if it has the "latest" tag

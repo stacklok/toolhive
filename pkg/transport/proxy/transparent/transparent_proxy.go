@@ -153,10 +153,12 @@ func (t *tracingTransport) manualForward(req *http.Request) (*http.Response, err
 	return client.Do(newReq)
 }
 
+// nolint:gocyclo // This function handles multiple request types and is complex by design
 func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// For remote servers, skip request body reading to avoid interfering with request forwarding
 	if strings.HasPrefix(t.p.targetURI, "https://") || strings.HasPrefix(t.p.targetURI, "http://") {
-		logger.Infof("Transparent proxy forwarding request to remote server: %s %s (URL: %s)", req.Method, req.URL.Path, req.URL.String())
+		logger.Infof("Transparent proxy forwarding request to remote server: %s %s (URL: %s)",
+			req.Method, req.URL.Path, req.URL.String())
 
 		// Log all headers being sent
 		logger.Infof("Request headers:")
@@ -191,7 +193,8 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			return nil, err
 		}
 
-		logger.Infof("Transparent proxy received response from remote server: status=%d, content-type=%s", resp.StatusCode, resp.Header.Get("Content-Type"))
+		logger.Infof("Transparent proxy received response from remote server: status=%d, content-type=%s",
+			resp.StatusCode, resp.Header.Get("Content-Type"))
 		return resp, nil
 	}
 
@@ -315,6 +318,7 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 }
 
 // Start starts the transparent proxy.
+// nolint:gocyclo // This function handles multiple startup scenarios and is complex by design
 func (p *TransparentProxy) Start(ctx context.Context) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()

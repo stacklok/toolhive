@@ -22,6 +22,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+const (
+	defaultTransportType = "streamable-http"
+)
+
 // RunFlags holds the configuration for running MCP servers
 type RunFlags struct {
 	// Transport and proxy settings
@@ -173,15 +177,24 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Allow JWKS/OIDC endpoints on private IP addresses (use with caution)")
 
 	// Remote authentication flags
-	cmd.Flags().BoolVar(&config.EnableRemoteAuth, "remote-auth", false, "Enable automatic OAuth authentication for remote MCP servers")
-	cmd.Flags().StringVar(&config.RemoteAuthClientID, "remote-auth-client-id", "", "OAuth client ID for remote server authentication")
-	cmd.Flags().StringVar(&config.RemoteAuthClientSecret, "remote-auth-client-secret", "", "OAuth client secret for remote server authentication")
-	cmd.Flags().StringVar(&config.RemoteAuthClientSecretFile, "remote-auth-client-secret-file", "", "Path to file containing OAuth client secret")
-	cmd.Flags().StringSliceVar(&config.RemoteAuthScopes, "remote-auth-scopes", []string{}, "OAuth scopes to request for remote server authentication")
-	cmd.Flags().BoolVar(&config.RemoteAuthSkipBrowser, "remote-auth-skip-browser", false, "Skip opening browser for remote server OAuth flow")
-	cmd.Flags().DurationVar(&config.RemoteAuthTimeout, "remote-auth-timeout", 5*time.Minute, "Timeout for OAuth authentication flow")
-	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", 8666, "Port for OAuth callback server during remote authentication")
-	cmd.Flags().StringVar(&config.RemoteAuthBearerToken, "remote-auth-bearer-token", "", "Bearer token for remote server authentication (alternative to OAuth)")
+	cmd.Flags().BoolVar(&config.EnableRemoteAuth, "remote-auth", false,
+		"Enable automatic OAuth authentication for remote MCP servers")
+	cmd.Flags().StringVar(&config.RemoteAuthClientID, "remote-auth-client-id", "",
+		"OAuth client ID for remote server authentication")
+	cmd.Flags().StringVar(&config.RemoteAuthClientSecret, "remote-auth-client-secret", "",
+		"OAuth client secret for remote server authentication")
+	cmd.Flags().StringVar(&config.RemoteAuthClientSecretFile, "remote-auth-client-secret-file", "",
+		"Path to file containing OAuth client secret")
+	cmd.Flags().StringSliceVar(&config.RemoteAuthScopes, "remote-auth-scopes", []string{},
+		"OAuth scopes to request for remote server authentication")
+	cmd.Flags().BoolVar(&config.RemoteAuthSkipBrowser, "remote-auth-skip-browser", false,
+		"Skip opening browser for remote server OAuth flow")
+	cmd.Flags().DurationVar(&config.RemoteAuthTimeout, "remote-auth-timeout", 5*time.Minute,
+		"Timeout for OAuth authentication flow")
+	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", 8666,
+		"Port for OAuth callback server during remote authentication")
+	cmd.Flags().StringVar(&config.RemoteAuthBearerToken, "remote-auth-bearer-token", "",
+		"Bearer token for remote server authentication (alternative to OAuth)")
 
 	// OAuth discovery configuration
 	cmd.Flags().StringVar(&config.ResourceURL, "resource-url", "",
@@ -222,6 +235,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration
+// nolint:gocyclo // This function handles multiple configuration scenarios and is complex by design
 func BuildRunnerConfig(
 	ctx context.Context,
 	runFlags *RunFlags,
@@ -274,17 +288,15 @@ func BuildRunnerConfig(
 	// Handle remote MCP server
 	var imageMetadata *registry.ImageMetadata
 	var remoteServerMetadata *registry.RemoteServerMetadata
-	imageURL := serverOrImage
 	transportType := runFlags.Transport
 
 	// If --remote flag is provided, use it as the serverOrImage
 	if runFlags.RemoteURL != "" {
 		serverOrImage = runFlags.RemoteURL
-		imageURL = runFlags.RemoteURL
 	}
 
 	// Try to get server from registry (container or remote) or direct URL
-	imageURL, imageMetadata, remoteServerMetadata, err = retriever.GetMCPServerOrRemote(
+	imageURL, imageMetadata, remoteServerMetadata, err := retriever.GetMCPServerOrRemote(
 		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
@@ -351,12 +363,12 @@ func BuildRunnerConfig(
 		// Handle direct URL approach
 		runFlags.RemoteURL = imageURL
 		if transportType == "" {
-			transportType = "streamable-http" // Default for direct URLs
+			transportType = defaultTransportType // Default for direct URLs
 		}
 	} else {
 		// Handle container server (existing logic)
 		if transportType == "" {
-			transportType = "streamable-http" // Default for remote servers
+			transportType = defaultTransportType // Default for remote servers
 		}
 		// Only pull image if we are not running in Kubernetes mode.
 		// This split will go away if we implement a separate command or binary

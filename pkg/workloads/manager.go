@@ -755,7 +755,7 @@ func (d *defaultManager) ListWorkloadsInGroup(ctx context.Context, groupName str
 }
 
 // getRemoteWorkloadsFromState retrieves remote servers from the state store
-func (d *defaultManager) getRemoteWorkloadsFromState(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error) {
+func (*defaultManager) getRemoteWorkloadsFromState(ctx context.Context, _ bool, labelFilters []string) ([]core.Workload, error) {
 	// Create a state store
 	store, err := state.NewRunConfigStore(state.DefaultAppName)
 	if err != nil {
@@ -786,7 +786,9 @@ func (d *defaultManager) getRemoteWorkloadsFromState(ctx context.Context, listAl
 
 		// Parse the run configuration
 		runConfig, err := runner.ReadJSON(reader)
-		reader.Close()
+		if closeErr := reader.Close(); closeErr != nil {
+			logger.Warnf("failed to close reader for %s: %v", name, closeErr)
+		}
 		if err != nil {
 			logger.Warnf("failed to parse configuration for %s: %v", name, err)
 			continue

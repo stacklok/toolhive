@@ -454,6 +454,11 @@ components:
             AuthorizeURL is the OAuth authorization endpoint URL
             Used for non-OIDC OAuth flows when issuer is not provided
           type: string
+        callback_port:
+          description: |-
+            CallbackPort is the specific port to use for the OAuth callback server
+            If not specified, a random available port will be used
+          type: integer
         client_id:
           description: ClientID is the OAuth client ID for authentication
           type: string
@@ -462,6 +467,13 @@ components:
             Issuer is the OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
             Used for OIDC discovery to find authorization and token endpoints
           type: string
+        oauth_params:
+          additionalProperties:
+            type: string
+          description: |-
+            OAuthParams contains additional OAuth parameters to include in the authorization request
+            These are server-specific parameters like "prompt", "response_mode", etc.
+          type: object
         scopes:
           description: |-
             Scopes are the OAuth scopes to request
@@ -600,6 +612,44 @@ components:
         predicate_type:
           type: string
       type: object
+    runner.RemoteAuthConfig:
+      description: RemoteAuthConfig contains OAuth configuration for remote MCP servers
+      properties:
+        authorizeURL:
+          type: string
+        bearerToken:
+          description: Add Bearer token support
+          type: string
+        callbackPort:
+          type: integer
+        clientID:
+          type: string
+        clientSecret:
+          type: string
+        clientSecretFile:
+          type: string
+        enableRemoteAuth:
+          type: boolean
+        issuer:
+          description: OAuth endpoint configuration (from registry)
+          type: string
+        oauthParams:
+          additionalProperties:
+            type: string
+          description: OAuth parameters for server-specific customization
+          type: object
+        scopes:
+          items:
+            type: string
+          type: array
+        skipBrowser:
+          type: boolean
+        timeout:
+          example: 5m
+          type: string
+        tokenURL:
+          type: string
+      type: object
     runner.RunConfig:
       properties:
         audit_config:
@@ -691,6 +741,11 @@ components:
           type: integer
         proxy_mode:
           $ref: '#/components/schemas/types.ProxyMode'
+        remote_auth_config:
+          $ref: '#/components/schemas/runner.RemoteAuthConfig'
+        remote_url:
+          description: RemoteURL is the URL of the remote MCP server (if running remotely)
+          type: string
         secrets:
           description: |-
             Secrets are the secret parameters to pass to the container

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sync"
 
+	"golang.org/x/oauth2"
+
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -14,7 +16,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/transport/types"
-	"golang.org/x/oauth2"
 )
 
 const (

@@ -357,7 +357,7 @@ type RemoteAuthConfig struct {
 	ClientSecretFile string
 	Scopes           []string
 	SkipBrowser      bool
-	Timeout          time.Duration
+	Timeout          time.Duration `swaggertype:"string" example:"5m"`
 	CallbackPort     int
 	BearerToken      string // Add Bearer token support
 

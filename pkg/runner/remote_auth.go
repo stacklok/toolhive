@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-logr/logr"
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // AuthInfo contains authentication information extracted from WWW-Authenticate header
@@ -37,17 +37,17 @@ func NewRemoteAuthHandler(config *RemoteAuthConfig) *RemoteAuthHandler {
 
 // Authenticate is the main entry point for remote MCP server authentication
 func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) (*oauth2.TokenSource, error) {
-	logger := logr.FromContextOrDiscard(ctx)
-	logger.V(1).Info("Authenticate called", "remoteURL", remoteURL)
-	logger.V(1).Info("RemoteAuthConfig", "enableRemoteAuth", h.config.EnableRemoteAuth, "hasBearerToken", h.config.BearerToken != "")
+	logger.Debugf("Authenticate called for remote URL: %s", remoteURL)
+	logger.Debugf("RemoteAuthConfig - enableRemoteAuth: %v, hasBearerToken: %v",
+		h.config.EnableRemoteAuth, h.config.BearerToken != "")
 
 	if h.config != nil {
-		logger.V(1).Info("OAuth configuration",
-			"clientID", h.config.ClientID,
-			"hasAuthorizeURL", h.config.AuthorizeURL != "",
-			"hasTokenURL", h.config.TokenURL != "",
-			"hasIssuer", h.config.Issuer != "",
-			"scopes", h.config.Scopes)
+		logger.Debugf("OAuth configuration - clientID: %s, hasAuthorizeURL: %v, hasTokenURL: %v, hasIssuer: %v, scopes: %v",
+			h.config.ClientID,
+			h.config.AuthorizeURL != "",
+			h.config.TokenURL != "",
+			h.config.Issuer != "",
+			h.config.Scopes)
 	}
 
 	// If we have a Bearer token configured, use it regardless of server authentication requirements
@@ -59,15 +59,13 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 	// First, try to detect if authentication is required
 	authInfo, err := h.detectAuthenticationFromServer(ctx, remoteURL)
 	if err != nil {
-		logger.V(1).Info("Could not detect authentication from server", "error", err)
+		logger.Debugf("Could not detect authentication from server: %v", err)
 		return nil, nil // Not an error, just no auth detected
 	}
 
 	if authInfo != nil {
-		logger.Info("Detected authentication requirement from server",
-			"type", authInfo.Type,
-			"realm", authInfo.Realm,
-			"resource_metadata", authInfo.ResourceMetadata)
+		logger.Infof("Detected authentication requirement from server - type: %s, realm: %s, resource_metadata: %s",
+			authInfo.Type, authInfo.Realm, authInfo.ResourceMetadata)
 
 		// Handle different authentication types
 		switch authInfo.Type {
@@ -78,7 +76,7 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 		case "Digest":
 			return h.handleDigestAuthentication(ctx, authInfo)
 		default:
-			logger.Info("Unsupported authentication type", "type", authInfo.Type)
+			logger.Infof("Unsupported authentication type: %s", authInfo.Type)
 			return nil, nil
 		}
 	}
@@ -198,7 +196,7 @@ func (h *RemoteAuthHandler) parseWWWAuthenticate(header string) (*AuthInfo, erro
 }
 
 // extractParameter extracts a parameter value from an authentication header
-func (h *RemoteAuthHandler) extractParameter(params, paramName string) string {
+func (*RemoteAuthHandler) extractParameter(params, paramName string) string {
 	// Look for paramName=value or paramName="value"
 	parts := strings.Split(params, ",")
 	for _, part := range parts {
@@ -214,9 +212,8 @@ func (h *RemoteAuthHandler) extractParameter(params, paramName string) string {
 }
 
 // handleBearerAuthentication handles Bearer token authentication
-func (h *RemoteAuthHandler) handleBearerAuthentication(ctx context.Context, authInfo *AuthInfo, remoteURL string) (*oauth2.TokenSource, error) {
-	logger := logr.FromContextOrDiscard(ctx)
-
+func (h *RemoteAuthHandler) handleBearerAuthentication(
+	ctx context.Context, authInfo *AuthInfo, remoteURL string) (*oauth2.TokenSource, error) {
 	// If we have a client ID configured, try OAuth flow
 	if h.config != nil && h.config.ClientID != "" {
 		logger.Info("Attempting OAuth authentication flow")
@@ -245,28 +242,28 @@ func (h *RemoteAuthHandler) handleBearerAuthentication(ctx context.Context, auth
 	}
 
 	// If no OAuth configuration or issuer, return error
-	return nil, fmt.Errorf("Bearer authentication required but no OAuth configuration available")
+	return nil, fmt.Errorf("bearer authentication required but no OAuth configuration available")
 }
 
 // handleBasicAuthentication handles Basic authentication
-func (h *RemoteAuthHandler) handleBasicAuthentication(ctx context.Context, authInfo *AuthInfo) (*oauth2.TokenSource, error) {
+func (*RemoteAuthHandler) handleBasicAuthentication(_ context.Context, _ *AuthInfo) (*oauth2.TokenSource, error) {
 	// Basic authentication is not supported in this implementation
 	// Could be extended to support username/password authentication
-	return nil, fmt.Errorf("Basic authentication not supported")
+	return nil, fmt.Errorf("basic authentication not supported")
 }
 
 // handleDigestAuthentication handles Digest authentication
-func (h *RemoteAuthHandler) handleDigestAuthentication(ctx context.Context, authInfo *AuthInfo) (*oauth2.TokenSource, error) {
+func (*RemoteAuthHandler) handleDigestAuthentication(_ context.Context, _ *AuthInfo) (*oauth2.TokenSource, error) {
 	// Digest authentication is not supported in this implementation
-	return nil, fmt.Errorf("Digest authentication not supported")
+	return nil, fmt.Errorf("digest authentication not supported")
 }
 
 // deriveIssuerFromURL attempts to derive the OAuth issuer from the remote URL using general patterns
-func (h *RemoteAuthHandler) deriveIssuerFromURL(remoteURL string) string {
+func (*RemoteAuthHandler) deriveIssuerFromURL(remoteURL string) string {
 	// Parse the URL to extract the domain
 	parsedURL, err := url.Parse(remoteURL)
 	if err != nil {
-		logr.FromContextOrDiscard(context.Background()).V(1).Info("Failed to parse remote URL", "error", err)
+		logger.Debugf("Failed to parse remote URL: %v", err)
 		return ""
 	}
 
@@ -279,23 +276,21 @@ func (h *RemoteAuthHandler) deriveIssuerFromURL(remoteURL string) string {
 	// This works for most OAuth providers that use their domain as the issuer
 	issuer := fmt.Sprintf("https://%s", host)
 
-	logr.FromContextOrDiscard(context.Background()).V(1).Info("Derived issuer from URL", "remoteURL", remoteURL, "issuer", issuer)
+	logger.Debugf("Derived issuer from URL - remoteURL: %s, issuer: %s", remoteURL, issuer)
 	return issuer
 }
 
 // performOAuthFlow performs the OAuth authentication flow
 func (h *RemoteAuthHandler) performOAuthFlow(ctx context.Context, issuer string) (*oauth2.TokenSource, error) {
-	logger := logr.FromContextOrDiscard(ctx)
-	logger.Info("Starting OAuth authentication flow...", "issuer", issuer)
+	logger.Infof("Starting OAuth authentication flow for issuer: %s", issuer)
 
 	var oauthConfig *oauth.Config
 	var err error
 
 	// Check if we have manual OAuth endpoints configured from registry
 	if h.config != nil && h.config.AuthorizeURL != "" && h.config.TokenURL != "" {
-		logger.Info("Using manual OAuth endpoints from registry",
-			"authorize_url", h.config.AuthorizeURL,
-			"token_url", h.config.TokenURL)
+		logger.Infof("Using manual OAuth endpoints from registry - authorize_url: %s, token_url: %s",
+			h.config.AuthorizeURL, h.config.TokenURL)
 
 		oauthConfig, err = oauth.CreateOAuthConfigManual(
 			h.config.ClientID,
@@ -335,7 +330,7 @@ func (h *RemoteAuthHandler) performOAuthFlow(ctx context.Context, issuer string)
 
 	if err != nil {
 		// If OIDC discovery fails, try fallback to known OAuth endpoints
-		logger.Info("OIDC discovery failed, trying fallback", "error", err)
+		logger.Infof("OIDC discovery failed, trying fallback: %v", err)
 		return h.performOAuthFlowFallback(ctx, issuer)
 	}
 
@@ -371,8 +366,7 @@ func (h *RemoteAuthHandler) performOAuthFlow(ctx context.Context, issuer string)
 
 // performOAuthFlowFallback performs OAuth flow with common endpoint patterns
 func (h *RemoteAuthHandler) performOAuthFlowFallback(ctx context.Context, issuer string) (*oauth2.TokenSource, error) {
-	logger := logr.FromContextOrDiscard(ctx)
-	logger.Info("Using fallback OAuth configuration", "issuer", issuer)
+	logger.Infof("Using fallback OAuth configuration for issuer: %s", issuer)
 
 	// Try common OAuth endpoint patterns
 	commonPatterns := []struct {
@@ -403,7 +397,7 @@ func (h *RemoteAuthHandler) performOAuthFlowFallback(ctx context.Context, issuer
 	}
 
 	for _, pattern := range commonPatterns {
-		logger.V(1).Info("Trying OAuth pattern", "pattern", pattern.name)
+		logger.Debugf("Trying OAuth pattern: %s", pattern.name)
 
 		oauthConfig, err := oauth.CreateOAuthConfigManual(
 			h.config.ClientID,
@@ -417,14 +411,14 @@ func (h *RemoteAuthHandler) performOAuthFlowFallback(ctx context.Context, issuer
 		)
 
 		if err != nil {
-			logger.V(1).Info("Pattern failed", "pattern", pattern.name, "error", err)
+			logger.Debugf("Pattern failed - pattern: %s, error: %v", pattern.name, err)
 			continue
 		}
 
 		// Try to create and start the OAuth flow
 		flow, err := oauth.NewFlow(oauthConfig)
 		if err != nil {
-			logger.V(1).Info("Failed to create OAuth flow for pattern", "pattern", pattern.name, "error", err)
+			logger.Debugf("Failed to create OAuth flow for pattern - pattern: %s, error: %v", pattern.name, err)
 			continue
 		}
 
@@ -443,11 +437,11 @@ func (h *RemoteAuthHandler) performOAuthFlowFallback(ctx context.Context, issuer
 			if oauthCtx.Err() == context.DeadlineExceeded {
 				return nil, fmt.Errorf("OAuth flow timed out after %v - user did not complete authentication", oauthTimeout)
 			}
-			logger.V(1).Info("OAuth flow failed for pattern", "pattern", pattern.name, "error", err)
+			logger.Debugf("OAuth flow failed for pattern - pattern: %s, error: %v", pattern.name, err)
 			continue
 		}
 
-		logger.Info("OAuth authentication successful using pattern", "pattern", pattern.name)
+		logger.Infof("OAuth authentication successful using pattern: %s", pattern.name)
 		source := flow.TokenSource()
 		return &source, nil
 	}
@@ -456,9 +450,8 @@ func (h *RemoteAuthHandler) performOAuthFlowFallback(ctx context.Context, issuer
 }
 
 // createBearerTokenSource creates a static oauth2.TokenSource from a provided Bearer token
-func (h *RemoteAuthHandler) createBearerTokenSource(token string) *oauth2.TokenSource {
-	logger := logr.FromContextOrDiscard(context.Background())
-	logger.V(1).Info("Creating Bearer token source", "token_prefix", token[:10]+"...")
+func (*RemoteAuthHandler) createBearerTokenSource(token string) *oauth2.TokenSource {
+	logger.Debugf("Creating Bearer token source with token prefix: %s...", token[:10])
 
 	// Create a static token source that always returns the same token
 	staticToken := &oauth2.Token{
@@ -466,6 +459,6 @@ func (h *RemoteAuthHandler) createBearerTokenSource(token string) *oauth2.TokenS
 		TokenType:   "Bearer",
 	}
 	tokenSource := oauth2.StaticTokenSource(staticToken)
-	logger.V(1).Info("Bearer token source created successfully")
+	logger.Debug("Bearer token source created successfully")
 	return &tokenSource
 }

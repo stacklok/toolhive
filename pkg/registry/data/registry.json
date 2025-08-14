@@ -1496,11 +1496,26 @@
         },
         {
           "description": "GitHub Enterprise Server hostname (optional)",
-          "name": "GH_HOST",
+          "name": "GITHUB_HOST",
+          "required": false
+        },
+        {
+          "description": "Comma-separated list of toolsets to enable (e.g., 'repos,issues,pull_requests'). If not set, all toolsets are enabled. See the README for available toolsets.",
+          "name": "GITHUB_TOOLSETS",
+          "required": false
+        },
+        {
+          "description": "Set to '1' to enable dynamic toolset discovery",
+          "name": "GITHUB_DYNAMIC_TOOLSETS",
+          "required": false
+        },
+        {
+          "description": "Set to '1' to enable read-only mode, preventing any modifications to GitHub resources",
+          "name": "GITHUB_READ_ONLY",
           "required": false
         }
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.10.0",
+      "image": "ghcr.io/github/github-mcp-server:v0.11.0",
       "metadata": {
         "last_updated": "2025-08-13T08:42:43Z",
         "pulls": 5000,
@@ -1533,16 +1548,20 @@
       "status": "Active",
       "tags": [
         "api",
+        "copilot",
         "create",
         "fork",
+        "gist",
         "github",
+        "github-actions",
+        "github-enterprise",
+        "issues",
         "list",
         "pull-request",
         "push",
         "repository",
         "search",
-        "update",
-        "issues"
+        "update"
       ],
       "tier": "Official",
       "tools": [
@@ -1553,6 +1572,7 @@
         "cancel_workflow_run",
         "create_and_submit_pull_request_review",
         "create_branch",
+        "create_gist",
         "create_issue",
         "create_or_update_file",
         "create_pending_pull_request_review",
@@ -1568,7 +1588,7 @@
         "get_commit",
         "get_dependabot_alert",
         "get_discussion",
-        "get_discussion_comment",
+        "get_discussion_comments",
         "get_file_contents",
         "get_issue",
         "get_issue_comments",
@@ -1592,6 +1612,7 @@
         "list_dependabot_alerts",
         "list_discussion_categories",
         "list_discussions",
+        "list_gists",
         "list_issues",
         "list_notifications",
         "list_pull_requests",
@@ -1620,6 +1641,7 @@
         "search_repositories",
         "search_users",
         "submit_pending_pull_request_review",
+        "update_gist",
         "update_issue",
         "update_pull_request",
         "update_pull_request_branch"

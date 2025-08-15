@@ -28,6 +28,7 @@ thv list [flags]
       --format string       Output format (json, text, or mcpservers) (default "text")
   -h, --help                help for list
   -l, --label stringArray   Filter workloads by labels (format: key=value)
+      --runtime string      Container runtime to use (docker, kubernetes)
 ```
 
 ### Options inherited from parent commands

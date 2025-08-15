@@ -138,18 +138,18 @@ func (mr *MockManagerMockRecorder) ListWorkloadsInGroup(ctx, groupName any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloadsInGroup", reflect.TypeOf((*MockManager)(nil).ListWorkloadsInGroup), ctx, groupName)
 }
 
-// MoveToDefaultGroup mocks base method.
-func (m *MockManager) MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error {
+// MoveToGroup mocks base method.
+func (m *MockManager) MoveToGroup(ctx context.Context, workloadNames []string, groupFrom, groupTo string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MoveToDefaultGroup", ctx, workloadNames, groupName)
+	ret := m.ctrl.Call(m, "MoveToGroup", ctx, workloadNames, groupFrom, groupTo)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// MoveToDefaultGroup indicates an expected call of MoveToDefaultGroup.
-func (mr *MockManagerMockRecorder) MoveToDefaultGroup(ctx, workloadNames, groupName any) *gomock.Call {
+// MoveToGroup indicates an expected call of MoveToGroup.
+func (mr *MockManagerMockRecorder) MoveToGroup(ctx, workloadNames, groupFrom, groupTo any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MoveToDefaultGroup", reflect.TypeOf((*MockManager)(nil).MoveToDefaultGroup), ctx, workloadNames, groupName)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MoveToGroup", reflect.TypeOf((*MockManager)(nil).MoveToGroup), ctx, workloadNames, groupFrom, groupTo)
 }
 
 // RestartWorkloads mocks base method.

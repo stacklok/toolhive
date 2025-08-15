@@ -22,12 +22,18 @@ type Client struct {
 	Name MCPClient `json:"name"`
 }
 
+// RegisteredClient represents a registered client with its associated groups.
+type RegisteredClient struct {
+	Name   MCPClient `json:"name"`
+	Groups []string  `json:"groups"`
+}
+
 // Manager is the interface for managing registered ToolHive clients.
 //
 //go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=manager.go Manager
 type Manager interface {
-	// ListClients returns a list of all registered.
-	ListClients() ([]Client, error)
+	// ListClients returns a list of all registered clients with their group information.
+	ListClients(ctx context.Context) ([]RegisteredClient, error)
 	// RegisterClients registers multiple clients with ToolHive for the specified workloads.
 	RegisterClients(clients []Client, workloads []core.Workload) error
 	// UnregisterClients unregisters multiple clients from ToolHive for the specified workloads.
@@ -61,15 +67,49 @@ func NewManager(ctx context.Context) (Manager, error) {
 	}, nil
 }
 
-func (*defaultManager) ListClients() ([]Client, error) {
-	clients := []Client{}
-	appConfig := config.GetConfig()
+func (m *defaultManager) ListClients(ctx context.Context) ([]RegisteredClient, error) {
+	cfg := config.GetConfig()
 
-	for _, clientName := range appConfig.Clients.RegisteredClients {
-		clients = append(clients, Client{Name: MCPClient(clientName)})
+	// Get all groups
+	allGroups, err := m.groupManager.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list groups: %w", err)
 	}
 
-	return clients, nil
+	clientGroups := make(map[string][]string) // client -> groups
+	allRegisteredClients := make(map[string]bool)
+
+	if len(allGroups) > 0 {
+		// Collect clients from all groups
+		for _, group := range allGroups {
+			for _, clientName := range group.RegisteredClients {
+				allRegisteredClients[clientName] = true
+				clientGroups[clientName] = append(clientGroups[clientName], group.Name)
+			}
+		}
+	}
+
+	// Add clients from global config that might not be in any group
+	for _, clientName := range cfg.Clients.RegisteredClients {
+		if !allRegisteredClients[clientName] {
+			allRegisteredClients[clientName] = true
+			if len(allGroups) > 0 {
+				clientGroups[clientName] = []string{} // no groups
+			}
+		}
+	}
+
+	// Convert to slice for return
+	var registeredClients []RegisteredClient
+	for clientName := range allRegisteredClients {
+		registered := RegisteredClient{
+			Name:   MCPClient(clientName),
+			Groups: clientGroups[clientName],
+		}
+		registeredClients = append(registeredClients, registered)
+	}
+
+	return registeredClients, nil
 }
 
 // RegisterClients registers multiple clients with ToolHive for the specified workloads.

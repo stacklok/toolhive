@@ -57,18 +57,18 @@ func (mr *MockManagerMockRecorder) AddServerToClients(ctx, serverName, serverURL
 }
 
 // ListClients mocks base method.
-func (m *MockManager) ListClients() ([]client.Client, error) {
+func (m *MockManager) ListClients(ctx context.Context) ([]client.RegisteredClient, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListClients")
-	ret0, _ := ret[0].([]client.Client)
+	ret := m.ctrl.Call(m, "ListClients", ctx)
+	ret0, _ := ret[0].([]client.RegisteredClient)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ListClients indicates an expected call of ListClients.
-func (mr *MockManagerMockRecorder) ListClients() *gomock.Call {
+func (mr *MockManagerMockRecorder) ListClients(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListClients", reflect.TypeOf((*MockManager)(nil).ListClients))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListClients", reflect.TypeOf((*MockManager)(nil).ListClients), ctx)
 }
 
 // RegisterClients mocks base method.

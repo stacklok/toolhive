@@ -104,6 +104,7 @@ func TestKeyctlProvider_BasicOperations(t *testing.T) {
 	})
 
 	t.Run("DeleteAll", func(t *testing.T) {
+		t.Parallel()
 		// Set multiple keys
 		keys := []string{"key1", "key2", "key3"}
 		for _, key := range keys {

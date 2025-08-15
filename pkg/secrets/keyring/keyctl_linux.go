@@ -140,6 +140,6 @@ func (k *keyctlProvider) IsAvailable() bool {
 	return true
 }
 
-func (_ *keyctlProvider) Name() string {
+func (*keyctlProvider) Name() string {
 	return "Linux Keyctl"
 }

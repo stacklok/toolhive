@@ -8419,7 +8419,7 @@ spec:
                 type: array
               serviceAccount:
                 description: |-
-                  ServiceAccount is the name of an already existingservice account to use by the MCP server.
+                  ServiceAccount is the name of an already existing service account to use by the MCP server.
                   If not specified, a ServiceAccount will be created automatically and used by the MCP server.
                 type: string
               targetPort:

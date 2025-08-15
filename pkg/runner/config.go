@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -39,6 +40,12 @@ type RunConfig struct {
 	// Image is the Docker image to run
 	Image string `json:"image" yaml:"image"`
 
+	// RemoteURL is the URL of the remote MCP server (if running remotely)
+	RemoteURL string `json:"remote_url,omitempty" yaml:"remote_url,omitempty"`
+
+	// RemoteAuthConfig contains OAuth configuration for remote MCP servers
+	RemoteAuthConfig *RemoteAuthConfig `json:"remote_auth_config,omitempty" yaml:"remote_auth_config,omitempty"`
+
 	// CmdArgs are the arguments to pass to the container
 	CmdArgs []string `json:"cmd_args,omitempty" yaml:"cmd_args,omitempty"`
 
@@ -46,10 +53,10 @@ type RunConfig struct {
 	Name string `json:"name" yaml:"name"`
 
 	// ContainerName is the name of the container
-	ContainerName string `json:"container_name" yaml:"container_name"`
+	ContainerName string `json:"container_name,omitempty" yaml:"container_name,omitempty"`
 
 	// BaseName is the base name used for the container (without prefixes)
-	BaseName string `json:"base_name" yaml:"base_name"`
+	BaseName string `json:"base_name,omitempty" yaml:"base_name,omitempty"`
 
 	// Transport is the transport mode (stdio, sse, or streamable-http)
 	Transport types.TransportType `json:"transport" yaml:"transport"`
@@ -358,4 +365,25 @@ func (c *RunConfig) SaveState(ctx context.Context) error {
 // LoadState loads a run configuration from the state store
 func LoadState(ctx context.Context, name string) (*RunConfig, error) {
 	return state.LoadRunConfig(ctx, name, ReadJSON)
+}
+
+// RemoteAuthConfig holds configuration for remote authentication
+type RemoteAuthConfig struct {
+	EnableRemoteAuth bool
+	ClientID         string
+	ClientSecret     string
+	ClientSecretFile string
+	Scopes           []string
+	SkipBrowser      bool
+	Timeout          time.Duration `swaggertype:"string" example:"5m"`
+	CallbackPort     int
+	BearerToken      string // Add Bearer token support
+
+	// OAuth endpoint configuration (from registry)
+	Issuer       string
+	AuthorizeURL string
+	TokenURL     string
+
+	// OAuth parameters for server-specific customization
+	OAuthParams map[string]string
 }

@@ -51,6 +51,9 @@ type Config struct {
 
 	// IntrospectionEndpoint is the optional introspection endpoint for validating tokens
 	IntrospectionEndpoint string
+
+	// OAuthParams are additional parameters to pass to the authorization URL
+	OAuthParams map[string]string
 }
 
 // Flow handles the OAuth authentication flow
@@ -239,6 +242,13 @@ func (f *Flow) Start(ctx context.Context, skipBrowser bool) (*TokenResult, error
 func (f *Flow) buildAuthURL() string {
 	opts := []oauth2.AuthCodeOption{
 		oauth2.SetAuthURLParam("state", f.state),
+	}
+
+	// Add registry-provided OAuth parameters
+	if f.config.OAuthParams != nil {
+		for key, value := range f.config.OAuthParams {
+			opts = append(opts, oauth2.SetAuthURLParam(key, value))
+		}
 	}
 
 	// Add PKCE parameters if enabled

@@ -14,6 +14,7 @@ func CreateOAuthConfigManual(
 	scopes []string,
 	usePKCE bool,
 	callbackPort int,
+	oauthParams map[string]string,
 ) (*Config, error) {
 	if clientID == "" {
 		return nil, fmt.Errorf("client ID is required")
@@ -46,5 +47,6 @@ func CreateOAuthConfigManual(
 		Scopes:       scopes,
 		UsePKCE:      usePKCE,
 		CallbackPort: callbackPort,
+		OAuthParams:  oauthParams,
 	}, nil
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-func TestGetClientStatus(t *testing.T) {
+func TestGetClientStatus(t *testing.T) { //nolint:paralleltest // Uses global XDG state via MockConfig
 	// Setup a temporary home directory for testing
 	tempHome, err := os.MkdirTemp("", "toolhive-test-home")
 	require.NoError(t, err)
@@ -65,7 +65,7 @@ func TestGetClientStatus(t *testing.T) {
 	assert.False(t, vscodeStatus.Registered)
 }
 
-func TestGetClientStatus_Sorting(t *testing.T) {
+func TestGetClientStatus_Sorting(t *testing.T) { //nolint:paralleltest // Uses global XDG state via MockConfig
 	// Setup a temporary home directory for testing
 	origHome := os.Getenv("HOME")
 	tempHome, err := os.MkdirTemp("", "toolhive-test-home")

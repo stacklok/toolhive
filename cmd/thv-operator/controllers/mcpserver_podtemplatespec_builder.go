@@ -1,8 +1,9 @@
 package controllers
 
 import (
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
 // MCPServerPodTemplateSpecBuilder provides an interface for building PodTemplateSpec patches for MCP Servers

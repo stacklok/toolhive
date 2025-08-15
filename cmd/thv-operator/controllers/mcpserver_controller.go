@@ -1540,7 +1540,6 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).

@@ -3,14 +3,16 @@ package controllers
 import (
 	"testing"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
+
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
 func TestMCPServerPodTemplateSpecBuilder_AllCombinations(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name                   string
 		userTemplate           *corev1.PodTemplateSpec
@@ -153,6 +155,7 @@ func TestMCPServerPodTemplateSpecBuilder_AllCombinations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Build the PodTemplateSpec
 			result := NewMCPServerPodTemplateSpecBuilder(tt.userTemplate).
 				WithServiceAccount(tt.serviceAccount).
@@ -195,6 +198,7 @@ func TestMCPServerPodTemplateSpecBuilder_AllCombinations(t *testing.T) {
 }
 
 func TestMCPServerPodTemplateSpecBuilder_SecretEnvVarNaming(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		secret      mcpv1alpha1.SecretRef
@@ -219,6 +223,7 @@ func TestMCPServerPodTemplateSpecBuilder_SecretEnvVarNaming(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := NewMCPServerPodTemplateSpecBuilder(nil).
 				WithSecrets([]mcpv1alpha1.SecretRef{tt.secret}).
 				Build()
@@ -237,6 +242,7 @@ func TestMCPServerPodTemplateSpecBuilder_SecretEnvVarNaming(t *testing.T) {
 }
 
 func TestMCPServerPodTemplateSpecBuilder_IsEmpty(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		setupBuilder   func() *MCPServerPodTemplateSpecBuilder
@@ -274,6 +280,7 @@ func TestMCPServerPodTemplateSpecBuilder_IsEmpty(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			builder := tt.setupBuilder()
 
 			// Test isEmpty method

@@ -357,8 +357,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 		return err
 	}
 
-	// Ensure RoleBinding
-	return r.ensureRBACResource(ctx, mcpServer, "RoleBinding", func() client.Object {
+	if err := r.ensureRBACResource(ctx, mcpServer, "RoleBinding", func() client.Object {
 		return &rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      proxyRunnerNameForRBAC,
@@ -375,6 +374,25 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 					Name:      proxyRunnerNameForRBAC,
 					Namespace: mcpServer.Namespace,
 				},
+			},
+		}
+	}); err != nil {
+		return err
+	}
+
+	// If a service account is specified, we don't need to create one
+	if mcpServer.Spec.ServiceAccount != nil {
+		return nil
+	}
+
+	// otherwise, create a service account for the MCP server
+	mcpServerServiceAccountName := mcpServerServiceAccountName(mcpServer.Name)
+	return r.ensureRBACResource(ctx, mcpServer, "ServiceAccount", func() client.Object {
+		mcpServer.Spec.ServiceAccount = &mcpServerServiceAccountName
+		return &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      mcpServerServiceAccountName,
+				Namespace: mcpServer.Namespace,
 			},
 		}
 	})
@@ -399,8 +417,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 	}
 
 	// Generate pod template patch for secrets and merge with user-provided patch
-	finalPodTemplateSpec := generateAndMergePodTemplateSpecs(m.Spec.Secrets, m.Spec.PodTemplateSpec)
 
+	finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
+		WithServiceAccount(m.Spec.ServiceAccount).
+		WithSecrets(m.Spec.Secrets).
+		Build()
 	// Add pod template patch if we have one
 	if finalPodTemplateSpec != nil {
 		podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
@@ -941,7 +962,10 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 		}
 
 		// Check if the pod template spec has changed (including secrets)
-		expectedPodTemplateSpec := generateAndMergePodTemplateSpecs(mcpServer.Spec.Secrets, mcpServer.Spec.PodTemplateSpec)
+		expectedPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec).
+			WithServiceAccount(mcpServer.Spec.ServiceAccount).
+			WithSecrets(mcpServer.Spec.Secrets).
+			Build()
 
 		// Find the current pod template patch in the container args
 		var currentPodTemplatePatch string
@@ -1087,6 +1111,11 @@ func resourceRequirementsForMCPServer(m *mcpv1alpha1.MCPServer) corev1.ResourceR
 // proxyRunnerServiceAccountName returns the service account name for the proxy runner
 func proxyRunnerServiceAccountName(mcpServerName string) string {
 	return fmt.Sprintf("%s-proxy-runner", mcpServerName)
+}
+
+// mcpServerServiceAccountName returns the service account name for the mcp server
+func mcpServerServiceAccountName(mcpServerName string) string {
+	return fmt.Sprintf("%s-sa", mcpServerName)
 }
 
 // labelsForMCPServer returns the labels for selecting the resources
@@ -1511,102 +1540,6 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
-// generateSecretsPodTemplatePatch generates a podTemplateSpec patch for secrets
-func generateSecretsPodTemplatePatch(secrets []mcpv1alpha1.SecretRef) *corev1.PodTemplateSpec {
-	if len(secrets) == 0 {
-		return nil
-	}
-
-	envVars := make([]corev1.EnvVar, 0, len(secrets))
-	for _, secret := range secrets {
-		targetEnv := secret.Key
-		if secret.TargetEnvName != "" {
-			targetEnv = secret.TargetEnvName
-		}
-
-		envVars = append(envVars, corev1.EnvVar{
-			Name: targetEnv,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: secret.Name,
-					},
-					Key: secret.Key,
-				},
-			},
-		})
-	}
-
-	return &corev1.PodTemplateSpec{
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name: mcpContainerName,
-					Env:  envVars,
-				},
-			},
-		},
-	}
-}
-
-// mergePodTemplateSpecs merges a secrets patch with a user-provided podTemplateSpec
-func mergePodTemplateSpecs(secretsPatch, userPatch *corev1.PodTemplateSpec) *corev1.PodTemplateSpec {
-	// If no secrets, return user patch as-is
-	if secretsPatch == nil {
-		return userPatch
-	}
-
-	// If no user patch, return secrets patch
-	if userPatch == nil {
-		return secretsPatch
-	}
-
-	// Start with user patch as base (preserves all user customizations)
-	result := userPatch.DeepCopy()
-
-	// Find or create mcp container in result
-	mcpIndex := -1
-	for i, container := range result.Spec.Containers {
-		if container.Name == mcpContainerName {
-			mcpIndex = i
-			break
-		}
-	}
-
-	// Get secret env vars from secrets patch
-	var secretEnvVars []corev1.EnvVar
-	for _, container := range secretsPatch.Spec.Containers {
-		if container.Name == mcpContainerName {
-			secretEnvVars = container.Env
-			break
-		}
-	}
-
-	if mcpIndex >= 0 {
-		// Merge env vars into existing mcp container
-		result.Spec.Containers[mcpIndex].Env = append(
-			result.Spec.Containers[mcpIndex].Env,
-			secretEnvVars...,
-		)
-	} else {
-		// Add new mcp container with just env vars
-		result.Spec.Containers = append(result.Spec.Containers, corev1.Container{
-			Name: mcpContainerName,
-			Env:  secretEnvVars,
-		})
-	}
-
-	return result
-}
-
-// generateAndMergePodTemplateSpecs generates secrets patch and merges with user patch
-func generateAndMergePodTemplateSpecs(
-	secrets []mcpv1alpha1.SecretRef,
-	userPatch *corev1.PodTemplateSpec,
-) *corev1.PodTemplateSpec {
-	secretsPatch := generateSecretsPodTemplatePatch(secrets)
-	return mergePodTemplateSpecs(secretsPatch, userPatch)
-}
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {

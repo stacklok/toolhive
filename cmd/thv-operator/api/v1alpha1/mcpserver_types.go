@@ -48,6 +48,11 @@ type MCPServerSpec struct {
 	// +optional
 	Secrets []SecretRef `json:"secrets,omitempty"`
 
+	// ServiceAccount is the name of an already existing service account to use by the MCP server.
+	// If not specified, a ServiceAccount will be created automatically and used by the MCP server.
+	// +optional
+	ServiceAccount *string `json:"serviceAccount,omitempty"`
+
 	// PermissionProfile defines the permission profile to use
 	// +optional
 	PermissionProfile *PermissionProfileRef `json:"permissionProfile,omitempty"`

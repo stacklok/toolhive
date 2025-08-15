@@ -8,6 +8,7 @@ import (
 )
 
 func TestKeyctlProvider_Creation(t *testing.T) {
+	t.Parallel()
 	provider, err := NewKeyctlProvider()
 	if err != nil {
 		t.Skipf("Keyctl provider creation failed (may be expected in test environments): %v", err)
@@ -26,6 +27,7 @@ func TestKeyctlProvider_Creation(t *testing.T) {
 }
 
 func TestKeyctlProvider_Name(t *testing.T) {
+	t.Parallel()
 	provider, err := NewKeyctlProvider()
 	if err != nil {
 		t.Skipf("Keyctl provider creation failed: %v", err)
@@ -39,6 +41,7 @@ func TestKeyctlProvider_Name(t *testing.T) {
 }
 
 func TestKeyctlProvider_BasicOperations(t *testing.T) {
+	t.Parallel()
 	provider, err := NewKeyctlProvider()
 	if err != nil {
 		t.Skipf("Keyctl provider creation failed: %v", err)
@@ -55,6 +58,7 @@ func TestKeyctlProvider_BasicOperations(t *testing.T) {
 	testValue := "test-value"
 
 	t.Run("Set and Get", func(t *testing.T) {
+		t.Parallel()
 		// Set a value
 		err := provider.Set(testService, testKey, testValue)
 		if err != nil {
@@ -73,6 +77,7 @@ func TestKeyctlProvider_BasicOperations(t *testing.T) {
 	})
 
 	t.Run("Get_NotFound", func(t *testing.T) {
+		t.Parallel()
 		_, err := provider.Get("nonexistent-service", "nonexistent-key")
 		if err == nil {
 			t.Error("expected error for nonexistent key")
@@ -84,6 +89,7 @@ func TestKeyctlProvider_BasicOperations(t *testing.T) {
 	})
 
 	t.Run("Delete", func(t *testing.T) {
+		t.Parallel()
 		// Delete the test key
 		err := provider.Delete(testService, testKey)
 		if err != nil {
@@ -124,6 +130,7 @@ func TestKeyctlProvider_BasicOperations(t *testing.T) {
 }
 
 func TestKeyctlProvider_MultipleServices(t *testing.T) {
+	t.Parallel()
 	provider, err := NewKeyctlProvider()
 	if err != nil {
 		t.Skipf("Keyctl provider creation failed: %v", err)

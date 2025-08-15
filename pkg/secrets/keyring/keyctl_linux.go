@@ -16,6 +16,8 @@ type keyctlProvider struct {
 	keys   map[string]map[string]int // service -> key -> keyid mapping
 }
 
+// NewKeyctlProvider creates a new keyring provider using Linux keyctl.
+// It initializes access to the user keyring for persistence across process invocations.
 func NewKeyctlProvider() (Provider, error) {
 	// Use user keyring for persistence across process invocations
 	ringID, err := unix.KeyctlGetKeyringID(unix.KEY_SPEC_USER_KEYRING, false)
@@ -138,6 +140,6 @@ func (k *keyctlProvider) IsAvailable() bool {
 	return true
 }
 
-func (k *keyctlProvider) Name() string {
+func (_ *keyctlProvider) Name() string {
 	return "Linux Keyctl"
 }

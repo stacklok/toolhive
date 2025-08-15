@@ -215,54 +215,36 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 }
 
 func listRegisteredClientsCmdFunc(cmd *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
-
-	// Check if we have groups configured
-	groupManager, err := groups.NewManager()
+	clientManager, err := client.NewManager(cmd.Context())
 	if err != nil {
-		return fmt.Errorf("failed to create group manager: %w", err)
+		return fmt.Errorf("failed to create client manager: %w", err)
 	}
 
-	allGroups, err := groupManager.List(cmd.Context())
+	registeredClients, err := clientManager.ListClients(cmd.Context())
 	if err != nil {
-		return fmt.Errorf("failed to list groups: %w", err)
+		return fmt.Errorf("failed to list registered clients: %w", err)
 	}
 
-	hasGroups := len(allGroups) > 0
-	clientGroups := make(map[string][]string) // client -> groups
-	allRegisteredClients := make(map[string]bool)
+	// Convert to UI format
+	var uiClients []ui.RegisteredClient
+	for _, regClient := range registeredClients {
+		uiClient := ui.RegisteredClient{
+			Name:   string(regClient.Name),
+			Groups: regClient.Groups,
+		}
+		uiClients = append(uiClients, uiClient)
+	}
 
-	if hasGroups {
-		// Collect clients from all groups
-		for _, group := range allGroups {
-			for _, clientName := range group.RegisteredClients {
-				allRegisteredClients[clientName] = true
-				clientGroups[clientName] = append(clientGroups[clientName], group.Name)
-			}
+	// Determine if we have groups by checking if any client has groups
+	hasGroups := false
+	for _, regClient := range registeredClients {
+		if len(regClient.Groups) > 0 {
+			hasGroups = true
+			break
 		}
 	}
 
-	// Add clients from global config that might not be in any group
-	for _, clientName := range cfg.Clients.RegisteredClients {
-		if !allRegisteredClients[clientName] {
-			allRegisteredClients[clientName] = true
-			if hasGroups {
-				clientGroups[clientName] = []string{} // no groups
-			}
-		}
-	}
-
-	// Convert to slice for table rendering
-	var registeredClients []ui.RegisteredClient
-	for clientName := range allRegisteredClients {
-		registered := ui.RegisteredClient{
-			Name:   clientName,
-			Groups: clientGroups[clientName],
-		}
-		registeredClients = append(registeredClients, registered)
-	}
-
-	return ui.RenderRegisteredClientsTable(registeredClients, hasGroups)
+	return ui.RenderRegisteredClientsTable(uiClients, hasGroups)
 }
 
 func performClientRegistration(ctx context.Context, clients []client.Client, groupNames []string) error {

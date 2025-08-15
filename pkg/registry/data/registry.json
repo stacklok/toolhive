@@ -1051,6 +1051,127 @@
       ],
       "transport": "streamable-http"
     },
+    "dolt": {
+      "description": "Provides Git-like version control for SQL databases using Dolt, enabling branching, merging, and versioning of database schemas and data",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "add_dolt_remote",
+        "alter_table",
+        "clone_database",
+        "create_database",
+        "create_dolt_branch",
+        "create_dolt_branch_from_head",
+        "create_dolt_commit",
+        "create_table",
+        "delete_dolt_branch",
+        "describe_table",
+        "dolt_fetch_all_branches",
+        "dolt_fetch_branch",
+        "dolt_pull_branch",
+        "dolt_push_branch",
+        "dolt_reset_all_tables_soft",
+        "dolt_reset_hard",
+        "dolt_reset_table_soft",
+        "drop_database",
+        "drop_table",
+        "exec",
+        "get_dolt_merge_status",
+        "list_databases",
+        "list_dolt_branches",
+        "list_dolt_commits",
+        "list_dolt_diff_changes_by_table_name",
+        "list_dolt_diff_changes_in_date_range",
+        "list_dolt_diff_changes_in_working_set",
+        "list_dolt_remotes",
+        "merge_dolt_branch",
+        "merge_dolt_branch_no_fast_forward",
+        "move_dolt_branch",
+        "query",
+        "remove_dolt_remote",
+        "select_active_branch",
+        "select_version",
+        "show_create_table",
+        "show_tables",
+        "stage_all_tables_for_dolt_commit",
+        "stage_table_for_dolt_commit",
+        "unstage_all_tables",
+        "unstage_table"
+      ],
+      "repository_url": "https://github.com/dolthub/dolt-mcp",
+      "tags": [
+        "database",
+        "version-control",
+        "sql",
+        "mysql",
+        "git",
+        "collaboration",
+        "data-science",
+        "branching",
+        "merging",
+        "reproducibility"
+      ],
+      "image": "docker.io/dolthub/dolt-mcp:0.1.0",
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              "localhost",
+              "dolthub.com",
+              ".dolthub.com"
+            ],
+            "allow_port": [
+              3306,
+              443,
+              80,
+              8080
+            ]
+          }
+        }
+      },
+      "env_vars": [
+        {
+          "name": "DOLT_HOST",
+          "description": "Hostname of the Dolt SQL server",
+          "required": true
+        },
+        {
+          "name": "DOLT_PORT",
+          "description": "Dolt server port",
+          "required": false,
+          "default": "3306"
+        },
+        {
+          "name": "DOLT_USER",
+          "description": "Username for Dolt server authentication",
+          "required": true
+        },
+        {
+          "name": "DOLT_PASSWORD",
+          "description": "Password for Dolt server authentication",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "DOLT_DATABASE",
+          "description": "Name of the database to connect to",
+          "required": true
+        },
+        {
+          "name": "MCP_MODE",
+          "description": "Server mode (stdio or http)",
+          "required": false,
+          "default": "http"
+        },
+        {
+          "name": "MCP_PORT",
+          "description": "HTTP server port (HTTP mode only)",
+          "required": false,
+          "default": "8080"
+        }
+      ]
+    },
     "elasticsearch": {
       "args": [
         "http"

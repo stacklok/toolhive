@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -109,6 +110,12 @@ func (b *RunConfigBuilder) WithSecrets(secrets []string) *RunConfigBuilder {
 // WithAuthzConfigPath sets the authorization config path
 func (b *RunConfigBuilder) WithAuthzConfigPath(path string) *RunConfigBuilder {
 	b.config.AuthzConfigPath = path
+	return b
+}
+
+// WithAuthzConfig sets the authorization config data
+func (b *RunConfigBuilder) WithAuthzConfig(config *authz.Config) *RunConfigBuilder {
+	b.config.AuthzConfig = config
 	return b
 }
 
@@ -294,6 +301,158 @@ func (b *RunConfigBuilder) WithToolsFilter(toolsFilter []string) *RunConfigBuild
 func (b *RunConfigBuilder) WithIgnoreConfig(ignoreConfig *ignore.Config) *RunConfigBuilder {
 	b.config.IgnoreConfig = ignoreConfig
 	return b
+}
+
+// WithMiddlewareFromFlags creates middleware configurations directly from flag values
+func (b *RunConfigBuilder) WithMiddlewareFromFlags(
+	oidcConfig *auth.TokenValidatorConfig,
+	toolsFilter []string,
+	telemetryConfig *telemetry.Config,
+	authzConfigPath string,
+	enableAudit bool,
+	auditConfigPath string,
+	serverName string,
+	transportType string,
+) *RunConfigBuilder {
+	var middlewareConfigs []types.MiddlewareConfig
+
+	// Add tool filter middlewares
+	middlewareConfigs = b.addToolFilterMiddlewares(middlewareConfigs, toolsFilter)
+
+	// Add core middlewares (always present)
+	middlewareConfigs = b.addCoreMiddlewares(middlewareConfigs, oidcConfig)
+
+	// Add optional middlewares
+	middlewareConfigs = b.addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
+	middlewareConfigs = b.addAuthzMiddleware(middlewareConfigs, authzConfigPath)
+	middlewareConfigs = b.addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName)
+
+	// Set the populated middleware configs
+	b.config.MiddlewareConfigs = middlewareConfigs
+	return b
+}
+
+// addToolFilterMiddlewares adds tool filter middlewares if tools filter is provided
+func (*RunConfigBuilder) addToolFilterMiddlewares(
+	middlewareConfigs []types.MiddlewareConfig, toolsFilter []string,
+) []types.MiddlewareConfig {
+	if len(toolsFilter) == 0 {
+		return middlewareConfigs
+	}
+
+	toolFilterParams := mcp.ToolFilterMiddlewareParams{
+		FilterTools: toolsFilter,
+	}
+
+	// Add tool filter middleware
+	if toolFilterConfig, err := types.NewMiddlewareConfig(mcp.ToolFilterMiddlewareType, toolFilterParams); err == nil {
+		middlewareConfigs = append(middlewareConfigs, *toolFilterConfig)
+	}
+
+	// Add tool call filter middleware
+	if toolCallFilterConfig, err := types.NewMiddlewareConfig(mcp.ToolCallFilterMiddlewareType, toolFilterParams); err == nil {
+		middlewareConfigs = append(middlewareConfigs, *toolCallFilterConfig)
+	}
+
+	return middlewareConfigs
+}
+
+// addCoreMiddlewares adds core middlewares that are always present
+func (*RunConfigBuilder) addCoreMiddlewares(
+	middlewareConfigs []types.MiddlewareConfig, oidcConfig *auth.TokenValidatorConfig,
+) []types.MiddlewareConfig {
+	// Authentication middleware (always present)
+	authParams := auth.MiddlewareParams{
+		OIDCConfig: oidcConfig,
+	}
+	if authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, authParams); err == nil {
+		middlewareConfigs = append(middlewareConfigs, *authConfig)
+	}
+
+	// MCP Parser middleware (always present)
+	mcpParserParams := mcp.ParserMiddlewareParams{}
+	if mcpParserConfig, err := types.NewMiddlewareConfig(mcp.ParserMiddlewareType, mcpParserParams); err == nil {
+		middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
+	}
+
+	return middlewareConfigs
+}
+
+// addTelemetryMiddleware adds telemetry middleware if enabled
+func (*RunConfigBuilder) addTelemetryMiddleware(
+	middlewareConfigs []types.MiddlewareConfig,
+	telemetryConfig *telemetry.Config,
+	serverName, transportType string,
+) []types.MiddlewareConfig {
+	if telemetryConfig == nil {
+		return middlewareConfigs
+	}
+
+	telemetryParams := telemetry.FactoryMiddlewareParams{
+		Config:     telemetryConfig,
+		ServerName: serverName,
+		Transport:  transportType,
+	}
+	if telemetryMwConfig, err := types.NewMiddlewareConfig(telemetry.MiddlewareType, telemetryParams); err == nil {
+		middlewareConfigs = append(middlewareConfigs, *telemetryMwConfig)
+	}
+
+	return middlewareConfigs
+}
+
+// addAuthzMiddleware adds authorization middleware if config path is provided
+func (*RunConfigBuilder) addAuthzMiddleware(
+	middlewareConfigs []types.MiddlewareConfig, authzConfigPath string,
+) []types.MiddlewareConfig {
+	if authzConfigPath == "" {
+		return middlewareConfigs
+	}
+
+	authzParams := authz.FactoryMiddlewareParams{
+		ConfigPath: authzConfigPath, // Keep for backwards compatibility
+	}
+
+	// Read authz config contents if path is provided
+	if authzConfigData, err := authz.LoadConfig(authzConfigPath); err == nil {
+		authzParams.ConfigData = authzConfigData
+	}
+	// Note: We keep ConfigPath set for backwards compatibility
+
+	if authzConfig, err := types.NewMiddlewareConfig(authz.MiddlewareType, authzParams); err == nil {
+		middlewareConfigs = append(middlewareConfigs, *authzConfig)
+	}
+
+	return middlewareConfigs
+}
+
+// addAuditMiddleware adds audit middleware if enabled or config path is provided
+func (*RunConfigBuilder) addAuditMiddleware(
+	middlewareConfigs []types.MiddlewareConfig,
+	enableAudit bool,
+	auditConfigPath, serverName string,
+) []types.MiddlewareConfig {
+	if !enableAudit && auditConfigPath == "" {
+		return middlewareConfigs
+	}
+
+	auditParams := audit.MiddlewareParams{
+		ConfigPath: auditConfigPath, // Keep for backwards compatibility
+		Component:  serverName,      // Use server name as component
+	}
+
+	// Read audit config contents if path is provided
+	if auditConfigPath != "" {
+		if auditConfigData, err := audit.LoadFromFile(auditConfigPath); err == nil {
+			auditParams.ConfigData = auditConfigData
+		}
+		// Note: We keep ConfigPath set for backwards compatibility
+	}
+
+	if auditConfig, err := types.NewMiddlewareConfig(audit.MiddlewareType, auditParams); err == nil {
+		middlewareConfigs = append(middlewareConfigs, *auditConfig)
+	}
+
+	return middlewareConfigs
 }
 
 // Build creates the final RunConfig instance with validation and processing

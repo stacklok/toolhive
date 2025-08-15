@@ -23,6 +23,8 @@ type Client struct {
 }
 
 // Manager is the interface for managing registered ToolHive clients.
+//
+//go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=manager.go Manager
 type Manager interface {
 	// ListClients returns a list of all registered.
 	ListClients() ([]Client, error)

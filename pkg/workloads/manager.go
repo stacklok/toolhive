@@ -19,7 +19,6 @@ import (
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
@@ -58,8 +57,8 @@ type Manager interface {
 	RestartWorkloads(ctx context.Context, names []string, foreground bool) (*errgroup.Group, error)
 	// GetLogs retrieves the logs of a container.
 	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
-	// MoveToDefaultGroup moves the specified workloads to the default group by updating the runconfig.
-	MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error
+	// MoveToGroup moves the specified workloads from one group to another by updating their runconfig.
+	MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group, including stopped workloads.
 	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error)
 	// DoesWorkloadExist checks if a workload with the given name exists.
@@ -700,8 +699,8 @@ func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.Cont
 	return &group
 }
 
-// MoveToDefaultGroup moves the specified workloads to the default group by updating their runconfig.
-func (*defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error {
+// MoveToGroup moves the specified workloads from one group to another by updating their runconfig.
+func (*defaultManager) MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error {
 	for _, workloadName := range workloadNames {
 		// Validate workload name
 		if err := types.ValidateWorkloadName(workloadName); err != nil {
@@ -715,14 +714,14 @@ func (*defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []s
 		}
 
 		// Check if the workload is actually in the specified group
-		if runnerConfig.Group != groupName {
+		if runnerConfig.Group != groupFrom {
 			logger.Debugf("Workload %s is not in group %s (current group: %s), skipping",
-				workloadName, groupName, runnerConfig.Group)
+				workloadName, groupFrom, runnerConfig.Group)
 			continue
 		}
 
 		// Move the workload to the default group
-		runnerConfig.Group = groups.DefaultGroup
+		runnerConfig.Group = groupTo
 
 		// Save the updated configuration
 		if err = runnerConfig.SaveState(ctx); err != nil {

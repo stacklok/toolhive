@@ -10,6 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/client"
+	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -141,10 +144,15 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create workloads manager: %w", err)
 	}
 
-	// Get all workloads in the group
-	groupWorkloads, err := workloadsManager.ListWorkloadsInGroup(ctx, groupName)
+	// Get all workloads and filter for the group
+	allWorkloads, err := workloadsManager.ListWorkloads(ctx, true) // listAll=true to include stopped workloads
 	if err != nil {
-		return fmt.Errorf("failed to list workloads in group: %w", err)
+		return fmt.Errorf("failed to list workloads: %w", err)
+	}
+
+	groupWorkloads, err := workloads.FilterByGroup(allWorkloads, groupName)
+	if err != nil {
+		return fmt.Errorf("failed to filter workloads by group: %w", err)
 	}
 
 	// Show warning and get user confirmation
@@ -160,9 +168,9 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	// Handle workloads if any exist
 	if len(groupWorkloads) > 0 {
 		if withWorkloadsFlag {
-			err = deleteWorkloadsInGroup(ctx, groupWorkloads, groupName)
+			err = deleteWorkloadsInGroup(ctx, workloadsManager, groupWorkloads, groupName)
 		} else {
-			err = removeWorkloadsMembershipFromGroup(ctx, groupWorkloads, groupName)
+			err = moveWorkloadsToGroup(ctx, workloadsManager, groupWorkloads, groupName, groups.DefaultGroup)
 		}
 	}
 	if err != nil {
@@ -177,7 +185,7 @@ func groupRmCmdFunc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func showWarningAndGetConfirmation(groupName string, groupWorkloads []string) (bool, error) {
+func showWarningAndGetConfirmation(groupName string, groupWorkloads []core.Workload) (bool, error) {
 	if len(groupWorkloads) == 0 {
 		return true, nil
 	}
@@ -192,9 +200,9 @@ func showWarningAndGetConfirmation(groupName string, groupWorkloads []string) (b
 	fmt.Printf("   The following %d workload(s) will be affected:\n", len(groupWorkloads))
 	for _, workload := range groupWorkloads {
 		if withWorkloadsFlag {
-			fmt.Printf("   - %s (will be DELETED)\n", workload)
+			fmt.Printf("   - %s (will be DELETED)\n", workload.Name)
 		} else {
-			fmt.Printf("   - %s (will be moved to the 'default' group)\n", workload)
+			fmt.Printf("   - %s (will be moved to the 'default' group)\n", workload.Name)
 		}
 	}
 
@@ -221,15 +229,20 @@ func showWarningAndGetConfirmation(groupName string, groupWorkloads []string) (b
 	return true, nil
 }
 
-func deleteWorkloadsInGroup(ctx context.Context, groupWorkloads []string, groupName string) error {
-	// Delete workloads
-	workloadManager, err := workloads.NewManager(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %w", err)
+func deleteWorkloadsInGroup(
+	ctx context.Context,
+	workloadManager workloads.Manager,
+	groupWorkloads []core.Workload,
+	groupName string,
+) error {
+	// Extract workload names for deletion
+	var workloadNames []string
+	for _, workload := range groupWorkloads {
+		workloadNames = append(workloadNames, workload.Name)
 	}
 
 	// Delete all workloads in the group
-	group, err := workloadManager.DeleteWorkloads(ctx, groupWorkloads)
+	group, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
 	if err != nil {
 		return fmt.Errorf("failed to delete workloads in group: %w", err)
 	}
@@ -243,20 +256,56 @@ func deleteWorkloadsInGroup(ctx context.Context, groupWorkloads []string, groupN
 	return nil
 }
 
-// removeWorkloadsFromGroup removes the group membership from the workloads
-// in the group.
-func removeWorkloadsMembershipFromGroup(ctx context.Context, groupWorkloads []string, groupName string) error {
-	workloadManager, err := workloads.NewManager(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %w", err)
+// moveWorkloadsToGroup moves all workloads in the specified group to a new group.
+func moveWorkloadsToGroup(
+	ctx context.Context,
+	workloadManager workloads.Manager,
+	groupWorkloads []core.Workload,
+	groupFrom string,
+	groupTo string,
+) error {
+
+	// Extract workload names for the move operation
+	var workloadNames []string
+	for _, workload := range groupWorkloads {
+		workloadNames = append(workloadNames, workload.Name)
 	}
 
-	// Remove group membership from all workloads
-	if err := workloadManager.MoveToDefaultGroup(ctx, groupWorkloads, groupName); err != nil {
+	// Update workload runconfigs to point to the new group
+	if err := workloadManager.MoveToGroup(ctx, workloadNames, groupFrom, groupTo); err != nil {
 		return fmt.Errorf("failed to move workloads to default group: %w", err)
 	}
 
-	fmt.Printf("Removed %d workload(s) from group '%s'\n", len(groupWorkloads), groupName)
+	// Update client configurations for the moved workloads
+	err := updateClientConfigurations(ctx, groupWorkloads, groupFrom, groupTo)
+	if err != nil {
+		return fmt.Errorf("failed to update client configurations with new group: %w", err)
+	}
+
+	fmt.Printf("Moved %d workload(s) from group '%s' to group '%s'\n", len(groupWorkloads), groupFrom, groupTo)
+	return nil
+}
+
+func updateClientConfigurations(ctx context.Context, groupWorkloads []core.Workload, groupFrom string, groupTo string) error {
+	clientManager, err := client.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
+	}
+
+	for _, w := range groupWorkloads {
+		// Only update client configurations for running workloads
+		if w.Status != runtime.WorkloadStatusRunning {
+			continue
+		}
+
+		if err := clientManager.RemoveServerFromClients(ctx, w.Name, groupFrom); err != nil {
+			return fmt.Errorf("failed to remove server %s from client configurations: %w", w.Name, err)
+		}
+		if err := clientManager.AddServerToClients(ctx, w.Name, w.URL, string(w.TransportType), groupTo); err != nil {
+			return fmt.Errorf("failed to add server %s to client configurations: %w", w.Name, err)
+		}
+	}
+
 	return nil
 }
 

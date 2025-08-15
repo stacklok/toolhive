@@ -92,7 +92,7 @@ func (m *DefaultGroupMigrator) migrateWorkloadsToDefaultGroup(ctx context.Contex
 	migratedCount := 0
 	for _, workloadName := range workloadsWithoutGroup {
 		// Move workload to default group
-		if err := m.workloadsManager.MoveToDefaultGroup(ctx, []string{workloadName}, ""); err != nil {
+		if err := m.workloadsManager.MoveToGroup(ctx, []string{workloadName}, "", groups.DefaultGroup); err != nil {
 			logger.Warnf("Failed to migrate workload %s to default group: %v", workloadName, err)
 			continue
 		}

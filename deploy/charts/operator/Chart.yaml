@@ -2,5 +2,5 @@ apiVersion: v2
 name: toolhive-operator
 description: A Helm chart for deploying the ToolHive Operator into Kubernetes.
 type: application
-version: 0.2.5
+version: 0.2.6
 appVersion: "0.2.8"

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
+  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "last_updated": "2025-08-14T06:59:15Z",
   "servers": {
     "arxiv-mcp-server": {

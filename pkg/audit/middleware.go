@@ -60,8 +60,8 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		auditConfig = DefaultConfig()
 	}
 
-	// Set component name if provided
-	if params.Component != "" {
+	// Set component name if provided and config doesn't already have one
+	if params.Component != "" && auditConfig.Component == "" {
 		auditConfig.Component = params.Component
 	}
 

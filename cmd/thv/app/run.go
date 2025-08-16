@@ -47,11 +47,14 @@ ToolHive supports four ways to run an MCP server:
 	   $ thv run npx://package-name [-- args...]
 	   $ thv run go://package-name [-- args...]
 	   $ thv run go://./local-path [-- args...]
+	   $ thv run maven://com.example.MCPServer [-- args...]
+	   $ thv run gradle://com.example.MCPServer [-- args...]
 
-   Automatically generates a container that runs the specified package
-   using either uvx (Python with uv package manager), npx (Node.js),
-   or go (Golang). For Go, you can also specify local paths starting
-   with './' or '../' to build and run local Go projects.
+	  Automatically generates a container that runs the specified package
+	  using either uvx (Python with uv package manager), npx (Node.js),
+	  go (Golang), maven (Java with Maven), or gradle (Java with Gradle).
+	  For Go, you can also specify local paths starting with './' or '../'
+	  to build and run local Go projects.
 
 4. From an exported configuration:
 

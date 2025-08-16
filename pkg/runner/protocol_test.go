@@ -149,6 +149,16 @@ func TestIsImageProtocolScheme(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "maven scheme",
+			input:    "maven://com.example.MCPServer",
+			expected: true,
+		},
+		{
+			name:     "gradle scheme",
+			input:    "gradle://com.example.MCPServer",
+			expected: true,
+		},
+		{
 			name:     "regular image name",
 			input:    "docker.io/library/alpine:latest",
 			expected: false,

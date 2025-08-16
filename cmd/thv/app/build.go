@@ -22,11 +22,14 @@ ToolHive supports building containers from protocol schemes:
 	$ thv build npx://package-name
 	$ thv build go://package-name
 	$ thv build go://./local-path
+	$ thv build maven://com.example.MCPServer
+	$ thv build gradle://com.example.MCPServer
 
 Automatically generates a container that can run the specified package
 using either uvx (Python with uv package manager), npx (Node.js),
-or go (Golang). For Go, you can also specify local paths starting
-with './' or '../' to build local Go projects.
+go (Golang), maven (Java with Maven), or gradle (Java with Gradle).
+For Go, you can also specify local paths starting with './' or '../'
+to build local Go projects.
 
 The container will be built and tagged locally, ready to be used with 'thv run'
 or other container tools. The built image name will be displayed upon successful completion.
@@ -34,7 +37,9 @@ or other container tools. The built image name will be displayed upon successful
 Examples:
 	$ thv build uvx://mcp-server-git
 	$ thv build --tag my-custom-name:latest npx://@modelcontextprotocol/server-filesystem
-	$ thv build go://./my-local-server`,
+	$ thv build go://./my-local-server
+	$ thv build maven://com.example.MCPServer
+	$ thv build gradle://com.example.MCPServer`,
 	Args: cobra.ExactArgs(1),
 	RunE: buildCmdFunc,
 }
@@ -66,7 +71,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Validate that this is a protocol scheme
 	if !runner.IsImageProtocolScheme(protocolScheme) {
-		return fmt.Errorf("invalid protocol scheme: %s. Supported schemes are: uvx://, npx://, go://", protocolScheme)
+		return fmt.Errorf("invalid protocol scheme: %s. Supported schemes are: %s", protocolScheme, runner.GetSupportedSchemes())
 	}
 
 	// Create image manager (even for dry-run, we pass it but it won't be used)

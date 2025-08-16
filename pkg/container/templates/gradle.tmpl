@@ -1,0 +1,79 @@
+FROM gradle:8.11-jdk21-alpine
+
+{{if .CACertContent}}
+# Add custom CA certificate BEFORE any network operations
+# This ensures that package managers can verify TLS certificates in corporate networks
+COPY ca-cert.crt /tmp/custom-ca.crt
+RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
+    rm /tmp/custom-ca.crt
+{{end}}
+
+# Install CA certificates
+RUN apk add --no-cache ca-certificates
+
+# Set working directory
+WORKDIR /app
+
+# Create a non-root user to run the application and set proper permissions
+RUN addgroup -S appgroup && \
+    adduser -S appuser -G appgroup && \
+    mkdir -p /app && \
+    chown -R appuser:appgroup /app && \
+    mkdir -p /home/appuser/.gradle && \
+    chown -R appuser:appgroup /home/appuser
+
+{{if .CACertContent}}
+# Properly install the custom CA certificate using standard tools
+RUN mkdir -p /usr/local/share/ca-certificates && \
+    cp /tmp/custom-ca.crt /usr/local/share/ca-certificates/custom-ca.crt 2>/dev/null || \
+    echo "CA cert already added to bundle" && \
+    chmod 644 /usr/local/share/ca-certificates/custom-ca.crt 2>/dev/null || true && \
+    update-ca-certificates
+
+# Configure Java to use the custom CA certificate
+ENV JAVA_TOOL_OPTIONS="-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts -Djavax.net.ssl.trustStorePassword=changeit"
+{{end}}
+
+# Set environment variables for better performance in containers
+ENV GRADLE_OPTS="-Xmx512m -XX:MaxMetaspaceSize=128m -Dorg.gradle.daemon=false" \
+    GRADLE_USER_HOME="/home/appuser/.gradle"
+
+{{if .IsLocalPath}}
+# Copy the local source code
+COPY . /app/
+
+# Change ownership of copied files to appuser
+USER root
+RUN chown -R appuser:appgroup /app
+{{end}}
+
+# Switch to non-root user
+USER appuser
+
+# Create a minimal build.gradle file to download and run the dependency
+RUN cat > build.gradle << 'EOF'
+plugins {
+    id 'java'
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation '{{.MCPPackage}}'
+}
+
+task copyToLib(type: Copy) {
+    from configurations.runtimeClasspath
+    into 'lib'
+}
+EOF
+
+# Download all dependencies to lib directory during build
+RUN gradle copyToLib --no-daemon
+
+# Run the MCP server with all JARs in classpath
+# The JAR filename follows the pattern artifactId-version.jar
+ENTRYPOINT ["sh", "-c", "java -cp 'lib/*' -jar lib/$(echo '{{.MCPPackage}}' | cut -d: -f2)-$(echo '{{.MCPPackage}}' | cut -d: -f3).jar {{range .MCPArgs}}{{.}} {{end}}"]

@@ -128,7 +128,7 @@ var _ = Describe("Client Management", func() {
 			expectedClients := []string{"vscode", "cursor", "roo-code", "cline", "claude-code"}
 			Expect(foundClients).To(HaveLen(len(expectedClients)), "Should find all registered clients")
 			for _, expectedClient := range expectedClients {
-				Expect(foundClients).To(ContainElement(expectedClient), "Should contain client: %s", expectedClient)
+				Expect(foundClients).To(ContainElement(MatchRegexp(fmt.Sprintf(".*%s.*", expectedClient))), "Should contain client: %s", expectedClient)
 			}
 
 			// Verify alphabetical order

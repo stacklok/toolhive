@@ -284,7 +284,7 @@ func (r *MCPServerReconciler) createRBACResource(
 ) error {
 	desired := createResource()
 	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-		logger.Error(fmt.Sprintf("Failed to set controller reference for %s", resourceType), err)
+		logger.Errorf("Failed to set controller reference for %s: %v", resourceType, err)
 		return nil
 	}
 
@@ -310,7 +310,7 @@ func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
 ) error {
 	desired := createResource()
 	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-		logger.Error(fmt.Sprintf("Failed to set controller reference for %s", resourceType), err)
+		logger.Errorf("Failed to set controller reference for %s: %v", resourceType, err)
 		return nil
 	}
 
@@ -665,7 +665,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 	// Set MCPServer instance as the owner and controller
 	if err := controllerutil.SetControllerReference(m, dep, r.Scheme); err != nil {
-		logger.Error("Failed to set controller reference for Deployment", err)
+		logger.Errorf("Failed to set controller reference for Deployment %v", err)
 		return nil
 	}
 	return dep
@@ -752,7 +752,7 @@ func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *cor
 
 	// Set MCPServer instance as the owner and controller
 	if err := controllerutil.SetControllerReference(m, svc, r.Scheme); err != nil {
-		logger.Error("Failed to set controller reference for Service", err)
+		logger.Errorf("Failed to set controller reference for Service %v", err)
 		return nil
 	}
 	return svc

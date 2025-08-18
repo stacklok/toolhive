@@ -3,15 +3,8 @@ name: Trigger Docs Update
 permissions: {}
 
 on:
-  workflow_call:
-    inputs:
-      version:
-        description: 'Version tag for the release'
-        required: true
-        type: string
-    secrets:
-      DOCS_REPO_DISPATCH_TOKEN:
-        required: true
+  release:
+    types: [published]
 
 jobs:
   trigger:
@@ -22,7 +15,7 @@ jobs:
         run: |
           repo="stacklok/docs-website"
           event_type="published-release"
-          version="${{ inputs.version }}"
+          version="${{ github.event.release.tag_name }}"
 
           echo "Triggering docs update for $repo with version $version"
   

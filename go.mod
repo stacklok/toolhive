@@ -15,7 +15,7 @@ require (
 	github.com/gofrs/flock v0.12.1
 	github.com/google/go-containerregistry v0.20.6
 	github.com/google/uuid v1.6.0
-	github.com/lestrrat-go/httprc/v3 v3.0.0
+	github.com/lestrrat-go/httprc/v3 v3.0.1
 	github.com/lestrrat-go/jwx/v3 v3.0.10
 	github.com/lmittmann/tint v1.1.2
 	github.com/mark3labs/mcp-go v0.37.0
@@ -26,7 +26,6 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/prometheus/client_golang v1.23.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/sigstore/protobuf-specs v0.5.0
 	github.com/sigstore/sigstore-go v1.1.1
 	github.com/spf13/viper v1.20.1

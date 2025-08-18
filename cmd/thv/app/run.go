@@ -149,6 +149,15 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
+	if runFlags.Name != "" {
+		exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
+		if err != nil {
+			return fmt.Errorf("failed to check if workload exists: %v", err)
+		}
+		if exists {
+			return fmt.Errorf("workload with name '%s' already exists", runFlags.Name)
+		}
+	}
 	err = validateGroup(ctx, workloadManager, serverOrImage)
 	if err != nil {
 		return err
@@ -201,6 +210,16 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serverOrImage string) error {
 	workloadName := runFlags.Name
 	if workloadName == "" {
+		// For protocol schemes without an explicit name, skip group validation.
+		// Protocol schemes (like npx://@scope/package) contain characters that are invalid
+		// for filesystem operations. The actual workload name will be generated during
+		// the build process (in BuildRunnerConfig) where it gets properly sanitized.
+		// Since the workload doesn't exist yet with the protocol URL as its name,
+		// and we can't check for conflicts without the final sanitized name,
+		// we defer group validation to when the workload is actually created.
+		if runner.IsImageProtocolScheme(serverOrImage) {
+			return nil
+		}
 		workloadName = serverOrImage
 	}
 

@@ -15,13 +15,50 @@ This can also be used to validate a custom registry file to be used with the
 
 ## Schema location
 
-- **File**: [`docs/registry/schema.json`](schema.json)
+- **File**: [`pkg/registry/data/schema.json`](../../pkg/registry/data/schema.json)
 - **Schema ID**:
-  `https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json`
+  `https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json`
 
 ## Usage
 
-### Local validation
+### Automated validation (Go tests)
+
+The registry is automatically validated against the schema during development
+and CI/CD through Go tests. This ensures that any changes to the registry data
+are immediately validated.
+
+The validation is implemented in
+[`pkg/registry/schema_validation.go`](../../pkg/registry/schema_validation.go)
+and tested in
+[`pkg/registry/schema_validation_test.go`](../../pkg/registry/schema_validation_test.go).
+
+**Key tests:**
+
+- `TestEmbeddedRegistrySchemaValidation` - Validates the embedded
+  `registry.json` against the schema
+- `TestRegistrySchemaValidation` - Comprehensive test suite with valid and
+  invalid registry examples
+
+**Running the validation:**
+
+```bash
+# Run all schema validation tests
+go test -v ./pkg/registry -run ".*Schema.*"
+
+# Run just the embedded registry validation
+go test -v ./pkg/registry -run TestEmbeddedRegistrySchemaValidation
+
+# Run all registry tests (includes schema validation)
+go test -v ./pkg/registry
+```
+
+This validation runs automatically as part of:
+
+- Local development (`go test`)
+- CI/CD pipeline (GitHub Actions)
+- Pre-commit hooks (if configured)
+
+### Manual validation
 
 #### Using check-jsonschema
 
@@ -41,7 +78,7 @@ Validate the registry with full format validation:
 
 ```bash
 # Run from the root of the repository
-check-jsonschema --schemafile docs/registry/schema.json pkg/registry/data/registry.json
+check-jsonschema --schemafile pkg/registry/data/schema.json pkg/registry/data/registry.json
 ```
 
 #### Using ajv-cli
@@ -56,7 +93,7 @@ Validate the registry with format validation:
 
 ```bash
 # Run from the root of the repository
-ajv validate -c ajv-formats -s docs/registry/schema.json -d pkg/registry/data/registry.json
+ajv validate -c ajv-formats -s pkg/registry/data/schema.json -d pkg/registry/data/registry.json
 ```
 
 #### Using VS Code
@@ -66,7 +103,7 @@ to the top of any registry JSON file:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/docs/registry/schema.json",
+  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   ...
 }
 ```

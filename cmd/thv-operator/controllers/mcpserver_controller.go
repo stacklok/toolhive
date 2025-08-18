@@ -431,7 +431,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		args = append(args, oidcArgs...)
 
 		// Add OAuth discovery resource URL for RFC 9728 compliance
-		resourceURL := createServiceURL(m.Name, m.Namespace, m.Spec.Port)
+		resourceURL := m.Spec.OIDCConfig.ResourceURL
+		if resourceURL == "" {
+			resourceURL = createServiceURL(m.Name, m.Namespace, m.Spec.Port)
+		}
 		args = append(args, fmt.Sprintf("--resource-url=%s", resourceURL))
 	}
 
@@ -574,6 +577,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		ReadOnlyRootFilesystem:   ptr.To(true),
 	}
 
+	env = ensureRequiredEnvVars(env)
+
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        m.Name,
@@ -643,6 +648,36 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		return nil
 	}
 	return dep
+}
+
+func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
+	// Check for the existence of the XDG_CONFIG_HOME and HOME environment variables
+	// and set them to /tmp if they don't exist
+	xdgConfigHomeFound := false
+	homeFound := false
+	for _, envVar := range env {
+		if envVar.Name == "XDG_CONFIG_HOME" {
+			xdgConfigHomeFound = true
+		}
+		if envVar.Name == "HOME" {
+			homeFound = true
+		}
+	}
+	if !xdgConfigHomeFound {
+		logger.Debugf("XDG_CONFIG_HOME not found, setting to /tmp")
+		env = append(env, corev1.EnvVar{
+			Name:  "XDG_CONFIG_HOME",
+			Value: "/tmp",
+		})
+	}
+	if !homeFound {
+		logger.Debugf("HOME not found, setting to /tmp")
+		env = append(env, corev1.EnvVar{
+			Name:  "HOME",
+			Value: "/tmp",
+		})
+	}
+	return env
 }
 
 func createServiceName(mcpServerName string) string {
@@ -842,20 +877,9 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 			return true
 		}
 
-		// Check if the tools filter has changed
-		if mcpServer.Spec.ToolsFilter == nil {
-			for _, arg := range container.Args {
-				if strings.HasPrefix(arg, "--tools=") {
-					return true
-				}
-			}
-		} else {
-			slices.Sort(mcpServer.Spec.ToolsFilter)
-			toolsFilterArg := fmt.Sprintf("--tools=%s", strings.Join(mcpServer.Spec.ToolsFilter, ","))
-			found = slices.Contains(container.Args, toolsFilterArg)
-			if !found {
-				return true
-			}
+		// Check if the tools filter has changed (order-independent)
+		if !equalToolsFilter(mcpServer.Spec.ToolsFilter, container.Args) {
+			return true
 		}
 
 		// Check if the pod template spec has changed
@@ -910,6 +934,8 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 				})
 			}
 		}
+		// Add default environment variables that are always injected
+		expectedProxyEnv = ensureRequiredEnvVars(expectedProxyEnv)
 		if !reflect.DeepEqual(container.Env, expectedProxyEnv) {
 			return true
 		}
@@ -972,8 +998,10 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 	}
 
 	// Check if the service account name has changed
+	// ServiceAccountName: treat empty (not yet set) as equal to the expected default
 	expectedServiceAccountName := proxyRunnerServiceAccountName(mcpServer.Name)
-	if deployment.Spec.Template.Spec.ServiceAccountName != expectedServiceAccountName {
+	currentServiceAccountName := deployment.Spec.Template.Spec.ServiceAccountName
+	if currentServiceAccountName != "" && currentServiceAccountName != expectedServiceAccountName {
 		return true
 	}
 
@@ -1587,4 +1615,39 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Complete(r)
+}
+
+// equalToolsFilter returns true when the desired toolsFilter slice and the
+// currently-applied `--tools=` argument in the container args represent the
+// same unordered set of tools.
+func equalToolsFilter(spec []string, args []string) bool {
+	// Build canonical form for spec
+	specCanon := canonicalToolsList(spec)
+
+	// Extract current tools argument (if any) from args
+	var currentArg string
+	for _, a := range args {
+		if strings.HasPrefix(a, "--tools=") {
+			currentArg = strings.TrimPrefix(a, "--tools=")
+			break
+		}
+	}
+
+	if specCanon == "" && currentArg == "" {
+		return true // both unset/empty
+	}
+
+	// Canonicalise current list
+	currentCanon := canonicalToolsList(strings.Split(strings.TrimSpace(currentArg), ","))
+	return specCanon == currentCanon
+}
+
+// canonicalToolsList sorts a slice and joins it with commas; empty slice yields "".
+func canonicalToolsList(list []string) string {
+	if len(list) == 0 || (len(list) == 1 && list[0] == "") {
+		return ""
+	}
+	cp := slices.Clone(list)
+	slices.Sort(cp)
+	return strings.Join(cp, ",")
 }

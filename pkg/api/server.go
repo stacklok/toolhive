@@ -190,7 +190,7 @@ func Serve(
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(clientManager, workloadManager, groupManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
-		"/api/v1beta/groups":    v1.GroupsRouter(groupManager, workloadManager),
+		"/api/v1beta/groups":    v1.GroupsRouter(groupManager, workloadManager, clientManager),
 	}
 
 	// Only mount docs router if enabled

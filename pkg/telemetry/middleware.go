@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -500,4 +502,82 @@ func (m *HTTPMiddleware) recordSSEConnection(ctx context.Context, r *http.Reques
 		attribute.String("connection_type", "sse"),
 	)
 	m.activeConnections.Add(ctx, 1, sseAttrs)
+}
+
+// Factory middleware type constant
+const (
+	MiddlewareType = "telemetry"
+)
+
+// FactoryMiddlewareParams represents the parameters for telemetry middleware
+type FactoryMiddlewareParams struct {
+	Config     *Config `json:"config"`
+	ServerName string  `json:"server_name"`
+	Transport  string  `json:"transport"`
+}
+
+// FactoryMiddleware wraps telemetry middleware functionality for factory pattern
+type FactoryMiddleware struct {
+	provider          *Provider
+	middleware        types.MiddlewareFunction
+	prometheusHandler http.Handler
+}
+
+// Handler returns the middleware function used by the proxy.
+func (m *FactoryMiddleware) Handler() types.MiddlewareFunction {
+	return m.middleware
+}
+
+// Close cleans up any resources used by the middleware.
+func (m *FactoryMiddleware) Close() error {
+	if m.provider != nil {
+		return m.provider.Shutdown(context.Background())
+	}
+	return nil
+}
+
+// PrometheusHandler returns the Prometheus metrics handler.
+func (m *FactoryMiddleware) PrometheusHandler() http.Handler {
+	return m.prometheusHandler
+}
+
+// CreateMiddleware factory function for telemetry middleware
+func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
+	var params FactoryMiddlewareParams
+	if err := json.Unmarshal(config.Parameters, &params); err != nil {
+		return fmt.Errorf("failed to unmarshal telemetry middleware parameters: %w", err)
+	}
+
+	if params.Config == nil {
+		return fmt.Errorf("telemetry config is required")
+	}
+
+	provider, err := NewProvider(context.Background(), *params.Config)
+	if err != nil {
+		return fmt.Errorf("failed to create telemetry provider: %w", err)
+	}
+
+	middleware := provider.Middleware(params.ServerName, params.Transport)
+
+	var prometheusHandler http.Handler
+	if params.Config.EnablePrometheusMetricsPath {
+		prometheusHandler = provider.PrometheusHandler()
+	}
+
+	telemetryMw := &FactoryMiddleware{
+		provider:          provider,
+		middleware:        middleware,
+		prometheusHandler: prometheusHandler,
+	}
+
+	// Add middleware to runner
+	runner.AddMiddleware(telemetryMw)
+
+	// Set Prometheus handler if enabled
+	if prometheusHandler != nil {
+		runner.SetPrometheusHandler(prometheusHandler)
+		logger.Infof("Prometheus metrics will be exposed on port %d at /metrics", runner.GetConfig().GetPort())
+	}
+
+	return nil
 }

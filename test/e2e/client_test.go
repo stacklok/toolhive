@@ -95,14 +95,32 @@ var _ = Describe("Client Management", func() {
 				WithEnv(fmt.Sprintf("HOME=%s", tempHome)).
 				ExpectSuccess()
 
-			// Extract client names from output (they appear after "- ")
+			// Extract client names from table output
+			// Table format has header row with "CLIENT TYPE" and data rows with client names
 			lines := strings.Split(stdout, "\n")
 			var foundClients []string
+			inDataSection := false
+
 			for _, line := range lines {
 				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "- ") {
-					client := strings.TrimPrefix(line, "- ")
-					foundClients = append(foundClients, client)
+				// Skip empty lines and table borders
+				if line == "" || strings.HasPrefix(line, "┌") || strings.HasPrefix(line, "└") || strings.HasPrefix(line, "├") {
+					continue
+				}
+
+				// Skip the header row
+				if strings.Contains(line, "CLIENT TYPE") {
+					inDataSection = true
+					continue
+				}
+
+				// Extract client names from data rows (format: "│ client-name │")
+				if inDataSection && strings.HasPrefix(line, "│") && strings.HasSuffix(line, "│") {
+					// Remove the table borders and trim whitespace
+					client := strings.TrimSpace(strings.Trim(line, "│"))
+					if client != "" {
+						foundClients = append(foundClients, client)
+					}
 				}
 			}
 

@@ -107,11 +107,6 @@ components:
       type: string
       x-enum-varnames:
       - ConfigTypeCedarV1
-    client.Client:
-      properties:
-        name:
-          $ref: '#/components/schemas/client.MCPClient'
-      type: object
     client.MCPClient:
       type: string
       x-enum-varnames:
@@ -155,6 +150,16 @@ components:
           description: Registered indicates whether the client is registered in the
             ToolHive configuration
           type: boolean
+      type: object
+    client.RegisteredClient:
+      properties:
+        groups:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        name:
+          $ref: '#/components/schemas/client.MCPClient'
       type: object
     core.Workload:
       properties:
@@ -691,6 +696,9 @@ components:
           type: integer
         proxy_mode:
           $ref: '#/components/schemas/types.ProxyMode'
+        schema_version:
+          description: SchemaVersion is the version of the RunConfig schema
+          type: string
         secrets:
           description: |-
             Secrets are the secret parameters to pass to the container
@@ -1310,7 +1318,7 @@ paths:
             application/json:
               schema:
                 items:
-                  $ref: '#/components/schemas/client.Client'
+                  $ref: '#/components/schemas/client.RegisteredClient'
                 type: array
           description: OK
       summary: List all clients

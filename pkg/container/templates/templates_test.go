@@ -182,6 +182,139 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:          "Maven transport",
+			transportType: TransportTypeMaven,
+			data: TemplateData{
+				MCPPackage: "com.example.MCPServer",
+				MCPArgs:    []string{"--arg1", "--arg2", "value"},
+			},
+			wantContains: []string{
+				"mvn dependency:get -Dartifact=com.example.MCPServer:jar",
+				"java -jar",
+			},
+			wantMatches: []string{
+				`FROM maven:\d+\.\d+-eclipse-temurin-\d+-alpine`, // Match any Maven version
+			},
+			wantNotContains: []string{
+				"Add custom CA certificate",
+				"update-ca-certificates",
+			},
+			wantErr: false,
+		},
+		{
+			name:          "Maven transport with CA certificate",
+			transportType: TransportTypeMaven,
+			data: TemplateData{
+				MCPPackage:    "com.example.MCPServer",
+				MCPArgs:       []string{"--arg1", "--arg2", "value"},
+				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
+			},
+			wantContains: []string{
+				"RUN mvn dependency:get",
+				"-Dartifact=com.example.MCPServer:jar",
+				"java -jar $(cat /app/jar-path.txt)",
+				"Add custom CA certificate BEFORE any network operations",
+				"COPY ca-cert.crt /tmp/custom-ca.crt",
+				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",
+				"update-ca-certificates",
+				"ENV JAVA_TOOL_OPTIONS=\"-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts -Djavax.net.ssl.trustStorePassword=changeit\"",
+			},
+			wantMatches: []string{
+				`FROM maven:\d+\.\d+-eclipse-temurin-\d+-alpine`, // Match any Maven version
+			},
+			wantNotContains: []string{},
+			wantErr:         false,
+		},
+		{
+			name:          "Maven transport with local path",
+			transportType: TransportTypeMaven,
+			data: TemplateData{
+				MCPPackage:  "com.example.MCPServer",
+				MCPArgs:     []string{"--arg1", "value"},
+				IsLocalPath: true,
+			},
+			wantContains: []string{
+				"COPY . /app/",
+				"RUN mvn dependency:get",
+				"-Dartifact=com.example.MCPServer:jar",
+				"java -jar $(cat /app/jar-path.txt)",
+			},
+			wantMatches: []string{
+				`FROM maven:\d+\.\d+-eclipse-temurin-\d+-alpine`, // Match any Maven version
+			},
+			wantNotContains: []string{
+				"Add custom CA certificate",
+			},
+			wantErr: false,
+		},
+		{
+			name:          "Gradle transport",
+			transportType: TransportTypeGradle,
+			data: TemplateData{
+				MCPPackage: "com.example.MCPServer",
+				MCPArgs:    []string{"--arg1", "--arg2", "value"},
+			},
+			wantContains: []string{
+				"gradle copyToLib --no-daemon",
+				"java -cp 'lib/*' -jar lib/",
+				"implementation 'com.example.MCPServer'",
+			},
+			wantMatches: []string{
+				`FROM gradle:\d+\.\d+-jdk\d+-alpine`, // Match any Gradle version
+			},
+			wantNotContains: []string{
+				"Add custom CA certificate",
+				"update-ca-certificates",
+			},
+			wantErr: false,
+		},
+		{
+			name:          "Gradle transport with CA certificate",
+			transportType: TransportTypeGradle,
+			data: TemplateData{
+				MCPPackage:    "com.example.MCPServer",
+				MCPArgs:       []string{"--arg1", "--arg2", "value"},
+				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
+			},
+			wantContains: []string{
+				"gradle copyToLib --no-daemon",
+				"java -cp 'lib/*' -jar lib/",
+				"implementation 'com.example.MCPServer'",
+				"Add custom CA certificate BEFORE any network operations",
+				"COPY ca-cert.crt /tmp/custom-ca.crt",
+				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",
+				"update-ca-certificates",
+				"ENV JAVA_TOOL_OPTIONS=\"-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts -Djavax.net.ssl.trustStorePassword=changeit\"",
+			},
+			wantMatches: []string{
+				`FROM gradle:\d+\.\d+-jdk\d+-alpine`, // Match any Gradle version
+			},
+			wantNotContains: []string{},
+			wantErr:         false,
+		},
+		{
+			name:          "Gradle transport with local path",
+			transportType: TransportTypeGradle,
+			data: TemplateData{
+				MCPPackage:  "com.example.MCPServer",
+				MCPArgs:     []string{"--arg1", "value"},
+				IsLocalPath: true,
+			},
+			wantContains: []string{
+				"COPY . /app/",
+				"gradle copyToLib --no-daemon",
+				"java -cp 'lib/*' -jar lib/",
+				"implementation 'com.example.MCPServer'",
+			},
+			wantMatches: []string{
+				`FROM gradle:\d+\.\d+-jdk\d+-alpine`, // Match any Gradle version
+			},
+			wantNotContains: []string{
+				"Add custom CA certificate",
+			},
+			wantErr: false,
+		},
+		{
 			name:          "Unsupported transport",
 			transportType: "unsupported",
 			data: TemplateData{
@@ -260,6 +393,18 @@ func TestParseTransportType(t *testing.T) {
 			name:    "GO transport",
 			s:       "go",
 			want:    TransportTypeGO,
+			wantErr: false,
+		},
+		{
+			name:    "Maven transport",
+			s:       "maven",
+			want:    TransportTypeMaven,
+			wantErr: false,
+		},
+		{
+			name:    "Gradle transport",
+			s:       "gradle",
+			want:    TransportTypeGradle,
 			wantErr: false,
 		},
 		{

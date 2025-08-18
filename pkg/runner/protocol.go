@@ -18,12 +18,20 @@ import (
 
 // Protocol schemes
 const (
-	UVXScheme = "uvx://"
-	NPXScheme = "npx://"
-	GOScheme  = "go://"
+	UVXScheme    = "uvx://"
+	NPXScheme    = "npx://"
+	GOScheme     = "go://"
+	MavenScheme  = "maven://"
+	GradleScheme = "gradle://"
 )
 
-// HandleProtocolScheme checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
+// GetSupportedSchemes returns a comma-separated list of supported protocol schemes
+func GetSupportedSchemes() string {
+	schemes := []string{UVXScheme, NPXScheme, GOScheme, MavenScheme, GradleScheme}
+	return strings.Join(schemes, ", ")
+}
+
+// HandleProtocolScheme checks if the serverOrImage string contains a protocol scheme
 // and builds a Docker image for it if needed.
 // Returns the Docker image name to use and any error encountered.
 func HandleProtocolScheme(
@@ -35,7 +43,7 @@ func HandleProtocolScheme(
 	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", false)
 }
 
-// BuildFromProtocolSchemeWithName checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
+// BuildFromProtocolSchemeWithName checks if the serverOrImage string contains a protocol scheme
 // and builds a Docker image for it if needed with a custom image name.
 // If imageName is empty, a default name will be generated.
 // If dryRun is true, returns the Dockerfile content instead of building the image.
@@ -80,6 +88,12 @@ func parseProtocolScheme(serverOrImage string) (templates.TransportType, string,
 	}
 	if strings.HasPrefix(serverOrImage, GOScheme) {
 		return templates.TransportTypeGO, strings.TrimPrefix(serverOrImage, GOScheme), nil
+	}
+	if strings.HasPrefix(serverOrImage, MavenScheme) {
+		return templates.TransportTypeMaven, strings.TrimPrefix(serverOrImage, MavenScheme), nil
+	}
+	if strings.HasPrefix(serverOrImage, GradleScheme) {
+		return templates.TransportTypeGradle, strings.TrimPrefix(serverOrImage, GradleScheme), nil
 	}
 	return "", "", fmt.Errorf("unsupported protocol scheme: %s", serverOrImage)
 }
@@ -349,6 +363,7 @@ func packageNameToImageName(packageName string) string {
 	imageName = strings.ReplaceAll(imageName, "/", "-")
 	imageName = strings.ReplaceAll(imageName, "@", "-")
 	imageName = strings.ReplaceAll(imageName, ".", "-")
+	imageName = strings.ReplaceAll(imageName, ":", "-")
 
 	// Ensure the name doesn't start with a dash
 	imageName = strings.TrimPrefix(imageName, "-")
@@ -367,9 +382,11 @@ func isLocalGoPath(path string) bool {
 	return strings.HasPrefix(path, "./") || strings.HasPrefix(path, "../") || strings.HasPrefix(path, "/") || path == "."
 }
 
-// IsImageProtocolScheme checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
+// IsImageProtocolScheme checks if the serverOrImage string contains a protocol scheme
 func IsImageProtocolScheme(serverOrImage string) bool {
 	return strings.HasPrefix(serverOrImage, UVXScheme) ||
 		strings.HasPrefix(serverOrImage, NPXScheme) ||
-		strings.HasPrefix(serverOrImage, GOScheme)
+		strings.HasPrefix(serverOrImage, GOScheme) ||
+		strings.HasPrefix(serverOrImage, MavenScheme) ||
+		strings.HasPrefix(serverOrImage, GradleScheme)
 }

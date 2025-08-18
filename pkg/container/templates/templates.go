@@ -34,6 +34,10 @@ const (
 	TransportTypeNPX TransportType = "npx"
 	// TransportTypeGO represents the go transport.
 	TransportTypeGO TransportType = "go"
+	// TransportTypeMaven represents the maven transport.
+	TransportTypeMaven TransportType = "maven"
+	// TransportTypeGradle represents the gradle transport.
+	TransportTypeGradle TransportType = "gradle"
 )
 
 // GetDockerfileTemplate returns the Dockerfile template for the specified transport type.
@@ -48,6 +52,10 @@ func GetDockerfileTemplate(transportType TransportType, data TemplateData) (stri
 		templateName = "npx.tmpl"
 	case TransportTypeGO:
 		templateName = "go.tmpl"
+	case TransportTypeMaven:
+		templateName = "maven.tmpl"
+	case TransportTypeGradle:
+		templateName = "gradle.tmpl"
 	default:
 		return "", fmt.Errorf("unsupported transport type: %s", transportType)
 	}
@@ -82,6 +90,10 @@ func ParseTransportType(s string) (TransportType, error) {
 		return TransportTypeNPX, nil
 	case "go":
 		return TransportTypeGO, nil
+	case "maven":
+		return TransportTypeMaven, nil
+	case "gradle":
+		return TransportTypeGradle, nil
 	default:
 		return "", fmt.Errorf("unsupported transport type: %s", s)
 	}

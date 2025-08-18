@@ -222,6 +222,7 @@ func (b *RunConfigBuilder) WithOIDCConfig(
 			IntrospectionURL: oidcIntrospectionURL,
 			ClientID:         oidcClientID,
 			ClientSecret:     oidcClientSecret,
+			AllowPrivateIP:   jwksAllowPrivateIP,
 		}
 	}
 	// Set JWKS-related configuration

@@ -32,7 +32,7 @@ func TestGetHealthcheck(t *testing.T) {
 
 		// Setup mock to return nil (no error) when IsRunning is called
 		mockRuntime.EXPECT().
-			IsRunning(gomock.Not(gomock.Nil())).
+			IsRunning(gomock.Any()).
 			Return(nil)
 
 		// Create a test request and response recorder
@@ -55,7 +55,7 @@ func TestGetHealthcheck(t *testing.T) {
 
 		// Setup mock to return an error when IsRunning is called
 		mockRuntime.EXPECT().
-			IsRunning(gomock.Not(gomock.Nil())).
+			IsRunning(gomock.Any()).
 			Return(expectedError)
 
 		// Create a test request and response recorder

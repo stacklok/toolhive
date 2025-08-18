@@ -11,6 +11,9 @@ jobs:
       packages: write
       id-token: write
 
+    outputs:
+      chart_version: ${{ steps.chart-releaser.outputs.chart_version }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
@@ -23,6 +26,7 @@ jobs:
           git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
       - name: Run chart-releaser
+        id: chart-releaser
         uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1.7.0
         with:
           config: cr.yaml
@@ -52,3 +56,13 @@ jobs:
           done
         env:
           COSIGN_EXPERIMENTAL: 1
+
+  update-docs-website:
+    name: Trigger Docs Update
+    needs: [ release ]
+    permissions: {}
+    uses: ./.github/workflows/update-docs-website.yml
+    with:
+      version: ${{ needs.release.outputs.chart_version }}
+    secrets:
+      DOCS_REPO_DISPATCH_TOKEN: ${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}

@@ -114,6 +114,16 @@ jobs:
       id-token: write
     uses: ./.github/workflows/image-build-and-publish.yml
 
+  update-docs-website:
+    name: Trigger Docs Update
+    needs: [ release ]
+    permissions: {}
+    uses: ./.github/workflows/update-docs-website.yml
+    with:
+      version: ${{ github.ref_name }}
+    secrets:
+      DOCS_REPO_DISPATCH_TOKEN: ${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}
+
 #  provenance:
 #    name: Generate provenance (SLSA3)
 #    needs:

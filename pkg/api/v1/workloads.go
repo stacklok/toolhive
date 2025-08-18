@@ -269,6 +269,19 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// check if the workload already exists
+	if req.Name != "" {
+		exists, err := s.workloadManager.DoesWorkloadExist(ctx, req.Name)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to check if workload exists: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if exists {
+			http.Error(w, fmt.Sprintf("Workload with name %s already exists", req.Name), http.StatusConflict)
+			return
+		}
+	}
+
 	// Create the workload using shared logic
 	runConfig, err := s.createWorkloadFromRequest(ctx, &req)
 	if err != nil {
@@ -713,18 +726,6 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 		return nil, fmt.Errorf("failed to retrieve MCP server image: %v", err)
 	}
 
-	// check if the workload already exists
-	if req.Name != "" {
-		exists, err := s.workloadManager.DoesWorkloadExist(ctx, req.Name)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to check if workload exists: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if exists {
-			http.Error(w, fmt.Sprintf("Workload with name %s already exists", req.Name), http.StatusConflict)
-			return
-		}
-	}
 
 	// Build RunConfig
 	runSecrets := secrets.SecretParametersToCLI(req.Secrets)

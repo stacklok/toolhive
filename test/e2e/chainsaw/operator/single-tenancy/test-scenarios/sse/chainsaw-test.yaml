@@ -17,8 +17,12 @@ spec:
         file: ../../setup/assert-operator-ready.yaml
       
   - name: deploy-mcpserver
-    description: Deploy a basic MCPServer instance and verify it's ready
+    description: Deploy a basic MCPServer instance and verify it's ready. It also creates a service account and tells the MCP Server to use it.
     try:
+    - apply:
+        file: ../common/mcp_serviceaccount.yaml
+    - assert:
+        file: ../common/mcp_serviceaccount.yaml
     - apply:
         file: mcpserver.yaml
     - assert:

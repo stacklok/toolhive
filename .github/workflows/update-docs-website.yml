@@ -9,7 +9,6 @@ on:
         description: 'Version tag for the release'
         required: true
         type: string
-        default: 'latest'
     secrets:
       DOCS_REPO_DISPATCH_TOKEN:
         required: true

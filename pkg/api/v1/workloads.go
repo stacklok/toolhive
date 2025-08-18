@@ -726,7 +726,6 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 		return nil, fmt.Errorf("failed to retrieve MCP server image: %v", err)
 	}
 
-
 	// Build RunConfig
 	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
 	runConfig, err := runner.NewRunConfigBuilder().

@@ -228,7 +228,6 @@ func (b *RunConfigBuilder) WithOIDCConfig(
 	// Set JWKS-related configuration
 	b.config.ThvCABundle = thvCABundle
 	b.config.JWKSAuthTokenFile = jwksAuthTokenFile
-	b.config.JWKSAllowPrivateIP = jwksAllowPrivateIP
 
 	// Set ResourceURL if OIDCConfig exists or if resourceURL is not empty
 	if b.config.OIDCConfig != nil {

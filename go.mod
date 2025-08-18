@@ -26,6 +26,7 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/prometheus/client_golang v1.23.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/sigstore/protobuf-specs v0.5.0
 	github.com/sigstore/sigstore-go v1.1.1
 	github.com/spf13/viper v1.20.1
@@ -39,7 +40,7 @@ require (
 	go.opentelemetry.io/otel/exporters/prometheus v0.59.1
 	go.opentelemetry.io/otel/sdk v1.37.0
 	go.opentelemetry.io/otel/sdk/metric v1.37.0
-	go.uber.org/mock v0.5.2
+	go.uber.org/mock v0.6.0
 	golang.ngrok.com/ngrok/v2 v2.0.0
 	golang.org/x/exp/jsonrpc2 v0.0.0-20250813145105-42675adae3e6
 	golang.org/x/mod v0.27.0

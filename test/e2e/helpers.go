@@ -41,6 +41,7 @@ type THVCommand struct {
 	args   []string
 	env    []string
 	dir    string
+	stdin  string
 }
 
 // NewTHVCommand creates a new ToolHive command
@@ -65,6 +66,12 @@ func (c *THVCommand) WithDir(dir string) *THVCommand {
 	return c
 }
 
+// WithStdin sets the stdin input for the command
+func (c *THVCommand) WithStdin(stdin string) *THVCommand {
+	c.stdin = stdin
+	return c
+}
+
 // Run executes the ToolHive command and returns stdout, stderr, and error
 func (c *THVCommand) Run() (string, string, error) {
 	return c.RunWithTimeout(c.config.TestTimeout)
@@ -79,6 +86,9 @@ func (c *THVCommand) RunWithTimeout(timeout time.Duration) (string, string, erro
 	cmd.Env = c.env
 	if c.dir != "" {
 		cmd.Dir = c.dir
+	}
+	if c.stdin != "" {
+		cmd.Stdin = strings.NewReader(c.stdin)
 	}
 
 	var stdout, stderr strings.Builder
@@ -135,6 +145,12 @@ func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Durati
 			}
 		}
 	}
+}
+
+// IsServerRunning checks if an MCP server is running
+func IsServerRunning(config *TestConfig, serverName string) bool {
+	stdout, _ := NewTHVCommand(config, "list").ExpectSuccess()
+	return strings.Contains(stdout, serverName) && strings.Contains(stdout, "running")
 }
 
 // StopAndRemoveMCPServer stops and removes an MCP server
@@ -271,4 +287,28 @@ func WaitForWorkloadUnhealthy(config *TestConfig, serverName string, timeout tim
 			}
 		}
 	}
+}
+
+// RemoveGroup removes a group by name
+func RemoveGroup(config *TestConfig, groupName string) error {
+	stdout, stderr, err := NewTHVCommand(config, "group", "rm", groupName).
+		WithStdin("y\n").
+		Run()
+
+	if err != nil {
+		// In cleanup scenarios, it's okay if the group doesn't exist
+		combinedOutput := stdout + stderr
+		if strings.Contains(combinedOutput, "does not exist") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// CreateAndTrackGroup creates a group and tracks it for cleanup
+func CreateAndTrackGroup(config *TestConfig, groupName string, createdGroups *[]string) {
+	createOutput, _ := NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
+	Expect(createOutput).To(ContainSubstring("created successfully"))
+	*createdGroups = append(*createdGroups, groupName)
 }

@@ -234,6 +234,11 @@ func (in *MCPServerSpec) DeepCopyInto(out *MCPServerSpec) {
 		*out = make([]SecretRef, len(*in))
 		copy(*out, *in)
 	}
+	if in.ServiceAccount != nil {
+		in, out := &in.ServiceAccount, &out.ServiceAccount
+		*out = new(string)
+		**out = **in
+	}
 	if in.PermissionProfile != nil {
 		in, out := &in.PermissionProfile, &out.PermissionProfile
 		*out = new(PermissionProfileRef)

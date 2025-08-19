@@ -97,3 +97,23 @@ func IsURL(input string) bool {
 	}
 	return parsedURL.Scheme == "http" || parsedURL.Scheme == "https"
 }
+
+// IsRemoteURL checks if the input is a remote HTTP or HTTPS URL (not localhost or private IP)
+func IsRemoteURL(input string) bool {
+	parsedURL, err := url.Parse(input)
+	if err != nil {
+		return false
+	}
+
+	// Must have HTTP or HTTPS scheme
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return false
+	}
+
+	// Must have a host
+	if parsedURL.Host == "" {
+		return false
+	}
+
+	return !IsLocalhost(parsedURL.Host)
+}

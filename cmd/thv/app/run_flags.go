@@ -10,6 +10,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
+	"github.com/stacklok/toolhive/pkg/authz"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -230,7 +231,6 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 }
 
 // BuildRunnerConfig creates a runner.RunConfig from the configuration
-// nolint:gocyclo // This function handles multiple configuration scenarios and is complex by design
 func BuildRunnerConfig(
 	ctx context.Context,
 	runFlags *RunFlags,
@@ -329,6 +329,32 @@ func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.En
 	return rt, envVarValidator, nil
 }
 
+// handleImageRetrieval handles image retrieval and metadata fetching
+func handleImageRetrieval(
+	ctx context.Context,
+	serverOrImage string,
+	runFlags *RunFlags,
+) (
+	string,
+	*registry.ImageMetadata,
+	error,
+) {
+	// Only pull image if we are not running in Kubernetes mode.
+	// This split will go away if we implement a separate command or binary
+	// for running MCP servers in Kubernetes.
+	if !runtime.IsKubernetesRuntime() {
+		// Take the MCP server we were supplied and either fetch the image, or
+		// build it from a protocol scheme. If the server URI refers to an image
+		// in our trusted registry, we will also fetch the image metadata.
+		imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+		}
+		return imageURL, imageMetadata, nil
+	}
+	return serverOrImage, nil, nil
+}
+
 // validateAndSetupProxyMode validates and sets default proxy mode if needed
 func validateAndSetupProxyMode(runFlags *RunFlags) error {
 	if !types.IsValidProxyMode(runFlags.ProxyMode) {
@@ -389,98 +415,59 @@ func buildRunnerConfig(
 			PrintOverlays: runFlags.PrintOverlays,
 		})
 
+	// Configure middleware from flags
+	builder = builder.WithMiddlewareFromFlags(
+		oidcConfig,
+		runFlags.ToolsFilter,
+		telemetryConfig,
+		runFlags.AuthzConfig,
+		runFlags.EnableAudit,
+		runFlags.AuditConfig,
+		runFlags.Name,
+		runFlags.Transport,
+	)
+
 	// Add remote auth configuration if enabled
 	if remoteAuthConfig := getRemoteAuthFromFlags(runFlags); remoteAuthConfig != nil {
 		builder = builder.WithRemoteAuth(remoteAuthConfig)
 	}
 
-	// Add OIDC configuration if provided
-	if oidcConfig != nil {
-		builder = builder.WithOIDCConfig(oidcConfig.Issuer, oidcConfig.Audience, oidcConfig.JWKSURL,
-			oidcConfig.IntrospectionURL, oidcConfig.ClientID, oidcConfig.ClientSecret,
-			oidcConfig.ResourceURL, oidcConfig.CACertPath, oidcConfig.AuthTokenFile, oidcConfig.AllowPrivateIP)
-	}
-
-	// Add telemetry configuration if provided
-	if telemetryConfig != nil {
-		// Convert headers map back to []string format for the builder
-		var headersList []string
-		for key, value := range telemetryConfig.Headers {
-			headersList = append(headersList, fmt.Sprintf("%s=%s", key, value))
+	// Load authz config if path is provided
+	if runFlags.AuthzConfig != "" {
+		if authzConfigData, err := authz.LoadConfig(runFlags.AuthzConfig); err == nil {
+			builder = builder.WithAuthzConfig(authzConfigData)
 		}
-
-		builder = builder.WithTelemetryConfig(telemetryConfig.Endpoint, telemetryConfig.EnablePrometheusMetricsPath,
-			telemetryConfig.ServiceName, telemetryConfig.SamplingRate, headersList,
-			telemetryConfig.Insecure, telemetryConfig.EnvironmentVariables)
+		// Note: Path is already set via WithAuthzConfigPath above
 	}
+
+	// Get OIDC and telemetry values for legacy configuration
+	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret := extractOIDCValues(oidcConfig)
+	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := extractTelemetryValues(telemetryConfig)
+
+	// Set additional configurations that are still needed in old format for other parts of the system
+	builder = builder.WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
+		runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP).
+		WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelServiceName,
+			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables).
+		WithToolsFilter(runFlags.ToolsFilter)
 
 	return builder.Build(ctx, imageMetadata, envVars, envVarValidator)
 }
 
-// handleImageRetrieval handles image retrieval and metadata fetching
-func handleImageRetrieval(
-	ctx context.Context,
-	serverOrImage string,
-	runFlags *RunFlags,
-) (
-	string,
-	*registry.ImageMetadata,
-	error,
-) {
-	// Only pull image if we are not running in Kubernetes mode.
-	// This split will go away if we implement a separate command or binary
-	// for running MCP servers in Kubernetes.
-	if !runtime.IsKubernetesRuntime() {
-		// Take the MCP server we were supplied and either fetch the image, or
-		// build it from a protocol scheme. If the server URI refers to an image
-		// in our trusted registry, we will also fetch the image metadata.
-		imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
-		}
-		return imageURL, imageMetadata, nil
+// extractOIDCValues extracts OIDC values from the OIDC config for legacy configuration
+func extractOIDCValues(config *auth.TokenValidatorConfig) (string, string, string, string, string, string) {
+	if config == nil {
+		return "", "", "", "", "", ""
 	}
-	return serverOrImage, nil, nil
+	return config.Issuer, config.Audience, config.JWKSURL, config.IntrospectionURL, config.ClientID, config.ClientSecret
 }
 
-// createOIDCConfig creates OIDC configuration
-func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-	oidcClientID, oidcClientSecret, resourceURL string, jwksAllowPrivateIP bool) *auth.TokenValidatorConfig {
-	return &auth.TokenValidatorConfig{
-		Issuer:           oidcIssuer,
-		Audience:         oidcAudience,
-		JWKSURL:          oidcJwksURL,
-		IntrospectionURL: oidcIntrospectionURL,
-		ClientID:         oidcClientID,
-		ClientSecret:     oidcClientSecret,
-		ResourceURL:      resourceURL,
-		AllowPrivateIP:   jwksAllowPrivateIP,
-		CACertPath:       "",
-		AuthTokenFile:    "",
+// extractTelemetryValues extracts telemetry values from the telemetry config for legacy configuration
+func extractTelemetryValues(config *telemetry.Config) (string, float64, []string) {
+	if config == nil {
+		return "", 0.0, nil
 	}
-}
-
-// createTelemetryConfig creates telemetry configuration
-func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
-	otelServiceName string, otelSamplingRate float64, otelHeaders []string, otelInsecure bool,
-	otelEnvironmentVariables []string) *telemetry.Config {
-	// Convert otelHeaders from []string to map[string]string
-	headersMap := make(map[string]string)
-	for _, header := range otelHeaders {
-		if parts := strings.SplitN(header, "=", 2); len(parts) == 2 {
-			headersMap[parts[0]] = parts[1]
-		}
-	}
-
-	return &telemetry.Config{
-		Endpoint:                    otelEndpoint,
-		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
-		ServiceName:                 otelServiceName,
-		SamplingRate:                otelSamplingRate,
-		Headers:                     headersMap,
-		Insecure:                    otelInsecure,
-		EnvironmentVariables:        otelEnvironmentVariables,
-	}
+	return config.Endpoint, config.SamplingRate, config.EnvironmentVariables
 }
 
 // getRemoteAuthFromFlags creates RemoteAuthConfig from RunFlags
@@ -534,4 +521,71 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 	}
 
 	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables
+}
+
+// createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided
+func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
+	oidcClientID, oidcClientSecret, resourceURL string, allowPrivateIP bool) *auth.TokenValidatorConfig {
+	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
+		oidcClientID != "" || oidcClientSecret != "" || resourceURL != "" {
+		return &auth.TokenValidatorConfig{
+			Issuer:           oidcIssuer,
+			Audience:         oidcAudience,
+			JWKSURL:          oidcJwksURL,
+			IntrospectionURL: oidcIntrospectionURL,
+			ClientID:         oidcClientID,
+			ClientSecret:     oidcClientSecret,
+			ResourceURL:      resourceURL,
+			AllowPrivateIP:   allowPrivateIP,
+		}
+	}
+	return nil
+}
+
+// createTelemetryConfig creates a telemetry configuration if any telemetry parameters are provided
+func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
+	otelServiceName string, otelSamplingRate float64, otelHeaders []string,
+	otelInsecure bool, otelEnvironmentVariables []string) *telemetry.Config {
+	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
+		return nil
+	}
+
+	// Parse headers from key=value format
+	headers := make(map[string]string)
+	for _, header := range otelHeaders {
+		parts := strings.SplitN(header, "=", 2)
+		if len(parts) == 2 {
+			headers[parts[0]] = parts[1]
+		}
+	}
+
+	// Use provided service name or default
+	serviceName := otelServiceName
+	if serviceName == "" {
+		serviceName = telemetry.DefaultConfig().ServiceName
+	}
+
+	// Process environment variables - split comma-separated values
+	var processedEnvVars []string
+	for _, envVarEntry := range otelEnvironmentVariables {
+		// Split by comma and trim whitespace
+		envVars := strings.Split(envVarEntry, ",")
+		for _, envVar := range envVars {
+			trimmed := strings.TrimSpace(envVar)
+			if trimmed != "" {
+				processedEnvVars = append(processedEnvVars, trimmed)
+			}
+		}
+	}
+
+	return &telemetry.Config{
+		Endpoint:                    otelEndpoint,
+		ServiceName:                 serviceName,
+		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+		SamplingRate:                otelSamplingRate,
+		Headers:                     headers,
+		Insecure:                    otelInsecure,
+		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
+		EnvironmentVariables:        processedEnvVars,
+	}
 }

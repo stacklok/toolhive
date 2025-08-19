@@ -24,6 +24,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -155,33 +156,7 @@ func (t *tracingTransport) manualForward(req *http.Request) (*http.Response, err
 
 // nolint:gocyclo // This function handles multiple request types and is complex by design
 func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// For remote servers, skip request body reading to avoid interfering with request forwarding
-	if strings.HasPrefix(t.p.targetURI, "https://") || strings.HasPrefix(t.p.targetURI, "http://") {
-		logger.Infof("Transparent proxy forwarding request to remote server: %s %s (URL: %s)",
-			req.Method, req.URL.Path, req.URL.String())
-
-		// Log all headers being sent
-		logger.Infof("Request headers:")
-		for name, values := range req.Header {
-			for _, value := range values {
-				logger.Infof("  %s: %s", name, value)
-			}
-		}
-
-		// Log request body if present
-		if req.Body != nil {
-			bodyBytes, err := io.ReadAll(req.Body)
-			if err != nil {
-				logger.Errorf("Failed to read request body: %v", err)
-			} else {
-				logger.Infof("Request body: %s", string(bodyBytes))
-				// Restore the body for forwarding
-				req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			}
-		} else {
-			logger.Infof("Request body: nil")
-		}
-
+	if networking.IsRemoteURL(t.p.targetURI) {
 		// Use manual HTTP client instead of reverse proxy for remote URLs
 		resp, err := t.manualForward(req)
 		if err != nil {
@@ -193,8 +168,6 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			return nil, err
 		}
 
-		logger.Infof("Transparent proxy received response from remote server: status=%d, content-type=%s",
-			resp.StatusCode, resp.Header.Get("Content-Type"))
 		return resp, nil
 	}
 

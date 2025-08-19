@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -132,7 +133,7 @@ func looksLikeURL(s string) bool {
 	}
 
 	// Fast-path for common schemes
-	if u.Scheme == "http" || u.Scheme == "https" {
+	if u.Scheme == networking.HttpScheme || u.Scheme == networking.HttpsScheme {
 		return true
 	}
 	// Fallback check for other schemes

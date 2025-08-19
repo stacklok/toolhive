@@ -43,12 +43,12 @@ func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
 
 	if allowPrivateRegistryIp {
 		// we validate either https or http URLs
-		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		if parsedURL.Scheme != networking.HttpScheme && parsedURL.Scheme != networking.HttpsScheme {
 			return fmt.Errorf("registry URL must start with http:// or https:// when allowing private IPs")
 		}
 	} else {
 		// we just allow https
-		if parsedURL.Scheme != "https" {
+		if parsedURL.Scheme != networking.HttpsScheme {
 			return fmt.Errorf("registry URL must start with https:// when not allowing private IPs")
 		}
 	}

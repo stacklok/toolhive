@@ -20,7 +20,8 @@ var privateIPBlocks []*net.IPNet
 // HttpTimeout is the timeout for outgoing HTTP requests
 const HttpTimeout = 30 * time.Second
 
-const httpsScheme = "https"
+const HttpsScheme = "https"
+const HttpScheme = "http"
 
 // Dialer control function for validating addresses prior to connection
 func protectedDialerControl(_, address string, _ syscall.RawConn) error {
@@ -51,7 +52,7 @@ func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 
 	// Check for HTTPS scheme
-	if parsedUrl.Scheme != httpsScheme {
+	if parsedUrl.Scheme != HttpsScheme {
 		return nil, fmt.Errorf("the supplied URL %s is not HTTPS scheme", req.URL.String())
 	}
 

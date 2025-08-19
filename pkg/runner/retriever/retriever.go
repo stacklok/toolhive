@@ -110,7 +110,7 @@ func GetMCPServerOrRemote(
 ) (string, *registry.ImageMetadata, *registry.RemoteServerMetadata, error) {
 
 	// First, check if it's a direct URL (existing --remote behavior)
-	if networking.IsURL(serverOrImage) {
+	if networking.IsRemoteURL(serverOrImage) {
 		// Direct URL approach - return as remote server
 		return serverOrImage, nil, nil, nil
 	}

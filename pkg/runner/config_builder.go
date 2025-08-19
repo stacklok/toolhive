@@ -692,3 +692,19 @@ func (b *RunConfigBuilder) processVolumeMounts() error {
 
 	return nil
 }
+
+// WithEnvFile adds environment variables from a single file
+func (b *RunConfigBuilder) WithEnvFile(filePath string) (*RunConfigBuilder, error) {
+	if _, err := b.config.WithEnvFile(filePath); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// WithEnvFilesFromDirectory adds environment variables from all files in a directory
+func (b *RunConfigBuilder) WithEnvFilesFromDirectory(dirPath string) (*RunConfigBuilder, error) {
+	if _, err := b.config.WithEnvFilesFromDirectory(dirPath); err != nil {
+		return nil, err
+	}
+	return b, nil
+}

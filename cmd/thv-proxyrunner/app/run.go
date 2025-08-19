@@ -82,6 +82,9 @@ var (
 
 	// OAuth discovery resource URL
 	runResourceURL string
+
+	// Environment file processing
+	runEnvFileDir string
 )
 
 func init() {
@@ -195,6 +198,12 @@ func init() {
 		"",
 		"Explicit resource URL for OAuth discovery endpoint (RFC 9728)",
 	)
+	runCmd.Flags().StringVar(
+		&runEnvFileDir,
+		"env-file-dir",
+		"",
+		"Load environment variables from all files in a directory",
+	)
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
@@ -245,7 +254,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize a new RunConfig with values from command-line flags
-	runConfig, err := runner.NewRunConfigBuilder().
+	builder := runner.NewRunConfigBuilder().
 		WithRuntime(rt).
 		WithCmdArgs(cmdArgs).
 		WithName(runName).
@@ -267,8 +276,17 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 			runThvCABundle, runJWKSAuthTokenFile, runResourceURL, runJWKSAllowPrivateIP).
 		WithTelemetryConfig(finalOtelEndpoint, runOtelEnablePrometheusMetricsPath, runOtelServiceName,
 			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
-		WithToolsFilter(runToolsFilter).
-		Build(ctx, imageMetadata, envVarsMap, envVarValidator)
+		WithToolsFilter(runToolsFilter)
+
+	// Process environment files
+	if runEnvFileDir != "" {
+		builder, err = builder.WithEnvFilesFromDirectory(runEnvFileDir)
+		if err != nil {
+			return fmt.Errorf("failed to process env files from directory %s: %v", runEnvFileDir, err)
+		}
+	}
+
+	runConfig, err := builder.Build(ctx, imageMetadata, envVarsMap, envVarValidator)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}

@@ -47,7 +47,6 @@ func (k *keyctlProvider) Set(service, key, value string) error {
 		return fmt.Errorf("failed to set key '%s' in user keyring: %w", keyName, err)
 	}
 
-	// Track the key for deletion
 	if k.keys[service] == nil {
 		k.keys[service] = make(map[string]int)
 	}
@@ -63,7 +62,6 @@ func (k *keyctlProvider) Get(service, key string) (string, error) {
 	keyName := fmt.Sprintf("%s:%s", service, key)
 	keyID, err := unix.KeyctlSearch(k.ringID, "user", keyName, 0)
 	if err != nil {
-		// Key not found
 		return "", ErrNotFound
 	}
 
@@ -88,7 +86,6 @@ func (k *keyctlProvider) Delete(service, key string) error {
 	keyName := fmt.Sprintf("%s:%s", service, key)
 	keyID, err := unix.KeyctlSearch(k.ringID, "user", keyName, 0)
 	if err != nil {
-		// Key not found - this is not an error for Delete
 		return nil
 	}
 
@@ -114,7 +111,7 @@ func (k *keyctlProvider) DeleteAll(service string) error {
 
 	serviceKeys, exists := k.keys[service]
 	if !exists {
-		return nil // No keys to delete
+		return nil
 	}
 
 	var lastErr error

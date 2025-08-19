@@ -213,6 +213,84 @@ kubectl describe mcpserver <name>
 | `permissionProfile` | Permission profile configuration                 | No       | -       |
 | `tools`             | Allow-list filter on the list of tools           | No       | -       |
 
+### Kagent Integration
+
+The ToolHive operator supports optional integration with [kagent](https://kagent.dev), allowing kagent agents to discover and use MCP servers managed by ToolHive. When enabled, the operator automatically creates kagent ToolServer resources that reference the ToolHive-managed MCP servers.
+
+#### Enabling Kagent Integration
+
+To enable kagent integration, set the following Helm value when installing the operator:
+
+```bash
+helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator \
+  --set kagentIntegration.enabled=true \
+  -n toolhive-system --create-namespace
+```
+
+Or add it to your values file:
+
+```yaml
+kagentIntegration:
+  enabled: true
+```
+
+#### How It Works
+
+When kagent integration is enabled:
+
+1. For each ToolHive MCPServer resource created, the operator automatically creates a corresponding kagent ToolServer resource
+2. The ToolServer resource references the ToolHive-managed MCP server service URL
+3. The ToolServer is owned by the MCPServer, ensuring it's deleted when the MCPServer is removed
+4. Kagent agents can then discover and use these ToolServers to access the MCP servers
+
+The kagent ToolServer resources are created with:
+- Name: `toolhive-<mcpserver-name>`
+- Namespace: Same as the MCPServer
+- Transport configuration: Mapped from ToolHive transport types (sse → sse, streamable-http → streamableHttp, stdio → sse)
+- Service URL: Points to the ToolHive proxy service
+
+#### Requirements
+
+- Kagent must be installed in your cluster
+- The operator needs permissions to manage kagent ToolServer resources (automatically configured when integration is enabled)
+
+#### Example
+
+When you create a ToolHive MCPServer:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/github/github-mcp-server
+  transport: sse
+  port: 8080
+```
+
+With kagent integration enabled, the operator automatically creates:
+
+```yaml
+apiVersion: kagent.dev/v1alpha1
+kind: ToolServer
+metadata:
+  name: toolhive-github
+  namespace: toolhive-system
+  labels:
+    toolhive.stacklok.dev/managed-by: toolhive-operator
+    toolhive.stacklok.dev/mcpserver: github
+spec:
+  description: "ToolHive MCP Server: github"
+  config:
+    type: sse
+    sse:
+      url: http://mcp-github-proxy.toolhive-system.svc.cluster.local:8080
+```
+
+Kagent agents can then reference this ToolServer to use the GitHub MCP server in their workflows.
+
 ### Permission Profiles
 
 Permission profiles can be configured in two ways:

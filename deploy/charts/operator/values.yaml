@@ -196,3 +196,8 @@ registryAPI:
     annotations: {}
     # -- Labels to add to the registry API service account
     labels: {}
+
+# -- Kagent integration configuration
+kagentIntegration:
+  # -- Enable kagent integration to create kagent MCPServer resources
+  enabled: false

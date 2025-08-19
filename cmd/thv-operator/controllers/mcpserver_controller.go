@@ -318,6 +318,13 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
+	// Ensure kagent ToolServer resource if integration is enabled
+	if err := r.ensureKagentToolServer(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to ensure kagent ToolServer")
+		// Log the error but don't fail the reconciliation
+		// This allows the ToolHive MCPServer to work even if kagent integration fails
+	}
+
 	// Check if the deployment spec changed
 	if r.deploymentNeedsUpdate(deployment, mcpServer) {
 		// Update the deployment
@@ -1246,6 +1253,13 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 		ctxLogger.Info("Deleted RunConfig ConfigMap", "name", runConfigName, "namespace", m.Namespace)
 	} else if !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to check RunConfig ConfigMap %s: %w", runConfigName, err)
+	}
+
+	// Step 5: Delete associated kagent ToolServer if it exists
+	// This should be handled by owner references, but we explicitly delete for safety
+	if err := r.deleteKagentToolServer(ctx, m); err != nil {
+		// Log the error but don't fail the finalization
+		ctxLogger.Error(err, "Failed to delete kagent ToolServer during finalization")
 	}
 
 	// The owner references will automatically delete the deployment and service

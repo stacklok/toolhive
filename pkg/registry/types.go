@@ -79,7 +79,7 @@ type ImageMetadata struct {
 type Provenance struct {
 	SigstoreURL       string               `json:"sigstore_url" yaml:"sigstore_url"`
 	RepositoryURI     string               `json:"repository_uri" yaml:"repository_uri"`
-	RepositoryRef     string               `json:"repository_ref" yaml:"repository_ref"`
+	RepositoryRef     string               `json:"repository_ref,omitempty" yaml:"repository_ref,omitempty"`
 	SignerIdentity    string               `json:"signer_identity" yaml:"signer_identity"`
 	RunnerEnvironment string               `json:"runner_environment" yaml:"runner_environment"`
 	CertIssuer        string               `json:"cert_issuer" yaml:"cert_issuer"`

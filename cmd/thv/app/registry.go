@@ -159,6 +159,7 @@ func printTextServers(servers []registry.ServerMetadata) {
 	}
 }
 
+// ServerType constants
 const (
 	ServerTypeRemote    = "remote"
 	ServerTypeContainer = "container"

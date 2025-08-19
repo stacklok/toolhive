@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -17,7 +16,8 @@ import (
 )
 
 var (
-	groupNames []string
+	groupAddNames []string
+	groupRmNames  []string
 )
 
 var clientCmd = &cobra.Command{
@@ -102,15 +102,14 @@ func init() {
 	clientCmd.AddCommand(clientRemoveCmd)
 	clientCmd.AddCommand(clientListRegisteredCmd)
 
-	// TODO: Re-enable when group functionality is complete
-	//clientRegisterCmd.Flags().StringSliceVar(
-	//	&groupNames, "group", []string{"default"}, "Only register workloads from specified groups")
-	//clientRemoveCmd.Flags().StringSliceVar(
-	//	&groupNames, "group", []string{}, "Remove client from specified groups (if not set, removes all workloads from the client)")
+	clientRegisterCmd.Flags().StringSliceVar(
+		&groupAddNames, "group", []string{groups.DefaultGroup}, "Only register workloads from specified groups")
+	clientRemoveCmd.Flags().StringSliceVar(
+		&groupRmNames, "group", []string{}, "Remove client from specified groups (if not set, removes all workloads from the client)")
 }
 
-func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
-	clientStatuses, err := client.GetClientStatus()
+func clientStatusCmdFunc(cmd *cobra.Command, _ []string) error {
+	clientStatuses, err := client.GetClientStatus(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("failed to get client status: %w", err)
 	}
@@ -118,7 +117,7 @@ func clientStatusCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
-	clientStatuses, err := client.GetClientStatus()
+	clientStatuses, err := client.GetClientStatus(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("failed to get client status: %w", err)
 	}
@@ -157,11 +156,11 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 	return registerSelectedClients(cmd, selectedClients, selectedGroups)
 }
 
-// Helper to get available (installed but unregistered) clients
+// Helper to get available (installed) clients
 func getAvailableClients(statuses []client.MCPClientStatus) []client.MCPClientStatus {
 	var available []client.MCPClientStatus
 	for _, s := range statuses {
-		if s.Installed && !s.Registered {
+		if s.Installed {
 			available = append(available, s)
 		}
 	}
@@ -193,7 +192,7 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 			clientType)
 	}
 
-	return performClientRegistration(cmd.Context(), []client.Client{{Name: client.MCPClient(clientType)}}, groupNames)
+	return performClientRegistration(cmd.Context(), []client.Client{{Name: client.MCPClient(clientType)}}, groupAddNames)
 }
 
 func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
@@ -211,26 +210,40 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 			clientType)
 	}
 
-	return performClientRemoval(cmd.Context(), client.Client{Name: client.MCPClient(clientType)}, groupNames)
+	return performClientRemoval(cmd.Context(), client.Client{Name: client.MCPClient(clientType)}, groupRmNames)
 }
 
-func listRegisteredClientsCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
-	if len(cfg.Clients.RegisteredClients) == 0 {
-		fmt.Println("No clients are currently registered.")
-		return nil
+func listRegisteredClientsCmdFunc(cmd *cobra.Command, _ []string) error {
+	clientManager, err := client.NewManager(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to create client manager: %w", err)
 	}
 
-	// Create a copy of the registered clients and sort it alphabetically
-	registeredClients := make([]string, len(cfg.Clients.RegisteredClients))
-	copy(registeredClients, cfg.Clients.RegisteredClients)
-	sort.Strings(registeredClients)
-
-	fmt.Println("Registered clients:")
-	for _, clientName := range registeredClients {
-		fmt.Printf("  - %s\n", clientName)
+	registeredClients, err := clientManager.ListClients(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to list registered clients: %w", err)
 	}
-	return nil
+
+	// Convert to UI format
+	var uiClients []ui.RegisteredClient
+	for _, regClient := range registeredClients {
+		uiClient := ui.RegisteredClient{
+			Name:   string(regClient.Name),
+			Groups: regClient.Groups,
+		}
+		uiClients = append(uiClients, uiClient)
+	}
+
+	// Determine if we have groups by checking if any client has groups
+	hasGroups := false
+	for _, regClient := range registeredClients {
+		if len(regClient.Groups) > 0 {
+			hasGroups = true
+			break
+		}
+	}
+
+	return ui.RenderRegisteredClientsTable(uiClients, hasGroups)
 }
 
 func performClientRegistration(ctx context.Context, clients []client.Client, groupNames []string) error {
@@ -431,7 +444,6 @@ func removeClientGlobally(
 				return
 			}
 		}
-		logger.Warnf("Client %s was not found in registered clients list", clientToRemove.Name)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration for client %s: %w", clientToRemove.Name, err)

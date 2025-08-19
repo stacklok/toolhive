@@ -4,6 +4,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,13 +12,11 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -37,21 +36,69 @@ type Runner struct {
 	// supportedMiddleware is a map of supported middleware types to their factory functions.
 	supportedMiddleware map[string]types.MiddlewareFactory
 
+	// middlewares is a slice of created middleware instances for cleanup
+	middlewares []types.Middleware
+
+	// middlewareFunctions is a slice of middleware functions to apply to the transport
+	middlewareFunctions []types.MiddlewareFunction
+
+	// authInfoHandler is the authentication info handler set by auth middleware
+	authInfoHandler http.Handler
+
+	// prometheusHandler is the Prometheus metrics handler set by telemetry middleware
+	prometheusHandler http.Handler
+
 	statusManager statuses.StatusManager
 }
 
 // NewRunner creates a new Runner with the provided configuration
 func NewRunner(runConfig *RunConfig, statusManager statuses.StatusManager) *Runner {
 	return &Runner{
-		Config:        runConfig,
-		statusManager: statusManager,
+		Config:              runConfig,
+		statusManager:       statusManager,
+		supportedMiddleware: GetSupportedMiddlewareFactories(),
 	}
+}
+
+// AddMiddleware adds a middleware instance and its function to the runner
+func (r *Runner) AddMiddleware(middleware types.Middleware) {
+	r.middlewares = append(r.middlewares, middleware)
+	r.middlewareFunctions = append(r.middlewareFunctions, middleware.Handler())
+}
+
+// SetAuthInfoHandler sets the authentication info handler
+func (r *Runner) SetAuthInfoHandler(handler http.Handler) {
+	r.authInfoHandler = handler
+}
+
+// SetPrometheusHandler sets the Prometheus metrics handler
+func (r *Runner) SetPrometheusHandler(handler http.Handler) {
+	r.prometheusHandler = handler
+}
+
+// GetConfig returns a config interface for middleware to access runner configuration
+func (r *Runner) GetConfig() types.RunnerConfig {
+	return r.Config
+}
+
+// GetPort returns the port from the runner config (implements types.RunnerConfig)
+func (c *RunConfig) GetPort() int {
+	return c.Port
 }
 
 // Run runs the MCP server with the provided configuration
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
+	// Check if middleware configs are already populated (new direct configuration)
+	// If not, use backwards compatibility to populate from old config fields
+	if len(r.Config.MiddlewareConfigs) == 0 {
+		// Use backwards compatibility - populate from old config fields
+		if err := PopulateMiddlewareConfigs(r.Config); err != nil {
+			return fmt.Errorf("failed to populate middleware configs: %v", err)
+		}
+	}
+
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:       r.Config.Transport,
@@ -72,101 +119,16 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Create the middleware instance using the factory function.
-		middleware, err := factory(&middlewareConfig)
-		if err != nil {
+		// The factory will add the middleware to the runner and handle any special configuration.
+		if err := factory(&middlewareConfig, r); err != nil {
 			return fmt.Errorf("failed to create middleware of type %s: %v", middlewareConfig.Type, err)
 		}
-
-		// Ensure middleware is cleaned up on shutdown.
-		defer func() {
-			if err := middleware.Close(); err != nil {
-				logger.Warnf("Failed to close middleware of type %s: %v", middlewareConfig.Type, err)
-			}
-		}()
-		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware.Handler())
 	}
 
-	if len(r.Config.ToolsFilter) > 0 {
-		toolsFilterMiddleware, err := mcp.NewToolFilterMiddleware(r.Config.ToolsFilter)
-		if err != nil {
-			return fmt.Errorf("failed to create tools filter middleware: %v", err)
-		}
-		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsFilterMiddleware)
-
-		toolsCallFilterMiddleware, err := mcp.NewToolCallFilterMiddleware(r.Config.ToolsFilter)
-		if err != nil {
-			return fmt.Errorf("failed to create tools call filter middleware: %v", err)
-		}
-		transportConfig.Middlewares = append(transportConfig.Middlewares, toolsCallFilterMiddleware)
-	}
-
-	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create authentication middleware: %v", err)
-	}
-	transportConfig.Middlewares = append(transportConfig.Middlewares, authMiddleware)
-	transportConfig.AuthInfoHandler = authInfoHandler
-
-	// Add MCP parsing middleware after authentication
-	logger.Info("MCP parsing middleware enabled for transport")
-	transportConfig.Middlewares = append(transportConfig.Middlewares, mcp.ParsingMiddleware)
-
-	// Add telemetry middleware if telemetry configuration is provided
-	if r.Config.TelemetryConfig != nil {
-		logger.Info("OpenTelemetry instrumentation enabled for transport")
-
-		// Create telemetry provider
-		telemetryProvider, err := telemetry.NewProvider(ctx, *r.Config.TelemetryConfig)
-		if err != nil {
-			return fmt.Errorf("failed to create telemetry provider: %w", err)
-		}
-
-		// Create telemetry middleware with server name and transport type
-		telemetryMiddleware := telemetryProvider.Middleware(r.Config.Name, r.Config.Transport.String())
-		transportConfig.Middlewares = append(transportConfig.Middlewares, telemetryMiddleware)
-
-		// Add Prometheus handler to transport config if metrics port is configured
-		if r.Config.TelemetryConfig.EnablePrometheusMetricsPath {
-			transportConfig.PrometheusHandler = telemetryProvider.PrometheusHandler()
-			logger.Infof("Prometheus metrics will be exposed on port %d at /metrics", r.Config.Port)
-		}
-
-		// Store provider for cleanup
-		r.telemetryProvider = telemetryProvider
-	}
-
-	// Add authorization middleware if authorization configuration is provided
-	if r.Config.AuthzConfig != nil {
-		logger.Info("Authorization enabled for transport")
-
-		// Get the middleware from the configuration
-		middleware, err := r.Config.AuthzConfig.CreateMiddleware()
-		if err != nil {
-			return fmt.Errorf("failed to get authorization middleware: %v", err)
-		}
-
-		// Add authorization middleware to transport config
-		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
-	}
-
-	// Add audit middleware if audit configuration is provided
-	if r.Config.AuditConfig != nil {
-		logger.Info("Audit logging enabled for transport")
-
-		// Set the component name if not already set
-		if r.Config.AuditConfig.Component == "" {
-			r.Config.AuditConfig.Component = r.Config.ContainerName
-		}
-
-		// Get the middleware from the configuration
-		middleware, err := r.Config.AuditConfig.CreateMiddleware()
-		if err != nil {
-			return fmt.Errorf("failed to create audit middleware: %w", err)
-		}
-
-		// Add audit middleware to transport config
-		transportConfig.Middlewares = append(transportConfig.Middlewares, middleware)
-	}
+	// Set all middleware functions and handlers on transport config
+	transportConfig.Middlewares = r.middlewareFunctions
+	transportConfig.AuthInfoHandler = r.authInfoHandler
+	transportConfig.PrometheusHandler = r.prometheusHandler
 
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode
@@ -367,14 +329,26 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (*oauth2.TokenS
 	return tokenSource, nil
 }
 
-// Cleanup performs cleanup operations for the runner, including shutting down telemetry.
+// Cleanup performs cleanup operations for the runner, including shutting down all middleware.
 func (r *Runner) Cleanup(ctx context.Context) error {
+	// For simplicity, return the last error we encounter during cleanup.
+	var lastErr error
+
+	// Clean up all middleware instances
+	for i, middleware := range r.middlewares {
+		if err := middleware.Close(); err != nil {
+			logger.Warnf("Failed to close middleware %d: %v", i, err)
+			lastErr = err
+		}
+	}
+
+	// Legacy telemetry provider cleanup (will be removed when telemetry middleware handles it)
 	if r.telemetryProvider != nil {
 		logger.Debug("Shutting down telemetry provider")
 		if err := r.telemetryProvider.Shutdown(ctx); err != nil {
 			logger.Warnf("Warning: Failed to shutdown telemetry provider: %v", err)
-			return err
+			lastErr = err
 		}
 	}
-	return nil
+	return lastErr
 }

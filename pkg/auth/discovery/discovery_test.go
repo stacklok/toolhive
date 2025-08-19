@@ -17,6 +17,7 @@ func init() {
 }
 
 func TestParseWWWAuthenticate(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		header   string
@@ -81,6 +82,7 @@ func TestParseWWWAuthenticate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result, err := ParseWWWAuthenticate(tt.header)
 
 			if tt.wantErr {
@@ -107,6 +109,7 @@ func TestParseWWWAuthenticate(t *testing.T) {
 }
 
 func TestExtractParameter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		params    string
@@ -147,6 +150,7 @@ func TestExtractParameter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := ExtractParameter(tt.params, tt.paramName)
 			if result != tt.expected {
 				t.Errorf("ExtractParameter() = %v, want %v", result, tt.expected)
@@ -156,6 +160,7 @@ func TestExtractParameter(t *testing.T) {
 }
 
 func TestDeriveIssuerFromURL(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		url      string
@@ -195,6 +200,7 @@ func TestDeriveIssuerFromURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := DeriveIssuerFromURL(tt.url)
 			if result != tt.expected {
 				t.Errorf("DeriveIssuerFromURL() = %v, want %v", result, tt.expected)
@@ -204,22 +210,23 @@ func TestDeriveIssuerFromURL(t *testing.T) {
 }
 
 func TestDetectAuthenticationFromServer(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
-		serverResponse func(w http.ResponseWriter, r *http.Request)
+		serverResponse func(w http.ResponseWriter, _ *http.Request)
 		expected       *AuthInfo
 		wantErr        bool
 	}{
 		{
 			name: "no authentication required",
-			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			},
 			expected: nil,
 		},
 		{
 			name: "bearer authentication required",
-			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="https://example.com"`)
 				w.WriteHeader(http.StatusUnauthorized)
 			},
@@ -230,7 +237,7 @@ func TestDetectAuthenticationFromServer(t *testing.T) {
 		},
 		{
 			name: "oauth authentication required",
-			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("WWW-Authenticate", `OAuth realm="https://example.com"`)
 				w.WriteHeader(http.StatusUnauthorized)
 			},
@@ -243,6 +250,7 @@ func TestDetectAuthenticationFromServer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Create test server
 			server := httptest.NewServer(http.HandlerFunc(tt.serverResponse))
 			defer server.Close()
@@ -287,6 +295,7 @@ func TestDetectAuthenticationFromServer(t *testing.T) {
 }
 
 func TestDefaultDiscoveryConfig(t *testing.T) {
+	t.Parallel()
 	config := DefaultDiscoveryConfig()
 
 	if config.Timeout != 10*time.Second {
@@ -307,7 +316,9 @@ func TestDefaultDiscoveryConfig(t *testing.T) {
 }
 
 func TestOAuthFlowConfig(t *testing.T) {
+	t.Parallel()
 	t.Run("nil config validation", func(t *testing.T) {
+		t.Parallel()
 		ctx := context.Background()
 		result, err := PerformOAuthFlow(ctx, "https://example.com", nil)
 
@@ -323,13 +334,11 @@ func TestOAuthFlowConfig(t *testing.T) {
 	})
 
 	t.Run("config validation", func(t *testing.T) {
+		t.Parallel()
 		config := &OAuthFlowConfig{
 			ClientID:     "test-client",
 			ClientSecret: "test-secret",
 			Scopes:       []string{"openid"},
-			CallbackPort: 8080,
-			Timeout:      30 * time.Second,
-			SkipBrowser:  true,
 		}
 
 		// This test only validates that the config is accepted and doesn't cause

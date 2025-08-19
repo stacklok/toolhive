@@ -8,8 +8,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
-// Updates to the registry schema should be reflected in the JSON schema file located at docs/registry/schema.json.
+// Updates to the registry schema should be reflected in the JSON schema file located at pkg/registry/data/schema.json.
 // The schema is used for validation and documentation purposes.
+//
+// The embedded registry.json is automatically validated against the schema during tests.
+// See pkg/registry/schema_validation_test.go for the validation implementation.
 
 // Registry represents the top-level structure of the MCP registry
 type Registry struct {
@@ -76,7 +79,7 @@ type ImageMetadata struct {
 type Provenance struct {
 	SigstoreURL       string               `json:"sigstore_url" yaml:"sigstore_url"`
 	RepositoryURI     string               `json:"repository_uri" yaml:"repository_uri"`
-	RepositoryRef     string               `json:"repository_ref" yaml:"repository_ref"`
+	RepositoryRef     string               `json:"repository_ref,omitempty" yaml:"repository_ref,omitempty"`
 	SignerIdentity    string               `json:"signer_identity" yaml:"signer_identity"`
 	RunnerEnvironment string               `json:"runner_environment" yaml:"runner_environment"`
 	CertIssuer        string               `json:"cert_issuer" yaml:"cert_issuer"`

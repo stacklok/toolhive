@@ -1,5 +1,10 @@
 // Package discovery provides authentication discovery utilities for detecting
 // authentication requirements from remote servers.
+//
+// Supported Authentication Types:
+// - OAuth 2.0 with PKCE (Proof Key for Code Exchange)
+// - OIDC (OpenID Connect) discovery
+// - Manual OAuth endpoint configuration
 package discovery
 
 import (
@@ -16,6 +21,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
+// Default timeout constants for authentication operations
+const (
+	DefaultOAuthTimeout      = 5 * time.Minute
+	DefaultHTTPTimeout       = 30 * time.Second
+	DefaultAuthDetectTimeout = 10 * time.Second
+	MaxRetryAttempts         = 3
+	RetryBaseDelay           = 2 * time.Second
+)
+
 // AuthInfo contains authentication information extracted from WWW-Authenticate header
 type AuthInfo struct {
 	Realm            string
@@ -25,8 +39,8 @@ type AuthInfo struct {
 	ErrorDescription string
 }
 
-// DiscoveryConfig holds configuration for authentication discovery
-type DiscoveryConfig struct {
+// Config holds configuration for authentication discovery
+type Config struct {
 	Timeout               time.Duration
 	TLSHandshakeTimeout   time.Duration
 	ResponseHeaderTimeout time.Duration
@@ -34,9 +48,9 @@ type DiscoveryConfig struct {
 }
 
 // DefaultDiscoveryConfig returns a default discovery configuration
-func DefaultDiscoveryConfig() *DiscoveryConfig {
-	return &DiscoveryConfig{
-		Timeout:               10 * time.Second,
+func DefaultDiscoveryConfig() *Config {
+	return &Config{
+		Timeout:               DefaultAuthDetectTimeout,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,
 		EnablePOSTDetection:   true,
@@ -44,7 +58,7 @@ func DefaultDiscoveryConfig() *DiscoveryConfig {
 }
 
 // DetectAuthenticationFromServer attempts to detect authentication requirements from the target server
-func DetectAuthenticationFromServer(ctx context.Context, targetURI string, config *DiscoveryConfig) (*AuthInfo, error) {
+func DetectAuthenticationFromServer(ctx context.Context, targetURI string, config *Config) (*AuthInfo, error) {
 	if config == nil {
 		config = DefaultDiscoveryConfig()
 	}
@@ -88,7 +102,13 @@ func DetectAuthenticationFromServer(ctx context.Context, targetURI string, confi
 }
 
 // detectAuthWithRequest makes a specific HTTP request and checks for authentication requirements
-func detectAuthWithRequest(ctx context.Context, client *http.Client, targetURI, method string, body *strings.Reader) (*AuthInfo, error) {
+func detectAuthWithRequest(
+	ctx context.Context,
+	client *http.Client,
+	targetURI string,
+	method string,
+	body *strings.Reader,
+) (*AuthInfo, error) {
 	var req *http.Request
 	var err error
 
@@ -290,7 +310,7 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 	// Create a context with timeout for the OAuth flow
 	oauthTimeout := config.Timeout
 	if oauthTimeout <= 0 {
-		oauthTimeout = 5 * time.Minute // Default timeout
+		oauthTimeout = DefaultOAuthTimeout
 	}
 
 	oauthCtx, cancel := context.WithTimeout(ctx, oauthTimeout)

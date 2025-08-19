@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/streamable"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/versions"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var (
@@ -86,7 +87,7 @@ func newMCPCommand() *cobra.Command {
 }
 
 func addMCPFlags(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&mcpServerURL, "server", "", "MCP server URL (required)")
+	cmd.Flags().StringVar(&mcpServerURL, "server", "", "MCP server URL or name from ToolHive registry (required)")
 	cmd.Flags().StringVar(&mcpFormat, "format", FormatText, "Output format (json or text)")
 	cmd.Flags().DurationVar(&mcpTimeout, "timeout", 30*time.Second, "Connection timeout")
 	cmd.Flags().StringVar(&mcpTransport, "transport", "auto", "Transport type (auto, sse, streamable-http)")
@@ -98,7 +99,13 @@ func mcpListCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), mcpTimeout)
 	defer cancel()
 
-	mcpClient, err := createMCPClient()
+	// Resolve server URL if it's a name
+	serverURL, err := resolveServerURL(ctx, mcpServerURL)
+	if err != nil {
+		return err
+	}
+
+	mcpClient, err := createMCPClient(serverURL)
 	if err != nil {
 		return err
 	}
@@ -143,7 +150,13 @@ func mcpListToolsCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), mcpTimeout)
 	defer cancel()
 
-	mcpClient, err := createMCPClient()
+	// Resolve server URL if it's a name
+	serverURL, err := resolveServerURL(ctx, mcpServerURL)
+	if err != nil {
+		return err
+	}
+
+	mcpClient, err := createMCPClient(serverURL)
 	if err != nil {
 		return err
 	}
@@ -166,7 +179,13 @@ func mcpListResourcesCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), mcpTimeout)
 	defer cancel()
 
-	mcpClient, err := createMCPClient()
+	// Resolve server URL if it's a name
+	serverURL, err := resolveServerURL(ctx, mcpServerURL)
+	if err != nil {
+		return err
+	}
+
+	mcpClient, err := createMCPClient(serverURL)
 	if err != nil {
 		return err
 	}
@@ -189,7 +208,13 @@ func mcpListPromptsCmdFunc(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), mcpTimeout)
 	defer cancel()
 
-	mcpClient, err := createMCPClient()
+	// Resolve server URL if it's a name
+	serverURL, err := resolveServerURL(ctx, mcpServerURL)
+	if err != nil {
+		return err
+	}
+
+	mcpClient, err := createMCPClient(serverURL)
 	if err != nil {
 		return err
 	}
@@ -207,19 +232,48 @@ func mcpListPromptsCmdFunc(cmd *cobra.Command, _ []string) error {
 	return outputMCPData(map[string]interface{}{"prompts": result.Prompts}, mcpFormat)
 }
 
+// resolveServerURL resolves a server name to a URL or returns the URL if it's already a URL
+func resolveServerURL(ctx context.Context, serverInput string) (string, error) {
+	// Check if it's already a URL
+	if strings.HasPrefix(serverInput, "http://") || strings.HasPrefix(serverInput, "https://") {
+		return serverInput, nil
+	}
+
+	// Try to get the workload by name
+	manager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to create workload manager: %w", err)
+	}
+
+	workload, err := manager.GetWorkload(ctx, serverInput)
+	if err != nil {
+		return "", fmt.Errorf(
+			"server '%s' not found in running workloads. "+
+				"Please ensure the server is running or provide a valid URL", serverInput)
+	}
+
+	// Check if the workload is running
+	if workload.Status != "running" {
+		return "", fmt.Errorf("server '%s' is not running (status: %s). "+
+			"Please start it first using 'thv run %s'", serverInput, workload.Status, serverInput)
+	}
+
+	return workload.URL, nil
+}
+
 // createMCPClient creates an MCP client based on the server URL and transport type
-func createMCPClient() (*client.Client, error) {
-	transportType := determineTransportType(mcpServerURL, mcpTransport)
+func createMCPClient(serverURL string) (*client.Client, error) {
+	transportType := determineTransportType(serverURL, mcpTransport)
 
 	switch transportType {
 	case types.TransportTypeSSE:
-		mcpClient, err := client.NewSSEMCPClient(mcpServerURL)
+		mcpClient, err := client.NewSSEMCPClient(serverURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SSE MCP client: %w", err)
 		}
 		return mcpClient, nil
 	case types.TransportTypeStreamableHTTP:
-		mcpClient, err := client.NewStreamableHttpClient(mcpServerURL)
+		mcpClient, err := client.NewStreamableHttpClient(serverURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Streamable HTTP MCP client: %w", err)
 		}

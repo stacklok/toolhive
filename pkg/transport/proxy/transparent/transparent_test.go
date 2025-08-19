@@ -20,7 +20,7 @@ func init() {
 
 func TestStreamingSessionIDDetection(t *testing.T) {
 	t.Parallel()
-	proxy := NewTransparentProxy("127.0.0.1", 0, "test", "http://example.com", nil, nil, true)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "test", "", nil, nil, true)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(200)

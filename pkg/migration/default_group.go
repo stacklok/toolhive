@@ -22,12 +22,18 @@ func (m *DefaultGroupMigrator) Migrate(ctx context.Context) error {
 		return fmt.Errorf("failed to initialize managers: %w", err)
 	}
 
-	// Create default group
-	if err := m.createDefaultGroup(ctx); err != nil {
-		return fmt.Errorf("failed to create default group: %w", err)
+	// Create default group if it doesn't exist
+	defaultGroupExists, err := m.groupManager.Exists(ctx, groups.DefaultGroupName)
+	if err != nil {
+		return fmt.Errorf("failed to check if default group exists: %w", err)
+	}
+	if !defaultGroupExists {
+		if err := m.createDefaultGroup(ctx); err != nil {
+			return fmt.Errorf("failed to create default group: %w", err)
+		}
 	}
 
-	// Migrate workloads to default group
+	// Migrate workloads to default group if they don't have a group assigned
 	migratedCount, err := m.migrateWorkloadsToDefaultGroup(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to migrate workloads: %w", err)
@@ -35,8 +41,6 @@ func (m *DefaultGroupMigrator) Migrate(ctx context.Context) error {
 
 	if migratedCount > 0 {
 		fmt.Printf("\nSuccessfully migrated %d workloads to default group '%s'\n", migratedCount, groups.DefaultGroupName)
-	} else {
-		fmt.Println("No workloads needed migration to default group")
 	}
 
 	// Migrate client configurations from global config to default group
@@ -92,7 +96,7 @@ func (m *DefaultGroupMigrator) migrateWorkloadsToDefaultGroup(ctx context.Contex
 	migratedCount := 0
 	for _, workloadName := range workloadsWithoutGroup {
 		// Move workload to default group
-		if err := m.workloadsManager.MoveToDefaultGroup(ctx, []string{workloadName}, ""); err != nil {
+		if err := m.workloadsManager.MoveToGroup(ctx, []string{workloadName}, "", groups.DefaultGroup); err != nil {
 			logger.Warnf("Failed to migrate workload %s to default group: %v", workloadName, err)
 			continue
 		}
@@ -108,11 +112,9 @@ func (m *DefaultGroupMigrator) migrateClientConfigs(ctx context.Context) error {
 
 	// If there are no registered clients, nothing to migrate
 	if len(appConfig.Clients.RegisteredClients) == 0 {
-		logger.Infof("No client configurations to migrate")
+		logger.Debugf("No client configurations to migrate")
 		return nil
 	}
-
-	fmt.Printf("Migrating %d client configurations to default group...\n", len(appConfig.Clients.RegisteredClients))
 
 	// Get the default group
 	defaultGroup, err := m.groupManager.Get(ctx, groups.DefaultGroupName)
@@ -151,10 +153,10 @@ func (m *DefaultGroupMigrator) migrateClientConfigs(ctx context.Context) error {
 		if err != nil {
 			logger.Warnf("Failed to clear global client configurations after migration: %v", err)
 		} else {
-			logger.Infof("Cleared global client configurations")
+			logger.Debugf("Cleared global client configurations")
 		}
 	} else {
-		logger.Infof("No client configurations needed migration")
+		logger.Debugf("No client configurations needed migration")
 	}
 
 	return nil

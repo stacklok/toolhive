@@ -10,7 +10,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-// RemoteAuthHandler handles authentication for remote MCP servers
+// RemoteAuthHandler handles authentication for remote MCP servers.
+// Supports OAuth/OIDC-based authentication with automatic discovery.
 type RemoteAuthHandler struct {
 	config *RemoteAuthConfig
 }

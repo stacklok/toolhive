@@ -95,7 +95,7 @@ func init() {
 	// Add run flags
 	AddRunFlags(runCmd, &runFlags)
 
-	//runCmd.PreRunE = validateGroupFlag()
+	runCmd.PreRunE = validateGroupFlag()
 
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
 	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
@@ -146,16 +146,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// If --remote is provided but no name is given, generate a name from the URL
 	if runFlags.RemoteURL != "" && runFlags.Name == "" {
 		// Extract a name from the remote URL
-		parsedURL, err := url.Parse(runFlags.RemoteURL)
+		name, err := deriveRemoteName()
 		if err != nil {
-			return fmt.Errorf("invalid remote URL: %v", err)
+			return err
 		}
-		// Use the hostname as the base name
-		hostname := parsedURL.Hostname()
-		if hostname == "" {
-			hostname = "remote"
-		}
-		runFlags.Name = fmt.Sprintf("%s-remote", hostname)
+		runFlags.Name = name
 	}
 
 	// Process command arguments using os.Args to find everything after --
@@ -177,6 +172,15 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
+	if runFlags.Name != "" {
+		exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
+		if err != nil {
+			return fmt.Errorf("failed to check if workload exists: %v", err)
+		}
+		if exists {
+			return fmt.Errorf("workload with name '%s' already exists", runFlags.Name)
+		}
+	}
 	err = validateGroup(ctx, workloadManager, serverOrImage)
 	if err != nil {
 		return err
@@ -199,6 +203,19 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	return workloadManager.RunWorkloadDetached(ctx, runnerConfig)
+}
+
+func deriveRemoteName() (string, error) {
+	parsedURL, err := url.Parse(runFlags.RemoteURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid remote URL: %v", err)
+	}
+	// Use the hostname as the base name
+	hostname := parsedURL.Hostname()
+	if hostname == "" {
+		hostname = "remote"
+	}
+	return fmt.Sprintf("%s-remote", hostname), nil
 }
 
 func runForeground(ctx context.Context, workloadManager workloads.Manager, runnerConfig *runner.RunConfig) error {
@@ -229,6 +246,16 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serverOrImage string) error {
 	workloadName := runFlags.Name
 	if workloadName == "" {
+		// For protocol schemes without an explicit name, skip group validation.
+		// Protocol schemes (like npx://@scope/package) contain characters that are invalid
+		// for filesystem operations. The actual workload name will be generated during
+		// the build process (in BuildRunnerConfig) where it gets properly sanitized.
+		// Since the workload doesn't exist yet with the protocol URL as its name,
+		// and we can't check for conflicts without the final sanitized name,
+		// we defer group validation to when the workload is actually created.
+		if runner.IsImageProtocolScheme(serverOrImage) {
+			return nil
+		}
 		workloadName = serverOrImage
 	}
 

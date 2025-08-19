@@ -19,7 +19,6 @@ import (
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
@@ -58,10 +57,12 @@ type Manager interface {
 	RestartWorkloads(ctx context.Context, names []string, foreground bool) (*errgroup.Group, error)
 	// GetLogs retrieves the logs of a container.
 	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
-	// MoveToDefaultGroup moves the specified workloads to the default group by updating the runconfig.
-	MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error
+	// MoveToGroup moves the specified workloads from one group to another by updating their runconfig.
+	MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group, including stopped workloads.
 	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error)
+	// DoesWorkloadExist checks if a workload with the given name exists.
+	DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error)
 }
 
 type defaultManager struct {
@@ -112,6 +113,23 @@ func (d *defaultManager) GetWorkload(ctx context.Context, workloadName string) (
 	// For the sake of minimizing changes, delegate to the status manager.
 	// Whether this method should still belong to the workload manager is TBD.
 	return d.statuses.GetWorkload(ctx, workloadName)
+}
+
+func (d *defaultManager) DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
+	// check if workload exists by trying to get it
+	workload, err := d.statuses.GetWorkload(ctx, workloadName)
+	if err != nil {
+		if errors.Is(err, rt.ErrWorkloadNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check if workload exists: %w", err)
+	}
+
+	// now check if the workload is not in error
+	if workload.Status == rt.WorkloadStatusError {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (d *defaultManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]core.Workload, error) {
@@ -414,7 +432,14 @@ func (d *defaultManager) cleanupWorkloadResources(childCtx context.Context, name
 		logger.Warnf("Warning: Failed to cleanup temporary permission profile: %v", err)
 	}
 
-	// Delete the saved state
+	// Remove client configurations
+	if err := removeClientConfigurations(name); err != nil {
+		logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+	} else {
+		logger.Infof("Client configurations for %s removed", name)
+	}
+
+	// Delete the saved state last
 	if err := state.DeleteSavedRunConfig(childCtx, baseName); err != nil {
 		logger.Warnf("Warning: Failed to delete saved state: %v", err)
 	} else {
@@ -422,13 +447,6 @@ func (d *defaultManager) cleanupWorkloadResources(childCtx context.Context, name
 	}
 
 	logger.Infof("Container %s removed", name)
-
-	// Remove client configurations
-	if err := removeClientConfigurations(name); err != nil {
-		logger.Warnf("Warning: Failed to remove client configurations: %v", err)
-	} else {
-		logger.Infof("Client configurations for %s removed", name)
-	}
 }
 
 func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
@@ -701,8 +719,8 @@ func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.Cont
 	return &group
 }
 
-// MoveToDefaultGroup moves the specified workloads to the default group by updating their runconfig.
-func (*defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []string, groupName string) error {
+// MoveToGroup moves the specified workloads from one group to another by updating their runconfig.
+func (*defaultManager) MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error {
 	for _, workloadName := range workloadNames {
 		// Validate workload name
 		if err := types.ValidateWorkloadName(workloadName); err != nil {
@@ -716,14 +734,14 @@ func (*defaultManager) MoveToDefaultGroup(ctx context.Context, workloadNames []s
 		}
 
 		// Check if the workload is actually in the specified group
-		if runnerConfig.Group != groupName {
+		if runnerConfig.Group != groupFrom {
 			logger.Debugf("Workload %s is not in group %s (current group: %s), skipping",
-				workloadName, groupName, runnerConfig.Group)
+				workloadName, groupFrom, runnerConfig.Group)
 			continue
 		}
 
 		// Move the workload to the default group
-		runnerConfig.Group = groups.DefaultGroup
+		runnerConfig.Group = groupTo
 
 		// Save the updated configuration
 		if err = runnerConfig.SaveState(ctx); err != nil {

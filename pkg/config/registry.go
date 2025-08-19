@@ -3,7 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,7 +36,7 @@ func DetectRegistryType(input string) (registryType string, cleanPath string) {
 
 // SetRegistryURL validates and sets a registry URL
 func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
-	parsedURL, err := url.Parse(registryURL)
+	parsedURL, err := neturl.Parse(registryURL)
 	if err != nil {
 		return fmt.Errorf("invalid registry URL: %w", err)
 	}

@@ -114,15 +114,6 @@ var (
 	remoteAuthTokenURL     string
 )
 
-// Default timeout constants
-const (
-	defaultOAuthTimeout      = 5 * time.Minute
-	defaultHTTPTimeout       = 30 * time.Second
-	defaultAuthDetectTimeout = 10 * time.Second
-	maxRetryAttempts         = 3
-	retryBaseDelay           = 2 * time.Second
-)
-
 // Environment variable names
 const (
 	// #nosec G101 - this is an environment variable name, not a credential
@@ -146,7 +137,7 @@ func init() {
 		"Explicit resource URL for OAuth discovery endpoint (RFC 9728)")
 
 	// Add remote server authentication flags
-	proxyCmd.Flags().BoolVar(&enableRemoteAuth, "remote-auth", false, "Enable OAuth authentication to remote MCP server")
+	proxyCmd.Flags().BoolVar(&enableRemoteAuth, "remote-auth", false, "Enable OAuth/OIDC authentication to remote MCP server")
 	proxyCmd.Flags().StringVar(&remoteAuthIssuer, "remote-auth-issuer", "",
 		"OAuth/OIDC issuer URL for remote server authentication (e.g., https://accounts.google.com)")
 	proxyCmd.Flags().StringVar(&remoteAuthClientID, "remote-auth-client-id", "",

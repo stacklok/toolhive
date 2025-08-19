@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/discovery"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -17,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -115,9 +119,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
 	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
-	// TODO: Re-enable when group functionality is complete
-	// cmd.Flags().StringVar(&config.Group, "group", "default",
-	//	"Name of the group this workload belongs to (defaults to 'default' if not specified)")
+	cmd.Flags().StringVar(&config.Group, "group", "default",
+		"Name of the group this workload belongs to (defaults to 'default' if not specified)")
 	cmd.Flags().StringVar(&config.Host, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	cmd.Flags().IntVar(&config.ProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
 	cmd.Flags().IntVar(&config.TargetPort, "target-port", 0,
@@ -172,7 +175,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 
 	// Remote authentication flags
 	cmd.Flags().BoolVar(&config.EnableRemoteAuth, "remote-auth", false,
-		"Enable automatic OAuth authentication for remote MCP servers")
+		"Enable automatic OAuth/OIDC authentication for remote MCP servers")
 	cmd.Flags().StringVar(&config.RemoteAuthClientID, "remote-auth-client-id", "",
 		"OAuth client ID for remote server authentication")
 	cmd.Flags().StringVar(&config.RemoteAuthClientSecret, "remote-auth-client-secret", "",
@@ -183,7 +186,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"OAuth scopes for remote server authentication")
 	cmd.Flags().BoolVar(&config.RemoteAuthSkipBrowser, "remote-auth-skip-browser", false,
 		"Skip opening browser for OAuth authentication (use device flow instead)")
-	cmd.Flags().DurationVar(&config.RemoteAuthTimeout, "remote-auth-timeout", 5*time.Minute,
+	cmd.Flags().DurationVar(&config.RemoteAuthTimeout, "remote-auth-timeout", discovery.DefaultOAuthTimeout,
 		"Timeout for remote authentication flow")
 	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", 0,
 		"Port for OAuth callback (0 = auto-assign)")
@@ -236,14 +239,53 @@ func BuildRunnerConfig(
 	debugMode bool,
 	cmd *cobra.Command,
 ) (*runner.RunConfig, error) {
-	// Validate the host flag
+	// Validate and setup basic configuration
 	validatedHost, err := ValidateAndNormaliseHostFlag(runFlags.Host)
 	if err != nil {
 		return nil, fmt.Errorf("invalid host: %s", runFlags.Host)
 	}
 
-	// Get OIDC flags
+	// Setup OIDC configuration
+	oidcConfig, err := setupOIDCConfiguration(cmd, runFlags)
+	if err != nil {
+		return nil, err
+	}
+
+	// Setup telemetry configuration
+	telemetryConfig := setupTelemetryConfiguration(cmd, runFlags)
+
+	// Setup runtime and validation
+	rt, envVarValidator, err := setupRuntimeAndValidation(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Handle image retrieval
+	imageURL, imageMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate and setup proxy mode
+	if err := validateAndSetupProxyMode(runFlags); err != nil {
+		return nil, err
+	}
+
+	// Parse environment variables
+	envVars, err := environment.ParseEnvironmentVariables(runFlags.Env)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse environment variables: %v", err)
+	}
+
+	// Build the runner config
+	return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, imageMetadata,
+		envVars, envVarValidator, oidcConfig, telemetryConfig)
+}
+
+// setupOIDCConfiguration sets up OIDC configuration and validates URLs
+func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.TokenValidatorConfig, error) {
 	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret := getOidcFromFlags(cmd)
+
 	if oidcJwksURL != "" {
 		if err := networking.ValidateEndpointURL(oidcJwksURL); err != nil {
 			return nil, fmt.Errorf("invalid %s: %w", oidcJwksURL, err)
@@ -255,21 +297,28 @@ func BuildRunnerConfig(
 		}
 	}
 
-	// Get OTEL flag values with config fallbacks
+	return createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
+		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP), nil
+}
+
+// setupTelemetryConfiguration sets up telemetry configuration with config fallbacks
+func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *telemetry.Config {
 	config := cfg.GetConfig()
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(cmd, config,
 		runFlags.OtelEndpoint, runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables)
 
-	// Create container runtime
+	return createTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
+		runFlags.OtelServiceName, finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure,
+		finalOtelEnvironmentVariables)
+}
+
+// setupRuntimeAndValidation creates container runtime and selects environment variable validator
+func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.EnvVarValidator, error) {
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create container runtime: %v", err)
+		return nil, nil, fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
-	// Select an envVars var validation strategy depending on how the CLI is run:
-	// If we have called the CLI directly, we use the CLIEnvVarValidator.
-	// If we are running in detached mode, or the CLI is wrapped by the K8s operator,
-	// we use the DetachedEnvVarValidator.
 	var envVarValidator runner.EnvVarValidator
 	if process.IsDetached() || runtime.IsKubernetesRuntime() {
 		envVarValidator = &runner.DetachedEnvVarValidator{}
@@ -277,131 +326,44 @@ func BuildRunnerConfig(
 		envVarValidator = &runner.CLIEnvVarValidator{}
 	}
 
-	// Handle remote MCP server
-	var imageMetadata *registry.ImageMetadata
-	var remoteServerMetadata *registry.RemoteServerMetadata
-	transportType := runFlags.Transport
+	return rt, envVarValidator, nil
+}
 
-	// If --remote flag is provided, use it as the serverOrImage
-	if runFlags.RemoteURL != "" {
-		serverOrImage = runFlags.RemoteURL
-	}
-
-	// Try to get server from registry (container or remote) or direct URL
-	imageURL, imageMetadata, remoteServerMetadata, err := retriever.GetMCPServerOrRemote(
-		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
-	}
-
-	if remoteServerMetadata != nil {
-		// Handle registry-based remote server
-		runFlags.RemoteURL = remoteServerMetadata.URL
-		if transportType == "" {
-			transportType = remoteServerMetadata.Transport
-		}
-
-		// Set up OAuth config if provided
-		if remoteServerMetadata.OAuthConfig != nil {
-			runFlags.EnableRemoteAuth = true
-			// Only set ClientID from registry if not provided via command line
-			if runFlags.RemoteAuthClientID == "" {
-				runFlags.RemoteAuthClientID = remoteServerMetadata.OAuthConfig.ClientID
-			}
-			runFlags.RemoteAuthIssuer = remoteServerMetadata.OAuthConfig.Issuer
-			runFlags.RemoteAuthAuthorizeURL = remoteServerMetadata.OAuthConfig.AuthorizeURL
-			runFlags.RemoteAuthTokenURL = remoteServerMetadata.OAuthConfig.TokenURL
-			runFlags.RemoteAuthScopes = remoteServerMetadata.OAuthConfig.Scopes
-
-			// Set OAuth parameters and callback port from registry
-			if remoteServerMetadata.OAuthConfig.OAuthParams != nil {
-				runFlags.OAuthParams = remoteServerMetadata.OAuthConfig.OAuthParams
-			}
-			if remoteServerMetadata.OAuthConfig.CallbackPort != 0 {
-				runFlags.RemoteAuthCallbackPort = remoteServerMetadata.OAuthConfig.CallbackPort
-			}
-		}
-
-		// Set up headers if provided
-		for _, header := range remoteServerMetadata.Headers {
-			if header.Secret {
-				runFlags.Secrets = append(runFlags.Secrets, fmt.Sprintf("%s,target=%s", header.Name, header.Name))
-			} else {
-				if runFlags.EnvVars == nil {
-					runFlags.EnvVars = make(map[string]string)
-				}
-				runFlags.EnvVars[header.Name] = header.Default
-			}
-		}
-
-		// Set up environment variables if provided
-		for _, envVar := range remoteServerMetadata.EnvVars {
-			if envVar.Secret {
-				// Only add secrets if no authentication method is provided
-				hasAuth := runFlags.RemoteAuthClientID != "" ||
-					runFlags.RemoteAuthClientSecret != "" ||
-					runFlags.RemoteAuthClientSecretFile != "" ||
-					runFlags.RemoteAuthIssuer != "" ||
-					runFlags.RemoteAuthAuthorizeURL != "" ||
-					runFlags.RemoteAuthTokenURL != ""
-				if !hasAuth {
-					runFlags.Secrets = append(runFlags.Secrets, fmt.Sprintf("%s,target=%s", envVar.Name, envVar.Name))
-				}
-			} else {
-				if runFlags.EnvVars == nil {
-					runFlags.EnvVars = make(map[string]string)
-				}
-				runFlags.EnvVars[envVar.Name] = envVar.Default
-			}
-		}
-	} else if networking.IsURL(imageURL) {
-		// Handle direct URL approach
-		runFlags.RemoteURL = imageURL
-		if transportType == "" {
-			transportType = defaultTransportType // Default for direct URLs
-		}
-	} else {
-		// Handle container server (existing logic)
-		if transportType == "" {
-			transportType = defaultTransportType // Default for remote servers
-		}
-		// Only pull image if we are not running in Kubernetes mode.
-		// This split will go away if we implement a separate command or binary
-		// for running MCP servers in Kubernetes.
-		if !runtime.IsKubernetesRuntime() {
-			// Take the MCP server we were supplied and either fetch the image, or
-			// build it from a protocol scheme. If the server URI refers to an image
-			// in our trusted registry, we will also fetch the image metadata.
-			imageURL, imageMetadata, err = retriever.GetMCPServer(ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
-			if err != nil {
-				return nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
-			}
-		}
-	}
-
-	// Build remote auth config if enabled
-	var remoteAuthConfig *runner.RemoteAuthConfig
-	if runFlags.EnableRemoteAuth || runFlags.RemoteAuthClientID != "" {
-		remoteAuthConfig = getRemoteAuthFromFlags(runFlags)
-	}
-
-	// Validate proxy mode early
+// validateAndSetupProxyMode validates and sets default proxy mode if needed
+func validateAndSetupProxyMode(runFlags *RunFlags) error {
 	if !types.IsValidProxyMode(runFlags.ProxyMode) {
 		if runFlags.ProxyMode == "" {
 			runFlags.ProxyMode = types.ProxyModeSSE.String() // default to SSE for backward compatibility
 		} else {
-			return nil, fmt.Errorf("invalid value for --proxy-mode: %s", runFlags.ProxyMode)
+			return fmt.Errorf("invalid value for --proxy-mode: %s", runFlags.ProxyMode)
 		}
 	}
+	return nil
+}
 
-	// Parse the environment variables from a list of strings to a map.
-	envVars, err := environment.ParseEnvironmentVariables(runFlags.Env)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse environment variables: %v", err)
+// buildRunnerConfig creates the final RunnerConfig using the builder pattern
+func buildRunnerConfig(
+	ctx context.Context,
+	runFlags *RunFlags,
+	cmdArgs []string,
+	debugMode bool,
+	validatedHost string,
+	rt runtime.Deployer,
+	imageURL string,
+	imageMetadata *registry.ImageMetadata,
+	envVars map[string]string,
+	envVarValidator runner.EnvVarValidator,
+	oidcConfig *auth.TokenValidatorConfig,
+	telemetryConfig *telemetry.Config,
+) (*runner.RunConfig, error) {
+	// Determine transport type
+	transportType := defaultTransportType
+	if runFlags.Transport != "" {
+		transportType = runFlags.Transport
 	}
 
-	// Initialize a new RunConfig with values from command-line flags
-	return runner.NewRunConfigBuilder().
+	// Create a builder for the RunConfig
+	builder := runner.NewRunConfigBuilder().
 		WithRuntime(rt).
 		WithCmdArgs(cmdArgs).
 		WithName(runFlags.Name).
@@ -422,17 +384,122 @@ func BuildRunnerConfig(
 		WithAuditEnabled(runFlags.EnableAudit, runFlags.AuditConfig).
 		WithLabels(runFlags.Labels).
 		WithGroup(runFlags.Group).
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-			runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP).
-		WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelServiceName,
-			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables).
-		WithToolsFilter(runFlags.ToolsFilter).
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    runFlags.IgnoreGlobally,
 			PrintOverlays: runFlags.PrintOverlays,
-		}).
-		WithRemoteAuth(remoteAuthConfig).
-		Build(ctx, imageMetadata, envVars, envVarValidator)
+		})
+
+	// Add remote auth configuration if enabled
+	if remoteAuthConfig := getRemoteAuthFromFlags(runFlags); remoteAuthConfig != nil {
+		builder = builder.WithRemoteAuth(remoteAuthConfig)
+	}
+
+	// Add OIDC configuration if provided
+	if oidcConfig != nil {
+		builder = builder.WithOIDCConfig(oidcConfig.Issuer, oidcConfig.Audience, oidcConfig.JWKSURL,
+			oidcConfig.IntrospectionURL, oidcConfig.ClientID, oidcConfig.ClientSecret,
+			oidcConfig.ResourceURL, oidcConfig.CACertPath, oidcConfig.AuthTokenFile, oidcConfig.AllowPrivateIP)
+	}
+
+	// Add telemetry configuration if provided
+	if telemetryConfig != nil {
+		// Convert headers map back to []string format for the builder
+		var headersList []string
+		for key, value := range telemetryConfig.Headers {
+			headersList = append(headersList, fmt.Sprintf("%s=%s", key, value))
+		}
+
+		builder = builder.WithTelemetryConfig(telemetryConfig.Endpoint, telemetryConfig.EnablePrometheusMetricsPath,
+			telemetryConfig.ServiceName, telemetryConfig.SamplingRate, headersList,
+			telemetryConfig.Insecure, telemetryConfig.EnvironmentVariables)
+	}
+
+	return builder.Build(ctx, imageMetadata, envVars, envVarValidator)
+}
+
+// handleImageRetrieval handles image retrieval and metadata fetching
+func handleImageRetrieval(
+	ctx context.Context,
+	serverOrImage string,
+	runFlags *RunFlags,
+) (
+	string,
+	*registry.ImageMetadata,
+	error,
+) {
+	// Only pull image if we are not running in Kubernetes mode.
+	// This split will go away if we implement a separate command or binary
+	// for running MCP servers in Kubernetes.
+	if !runtime.IsKubernetesRuntime() {
+		// Take the MCP server we were supplied and either fetch the image, or
+		// build it from a protocol scheme. If the server URI refers to an image
+		// in our trusted registry, we will also fetch the image metadata.
+		imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+		}
+		return imageURL, imageMetadata, nil
+	}
+	return serverOrImage, nil, nil
+}
+
+// createOIDCConfig creates OIDC configuration
+func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
+	oidcClientID, oidcClientSecret, resourceURL string, jwksAllowPrivateIP bool) *auth.TokenValidatorConfig {
+	return &auth.TokenValidatorConfig{
+		Issuer:           oidcIssuer,
+		Audience:         oidcAudience,
+		JWKSURL:          oidcJwksURL,
+		IntrospectionURL: oidcIntrospectionURL,
+		ClientID:         oidcClientID,
+		ClientSecret:     oidcClientSecret,
+		ResourceURL:      resourceURL,
+		AllowPrivateIP:   jwksAllowPrivateIP,
+		CACertPath:       "",
+		AuthTokenFile:    "",
+	}
+}
+
+// createTelemetryConfig creates telemetry configuration
+func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
+	otelServiceName string, otelSamplingRate float64, otelHeaders []string, otelInsecure bool,
+	otelEnvironmentVariables []string) *telemetry.Config {
+	// Convert otelHeaders from []string to map[string]string
+	headersMap := make(map[string]string)
+	for _, header := range otelHeaders {
+		if parts := strings.SplitN(header, "=", 2); len(parts) == 2 {
+			headersMap[parts[0]] = parts[1]
+		}
+	}
+
+	return &telemetry.Config{
+		Endpoint:                    otelEndpoint,
+		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
+		ServiceName:                 otelServiceName,
+		SamplingRate:                otelSamplingRate,
+		Headers:                     headersMap,
+		Insecure:                    otelInsecure,
+		EnvironmentVariables:        otelEnvironmentVariables,
+	}
+}
+
+// getRemoteAuthFromFlags creates RemoteAuthConfig from RunFlags
+func getRemoteAuthFromFlags(runFlags *RunFlags) *runner.RemoteAuthConfig {
+	if runFlags.EnableRemoteAuth || runFlags.RemoteAuthClientID != "" {
+		return &runner.RemoteAuthConfig{
+			ClientID:     runFlags.RemoteAuthClientID,
+			ClientSecret: runFlags.RemoteAuthClientSecret,
+			Scopes:       runFlags.RemoteAuthScopes,
+			SkipBrowser:  runFlags.RemoteAuthSkipBrowser,
+			Timeout:      runFlags.RemoteAuthTimeout,
+			CallbackPort: runFlags.RemoteAuthCallbackPort,
+			Issuer:       runFlags.RemoteAuthIssuer,
+			AuthorizeURL: runFlags.RemoteAuthAuthorizeURL,
+			TokenURL:     runFlags.RemoteAuthTokenURL,
+			OAuthParams:  runFlags.OAuthParams,
+		}
+	}
+	return nil
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags
@@ -467,22 +534,4 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 	}
 
 	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables
-}
-
-// getRemoteAuthFromFlags extracts remote authentication configuration from command flags
-func getRemoteAuthFromFlags(runFlags *RunFlags) *runner.RemoteAuthConfig {
-	return &runner.RemoteAuthConfig{
-		EnableRemoteAuth: runFlags.EnableRemoteAuth,
-		ClientID:         runFlags.RemoteAuthClientID,
-		ClientSecret:     runFlags.RemoteAuthClientSecret,
-		ClientSecretFile: runFlags.RemoteAuthClientSecretFile,
-		Scopes:           runFlags.RemoteAuthScopes,
-		SkipBrowser:      runFlags.RemoteAuthSkipBrowser,
-		Timeout:          runFlags.RemoteAuthTimeout,
-		CallbackPort:     runFlags.RemoteAuthCallbackPort,
-		Issuer:           runFlags.RemoteAuthIssuer,
-		AuthorizeURL:     runFlags.RemoteAuthAuthorizeURL,
-		TokenURL:         runFlags.RemoteAuthTokenURL,
-		OAuthParams:      runFlags.OAuthParams,
-	}
 }

@@ -107,11 +107,6 @@ components:
       type: string
       x-enum-varnames:
       - ConfigTypeCedarV1
-    client.Client:
-      properties:
-        name:
-          $ref: '#/components/schemas/client.MCPClient'
-      type: object
     client.MCPClient:
       type: string
       x-enum-varnames:
@@ -155,6 +150,16 @@ components:
           description: Registered indicates whether the client is registered in the
             ToolHive configuration
           type: boolean
+      type: object
+    client.RegisteredClient:
+      properties:
+        groups:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        name:
+          $ref: '#/components/schemas/client.MCPClient'
       type: object
     core.Workload:
       properties:
@@ -617,9 +622,6 @@ components:
       properties:
         authorizeURL:
           type: string
-        bearerToken:
-          description: Add Bearer token support
-          type: string
         callbackPort:
           type: integer
         clientID:
@@ -704,10 +706,6 @@ components:
           description: IsolateNetwork indicates whether to isolate the network for
             the container
           type: boolean
-        jwks_allow_private_ip:
-          description: JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP
-            addresses
-          type: boolean
         jwks_auth_token_file:
           description: JWKSAuthTokenFile is the path to file containing auth token
             for JWKS/OIDC requests
@@ -745,6 +743,9 @@ components:
           $ref: '#/components/schemas/runner.RemoteAuthConfig'
         remote_url:
           description: RemoteURL is the URL of the remote MCP server (if running remotely)
+          type: string
+        schema_version:
+          description: SchemaVersion is the version of the RunConfig schema
           type: string
         secrets:
           description: |-
@@ -1302,6 +1303,65 @@ components:
           description: Type of the secrets provider that was setup
           type: string
       type: object
+    v1.updateRequest:
+      description: Request to update an existing workload (name cannot be changed)
+      properties:
+        authz_config:
+          description: Authorization configuration
+          type: string
+        cmd_arguments:
+          description: Command arguments to pass to the container
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        env_vars:
+          additionalProperties:
+            type: string
+          description: Environment variables to set in the container
+          type: object
+        host:
+          description: Host to bind to
+          type: string
+        image:
+          description: Docker image to use
+          type: string
+        network_isolation:
+          description: Whether network isolation is turned on. This applies the rules
+            in the permission profile.
+          type: boolean
+        oidc:
+          $ref: '#/components/schemas/v1.oidcOptions'
+        permission_profile:
+          $ref: '#/components/schemas/permissions.Profile'
+        proxy_mode:
+          description: Proxy mode to use
+          type: string
+        secrets:
+          description: Secret parameters to inject
+          items:
+            $ref: '#/components/schemas/secrets.SecretParameter'
+          type: array
+          uniqueItems: false
+        target_port:
+          description: Port to expose from the container
+          type: integer
+        tools:
+          description: Tools filter
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport:
+          description: Transport configuration
+          type: string
+        volumes:
+          description: Volume mounts
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
     v1.updateSecretRequest:
       description: Request to update an existing secret
       properties:
@@ -1365,7 +1425,7 @@ paths:
             application/json:
               schema:
                 items:
-                  $ref: '#/components/schemas/client.Client'
+                  $ref: '#/components/schemas/client.RegisteredClient'
                 type: array
           description: OK
       summary: List all clients
@@ -2164,7 +2224,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/core.Workload'
+                $ref: '#/components/schemas/v1.createRequest'
           description: OK
         "404":
           content:
@@ -2173,6 +2233,45 @@ paths:
                 type: string
           description: Not Found
       summary: Get workload details
+      tags:
+      - workloads
+  /api/v1beta/workloads/{name}/edit:
+    post:
+      description: Update an existing workload configuration
+      parameters:
+      - description: Workload name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.updateRequest'
+        description: Update workload request
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.createWorkloadResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+      summary: Update workload
       tags:
       - workloads
   /api/v1beta/workloads/{name}/export:

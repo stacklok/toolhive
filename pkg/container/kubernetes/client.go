@@ -246,10 +246,23 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 
 	// Ensure the pod template has required configuration (labels, etc.)
-	podTemplateSpec = ensurePodTemplateConfig(podTemplateSpec, containerLabels)
+	// Get a config to talk to the apiserver
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		return 0, fmt.Errorf("error getting in-cluster config for APIServer: %w", err)
+	}
+
+	// Detect platform type
+	platformDetector := NewDefaultPlatformDetector()
+	platform, err := platformDetector.DetectPlatform(cfg)
+	if err != nil {
+		return 0, fmt.Errorf("can't determine api server type: %w", err)
+	}
+
+	podTemplateSpec = ensurePodTemplateConfig(podTemplateSpec, containerLabels, platform)
 
 	// Configure the MCP container
-	err := configureMCPContainer(
+	err = configureMCPContainer(
 		podTemplateSpec,
 		image,
 		command,
@@ -257,6 +270,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		envVarList,
 		transportType,
 		options,
+		platform,
 	)
 	if err != nil {
 		return 0, err
@@ -891,6 +905,7 @@ func createPodTemplateFromPatch(patchJSON string) (*corev1apply.PodTemplateSpecA
 func ensurePodTemplateConfig(
 	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
 	containerLabels map[string]string,
+	platform Platform,
 ) *corev1apply.PodTemplateSpecApplyConfiguration {
 	podTemplateSpec = ensureObjectMetaApplyConfigurationExists(podTemplateSpec)
 	// Ensure the pod template has labels
@@ -940,6 +955,31 @@ func ensurePodTemplateConfig(
 			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithRunAsGroup(int64(1000))
 		}
 	}
+
+	if platform == PlatformOpenShift {
+		if podTemplateSpec.Spec.SecurityContext.RunAsUser != nil {
+			podTemplateSpec.Spec.SecurityContext.RunAsUser = nil
+		}
+
+		if podTemplateSpec.Spec.SecurityContext.RunAsGroup != nil {
+			podTemplateSpec.Spec.SecurityContext.RunAsGroup = nil
+		}
+
+		if podTemplateSpec.Spec.SecurityContext.FSGroup != nil {
+			podTemplateSpec.Spec.SecurityContext.FSGroup = nil
+		}
+
+		if podTemplateSpec.Spec.SecurityContext.SeccompProfile == nil {
+			podTemplateSpec.Spec.SecurityContext.SeccompProfile =
+				corev1apply.SeccompProfile().WithType(
+					corev1.SeccompProfileTypeRuntimeDefault)
+		} else {
+			podTemplateSpec.Spec.SecurityContext.SeccompProfile =
+				podTemplateSpec.Spec.SecurityContext.SeccompProfile.WithType(
+					corev1.SeccompProfileTypeRuntimeDefault)
+		}
+	}
+
 	return podTemplateSpec
 }
 
@@ -985,7 +1025,18 @@ func configureContainer(
 	command []string,
 	attachStdio bool,
 	envVars []*corev1apply.EnvVarApplyConfiguration,
+	platform Platform,
 ) {
+	logger.Debugf("Configuring container %s with image %s", *container.Name, image)
+	logger.Debugf("Command: ")
+	for _, arg := range command {
+		logger.Debugf("Arg: %s", arg)
+	}
+	logger.Debugf("AttachStdio: %v", attachStdio)
+	for _, envVar := range envVars {
+		logger.Debugf("EnvVar: %s=%s", *envVar.Name, *envVar.Value)
+	}
+
 	container.WithImage(image).
 		WithArgs(command...).
 		WithStdin(attachStdio).
@@ -1029,6 +1080,34 @@ func configureContainer(
 			container.SecurityContext = container.SecurityContext.WithAllowPrivilegeEscalation(false)
 		}
 	}
+
+	if platform == PlatformOpenShift {
+		logger.Infof("Setting OpenShift security context requirements to container %s", *container.Name)
+
+		if container.SecurityContext.RunAsUser != nil {
+			container.SecurityContext.RunAsUser = nil
+		}
+
+		if container.SecurityContext.RunAsGroup != nil {
+			container.SecurityContext.RunAsGroup = nil
+		}
+
+		if container.SecurityContext.SeccompProfile == nil {
+			container.SecurityContext.SeccompProfile =
+				corev1apply.SeccompProfile().WithType(
+					corev1.SeccompProfileTypeRuntimeDefault)
+		} else {
+			container.SecurityContext.SeccompProfile =
+				container.SecurityContext.SeccompProfile.WithType(
+					corev1.SeccompProfileTypeRuntimeDefault)
+		}
+
+		if container.SecurityContext.Capabilities == nil {
+			container.SecurityContext.Capabilities = &corev1apply.CapabilitiesApplyConfiguration{
+				Drop: []corev1.Capability{"ALL"},
+			}
+		}
+	}
 }
 
 // configureMCPContainer configures the MCP container in the pod template
@@ -1040,6 +1119,7 @@ func configureMCPContainer(
 	envVarList []*corev1apply.EnvVarApplyConfiguration,
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
+	platform Platform,
 ) error {
 	// Get the "mcp" container if it exists
 	mcpContainer := getMCPContainer(podTemplateSpec)
@@ -1049,7 +1129,7 @@ func configureMCPContainer(
 		mcpContainer = corev1apply.Container().WithName("mcp")
 
 		// Configure the container
-		configureContainer(mcpContainer, image, command, attachStdio, envVarList)
+		configureContainer(mcpContainer, image, command, attachStdio, envVarList, platform)
 
 		// Configure ports if needed
 		if options != nil && transportType == string(transtypes.TransportTypeSSE) {
@@ -1064,7 +1144,7 @@ func configureMCPContainer(
 		podTemplateSpec.Spec.WithContainers(mcpContainer)
 	} else {
 		// Configure the existing container
-		configureContainer(mcpContainer, image, command, attachStdio, envVarList)
+		configureContainer(mcpContainer, image, command, attachStdio, envVarList, platform)
 
 		// Configure ports if needed
 		if options != nil && transportType == string(transtypes.TransportTypeSSE) {

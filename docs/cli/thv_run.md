@@ -75,6 +75,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
   -e, --env stringArray                         Environment variables to pass to the MCP server (format: KEY=VALUE)
   -f, --foreground                              Run in foreground mode (block until container exits)
       --from-config string                      Load configuration from exported file
+      --group string                            Name of the group this workload belongs to (defaults to 'default' if not specified) (default "default")
   -h, --help                                    help for run
       --host string                             Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --ignore-globally                         Load global ignore patterns from ~/.config/toolhive/thvignore (default true)
@@ -102,21 +103,21 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --proxy-mode string                       Proxy mode for stdio transport (sse or streamable-http) (default "sse")
       --proxy-port int                          Port for the HTTP proxy to listen on (host port)
       --remote string                           URL of remote MCP server to run as a workload
-      --remote-auth                             Enable automatic OAuth authentication for remote MCP servers
-      --remote-auth-callback-port int           Port for OAuth callback server during remote authentication (default 8666)
+      --remote-auth                             Enable automatic OAuth/OIDC authentication for remote MCP servers
+      --remote-auth-callback-port int           Port for OAuth callback (0 = auto-assign)
       --remote-auth-client-id string            OAuth client ID for remote server authentication
       --remote-auth-client-secret string        OAuth client secret for remote server authentication
-      --remote-auth-client-secret-file string   Path to file containing OAuth client secret
-      --remote-auth-scopes strings              OAuth scopes to request for remote server authentication
-      --remote-auth-skip-browser                Skip opening browser for remote server OAuth flow
-      --remote-auth-timeout duration            Timeout for OAuth authentication flow (default 5m0s)
+      --remote-auth-client-secret-file string   Path to file containing client secret for remote server authentication
+      --remote-auth-scopes strings              OAuth scopes for remote server authentication
+      --remote-auth-skip-browser                Skip opening browser for OAuth authentication (use device flow instead)
+      --remote-auth-timeout duration            Timeout for remote authentication flow (default 5m0s)
       --resource-url string                     Explicit resource URL for OAuth discovery endpoint (RFC 9728)
       --secret stringArray                      Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
       --target-host string                      Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")
       --target-port int                         Port for the container to expose (only applicable to SSE or Streamable HTTP transport)
       --thv-ca-bundle string                    Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)
       --tools stringArray                       Filter MCP server tools (comma-separated list of tool names)
-      --transport string                        Transport type to use (stdio, sse, streamable-http)
+      --transport string                        Transport mode (sse, streamable-http or stdio)
   -v, --volume stringArray                      Mount a volume into the container (format: host-path:container-path[:ro])
 ```
 

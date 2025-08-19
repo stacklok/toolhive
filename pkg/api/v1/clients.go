@@ -51,10 +51,10 @@ func ClientRouter(
 //	@Description	List all registered clients in ToolHive
 //	@Tags			clients
 //	@Produce		json
-//	@Success		200	{array}	client.Client
+//	@Success		200	{array}	client.RegisteredClient
 //	@Router			/api/v1beta/clients [get]
-func (c *ClientRoutes) listClients(w http.ResponseWriter, _ *http.Request) {
-	clients, err := c.clientManager.ListClients()
+func (c *ClientRoutes) listClients(w http.ResponseWriter, r *http.Request) {
+	clients, err := c.clientManager.ListClients(r.Context())
 	if err != nil {
 		logger.Errorf("Failed to list clients: %v", err)
 		http.Error(w, "Failed to list clients", http.StatusInternalServerError)
@@ -437,7 +437,6 @@ func (c *ClientRoutes) removeClientGlobally(
 					return
 				}
 			}
-			logger.Warnf("Client %s was not found in registered clients list", clientToRemove.Name)
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update configuration for client %s: %w", clientToRemove.Name, err)

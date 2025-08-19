@@ -408,4 +408,43 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 			})
 		})
 	})
+
+	Describe("We cannot create duplicate servers", func() {
+		It("should reject starting a second workload with the same name [Serial]", func() {
+			// unique name for this test
+			serverName := generateUniqueServerName("osv-duplicate-name-test")
+
+			By("Starting the first OSV MCP server")
+			e2e.NewTHVCommand(config, "run",
+				"--name", serverName,
+				"--transport", "sse", "osv").ExpectSuccess()
+
+			// ensure it's actually up before attempting the duplicate
+			err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+			Expect(err).ToNot(HaveOccurred(), "first server should start")
+
+			By("Attempting to start a second server with the same name")
+			// Use Run() (not ExpectSuccess) so we can assert failure +
+			// examine stdout/stderr
+			stdout, stderr, runErr := e2e.NewTHVCommand(config, "run",
+				"--name", serverName,
+				"--transport", "sse",
+				"osv").Run()
+
+			// The second run must fail because the name already exists
+			Expect(runErr).To(HaveOccurred(), "second server with same name should fail")
+			// Be flexible on the exact message, but check for a helpful hint
+			Expect(stdout+stderr).To(
+				ContainSubstring("already exists"),
+				"CLI should report a duplicate-name conflict",
+			)
+
+			// Cleanup
+			if config.CleanupAfter {
+				cerr := e2e.StopAndRemoveMCPServer(config, serverName)
+				Expect(cerr).ToNot(HaveOccurred(), "cleanup should succeed")
+			}
+		})
+
+	})
 })

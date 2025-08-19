@@ -8,6 +8,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -149,7 +150,7 @@ func completeLogsArgs(cmd *cobra.Command, args []string, _ string) ([]string, co
 
 // ValidateGroupFlag returns a cobra PreRunE-compatible function
 // that validates the --group flag *if provided*.
-/*func validateGroupFlag() func(cmd *cobra.Command, args []string) error {
+func validateGroupFlag() func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
 		groupName, err := cmd.Flags().GetString("group")
 		if err != nil {
@@ -168,4 +169,4 @@ func completeLogsArgs(cmd *cobra.Command, args []string, _ string) ([]string, co
 
 		return nil
 	}
-}*/
+}

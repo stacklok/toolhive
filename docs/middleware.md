@@ -304,16 +304,244 @@ Key metrics tracked by the middleware:
 - **Parsing success rates** - MCP message parsing statistics
 - **Error rates** - Authentication and authorization failures
 
+## Middleware Interfaces
+
+ToolHive defines two key interfaces that middleware must implement to integrate with the system:
+
+### Core Middleware Interface
+
+All middleware must implement the `types.Middleware` interface defined in `pkg/transport/types/transport.go:24`:
+
+```go
+type Middleware interface {
+    // Handler returns the middleware function used by the proxy.
+    Handler() MiddlewareFunction
+    // Close cleans up any resources used by the middleware.
+    Close() error
+}
+```
+
+The `MiddlewareFunction` type is defined as:
+
+```go
+type MiddlewareFunction func(http.Handler) http.Handler
+```
+
+### Middleware Configuration
+
+Middleware configuration is handled through the `MiddlewareConfig` struct:
+
+```go
+type MiddlewareConfig struct {
+    // Type is a string representing the middleware type.
+    Type string `json:"type"`
+    // Parameters is a JSON object containing the middleware parameters.
+    Parameters json.RawMessage `json:"parameters"`
+}
+```
+
+### Middleware Factory Function
+
+Each middleware must provide a factory function that matches the `MiddlewareFactory` signature:
+
+```go
+type MiddlewareFactory func(config *MiddlewareConfig, runner MiddlewareRunner) error
+```
+
+The factory function is responsible for:
+1. Parsing the middleware parameters from JSON
+2. Creating the middleware instance
+3. Registering the middleware with the runner
+4. Setting up any additional handlers (auth info, metrics, etc.)
+
+### Middleware Runner Interface
+
+Middleware can interact with the runner through the `MiddlewareRunner` interface:
+
+```go
+type MiddlewareRunner interface {
+    // AddMiddleware adds a middleware instance to the runner's middleware chain
+    AddMiddleware(middleware Middleware)
+    
+    // SetAuthInfoHandler sets the authentication info handler (used by auth middleware)
+    SetAuthInfoHandler(handler http.Handler)
+    
+    // SetPrometheusHandler sets the Prometheus metrics handler (used by telemetry middleware)
+    SetPrometheusHandler(handler http.Handler)
+    
+    // GetConfig returns a config interface for middleware to access runner configuration
+    GetConfig() RunnerConfig
+}
+```
+
 ## Extending the Middleware
 
 ### Adding New Middleware
 
 To add new middleware to the chain:
 
-1. Implement the `func(http.Handler) http.Handler` interface
-2. Add configuration options to the runner
-3. Insert at the appropriate position in the chain
-4. Update tests to include the new middleware
+1. **Implement the Core Interface**: Create a struct that implements `types.Middleware`
+2. **Define Parameters Structure**: Create a parameters struct for configuration
+3. **Create Factory Function**: Implement a factory function with the correct signature
+4. **Register with Runner**: Add your middleware type to the supported middleware map
+5. **Update Configuration**: Add middleware to the configuration population logic
+6. **Write Tests**: Include comprehensive tests for your middleware
+
+#### Step-by-Step Implementation
+
+**Step 1: Implement the Middleware Interface**
+
+```go
+package yourpackage
+
+import (
+    "net/http"
+    "github.com/stacklok/toolhive/pkg/transport/types"
+)
+
+const (
+    MiddlewareType = "your-middleware"
+)
+
+// MiddlewareParams defines the configuration parameters
+type MiddlewareParams struct {
+    SomeConfig string `json:"some_config"`
+    Enabled    bool   `json:"enabled"`
+}
+
+// Middleware implements the types.Middleware interface
+type Middleware struct {
+    middleware types.MiddlewareFunction
+    params     MiddlewareParams
+}
+
+// Handler returns the middleware function
+func (m *Middleware) Handler() types.MiddlewareFunction {
+    return m.middleware
+}
+
+// Close cleans up resources
+func (m *Middleware) Close() error {
+    // Cleanup logic here
+    return nil
+}
+```
+
+**Step 2: Create the Factory Function**
+
+```go
+// CreateMiddleware factory function for your middleware
+func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
+    // Parse parameters
+    var params MiddlewareParams
+    if err := json.Unmarshal(config.Parameters, &params); err != nil {
+        return fmt.Errorf("failed to unmarshal middleware parameters: %w", err)
+    }
+
+    // Create the actual HTTP middleware function
+    middlewareFunc := func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // Your middleware logic here
+            next.ServeHTTP(w, r)
+        })
+    }
+
+    // Create middleware instance
+    middleware := &Middleware{
+        middleware: middlewareFunc,
+        params:     params,
+    }
+
+    // Add to runner
+    runner.AddMiddleware(middleware)
+    
+    // Set up additional handlers if needed
+    // runner.SetPrometheusHandler(someHandler)
+    // runner.SetAuthInfoHandler(someHandler)
+
+    return nil
+}
+```
+
+**Step 3: Register with the System**
+
+Add your middleware to `pkg/runner/middleware.go:15` in the `GetSupportedMiddlewareFactories()` function:
+
+```go
+func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
+    return map[string]types.MiddlewareFactory{
+        // ... existing middleware
+        yourpackage.MiddlewareType: yourpackage.CreateMiddleware,
+    }
+}
+```
+
+**Step 4: Update Configuration Population**
+
+Add your middleware to `pkg/runner/middleware.go:27` in the `PopulateMiddlewareConfigs()` function:
+
+```go
+// Your middleware (if enabled)
+if config.YourMiddlewareConfig != nil {
+    yourParams := yourpackage.MiddlewareParams{
+        SomeConfig: config.YourMiddlewareConfig.SomeConfig,
+        Enabled:    config.YourMiddlewareConfig.Enabled,
+    }
+    yourConfig, err := types.NewMiddlewareConfig(yourpackage.MiddlewareType, yourParams)
+    if err != nil {
+        return fmt.Errorf("failed to create your middleware config: %w", err)
+    }
+    middlewareConfigs = append(middlewareConfigs, *yourConfig)
+}
+```
+
+#### Example: Authentication Middleware Implementation
+
+For reference, here's how the authentication middleware is implemented:
+
+```go
+// pkg/auth/middleware.go
+func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
+    var params MiddlewareParams
+    if err := json.Unmarshal(config.Parameters, &params); err != nil {
+        return fmt.Errorf("failed to unmarshal auth middleware parameters: %w", err)
+    }
+
+    // Create token validator
+    validator, err := NewTokenValidator(params.OIDCConfig)
+    if err != nil {
+        return fmt.Errorf("failed to create token validator: %w", err)
+    }
+
+    // Create middleware function
+    middlewareFunc := createAuthMiddleware(validator)
+
+    // Create middleware instance
+    middleware := &Middleware{
+        middleware:      middlewareFunc,
+        authInfoHandler: createAuthInfoHandler(params.OIDCConfig),
+    }
+
+    // Register with runner
+    runner.AddMiddleware(middleware)
+    runner.SetAuthInfoHandler(middleware.AuthInfoHandler())
+
+    return nil
+}
+```
+
+### Middleware Execution Order
+
+The middleware chain execution order is critical and controlled by the order in `PopulateMiddlewareConfigs()` in `pkg/runner/middleware.go:27`:
+
+1. **Tool Filter Middleware** (if enabled) - Filters available tools
+2. **Authentication Middleware** (always present) - Validates JWT tokens
+3. **MCP Parser Middleware** (always present) - Parses JSON-RPC MCP requests
+4. **Telemetry Middleware** (if enabled) - OpenTelemetry instrumentation
+5. **Authorization Middleware** (if enabled) - Cedar policy evaluation
+6. **Audit Middleware** (if enabled) - Request logging
+
+**Important**: Authentication must come before authorization, and MCP parsing must come before authorization to ensure the required context data is available.
 
 ### Custom Authorization Policies
 

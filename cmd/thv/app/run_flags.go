@@ -94,9 +94,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
 	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
-	// TODO: Re-enable when group functionality is complete
-	// cmd.Flags().StringVar(&config.Group, "group", "default",
-	//	"Name of the group this workload belongs to (defaults to 'default' if not specified)")
+	cmd.Flags().StringVar(&config.Group, "group", "default",
+		"Name of the group this workload belongs to (defaults to 'default' if not specified)")
 	cmd.Flags().StringVar(&config.Host, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	cmd.Flags().IntVar(&config.ProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
 	cmd.Flags().IntVar(&config.TargetPort, "target-port", 0,
@@ -254,7 +253,7 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 	}
 
 	return createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-		oidcClientID, oidcClientSecret, runFlags.ResourceURL), nil
+		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP), nil
 }
 
 // setupTelemetryConfiguration sets up telemetry configuration with config fallbacks
@@ -442,7 +441,7 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 
 // createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided
 func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-	oidcClientID, oidcClientSecret, resourceURL string) *auth.TokenValidatorConfig {
+	oidcClientID, oidcClientSecret, resourceURL string, allowPrivateIP bool) *auth.TokenValidatorConfig {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
 		oidcClientID != "" || oidcClientSecret != "" || resourceURL != "" {
 		return &auth.TokenValidatorConfig{
@@ -453,6 +452,7 @@ func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionUR
 			ClientID:         oidcClientID,
 			ClientSecret:     oidcClientSecret,
 			ResourceURL:      resourceURL,
+			AllowPrivateIP:   allowPrivateIP,
 		}
 	}
 	return nil

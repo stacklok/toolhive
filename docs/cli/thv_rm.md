@@ -24,7 +24,8 @@ thv rm [workload-name] [flags]
 ### Options
 
 ```
-  -h, --help   help for rm
+      --group string   Delete all workloads in the specified group
+  -h, --help           help for rm
 ```
 
 ### Options inherited from parent commands

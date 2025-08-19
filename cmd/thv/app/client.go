@@ -102,11 +102,10 @@ func init() {
 	clientCmd.AddCommand(clientRemoveCmd)
 	clientCmd.AddCommand(clientListRegisteredCmd)
 
-	// TODO: Re-enable when group functionality is complete
-	//clientRegisterCmd.Flags().StringSliceVar(
-	//	&groupAddNames, "group", []string{groups.DefaultGroup}, "Only register workloads from specified groups")
-	//clientRemoveCmd.Flags().StringSliceVar(
-	//	&groupRmNames, "group", []string{}, "Remove client from specified groups (if not set, removes all workloads from the client)")
+	clientRegisterCmd.Flags().StringSliceVar(
+		&groupAddNames, "group", []string{groups.DefaultGroup}, "Only register workloads from specified groups")
+	clientRemoveCmd.Flags().StringSliceVar(
+		&groupRmNames, "group", []string{}, "Remove client from specified groups (if not set, removes all workloads from the client)")
 }
 
 func clientStatusCmdFunc(cmd *cobra.Command, _ []string) error {
@@ -157,11 +156,11 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 	return registerSelectedClients(cmd, selectedClients, selectedGroups)
 }
 
-// Helper to get available (installed but unregistered) clients
+// Helper to get available (installed) clients
 func getAvailableClients(statuses []client.MCPClientStatus) []client.MCPClientStatus {
 	var available []client.MCPClientStatus
 	for _, s := range statuses {
-		if s.Installed && !s.Registered {
+		if s.Installed {
 			available = append(available, s)
 		}
 	}

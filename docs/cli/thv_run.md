@@ -67,6 +67,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
   -e, --env stringArray                       Environment variables to pass to the MCP server (format: KEY=VALUE)
   -f, --foreground                            Run in foreground mode (block until container exits)
       --from-config string                    Load configuration from exported file
+      --group string                          Name of the group this workload belongs to (defaults to 'default' if not specified) (default "default")
   -h, --help                                  help for run
       --host string                           Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --ignore-globally                       Load global ignore patterns from ~/.config/toolhive/thvignore (default true)

@@ -126,9 +126,6 @@ type RunConfig struct {
 	// JWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests
 	JWKSAuthTokenFile string `json:"jwks_auth_token_file,omitempty" yaml:"jwks_auth_token_file,omitempty"`
 
-	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
-	JWKSAllowPrivateIP bool `json:"jwks_allow_private_ip,omitempty" yaml:"jwks_allow_private_ip,omitempty"`
-
 	// Group is the name of the group this workload belongs to, if any
 	Group string `json:"group,omitempty" yaml:"group,omitempty"`
 

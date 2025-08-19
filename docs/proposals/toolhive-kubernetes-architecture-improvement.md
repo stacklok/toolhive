@@ -54,7 +54,7 @@ Changes to certain resources, such as secrets management for an MCP Server, may 
 
 ## New Deployment Architecture Proposal
 
-As described above, the current deployment architecture has it's pains. The aim with the new proposal is to make these pains less painful (hopefully entirely) by moving some of the responsibilities over to other components of ToolHive inside of a Kubernetes context. The high-level proposal is to repurpose the ProxyRunner to be just a proxy. By taking all "runner" logic out of the ProxyRunner would allow us to leverage the Operator to do what it does best; create Kubernetes resources.
+As described above, the current deployment architecture has it's pains. The aim with the new proposal is to make these pains less painful (hopefully entirely) by moving some of the responsibilities over to other components of ToolHive inside of a Kubernetes context.
 
 As described above, the current deployment architecture has several pain points. The goal of this proposal is to reduce (ideally eliminate) those issues by shifting certain responsibilities to more appropriate components within ToolHive’s Kubernetes deployment.
 

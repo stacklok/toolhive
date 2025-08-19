@@ -2,6 +2,7 @@ package keyring
 
 import "errors"
 
+// ErrNotFound is returned when a requested key is not found in the keyring
 var ErrNotFound = errors.New("key not found")
 
 // Provider defines the interface for keyring backends

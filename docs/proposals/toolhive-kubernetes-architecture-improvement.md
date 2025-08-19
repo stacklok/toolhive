@@ -43,13 +43,13 @@ This evolution led to the `Proxy` being renamed to `ProxyRunner` in the Kubernet
 
 However, what began as a logical and straightforward implementation gradually became difficult and hacky to work with when complexity increased, for the following reasons:
 
-1) Split service creation
+1) **Split service creation** <br>
 The headless service is created by the `ProxyRunner`, while the proxy service is created by the Operator. This means two services are managed in different places, which adds complexity and makes the design harder to reason about.
-2) Orphaned resources
+2) **Orphaned resources** <br>
 When an `MCPServer` CR is removed, the Operator correctly deletes the `ProxyRunner` (as its owner) but could not delete the associated `MCPServer` `StatefulSet`, since it was not the creator. This leaves orphaned resources and forced us to implement [finalizer logic](https://github.com/stacklok/toolhive/blob/main/cmd/thv-operator/controllers/mcpserver_controller.go#L820-L846) in the Operator to handle `StatefulSet` and headless service cleanup.
-3) Coupled changes across components
+3) **Coupled changes across components** <br>
 When the Operator creates the `ProxyRunner` Deployment, it must pass a `--k8s-pod-patch` flag containing the user-provided `podTemplateSpec` from the `MCPServer` resource. The `ProxyRunner` then merges this with the `StatefulSet` it creates. As a result, changes that should live together are split across the `MCPServer` CR, Operator code, and `ProxyRunner` code, increasing maintenance overhead and complexity to testing assurance.
-4) Difficult testing
+4) **Difficult testing** <br>
 Changes to certain resources, such as secrets management for an MCP Server, may require modifications in both the Operator and `ProxyRunner`. There is no reliable way to validate this interaction in isolation, so we depend heavily on end-to-end tests, which are more expensive and less precise than unit tests. 
 
 ## New Deployment Architecture Proposal
@@ -75,12 +75,12 @@ The high-level idea is to repurpose the ProxyRunner so that it acts purely as a 
 
 This new approach would enable us to:
 
-1) Centralize service creation – Have the Operator create all services required for both the Proxy and the MCP headless service, avoiding the need for extra finalizer code to clean them up during deletion.
-2) Properly manage StatefulSets – Allow the Operator to create MCPServer StatefulSets with correct owner references, ensuring clean deletion without custom finalizer logic.
-3) Keep logic close to the CR – By having the Operator manage the MCPServer StatefulSet directly, changes or additions only require updates in a single component. This removes the need to pass pod patches to ProxyRunner and allows for easier unit testing of the final StatefulSet manifest.
-4) Simplify ProxyRunner – Reduce ProxyRunner’s responsibilities so it focuses solely on proxying requests.
-5) Keep clear boundaries on responsibilities of ToolHive components.
-6) Minimize RBAC surface area – With fewer responsibilities, ProxyRunner requires far fewer Kubernetes permissions.
+1) **Centralize service creation** – Have the Operator create all services required for both the Proxy and the MCP headless service, avoiding the need for extra finalizer code to clean them up during deletion.
+2) **Properly manage StatefulSets** – Allow the Operator to create MCPServer StatefulSets with correct owner references, ensuring clean deletion without custom finalizer logic.
+3) **Keep logic close to the CR** – By having the Operator manage the MCPServer StatefulSet directly, changes or additions only require updates in a single component. This removes the need to pass pod patches to ProxyRunner and allows for easier unit testing of the final StatefulSet manifest.
+4) **Simplify ProxyRunner** – Reduce ProxyRunner’s responsibilities so it focuses solely on proxying requests.
+5) **Clear boundaries** - Keep clear boundaries on responsibilities of ToolHive components.
+6) **Minimize RBAC surface area** – With fewer responsibilities, ProxyRunner requires far fewer Kubernetes permissions.
 
 
 

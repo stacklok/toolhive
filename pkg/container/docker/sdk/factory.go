@@ -22,6 +22,8 @@ const (
 	DockerSocketEnv = "TOOLHIVE_DOCKER_SOCKET"
 	// PodmanSocketEnv is the environment variable for custom Podman socket path
 	PodmanSocketEnv = "TOOLHIVE_PODMAN_SOCKET"
+	// ColimaSocketEnv is the environment variable for custom Colima socket path
+	ColimaSocketEnv = "TOOLHIVE_COLIMA_SOCKET"
 )
 
 // Common socket paths
@@ -32,13 +34,15 @@ const (
 	PodmanXDGRuntimeSocketPath = "podman/podman.sock"
 	// DockerSocketPath is the default Docker socket path
 	DockerSocketPath = "/var/run/docker.sock"
+	// ColimaSocketPath is the default Colima socket path
+	ColimaSocketPath = ".colima/default/docker.sock"
 	// DockerDesktopMacSocketPath is the Docker Desktop socket path on macOS
 	DockerDesktopMacSocketPath = ".docker/run/docker.sock"
 	// RancherDesktopMacSocketPath is the Docker socket path for Rancher Desktop on macOS
 	RancherDesktopMacSocketPath = ".rd/docker.sock"
 )
 
-var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
+var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeColima, runtime.TypeDocker}
 
 // NewDockerClient creates a new container client
 func NewDockerClient(ctx context.Context) (*client.Client, string, runtime.Type, error) {

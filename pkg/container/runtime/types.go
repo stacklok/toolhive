@@ -184,6 +184,8 @@ const (
 	TypePodman Type = "podman"
 	// TypeDocker represents the Docker runtime
 	TypeDocker Type = "docker"
+	// TypeColima represents the Colima runtime
+	TypeColima Type = "colima"
 	// TypeKubernetes represents the Kubernetes runtime
 	TypeKubernetes Type = "kubernetes"
 )

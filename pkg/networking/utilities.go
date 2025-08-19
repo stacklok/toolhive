@@ -72,7 +72,7 @@ func ValidateEndpointURL(endpoint string) error {
 	}
 
 	// Ensure HTTPS for security (except localhost for development)
-	if u.Scheme != "https" && !IsLocalhost(u.Host) {
+	if u.Scheme != HttpsScheme && !IsLocalhost(u.Host) {
 		return fmt.Errorf("endpoint must use HTTPS: %s", endpoint)
 	}
 
@@ -95,7 +95,7 @@ func IsURL(input string) bool {
 	if err != nil {
 		return false
 	}
-	return parsedURL.Scheme == "http" || parsedURL.Scheme == "https"
+	return parsedURL.Scheme == HttpScheme || parsedURL.Scheme == HttpsScheme
 }
 
 // IsRemoteURL checks if the input is a remote HTTP or HTTPS URL (not localhost or private IP)
@@ -106,14 +106,9 @@ func IsRemoteURL(input string) bool {
 	}
 
 	// Must have HTTP or HTTPS scheme
-	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return false
+	if parsedURL.Scheme == HttpScheme || parsedURL.Scheme == HttpsScheme {
+		return !IsLocalhost(parsedURL.Host) && parsedURL.Host != ""
 	}
 
-	// Must have a host
-	if parsedURL.Host == "" {
-		return false
-	}
-
-	return !IsLocalhost(parsedURL.Host)
+	return false
 }

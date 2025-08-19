@@ -20,7 +20,10 @@ var privateIPBlocks []*net.IPNet
 // HttpTimeout is the timeout for outgoing HTTP requests
 const HttpTimeout = 30 * time.Second
 
+// HttpsScheme is the HTTPS scheme
 const HttpsScheme = "https"
+
+// HttpScheme is the HTTP scheme
 const HttpScheme = "http"
 
 // Dialer control function for validating addresses prior to connection

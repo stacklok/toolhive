@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -85,7 +86,8 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 	}
 
 	// Call deploymentForMCPServer
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check if the pod template patch is included in the args
@@ -173,7 +175,8 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 	}
 
 	// Call deploymentForMCPServer
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 }
 
@@ -215,7 +218,8 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 	}
 
 	// Call deploymentForMCPServer
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that secrets are injected via pod template patch
@@ -317,7 +321,8 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 	}
 
 	// Generate the deployment
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that environment variables are passed as --env flags in the container args
@@ -371,7 +376,8 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 	}
 
 	// Generate the deployment
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that the ProxyRunner's pod and container security context are set

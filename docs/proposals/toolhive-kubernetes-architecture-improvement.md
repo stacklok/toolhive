@@ -1,4 +1,4 @@
-# Improved Deployment Architecture for ToolHive Inside of Kuberenetes.
+# Improved Deployment Architecture for ToolHive Inside of Kubernetes.
 
 This document outlines a proposal to improve ToolHive’s deployment architecture within Kubernetes. It provides background on the rationale for the current design, particularly the roles of the ProxyRunner and Operator, and introduces a revised approach intended to increase manageability, maintainability, and overall robustness of the system.
 

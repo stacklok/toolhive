@@ -201,3 +201,5 @@ registryAPI:
 kagentIntegration:
   # -- Enable kagent integration to create kagent MCPServer resources
   enabled: false
+  # -- Preferred kagent API version (v1alpha1 or v1alpha2). Defaults to v1alpha1 for backward compatibility
+  # apiVersion: v1alpha1

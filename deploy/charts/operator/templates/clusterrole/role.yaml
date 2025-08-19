@@ -100,11 +100,13 @@ rules:
   - patch
   - update
 {{- if .Values.kagentIntegration.enabled }}
-# Allow the operator to manage kagent ToolServer resources when integration is enabled
+# Allow the operator to manage kagent resources when integration is enabled
+# Supports both v1alpha1 (ToolServer) and v1alpha2 (RemoteMCPServer)
 - apiGroups:
   - kagent.dev
   resources:
   - toolservers
+  - remotemcpservers
   verbs:
   - create
   - delete

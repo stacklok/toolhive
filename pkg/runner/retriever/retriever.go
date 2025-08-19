@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -110,7 +110,7 @@ func GetMCPServerOrRemote(
 ) (string, *registry.ImageMetadata, *registry.RemoteServerMetadata, error) {
 
 	// First, check if it's a direct URL (existing --remote behavior)
-	if isURL(serverOrImage) {
+	if networking.IsURL(serverOrImage) {
 		// Direct URL approach - return as remote server
 		return serverOrImage, nil, nil, nil
 	}
@@ -134,11 +134,6 @@ func GetMCPServerOrRemote(
 	}
 
 	return imageURL, imageMetadata, nil, nil
-}
-
-// isURL checks if the input is a URL
-func isURL(input string) bool {
-	return strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://")
 }
 
 // pullImage pulls an image from a remote registry if it has the "latest" tag

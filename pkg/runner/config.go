@@ -359,7 +359,6 @@ type RemoteAuthConfig struct {
 	SkipBrowser      bool
 	Timeout          time.Duration `swaggertype:"string" example:"5m"`
 	CallbackPort     int
-	BearerToken      string // Add Bearer token support
 
 	// OAuth endpoint configuration (from registry)
 	Issuer       string

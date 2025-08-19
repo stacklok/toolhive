@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -102,23 +101,18 @@ type RunFlags struct {
 	RemoteAuthSkipBrowser      bool
 	RemoteAuthTimeout          time.Duration
 	RemoteAuthCallbackPort     int
-	RemoteAuthBearerToken      string
-
-	// Additional remote auth fields for registry-based servers
-	RemoteAuthIssuer       string
-	RemoteAuthAuthorizeURL string
-	RemoteAuthTokenURL     string
+	RemoteAuthIssuer           string
+	RemoteAuthAuthorizeURL     string
+	RemoteAuthTokenURL         string
+	OAuthParams                map[string]string
 
 	// Environment variables for remote servers
 	EnvVars map[string]string
-
-	// OAuth parameters for remote servers
-	OAuthParams map[string]string
 }
 
 // AddRunFlags adds all the run flags to a command
 func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
-	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport type to use (stdio, sse, streamable-http)")
+	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
 	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	// TODO: Re-enable when group functionality is complete
@@ -184,17 +178,15 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.RemoteAuthClientSecret, "remote-auth-client-secret", "",
 		"OAuth client secret for remote server authentication")
 	cmd.Flags().StringVar(&config.RemoteAuthClientSecretFile, "remote-auth-client-secret-file", "",
-		"Path to file containing OAuth client secret")
+		"Path to file containing client secret for remote server authentication")
 	cmd.Flags().StringSliceVar(&config.RemoteAuthScopes, "remote-auth-scopes", []string{},
-		"OAuth scopes to request for remote server authentication")
+		"OAuth scopes for remote server authentication")
 	cmd.Flags().BoolVar(&config.RemoteAuthSkipBrowser, "remote-auth-skip-browser", false,
-		"Skip opening browser for remote server OAuth flow")
+		"Skip opening browser for OAuth authentication (use device flow instead)")
 	cmd.Flags().DurationVar(&config.RemoteAuthTimeout, "remote-auth-timeout", 5*time.Minute,
-		"Timeout for OAuth authentication flow")
-	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", 8666,
-		"Port for OAuth callback server during remote authentication")
-	cmd.Flags().StringVar(&config.RemoteAuthBearerToken, "remote-auth-bearer-token", "",
-		"Bearer token for remote server authentication (alternative to OAuth)")
+		"Timeout for remote authentication flow")
+	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", 0,
+		"Port for OAuth callback (0 = auto-assign)")
 
 	// OAuth discovery configuration
 	cmd.Flags().StringVar(&config.ResourceURL, "resource-url", "",
@@ -346,9 +338,12 @@ func BuildRunnerConfig(
 		for _, envVar := range remoteServerMetadata.EnvVars {
 			if envVar.Secret {
 				// Only add secrets if no authentication method is provided
-				hasAuth := runFlags.RemoteAuthBearerToken != "" ||
-					runFlags.RemoteAuthClientID != "" ||
-					remoteServerMetadata.OAuthConfig != nil
+				hasAuth := runFlags.RemoteAuthClientID != "" ||
+					runFlags.RemoteAuthClientSecret != "" ||
+					runFlags.RemoteAuthClientSecretFile != "" ||
+					runFlags.RemoteAuthIssuer != "" ||
+					runFlags.RemoteAuthAuthorizeURL != "" ||
+					runFlags.RemoteAuthTokenURL != ""
 				if !hasAuth {
 					runFlags.Secrets = append(runFlags.Secrets, fmt.Sprintf("%s,target=%s", envVar.Name, envVar.Name))
 				}
@@ -359,7 +354,7 @@ func BuildRunnerConfig(
 				runFlags.EnvVars[envVar.Name] = envVar.Default
 			}
 		}
-	} else if isURL(imageURL) {
+	} else if networking.IsURL(imageURL) {
 		// Handle direct URL approach
 		runFlags.RemoteURL = imageURL
 		if transportType == "" {
@@ -386,22 +381,8 @@ func BuildRunnerConfig(
 
 	// Build remote auth config if enabled
 	var remoteAuthConfig *runner.RemoteAuthConfig
-	if runFlags.EnableRemoteAuth || runFlags.RemoteAuthClientID != "" || runFlags.RemoteAuthBearerToken != "" {
-		remoteAuthConfig = &runner.RemoteAuthConfig{
-			EnableRemoteAuth: runFlags.EnableRemoteAuth,
-			ClientID:         runFlags.RemoteAuthClientID,
-			ClientSecret:     runFlags.RemoteAuthClientSecret,
-			ClientSecretFile: runFlags.RemoteAuthClientSecretFile,
-			Scopes:           runFlags.RemoteAuthScopes,
-			SkipBrowser:      runFlags.RemoteAuthSkipBrowser,
-			Timeout:          runFlags.RemoteAuthTimeout,
-			CallbackPort:     runFlags.RemoteAuthCallbackPort,
-			BearerToken:      runFlags.RemoteAuthBearerToken,
-			Issuer:           runFlags.RemoteAuthIssuer,
-			AuthorizeURL:     runFlags.RemoteAuthAuthorizeURL,
-			TokenURL:         runFlags.RemoteAuthTokenURL,
-			OAuthParams:      runFlags.OAuthParams,
-		}
+	if runFlags.EnableRemoteAuth || runFlags.RemoteAuthClientID != "" {
+		remoteAuthConfig = getRemoteAuthFromFlags(runFlags)
 	}
 
 	// Validate proxy mode early
@@ -488,7 +469,20 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables
 }
 
-// isURL checks if the input is a URL
-func isURL(input string) bool {
-	return strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://")
+// getRemoteAuthFromFlags extracts remote authentication configuration from command flags
+func getRemoteAuthFromFlags(runFlags *RunFlags) *runner.RemoteAuthConfig {
+	return &runner.RemoteAuthConfig{
+		EnableRemoteAuth: runFlags.EnableRemoteAuth,
+		ClientID:         runFlags.RemoteAuthClientID,
+		ClientSecret:     runFlags.RemoteAuthClientSecret,
+		ClientSecretFile: runFlags.RemoteAuthClientSecretFile,
+		Scopes:           runFlags.RemoteAuthScopes,
+		SkipBrowser:      runFlags.RemoteAuthSkipBrowser,
+		Timeout:          runFlags.RemoteAuthTimeout,
+		CallbackPort:     runFlags.RemoteAuthCallbackPort,
+		Issuer:           runFlags.RemoteAuthIssuer,
+		AuthorizeURL:     runFlags.RemoteAuthAuthorizeURL,
+		TokenURL:         runFlags.RemoteAuthTokenURL,
+		OAuthParams:      runFlags.OAuthParams,
+	}
 }

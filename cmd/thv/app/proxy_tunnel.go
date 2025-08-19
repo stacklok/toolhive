@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -126,11 +125,16 @@ func resolveTarget(ctx context.Context, target string) (string, error) {
 }
 
 func looksLikeURL(s string) bool {
+	// Parse the URL once
+	u, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+
 	// Fast-path for common schemes
-	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+	if u.Scheme == "http" || u.Scheme == "https" {
 		return true
 	}
-	// Fallback parse check
-	u, err := url.Parse(s)
-	return err == nil && u.Scheme != "" && u.Host != ""
+	// Fallback check for other schemes
+	return u.Scheme != "" && u.Host != ""
 }

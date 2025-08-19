@@ -1484,7 +1484,7 @@
       ],
       "transport": "stdio"
     },
-"github": {
+    "github": {
       "args": [],
       "description": "Provides integration with GitHub's APIs",
       "env_vars": [
@@ -4166,93 +4166,5 @@
       "transport": "stdio"
     }
   },
-  "remote_servers": {
-    "stripe": {
-      "name": "stripe",
-      "description": "Stripe MCP server for payment processing and financial operations",
-      "tier": "Official",
-      "status": "Active",
-      "transport": "streamable-http",
-      "url": "https://mcp.stripe.com",
-      "tools": ["stripe_payments", "stripe_customers", "stripe_products", "stripe_subscriptions"],
-      "tags": ["payments", "finance", "ecommerce"],
-      "oauth_config": {
-        "issuer": "https://connect.stripe.com",
-        "scopes": ["read", "write"]
-      },
-      "env_vars": [
-        {
-          "name": "STRIPE_PUBLISHABLE_KEY",
-          "description": "Stripe publishable key for client-side operations",
-          "required": false
-        },
-        {
-          "name": "STRIPE_SECRET_KEY",
-          "description": "Stripe secret key for server-side operations",
-          "required": false,
-          "secret": true
-        }
-      ],
-      "metadata": {
-        "last_updated": "2025-08-13T10:00:00Z"
-      }
-    },
-    "paypal": {
-      "name": "paypal",
-      "description": "PayPal MCP server for payment processing and order management",
-      "tier": "Official", 
-      "status": "Active",
-      "transport": "sse",
-      "url": "http://mcp.sandbox.paypal.com/sse",
-      "tools": ["paypal_payments", "paypal_orders", "paypal_subscriptions"],
-      "tags": ["payments", "finance", "ecommerce"],
-      "oauth_config": {
-        "authorize_url": "https://www.sandbox.paypal.com/connect",
-        "token_url": "https://api.sandbox.paypal.com/v1/identity/openidconnect/tokenservice"
-      },
-      "env_vars": [
-        {
-          "name": "PAYPAL_CLIENT_ID",
-          "description": "PayPal client ID for OAuth authentication",
-          "required": false
-        },
-        {
-          "name": "PAYPAL_CLIENT_SECRET",
-          "description": "PayPal client secret for OAuth authentication",
-          "required": false,
-          "secret": true
-        }
-      ],
-      "metadata": {
-        "last_updated": "2025-08-13T10:00:00Z"
-      }
-    },
-    "github": {
-      "name": "github",
-      "description": "GitHub Copilot MCP server for code generation and AI assistance",
-      "tier": "Official",
-      "status": "Active",
-      "transport": "streamable-http",
-      "url": "https://api.githubcopilot.com/mcp/",
-      "tools": ["github_copilot", "code_generation", "code_completion", "code_explanation"],
-      "tags": ["ai", "code", "copilot", "github", "programming"],
-      "oauth_config": {
-        "authorize_url": "https://github.com/login/oauth/select_account",
-        "token_url": "https://github.com/login/oauth/access_token",
-        "scopes": ["gist", "notifications", "public_repo", "read:gpg_key", "read:org", "repo", "repo:status", "repo_deployment", "user", "user:email", "user:follow"]
-      },
-      "env_vars": [
-        {
-          "name": "GITHUB_TOKEN",
-          "description": "GitHub personal access token for authentication",
-          "required": false,
-          "secret": true
-        }
-      ],
-      "metadata": {
-        "last_updated": "2025-08-13T12:00:00Z"
-      }
-    }
-    },
   "version": "1.0.0"
 }

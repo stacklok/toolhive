@@ -207,7 +207,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Handle remote authentication if configured
 		if r.Config.RemoteAuthConfig != nil && (r.Config.RemoteAuthConfig.EnableRemoteAuth ||
-			r.Config.RemoteAuthConfig.BearerToken != "" || r.Config.RemoteAuthConfig.ClientID != "") {
+			r.Config.RemoteAuthConfig.ClientID != "") {
 			tokenSource, err := r.handleRemoteAuthentication(ctx)
 			if err != nil {
 				return fmt.Errorf("failed to authenticate to remote server: %w", err)

@@ -88,3 +88,12 @@ func IsLocalhost(host string) bool {
 		host == "127.0.0.1" ||
 		host == "[::1]"
 }
+
+// IsURL checks if the input is a valid HTTP or HTTPS URL
+func IsURL(input string) bool {
+	parsedURL, err := url.Parse(input)
+	if err != nil {
+		return false
+	}
+	return parsedURL.Scheme == "http" || parsedURL.Scheme == "https"
+}

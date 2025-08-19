@@ -103,7 +103,6 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --proxy-port int                          Port for the HTTP proxy to listen on (host port)
       --remote string                           URL of remote MCP server to run as a workload
       --remote-auth                             Enable automatic OAuth authentication for remote MCP servers
-      --remote-auth-bearer-token string         Bearer token for remote server authentication (alternative to OAuth)
       --remote-auth-callback-port int           Port for OAuth callback server during remote authentication (default 8666)
       --remote-auth-client-id string            OAuth client ID for remote server authentication
       --remote-auth-client-secret string        OAuth client secret for remote server authentication

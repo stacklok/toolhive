@@ -282,6 +282,16 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Default proxy mode to SSE if not specified
+	if !types.IsValidProxyMode(req.ProxyMode) {
+		if req.ProxyMode == "" {
+			req.ProxyMode = types.ProxyModeSSE.String()
+		} else {
+			http.Error(w, "Invalid proxy_mode", http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Create the workload using shared logic
 	runConfig, err := s.createWorkloadFromRequest(ctx, &req)
 	if err != nil {

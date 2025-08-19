@@ -75,6 +75,12 @@ func TestTokenValidator(t *testing.T) {
 		t.Fatalf("Failed to create token validator: %v", err)
 	}
 
+	// Ensure JWKS is registered before lookup
+	err = validator.ensureJWKSRegistered(ctx)
+	if err != nil {
+		t.Fatalf("Failed to register JWKS: %v", err)
+	}
+
 	// Force a refresh of the JWKS cache
 	_, err = validator.jwksClient.Lookup(ctx, jwksServer.URL)
 	if err != nil {
@@ -215,6 +221,12 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Failed to create token validator: %v", err)
+	}
+
+	// Ensure JWKS is registered before lookup
+	err = validator.ensureJWKSRegistered(ctx)
+	if err != nil {
+		t.Fatalf("Failed to register JWKS: %v", err)
 	}
 
 	// Force a refresh of the JWKS cache
@@ -605,6 +617,12 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 		tokenString, err := token.SignedString(privateKey)
 		if err != nil {
 			t.Fatalf("Failed to sign token: %v", err)
+		}
+
+		// Ensure JWKS is registered before lookup
+		err = validator.ensureJWKSRegistered(ctx)
+		if err != nil {
+			t.Fatalf("Failed to register JWKS: %v", err)
 		}
 
 		// Force a refresh of the JWKS cache

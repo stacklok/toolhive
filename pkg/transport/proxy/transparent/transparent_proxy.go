@@ -313,14 +313,12 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Create a handler that logs requests and strips /mcp path for remote servers
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// For remote servers, strip the /mcp path since they expect requests at the root
-		if strings.HasPrefix(r.URL.Path, "/mcp") {
+		if networking.IsRemoteURL(p.targetURI) && strings.HasPrefix(r.URL.Path, "/mcp") {
 			// Strip /mcp from the path for remote servers
 			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/mcp")
 			if r.URL.Path == "" {
 				r.URL.Path = "/"
 			}
-			logger.Infof("Transparent proxy: %s %s -> %s (stripped /mcp)", r.Method, r.URL.Path, targetURL)
-		} else {
 			logger.Infof("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, targetURL)
 		}
 		proxy.ServeHTTP(w, r)

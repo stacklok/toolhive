@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -47,7 +49,13 @@ func NewUpdateChecker(versionClient VersionClient) (UpdateChecker, error) {
 		var contents updateFile
 		err = json.Unmarshal(rawContents, &contents)
 		if err != nil {
-			return nil, fmt.Errorf("failed to deserialize update file: %w", err)
+			// If the file is corrupted, attempt to recover
+			if recoveredFile, recoverErr := recoverCorruptedJSON(rawContents); recoverErr == nil {
+				contents = recoveredFile
+				logger.Debug("Update file is corrupted, attempting to preserve instance ID")
+			} else {
+				return nil, fmt.Errorf("failed to deserialize update file: %w", err)
+			}
 		}
 		instanceID = contents.InstanceID
 		previousVersion = contents.LatestVersion
@@ -106,7 +114,13 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 		}
 	} else {
 		if err := json.Unmarshal(rawContents, &currentFile); err != nil {
-			return fmt.Errorf("failed to deserialize update file: %w", err)
+			// If the file is corrupted, attempt to recover
+			if recoveredFile, recoverErr := recoverCorruptedJSON(rawContents); recoverErr == nil {
+				currentFile = recoveredFile
+				logger.Debug("Recovered corrupted update file, preserving instance ID")
+			} else {
+				return fmt.Errorf("failed to deserialize update file: %w", err)
+			}
 		}
 
 		// Initialize components map if it doesn't exist (for backward compatibility)
@@ -180,4 +194,21 @@ func notifyIfUpdateAvailable(current, latest string) {
 	if semver.Compare(semver.Canonical(current), semver.Canonical(latest)) < 0 {
 		fmt.Fprintf(os.Stderr, "A new version of ToolHive is available: %s\nCurrently running: %s\n", latest, current)
 	}
+}
+
+// recoverCorruptedJSON attempts to recover from common JSON corruption issues
+// while preserving the instance_id to avoid regenerating it.
+func recoverCorruptedJSON(rawContents []byte) (updateFile, error) {
+	content := string(rawContents)
+
+	// Extract the instance_id from the corrupted JSON and regenerate the file
+	instanceIDRegex := regexp.MustCompile(`"instance_id":"([^"]+)"`)
+	if matches := instanceIDRegex.FindStringSubmatch(content); len(matches) > 1 {
+		return updateFile{
+			InstanceID: matches[1],
+			Components: make(map[string]componentInfo),
+		}, nil
+	}
+
+	return updateFile{}, fmt.Errorf("unable to recover corrupted JSON")
 }

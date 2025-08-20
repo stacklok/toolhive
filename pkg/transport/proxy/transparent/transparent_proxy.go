@@ -24,7 +24,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -70,6 +69,9 @@ type TransparentProxy struct {
 
 	// Listener for the HTTP server
 	listener net.Listener
+
+	// Whether the target URI is remote
+	isRemote bool
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -81,6 +83,7 @@ func NewTransparentProxy(
 	prometheusHandler http.Handler,
 	authInfoHandler http.Handler,
 	enableHealthCheck bool,
+	isRemote bool,
 	middlewares ...types.MiddlewareFunction,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
@@ -93,6 +96,7 @@ func NewTransparentProxy(
 		prometheusHandler: prometheusHandler,
 		authInfoHandler:   authInfoHandler,
 		sessionManager:    session.NewManager(30*time.Minute, session.NewProxySession),
+		isRemote:          isRemote,
 	}
 
 	// Create MCP pinger and health checker only if enabled
@@ -156,7 +160,7 @@ func (t *tracingTransport) manualForward(req *http.Request) (*http.Response, err
 
 // nolint:gocyclo // This function handles multiple request types and is complex by design
 func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if networking.IsRemoteURL(t.p.targetURI) {
+	if t.p.isRemote {
 		// Use manual HTTP client instead of reverse proxy for remote URLs
 		resp, err := t.manualForward(req)
 		if err != nil {
@@ -313,7 +317,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Create a handler that logs requests and strips /mcp path for remote servers
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// For remote servers, strip the /mcp path since they expect requests at the root
-		if networking.IsRemoteURL(p.targetURI) && strings.HasPrefix(r.URL.Path, "/mcp") {
+		if p.isRemote && strings.HasPrefix(r.URL.Path, "/mcp") {
 			// Strip /mcp from the path for remote servers
 			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/mcp")
 			if r.URL.Path == "" {

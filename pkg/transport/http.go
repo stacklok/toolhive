@@ -311,6 +311,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		t.host, t.proxyPort, t.containerName, targetURI,
 		t.prometheusHandler, t.authInfoHandler,
 		t.remoteURL == "",
+		t.remoteURL != "",
 		middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err

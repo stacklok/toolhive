@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -53,7 +52,7 @@ func NewUpdateChecker(versionClient VersionClient) (UpdateChecker, error) {
 			// If the file is corrupted, attempt to recover
 			if recoveredFile, recoverErr := recoverCorruptedJSON(rawContents); recoverErr == nil {
 				contents = recoveredFile
-				logger.Debug("Update file is corrupted, attempting to preserve instance ID")
+				// Note: Update file is corrupted, attempting to preserve instance ID
 			} else {
 				return nil, fmt.Errorf("failed to deserialize update file: %w", err)
 			}
@@ -118,7 +117,7 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 			// If the file is corrupted, attempt to recover
 			if recoveredFile, recoverErr := recoverCorruptedJSON(rawContents); recoverErr == nil {
 				currentFile = recoveredFile
-				logger.Debug("Recovered corrupted update file, preserving instance ID")
+				// Note: Recovered corrupted update file, preserving instance ID
 			} else {
 				return fmt.Errorf("failed to deserialize update file: %w", err)
 			}

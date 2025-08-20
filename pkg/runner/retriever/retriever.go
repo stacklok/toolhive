@@ -38,7 +38,7 @@ func GetMCPServer(
 	serverOrImage string,
 	rawCACertPath string,
 	verificationType string,
-) (string, *registry.ImageMetadata, *registry.RemoteServerMetadata, error) {
+) (string, registry.ServerMetadata, error) {
 	var imageMetadata *registry.ImageMetadata
 	var imageToUse string
 
@@ -50,7 +50,7 @@ func GetMCPServer(
 		caCertPath := resolveCACertPath(rawCACertPath)
 		generatedImage, err := runner.HandleProtocolScheme(ctx, imageManager, serverOrImage, caCertPath)
 		if err != nil {
-			return "", nil, nil, errors.Join(ErrBadProtocolScheme, err)
+			return "", nil, errors.Join(ErrBadProtocolScheme, err)
 		}
 		// Update the image in the runConfig with the generated image
 		logger.Debugf("Using built image: %s instead of %s", generatedImage, serverOrImage)
@@ -60,7 +60,7 @@ func GetMCPServer(
 		// Try to find the server in the registry
 		provider, err := registry.GetDefaultProvider()
 		if err != nil {
-			return "", nil, nil, fmt.Errorf("failed to get registry provider: %v", err)
+			return "", nil, fmt.Errorf("failed to get registry provider: %v", err)
 		}
 
 		// First check if the server exists and whether it's remote
@@ -68,7 +68,7 @@ func GetMCPServer(
 		if err == nil {
 			// Server found, check if it's remote
 			if server.IsRemote() {
-				return serverOrImage, nil, server.(*registry.RemoteServerMetadata), nil
+				return serverOrImage, server, nil
 			}
 			// It's a container server, get the ImageMetadata
 			imageMetadata, err = provider.GetImageServer(serverOrImage)
@@ -89,15 +89,15 @@ func GetMCPServer(
 
 	// Verify the image against the expected provenance info (if applicable)
 	if err := verifyImage(imageToUse, imageMetadata, verificationType); err != nil {
-		return "", nil, nil, err
+		return "", nil, err
 	}
 
 	// Pull the image if necessary
 	if err := pullImage(ctx, imageToUse, imageManager); err != nil {
-		return "", nil, nil, fmt.Errorf("failed to retrieve or pull image: %v", err)
+		return "", nil, fmt.Errorf("failed to retrieve or pull image: %v", err)
 	}
 
-	return imageToUse, imageMetadata, nil, nil
+	return imageToUse, imageMetadata, nil
 }
 
 // pullImage pulls an image from a remote registry if it has the "latest" tag

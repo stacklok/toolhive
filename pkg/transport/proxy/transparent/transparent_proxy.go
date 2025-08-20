@@ -72,6 +72,9 @@ type TransparentProxy struct {
 
 	// Whether the target URI is remote
 	isRemote bool
+
+	// Transport type (sse, streamable-http)
+	transportType string
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -84,6 +87,7 @@ func NewTransparentProxy(
 	authInfoHandler http.Handler,
 	enableHealthCheck bool,
 	isRemote bool,
+	transportType string,
 	middlewares ...types.MiddlewareFunction,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
@@ -97,6 +101,7 @@ func NewTransparentProxy(
 		authInfoHandler:   authInfoHandler,
 		sessionManager:    session.NewManager(30*time.Minute, session.NewProxySession),
 		isRemote:          isRemote,
+		transportType:     transportType,
 	}
 
 	// Create MCP pinger and health checker only if enabled
@@ -161,18 +166,28 @@ func (t *tracingTransport) manualForward(req *http.Request) (*http.Response, err
 // nolint:gocyclo // This function handles multiple request types and is complex by design
 func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.p.isRemote {
-		// Use manual HTTP client instead of reverse proxy for remote URLs
-		resp, err := t.manualForward(req)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				// Expected during shutdown or client disconnect—silently ignore
+		// Route based on transport type for remote servers
+		switch t.p.transportType {
+		case "sse":
+			// Use reverse proxy for SSE (streaming)
+			return t.forward(req)
+		case "streamable-http":
+			// Use manual HTTP client for streamable-http (request/response)
+			resp, err := t.manualForward(req)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					// Expected during shutdown or client disconnect—silently ignore
+					return nil, err
+				}
+				logger.Errorf("Failed to forward request: %v", err)
 				return nil, err
 			}
-			logger.Errorf("Failed to forward request: %v", err)
-			return nil, err
+			return resp, nil
+		default:
+			// Default to manual forwarding for unknown transport types
+			logger.Warnf("Unknown transport type '%s', using manual forwarding", t.p.transportType)
+			return t.manualForward(req)
 		}
-
-		return resp, nil
 	}
 
 	// Original logic for local containers

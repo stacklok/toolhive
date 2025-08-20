@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -723,7 +724,7 @@ func (s *WorkloadRoutes) getWorkloadNamesFromRequest(ctx context.Context, req bu
 // createWorkloadFromRequest creates a workload from a request
 func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
 	// Fetch or build the requested image
-	imageURL, imageMetadata, _, err := retriever.GetMCPServer(
+	imageURL, serverMetadata, err := retriever.GetMCPServer(
 		ctx,
 		req.Image,
 		"", // We do not let the user specify a CA cert path here.
@@ -738,6 +739,10 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 
 	// Build RunConfig
 	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
+
+	// Handle server metadata - API only supports container servers
+	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
+
 	runConfig, err := runner.NewRunConfigBuilder().
 		WithRuntime(s.containerRuntime).
 		WithCmdArgs(req.CmdArguments).

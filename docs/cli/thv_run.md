@@ -52,7 +52,7 @@ ToolHive supports five ways to run an MCP server:
 
 5. Remote MCP server:
 
-	   $ thv run --remote <URL> [--name <name>]
+	   $ thv run <URL> [--name <name>]
 
    Runs a remote MCP server as a workload, proxying requests to the specified URL.
    This allows remote MCP servers to be managed like local workloads with full
@@ -104,7 +104,6 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --print-resolved-overlays                 Debug: show resolved container paths for tmpfs overlays
       --proxy-mode string                       Proxy mode for stdio transport (sse or streamable-http) (default "sse")
       --proxy-port int                          Port for the HTTP proxy to listen on (host port)
-      --remote string                           URL of remote MCP server to run as a workload
       --remote-auth                             Enable OAuth/OIDC authentication to remote MCP server
       --remote-auth-authorize-url string        OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
       --remote-auth-callback-port int           Port for OAuth callback server during remote authentication (default 8666)

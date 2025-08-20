@@ -222,8 +222,6 @@ func deriveRemoteName(remoteURL string) (string, error) {
 	// Remove common TLDs and use the main domain name
 	parts := strings.Split(hostname, ".")
 	if len(parts) >= 2 {
-		// For domains like "api.github.com", return "github"
-		// For domains like "github.com", return "github"
 		return parts[len(parts)-2], nil
 	}
 

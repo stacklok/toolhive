@@ -127,6 +127,9 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 		return nil, fmt.Errorf("failed to get workloads from files: %w", err)
 	}
 
+	// TODO: Fetch the runconfig if present to populate additional fields like package, tool type, group etc.
+	// There's currently an import cycle between this package and the runconfig package
+
 	// Create a map of runtime workloads by name for easy lookup
 	workloadMap := f.mergeRuntimeAndFileWorkloads(ctx, runtimeContainers, fileWorkloads)
 

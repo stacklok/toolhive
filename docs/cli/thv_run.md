@@ -104,13 +104,16 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --proxy-port int                          Port for the HTTP proxy to listen on (host port)
       --remote string                           URL of remote MCP server to run as a workload
       --remote-auth                             Enable automatic OAuth/OIDC authentication for remote MCP servers
+      --remote-auth-authorize-url string        OAuth authorize URL for remote server authentication
       --remote-auth-callback-port int           Port for OAuth callback (0 = auto-assign)
       --remote-auth-client-id string            OAuth client ID for remote server authentication
       --remote-auth-client-secret string        OAuth client secret for remote server authentication
       --remote-auth-client-secret-file string   Path to file containing client secret for remote server authentication
+      --remote-auth-issuer string               OAuth issuer for remote server authentication
       --remote-auth-scopes strings              OAuth scopes for remote server authentication
       --remote-auth-skip-browser                Skip opening browser for OAuth authentication (use device flow instead)
       --remote-auth-timeout duration            Timeout for remote authentication flow (default 5m0s)
+      --remote-auth-token-url string            OAuth token URL for remote server authentication
       --resource-url string                     Explicit resource URL for OAuth discovery endpoint (RFC 9728)
       --secret stringArray                      Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
       --target-host string                      Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")

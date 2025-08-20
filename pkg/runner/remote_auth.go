@@ -42,7 +42,11 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 			// Use realm as issuer if available, otherwise derive from URL
 			issuer := authInfo.Realm
 			if issuer == "" {
-				issuer = discovery.DeriveIssuerFromURL(remoteURL)
+				if h.config.Issuer != "" {
+					issuer = h.config.Issuer
+				} else {
+					issuer = discovery.DeriveIssuerFromURL(remoteURL)
+				}
 			}
 
 			if issuer == "" {

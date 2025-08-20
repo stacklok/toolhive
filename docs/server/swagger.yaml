@@ -632,6 +632,16 @@ components:
           type: string
         enableRemoteAuth:
           type: boolean
+        envVars:
+          description: Environment variables for the client
+          items:
+            $ref: '#/components/schemas/registry.EnvVar'
+          type: array
+        headers:
+          description: Headers for HTTP requests
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
         issuer:
           description: OAuth endpoint configuration (from registry)
           type: string

@@ -110,9 +110,6 @@ type RunFlags struct {
 	RemoteAuthAuthorizeURL     string
 	RemoteAuthTokenURL         string
 	OAuthParams                map[string]string
-
-	// Environment variables for remote servers
-	EnvVars map[string]string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -191,6 +188,12 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Timeout for remote authentication flow")
 	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", 0,
 		"Port for OAuth callback (0 = auto-assign)")
+	cmd.Flags().StringVar(&config.RemoteAuthIssuer, "remote-auth-issuer", "",
+		"OAuth issuer for remote server authentication")
+	cmd.Flags().StringVar(&config.RemoteAuthAuthorizeURL, "remote-auth-authorize-url", "",
+		"OAuth authorize URL for remote server authentication")
+	cmd.Flags().StringVar(&config.RemoteAuthTokenURL, "remote-auth-token-url", "",
+		"OAuth token URL for remote server authentication")
 
 	// OAuth discovery configuration
 	cmd.Flags().StringVar(&config.ResourceURL, "resource-url", "",
@@ -260,8 +263,14 @@ func BuildRunnerConfig(
 		return nil, err
 	}
 
+	// If --remote flag is provided, use it as the serverOrImage
+	if runFlags.RemoteURL != "" {
+		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
+			nil, nil, envVarValidator, oidcConfig, telemetryConfig)
+	}
+
 	// Handle image retrieval
-	imageURL, imageMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags)
+	imageURL, imageMetadata, remoteServerMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +287,7 @@ func BuildRunnerConfig(
 	}
 
 	// Build the runner config
-	return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, imageMetadata,
+	return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, imageMetadata, remoteServerMetadata,
 		envVars, envVarValidator, oidcConfig, telemetryConfig)
 }
 
@@ -337,8 +346,21 @@ func handleImageRetrieval(
 ) (
 	string,
 	*registry.ImageMetadata,
+	*registry.RemoteServerMetadata,
 	error,
 ) {
+
+	// Try to get server from registry (container or remote) or direct URL
+	imageURL, imageMetadata, remoteServerMetadata, err := retriever.GetMCPServer(
+		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+	}
+
+	if remoteServerMetadata != nil {
+		return imageURL, nil, remoteServerMetadata, nil
+	}
+
 	// Only pull image if we are not running in Kubernetes mode.
 	// This split will go away if we implement a separate command or binary
 	// for running MCP servers in Kubernetes.
@@ -346,13 +368,11 @@ func handleImageRetrieval(
 		// Take the MCP server we were supplied and either fetch the image, or
 		// build it from a protocol scheme. If the server URI refers to an image
 		// in our trusted registry, we will also fetch the image metadata.
-		imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+		if imageMetadata != nil {
+			return imageURL, imageMetadata, nil, nil
 		}
-		return imageURL, imageMetadata, nil
 	}
-	return serverOrImage, nil, nil
+	return serverOrImage, nil, nil, nil
 }
 
 // validateAndSetupProxyMode validates and sets default proxy mode if needed
@@ -377,6 +397,7 @@ func buildRunnerConfig(
 	rt runtime.Deployer,
 	imageURL string,
 	imageMetadata *registry.ImageMetadata,
+	remoteServerMetadata *registry.RemoteServerMetadata,
 	envVars map[string]string,
 	envVarValidator runner.EnvVarValidator,
 	oidcConfig *auth.TokenValidatorConfig,
@@ -384,7 +405,11 @@ func buildRunnerConfig(
 ) (*runner.RunConfig, error) {
 	// Determine transport type
 	transportType := defaultTransportType
-	if runFlags.Transport != "" {
+	if imageMetadata != nil {
+		transportType = imageMetadata.Transport
+	} else if remoteServerMetadata != nil {
+		transportType = remoteServerMetadata.Transport
+	} else if runFlags.Transport != "" {
 		transportType = runFlags.Transport
 	}
 
@@ -427,9 +452,15 @@ func buildRunnerConfig(
 		runFlags.Transport,
 	)
 
-	// Add remote auth configuration if enabled
-	if remoteAuthConfig := getRemoteAuthFromFlags(runFlags); remoteAuthConfig != nil {
-		builder = builder.WithRemoteAuth(remoteAuthConfig)
+	if remoteServerMetadata != nil {
+		if remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata); remoteAuthConfig != nil {
+			builder = builder.WithRemoteAuth(remoteAuthConfig)
+		}
+	}
+	if runFlags.RemoteURL != "" {
+		if remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags); remoteAuthConfig != nil {
+			builder = builder.WithRemoteAuth(remoteAuthConfig)
+		}
 	}
 
 	// Load authz config if path is provided
@@ -470,8 +501,33 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 	return config.Endpoint, config.SamplingRate, config.EnvironmentVariables
 }
 
-// getRemoteAuthFromFlags creates RemoteAuthConfig from RunFlags
-func getRemoteAuthFromFlags(runFlags *RunFlags) *runner.RemoteAuthConfig {
+// getRemoteAuthFromRemoteServerMetadata creates RemoteAuthConfig from RemoteServerMetadata
+func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.RemoteServerMetadata) *runner.RemoteAuthConfig {
+	if remoteServerMetadata == nil {
+		return nil
+	}
+
+	if remoteServerMetadata.OAuthConfig != nil {
+		return &runner.RemoteAuthConfig{
+			ClientID:     runFlags.RemoteAuthClientID,
+			ClientSecret: runFlags.RemoteAuthClientSecret,
+			Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
+			SkipBrowser:  runFlags.RemoteAuthSkipBrowser,
+			Timeout:      runFlags.RemoteAuthTimeout,
+			CallbackPort: remoteServerMetadata.OAuthConfig.CallbackPort,
+			Issuer:       remoteServerMetadata.OAuthConfig.Issuer,
+			AuthorizeURL: remoteServerMetadata.OAuthConfig.AuthorizeURL,
+			TokenURL:     remoteServerMetadata.OAuthConfig.TokenURL,
+			OAuthParams:  remoteServerMetadata.OAuthConfig.OAuthParams,
+			Headers:      remoteServerMetadata.Headers,
+			EnvVars:      remoteServerMetadata.EnvVars,
+		}
+	}
+	return nil
+}
+
+// getRemoteAuthFromRunFlags creates RemoteAuthConfig from RunFlags
+func getRemoteAuthFromRunFlags(runFlags *RunFlags) *runner.RemoteAuthConfig {
 	if runFlags.EnableRemoteAuth || runFlags.RemoteAuthClientID != "" {
 		return &runner.RemoteAuthConfig{
 			ClientID:     runFlags.RemoteAuthClientID,

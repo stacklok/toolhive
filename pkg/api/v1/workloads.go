@@ -723,7 +723,7 @@ func (s *WorkloadRoutes) getWorkloadNamesFromRequest(ctx context.Context, req bu
 // createWorkloadFromRequest creates a workload from a request
 func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
 	// Fetch or build the requested image
-	imageURL, imageMetadata, err := retriever.GetMCPServer(
+	imageURL, imageMetadata, _, err := retriever.GetMCPServer(
 		ctx,
 		req.Image,
 		"", // We do not let the user specify a CA cert path here.

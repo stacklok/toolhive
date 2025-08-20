@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -379,6 +380,12 @@ type RemoteAuthConfig struct {
 	Issuer       string
 	AuthorizeURL string
 	TokenURL     string
+
+	// Headers for HTTP requests
+	Headers []*registry.Header
+
+	// Environment variables for the client
+	EnvVars []*registry.EnvVar
 
 	// OAuth parameters for server-specific customization
 	OAuthParams map[string]string

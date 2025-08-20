@@ -39,7 +39,7 @@ func GetMCPServer(
 	serverOrImage string,
 	rawCACertPath string,
 	verificationType string,
-) (string, *registry.ImageMetadata, error) {
+) (string, *registry.ImageMetadata, *registry.RemoteServerMetadata, error) {
 	var imageMetadata *registry.ImageMetadata
 	var imageToUse string
 
@@ -51,7 +51,7 @@ func GetMCPServer(
 		caCertPath := resolveCACertPath(rawCACertPath)
 		generatedImage, err := runner.HandleProtocolScheme(ctx, imageManager, serverOrImage, caCertPath)
 		if err != nil {
-			return "", nil, errors.Join(ErrBadProtocolScheme, err)
+			return "", nil, nil, errors.Join(ErrBadProtocolScheme, err)
 		}
 		// Update the image in the runConfig with the generated image
 		logger.Debugf("Using built image: %s instead of %s", generatedImage, serverOrImage)
@@ -61,7 +61,7 @@ func GetMCPServer(
 		// Try to find the server in the registry
 		provider, err := registry.GetDefaultProvider()
 		if err != nil {
-			return "", nil, fmt.Errorf("failed to get registry provider: %v", err)
+			return "", nil, nil, fmt.Errorf("failed to get registry provider: %v", err)
 		}
 
 		// First check if the server exists and whether it's remote
@@ -69,7 +69,7 @@ func GetMCPServer(
 		if err == nil {
 			// Server found, check if it's remote
 			if server.IsRemote() {
-				return "", nil, fmt.Errorf("remote servers are not supported for running yet. Use 'thv proxy %s' instead", serverOrImage)
+				return serverOrImage, nil, server.(*registry.RemoteServerMetadata), nil
 			}
 			// It's a container server, get the ImageMetadata
 			imageMetadata, err = provider.GetImageServer(serverOrImage)
@@ -90,15 +90,15 @@ func GetMCPServer(
 
 	// Verify the image against the expected provenance info (if applicable)
 	if err := verifyImage(imageToUse, imageMetadata, verificationType); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 
 	// Pull the image if necessary
 	if err := pullImage(ctx, imageToUse, imageManager); err != nil {
-		return "", nil, fmt.Errorf("failed to retrieve or pull image: %v", err)
+		return "", nil, nil, fmt.Errorf("failed to retrieve or pull image: %v", err)
 	}
 
-	return imageToUse, imageMetadata, nil
+	return imageToUse, imageMetadata, nil, nil
 }
 
 // GetMCPServerOrRemote retrieves the MCP server definition from the registry, supporting both container and remote servers
@@ -110,30 +110,17 @@ func GetMCPServerOrRemote(
 ) (string, *registry.ImageMetadata, *registry.RemoteServerMetadata, error) {
 
 	// First, check if it's a direct URL (existing --remote behavior)
-	if networking.IsRemoteURL(serverOrImage) {
+	if networking.IsURL(serverOrImage) {
 		// Direct URL approach - return as remote server
 		return serverOrImage, nil, nil, nil
 	}
 
-	// Second, try to find as a remote server in registry
-	provider, err := registry.GetDefaultProvider()
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to get registry provider: %v", err)
-	}
-
-	remoteServer, err := provider.GetServer(serverOrImage)
-	if err == nil {
-		// Found a remote server in registry
-		return remoteServer.GetRepositoryURL(), nil, remoteServer.(*registry.RemoteServerMetadata), nil
-	}
-
-	// Third, try as container server (existing logic)
-	imageURL, imageMetadata, err := GetMCPServer(ctx, serverOrImage, rawCACertPath, verificationType)
+	imageURL, imageMetadata, remoteServerMetadata, err := GetMCPServer(ctx, serverOrImage, rawCACertPath, verificationType)
 	if err != nil {
 		return "", nil, nil, err
 	}
 
-	return imageURL, imageMetadata, nil, nil
+	return imageURL, imageMetadata, remoteServerMetadata, nil
 }
 
 // pullImage pulls an image from a remote registry if it has the "latest" tag

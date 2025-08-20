@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
+	"github.com/gofrs/flock"
 	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 
@@ -164,6 +165,15 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal updated data: %w", err)
 	}
+
+	// Acquire lock just before writing to minimize lock time
+	lockFile := flock.New(d.updateFilePath + ".lock")
+	if err := lockFile.Lock(); err != nil {
+		return fmt.Errorf("failed to acquire lock on update file: %w", err)
+	}
+	defer func() {
+		_ = lockFile.Unlock()
+	}()
 
 	if err := os.WriteFile(d.updateFilePath, updatedData, 0600); err != nil {
 		return fmt.Errorf("failed to write updated file: %w", err)

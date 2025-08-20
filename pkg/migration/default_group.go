@@ -100,7 +100,7 @@ func (m *DefaultGroupMigrator) migrateWorkloadsToDefaultGroup(ctx context.Contex
 		// ListWorkloadsInGroup doesn't check the runconfig, so we need an additional check here
 		runConfig, err := runner.LoadState(ctx, workloadName)
 		if err != nil {
-			logger.Warnf("Failed to migrate workload %s to default group due to missing or currupt"+
+			logger.Warnf("Failed to migrate workload %s to default group due to missing or corrupt"+
 				" run configuration: %v. The workload may be unhealthy and need to be deleted.", workloadName, err)
 			continue
 		}

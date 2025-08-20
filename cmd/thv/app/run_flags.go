@@ -146,7 +146,6 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		[]string{},
 		"Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)",
 	)
-	cmd.Flags().StringVar(&config.RemoteURL, "remote", "", "URL of remote MCP server to run as a workload")
 	cmd.Flags().StringVar(&config.AuthzConfig, "authz-config", "", "Path to the authorization configuration file")
 	cmd.Flags().StringVar(&config.AuditConfig, "audit-config", "", "Path to the audit configuration file")
 	cmd.Flags().BoolVar(&config.EnableAudit, "enable-audit", false, "Enable audit logging with default configuration")

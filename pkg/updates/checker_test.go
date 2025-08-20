@@ -330,3 +330,73 @@ func TestNotifyIfUpdateAvailable(t *testing.T) {
 		notifyIfUpdateAvailable(currentVersion, latestVersion)
 	})
 }
+
+// TestCorruptedJSONRecovery tests the recovery of corrupted update files
+func TestCorruptedJSONRecovery(t *testing.T) {
+	t.Parallel()
+
+	t.Run("recover from corrupted JSON with extra braces", func(t *testing.T) {
+		t.Parallel()
+
+		// Create corrupted JSON with extra closing braces (real example from user)
+		corruptedJSON := `{"instance_id":"test-instance-recovery","latest_version":"v0.2.3","components":{"API":{"last_check":"2025-08-01T11:12:00.740318Z"},"CLI":{"last_check":"2025-07-01T10:54:28.356601Z"},"UI":{"last_check":"2025-08-05T13:52:11.49587Z"}}}}}`
+
+		// Test recovery function directly
+		recovered, err := recoverCorruptedJSON([]byte(corruptedJSON))
+
+		// Verify recovery succeeded
+		require.NoError(t, err)
+		assert.Equal(t, "test-instance-recovery", recovered.InstanceID)
+		assert.NotNil(t, recovered.Components)
+		assert.Empty(t, recovered.LatestVersion) // Should be empty in fresh recovery
+	})
+
+	t.Run("recover from corrupted JSON in NewUpdateChecker", func(t *testing.T) {
+		t.Parallel()
+
+		// Setup corrupted file
+		tempDir, err := os.MkdirTemp("", "toolhive-corruption-test-*")
+		require.NoError(t, err)
+		defer os.RemoveAll(tempDir)
+
+		corruptedFilePath := filepath.Join(tempDir, "updates.json")
+		corruptedJSON := `{"instance_id":"test-instance-recovery","latest_version":"v0.2.3","components":{"CLI":{"last_check":"2025-08-20T09:47:11.528773Z"}}}}}`
+
+		err = os.WriteFile(corruptedFilePath, []byte(corruptedJSON), 0600)
+		require.NoError(t, err)
+
+		// Create mock client
+		mockClient := setupMockVersionClient(t)
+		mockClient.On("GetComponent").Return("CLI")
+		mockClient.On("GetLatestVersion", "test-instance-recovery", testCurrentVersion).Return(testLatestVersion, nil)
+
+		// Create update checker - this should recover from corruption during initialization
+		checker := &defaultUpdateChecker{
+			currentVersion:      testCurrentVersion,
+			updateFilePath:      corruptedFilePath,
+			versionClient:       mockClient,
+			previousAPIResponse: "",
+			component:           "CLI",
+		}
+
+		// This should work without error despite corrupted file
+		err = checker.CheckLatestVersion()
+
+		// Should not fail due to JSON corruption
+		assert.NoError(t, err)
+	})
+
+	t.Run("recovery fails when instance_id cannot be extracted", func(t *testing.T) {
+		t.Parallel()
+
+		// Create completely invalid JSON without instance_id
+		invalidJSON := `{"invalid":"json","no_instance_id":true}}`
+
+		// Test recovery function directly
+		_, err := recoverCorruptedJSON([]byte(invalidJSON))
+
+		// Should fail to recover
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unable to recover corrupted JSON")
+	})
+}

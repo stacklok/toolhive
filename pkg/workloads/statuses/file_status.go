@@ -128,45 +128,7 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 	}
 
 	// Create a map of runtime workloads by name for easy lookup
-	runtimeWorkloadMap := make(map[string]rt.ContainerInfo)
-	for _, container := range runtimeContainers {
-		runtimeWorkloadMap[container.Name] = container
-	}
-
-	// Create result map to avoid duplicates and merge data
-	workloadMap := make(map[string]core.Workload)
-
-	// First, add all runtime workloads
-	for _, container := range runtimeContainers {
-		workload, err := types.WorkloadFromContainerInfo(&container)
-		if err != nil {
-			logger.Warnf("failed to convert container info for workload %s: %v", container.Name, err)
-			continue
-		}
-		workloadMap[container.Name] = workload
-	}
-
-	// Then, merge with file workloads, validating running workloads
-	for name, fileWorkload := range fileWorkloads {
-		if runtimeContainer, exists := runtimeWorkloadMap[name]; exists {
-			// Validate running workloads similar to GetWorkload
-			validatedWorkload, err := f.validateWorkloadInList(ctx, name, fileWorkload, runtimeContainer)
-			if err != nil {
-				logger.Warnf("failed to validate workload %s in list: %v", name, err)
-				// Fall back to basic merge without validation
-				runtimeWorkload := workloadMap[name]
-				runtimeWorkload.Status = fileWorkload.Status
-				runtimeWorkload.StatusContext = fileWorkload.StatusContext
-				runtimeWorkload.CreatedAt = fileWorkload.CreatedAt
-				workloadMap[name] = runtimeWorkload
-			} else {
-				workloadMap[name] = validatedWorkload
-			}
-		} else {
-			// File-only workload (runtime not available)
-			workloadMap[name] = fileWorkload
-		}
-	}
+	workloadMap := f.mergeRuntimeAndFileWorkloads(ctx, runtimeContainers, fileWorkloads)
 
 	// Convert map to slice and apply filters
 	var workloads []core.Workload
@@ -510,6 +472,25 @@ func (f *fileStatusManager) handleRuntimeMismatch(
 	return runtimeResult, nil
 }
 
+// handleRuntimeMissing handles the case where the file indicates running or stopped but the runtime
+// does not have the workload running. This can happen if using different versions of ToolHive, for example
+// the CLI and UI have different versions.
+func (f *fileStatusManager) handleRuntimeMissing(
+	ctx context.Context, workloadName string, fileWorkload core.Workload,
+) (core.Workload, error) {
+	if fileWorkload.Status == rt.WorkloadStatusRunning || fileWorkload.Status == rt.WorkloadStatusStopped {
+		// The workload cannot be running or stopped if the runtime container is not found
+		contextMsg := fmt.Sprintf("workload %s not found in runtime, marking as unhealthy", workloadName)
+		if err := f.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusUnhealthy, contextMsg); err != nil {
+			return core.Workload{}, err
+		}
+		fileWorkload.Status = rt.WorkloadStatusUnhealthy
+	}
+
+	// If the workload has another status, like starting or stopping, we can keep it as is
+	return fileWorkload, nil
+}
+
 // checkProxyHealth checks if the proxy process is running for the workload.
 // Returns (unhealthyWorkload, true) if proxy is not running, (emptyWorkload, false) if proxy is healthy or not applicable.
 func (f *fileStatusManager) checkProxyHealth(
@@ -591,4 +572,57 @@ func (f *fileStatusManager) validateWorkloadInList(
 
 	// Runtime and proxy confirm workload is healthy - merge runtime data with file status
 	return f.mergeHealthyWorkloadData(containerInfo, fileWorkload)
+}
+
+// mergeRuntimeAndFileWorkloads returns a map of workloads that combines runtime containers and file-based workloads.
+func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
+	ctx context.Context,
+	runtimeContainers []rt.ContainerInfo,
+	fileWorkloads map[string]core.Workload,
+) map[string]core.Workload {
+	runtimeWorkloadMap := make(map[string]rt.ContainerInfo)
+	for _, container := range runtimeContainers {
+		runtimeWorkloadMap[container.Name] = container
+	}
+
+	// Create result map to avoid duplicates and merge data
+	workloadMap := make(map[string]core.Workload)
+
+	// First, add all runtime workloads
+	for _, container := range runtimeContainers {
+		workload, err := types.WorkloadFromContainerInfo(&container)
+		if err != nil {
+			logger.Warnf("failed to convert container info for workload %s: %v", container.Name, err)
+			continue
+		}
+		workloadMap[container.Name] = workload
+	}
+
+	// Then, merge with file workloads, validating running workloads
+	for name, fileWorkload := range fileWorkloads {
+		if runtimeContainer, exists := runtimeWorkloadMap[name]; exists {
+			// Validate running workloads similar to GetWorkload
+			validatedWorkload, err := f.validateWorkloadInList(ctx, name, fileWorkload, runtimeContainer)
+			if err != nil {
+				logger.Warnf("failed to validate workload %s in list: %v", name, err)
+				// Fall back to basic merge without validation
+				runtimeWorkload := workloadMap[name]
+				runtimeWorkload.Status = fileWorkload.Status
+				runtimeWorkload.StatusContext = fileWorkload.StatusContext
+				runtimeWorkload.CreatedAt = fileWorkload.CreatedAt
+				workloadMap[name] = runtimeWorkload
+			} else {
+				workloadMap[name] = validatedWorkload
+			}
+		} else {
+			// File-only workload (runtime not available)
+			updatedWorkload, err := f.handleRuntimeMissing(ctx, name, fileWorkload)
+			if err != nil {
+				logger.Warnf("failed to handle missing runtime for workload %s: %v", name, err)
+				workloadMap[name] = fileWorkload
+			}
+			workloadMap[name] = updatedWorkload
+		}
+	}
+	return workloadMap
 }

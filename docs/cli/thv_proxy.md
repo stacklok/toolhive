@@ -93,7 +93,7 @@ thv proxy [flags] SERVER_NAME
       --port int                                Port for the HTTP proxy to listen on (host port)
       --remote-auth                             Enable OAuth/OIDC authentication to remote MCP server
       --remote-auth-authorize-url string        OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
-      --remote-auth-callback-port int           Port for OAuth callback server during remote authentication (default: 8666) (default 8666)
+      --remote-auth-callback-port int           Port for OAuth callback server during remote authentication (default 8666)
       --remote-auth-client-id string            OAuth client ID for remote server authentication
       --remote-auth-client-secret string        OAuth client secret for remote server authentication (optional for PKCE)
       --remote-auth-client-secret-file string   Path to file containing OAuth client secret (alternative to --remote-auth-client-secret)

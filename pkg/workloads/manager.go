@@ -351,30 +351,29 @@ func (d *defaultManager) deleteWorkload(ctx context.Context, name string) error 
 	if err != nil {
 		return err
 	}
-	if container == nil {
-		return nil // Container not found, but operation should succeed
-	}
 
 	// Set status to removing
 	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusRemoving, ""); err != nil {
 		logger.Warnf("Failed to set workload %s status to removing: %v", name, err)
 	}
 
-	containerLabels := container.Labels
-	baseName := labels.GetContainerBaseName(containerLabels)
+	if container != nil {
+		containerLabels := container.Labels
+		baseName := labels.GetContainerBaseName(containerLabels)
 
-	// Stop proxy if running
-	if container.IsRunning() {
-		d.stopProxyIfNeeded(name, baseName)
+		// Stop proxy if running
+		if container.IsRunning() {
+			d.stopProxyIfNeeded(name, baseName)
+		}
+
+		// Remove the container
+		if err := d.removeContainer(childCtx, ctx, name); err != nil {
+			return err
+		}
+
+		// Clean up associated resources
+		d.cleanupWorkloadResources(childCtx, name, baseName)
 	}
-
-	// Remove the container
-	if err := d.removeContainer(childCtx, ctx, name); err != nil {
-		return err
-	}
-
-	// Clean up associated resources
-	d.cleanupWorkloadResources(childCtx, name, baseName)
 
 	// Remove the workload status from the status store
 	if err := d.statuses.DeleteWorkloadStatus(ctx, name); err != nil {
@@ -390,7 +389,7 @@ func (d *defaultManager) getWorkloadContainer(childCtx, ctx context.Context, nam
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
 			// Log but don't fail the entire operation for not found containers
-			logger.Warnf("Warning: Failed to delete workload %s: %v", name, err)
+			logger.Warnf("Warning: Failed to get workload %s: %v", name, err)
 			return nil, nil
 		}
 		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {

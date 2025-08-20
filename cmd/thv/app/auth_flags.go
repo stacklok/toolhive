@@ -40,7 +40,7 @@ func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 	cmd.Flags().DurationVar(&config.RemoteAuthTimeout, "remote-auth-timeout", 30*time.Second,
 		"Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s)")
 	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", 8666,
-		"Port for OAuth callback server during remote authentication (default: 8666)")
+		"Port for OAuth callback server during remote authentication")
 	cmd.Flags().StringVar(&config.RemoteAuthAuthorizeURL, "remote-auth-authorize-url", "",
 		"OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)")
 	cmd.Flags().StringVar(&config.RemoteAuthTokenURL, "remote-auth-token-url", "",

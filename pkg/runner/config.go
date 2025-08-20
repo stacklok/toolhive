@@ -312,6 +312,41 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 	return c, nil
 }
 
+// mergeEnvVars is a helper method to merge environment variables into RunConfig
+func (c *RunConfig) mergeEnvVars(envVars map[string]string) *RunConfig {
+	// Initialize EnvVars if it's nil
+	if c.EnvVars == nil {
+		c.EnvVars = make(map[string]string)
+	}
+
+	// Add env vars to environment variables
+	for key, value := range envVars {
+		c.EnvVars[key] = value
+	}
+
+	return c
+}
+
+// WithEnvFilesFromDirectory processes environment files from a directory and adds them to environment variables
+func (c *RunConfig) WithEnvFilesFromDirectory(dirPath string) (*RunConfig, error) {
+	envVars, err := processEnvFilesDirectory(dirPath)
+	if err != nil {
+		return c, fmt.Errorf("failed to process env files from %s: %w", dirPath, err)
+	}
+
+	return c.mergeEnvVars(envVars), nil
+}
+
+// WithEnvFile processes a single environment file and adds it to environment variables
+func (c *RunConfig) WithEnvFile(filePath string) (*RunConfig, error) {
+	envVars, err := processEnvFile(filePath)
+	if err != nil {
+		return c, fmt.Errorf("failed to process env file %s: %w", filePath, err)
+	}
+
+	return c.mergeEnvVars(envVars), nil
+}
+
 // WithContainerName generates container name if not already set
 func (c *RunConfig) WithContainerName() *RunConfig {
 	if c.ContainerName == "" && c.Image != "" {

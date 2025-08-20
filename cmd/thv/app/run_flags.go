@@ -84,6 +84,10 @@ type RunFlags struct {
 	// Configuration import
 	FromConfig string
 
+	// Environment file processing
+	EnvFile    string
+	EnvFileDir string
+
 	// Ignore functionality
 	IgnoreGlobally bool
 	PrintOverlays  bool
@@ -177,6 +181,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Filter MCP server tools (comma-separated list of tool names)",
 	)
 	cmd.Flags().StringVar(&config.FromConfig, "from-config", "", "Load configuration from exported file")
+
+	// Environment file processing flags
+	cmd.Flags().StringVar(&config.EnvFile, "env-file", "", "Load environment variables from a single file")
+	cmd.Flags().StringVar(&config.EnvFileDir, "env-file-dir", "", "Load environment variables from all files in a directory")
 
 	// Ignore functionality flags
 	cmd.Flags().BoolVar(&config.IgnoreGlobally, "ignore-globally", true,
@@ -385,6 +393,21 @@ func buildRunnerConfig(
 		WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelServiceName,
 			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables).
 		WithToolsFilter(runFlags.ToolsFilter)
+
+	// Process environment files
+	var err error
+	if runFlags.EnvFile != "" {
+		builder, err = builder.WithEnvFile(runFlags.EnvFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process env file %s: %v", runFlags.EnvFile, err)
+		}
+	}
+	if runFlags.EnvFileDir != "" {
+		builder, err = builder.WithEnvFilesFromDirectory(runFlags.EnvFileDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process env files from directory %s: %v", runFlags.EnvFileDir, err)
+		}
+	}
 
 	return builder.Build(ctx, imageMetadata, envVars, envVarValidator)
 }

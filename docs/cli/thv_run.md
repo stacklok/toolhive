@@ -65,6 +65,8 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --ca-cert string                        Path to a custom CA certificate file to use for container builds
       --enable-audit                          Enable audit logging with default configuration
   -e, --env stringArray                       Environment variables to pass to the MCP server (format: KEY=VALUE)
+      --env-file string                       Load environment variables from a single file
+      --env-file-dir string                   Load environment variables from all files in a directory
   -f, --foreground                            Run in foreground mode (block until container exits)
       --from-config string                    Load configuration from exported file
       --group string                          Name of the group this workload belongs to (defaults to 'default' if not specified) (default "default")

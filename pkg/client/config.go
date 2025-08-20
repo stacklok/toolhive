@@ -117,10 +117,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersPathPrefix: "/mcpServers",
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeSSE:   "sse",
-			types.TransportTypeStdio: "sse",
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "streamableHttp",
 		},
-		IsTransportTypeFieldSupported: false,
+		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabel:            "url",
 	},
 	{

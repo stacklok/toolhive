@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -26,7 +27,7 @@ var runCmd = &cobra.Command{
 	Short: "Run an MCP server",
 	Long: `Run an MCP server with the specified name, image, or protocol scheme.
 
-ToolHive supports four ways to run an MCP server:
+ToolHive supports five ways to run an MCP server:
 
 1. From the registry:
 
@@ -59,11 +60,23 @@ ToolHive supports four ways to run an MCP server:
 
    Runs an MCP server using a previously exported configuration file.
 
+5. Remote MCP server:
+
+	   $ thv run --remote <URL> [--name <name>]
+
+   Runs a remote MCP server as a workload, proxying requests to the specified URL.
+   This allows remote MCP servers to be managed like local workloads with full
+   support for client configuration, tool filtering, import/export, etc.
+
 The container will be started with the specified transport mode and
 permission profile. Additional configuration can be provided via flags.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		// If --from-config is provided, no args are required
 		if runFlags.FromConfig != "" {
+			return nil
+		}
+		// If --remote is provided, no args are required
+		if runFlags.RemoteURL != "" {
 			return nil
 		}
 		// Otherwise, require at least 1 argument
@@ -124,10 +137,20 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Get the name of the MCP server to run.
 	// This may be a server name from the registry, a container image, or a protocol scheme.
-	// When using --from-config, no args are required
+	// When using --from-config or --remote, no args are required
 	var serverOrImage string
 	if len(args) > 0 {
 		serverOrImage = args[0]
+	}
+
+	// If --remote is provided but no name is given, generate a name from the URL
+	if runFlags.RemoteURL != "" && runFlags.Name == "" {
+		// Extract a name from the remote URL
+		name, err := deriveRemoteName()
+		if err != nil {
+			return err
+		}
+		runFlags.Name = name
 	}
 
 	// Process command arguments using os.Args to find everything after --
@@ -180,6 +203,19 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	return workloadManager.RunWorkloadDetached(ctx, runnerConfig)
+}
+
+func deriveRemoteName() (string, error) {
+	parsedURL, err := url.Parse(runFlags.RemoteURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid remote URL: %v", err)
+	}
+	// Use the hostname as the base name
+	hostname := parsedURL.Hostname()
+	if hostname == "" {
+		hostname = "remote"
+	}
+	return fmt.Sprintf("%s-remote", hostname), nil
 }
 
 func runForeground(ctx context.Context, workloadManager workloads.Manager, runnerConfig *runner.RunConfig) error {

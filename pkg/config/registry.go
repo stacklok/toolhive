@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +26,7 @@ func DetectRegistryType(input string) (registryType string, cleanPath string) {
 	}
 
 	// Check for HTTP/HTTPS URLs
-	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
+	if networking.IsURL(input) {
 		return RegistryTypeURL, input
 	}
 
@@ -35,14 +36,19 @@ func DetectRegistryType(input string) (registryType string, cleanPath string) {
 
 // SetRegistryURL validates and sets a registry URL
 func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
+	parsedURL, err := neturl.Parse(registryURL)
+	if err != nil {
+		return fmt.Errorf("invalid registry URL: %w", err)
+	}
+
 	if allowPrivateRegistryIp {
 		// we validate either https or http URLs
-		if !strings.HasPrefix(registryURL, "http://") && !strings.HasPrefix(registryURL, "https://") {
+		if parsedURL.Scheme != networking.HttpScheme && parsedURL.Scheme != networking.HttpsScheme {
 			return fmt.Errorf("registry URL must start with http:// or https:// when allowing private IPs")
 		}
 	} else {
 		// we just allow https
-		if !strings.HasPrefix(registryURL, "https://") {
+		if parsedURL.Scheme != networking.HttpsScheme {
 			return fmt.Errorf("registry URL must start with https:// when not allowing private IPs")
 		}
 	}
@@ -59,7 +65,7 @@ func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
 	}
 
 	// Update the configuration
-	err := UpdateConfig(func(c *Config) {
+	err = UpdateConfig(func(c *Config) {
 		c.RegistryUrl = registryURL
 		c.LocalRegistryPath = "" // Clear local path when setting URL
 		c.AllowPrivateRegistryIp = allowPrivateRegistryIp

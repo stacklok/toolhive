@@ -244,7 +244,6 @@ func (f *Flow) buildAuthURL() string {
 		oauth2.SetAuthURLParam("state", f.state),
 	}
 
-	// Add registry-provided OAuth parameters
 	if f.config.OAuthParams != nil {
 		for key, value := range f.config.OAuthParams {
 			opts = append(opts, oauth2.SetAuthURLParam(key, value))

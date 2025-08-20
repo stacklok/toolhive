@@ -12,7 +12,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -99,28 +98,6 @@ func GetMCPServer(
 	}
 
 	return imageToUse, imageMetadata, nil, nil
-}
-
-// GetMCPServerOrRemote retrieves the MCP server definition from the registry, supporting both container and remote servers
-func GetMCPServerOrRemote(
-	ctx context.Context,
-	serverOrImage string,
-	rawCACertPath string,
-	verificationType string,
-) (string, *registry.ImageMetadata, *registry.RemoteServerMetadata, error) {
-
-	// First, check if it's a direct URL (existing --remote behavior)
-	if networking.IsURL(serverOrImage) {
-		// Direct URL approach - return as remote server
-		return serverOrImage, nil, nil, nil
-	}
-
-	imageURL, imageMetadata, remoteServerMetadata, err := GetMCPServer(ctx, serverOrImage, rawCACertPath, verificationType)
-	if err != nil {
-		return "", nil, nil, err
-	}
-
-	return imageURL, imageMetadata, remoteServerMetadata, nil
 }
 
 // pullImage pulls an image from a remote registry if it has the "latest" tag

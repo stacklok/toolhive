@@ -405,12 +405,12 @@ func buildRunnerConfig(
 ) (*runner.RunConfig, error) {
 	// Determine transport type
 	transportType := defaultTransportType
-	if imageMetadata != nil {
+	if runFlags.Transport != "" {
+		transportType = runFlags.Transport
+	} else if imageMetadata != nil {
 		transportType = imageMetadata.Transport
 	} else if remoteServerMetadata != nil {
 		transportType = remoteServerMetadata.Transport
-	} else if runFlags.Transport != "" {
-		transportType = runFlags.Transport
 	}
 
 	// Create a builder for the RunConfig

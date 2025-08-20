@@ -127,3 +127,17 @@ func (mr *MockManagerMockRecorder) RegisterClients(ctx, groupNames, clientNames 
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterClients", reflect.TypeOf((*MockManager)(nil).RegisterClients), ctx, groupNames, clientNames)
 }
+
+// UnregisterClients mocks base method.
+func (m *MockManager) UnregisterClients(ctx context.Context, groupNames, clientNames []string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnregisterClients", ctx, groupNames, clientNames)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UnregisterClients indicates an expected call of UnregisterClients.
+func (mr *MockManagerMockRecorder) UnregisterClients(ctx, groupNames, clientNames any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnregisterClients", reflect.TypeOf((*MockManager)(nil).UnregisterClients), ctx, groupNames, clientNames)
+}

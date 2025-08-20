@@ -39,7 +39,8 @@ thv client register [client] [flags]
 ### Options
 
 ```
-  -h, --help   help for register
+      --group strings   Only register workloads from specified groups (default [default])
+  -h, --help            help for register
 ```
 
 ### Options inherited from parent commands

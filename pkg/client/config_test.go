@@ -4,11 +4,13 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -83,6 +85,7 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 	// Save original XDG_CONFIG_HOME
 	originalXDGConfigHome := os.Getenv("XDG_CONFIG_HOME")
 	t.Setenv("XDG_CONFIG_HOME", tempDir)
+	xdg.Reload()
 
 	// Create the config directory structure
 	configDir := filepath.Join(tempDir, "toolhive")
@@ -97,6 +100,7 @@ func MockConfig(t *testing.T, cfg *config.Config) func() {
 
 	return func() {
 		t.Setenv("XDG_CONFIG_HOME", originalXDGConfigHome)
+		xdg.Reload()
 	}
 }
 
@@ -181,7 +185,7 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 
 		// Find client configs - this should NOT fail due to the invalid JSON
 		// Instead, it should log a warning and continue
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(context.Background())
 		assert.NoError(t, err, "FindRegisteredClientConfigs should not return an error for invalid config files")
 
 		// The invalid client should be skipped, so we should get configs for valid clients only
@@ -226,32 +230,33 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	// Create test config files
 	createTestConfigFiles(t, tempHome)
 
+	// Set up config for all sub-tests
+	testConfig := &config.Config{
+		Secrets: config.Secrets{
+			ProviderType: "encrypted",
+		},
+		Clients: config.Clients{
+			RegisteredClients: []string{
+				string(VSCode),
+				string(VSCodeInsider),
+				string(Cursor),
+				string(RooCode),
+				string(ClaudeCode),
+				string(Cline),
+				string(AmpCli),
+				string(AmpVSCode),
+				string(AmpCursor),
+				string(AmpVSCodeInsider),
+				string(AmpWindsurf),
+			},
+		},
+	}
+
+	cleanup := MockConfig(t, testConfig)
+	defer cleanup()
+
 	t.Run("FindAllConfiguredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		testConfig := &config.Config{
-			Secrets: config.Secrets{
-				ProviderType: "encrypted",
-			},
-			Clients: config.Clients{
-				RegisteredClients: []string{
-					string(VSCode),
-					string(VSCodeInsider),
-					string(Cursor),
-					string(RooCode),
-					string(ClaudeCode),
-					string(Cline),
-					string(AmpCli),
-					string(AmpVSCode),
-					string(AmpCursor),
-					string(AmpVSCodeInsider),
-					string(AmpWindsurf),
-				},
-			},
-		}
-
-		cleanup := MockConfig(t, testConfig)
-		defer cleanup()
-
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(context.Background())
 		require.NoError(t, err)
 		assert.Len(t, configs, len(supportedClientIntegrations), "Should find all mock client configs")
 
@@ -268,7 +273,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	})
 
 	t.Run("VerifyConfigFileContents", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(context.Background())
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
 
@@ -322,7 +327,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	})
 
 	t.Run("AddAndVerifyMCPServer", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindRegisteredClientConfigs()
+		configs, err := FindRegisteredClientConfigs(context.Background())
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
 

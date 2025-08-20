@@ -3,5 +3,9 @@ kind: StatefulSet
 metadata:
   name: yardstick
   namespace: toolhive-system
+spec:
+  template:
+    spec:
+      serviceAccountName: yardstick-sa
 status:
   availableReplicas: 1

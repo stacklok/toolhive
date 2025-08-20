@@ -8,13 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/adrg/xdg"
-	"github.com/zalando/go-keyring"
 	"golang.org/x/term"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/secrets/keyring"
 )
 
 const (
@@ -26,6 +27,18 @@ const (
 
 	keyringService = "toolhive"
 )
+
+var (
+	keyringProvider keyring.Provider
+	keyringOnce     sync.Once
+)
+
+func getKeyringProvider() keyring.Provider {
+	keyringOnce.Do(func() {
+		keyringProvider = keyring.NewCompositeProvider()
+	})
+	return keyringProvider
+}
 
 // ProviderType represents an enum of the types of available secrets providers.
 type ProviderType string
@@ -157,20 +170,10 @@ var ErrKeyringNotAvailable = errors.New("OS keyring is not available. " +
 	"Please use a different secrets provider (e.g., 1password) " +
 	"or ensure your system has a keyring service available")
 
-// IsKeyringAvailable tests if the OS keyring is available by attempting to set and delete a test value.
+// IsKeyringAvailable tests if any keyring backend is available
 func IsKeyringAvailable() bool {
-	testKey := "toolhive-keyring-test"
-	testValue := "test"
-
-	// Try to set a test value
-	if err := keyring.Set(keyringService, testKey, testValue); err != nil {
-		return false
-	}
-
-	// Clean up the test value
-	_ = keyring.Delete(keyringService, testKey)
-
-	return true
+	provider := getKeyringProvider()
+	return provider.IsAvailable()
 }
 
 // CreateSecretProvider creates the specified type of secrets provider.
@@ -214,14 +217,15 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 // If optionalPassword is provided and keyring is not yet setup, it uses that password and stores it.
 // Otherwise, it uses the current functionality (read from keyring or stdin).
 func GetSecretsPassword(optionalPassword string) ([]byte, error) {
-	// Attempt to load the password from the OS keyring.
-	keyringSecret, err := keyring.Get(keyringService, keyringService)
+	provider := getKeyringProvider()
+
+	// Attempt to load the password from the keyring
+	keyringSecret, err := provider.Get(keyringService, keyringService)
 	if err == nil {
 		return []byte(keyringSecret), nil
 	}
 
-	// We need to determine if the error is due to a lack of keyring on the
-	// system or if the keyring is available but nothing was stored.
+	// Handle key not found
 	if errors.Is(err, keyring.ErrNotFound) {
 		var password []byte
 
@@ -233,9 +237,6 @@ func GetSecretsPassword(optionalPassword string) ([]byte, error) {
 			password = []byte(optionalPassword)
 		} else {
 			// Keyring is available but no password stored - this should only happen during setup
-			// We cannot ask for a password in a detached process.
-			// We should never trigger this, but this ensures that if there's a bug
-			// then it's easier to find.
 			if process.IsDetached() {
 				return nil, fmt.Errorf("detached process detected, cannot ask for password")
 			}
@@ -248,10 +249,9 @@ func GetSecretsPassword(optionalPassword string) ([]byte, error) {
 			}
 		}
 
-		// TODO GET function should not be saving anything into keyring
 		// Store the password in the keyring for future use
-		logger.Info("writing password to os keyring")
-		err = keyring.Set(keyringService, keyringService, string(password))
+		logger.Info(fmt.Sprintf("writing password to %s", provider.Name()))
+		err = provider.Set(keyringService, keyringService, string(password))
 		if err != nil {
 			return nil, fmt.Errorf("failed to store password in keyring: %w", err)
 		}
@@ -260,7 +260,7 @@ func GetSecretsPassword(optionalPassword string) ([]byte, error) {
 	}
 
 	// Assume any other keyring error means keyring is not available
-	return nil, fmt.Errorf("OS keyring is not available: %w", err)
+	return nil, fmt.Errorf("keyring is not available: %w", err)
 }
 
 func readPasswordStdin() ([]byte, error) {
@@ -281,7 +281,8 @@ func readPasswordStdin() ([]byte, error) {
 
 // ResetKeyringSecret clears out the secret from the keystore (if present).
 func ResetKeyringSecret() error {
-	return keyring.DeleteAll(keyringService)
+	provider := getKeyringProvider()
+	return provider.DeleteAll(keyringService)
 }
 
 // GenerateSecurePassword generates a cryptographically secure random password

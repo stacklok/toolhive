@@ -1,22 +1,36 @@
-package workloads
+package types
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/labels"
-	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+// minimalRunConfig represents just the group field from a run configuration
+type minimalRunConfig struct {
+	Group string `json:"group,omitempty" yaml:"group,omitempty"`
+}
 
 // loadGroupFromRunConfig attempts to load group information from the runconfig
 // Returns empty string if runconfig doesn't exist or doesn't have group info
 func loadGroupFromRunConfig(ctx context.Context, name string) (string, error) {
 	// Try to load the runconfig
-	runConfig, err := runner.LoadState(ctx, name)
+	runConfig, err := state.LoadRunConfig(ctx, name, func(r io.Reader) (*minimalRunConfig, error) {
+		var config minimalRunConfig
+		decoder := json.NewDecoder(r)
+		if err := decoder.Decode(&config); err != nil {
+			return nil, err
+		}
+		return &config, nil
+	})
 	if err != nil {
 		if errors.IsRunConfigNotFound(err) {
 			return "", nil

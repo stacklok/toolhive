@@ -10,7 +10,6 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -23,14 +22,22 @@ type Client struct {
 	Name MCPClient `json:"name"`
 }
 
+// RegisteredClient represents a registered client with its associated groups.
+type RegisteredClient struct {
+	Name   MCPClient `json:"name"`
+	Groups []string  `json:"groups"`
+}
+
 // Manager is the interface for managing registered ToolHive clients.
+//
+//go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=manager.go Manager
 type Manager interface {
-	// ListClients returns a list of all registered.
-	ListClients() ([]Client, error)
+	// ListClients returns a list of all registered clients with their group information.
+	ListClients(ctx context.Context) ([]RegisteredClient, error)
 	// RegisterClients registers multiple clients with ToolHive for the specified workloads.
 	RegisterClients(clients []Client, workloads []core.Workload) error
-	// UnregisterClients unregisters multiple clients from ToolHive.
-	UnregisterClients(ctx context.Context, clients []Client) error
+	// UnregisterClients unregisters multiple clients from ToolHive for the specified workloads.
+	UnregisterClients(ctx context.Context, clients []Client, workloads []core.Workload) error
 	// AddServerToClients adds an MCP server to the appropriate client configurations.
 	AddServerToClients(ctx context.Context, serverName, serverURL, transportType, group string) error
 	// RemoveServerFromClients removes an MCP server from the appropriate client configurations.
@@ -60,15 +67,49 @@ func NewManager(ctx context.Context) (Manager, error) {
 	}, nil
 }
 
-func (*defaultManager) ListClients() ([]Client, error) {
-	clients := []Client{}
-	appConfig := config.GetConfig()
+func (m *defaultManager) ListClients(ctx context.Context) ([]RegisteredClient, error) {
+	cfg := config.GetConfig()
 
-	for _, clientName := range appConfig.Clients.RegisteredClients {
-		clients = append(clients, Client{Name: MCPClient(clientName)})
+	// Get all groups
+	allGroups, err := m.groupManager.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list groups: %w", err)
 	}
 
-	return clients, nil
+	clientGroups := make(map[string][]string) // client -> groups
+	allRegisteredClients := make(map[string]bool)
+
+	if len(allGroups) > 0 {
+		// Collect clients from all groups
+		for _, group := range allGroups {
+			for _, clientName := range group.RegisteredClients {
+				allRegisteredClients[clientName] = true
+				clientGroups[clientName] = append(clientGroups[clientName], group.Name)
+			}
+		}
+	}
+
+	// Add clients from global config that might not be in any group
+	for _, clientName := range cfg.Clients.RegisteredClients {
+		if !allRegisteredClients[clientName] {
+			allRegisteredClients[clientName] = true
+			if len(allGroups) > 0 {
+				clientGroups[clientName] = []string{} // no groups
+			}
+		}
+	}
+
+	// Convert to slice for return
+	var registeredClients []RegisteredClient
+	for clientName := range allRegisteredClients {
+		registered := RegisteredClient{
+			Name:   MCPClient(clientName),
+			Groups: clientGroups[clientName],
+		}
+		registeredClients = append(registeredClients, registered)
+	}
+
+	return registeredClients, nil
 }
 
 // RegisterClients registers multiple clients with ToolHive for the specified workloads.
@@ -82,27 +123,12 @@ func (m *defaultManager) RegisterClients(clients []Client, workloads []core.Work
 	return nil
 }
 
-// UnregisterClients unregisters multiple clients from ToolHive.
-func (m *defaultManager) UnregisterClients(ctx context.Context, clients []Client) error {
+// UnregisterClients unregisters multiple clients from ToolHive for the specified workloads.
+func (m *defaultManager) UnregisterClients(_ context.Context, clients []Client, workloads []core.Workload) error {
 	for _, client := range clients {
-		err := config.UpdateConfig(func(c *config.Config) {
-			// Find and remove the client from registered clients list
-			for i, registeredClient := range c.Clients.RegisteredClients {
-				if registeredClient == string(client.Name) {
-					// Remove client from slice
-					c.Clients.RegisteredClients = append(c.Clients.RegisteredClients[:i], c.Clients.RegisteredClients[i+1:]...)
-					logger.Infof("Successfully unregistered client: %s\n", client.Name)
-					return
-				}
-			}
-			logger.Warnf("Client %s was not found in registered clients list", client.Name)
-		})
-		if err != nil {
-			return fmt.Errorf("failed to update configuration for client %s: %w", client.Name, err)
-		}
-		// Remove MCPs from client configuration
-		if err := m.removeMCPsFromClient(ctx, client.Name); err != nil {
-			logger.Warnf("Warning: Failed to remove MCPs from client %s: %v", client.Name, err)
+		// Remove specified workloads from the client
+		if err := m.removeWorkloadsFromClient(client.Name, workloads); err != nil {
+			return fmt.Errorf("failed to remove workloads from client %s: %v", client.Name, err)
 		}
 	}
 	return nil
@@ -151,52 +177,6 @@ func (m *defaultManager) RemoveServerFromClients(ctx context.Context, serverName
 	return nil
 }
 
-// removeMCPsFromClient removes currently running MCP servers from the specified client's configuration
-func (m *defaultManager) removeMCPsFromClient(ctx context.Context, clientType MCPClient) error {
-	// List workloads
-	containers, err := m.runtime.ListWorkloads(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	// Filter containers to only show those managed by ToolHive and running
-	var runningContainers []rt.ContainerInfo
-	for _, c := range containers {
-		if labels.IsToolHiveContainer(c.Labels) && c.State == "running" {
-			runningContainers = append(runningContainers, c)
-		}
-	}
-
-	if len(runningContainers) == 0 {
-		// No running servers, nothing to do
-		return nil
-	}
-
-	// For each running container, remove it from the client configuration
-	for _, c := range runningContainers {
-		// Get container name from labels
-		name := labels.GetContainerName(c.Labels)
-		if name == "" {
-			name = c.Name // Fallback to container name
-		}
-
-		// Get tool type from labels
-		toolType := labels.GetToolType(c.Labels)
-
-		// Only include containers with tool type "mcp"
-		if toolType != mcpToolType {
-			continue
-		}
-
-		if err := m.removeServerFromClient(clientType, name); err != nil {
-			logger.Warnf("Warning: %v", err)
-			continue
-		}
-	}
-
-	return nil
-}
-
 // addWorkloadsToClient adds the specified workloads to the client's configuration
 func (m *defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []core.Workload) error {
 	if len(workloads) == 0 {
@@ -224,6 +204,28 @@ func (m *defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []
 	return nil
 }
 
+// removeWorkloadsFromClient removes the specified workloads from the client's configuration
+func (m *defaultManager) removeWorkloadsFromClient(clientType MCPClient, workloads []core.Workload) error {
+	if len(workloads) == 0 {
+		// No workloads to remove, nothing to do
+		return nil
+	}
+
+	// For each workload, remove it from the client configuration
+	for _, workload := range workloads {
+		if workload.ToolType != mcpToolType {
+			continue
+		}
+
+		err := m.removeServerFromClient(clientType, workload.Name)
+		if err != nil {
+			return fmt.Errorf("failed to remove workload %s from client %s: %v", workload.Name, clientType, err)
+		}
+	}
+
+	return nil
+}
+
 // removeServerFromClient removes an MCP server from a single client configuration
 func (*defaultManager) removeServerFromClient(clientName MCPClient, serverName string) error {
 	clientConfig, err := FindClientConfig(clientName)
@@ -236,7 +238,7 @@ func (*defaultManager) removeServerFromClient(clientName MCPClient, serverName s
 		return fmt.Errorf("failed to remove MCP server configuration from %s: %v", clientConfig.Path, err)
 	}
 
-	logger.Infof("Removed MCP server %s from client %s\n", serverName, clientName)
+	logger.Infof("Removed MCP server %s from client %s", serverName, clientName)
 	return nil
 }
 
@@ -280,7 +282,7 @@ func (m *defaultManager) getTargetClients(ctx context.Context, serverName, group
 
 		logger.Infof(
 			"Server %s belongs to group %s, updating %d registered client(s)",
-			serverName, group, len(group.RegisteredClients),
+			serverName, group.Name, len(group.RegisteredClients),
 		)
 		return group.RegisteredClients
 	}

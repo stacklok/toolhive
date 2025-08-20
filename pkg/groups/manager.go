@@ -143,6 +143,41 @@ func (m *manager) RegisterClients(ctx context.Context, groupNames []string, clie
 	return nil
 }
 
+// UnregisterClients removes multiple clients from multiple groups
+func (m *manager) UnregisterClients(ctx context.Context, groupNames []string, clientNames []string) error {
+	for _, groupName := range groupNames {
+		// Get the existing group
+		group, err := m.Get(ctx, groupName)
+		if err != nil {
+			return fmt.Errorf("failed to get group %s: %w", groupName, err)
+		}
+
+		groupModified := false
+		for _, clientName := range clientNames {
+			// Find and remove the client from the group
+			for i, existingClient := range group.RegisteredClients {
+				if existingClient == clientName {
+					// Remove client from slice
+					group.RegisteredClients = append(group.RegisteredClients[:i], group.RegisteredClients[i+1:]...)
+					groupModified = true
+					logger.Infof("Successfully unregistered client %s from group %s", clientName, groupName)
+					break
+				}
+			}
+		}
+
+		// Only save if the group was actually modified
+		if groupModified {
+			err = m.saveGroup(ctx, group)
+			if err != nil {
+				return fmt.Errorf("failed to save group %s: %w", groupName, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // saveGroup saves the group to the group state store
 func (m *manager) saveGroup(ctx context.Context, group *Group) error {
 	writer, err := m.groupStore.GetWriter(ctx, group.Name)

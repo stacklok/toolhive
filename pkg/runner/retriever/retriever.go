@@ -57,18 +57,33 @@ func GetMCPServer(
 		imageToUse = generatedImage
 	} else {
 		logger.Debugf("No protocol scheme detected, using image: %s", serverOrImage)
-		// Try to find the imageMetadata in the registry
+		// Try to find the server in the registry
 		provider, err := registry.GetDefaultProvider()
 		if err != nil {
 			return "", nil, fmt.Errorf("failed to get registry provider: %v", err)
 		}
-		imageMetadata, err = provider.GetServer(serverOrImage)
-		if err != nil {
-			logger.Debugf("ImageMetadata '%s' not found in registry: %v", serverOrImage, err)
-			imageToUse = serverOrImage
+
+		// First check if the server exists and whether it's remote
+		server, err := provider.GetServer(serverOrImage)
+		if err == nil {
+			// Server found, check if it's remote
+			if server.IsRemote() {
+				return "", nil, fmt.Errorf("remote servers are not supported for running yet. Use 'thv proxy %s' instead", serverOrImage)
+			}
+			// It's a container server, get the ImageMetadata
+			imageMetadata, err = provider.GetImageServer(serverOrImage)
+			if err != nil {
+				// This shouldn't happen since we just found it, but handle it anyway
+				logger.Debugf("ImageMetadata '%s' not found in registry: %v", serverOrImage, err)
+				imageToUse = serverOrImage
+			} else {
+				logger.Debugf("Found imageMetadata '%s' in registry: %v", serverOrImage, imageMetadata)
+				imageToUse = imageMetadata.Image
+			}
 		} else {
-			logger.Debugf("Found imageMetadata '%s' in registry: %v", serverOrImage, imageMetadata)
-			imageToUse = imageMetadata.Image
+			// Server not found in registry, treat as a direct image reference
+			logger.Debugf("Server '%s' not found in registry: %v", serverOrImage, err)
+			imageToUse = serverOrImage
 		}
 	}
 

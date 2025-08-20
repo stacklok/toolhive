@@ -13,6 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/client"
+	clientmocks "github.com/stacklok/toolhive/pkg/client/mocks"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
@@ -130,7 +133,7 @@ func TestGroupsRouter(t *testing.T) {
 			path:   "/testgroup",
 			setupMock: func(gm *groupsmocks.MockManager, wm *workloadsmocks.MockManager) {
 				gm.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
-				wm.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				wm.EXPECT().ListWorkloads(gomock.Any(), true).Return([]core.Workload{}, nil)
 				gm.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
@@ -162,7 +165,7 @@ func TestGroupsRouter(t *testing.T) {
 			path:   "/testgroup?with-workloads=true",
 			setupMock: func(gm *groupsmocks.MockManager, wm *workloadsmocks.MockManager) {
 				gm.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
-				wm.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				wm.EXPECT().ListWorkloads(gomock.Any(), true).Return([]core.Workload{}, nil)
 				gm.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
@@ -174,7 +177,7 @@ func TestGroupsRouter(t *testing.T) {
 			path:   "/testgroup?with-workloads=false",
 			setupMock: func(gm *groupsmocks.MockManager, wm *workloadsmocks.MockManager) {
 				gm.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
-				wm.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				wm.EXPECT().ListWorkloads(gomock.Any(), true).Return([]core.Workload{}, nil)
 				gm.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
@@ -186,7 +189,7 @@ func TestGroupsRouter(t *testing.T) {
 			path:   "/testgroup",
 			setupMock: func(gm *groupsmocks.MockManager, wm *workloadsmocks.MockManager) {
 				gm.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
-				wm.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				wm.EXPECT().ListWorkloads(gomock.Any(), true).Return([]core.Workload{}, nil)
 				gm.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
@@ -198,7 +201,7 @@ func TestGroupsRouter(t *testing.T) {
 			path:   "/testgroup",
 			setupMock: func(gm *groupsmocks.MockManager, wm *workloadsmocks.MockManager) {
 				gm.EXPECT().Exists(gomock.Any(), "testgroup").Return(true, nil)
-				wm.EXPECT().ListWorkloadsInGroup(gomock.Any(), "testgroup").Return([]string{}, nil)
+				wm.EXPECT().ListWorkloads(gomock.Any(), true).Return([]core.Workload{}, nil)
 				gm.EXPECT().Delete(gomock.Any(), "testgroup").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
@@ -217,12 +220,13 @@ func TestGroupsRouter(t *testing.T) {
 			// Create mock managers
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
 			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
+			mockClientManager := clientmocks.NewMockManager(ctrl)
 			if tt.setupMock != nil {
 				tt.setupMock(mockGroupManager, mockWorkloadManager)
 			}
 
 			// Create router
-			router := GroupsRouter(mockGroupManager, mockWorkloadManager)
+			router := GroupsRouter(mockGroupManager, mockWorkloadManager, mockClientManager)
 
 			// Create request
 			var req *http.Request
@@ -269,6 +273,9 @@ func TestGroupsRouter(t *testing.T) {
 func TestGroupsRouter_Integration(t *testing.T) {
 	t.Parallel()
 
+	// Initialize logger to prevent panic
+	logger.Initialize()
+
 	// Test with real managers (integration test)
 	groupManager, err := groups.NewManager()
 	if err != nil {
@@ -280,7 +287,12 @@ func TestGroupsRouter_Integration(t *testing.T) {
 		t.Skip("Skipping integration test: failed to create workload manager")
 	}
 
-	router := GroupsRouter(groupManager, workloadManager)
+	clientManager, err := client.NewManager(context.Background())
+	if err != nil {
+		t.Skip("Skipping integration test: failed to create client manager")
+	}
+
+	router := GroupsRouter(groupManager, workloadManager, clientManager)
 
 	// Test creating a group
 	t.Run("create and list group", func(t *testing.T) {

@@ -677,6 +677,7 @@ func (c *Client) getPermissionConfigFromProfile(
 		CapDrop:     []string{"ALL"},
 		CapAdd:      []string{},
 		SecurityOpt: []string{},
+		Privileged:  profile.Privileged,
 	}
 
 	// Add mounts
@@ -815,6 +816,11 @@ func compareHostConfig(existing *container.InspectResponse, desired *container.H
 
 	// Compare security options
 	if !compareStringSlices(existing.HostConfig.SecurityOpt, desired.SecurityOpt) {
+		return false
+	}
+
+	// Compare privileged mode
+	if existing.HostConfig.Privileged != desired.Privileged {
 		return false
 	}
 
@@ -1299,6 +1305,7 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 		CapAdd:      permissionConfig.CapAdd,
 		CapDrop:     permissionConfig.CapDrop,
 		SecurityOpt: permissionConfig.SecurityOpt,
+		Privileged:  permissionConfig.Privileged,
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},

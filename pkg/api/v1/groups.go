@@ -1,12 +1,16 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -18,13 +22,15 @@ import (
 type GroupsRoutes struct {
 	groupManager    groups.Manager
 	workloadManager workloads.Manager
+	clientManager   client.Manager
 }
 
 // GroupsRouter creates a new GroupsRoutes instance.
-func GroupsRouter(groupManager groups.Manager, workloadManager workloads.Manager) http.Handler {
+func GroupsRouter(groupManager groups.Manager, workloadManager workloads.Manager, clientManager client.Manager) http.Handler {
 	routes := GroupsRoutes{
 		groupManager:    groupManager,
 		workloadManager: workloadManager,
+		clientManager:   clientManager,
 	}
 
 	r := chi.NewRouter()
@@ -202,42 +208,27 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	// Get the with-workloads flag from query parameter
 	withWorkloads := r.URL.Query().Get("with-workloads") == "true"
 
-	// Get all workloads in the group
-	groupWorkloads, err := s.workloadManager.ListWorkloadsInGroup(ctx, name)
+	// Get all workloads and filter for the group
+	allWorkloads, err := s.workloadManager.ListWorkloads(ctx, true) // listAll=true to include stopped workloads
 	if err != nil {
-		logger.Errorf("Failed to list workloads in group %s: %v", name, err)
-		http.Error(w, "Failed to list workloads in group", http.StatusInternalServerError)
+		logger.Errorf("Failed to list workloads: %v", err)
+		http.Error(w, "Failed to list workloads", http.StatusInternalServerError)
+		return
+	}
+
+	groupWorkloads, err := workloads.FilterByGroup(allWorkloads, name)
+	if err != nil {
+		logger.Errorf("Failed to filter workloads by group %s: %v", name, err)
+		http.Error(w, "Failed to filter workloads by group", http.StatusInternalServerError)
 		return
 	}
 
 	// Handle workloads if any exist
 	if len(groupWorkloads) > 0 {
-		if withWorkloads {
-			// Delete all workloads in the group
-			group, err := s.workloadManager.DeleteWorkloads(ctx, groupWorkloads)
-			if err != nil {
-				logger.Errorf("Failed to delete workloads in group %s: %v", name, err)
-				http.Error(w, "Failed to delete workloads in group", http.StatusInternalServerError)
-				return
-			}
-
-			// Wait for the deletion to complete
-			if err := group.Wait(); err != nil {
-				logger.Errorf("Failed to delete workloads in group %s: %v", name, err)
-				http.Error(w, "Failed to delete workloads in group", http.StatusInternalServerError)
-				return
-			}
-
-			logger.Infof("Deleted %d workload(s) from group '%s'", len(groupWorkloads), name)
-		} else {
-			// Move workloads to default group
-			if err := s.workloadManager.MoveToDefaultGroup(ctx, groupWorkloads, name); err != nil {
-				logger.Errorf("Failed to move workloads to default group: %v", err)
-				http.Error(w, "Failed to move workloads to default group", http.StatusInternalServerError)
-				return
-			}
-
-			logger.Infof("Moved %d workload(s) from group '%s' to default group", len(groupWorkloads), name)
+		if err := s.handleWorkloadsForGroupDeletion(ctx, name, groupWorkloads, withWorkloads); err != nil {
+			logger.Errorf("Failed to handle workloads for group %s: %v", name, err)
+			http.Error(w, "Failed to handle workloads", http.StatusInternalServerError)
+			return
 		}
 	}
 
@@ -250,6 +241,73 @@ func (s *GroupsRoutes) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleWorkloadsForGroupDeletion handles workloads when deleting a group
+func (s *GroupsRoutes) handleWorkloadsForGroupDeletion(
+	ctx context.Context,
+	groupName string,
+	groupWorkloads []core.Workload,
+	withWorkloads bool,
+) error {
+	// Extract workload names
+	var workloadNames []string
+	for _, workload := range groupWorkloads {
+		workloadNames = append(workloadNames, workload.Name)
+	}
+
+	if withWorkloads {
+		// Delete all workloads in the group
+		group, err := s.workloadManager.DeleteWorkloads(ctx, workloadNames)
+		if err != nil {
+			return fmt.Errorf("failed to delete workloads in group %s: %w", groupName, err)
+		}
+
+		// Wait for the deletion to complete
+		if err := group.Wait(); err != nil {
+			return fmt.Errorf("failed to delete workloads in group %s: %w", groupName, err)
+		}
+
+		logger.Infof("Deleted %d workload(s) from group '%s'", len(groupWorkloads), groupName)
+	} else {
+		// Move workloads to default group
+		if err := s.workloadManager.MoveToGroup(ctx, workloadNames, groupName, groups.DefaultGroup); err != nil {
+			return fmt.Errorf("failed to move workloads to default group: %w", err)
+		}
+
+		// Update client configurations for the moved workloads
+		if err := s.updateClientConfigurations(ctx, groupWorkloads, groupName, groups.DefaultGroup); err != nil {
+			return fmt.Errorf("failed to update client configurations: %w", err)
+		}
+
+		logger.Infof("Moved %d workload(s) from group '%s' to default group", len(groupWorkloads), groupName)
+	}
+
+	return nil
+}
+
+// updateClientConfigurations updates client configurations when workloads are moved between groups
+func (s *GroupsRoutes) updateClientConfigurations(
+	ctx context.Context,
+	groupWorkloads []core.Workload,
+	groupFrom string,
+	groupTo string,
+) error {
+	for _, w := range groupWorkloads {
+		// Only update client configurations for running workloads
+		if w.Status != runtime.WorkloadStatusRunning {
+			continue
+		}
+
+		if err := s.clientManager.RemoveServerFromClients(ctx, w.Name, groupFrom); err != nil {
+			return fmt.Errorf("failed to remove server %s from client configurations: %w", w.Name, err)
+		}
+		if err := s.clientManager.AddServerToClients(ctx, w.Name, w.URL, string(w.TransportType), groupTo); err != nil {
+			return fmt.Errorf("failed to add server %s to client configurations: %w", w.Name, err)
+		}
+	}
+
+	return nil
 }
 
 // Response types

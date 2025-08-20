@@ -29,8 +29,8 @@ func DiscoveryRouter() http.Handler {
 //	@Produce		json
 //	@Success		200	{object}	clientStatusResponse
 //	@Router			/api/v1beta/discovery/clients [get]
-func (*DiscoveryRoutes) discoverClients(w http.ResponseWriter, _ *http.Request) {
-	clients, err := client.GetClientStatus()
+func (*DiscoveryRoutes) discoverClients(w http.ResponseWriter, r *http.Request) {
+	clients, err := client.GetClientStatus(r.Context())
 	if err != nil {
 		// TODO: Error should be JSON marshaled
 		http.Error(w, "Failed to get client status", http.StatusInternalServerError)

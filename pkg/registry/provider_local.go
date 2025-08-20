@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 )
 
 //go:embed data/registry.json
@@ -13,6 +12,7 @@ var embeddedRegistryFS embed.FS
 
 // LocalRegistryProvider provides registry data from embedded JSON files or local files
 type LocalRegistryProvider struct {
+	*BaseProvider
 	filePath string
 }
 
@@ -23,7 +23,15 @@ func NewLocalRegistryProvider(filePath ...string) *LocalRegistryProvider {
 	if len(filePath) > 0 {
 		path = filePath[0]
 	}
-	return &LocalRegistryProvider{filePath: path}
+
+	p := &LocalRegistryProvider{
+		filePath: path,
+	}
+
+	// Initialize the base provider with the GetRegistry function
+	p.BaseProvider = NewBaseProvider(p.GetRegistry)
+
+	return p
 }
 
 // GetRegistry returns the registry data from file path or embedded data
@@ -54,73 +62,12 @@ func (p *LocalRegistryProvider) GetRegistry() (*Registry, error) {
 	for name, server := range registry.Servers {
 		server.Name = name
 	}
+	// Set name field on each remote server based on map key
+	for name, server := range registry.RemoteServers {
+		server.Name = name
+	}
 
 	return registry, nil
-}
-
-// GetServer returns a specific server by name
-func (p *LocalRegistryProvider) GetServer(name string) (*ImageMetadata, error) {
-	reg, err := p.GetRegistry()
-	if err != nil {
-		return nil, err
-	}
-
-	server, ok := reg.Servers[name]
-	if !ok {
-		return nil, fmt.Errorf("server not found: %s", name)
-	}
-
-	return server, nil
-}
-
-// SearchServers searches for servers matching the query
-func (p *LocalRegistryProvider) SearchServers(query string) ([]*ImageMetadata, error) {
-	reg, err := p.GetRegistry()
-	if err != nil {
-		return nil, err
-	}
-
-	query = strings.ToLower(query)
-	var results []*ImageMetadata
-
-	for name, server := range reg.Servers {
-		// Search in name
-		if strings.Contains(strings.ToLower(name), query) {
-			results = append(results, server)
-			continue
-		}
-
-		// Search in description
-		if strings.Contains(strings.ToLower(server.Description), query) {
-			results = append(results, server)
-			continue
-		}
-
-		// Search in tags
-		for _, tag := range server.Tags {
-			if strings.Contains(strings.ToLower(tag), query) {
-				results = append(results, server)
-				break
-			}
-		}
-	}
-
-	return results, nil
-}
-
-// ListServers returns all available servers
-func (p *LocalRegistryProvider) ListServers() ([]*ImageMetadata, error) {
-	reg, err := p.GetRegistry()
-	if err != nil {
-		return nil, err
-	}
-
-	servers := make([]*ImageMetadata, 0, len(reg.Servers))
-	for _, server := range reg.Servers {
-		servers = append(servers, server)
-	}
-
-	return servers, nil
 }
 
 // parseRegistryData parses JSON data into a Registry struct

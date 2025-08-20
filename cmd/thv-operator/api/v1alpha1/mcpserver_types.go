@@ -48,6 +48,11 @@ type MCPServerSpec struct {
 	// +optional
 	Secrets []SecretRef `json:"secrets,omitempty"`
 
+	// ServiceAccount is the name of an already existing service account to use by the MCP server.
+	// If not specified, a ServiceAccount will be created automatically and used by the MCP server.
+	// +optional
+	ServiceAccount *string `json:"serviceAccount,omitempty"`
+
 	// PermissionProfile defines the permission profile to use
 	// +optional
 	PermissionProfile *PermissionProfileRef `json:"permissionProfile,omitempty"`
@@ -271,6 +276,11 @@ type OIDCConfigRef struct {
 	// +kubebuilder:validation:Enum=kubernetes;configMap;inline
 	// +kubebuilder:default=kubernetes
 	Type string `json:"type"`
+
+	// ResourceURL is the explicit resource URL for OAuth discovery endpoint (RFC 9728)
+	// If not specified, defaults to the in-cluster Kubernetes service URL
+	// +optional
+	ResourceURL string `json:"resourceUrl,omitempty"`
 
 	// Kubernetes configures OIDC for Kubernetes service account token validation
 	// Only used when Type is "kubernetes"

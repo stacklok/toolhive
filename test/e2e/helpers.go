@@ -41,6 +41,7 @@ type THVCommand struct {
 	args   []string
 	env    []string
 	dir    string
+	stdin  string
 }
 
 // NewTHVCommand creates a new ToolHive command
@@ -65,6 +66,12 @@ func (c *THVCommand) WithDir(dir string) *THVCommand {
 	return c
 }
 
+// WithStdin sets the stdin input for the command
+func (c *THVCommand) WithStdin(stdin string) *THVCommand {
+	c.stdin = stdin
+	return c
+}
+
 // Run executes the ToolHive command and returns stdout, stderr, and error
 func (c *THVCommand) Run() (string, string, error) {
 	return c.RunWithTimeout(c.config.TestTimeout)
@@ -79,6 +86,9 @@ func (c *THVCommand) RunWithTimeout(timeout time.Duration) (string, string, erro
 	cmd.Env = c.env
 	if c.dir != "" {
 		cmd.Dir = c.dir
+	}
+	if c.stdin != "" {
+		cmd.Stdin = strings.NewReader(c.stdin)
 	}
 
 	var stdout, stderr strings.Builder
@@ -135,6 +145,12 @@ func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Durati
 			}
 		}
 	}
+}
+
+// IsServerRunning checks if an MCP server is running
+func IsServerRunning(config *TestConfig, serverName string) bool {
+	stdout, _ := NewTHVCommand(config, "list").ExpectSuccess()
+	return strings.Contains(stdout, serverName) && strings.Contains(stdout, "running")
 }
 
 // StopAndRemoveMCPServer stops and removes an MCP server
@@ -242,4 +258,57 @@ func StartDockerCommand(args ...string) *exec.Cmd {
 	cmd := exec.Command("docker", args...) //nolint:gosec // Intentional for e2e testing
 	cmd.Env = os.Environ()
 	return cmd
+}
+
+// WaitForWorkloadUnhealthy waits for a workload to be marked as unhealthy
+func WaitForWorkloadUnhealthy(config *TestConfig, serverName string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for workload %s to be marked as unhealthy", serverName)
+		case <-ticker.C:
+			stdout, _, err := NewTHVCommand(config, "list", "--all").Run()
+			if err != nil {
+				continue
+			}
+
+			// Check if the server is listed and marked as unhealthy
+			lines := strings.Split(stdout, "\n")
+			for _, line := range lines {
+				if strings.Contains(line, serverName) && strings.Contains(line, "unhealthy") {
+					return nil
+				}
+			}
+		}
+	}
+}
+
+// RemoveGroup removes a group by name
+func RemoveGroup(config *TestConfig, groupName string) error {
+	stdout, stderr, err := NewTHVCommand(config, "group", "rm", groupName).
+		WithStdin("y\n").
+		Run()
+
+	if err != nil {
+		// In cleanup scenarios, it's okay if the group doesn't exist
+		combinedOutput := stdout + stderr
+		if strings.Contains(combinedOutput, "does not exist") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// CreateAndTrackGroup creates a group and tracks it for cleanup
+func CreateAndTrackGroup(config *TestConfig, groupName string, createdGroups *[]string) {
+	createOutput, _ := NewTHVCommand(config, "group", "create", groupName).ExpectSuccess()
+	Expect(createOutput).To(ContainSubstring("created successfully"))
+	*createdGroups = append(*createdGroups, groupName)
 }

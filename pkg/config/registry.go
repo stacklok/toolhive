@@ -35,9 +35,16 @@ func DetectRegistryType(input string) (registryType string, cleanPath string) {
 
 // SetRegistryURL validates and sets a registry URL
 func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
-	// Basic URL validation - check if it starts with http:// or https://
-	if registryURL != "" && !strings.HasPrefix(registryURL, "http://") && !strings.HasPrefix(registryURL, "https://") {
-		return fmt.Errorf("registry URL must start with http:// or https://")
+	if allowPrivateRegistryIp {
+		// we validate either https or http URLs
+		if !strings.HasPrefix(registryURL, "http://") && !strings.HasPrefix(registryURL, "https://") {
+			return fmt.Errorf("registry URL must start with http:// or https:// when allowing private IPs")
+		}
+	} else {
+		// we just allow https
+		if !strings.HasPrefix(registryURL, "https://") {
+			return fmt.Errorf("registry URL must start with https:// when not allowing private IPs")
+		}
 	}
 
 	if !allowPrivateRegistryIp {

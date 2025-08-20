@@ -2,6 +2,8 @@
 // used in communication between the client and MCP server.
 package types
 
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination=mocks/transport.go -source=transport.go MiddlewareRunner,RunnerConfig
+
 import (
 	"context"
 	"encoding/json"
@@ -51,8 +53,30 @@ func NewMiddlewareConfig(middlewareType string, parameters any) (*MiddlewareConf
 	}, nil
 }
 
-// MiddlewareFactory is a function that creates a Middleware instance based on the provided configuration.
-type MiddlewareFactory func(config *MiddlewareConfig) (Middleware, error)
+// MiddlewareRunner defines the interface that middleware can use to interact with the runner.
+// This unified interface replaces the ad-hoc interfaces defined in each middleware package.
+type MiddlewareRunner interface {
+	// AddMiddleware adds a middleware instance to the runner's middleware chain
+	AddMiddleware(middleware Middleware)
+
+	// SetAuthInfoHandler sets the authentication info handler (used by auth middleware)
+	SetAuthInfoHandler(handler http.Handler)
+
+	// SetPrometheusHandler sets the Prometheus metrics handler (used by telemetry middleware)
+	SetPrometheusHandler(handler http.Handler)
+
+	// GetConfig returns a config interface for middleware to access runner configuration
+	GetConfig() RunnerConfig
+}
+
+// RunnerConfig defines the config interface needed by middleware to access runner configuration
+type RunnerConfig interface {
+	GetPort() int
+}
+
+// MiddlewareFactory is a function that creates a Middleware instance based on the provided configuration
+// and configures the runner with the middleware and any additional handlers it provides.
+type MiddlewareFactory func(config *MiddlewareConfig, runner MiddlewareRunner) error
 
 // Transport defines the interface for MCP transport implementations.
 // It provides methods for handling communication between the client and server.

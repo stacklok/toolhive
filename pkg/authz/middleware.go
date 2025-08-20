@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // MCPMethodToFeatureOperation maps MCP method names to feature and operation pairs.
@@ -203,4 +204,65 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		// Call the next handler
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Factory middleware type constant
+const (
+	MiddlewareType = "authorization"
+)
+
+// FactoryMiddlewareParams represents the parameters for authorization middleware
+type FactoryMiddlewareParams struct {
+	ConfigPath string  `json:"config_path,omitempty"` // Kept for backwards compatibility
+	ConfigData *Config `json:"config_data,omitempty"` // New field for config contents
+}
+
+// FactoryMiddleware wraps authorization middleware functionality for factory pattern
+type FactoryMiddleware struct {
+	middleware types.MiddlewareFunction
+}
+
+// Handler returns the middleware function used by the proxy.
+func (m *FactoryMiddleware) Handler() types.MiddlewareFunction {
+	return m.middleware
+}
+
+// Close cleans up any resources used by the middleware.
+func (*FactoryMiddleware) Close() error {
+	// Authorization middleware doesn't need cleanup
+	return nil
+}
+
+// CreateMiddleware factory function for authorization middleware
+func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
+
+	var params FactoryMiddlewareParams
+	if err := json.Unmarshal(config.Parameters, &params); err != nil {
+		return fmt.Errorf("failed to unmarshal authorization middleware parameters: %w", err)
+	}
+
+	var authzConfig *Config
+	var err error
+
+	if params.ConfigData != nil {
+		// Use provided config data (preferred method)
+		authzConfig = params.ConfigData
+	} else if params.ConfigPath != "" {
+		// Load config from file (backwards compatibility)
+		authzConfig, err = LoadConfig(params.ConfigPath)
+		if err != nil {
+			return fmt.Errorf("failed to load authorization configuration: %w", err)
+		}
+	} else {
+		return fmt.Errorf("either config_data or config_path is required for authorization middleware")
+	}
+
+	middleware, err := authzConfig.CreateMiddleware()
+	if err != nil {
+		return fmt.Errorf("failed to create authorization middleware: %w", err)
+	}
+
+	authzMw := &FactoryMiddleware{middleware: middleware}
+	runner.AddMiddleware(authzMw)
+	return nil
 }

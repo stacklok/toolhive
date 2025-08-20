@@ -93,22 +93,29 @@ We won't be applying it as its beyond the scope of this document, but the below 
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: mcp-fetch-ingress
+  name: mcp-ingress
   namespace: toolhive-system
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
 spec:
   ingressClassName: nginx
   rules:
-  - http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: mcp-fetch-proxy
-            port:
-              number: 8080
+    - http:
+        paths:
+          - path: /fetch(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: mcp-fetch-proxy
+                port:
+                  number: 8080
+          - path: /yardstick(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: mcp-yardstick-proxy
+                port:
+                  number: 8080
 ```
 
 ## Ingress with a Local Hostname

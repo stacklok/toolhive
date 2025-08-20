@@ -3,18 +3,23 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -79,6 +84,10 @@ type RunFlags struct {
 	// Configuration import
 	FromConfig string
 
+	// Environment file processing
+	EnvFile    string
+	EnvFileDir string
+
 	// Ignore functionality
 	IgnoreGlobally bool
 	PrintOverlays  bool
@@ -89,9 +98,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
 	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
-	// TODO: Re-enable when group functionality is complete
-	// cmd.Flags().StringVar(&config.Group, "group", "default",
-	//	"Name of the group this workload belongs to (defaults to 'default' if not specified)")
+	cmd.Flags().StringVar(&config.Group, "group", "default",
+		"Name of the group this workload belongs to (defaults to 'default' if not specified)")
 	cmd.Flags().StringVar(&config.Host, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
 	cmd.Flags().IntVar(&config.ProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
 	cmd.Flags().IntVar(&config.TargetPort, "target-port", 0,
@@ -174,6 +182,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	)
 	cmd.Flags().StringVar(&config.FromConfig, "from-config", "", "Load configuration from exported file")
 
+	// Environment file processing flags
+	cmd.Flags().StringVar(&config.EnvFile, "env-file", "", "Load environment variables from a single file")
+	cmd.Flags().StringVar(&config.EnvFileDir, "env-file-dir", "", "Load environment variables from all files in a directory")
+
 	// Ignore functionality flags
 	cmd.Flags().BoolVar(&config.IgnoreGlobally, "ignore-globally", true,
 		"Load global ignore patterns from ~/.config/toolhive/thvignore")
@@ -184,20 +196,59 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 // BuildRunnerConfig creates a runner.RunConfig from the configuration
 func BuildRunnerConfig(
 	ctx context.Context,
-	runConfig *RunFlags,
+	runFlags *RunFlags,
 	serverOrImage string,
 	cmdArgs []string,
 	debugMode bool,
 	cmd *cobra.Command,
 ) (*runner.RunConfig, error) {
-	// Validate the host flag
-	validatedHost, err := ValidateAndNormaliseHostFlag(runConfig.Host)
+	// Validate and setup basic configuration
+	validatedHost, err := ValidateAndNormaliseHostFlag(runFlags.Host)
 	if err != nil {
-		return nil, fmt.Errorf("invalid host: %s", runConfig.Host)
+		return nil, fmt.Errorf("invalid host: %s", runFlags.Host)
 	}
 
-	// Get OIDC flags
+	// Setup OIDC configuration
+	oidcConfig, err := setupOIDCConfiguration(cmd, runFlags)
+	if err != nil {
+		return nil, err
+	}
+
+	// Setup telemetry configuration
+	telemetryConfig := setupTelemetryConfiguration(cmd, runFlags)
+
+	// Setup runtime and validation
+	rt, envVarValidator, err := setupRuntimeAndValidation(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Handle image retrieval
+	imageURL, imageMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate and setup proxy mode
+	if err := validateAndSetupProxyMode(runFlags); err != nil {
+		return nil, err
+	}
+
+	// Parse environment variables
+	envVars, err := environment.ParseEnvironmentVariables(runFlags.Env)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse environment variables: %v", err)
+	}
+
+	// Build the runner config
+	return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, imageMetadata,
+		envVars, envVarValidator, oidcConfig, telemetryConfig)
+}
+
+// setupOIDCConfiguration sets up OIDC configuration and validates URLs
+func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.TokenValidatorConfig, error) {
 	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret := getOidcFromFlags(cmd)
+
 	if oidcJwksURL != "" {
 		if err := networking.ValidateEndpointURL(oidcJwksURL); err != nil {
 			return nil, fmt.Errorf("invalid %s: %w", oidcJwksURL, err)
@@ -209,21 +260,28 @@ func BuildRunnerConfig(
 		}
 	}
 
-	// Get OTEL flag values with config fallbacks
-	config := cfg.GetConfig()
-	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(nil, config,
-		runConfig.OtelEndpoint, runConfig.OtelSamplingRate, runConfig.OtelEnvironmentVariables)
+	return createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
+		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP), nil
+}
 
-	// Create container runtime
+// setupTelemetryConfiguration sets up telemetry configuration with config fallbacks
+func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *telemetry.Config {
+	config := cfg.GetConfig()
+	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(cmd, config,
+		runFlags.OtelEndpoint, runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables)
+
+	return createTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
+		runFlags.OtelServiceName, finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure,
+		finalOtelEnvironmentVariables)
+}
+
+// setupRuntimeAndValidation creates container runtime and selects environment variable validator
+func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.EnvVarValidator, error) {
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create container runtime: %v", err)
+		return nil, nil, fmt.Errorf("failed to create container runtime: %v", err)
 	}
 
-	// Select an env var validation strategy depending on how the CLI is run:
-	// If we have called the CLI directly, we use the CLIEnvVarValidator.
-	// If we are running in detached mode, or the CLI is wrapped by the K8s operator,
-	// we use the DetachedEnvVarValidator.
 	var envVarValidator runner.EnvVarValidator
 	if process.IsDetached() || runtime.IsKubernetesRuntime() {
 		envVarValidator = &runner.DetachedEnvVarValidator{}
@@ -231,62 +289,143 @@ func BuildRunnerConfig(
 		envVarValidator = &runner.CLIEnvVarValidator{}
 	}
 
-	// Image retrieval
+	return rt, envVarValidator, nil
+}
+
+// handleImageRetrieval retrieves and processes the MCP server image
+func handleImageRetrieval(
+	ctx context.Context, serverOrImage string, runFlags *RunFlags,
+) (string, *registry.ImageMetadata, error) {
 	var imageMetadata *registry.ImageMetadata
 	imageURL := serverOrImage
-	// Only pull image if we are not running in Kubernetes mode.
-	// This split will go away if we implement a separate command or binary
-	// for running MCP servers in Kubernetes.
+
 	if !runtime.IsKubernetesRuntime() {
-		// Take the MCP server we were supplied and either fetch the image, or
-		// build it from a protocol scheme. If the server URI refers to an image
-		// in our trusted registry, we will also fetch the image metadata.
-		imageURL, imageMetadata, err = retriever.GetMCPServer(ctx, serverOrImage, runConfig.CACertPath, runConfig.VerifyImage)
+		var err error
+		imageURL, imageMetadata, err = retriever.GetMCPServer(ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
 		if err != nil {
-			return nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+			return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
 		}
 	}
 
-	// Validate proxy mode early
-	if !types.IsValidProxyMode(runConfig.ProxyMode) {
-		if runConfig.ProxyMode == "" {
-			runConfig.ProxyMode = types.ProxyModeSSE.String() // default to SSE for backward compatibility
+	return imageURL, imageMetadata, nil
+}
+
+// validateAndSetupProxyMode validates and sets default proxy mode if needed
+func validateAndSetupProxyMode(runFlags *RunFlags) error {
+	if !types.IsValidProxyMode(runFlags.ProxyMode) {
+		if runFlags.ProxyMode == "" {
+			runFlags.ProxyMode = types.ProxyModeSSE.String() // default to SSE for backward compatibility
 		} else {
-			return nil, fmt.Errorf("invalid value for --proxy-mode: %s", runConfig.ProxyMode)
+			return fmt.Errorf("invalid value for --proxy-mode: %s", runFlags.ProxyMode)
 		}
 	}
+	return nil
+}
 
-	// Initialize a new RunConfig with values from command-line flags
-	return runner.NewRunConfigBuilder().
+// buildRunnerConfig creates the final RunnerConfig using the builder pattern
+func buildRunnerConfig(
+	ctx context.Context,
+	runFlags *RunFlags,
+	cmdArgs []string,
+	debugMode bool,
+	validatedHost string,
+	rt runtime.Deployer,
+	imageURL string,
+	imageMetadata *registry.ImageMetadata,
+	envVars map[string]string,
+	envVarValidator runner.EnvVarValidator,
+	oidcConfig *auth.TokenValidatorConfig,
+	telemetryConfig *telemetry.Config,
+) (*runner.RunConfig, error) {
+	// Create a builder for the RunConfig
+	builder := runner.NewRunConfigBuilder().
 		WithRuntime(rt).
 		WithCmdArgs(cmdArgs).
-		WithName(runConfig.Name).
+		WithName(runFlags.Name).
 		WithImage(imageURL).
 		WithHost(validatedHost).
-		WithTargetHost(runConfig.TargetHost).
+		WithTargetHost(runFlags.TargetHost).
 		WithDebug(debugMode).
-		WithVolumes(runConfig.Volumes).
-		WithSecrets(runConfig.Secrets).
-		WithAuthzConfigPath(runConfig.AuthzConfig).
-		WithAuditConfigPath(runConfig.AuditConfig).
-		WithPermissionProfileNameOrPath(runConfig.PermissionProfile).
-		WithNetworkIsolation(runConfig.IsolateNetwork).
-		WithK8sPodPatch(runConfig.K8sPodPatch).
-		WithProxyMode(types.ProxyMode(runConfig.ProxyMode)).
-		WithTransportAndPorts(runConfig.Transport, runConfig.ProxyPort, runConfig.TargetPort).
-		WithAuditEnabled(runConfig.EnableAudit, runConfig.AuditConfig).
-		WithLabels(runConfig.Labels).
-		WithGroup(runConfig.Group).
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-			runConfig.ThvCABundle, runConfig.JWKSAuthTokenFile, runConfig.ResourceURL, runConfig.JWKSAllowPrivateIP).
-		WithTelemetryConfig(finalOtelEndpoint, runConfig.OtelEnablePrometheusMetricsPath, runConfig.OtelServiceName,
-			finalOtelSamplingRate, runConfig.OtelHeaders, runConfig.OtelInsecure, finalOtelEnvironmentVariables).
-		WithToolsFilter(runConfig.ToolsFilter).
+		WithVolumes(runFlags.Volumes).
+		WithSecrets(runFlags.Secrets).
+		WithAuthzConfigPath(runFlags.AuthzConfig).
+		WithAuditConfigPath(runFlags.AuditConfig).
+		WithPermissionProfileNameOrPath(runFlags.PermissionProfile).
+		WithNetworkIsolation(runFlags.IsolateNetwork).
+		WithK8sPodPatch(runFlags.K8sPodPatch).
+		WithProxyMode(types.ProxyMode(runFlags.ProxyMode)).
+		WithTransportAndPorts(runFlags.Transport, runFlags.ProxyPort, runFlags.TargetPort).
+		WithAuditEnabled(runFlags.EnableAudit, runFlags.AuditConfig).
+		WithLabels(runFlags.Labels).
+		WithGroup(runFlags.Group).
 		WithIgnoreConfig(&ignore.Config{
-			LoadGlobal:    runConfig.IgnoreGlobally,
-			PrintOverlays: runConfig.PrintOverlays,
-		}).
-		Build(ctx, imageMetadata, runConfig.Env, envVarValidator)
+			LoadGlobal:    runFlags.IgnoreGlobally,
+			PrintOverlays: runFlags.PrintOverlays,
+		})
+
+	// Configure middleware from flags
+	builder = builder.WithMiddlewareFromFlags(
+		oidcConfig,
+		runFlags.ToolsFilter,
+		telemetryConfig,
+		runFlags.AuthzConfig,
+		runFlags.EnableAudit,
+		runFlags.AuditConfig,
+		runFlags.Name,
+		runFlags.Transport,
+	)
+
+	// Load authz config if path is provided
+	if runFlags.AuthzConfig != "" {
+		if authzConfigData, err := authz.LoadConfig(runFlags.AuthzConfig); err == nil {
+			builder = builder.WithAuthzConfig(authzConfigData)
+		}
+		// Note: Path is already set via WithAuthzConfigPath above
+	}
+
+	// Get OIDC and telemetry values for legacy configuration
+	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret := extractOIDCValues(oidcConfig)
+	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := extractTelemetryValues(telemetryConfig)
+
+	// Set additional configurations that are still needed in old format for other parts of the system
+	builder = builder.WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
+		runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP).
+		WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelServiceName,
+			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables).
+		WithToolsFilter(runFlags.ToolsFilter)
+
+	// Process environment files
+	var err error
+	if runFlags.EnvFile != "" {
+		builder, err = builder.WithEnvFile(runFlags.EnvFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process env file %s: %v", runFlags.EnvFile, err)
+		}
+	}
+	if runFlags.EnvFileDir != "" {
+		builder, err = builder.WithEnvFilesFromDirectory(runFlags.EnvFileDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process env files from directory %s: %v", runFlags.EnvFileDir, err)
+		}
+	}
+
+	return builder.Build(ctx, imageMetadata, envVars, envVarValidator)
+}
+
+// extractOIDCValues extracts OIDC values from the OIDC config for legacy configuration
+func extractOIDCValues(config *auth.TokenValidatorConfig) (string, string, string, string, string, string) {
+	if config == nil {
+		return "", "", "", "", "", ""
+	}
+	return config.Issuer, config.Audience, config.JWKSURL, config.IntrospectionURL, config.ClientID, config.ClientSecret
+}
+
+// extractTelemetryValues extracts telemetry values from the telemetry config for legacy configuration
+func extractTelemetryValues(config *telemetry.Config) (string, float64, []string) {
+	if config == nil {
+		return "", 0.0, nil
+	}
+	return config.Endpoint, config.SamplingRate, config.EnvironmentVariables
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags
@@ -306,19 +445,86 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 	otelEnvironmentVariables []string) (string, float64, []string) {
 	// Use config values as fallbacks for OTEL flags if not explicitly set
 	finalOtelEndpoint := otelEndpoint
-	if cmd != nil && !cmd.Flags().Changed("otel-endpoint") && config.OTEL.Endpoint != "" {
+	if !cmd.Flags().Changed("otel-endpoint") && config.OTEL.Endpoint != "" {
 		finalOtelEndpoint = config.OTEL.Endpoint
 	}
 
 	finalOtelSamplingRate := otelSamplingRate
-	if cmd != nil && !cmd.Flags().Changed("otel-sampling-rate") && config.OTEL.SamplingRate != 0.0 {
+	if !cmd.Flags().Changed("otel-sampling-rate") && config.OTEL.SamplingRate != 0.0 {
 		finalOtelSamplingRate = config.OTEL.SamplingRate
 	}
 
 	finalOtelEnvironmentVariables := otelEnvironmentVariables
-	if cmd != nil && !cmd.Flags().Changed("otel-env-vars") && len(config.OTEL.EnvVars) > 0 {
+	if !cmd.Flags().Changed("otel-env-vars") && len(config.OTEL.EnvVars) > 0 {
 		finalOtelEnvironmentVariables = config.OTEL.EnvVars
 	}
 
 	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables
+}
+
+// createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided
+func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
+	oidcClientID, oidcClientSecret, resourceURL string, allowPrivateIP bool) *auth.TokenValidatorConfig {
+	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
+		oidcClientID != "" || oidcClientSecret != "" || resourceURL != "" {
+		return &auth.TokenValidatorConfig{
+			Issuer:           oidcIssuer,
+			Audience:         oidcAudience,
+			JWKSURL:          oidcJwksURL,
+			IntrospectionURL: oidcIntrospectionURL,
+			ClientID:         oidcClientID,
+			ClientSecret:     oidcClientSecret,
+			ResourceURL:      resourceURL,
+			AllowPrivateIP:   allowPrivateIP,
+		}
+	}
+	return nil
+}
+
+// createTelemetryConfig creates a telemetry configuration if any telemetry parameters are provided
+func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
+	otelServiceName string, otelSamplingRate float64, otelHeaders []string,
+	otelInsecure bool, otelEnvironmentVariables []string) *telemetry.Config {
+	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
+		return nil
+	}
+
+	// Parse headers from key=value format
+	headers := make(map[string]string)
+	for _, header := range otelHeaders {
+		parts := strings.SplitN(header, "=", 2)
+		if len(parts) == 2 {
+			headers[parts[0]] = parts[1]
+		}
+	}
+
+	// Use provided service name or default
+	serviceName := otelServiceName
+	if serviceName == "" {
+		serviceName = telemetry.DefaultConfig().ServiceName
+	}
+
+	// Process environment variables - split comma-separated values
+	var processedEnvVars []string
+	for _, envVarEntry := range otelEnvironmentVariables {
+		// Split by comma and trim whitespace
+		envVars := strings.Split(envVarEntry, ",")
+		for _, envVar := range envVars {
+			trimmed := strings.TrimSpace(envVar)
+			if trimmed != "" {
+				processedEnvVars = append(processedEnvVars, trimmed)
+			}
+		}
+	}
+
+	return &telemetry.Config{
+		Endpoint:                    otelEndpoint,
+		ServiceName:                 serviceName,
+		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+		SamplingRate:                otelSamplingRate,
+		Headers:                     headers,
+		Insecure:                    otelInsecure,
+		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
+		EnvironmentVariables:        processedEnvVars,
+	}
 }

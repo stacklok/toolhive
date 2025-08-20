@@ -12,12 +12,12 @@ operator:
   # -- List of image pull secrets to use
   imagePullSecrets: []
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.2.0
+  image: ghcr.io/stacklok/toolhive/operator:v0.2.8
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.2.0
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.2.8
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0

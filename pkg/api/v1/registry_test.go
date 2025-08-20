@@ -112,6 +112,76 @@ func TestGetRegistryInfo(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // uses MockConfig (env mutation)
+func TestSetRegistryURL_SchemeAndPrivateIPs(t *testing.T) {
+	logger.Initialize()
+
+	// Isolate config (XDG) for each run
+	cleanup := MockConfig(t, nil)
+	t.Cleanup(cleanup)
+
+	tests := []struct {
+		name            string
+		url             string
+		allowPrivateIPs bool
+		wantErr         bool
+	}{
+		// Scheme enforcement when NOT allowing private IPs
+		{
+			name:            "reject http (public) when not allowing private IPs",
+			url:             "http://example.com/registry.json",
+			allowPrivateIPs: false,
+			wantErr:         true,
+		},
+		{
+			name:            "accept https (public) when not allowing private IPs",
+			url:             "https://example.com/registry.json",
+			allowPrivateIPs: false,
+			wantErr:         false,
+		},
+
+		// When allowing private IPs, https is allowed to private hosts
+		{
+			name:            "accept https to loopback when allowing private IPs",
+			url:             "https://127.0.0.1/registry.json",
+			allowPrivateIPs: true,
+			wantErr:         false,
+		},
+		{
+			name:            "accept http to loopback when allowing private IPs",
+			url:             "http://127.0.0.1/registry.json",
+			allowPrivateIPs: true,
+			wantErr:         false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			// Start from a clean slate each case
+			require.NoError(t, config.UnsetRegistry())
+
+			err := config.SetRegistryURL(tt.url, tt.allowPrivateIPs)
+			if tt.wantErr {
+				require.Error(t, err, "expected error but got nil")
+
+				// Verify nothing was persisted
+				regType, src := getRegistryInfo()
+				assert.Equal(t, RegistryTypeDefault, regType, "registry should remain default on error")
+				assert.Equal(t, "", src, "source should be empty on error")
+				return
+			}
+
+			require.NoError(t, err, "unexpected error from SetRegistryURL")
+
+			// Confirm via the same helper used elsewhere
+			regType, src := getRegistryInfo()
+			assert.Equal(t, RegistryTypeURL, regType, "should be URL type after successful SetRegistryURL")
+			assert.Equal(t, tt.url, src, "source should be the URL we set")
+		})
+	}
+}
+
 func TestRegistryAPI_PutEndpoint(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -359,8 +360,8 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 }
 
 // FindRegisteredClientConfigs finds all registered client configs and creates them if they don't exist.
-func FindRegisteredClientConfigs() ([]ConfigFile, error) {
-	clientStatuses, err := GetClientStatus()
+func FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
+	clientStatuses, err := GetClientStatus(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client status: %w", err)
 	}

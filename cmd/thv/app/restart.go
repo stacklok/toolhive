@@ -29,13 +29,12 @@ var restartCmd = &cobra.Command{
 func init() {
 	restartCmd.Flags().BoolVarP(&restartAll, "all", "a", false, "Restart all MCP servers")
 	restartCmd.Flags().BoolVarP(&restartForeground, "foreground", "f", false, "Run the restarted workload in foreground mode")
-	// TODO: Uncomment when groups are fully supported
-	//restartCmd.Flags().StringVarP(&restartGroup, "group", "g", "", "Restart all MCP servers in a specific group")
-	//
-	//// Mark the flags as mutually exclusive
-	//restartCmd.MarkFlagsMutuallyExclusive("all", "group")
+	restartCmd.Flags().StringVarP(&restartGroup, "group", "g", "", "Restart all MCP servers in a specific group")
 
-	// restartCmd.PreRunE = validateGroupFlag()
+	// Mark the flags as mutually exclusive
+	restartCmd.MarkFlagsMutuallyExclusive("all", "group")
+
+	restartCmd.PreRunE = validateGroupFlag()
 }
 
 func restartCmdFunc(cmd *cobra.Command, args []string) error {

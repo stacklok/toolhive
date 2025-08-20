@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/lestrrat-go/httprc/v3"
+	"github.com/lestrrat-go/jwx/v3/jwk"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -56,7 +58,10 @@ type TokenValidator struct {
 	introspectURL string       // Optional introspection endpoint
 	client        *http.Client // HTTP client for making requests
 
-	// No need for additional caching as jwk.Cache handles it
+	// Lazy JWKS registration
+	jwksRegistered      bool
+	jwksRegistrationMu  sync.Mutex
+	jwksRegistrationErr error
 }
 
 // TokenValidatorConfig contains configuration for the token validator.
@@ -175,7 +180,6 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 			return nil, fmt.Errorf("%w: %v", ErrFailedToDiscoverOIDC, err)
 		}
 		jwksURL = doc.JWKSURI
-
 	}
 
 	// Ensure we have a JWKS URL either provided or discovered
@@ -195,13 +199,14 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 	config.httpClient = httpClient
 
 	// Create a new JWKS client with auto-refresh
-	cache := jwk.NewCache(ctx)
-
-	// Register the JWKS URL with the cache using custom HTTP client
-	err = cache.Register(jwksURL, jwk.WithHTTPClient(httpClient))
+	// In jwx v3, NewCache requires an httprc.Client
+	httprcClient := httprc.NewClient(httprc.WithHTTPClient(httpClient))
+	cache, err := jwk.NewCache(ctx, httprcClient)
 	if err != nil {
-		return nil, fmt.Errorf("failed to register JWKS URL: %w", err)
+		return nil, fmt.Errorf("failed to create JWKS cache: %w", err)
 	}
+
+	// Skip synchronous JWKS registration - will be done lazily on first use
 
 	return &TokenValidator{
 		issuer:        config.Issuer,
@@ -215,8 +220,40 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 	}, nil
 }
 
+// ensureJWKSRegistered ensures that the JWKS URL is registered with the cache.
+// This is called lazily on first use to avoid blocking startup.
+func (v *TokenValidator) ensureJWKSRegistered(ctx context.Context) error {
+	v.jwksRegistrationMu.Lock()
+	defer v.jwksRegistrationMu.Unlock()
+
+	// Check if already registered or failed
+	if v.jwksRegistered {
+		return v.jwksRegistrationErr
+	}
+
+	// Create context with 5-second timeout for JWKS registration
+	registrationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// Attempt registration
+	err := v.jwksClient.Register(registrationCtx, v.jwksURL)
+	if err != nil {
+		v.jwksRegistrationErr = fmt.Errorf("failed to register JWKS URL: %w", err)
+	} else {
+		v.jwksRegistrationErr = nil
+	}
+
+	v.jwksRegistered = true
+	return v.jwksRegistrationErr
+}
+
 // getKeyFromJWKS gets the key from the JWKS.
 func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (interface{}, error) {
+	// Ensure JWKS is registered before attempting to use it
+	if err := v.ensureJWKSRegistered(ctx); err != nil {
+		return nil, fmt.Errorf("JWKS registration failed: %w", err)
+	}
+
 	// Validate the signing method
 	if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
 		return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -229,9 +266,10 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 	}
 
 	// Get the key set from the JWKS
-	keySet, err := v.jwksClient.Get(ctx, v.jwksURL)
+	// In jwx v3, Get is replaced with Lookup
+	keySet, err := v.jwksClient.Lookup(ctx, v.jwksURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get JWKS: %w", err)
+		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
 	}
 
 	// Get the key with the matching key ID
@@ -241,9 +279,10 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 	}
 
 	// Get the raw key
+	// In jwx v3, Raw method is replaced with Export function
 	var rawKey interface{}
-	if err := key.Raw(&rawKey); err != nil {
-		return nil, fmt.Errorf("failed to get raw key: %w", err)
+	if err := jwk.Export(key, &rawKey); err != nil {
+		return nil, fmt.Errorf("failed to export raw key: %w", err)
 	}
 
 	return rawKey, nil

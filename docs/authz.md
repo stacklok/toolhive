@@ -91,13 +91,13 @@ The configuration file has the following fields:
 To start an MCP server with authorization, use the `--authz-config` flag:
 
 ```bash
-thv run --transport sse --name my-mcp-server --port 8080 --authz-config /path/to/authz-config.json my-mcp-server-image:latest -- my-mcp-server-args
+thv run --transport sse --name my-mcp-server --proxy-port 8080 --authz-config /path/to/authz-config.json my-mcp-server-image:latest -- my-mcp-server-args
 ```
 
 Or with a YAML configuration:
 
 ```bash
-thv run --transport sse --name my-mcp-server --port 8080 --authz-config /path/to/authz-config.yaml my-mcp-server-image:latest -- my-mcp-server-args
+thv run --transport sse --name my-mcp-server --proxy-port 8080 --authz-config /path/to/authz-config.yaml my-mcp-server-image:latest -- my-mcp-server-args
 ```
 
 ## Writing Cedar policies

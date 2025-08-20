@@ -26,9 +26,9 @@ jobs:
   docs:
     name: Docs
     uses: ./.github/workflows/verify-docgen.yml
-  swagger:
-    name: Swagger
-    uses: ./.github/workflows/verify-swagger.yml
+  codegen:
+    name: Codegen
+    uses: ./.github/workflows/verify-gen.yml
   operator-ci:
     name: Operator CI
     permissions:

@@ -104,13 +104,13 @@ func TestLocalRegistryProvider(t *testing.T) {
 	// Test GetServer with existing server
 	if len(servers) > 0 {
 		firstServer := servers[0]
-		server, err := provider.GetServer(firstServer.Name)
+		server, err := provider.GetServer(firstServer.GetName())
 		if err != nil {
 			t.Fatalf("GetServer() error = %v", err)
 		}
 
-		if server.Name != firstServer.Name {
-			t.Errorf("GetServer() returned wrong server: got %s, want %s", server.Name, firstServer.Name)
+		if server.GetName() != firstServer.GetName() {
+			t.Errorf("GetServer() returned wrong server: got %s, want %s", server.GetName(), firstServer.GetName())
 		}
 	}
 
@@ -255,16 +255,21 @@ func TestGetServer(t *testing.T) {
 	}
 
 	if server == nil {
-		t.Fatal("ImageMetadata is nil")
+		t.Fatal("ServerMetadata is nil")
 		return
 	}
 
-	if server.Image == "" {
-		t.Error("ImageMetadata image is empty")
+	// Check if it's a container server and has an image
+	if !server.IsRemote() {
+		if img, ok := server.(*ImageMetadata); ok {
+			if img.Image == "" {
+				t.Error("ImageMetadata image is empty")
+			}
+		}
 	}
 
-	if server.Description == "" {
-		t.Error("ImageMetadata description is empty")
+	if server.GetDescription() == "" {
+		t.Error("ServerMetadata description is empty")
 	}
 
 	// Test getting a non-existent server

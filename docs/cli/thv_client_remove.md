@@ -39,7 +39,8 @@ thv client remove [client] [flags]
 ### Options
 
 ```
-  -h, --help   help for remove
+      --group strings   Remove client from specified groups (if not set, removes all workloads from the client)
+  -h, --help            help for remove
 ```
 
 ### Options inherited from parent commands

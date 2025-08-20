@@ -26,7 +26,7 @@ thv mcp list resources [flags]
 ```
       --format string      Output format (json or text) (default "text")
   -h, --help               help for resources
-      --server string      MCP server URL (required)
+      --server string      MCP server URL or name from ToolHive registry (required)
       --timeout duration   Connection timeout (default 30s)
       --transport string   Transport type (auto, sse, streamable-http) (default "auto")
 ```

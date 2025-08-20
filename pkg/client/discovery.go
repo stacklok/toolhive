@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/groups"
 )
 
 // MCPClientStatus represents the status of a supported MCP client
@@ -23,7 +25,7 @@ type MCPClientStatus struct {
 }
 
 // GetClientStatus returns the installation status of all supported MCP clients
-func GetClientStatus() ([]MCPClientStatus, error) {
+func GetClientStatus(ctx context.Context) ([]MCPClientStatus, error) {
 	var statuses []MCPClientStatus
 
 	// Get home directory
@@ -36,9 +38,23 @@ func GetClientStatus() ([]MCPClientStatus, error) {
 	appConfig := config.GetConfig()
 	registeredClients := make(map[string]bool)
 
-	// Create a map of registered clients for quick lookup
+	// Create a map of registered clients for quick lookup from global config
 	for _, client := range appConfig.Clients.RegisteredClients {
 		registeredClients[client] = true
+	}
+
+	// Also check for clients registered in groups
+	groupManager, err := groups.NewManager()
+	if err == nil { // If group manager fails to initialize, we'll just skip group checks
+		allGroups, err := groupManager.List(ctx)
+		if err == nil {
+			// Collect clients from all groups
+			for _, group := range allGroups {
+				for _, clientName := range group.RegisteredClients {
+					registeredClients[clientName] = true
+				}
+			}
+		}
 	}
 
 	for _, cfg := range supportedClientIntegrations {

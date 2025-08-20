@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -81,6 +82,9 @@ var (
 
 	// OAuth discovery resource URL
 	runResourceURL string
+
+	// Environment file processing
+	runEnvFileDir string
 )
 
 func init() {
@@ -194,6 +198,12 @@ func init() {
 		"",
 		"Explicit resource URL for OAuth discovery endpoint (RFC 9728)",
 	)
+	runCmd.Flags().StringVar(
+		&runEnvFileDir,
+		"env-file-dir",
+		"",
+		"Load environment variables from all files in a directory",
+	)
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
@@ -237,8 +247,14 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	var imageMetadata *registry.ImageMetadata
 
+	// Parse environment variables from slice to map
+	envVarsMap, err := environment.ParseEnvironmentVariables(runEnv)
+	if err != nil {
+		return fmt.Errorf("failed to parse environment variables: %v", err)
+	}
+
 	// Initialize a new RunConfig with values from command-line flags
-	runConfig, err := runner.NewRunConfigBuilder().
+	builder := runner.NewRunConfigBuilder().
 		WithRuntime(rt).
 		WithCmdArgs(cmdArgs).
 		WithName(runName).
@@ -260,13 +276,25 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 			runThvCABundle, runJWKSAuthTokenFile, runResourceURL, runJWKSAllowPrivateIP).
 		WithTelemetryConfig(finalOtelEndpoint, runOtelEnablePrometheusMetricsPath, runOtelServiceName,
 			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
-		WithToolsFilter(runToolsFilter).
-		Build(ctx, imageMetadata, runEnv, envVarValidator)
+		WithToolsFilter(runToolsFilter)
+
+	// Process environment files
+	if runEnvFileDir != "" {
+		builder, err = builder.WithEnvFilesFromDirectory(runEnvFileDir)
+		if err != nil {
+			return fmt.Errorf("failed to process env files from directory %s: %v", runEnvFileDir, err)
+		}
+	}
+
+	runConfig, err := builder.Build(ctx, imageMetadata, envVarsMap, envVarValidator)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}
 
-	workloadManager := workloads.NewManagerFromRuntime(rt)
+	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
 	return workloadManager.RunWorkload(ctx, runConfig)
 }
 

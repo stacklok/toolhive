@@ -22,7 +22,6 @@ const HttpTimeout = 30 * time.Second
 
 // Dialer control function for validating addresses prior to connection
 func protectedDialerControl(_, address string, _ syscall.RawConn) error {
-
 	err := AddressReferencesPrivateIp(address)
 	if err != nil {
 		return err
@@ -38,10 +37,14 @@ type ValidatingTransport struct {
 
 // RoundTrip validates the request URL prior to forwarding
 func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Skip validation if INSECURE_DISABLE_URL_VALIDATION is set
+	if strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true") {
+		return t.Transport.RoundTrip(req)
+	}
+
 	// Check for valid URL specification
 	parsedUrl, err := url.Parse(req.URL.String())
 	if err != nil {
-		fmt.Print(err)
 		return nil, fmt.Errorf("the supplied URL %s is malformed", req.URL.String())
 	}
 

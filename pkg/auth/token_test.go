@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/lestrrat-go/jwx/v3/jwk"
 )
 
 const testKeyID = "test-key-1"
@@ -31,7 +31,7 @@ func TestTokenValidator(t *testing.T) {
 	publicKey := &privateKey.PublicKey
 
 	// Create a key set with the public key
-	key, err := jwk.FromRaw(publicKey)
+	key, err := jwk.Import(publicKey)
 	if err != nil {
 		t.Fatalf("Failed to create JWK from public key: %v", err)
 	}
@@ -75,8 +75,14 @@ func TestTokenValidator(t *testing.T) {
 		t.Fatalf("Failed to create token validator: %v", err)
 	}
 
+	// Ensure JWKS is registered before lookup
+	err = validator.ensureJWKSRegistered(ctx)
+	if err != nil {
+		t.Fatalf("Failed to register JWKS: %v", err)
+	}
+
 	// Force a refresh of the JWKS cache
-	_, err = validator.jwksClient.Get(ctx, jwksServer.URL)
+	_, err = validator.jwksClient.Lookup(ctx, jwksServer.URL)
 	if err != nil {
 		t.Fatalf("Failed to refresh JWKS cache: %v", err)
 	}
@@ -173,7 +179,7 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 	publicKey := &privateKey.PublicKey
 
 	// Create a key set with the public key
-	key, err := jwk.FromRaw(publicKey)
+	key, err := jwk.Import(publicKey)
 	if err != nil {
 		t.Fatalf("Failed to create JWK from public key: %v", err)
 	}
@@ -217,8 +223,14 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 		t.Fatalf("Failed to create token validator: %v", err)
 	}
 
+	// Ensure JWKS is registered before lookup
+	err = validator.ensureJWKSRegistered(ctx)
+	if err != nil {
+		t.Fatalf("Failed to register JWKS: %v", err)
+	}
+
 	// Force a refresh of the JWKS cache
-	_, err = validator.jwksClient.Get(ctx, jwksServer.URL)
+	_, err = validator.jwksClient.Lookup(ctx, jwksServer.URL)
 	if err != nil {
 		t.Fatalf("Failed to refresh JWKS cache: %v", err)
 	}
@@ -505,7 +517,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 	publicKey := &privateKey.PublicKey
 
 	// Create a key set with the public key
-	key, err := jwk.FromRaw(publicKey)
+	key, err := jwk.Import(publicKey)
 	if err != nil {
 		t.Fatalf("Failed to create JWK from public key: %v", err)
 	}
@@ -607,8 +619,14 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			t.Fatalf("Failed to sign token: %v", err)
 		}
 
+		// Ensure JWKS is registered before lookup
+		err = validator.ensureJWKSRegistered(ctx)
+		if err != nil {
+			t.Fatalf("Failed to register JWKS: %v", err)
+		}
+
 		// Force a refresh of the JWKS cache
-		_, err = validator.jwksClient.Get(ctx, validator.jwksURL)
+		_, err = validator.jwksClient.Lookup(ctx, validator.jwksURL)
 		if err != nil {
 			t.Fatalf("Failed to refresh JWKS cache: %v", err)
 		}

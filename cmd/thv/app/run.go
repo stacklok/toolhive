@@ -82,7 +82,7 @@ func init() {
 	// Add run flags
 	AddRunFlags(runCmd, &runFlags)
 
-	//runCmd.PreRunE = validateGroupFlag()
+	runCmd.PreRunE = validateGroupFlag()
 
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
 	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
@@ -144,8 +144,20 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %v", err)
 	}
-	workloadManager := workloads.NewManagerFromRuntime(rt)
+	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
 
+	if runFlags.Name != "" {
+		exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
+		if err != nil {
+			return fmt.Errorf("failed to check if workload exists: %v", err)
+		}
+		if exists {
+			return fmt.Errorf("workload with name '%s' already exists", runFlags.Name)
+		}
+	}
 	err = validateGroup(ctx, workloadManager, serverOrImage)
 	if err != nil {
 		return err
@@ -198,6 +210,16 @@ func runForeground(ctx context.Context, workloadManager workloads.Manager, runne
 func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serverOrImage string) error {
 	workloadName := runFlags.Name
 	if workloadName == "" {
+		// For protocol schemes without an explicit name, skip group validation.
+		// Protocol schemes (like npx://@scope/package) contain characters that are invalid
+		// for filesystem operations. The actual workload name will be generated during
+		// the build process (in BuildRunnerConfig) where it gets properly sanitized.
+		// Since the workload doesn't exist yet with the protocol URL as its name,
+		// and we can't check for conflicts without the final sanitized name,
+		// we defer group validation to when the workload is actually created.
+		if runner.IsImageProtocolScheme(serverOrImage) {
+			return nil
+		}
 		workloadName = serverOrImage
 	}
 
@@ -298,7 +320,10 @@ func runFromConfigFile(ctx context.Context) error {
 	runConfig.Deployer = rt
 
 	// Create workload manager
-	workloadManager := workloads.NewManagerFromRuntime(rt)
+	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %v", err)
+	}
 
 	// Run the workload based on foreground flag
 	if runFlags.Foreground {

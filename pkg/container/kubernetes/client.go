@@ -25,6 +25,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/tools/watch"
 
@@ -42,31 +43,86 @@ const (
 	mcpContainerName = "mcp"
 )
 
+// RuntimeName is the name identifier for the Kubernetes runtime
+const RuntimeName = "kubernetes"
+
 // Client implements the Deployer interface for container operations
 type Client struct {
-	runtimeType runtime.Type
-	client      kubernetes.Interface
+	runtimeType      runtime.Type
+	client           kubernetes.Interface
+	config           *rest.Config
+	platformDetector PlatformDetector
 	// waitForStatefulSetReadyFunc is used for testing to mock the waitForStatefulSetReady function
 	waitForStatefulSetReadyFunc func(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error
 }
 
+// getKubernetesConfig returns a Kubernetes REST config, trying in-cluster first,
+// then falling back to out-of-cluster configuration using kubeconfig
+func getKubernetesConfig() (*rest.Config, error) {
+	// Try in-cluster config first
+	config, err := rest.InClusterConfig()
+	if err == nil {
+		return config, nil
+	}
+
+	// If in-cluster config fails, try out-of-cluster config
+	// This will use the default kubeconfig loading rules:
+	// 1. KUBECONFIG environment variable
+	// 2. ~/.kube/config file
+	// 3. In-cluster config (already tried above)
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	configOverrides := &clientcmd.ConfigOverrides{}
+
+	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+	config, err = kubeConfig.ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kubernetes config (tried both in-cluster and out-of-cluster): %w", err)
+	}
+
+	return config, nil
+}
+
 // NewClient creates a new container client
 func NewClient(_ context.Context) (*Client, error) {
-	// creates the in-cluster config
-	config, err := rest.InClusterConfig()
+	// Get kubernetes config (in-cluster or out-of-cluster)
+	config, err := getKubernetesConfig()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create in-cluster config: %v", err)
+		return nil, fmt.Errorf("failed to create kubernetes config: %v", err)
 	}
+
 	// creates the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubernetes client: %v", err)
 	}
 
+	return NewClientWithConfig(clientset, config), nil
+}
+
+// NewClientWithConfig creates a new container client with a provided config
+// This is primarily used for testing with fake clients
+func NewClientWithConfig(clientset kubernetes.Interface, config *rest.Config) *Client {
 	return &Client{
-		runtimeType: runtime.TypeKubernetes,
-		client:      clientset,
-	}, nil
+		runtimeType:      runtime.TypeKubernetes,
+		client:           clientset,
+		config:           config,
+		platformDetector: NewDefaultPlatformDetector(),
+	}
+}
+
+// NewClientWithConfigAndPlatformDetector creates a new container client with a provided config and platform detector
+// This is primarily used for testing with fake clients and mock platform detectors
+func NewClientWithConfigAndPlatformDetector(
+	clientset kubernetes.Interface,
+	config *rest.Config,
+	platformDetector PlatformDetector,
+) *Client {
+	return &Client{
+		runtimeType:      runtime.TypeKubernetes,
+		client:           clientset,
+		config:           config,
+		platformDetector: platformDetector,
+	}
 }
 
 // AttachToWorkload implements runtime.Runtime.
@@ -107,10 +163,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 		SubResource("attach").
 		VersionedParams(attachOpts, scheme.ParameterCodec)
 
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		panic(fmt.Errorf("failed to create k8s config: %v", err))
-	}
+	config := c.config
 	// Create a SPDY executor
 	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
 	if err != nil {
@@ -247,13 +300,13 @@ func (c *Client) DeployWorkload(ctx context.Context,
 
 	// Ensure the pod template has required configuration (labels, etc.)
 	// Get a config to talk to the apiserver
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		return 0, fmt.Errorf("error getting in-cluster config for APIServer: %w", err)
-	}
+	cfg := c.config
 
 	// Detect platform type
-	platformDetector := NewDefaultPlatformDetector()
+	platformDetector := c.platformDetector
+	if platformDetector == nil {
+		platformDetector = NewDefaultPlatformDetector()
+	}
 	platform, err := platformDetector.DetectPlatform(cfg)
 	if err != nil {
 		return 0, fmt.Errorf("can't determine api server type: %w", err)

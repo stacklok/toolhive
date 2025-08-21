@@ -459,6 +459,11 @@ components:
             AuthorizeURL is the OAuth authorization endpoint URL
             Used for non-OIDC OAuth flows when issuer is not provided
           type: string
+        callback_port:
+          description: |-
+            CallbackPort is the specific port to use for the OAuth callback server
+            If not specified, a random available port will be used
+          type: integer
         client_id:
           description: ClientID is the OAuth client ID for authentication
           type: string
@@ -467,6 +472,13 @@ components:
             Issuer is the OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
             Used for OIDC discovery to find authorization and token endpoints
           type: string
+        oauth_params:
+          additionalProperties:
+            type: string
+          description: |-
+            OAuthParams contains additional OAuth parameters to include in the authorization request
+            These are server-specific parameters like "prompt", "response_mode", etc.
+          type: object
         scopes:
           description: |-
             Scopes are the OAuth scopes to request
@@ -605,6 +617,51 @@ components:
         predicate_type:
           type: string
       type: object
+    runner.RemoteAuthConfig:
+      description: RemoteAuthConfig contains OAuth configuration for remote MCP servers
+      properties:
+        authorizeURL:
+          type: string
+        callbackPort:
+          type: integer
+        clientID:
+          type: string
+        clientSecret:
+          type: string
+        clientSecretFile:
+          type: string
+        enableRemoteAuth:
+          type: boolean
+        envVars:
+          description: Environment variables for the client
+          items:
+            $ref: '#/components/schemas/registry.EnvVar'
+          type: array
+        headers:
+          description: Headers for HTTP requests
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+        issuer:
+          description: OAuth endpoint configuration (from registry)
+          type: string
+        oauthParams:
+          additionalProperties:
+            type: string
+          description: OAuth parameters for server-specific customization
+          type: object
+        scopes:
+          items:
+            type: string
+          type: array
+        skipBrowser:
+          type: boolean
+        timeout:
+          example: 5m
+          type: string
+        tokenURL:
+          type: string
+      type: object
     runner.RunConfig:
       properties:
         audit_config:
@@ -692,6 +749,11 @@ components:
           type: integer
         proxy_mode:
           $ref: '#/components/schemas/types.ProxyMode'
+        remote_auth_config:
+          $ref: '#/components/schemas/runner.RemoteAuthConfig'
+        remote_url:
+          description: RemoteURL is the URL of the remote MCP server (if running remotely)
+          type: string
         schema_version:
           description: SchemaVersion is the version of the RunConfig schema
           type: string
@@ -1341,6 +1403,22 @@ components:
             $ref: '#/components/schemas/core.Workload'
           type: array
           uniqueItems: false
+      type: object
+    v1.workloadStatusResponse:
+      description: Response containing workload status information
+      properties:
+        status:
+          description: Current status of the workload
+          type: string
+          x-enum-varnames:
+          - WorkloadStatusRunning
+          - WorkloadStatusStopped
+          - WorkloadStatusError
+          - WorkloadStatusStarting
+          - WorkloadStatusStopping
+          - WorkloadStatusUnhealthy
+          - WorkloadStatusRemoving
+          - WorkloadStatusUnknown
       type: object
 externalDocs:
   description: ""
@@ -2307,6 +2385,32 @@ paths:
                 type: string
           description: Not Found
       summary: Restart a workload
+      tags:
+      - workloads
+  /api/v1beta/workloads/{name}/status:
+    get:
+      description: Get the current status of a specific workload
+      parameters:
+      - description: Workload name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.workloadStatusResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+      summary: Get workload status
       tags:
       - workloads
   /api/v1beta/workloads/{name}/stop:

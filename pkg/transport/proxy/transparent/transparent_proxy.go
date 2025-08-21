@@ -69,6 +69,12 @@ type TransparentProxy struct {
 
 	// Listener for the HTTP server
 	listener net.Listener
+
+	// Whether the target URI is remote
+	isRemote bool
+
+	// Transport type (sse, streamable-http)
+	transportType string
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -80,6 +86,8 @@ func NewTransparentProxy(
 	prometheusHandler http.Handler,
 	authInfoHandler http.Handler,
 	enableHealthCheck bool,
+	isRemote bool,
+	transportType string,
 	middlewares ...types.MiddlewareFunction,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
@@ -92,6 +100,8 @@ func NewTransparentProxy(
 		prometheusHandler: prometheusHandler,
 		authInfoHandler:   authInfoHandler,
 		sessionManager:    session.NewManager(30*time.Minute, session.NewProxySession),
+		isRemote:          isRemote,
+		transportType:     transportType,
 	}
 
 	// Create MCP pinger and health checker only if enabled
@@ -125,7 +135,62 @@ func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
 	return tr.RoundTrip(req)
 }
 
+// manualForward manually forwards a request to the remote server using an HTTP client
+func (t *tracingTransport) manualForward(req *http.Request) (*http.Response, error) {
+	// Create a new request to the target URL
+	targetURL := t.p.targetURI + req.URL.Path
+	if req.URL.RawQuery != "" {
+		targetURL += "?" + req.URL.RawQuery
+	}
+
+	newReq, err := http.NewRequest(req.Method, targetURL, req.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new request: %w", err)
+	}
+
+	// Copy headers from the original request
+	for name, values := range req.Header {
+		for _, value := range values {
+			newReq.Header.Add(name, value)
+		}
+	}
+
+	// Create HTTP client and make the request
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	return client.Do(newReq)
+}
+
+// nolint:gocyclo // This function handles multiple request types and is complex by design
 func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.p.isRemote {
+		// Route based on transport type for remote servers
+		switch t.p.transportType {
+		case "sse":
+			// Use reverse proxy for SSE (streaming)
+			return t.forward(req)
+		case "streamable-http":
+			// Use manual HTTP client for streamable-http (request/response)
+			resp, err := t.manualForward(req)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					// Expected during shutdown or client disconnect—silently ignore
+					return nil, err
+				}
+				logger.Errorf("Failed to forward request: %v", err)
+				return nil, err
+			}
+			return resp, nil
+		default:
+			// Default to manual forwarding for unknown transport types
+			logger.Warnf("Unknown transport type '%s', using manual forwarding", t.p.transportType)
+			return t.manualForward(req)
+		}
+	}
+
+	// Original logic for local containers
 	reqBody := readRequestBody(req)
 
 	path := req.URL.Path
@@ -245,6 +310,7 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 }
 
 // Start starts the transparent proxy.
+// nolint:gocyclo // This function handles multiple startup scenarios and is complex by design
 func (p *TransparentProxy) Start(ctx context.Context) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
@@ -263,9 +329,17 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		return p.modifyForSessionID(resp)
 	}
 
-	// Create a handler that logs requests
+	// Create a handler that logs requests and strips /mcp path for remote servers
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger.Infof("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, targetURL)
+		// For remote servers, strip the /mcp path since they expect requests at the root
+		if p.isRemote && strings.HasPrefix(r.URL.Path, "/mcp") {
+			// Strip /mcp from the path for remote servers
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/mcp")
+			if r.URL.Path == "" {
+				r.URL.Path = "/"
+			}
+			logger.Infof("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, targetURL)
+		}
 		proxy.ServeHTTP(w, r)
 	})
 

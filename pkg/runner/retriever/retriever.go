@@ -38,7 +38,7 @@ func GetMCPServer(
 	serverOrImage string,
 	rawCACertPath string,
 	verificationType string,
-) (string, *registry.ImageMetadata, error) {
+) (string, registry.ServerMetadata, error) {
 	var imageMetadata *registry.ImageMetadata
 	var imageToUse string
 
@@ -68,7 +68,7 @@ func GetMCPServer(
 		if err == nil {
 			// Server found, check if it's remote
 			if server.IsRemote() {
-				return "", nil, fmt.Errorf("remote servers are not supported for running yet. Use 'thv proxy %s' instead", serverOrImage)
+				return serverOrImage, server, nil
 			}
 			// It's a container server, get the ImageMetadata
 			imageMetadata, err = provider.GetImageServer(serverOrImage)

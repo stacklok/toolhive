@@ -32,12 +32,14 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 
 	// Use retriever to properly fetch and prepare the MCP server
 	// TODO: make this configurable so we could warn or even fail
-	imageURL, imageMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled")
+	imageURL, serverMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
 	}
 
 	// Build run configuration
+	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
+
 	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to build run configuration: %v", err)), nil

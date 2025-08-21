@@ -14,6 +14,7 @@ import (
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -27,6 +28,16 @@ func init() {
 // mockWaitForStatefulSetReady is used to mock the waitForStatefulSetReady function in tests
 var mockWaitForStatefulSetReady = func(_ context.Context, _ kubernetes.Interface, _, _ string) error {
 	return nil
+}
+
+// mockPlatformDetector is used to mock the platform detector in tests
+type mockPlatformDetector struct {
+	platform Platform
+	err      error
+}
+
+func (m *mockPlatformDetector) DetectPlatform(_ *rest.Config) (Platform, error) {
+	return m.platform, m.err
 }
 
 // TestCreateContainerWithPodTemplatePatch tests that the pod template patch is correctly applied
@@ -161,12 +172,20 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 			}
 			clientset := fake.NewSimpleClientset(mockStatefulSet)
 
-			// Create a client with the fake clientset
-			client := &Client{
-				runtimeType:                 runtime.TypeKubernetes,
-				client:                      clientset,
-				waitForStatefulSetReadyFunc: mockWaitForStatefulSetReady,
+			// Create a fake config for testing
+			fakeConfig := &rest.Config{
+				Host: "https://fake-k8s-api.example.com",
 			}
+
+			// Create a mock platform detector that returns Kubernetes platform
+			mockDetector := &mockPlatformDetector{
+				platform: PlatformKubernetes,
+				err:      nil,
+			}
+
+			// Create a client with the fake clientset, config, and platform detector
+			client := NewClientWithConfigAndPlatformDetector(clientset, fakeConfig, mockDetector)
+			client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
 			// Create workload options with the pod template patch
 			options := runtime.NewDeployWorkloadOptions()
 			options.K8sPodTemplatePatch = tc.k8sPodTemplatePatch
@@ -691,12 +710,20 @@ func TestCreateContainerWithMCP(t *testing.T) {
 			}
 			clientset := fake.NewSimpleClientset(mockStatefulSet)
 
-			// Create a client with the fake clientset
-			client := &Client{
-				runtimeType:                 runtime.TypeKubernetes,
-				client:                      clientset,
-				waitForStatefulSetReadyFunc: mockWaitForStatefulSetReady,
+			// Create a fake config for testing
+			fakeConfig := &rest.Config{
+				Host: "https://fake-k8s-api.example.com",
 			}
+
+			// Create a mock platform detector that returns Kubernetes platform
+			mockDetector := &mockPlatformDetector{
+				platform: PlatformKubernetes,
+				err:      nil,
+			}
+
+			// Create a client with the fake clientset, config, and platform detector
+			client := NewClientWithConfigAndPlatformDetector(clientset, fakeConfig, mockDetector)
+			client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
 
 			// Deploy the workload
 			_, err := client.DeployWorkload(

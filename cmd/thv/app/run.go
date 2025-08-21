@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -26,7 +29,7 @@ var runCmd = &cobra.Command{
 	Short: "Run an MCP server",
 	Long: `Run an MCP server with the specified name, image, or protocol scheme.
 
-ToolHive supports four ways to run an MCP server:
+ToolHive supports five ways to run an MCP server:
 
 1. From the registry:
 
@@ -58,6 +61,14 @@ ToolHive supports four ways to run an MCP server:
 	   $ thv run --from-config <path>
 
    Runs an MCP server using a previously exported configuration file.
+
+5. Remote MCP server:
+
+	   $ thv run <URL> [--name <name>]
+
+   Runs a remote MCP server as a workload, proxying requests to the specified URL.
+   This allows remote MCP servers to be managed like local workloads with full
+   support for client configuration, tool filtering, import/export, etc.
 
 The container will be started with the specified transport mode and
 permission profile. Additional configuration can be provided via flags.`,
@@ -114,6 +125,7 @@ func cleanupAndWait(workloadManager workloads.Manager, name string, cancel conte
 	}
 }
 
+// nolint:gocyclo // This function is complex by design
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
@@ -123,11 +135,23 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get the name of the MCP server to run.
-	// This may be a server name from the registry, a container image, or a protocol scheme.
-	// When using --from-config, no args are required
+	// This may be a server name from the registry, a container image, a protocol scheme, or a remote URL.
 	var serverOrImage string
 	if len(args) > 0 {
 		serverOrImage = args[0]
+	}
+
+	// Check if the server name is actually a URL (remote server)
+	if serverOrImage != "" && networking.IsURL(serverOrImage) {
+		runFlags.RemoteURL = serverOrImage
+		// If no name is given, generate a name from the URL
+		if runFlags.Name == "" {
+			name, err := deriveRemoteName(serverOrImage)
+			if err != nil {
+				return err
+			}
+			runFlags.Name = name
+		}
 	}
 
 	// Process command arguments using os.Args to find everything after --
@@ -180,6 +204,28 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	return workloadManager.RunWorkloadDetached(ctx, runnerConfig)
+}
+
+// deriveRemoteName extracts a name from a remote URL
+func deriveRemoteName(remoteURL string) (string, error) {
+	parsedURL, err := url.Parse(remoteURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid remote URL: %w", err)
+	}
+
+	// Use the hostname as the base name
+	hostname := parsedURL.Hostname()
+	if hostname == "" {
+		return "", fmt.Errorf("could not extract hostname from URL: %s", remoteURL)
+	}
+
+	// Remove common TLDs and use the main domain name
+	parts := strings.Split(hostname, ".")
+	if len(parts) >= 2 {
+		return parts[len(parts)-2], nil
+	}
+
+	return hostname, nil
 }
 
 func runForeground(ctx context.Context, workloadManager workloads.Manager, runnerConfig *runner.RunConfig) error {

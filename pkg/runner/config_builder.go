@@ -53,6 +53,18 @@ func (b *RunConfigBuilder) WithImage(image string) *RunConfigBuilder {
 	return b
 }
 
+// WithRemoteURL sets the remote URL for the MCP server
+func (b *RunConfigBuilder) WithRemoteURL(remoteURL string) *RunConfigBuilder {
+	b.config.RemoteURL = remoteURL
+	return b
+}
+
+// WithRemoteAuth sets the remote authentication configuration
+func (b *RunConfigBuilder) WithRemoteAuth(config *RemoteAuthConfig) *RunConfigBuilder {
+	b.config.RemoteAuthConfig = config
+	return b
+}
+
 // WithName sets the MCP server name
 func (b *RunConfigBuilder) WithName(name string) *RunConfigBuilder {
 	b.config.Name = name

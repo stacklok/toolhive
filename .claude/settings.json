@@ -6,7 +6,13 @@
       "Bash(task lint)",
       "Bash(golangci-lint run:*)",
       "Bash(go doc:*)",
-      "WebFetch(domain:modelcontextprotocol.io)"
+      "WebFetch(domain:modelcontextprotocol.io)",
+      "Bash(pre-commit:*)",
+      "Bash(pre-commit run:*)",
+      "Bash(pre-commit install:*)",
+      "Bash(pre-commit autoupdate:*)",
+      "Bash(helm-docs:*)",
+      "Bash(codespell:*)"
     ],
     "deny": []
   }

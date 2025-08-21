@@ -64,6 +64,7 @@ func WorkloadRouter(
 	r.Post("/{name}/edit", routes.updateWorkload)
 	r.Post("/{name}/stop", routes.stopWorkload)
 	r.Post("/{name}/restart", routes.restartWorkload)
+	r.Get("/{name}/status", routes.getWorkloadStatus)
 	r.Get("/{name}/logs", routes.getLogsForWorkload)
 	r.Get("/{name}/export", routes.exportWorkload)
 	r.Delete("/{name}", routes.deleteWorkload)
@@ -558,6 +559,45 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// getWorkloadStatus
+//
+//	@Summary		Get workload status
+//	@Description	Get the current status of a specific workload
+//	@Tags			workloads
+//	@Produce		json
+//	@Param			name	path		string	true	"Workload name"
+//	@Success		200		{object}	workloadStatusResponse
+//	@Failure		404		{string}	string	"Not Found"
+//	@Router			/api/v1beta/workloads/{name}/status [get]
+func (s *WorkloadRoutes) getWorkloadStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := chi.URLParam(r, "name")
+
+	workload, err := s.workloadManager.GetWorkload(ctx, name)
+	if err != nil {
+		if errors.Is(err, runtime.ErrWorkloadNotFound) {
+			http.Error(w, "Workload not found", http.StatusNotFound)
+			return
+		} else if errors.Is(err, wt.ErrInvalidWorkloadName) {
+			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		logger.Errorf("Failed to get workload: %v", err)
+		http.Error(w, "Failed to get workload", http.StatusInternalServerError)
+		return
+	}
+
+	response := workloadStatusResponse{
+		Status: workload.Status,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "Failed to marshal workload status", http.StatusInternalServerError)
+		return
+	}
+}
+
 // exportWorkload
 //
 //	@Summary		Export workload configuration
@@ -601,6 +641,14 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 type workloadListResponse struct {
 	// List of container information for each workload
 	Workloads []core.Workload `json:"workloads"`
+}
+
+// workloadStatusResponse represents the response for getting workload status
+//
+//	@Description	Response containing workload status information
+type workloadStatusResponse struct {
+	// Current status of the workload
+	Status runtime.WorkloadStatus `json:"status"`
 }
 
 // updateRequest represents the request to update an existing workload

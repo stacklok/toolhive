@@ -134,6 +134,8 @@ func Initialize() {
 		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 		config.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout(time.Kitchen)
 		config.OutputPaths = []string{"stderr"}
+		config.DisableStacktrace = true
+		config.DisableCaller = true
 	} else {
 		config = zap.NewProductionConfig()
 		config.OutputPaths = []string{"stdout"}

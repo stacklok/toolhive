@@ -341,6 +341,43 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 	}
 }
 
+func TestFileStatusManager_ValidateRunningWorkload_Remote(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tempDir := t.TempDir()
+	mockRuntime := mocks.NewMockRuntime(ctrl)
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		runtime: mockRuntime,
+	}
+	ctx := context.Background()
+
+	// Create a remote workload with running status
+	remoteWorkload := core.Workload{
+		Name:          "remote-test",
+		Status:        rt.WorkloadStatusRunning,
+		Remote:        true,
+		StatusContext: "remote server",
+		CreatedAt:     time.Now(),
+	}
+
+	// Mock runtime should NOT be called for remote workloads
+	// (no expectations set, so any call would fail the test)
+
+	// Validate the remote workload
+	result, err := manager.validateRunningWorkload(ctx, "remote-test", remoteWorkload)
+	require.NoError(t, err)
+
+	// Should return the workload unchanged without calling runtime
+	assert.Equal(t, remoteWorkload.Name, result.Name)
+	assert.Equal(t, remoteWorkload.Status, result.Status)
+	assert.Equal(t, remoteWorkload.Remote, result.Remote)
+	assert.Equal(t, remoteWorkload.StatusContext, result.StatusContext)
+}
+
 func TestFileStatusManager_FullLifecycle(t *testing.T) {
 	t.Parallel()
 

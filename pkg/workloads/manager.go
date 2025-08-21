@@ -634,13 +634,11 @@ func (d *defaultManager) restartSingleWorkload(ctx context.Context, name string,
 
 // restartRemoteWorkload handles restarting a remote workload
 func (d *defaultManager) restartRemoteWorkload(ctx context.Context, childCtx context.Context, name string, runConfig *runner.RunConfig, foreground bool) error {
-	// Get comprehensive workload state (consistent with container workloads)
 	workloadState, err := d.getRemoteWorkloadState(childCtx, name, runConfig.BaseName)
 	if err != nil {
 		return err
 	}
 
-	// Check if already running (consistent with container workloads)
 	if d.isRemoteWorkloadAlreadyRunning(name, workloadState) {
 		return nil
 	}
@@ -650,7 +648,7 @@ func (d *defaultManager) restartRemoteWorkload(ctx context.Context, childCtx con
 		logger.Warnf("Failed to set workload %s status to starting: %v", name, err)
 	}
 
-	// Load runner configuration from state (consistent with container workloads)
+	// Load runner configuration from state
 	mcpRunner, err := d.loadRunnerFromState(childCtx, runConfig.BaseName)
 	if err != nil {
 		return fmt.Errorf("failed to load state for %s: %v", runConfig.BaseName, err)
@@ -658,40 +656,7 @@ func (d *defaultManager) restartRemoteWorkload(ctx context.Context, childCtx con
 	logger.Infof("Loaded configuration from state for %s", runConfig.BaseName)
 
 	// Start the remote workload using the loaded runner
-	return d.startRemoteWorkload(ctx, name, mcpRunner, foreground)
-}
-
-// startRemoteWorkload starts a remote workload using a pre-configured runner
-func (d *defaultManager) startRemoteWorkload(ctx context.Context, name string, mcpRunner *runner.Runner, foreground bool) error {
-	if foreground {
-		// Run in foreground mode
-		err := mcpRunner.Run(ctx)
-		if err != nil {
-			// Set status to error if the run failed
-			if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
-				logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
-			}
-			return fmt.Errorf("failed to start remote workload %s: %v", name, err)
-		}
-	} else {
-		// Run in detached mode
-		err := d.RunWorkloadDetached(ctx, mcpRunner.Config)
-		if err != nil {
-			// Set status to error if the run failed
-			if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
-				logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
-			}
-			return fmt.Errorf("failed to start remote workload %s: %v", name, err)
-		}
-	}
-
-	// Set status to running
-	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusRunning, ""); err != nil {
-		logger.Warnf("Failed to set workload %s status to running: %v", name, err)
-	}
-
-	logger.Infof("Remote workload %s started successfully", name)
-	return nil
+	return d.startWorkload(ctx, name, mcpRunner, foreground)
 }
 
 // restartContainerWorkload handles restarting a container-based workload
@@ -1006,7 +971,7 @@ func (d *defaultManager) ListWorkloadsInGroup(ctx context.Context, groupName str
 }
 
 // getRemoteWorkloadsFromState retrieves remote servers from the state store
-func (*defaultManager) getRemoteWorkloadsFromState(ctx context.Context, _ bool, labelFilters []string) ([]core.Workload, error) {
+func (d *defaultManager) getRemoteWorkloadsFromState(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error) {
 	// Create a state store
 	store, err := state.NewRunConfigStore(state.DefaultAppName)
 	if err != nil {
@@ -1029,24 +994,26 @@ func (*defaultManager) getRemoteWorkloadsFromState(ctx context.Context, _ bool, 
 
 	for _, name := range configNames {
 		// Load the run configuration
-		reader, err := store.GetReader(ctx, name)
+		runConfig, err := runner.LoadState(ctx, name)
 		if err != nil {
-			logger.Warnf("failed to read configuration for %s: %v", name, err)
-			continue
-		}
-
-		// Parse the run configuration
-		runConfig, err := runner.ReadJSON(reader)
-		if closeErr := reader.Close(); closeErr != nil {
-			logger.Warnf("failed to close reader for %s: %v", name, closeErr)
-		}
-		if err != nil {
-			logger.Warnf("failed to parse configuration for %s: %v", name, err)
+			logger.Warnf("failed to load state for %s: %v", name, err)
 			continue
 		}
 
 		// Only include remote servers (those with RemoteURL set)
 		if runConfig.RemoteURL == "" {
+			continue
+		}
+
+		// Check the status from the status file
+		workloadStatus, err := d.statuses.GetWorkload(ctx, name)
+		if err != nil {
+			logger.Warnf("failed to get status for remote workload %s: %v", name, err)
+			continue
+		}
+
+		// Apply listAll filter - only include running workloads unless listAll is true
+		if !listAll && workloadStatus.Status != rt.WorkloadStatusRunning {
 			continue
 		}
 
@@ -1057,15 +1024,15 @@ func (*defaultManager) getRemoteWorkloadsFromState(ctx context.Context, _ bool, 
 		workload := core.Workload{
 			Name:          name,
 			Package:       "remote",
-			Status:        rt.WorkloadStatusRunning, // Remote servers are always considered running
+			Status:        workloadStatus.Status,
 			URL:           runConfig.RemoteURL,
-			Port:          0, // Remote servers don't have a local port
+			Port:          runConfig.Port,
 			TransportType: transportType,
 			ToolType:      "remote",
 			Group:         runConfig.Group,
-			CreatedAt:     time.Now(), // Use current time since RunConfig doesn't store creation time
+			CreatedAt:     workloadStatus.CreatedAt,
 			Labels:        runConfig.ContainerLabels,
-			Remote:        true, // Mark as remote workload
+			Remote:        true,
 		}
 
 		// Apply label filtering

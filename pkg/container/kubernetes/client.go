@@ -43,6 +43,9 @@ const (
 	mcpContainerName = "mcp"
 )
 
+// RuntimeName is the name identifier for the Kubernetes runtime
+const RuntimeName = "kubernetes"
+
 // Client implements the Deployer interface for container operations
 type Client struct {
 	runtimeType      runtime.Type

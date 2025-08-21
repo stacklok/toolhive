@@ -37,6 +37,18 @@ import (
 // DnsImage is the default DNS image used for network permissions
 const DnsImage = "dockurr/dnsmasq:latest"
 
+// RuntimeName is the name identifier for the Docker runtime
+const RuntimeName = "docker"
+
+// IsAvailable checks if Docker is available by attempting to connect to the Docker daemon
+func IsAvailable() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := NewClient(ctx)
+	return err == nil
+}
+
 // Workloads
 const (
 	ToolhiveAuxiliaryWorkloadLabel = "toolhive-auxiliary-workload"

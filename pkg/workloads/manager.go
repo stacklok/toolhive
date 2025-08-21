@@ -165,34 +165,110 @@ func (d *defaultManager) StopWorkloads(ctx context.Context, names []string) (*er
 		}
 	}
 
-	// Find all containers first
-	var containers []*rt.ContainerInfo
+	// Create an errgroup to handle both container and remote workloads
+	eg, ctx := errgroup.WithContext(ctx)
+
+	// Process each workload
 	for _, name := range names {
-		container, err := d.runtime.GetWorkloadInfo(ctx, name)
-		if err != nil {
-			if errors.Is(err, rt.ErrWorkloadNotFound) {
-				// Log but don't fail the entire operation for not found containers
-				logger.Warnf("Warning: Failed to stop workload %s: %v", name, err)
-				continue
-			}
-			return nil, fmt.Errorf("failed to find workload %s: %v", name, err)
-		}
-
-		running := container.IsRunning()
-		if !running {
-			// Log but don't fail the entire operation for not running containers
-			logger.Warnf("Warning: Failed to stop workload %s: %v", name, ErrWorkloadNotRunning)
-			continue
-		}
-
-		// Transition workload to `stopping` state.
-		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
-			logger.Warnf("Failed to set workload %s status to stopping: %v", name, err)
-		}
-		containers = append(containers, &container)
+		name := name // capture loop variable
+		eg.Go(func() error {
+			return d.stopSingleWorkload(ctx, name)
+		})
 	}
 
-	return d.stopWorkloads(ctx, containers), nil
+	return eg, nil
+}
+
+// stopSingleWorkload stops a single workload (container or remote)
+func (d *defaultManager) stopSingleWorkload(ctx context.Context, name string) error {
+	// First, try to load the run configuration to check if it's a remote workload
+	runConfig, err := runner.LoadState(ctx, name)
+	if err != nil {
+		// If we can't load the state, it might be a container workload or the workload doesn't exist
+		// Try to stop it as a container workload
+		return d.stopContainerWorkload(ctx, name)
+	}
+
+	// Check if this is a remote workload
+	if runConfig.RemoteURL != "" {
+		return d.stopRemoteWorkload(ctx, name, runConfig)
+	}
+
+	// This is a container-based workload
+	return d.stopContainerWorkload(ctx, name)
+}
+
+// stopRemoteWorkload stops a remote workload
+func (d *defaultManager) stopRemoteWorkload(ctx context.Context, name string, runConfig *runner.RunConfig) error {
+	logger.Infof("Stopping remote workload %s...", name)
+
+	// Check if the workload is running by checking its status
+	workload, err := d.statuses.GetWorkload(ctx, name)
+	if err != nil {
+		// If we can't get the status, assume it's not running
+		logger.Warnf("Warning: Failed to get status for remote workload %s: %v", name, err)
+		return nil
+	}
+
+	if workload.Status != rt.WorkloadStatusRunning {
+		logger.Warnf("Warning: Remote workload %s is not running (status: %s)", name, workload.Status)
+		return nil
+	}
+
+	// Set status to stopping
+	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
+		logger.Warnf("Failed to set workload %s status to stopping: %v", name, err)
+	}
+
+	// Stop proxy if running
+	if runConfig.BaseName != "" {
+		d.stopProxyIfNeeded(name, runConfig.BaseName)
+	}
+
+	// For remote workloads, we only need to clean up client configurations
+	// The saved state should be preserved for restart capability
+	if err := removeClientConfigurations(name); err != nil {
+		logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+	} else {
+		logger.Infof("Client configurations for %s removed", name)
+	}
+
+	// Set status to stopped
+	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
+		logger.Warnf("Failed to set workload %s status to stopped: %v", name, err)
+	}
+
+	logger.Infof("Remote workload %s stopped successfully", name)
+	return nil
+}
+
+// stopContainerWorkload stops a container-based workload
+func (d *defaultManager) stopContainerWorkload(ctx context.Context, name string) error {
+	container, err := d.runtime.GetWorkloadInfo(ctx, name)
+	if err != nil {
+		if errors.Is(err, rt.ErrWorkloadNotFound) {
+			// Log but don't fail the entire operation for not found containers
+			logger.Warnf("Warning: Failed to stop workload %s: %v", name, err)
+			return nil
+		}
+		return fmt.Errorf("failed to find workload %s: %v", name, err)
+	}
+
+	running := container.IsRunning()
+	if !running {
+		// Log but don't fail the entire operation for not running containers
+		logger.Warnf("Warning: Failed to stop workload %s: %v", name, ErrWorkloadNotRunning)
+		return nil
+	}
+
+	// Transition workload to `stopping` state.
+	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
+		logger.Warnf("Failed to set workload %s status to stopping: %v", name, err)
+	}
+
+	// Use the existing stopWorkloads method for container workloads
+	eg := d.stopWorkloads(ctx, []*rt.ContainerInfo{&container})
+	return eg.Wait()
 }
 
 func (d *defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
@@ -346,6 +422,52 @@ func (d *defaultManager) deleteWorkload(ctx context.Context, name string) error 
 	childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
 	defer cancel()
 
+	// First, check if this is a remote workload by trying to load its run configuration
+	runConfig, err := runner.LoadState(childCtx, name)
+	if err != nil {
+		// If we can't load the state, it might be a container workload or the workload doesn't exist
+		// Continue with the container-based deletion logic
+		return d.deleteContainerWorkload(childCtx, ctx, name)
+	}
+
+	// If this is a remote workload (has RemoteURL), handle it differently
+	if runConfig.RemoteURL != "" {
+		return d.deleteRemoteWorkload(childCtx, ctx, name, runConfig)
+	}
+
+	// This is a container-based workload, use the existing logic
+	return d.deleteContainerWorkload(childCtx, ctx, name)
+}
+
+// deleteRemoteWorkload handles deletion of a remote workload
+func (d *defaultManager) deleteRemoteWorkload(childCtx, ctx context.Context, name string, runConfig *runner.RunConfig) error {
+	logger.Infof("Removing remote workload %s...", name)
+
+	// Set status to removing
+	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusRemoving, ""); err != nil {
+		logger.Warnf("Failed to set workload %s status to removing: %v", name, err)
+	}
+
+	// Stop proxy if running
+	if runConfig.BaseName != "" {
+		d.stopProxyIfNeeded(name, runConfig.BaseName)
+	}
+
+	// Clean up associated resources
+	d.cleanupWorkloadResources(childCtx, name, runConfig.BaseName)
+
+	// Remove the workload status from the status store
+	if err := d.statuses.DeleteWorkloadStatus(ctx, name); err != nil {
+		logger.Warnf("failed to delete workload status for %s: %v", name, err)
+	}
+
+	logger.Infof("Remote workload %s removed successfully", name)
+	return nil
+}
+
+// deleteContainerWorkload handles deletion of a container-based workload (existing logic)
+func (d *defaultManager) deleteContainerWorkload(childCtx, ctx context.Context, name string) error {
+
 	// Find and validate the container
 	container, err := d.getWorkloadContainer(childCtx, ctx, name)
 	if err != nil {
@@ -493,6 +615,87 @@ func (d *defaultManager) restartSingleWorkload(ctx context.Context, name string,
 	childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
 	defer cancel()
 
+	// First, try to load the run configuration to check if it's a remote workload
+	runConfig, err := runner.LoadState(childCtx, name)
+	if err != nil {
+		// If we can't load the state, it might be a container workload or the workload doesn't exist
+		// Try to restart it as a container workload
+		return d.restartContainerWorkload(ctx, childCtx, name, foreground)
+	}
+
+	// Check if this is a remote workload
+	if runConfig.RemoteURL != "" {
+		return d.restartRemoteWorkload(ctx, childCtx, name, runConfig, foreground)
+	}
+
+	// This is a container-based workload
+	return d.restartContainerWorkload(ctx, childCtx, name, foreground)
+}
+
+// restartRemoteWorkload handles restarting a remote workload
+func (d *defaultManager) restartRemoteWorkload(ctx context.Context, childCtx context.Context, name string, runConfig *runner.RunConfig, foreground bool) error {
+	// Get comprehensive workload state (consistent with container workloads)
+	workloadState, err := d.getRemoteWorkloadState(childCtx, name, runConfig.BaseName)
+	if err != nil {
+		return err
+	}
+
+	// Check if already running (consistent with container workloads)
+	if d.isRemoteWorkloadAlreadyRunning(name, workloadState) {
+		return nil
+	}
+
+	// Set status to starting
+	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStarting, ""); err != nil {
+		logger.Warnf("Failed to set workload %s status to starting: %v", name, err)
+	}
+
+	// Load runner configuration from state (consistent with container workloads)
+	mcpRunner, err := d.loadRunnerFromState(childCtx, runConfig.BaseName)
+	if err != nil {
+		return fmt.Errorf("failed to load state for %s: %v", runConfig.BaseName, err)
+	}
+	logger.Infof("Loaded configuration from state for %s", runConfig.BaseName)
+
+	// Start the remote workload using the loaded runner
+	return d.startRemoteWorkload(ctx, name, mcpRunner, foreground)
+}
+
+// startRemoteWorkload starts a remote workload using a pre-configured runner
+func (d *defaultManager) startRemoteWorkload(ctx context.Context, name string, mcpRunner *runner.Runner, foreground bool) error {
+	if foreground {
+		// Run in foreground mode
+		err := mcpRunner.Run(ctx)
+		if err != nil {
+			// Set status to error if the run failed
+			if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
+				logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
+			}
+			return fmt.Errorf("failed to start remote workload %s: %v", name, err)
+		}
+	} else {
+		// Run in detached mode
+		err := d.RunWorkloadDetached(ctx, mcpRunner.Config)
+		if err != nil {
+			// Set status to error if the run failed
+			if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
+				logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
+			}
+			return fmt.Errorf("failed to start remote workload %s: %v", name, err)
+		}
+	}
+
+	// Set status to running
+	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusRunning, ""); err != nil {
+		logger.Warnf("Failed to set workload %s status to running: %v", name, err)
+	}
+
+	logger.Infof("Remote workload %s started successfully", name)
+	return nil
+}
+
+// restartContainerWorkload handles restarting a container-based workload
+func (d *defaultManager) restartContainerWorkload(ctx context.Context, childCtx context.Context, name string, foreground bool) error {
 	// Get workload state information
 	workloadState, err := d.getWorkloadState(childCtx, name)
 	if err != nil {
@@ -560,10 +763,41 @@ func (d *defaultManager) getWorkloadState(ctx context.Context, name string) (*wo
 	return workloadSt, nil
 }
 
+// getRemoteWorkloadState retrieves the current state of a remote workload
+func (d *defaultManager) getRemoteWorkloadState(ctx context.Context, name, baseName string) (*workloadState, error) {
+	workloadSt := &workloadState{
+		BaseName: baseName,
+	}
+
+	// Check the workload status
+	workload, err := d.statuses.GetWorkload(ctx, name)
+	if err != nil {
+		// If we can't get the status, assume it's not running
+		logger.Warnf("Warning: Failed to get status for remote workload %s: %v", name, err)
+		workloadSt.Running = false
+	} else {
+		workloadSt.Running = (workload.Status == rt.WorkloadStatusRunning)
+	}
+
+	// Check if the detached process is actually running
+	workloadSt.ProxyRunning = proxy.IsRunning(baseName)
+
+	return workloadSt, nil
+}
+
 // isWorkloadAlreadyRunning checks if the workload is already fully running
 func (*defaultManager) isWorkloadAlreadyRunning(name string, workloadSt *workloadState) bool {
 	if workloadSt.Running && workloadSt.ProxyRunning {
 		logger.Infof("Container %s and proxy are already running", name)
+		return true
+	}
+	return false
+}
+
+// isRemoteWorkloadAlreadyRunning checks if the remote workload is already fully running
+func (*defaultManager) isRemoteWorkloadAlreadyRunning(name string, workloadSt *workloadState) bool {
+	if workloadSt.Running && workloadSt.ProxyRunning {
+		logger.Infof("Remote workload %s is already running (status: %v, process: %v)", name, workloadSt.Running, workloadSt.ProxyRunning)
 		return true
 	}
 	return false
@@ -831,6 +1065,7 @@ func (*defaultManager) getRemoteWorkloadsFromState(ctx context.Context, _ bool, 
 			Group:         runConfig.Group,
 			CreatedAt:     time.Now(), // Use current time since RunConfig doesn't store creation time
 			Labels:        runConfig.ContainerLabels,
+			Remote:        true, // Mark as remote workload
 		}
 
 		// Apply label filtering

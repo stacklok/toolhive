@@ -15,7 +15,7 @@ Restart a tooling server
 
 ### Synopsis
 
-Restart a running tooling server managed by ToolHive. If the server is not running, it will be started.
+Restart a running tooling server managed by ToolHive. If the server is not running, it will be started. Supports both container-based and remote MCP servers.
 
 ```
 thv restart [workload-name] [flags]

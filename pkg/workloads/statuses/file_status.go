@@ -94,13 +94,30 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		return core.Workload{}, err
 	}
 
-	// If file was found and workload is running, validate against runtime
-	if fileFound && result.Status == rt.WorkloadStatusRunning {
-		return f.validateRunningWorkload(ctx, workloadName, result)
-	}
-
-	// If file was found and workload is not running, return file data
+	// If file was found, check if this is a remote workload
 	if fileFound {
+		// Check if this is a remote workload by checking the run configuration file
+		stateDir, err := xdg.DataFile("toolhive/state")
+		if err == nil {
+			runConfigPath := filepath.Join(stateDir, workloadName+".json")
+			if _, err := os.Stat(runConfigPath); err == nil {
+				// Read the run config file to check if it's a remote workload
+				data, err := os.ReadFile(runConfigPath)
+				if err == nil {
+					// Check if the JSON contains "remote_url" field
+					if strings.Contains(string(data), `"remote_url"`) {
+						result.Remote = true
+					}
+				}
+			}
+		}
+
+		// If workload is running, validate against runtime
+		if result.Status == rt.WorkloadStatusRunning {
+			return f.validateRunningWorkload(ctx, workloadName, result)
+		}
+
+		// Return file data
 		return result, nil
 	}
 
@@ -414,6 +431,22 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 				CreatedAt:     statusFile.CreatedAt,
 			}
 
+			// Check if this is a remote workload by checking the run configuration file
+			stateDir, err := xdg.DataFile("toolhive/state")
+			if err == nil {
+				runConfigPath := filepath.Join(stateDir, workloadName+".json")
+				if _, err := os.Stat(runConfigPath); err == nil {
+					// Read the run config file to check if it's a remote workload
+					data, err := os.ReadFile(runConfigPath)
+					if err == nil {
+						// Check if the JSON contains "remote_url" field
+						if strings.Contains(string(data), `"remote_url"`) {
+							workload.Remote = true
+						}
+					}
+				}
+			}
+
 			workloads[workloadName] = workload
 			return nil
 		})
@@ -481,6 +514,14 @@ func (f *fileStatusManager) handleRuntimeMismatch(
 func (f *fileStatusManager) handleRuntimeMissing(
 	ctx context.Context, workloadName string, fileWorkload core.Workload,
 ) (core.Workload, error) {
+	// Check if this is a remote workload using the Remote field
+	if fileWorkload.Remote {
+		// Remote workloads don't exist in the container runtime, so it's normal for them to be missing
+		// Don't mark them as unhealthy
+		logger.Infof("Remote workload %s is file-only and should not be marked as unhealthy", workloadName)
+		return fileWorkload, nil
+	}
+
 	if fileWorkload.Status == rt.WorkloadStatusRunning || fileWorkload.Status == rt.WorkloadStatusStopped {
 		// The workload cannot be running or stopped if the runtime container is not found
 		contextMsg := fmt.Sprintf("workload %s not found in runtime, marking as unhealthy", workloadName)

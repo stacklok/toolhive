@@ -323,7 +323,7 @@ func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses enviro
 		{levelWarn, "warn message %s and %s", "key", "value", "warn message key and value"},
 		{levelError, "error message %s and %s", "key", "value", "error message key and value"},
 		{levelDPanic, "error message %s and %s", "key", "value", "dpanic message key and value"},
-		{levelPanic, "error message %s and %s", "key", "value", "panic message key and value"},
+		{levelPanic, "panic message %s and %s", "key", "value", "panic message key and value"},
 	}
 
 	for _, tc := range formattedLogTestCases { //nolint:paralleltest // Uses environment variables

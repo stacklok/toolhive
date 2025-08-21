@@ -752,7 +752,7 @@ func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *cor
 
 	// Set MCPServer instance as the owner and controller
 	if err := controllerutil.SetControllerReference(m, svc, r.Scheme); err != nil {
-		logger.Errorf("Failed to set controller reference for Service %v", err)
+		logger.Errorf("Failed to set controller reference for Service: %v", err)
 		return nil
 	}
 	return svc

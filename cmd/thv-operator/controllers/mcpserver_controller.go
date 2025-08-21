@@ -665,7 +665,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 
 	// Set MCPServer instance as the owner and controller
 	if err := controllerutil.SetControllerReference(m, dep, r.Scheme); err != nil {
-		logger.Errorf("Failed to set controller reference for Deployment %v", err)
+		logger.Errorf("Failed to set controller reference for Deployment: %v", err)
 		return nil
 	}
 	return dep

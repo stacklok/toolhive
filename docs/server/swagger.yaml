@@ -779,6 +779,18 @@ components:
           description: ThvCABundle is the path to the CA certificate bundle for ToolHive
             HTTP operations
           type: string
+        tool_override:
+          additionalProperties:
+            $ref: '#/components/schemas/runner.ToolOverride'
+          description: |-
+            ToolOverride is the map of tool names to override. Tools to override are
+            specified as ToolOverride structs.
+          type: object
+        tool_override_file:
+          description: |-
+            ToolOverrideFile is the path to a file containing tool overrides.
+            The file is a JSON struct mapping actual names to ToolOverride structs.
+          type: string
         tools_filter:
           description: ToolsFilter is the list of tools to filter
           items:
@@ -801,6 +813,15 @@ components:
             type: string
           type: array
           uniqueItems: false
+      type: object
+    runner.ToolOverride:
+      properties:
+        description:
+          description: Description is the redefined description of the tool
+          type: string
+        name:
+          description: Name is the redefined name of the tool
+          type: string
       type: object
     runtime.WorkloadStatus:
       description: Status is the current status of the workload.

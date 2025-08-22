@@ -17,7 +17,79 @@ var errToolNameNotFound = errors.New("tool name not found")
 var errToolNotInFilter = errors.New("tool not in filter")
 var errBug = errors.New("there's a bug")
 
-// NewToolFilterMiddleware creates an HTTP middleware that parses SSE responses
+// toolOverrideEntry is a struct that represents a tool override entry.
+type toolOverrideEntry struct {
+	ActualName          string
+	OverrideName        string
+	OverrideDescription string
+}
+
+// toolMiddlewareConfig is a helper struct used to configure the tool middleware,
+// and it's meant to map from a tool's actual name to a config entry.
+//
+// The two separate structs are necessary because it must be possible to specify
+// tool overrides without tool filtering.
+//
+// Assume a User only specified an override for a single tool out of a list of
+// n tools; in such a case, it would become unclear whether the tool is the only
+// one allowed or is the only one overridden.
+//
+// Sufficient information could be represented in a more complex structure, but
+// this gets the job and is easy enough to understand.
+type toolMiddlewareConfig struct {
+	filterTools          map[string]struct{}
+	actualToUserOverride map[string]toolOverrideEntry
+	userToActualOverride map[string]toolOverrideEntry
+}
+
+// ToolMiddlewareOption is a function that can be used to configure the tool
+// middleware.
+type ToolMiddlewareOption func(*toolMiddlewareConfig) error
+
+// WithToolsFilter is a function that can be used to configure the tool
+// middleware to use a filter list of tools.
+func WithToolsFilter(toolsFilter ...string) ToolMiddlewareOption {
+	return func(mw *toolMiddlewareConfig) error {
+		for _, tf := range toolsFilter {
+			if tf == "" {
+				return fmt.Errorf("tool name cannot be empty")
+			}
+
+			mw.filterTools[tf] = struct{}{}
+		}
+
+		return nil
+	}
+}
+
+// WithToolsOverride is a function that can be used to configure the tool
+// middleware to use a map of tools to override the actual list of tools.
+//
+// If an empty string is provided for either overrideName or overrideDescription,
+// that field will be left unchanged. An error is returned if actualName is empty.
+func WithToolsOverride(actualName string, overrideName string, overrideDescription string) ToolMiddlewareOption {
+	return func(mw *toolMiddlewareConfig) error {
+		if actualName == "" {
+			return fmt.Errorf("tool name cannot be empty")
+		}
+
+		if overrideName == "" && overrideDescription == "" {
+			return fmt.Errorf("override name and description cannot both be empty")
+		}
+
+		entry := toolOverrideEntry{
+			ActualName:          actualName,
+			OverrideName:        overrideName,        // empty string means no override
+			OverrideDescription: overrideDescription, // empty string means no override
+		}
+		mw.actualToUserOverride[actualName] = entry
+		mw.userToActualOverride[overrideName] = entry
+
+		return nil
+	}
+}
+
+// NewListToolsMappingMiddleware creates an HTTP middleware that parses SSE responses
 // and plain JSON objects to extract tool names from JSON-RPC messages containing
 // tool lists or tool calls.
 //
@@ -25,21 +97,23 @@ var errBug = errors.New("there's a bug")
 // - event: message
 // - data: {"jsonrpc":"2.0","id":X,"result":{"tools":[...]}}
 //
-// When it finds such messages, it prints the name of each tool in the list.
-// If filterTools is provided, only tools in that list will be logged.
-// If filterTools is nil or empty, all tools will be logged.
-//
-// This middleware is designed to be used ONLY when tool filtering is enabled,
-// and expects the list of tools to be "correct" (i.e. not empty and not
-// containing nonexisting tools).
-func NewToolFilterMiddleware(filterTools []string) (types.MiddlewareFunction, error) {
-	if len(filterTools) == 0 {
-		return nil, fmt.Errorf("tools list for filtering is empty")
+// This middleware is designed to be used ONLY when tool filtering or
+// override are enabled, and expects the list of tools to be "correct"
+// (i.e. not empty and not containing nonexisting tools).
+func NewListToolsMappingMiddleware(opts ...ToolMiddlewareOption) (types.MiddlewareFunction, error) {
+	config := &toolMiddlewareConfig{
+		filterTools:          make(map[string]struct{}),
+		actualToUserOverride: make(map[string]toolOverrideEntry),
+		userToActualOverride: make(map[string]toolOverrideEntry),
+	}
+	for _, opt := range opts {
+		if err := opt(config); err != nil {
+			return nil, err
+		}
 	}
 
-	toolsMap := make(map[string]struct{})
-	for _, tool := range filterTools {
-		toolsMap[tool] = struct{}{}
+	if len(config.filterTools) == 0 && len(config.actualToUserOverride) == 0 {
+		return nil, fmt.Errorf("tools list for filtering or overriding is empty")
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -54,7 +128,7 @@ func NewToolFilterMiddleware(filterTools []string) (types.MiddlewareFunction, er
 			// modify it before returning it to the client.
 			rw := &toolFilterWriter{
 				ResponseWriter: w,
-				filterTools:    toolsMap,
+				filterTools:    config.filterTools,
 			}
 
 			// Call the next handler
@@ -63,24 +137,30 @@ func NewToolFilterMiddleware(filterTools []string) (types.MiddlewareFunction, er
 	}, nil
 }
 
-// NewToolCallFilterMiddleware creates an HTTP middleware that parses tool call
+// NewToolCallMappingMiddleware creates an HTTP middleware that parses tool call
 // requests and filters out tools that are not in the filter list.
 //
 // The middleware looks for JSON-RPC messages with:
 // - method: tool/call
 // - params: {"name": "tool_name"}
 //
-// This middleware is designed to be used ONLY when tool filtering is enabled,
-// and expects the list of tools to be "correct" (i.e. not empty and not
-// containing nonexisting tools).
-func NewToolCallFilterMiddleware(filterTools []string) (types.MiddlewareFunction, error) {
-	if len(filterTools) == 0 {
-		return nil, fmt.Errorf("tools list for filtering is empty")
+// This middleware is designed to be used ONLY when tool filtering or override
+// is enabled, and expects the list of tools to be "correct" (i.e. not empty
+// and not containing nonexisting tools).
+func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.MiddlewareFunction, error) {
+	config := &toolMiddlewareConfig{
+		filterTools:          make(map[string]struct{}),
+		actualToUserOverride: make(map[string]toolOverrideEntry),
+		userToActualOverride: make(map[string]toolOverrideEntry),
+	}
+	for _, opt := range opts {
+		if err := opt(config); err != nil {
+			return nil, err
+		}
 	}
 
-	toolsMap := make(map[string]struct{})
-	for _, tool := range filterTools {
-		toolsMap[tool] = struct{}{}
+	if len(config.filterTools) == 0 && len(config.actualToUserOverride) == 0 {
+		return nil, fmt.Errorf("tools list for filtering or overriding is empty")
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -102,7 +182,7 @@ func NewToolCallFilterMiddleware(filterTools []string) (types.MiddlewareFunction
 			var toolCallRequest toolCallRequest
 			err = json.Unmarshal(bodyBytes, &toolCallRequest)
 			if err == nil && toolCallRequest.Params != nil && toolCallRequest.Method == "tools/call" {
-				err = processToolCallRequest(toolsMap, toolCallRequest)
+				err = processToolCallRequest(config.filterTools, toolCallRequest)
 
 				// NOTE: ideally, trying to call that was filtered out by config should be
 				// equivalent to calling a nonexisting tool; in such cases and when the SSE
@@ -186,7 +266,7 @@ type toolsListResponse struct {
 	ID      any    `json:"id"`
 	Result  struct {
 		Tools *[]map[string]any `json:"tools"`
-	} `json:"result,omitempty"`
+	} `json:"result"`
 }
 
 type toolCallRequest struct {

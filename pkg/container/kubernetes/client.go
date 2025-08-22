@@ -41,6 +41,8 @@ const (
 	UnknownStatus = "unknown"
 	// mcpContainerName is the name of the MCP container. This is a known constant.
 	mcpContainerName = "mcp"
+	// defaultNamespace is the default Kubernetes namespace
+	defaultNamespace = "default"
 )
 
 // RuntimeName is the name identifier for the Kubernetes runtime
@@ -54,6 +56,8 @@ type Client struct {
 	platformDetector PlatformDetector
 	// waitForStatefulSetReadyFunc is used for testing to mock the waitForStatefulSetReady function
 	waitForStatefulSetReadyFunc func(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error
+	// namespaceFunc is used for testing to override namespace detection
+	namespaceFunc func() string
 }
 
 // getKubernetesConfig returns a Kubernetes REST config, trying in-cluster first,
@@ -141,7 +145,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 	// as it requires setting up an exec session to the pod
 
 	// First, we need to find the pod associated with the workloadID (which is actually the statefulset name)
-	namespace := getCurrentNamespace()
+	namespace := c.getCurrentNamespace()
 	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app=%s", workloadName),
 	})
@@ -168,7 +172,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 	req := c.client.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
-		Namespace(getCurrentNamespace()).
+		Namespace(c.getCurrentNamespace()).
 		SubResource("attach").
 		VersionedParams(attachOpts, scheme.ParameterCodec)
 
@@ -229,7 +233,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 // GetWorkloadLogs implements runtime.Runtime.
 func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follow bool) (string, error) {
 	// In Kubernetes, workloadID is the statefulset name
-	namespace := getCurrentNamespace()
+	namespace := c.getCurrentNamespace()
 
 	// Get the pods associated with this statefulset
 	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
@@ -283,7 +287,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	options *runtime.DeployWorkloadOptions,
 	_ bool,
 ) (int, error) {
-	namespace := getCurrentNamespace()
+	namespace := c.getCurrentNamespace()
 	containerLabels["app"] = containerName
 	containerLabels["toolhive"] = "true"
 
@@ -387,7 +391,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 // GetWorkloadInfo implements runtime.Runtime.
 func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runtime.ContainerInfo, error) {
 	// In Kubernetes, workloadID is the statefulset name
-	namespace := getCurrentNamespace()
+	namespace := c.getCurrentNamespace()
 
 	// Get the statefulset
 	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadName, metav1.GetOptions{})
@@ -455,7 +459,7 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runt
 // IsWorkloadRunning implements runtime.Runtime.
 func (c *Client) IsWorkloadRunning(ctx context.Context, workloadName string) (bool, error) {
 	// In Kubernetes, workloadID is the statefulset name
-	namespace := getCurrentNamespace()
+	namespace := c.getCurrentNamespace()
 
 	// Get the statefulset
 	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadName, metav1.GetOptions{})
@@ -473,10 +477,20 @@ func (c *Client) IsWorkloadRunning(ctx context.Context, workloadName string) (bo
 // ListWorkloads implements runtime.Runtime.
 func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, error) {
 	// Create label selector for toolhive containers
-	labelSelector := "toolhive=true"
+	// Only show main MCP server pods (not proxy pods) by requiring toolhive-tool-type label
+	labelSelector := "toolhive=true,toolhive-tool-type"
+
+	// Determine namespace to search in
+	var namespace string
+	if strings.TrimSpace(os.Getenv("TOOLHIVE_KUBERNETES_ALL_NAMESPACES")) != "" {
+		// Search in all namespaces
+		namespace = ""
+	} else {
+		// Search in current namespace only
+		namespace = c.getCurrentNamespace()
+	}
 
 	// List pods with the toolhive label
-	namespace := getCurrentNamespace()
 	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
@@ -531,7 +545,7 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 // RemoveWorkload implements runtime.Runtime.
 func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error {
 	// In Kubernetes, we remove a workload by deleting the statefulset
-	namespace := getCurrentNamespace()
+	namespace := c.getCurrentNamespace()
 
 	// Delete the statefulset
 	deleteOptions := metav1.DeleteOptions{}
@@ -1239,12 +1253,52 @@ func getNamespaceFromEnv() (string, error) {
 	return ns, nil
 }
 
+// getNamespaceFromKubeConfig attempts to get the namespace from the current kubectl context
+func getNamespaceFromKubeConfig() (string, error) {
+	// Use the same loading rules as the main client
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	configOverrides := &clientcmd.ConfigOverrides{}
+
+	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+
+	// Get the raw config to access the current context
+	rawConfig, err := kubeConfig.RawConfig()
+	if err != nil {
+		return "", fmt.Errorf("failed to load kubeconfig: %w", err)
+	}
+
+	// Get the current context
+	currentContext := rawConfig.CurrentContext
+	if currentContext == "" {
+		return "", fmt.Errorf("no current context set in kubeconfig")
+	}
+
+	// Get the context details
+	contextConfig, exists := rawConfig.Contexts[currentContext]
+	if !exists {
+		return "", fmt.Errorf("current context %q not found in kubeconfig", currentContext)
+	}
+
+	// Return the namespace from the context, or empty string if not set
+	if contextConfig.Namespace == "" {
+		return "", fmt.Errorf("no namespace set in current context %q", currentContext)
+	}
+
+	return contextConfig.Namespace, nil
+}
+
 // getCurrentNamespace returns the namespace the pod is running in.
 // It tries multiple methods in order:
-// 1. Reading from the service account token file
+// 1. Reading from the service account token file (when running inside a pod)
 // 2. Getting the namespace from environment variables
-// 3. Falling back to "default" if both methods fail
-func getCurrentNamespace() string {
+// 3. Getting the namespace from the current kubectl context
+// 4. Falling back to "default" if all methods fail
+func (c *Client) getCurrentNamespace() string {
+	// If a custom namespace function is set (for testing), use it
+	if c.namespaceFunc != nil {
+		return c.namespaceFunc()
+	}
+
 	// Method 1: Try to read from the service account namespace file
 	ns, err := getNamespaceFromServiceAccount()
 	if err == nil {
@@ -1257,6 +1311,12 @@ func getCurrentNamespace() string {
 		return ns
 	}
 
-	// Method 3: Fall back to default
-	return "default"
+	// Method 3: Try to get the namespace from the current kubectl context
+	ns, err = getNamespaceFromKubeConfig()
+	if err == nil {
+		return ns
+	}
+
+	// Method 4: Fall back to default
+	return defaultNamespace
 }

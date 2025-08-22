@@ -54,7 +54,9 @@ jobs:
           # Verify checksum if available
           if [ "${{ steps.get-release.outputs.has_checksum }}" = "true" ]; then
             echo "Verifying checksum..."
-            cd /tmp && sha256sum -c registry.json.sha256
+            pushd /tmp
+            sha256sum -c registry.json.sha256
+            popd
             echo "✅ Checksum verification passed"
           else
             echo "⚠️ No checksum available for verification"

@@ -669,8 +669,6 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 	// Then, merge with file workloads, validating running workloads
 	for name, fileWorkload := range fileWorkloads {
 
-		logger.Infof("fileWorkload: %+v", fileWorkload)
-
 		if fileWorkload.Remote { // Remote workloads are not managed by the container runtime
 			continue
 		}

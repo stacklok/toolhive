@@ -50,6 +50,8 @@ const (
 	AmpVSCodeInsider MCPClient = "amp-vscode-insider"
 	// AmpWindsurf represents the Sourcegraph Amp extension for Windsurf.
 	AmpWindsurf MCPClient = "amp-windsurf"
+	// LMStudio represents the LM Studio application.
+	LMStudio MCPClient = "lm-studio"
 )
 
 // Extension is extension of the client config file.
@@ -324,6 +326,21 @@ var supportedClientIntegrations = []mcpClientConfig{
 			types.TransportTypeStreamableHTTP: "http",
 		},
 		IsTransportTypeFieldSupported: true,
+	},
+	{
+		ClientType:           LMStudio,
+		Description:          "LM Studio application",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".lmstudio"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
 	},
 }
 

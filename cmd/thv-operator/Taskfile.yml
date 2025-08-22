@@ -23,6 +23,7 @@ vars:
       else
         echo "docker"
       fi
+  KEYCLOAK_VERSION: '26.3.2'
 
 
 tasks:
@@ -263,3 +264,49 @@ tasks:
         --namespace {{.OCP_PROJECT}} \
         --create-namespace \
         {{ .CLI_ARGS }}
+
+  # Keycloak tasks
+  keycloak:install-operator:
+    desc: Install Keycloak Operator using official manifests (v{{.KEYCLOAK_VERSION}})
+    cmds:
+      - echo "Creating keycloak namespace..."
+      - kubectl create namespace keycloak --dry-run=client -o yaml --kubeconfig kconfig.yaml | kubectl apply -f - --kubeconfig kconfig.yaml
+      - echo "Installing Keycloak CRDs and Operator (version {{.KEYCLOAK_VERSION}})..."
+      - kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/{{.KEYCLOAK_VERSION}}/kubernetes/keycloaks.k8s.keycloak.org-v1.yml --kubeconfig kconfig.yaml
+      - kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/{{.KEYCLOAK_VERSION}}/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml --kubeconfig kconfig.yaml
+      - kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/{{.KEYCLOAK_VERSION}}/kubernetes/kubernetes.yml -n keycloak --kubeconfig kconfig.yaml
+      - echo "Waiting for Keycloak Operator to be ready..."
+      - kubectl wait --for=condition=ready --timeout=300s pod -l app.kubernetes.io/name=keycloak-operator -n keycloak --kubeconfig kconfig.yaml
+
+  keycloak:deploy-dev:
+    desc: Deploy Keycloak for development and setup ToolHive realm
+    deps: [keycloak:install-operator]
+    cmds:
+      - echo "Deploying Keycloak for development..."
+      - kubectl apply -f deploy/keycloak/keycloak-dev.yaml --kubeconfig kconfig.yaml
+      - echo "Waiting for Keycloak to be ready..."
+      - kubectl wait --for=condition=Ready --timeout=600s keycloaks.k8s.keycloak.org/keycloak-dev -n keycloak --kubeconfig kconfig.yaml
+      # Using REST API instead of KeycloakRealmImport because with embedded H2 database,
+      # KeycloakRealmImport creates a separate temporary database that doesn't persist
+      # to the main running Keycloak instance
+      - echo "Starting port-forward for realm setup..."
+      - kubectl port-forward service/keycloak-dev-service -n keycloak 8080:8080 --kubeconfig kconfig.yaml &
+      - sleep 5  # Wait for port-forward to be ready
+      - echo "Setting up ToolHive realm via REST API..."
+      - deploy/keycloak/setup-realm.sh
+      - echo "Stopping port-forward..."
+      - pkill -f "kubectl port-forward.*keycloak-dev-service" || true
+      - echo "Keycloak is ready with ToolHive realm! Use 'task keycloak:port-forward' to access it."
+
+  keycloak:get-admin-creds:
+    desc: Get Keycloak admin credentials
+    cmds:
+      - echo "Username:" && kubectl get secret keycloak-dev-initial-admin -n keycloak -o jsonpath='{.data.username}' --kubeconfig kconfig.yaml | base64 --decode
+      - echo "Password:" && kubectl get secret keycloak-dev-initial-admin -n keycloak -o jsonpath='{.data.password}' --kubeconfig kconfig.yaml | base64 --decode
+
+  keycloak:port-forward:
+    desc: Port forward to Keycloak service (http://localhost:8080)
+    cmds:
+      - echo "Keycloak will be available at http://localhost:8080"
+      - echo "Use 'task keycloak:get-admin-creds' to get login credentials"
+      - kubectl port-forward service/keycloak-dev-service -n keycloak 8080:8080 --kubeconfig kconfig.yaml

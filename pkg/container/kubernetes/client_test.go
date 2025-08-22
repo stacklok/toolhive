@@ -186,6 +186,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 			// Create a client with the fake clientset, config, and platform detector
 			client := NewClientWithConfigAndPlatformDetector(clientset, fakeConfig, mockDetector)
 			client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+			client.namespaceFunc = func() string { return defaultNamespace }
 			// Create workload options with the pod template patch
 			options := runtime.NewDeployWorkloadOptions()
 			options.K8sPodTemplatePatch = tc.k8sPodTemplatePatch
@@ -724,6 +725,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 			// Create a client with the fake clientset, config, and platform detector
 			client := NewClientWithConfigAndPlatformDetector(clientset, fakeConfig, mockDetector)
 			client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+			client.namespaceFunc = func() string { return defaultNamespace }
 
 			// Deploy the workload
 			_, err := client.DeployWorkload(

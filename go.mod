@@ -20,7 +20,7 @@ require (
 	github.com/lestrrat-go/jwx/v3 v3.0.10
 	github.com/mark3labs/mcp-go v0.38.0
 	github.com/olekukonko/tablewriter v1.0.9
-	github.com/onsi/ginkgo/v2 v2.25.0
+	github.com/onsi/ginkgo/v2 v2.25.1
 	github.com/onsi/gomega v1.38.0
 	github.com/ory/fosite v0.49.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c

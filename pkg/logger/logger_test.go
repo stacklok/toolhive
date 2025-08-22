@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestUnstructuredLogsCheck tests the unstructuredLogs function
 func TestUnstructuredLogsCheck(t *testing.T) { //nolint:paralleltest // Uses environment variables
 	tests := []struct {
 		name     string
@@ -41,25 +42,33 @@ func TestUnstructuredLogsCheck(t *testing.T) { //nolint:paralleltest // Uses env
 	}
 }
 
+// TestStructuredLogger tests the structured logger functionality
+// TODO: Keeping this for migration but can be removed as we don't need really need to test zap
 func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environment variables
-	unformattedLogTestCases := []struct {
-		level    string // The log level to test
-		message  string // The message to log
-		key      string // Key for structured logging
-		value    string // Value for structured logging
-		contains bool   // Whether to check if output contains the message
+	const (
+		levelDebug  = "debug"
+		levelInfo   = "info"
+		levelWarn   = "warn"
+		levelError  = "error"
+		levelDPanic = "dpanic"
+		levelPanic  = "panic"
+	)
+	// Test cases for basic logging methods (Debug, Info, Warn, etc.)
+	basicLogTestCases := []struct {
+		level   string // The log level to test
+		message string // The message to log
 	}{
-		{"DEBUG", "debug message", "key", "value", true},
-		{"INFO", "info message", "key", "value", true},
-		{"WARN", "warn message", "key", "value", true},
-		{"ERROR", "error message", "key", "value", true},
+		{levelDebug, "debug message"},
+		{levelInfo, "info message"},
+		{levelWarn, "warn message"},
+		{levelError, "error message"},
+		{levelDPanic, "dpanic message"},
+		{levelPanic, "panic message"},
 	}
 
-	for _, tc := range unformattedLogTestCases {
-		t.Run("NonFormattedLogs", func(t *testing.T) {
-
+	for _, tc := range basicLogTestCases { //nolint:paralleltest // Uses environment variables
+		t.Run("BasicLogs_"+tc.level, func(t *testing.T) {
 			// we create a pipe to capture the output of the log
-			// so we can test that the logger logs the right message
 			originalStdout := os.Stdout
 			r, w, _ := os.Pipe()
 			os.Stdout = w
@@ -70,21 +79,34 @@ func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environm
 			viper.SetDefault("debug", true)
 
 			Initialize()
-			os.Stdout = originalStdout
 
-			// Log the message based on the level
+			// Handle panic and fatal recovery
+			defer func() {
+				if r := recover(); r != nil {
+					if tc.level != levelPanic && tc.level != levelDPanic {
+						t.Errorf("Unexpected panic for level %s: %v", tc.level, r)
+					}
+				}
+			}()
+
+			// Log using basic methods
 			switch tc.level {
-			case "DEBUG":
-				log.Debug(tc.message, tc.key, tc.value)
-			case "INFO":
-				log.Info(tc.message, tc.key, tc.value)
-			case "WARN":
-				log.Warn(tc.message, tc.key, tc.value)
-			case "ERROR":
-				log.Error(tc.message, tc.key, tc.value)
+			case levelDebug:
+				Debug(tc.message)
+			case levelInfo:
+				Info(tc.message)
+			case levelWarn:
+				Warn(tc.message)
+			case levelError:
+				Error(tc.message)
+			case levelDPanic:
+				DPanic(tc.message)
+			case levelPanic:
+				Panic(tc.message)
 			}
 
 			w.Close()
+			os.Stdout = originalStdout
 
 			// Read the captured output
 			var capturedOutput bytes.Buffer
@@ -92,7 +114,87 @@ func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environm
 			output := capturedOutput.String()
 
 			// Parse JSON output
-			var logEntry map[string]interface{}
+			var logEntry map[string]any
+			if err := json.Unmarshal([]byte(output), &logEntry); err != nil {
+				t.Fatalf("Failed to parse JSON log output: %v", err)
+			}
+
+			// Check level
+			if level, ok := logEntry["level"].(string); !ok || level != tc.level {
+				t.Errorf("Expected level %s, got %v", tc.level, logEntry["level"])
+			}
+
+			// Check message
+			if msg, ok := logEntry["msg"].(string); !ok || msg != tc.message {
+				t.Errorf("Expected message %s, got %v", tc.message, logEntry["msg"])
+			}
+		})
+	}
+
+	// Test cases for structured logging methods (Debugw, Infow, etc.)
+	structuredLogTestCases := []struct {
+		level   string // The log level to test
+		message string // The message to log
+		key     string // Key for structured logging
+		value   string // Value for structured logging
+	}{
+		{levelDebug, "debug message", "key", "value"},
+		{levelInfo, "info message", "key", "value"},
+		{levelWarn, "warn message", "key", "value"},
+		{levelError, "error message", "key", "value"},
+		{levelDPanic, "dpanic message", "key", "value"},
+		{levelPanic, "panic message", "key", "value"},
+	}
+
+	for _, tc := range structuredLogTestCases { //nolint:paralleltest // Uses environment variables
+		t.Run("StructuredLogs_"+tc.level, func(t *testing.T) {
+			// we create a pipe to capture the output of the log
+			originalStdout := os.Stdout
+			r, w, _ := os.Pipe()
+			os.Stdout = w
+
+			os.Setenv("UNSTRUCTURED_LOGS", "false")
+			defer os.Unsetenv("UNSTRUCTURED_LOGS")
+
+			viper.SetDefault("debug", true)
+
+			Initialize()
+
+			// Handle panic and fatal recovery
+			defer func() {
+				if r := recover(); r != nil {
+					if tc.level != "panic" && tc.level != levelDPanic {
+						t.Errorf("Unexpected panic for level %s: %v", tc.level, r)
+					}
+				}
+			}()
+
+			// Log using structured methods
+			switch tc.level {
+			case levelDebug:
+				Debugw(tc.message, tc.key, tc.value)
+			case levelInfo:
+				Infow(tc.message, tc.key, tc.value)
+			case levelWarn:
+				Warnw(tc.message, tc.key, tc.value)
+			case levelError:
+				Errorw(tc.message, tc.key, tc.value)
+			case levelDPanic:
+				DPanicw(tc.message, tc.key, tc.value)
+			case levelPanic:
+				Panicw(tc.message, tc.key, tc.value)
+			}
+
+			w.Close()
+			os.Stdout = originalStdout
+
+			// Read the captured output
+			var capturedOutput bytes.Buffer
+			io.Copy(&capturedOutput, r)
+			output := capturedOutput.String()
+
+			// Parse JSON output
+			var logEntry map[string]any
 			if err := json.Unmarshal([]byte(output), &logEntry); err != nil {
 				t.Fatalf("Failed to parse JSON log output: %v", err)
 			}
@@ -114,6 +216,7 @@ func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environm
 		})
 	}
 
+	// Test cases for formatted logging methods (Debugf, Infof, etc.)
 	formattedLogTestCases := []struct {
 		level    string
 		message  string
@@ -122,16 +225,17 @@ func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environm
 		expected string
 		contains bool
 	}{
-		{"DEBUG", "debug message %s and %s", "key", "value", "debug message key and value", true},
-		{"INFO", "info message %s and %s", "key", "value", "info message key and value", true},
-		{"WARN", "warn message %s and %s", "key", "value", "warn message key and value", true},
-		{"ERROR", "error message %s and %s", "key", "value", "error message key and value", true},
+		{levelDebug, "debug message %s and %s", "key", "value", "debug message key and value", true},
+		{levelInfo, "info message %s and %s", "key", "value", "info message key and value", true},
+		{levelWarn, "warn message %s and %s", "key", "value", "warn message key and value", true},
+		{levelError, "error message %s and %s", "key", "value", "error message key and value", true},
+		{levelDPanic, "dpanic message %s and %s", "key", "value", "dpanic message key and value", true},
+		{levelPanic, "panic message %s and %s", "key", "value", "panic message key and value", true},
 	}
 
 	for _, tc := range formattedLogTestCases { //nolint:paralleltest // Uses environment variables
-		t.Run("FormattedLogs", func(t *testing.T) {
+		t.Run("FormattedLogs_"+tc.level, func(t *testing.T) {
 			// we create a pipe to capture the output of the log
-			// so we can test that the logger logs the right message
 			originalStdout := os.Stdout
 			r, w, _ := os.Pipe()
 			os.Stdout = w
@@ -142,31 +246,41 @@ func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environm
 			viper.SetDefault("debug", true)
 
 			Initialize()
-			os.Stdout = originalStdout
 
-			// Log the message based on the level
+			// Handle panic and fatal recovery
+			defer func() {
+				if r := recover(); r != nil {
+					if tc.level != levelPanic && tc.level != levelDPanic {
+						t.Errorf("Unexpected panic for level %s: %v", tc.level, r)
+					}
+				}
+			}()
+
+			// Log using formatted methods
 			switch tc.level {
-			case "DEBUG":
-				log.Debugf(tc.message, tc.key, tc.value)
-			case "INFO":
-				log.Infof(tc.message, tc.key, tc.value)
-			case "WARN":
-				log.Warnf(tc.message, tc.key, tc.value)
-			case "ERROR":
-				log.Errorf(tc.message, tc.key, tc.value)
+			case levelDebug:
+				Debugf(tc.message, tc.key, tc.value)
+			case levelInfo:
+				Infof(tc.message, tc.key, tc.value)
+			case levelWarn:
+				Warnf(tc.message, tc.key, tc.value)
+			case levelError:
+				Errorf(tc.message, tc.key, tc.value)
+			case levelDPanic:
+				DPanicf(tc.message, tc.key, tc.value)
+			case levelPanic:
+				Panicf(tc.message, tc.key, tc.value)
 			}
-
 			w.Close()
+			os.Stdout = originalStdout
 
 			// Read the captured output
 			var capturedOutput bytes.Buffer
 			io.Copy(&capturedOutput, r)
 			output := capturedOutput.String()
 
-			capturedOutput.Reset()
-
 			// Parse JSON output
-			var logEntry map[string]interface{}
+			var logEntry map[string]any
 			if err := json.Unmarshal([]byte(output), &logEntry); err != nil {
 				t.Fatalf("Failed to parse JSON log output: %v", err)
 			}
@@ -178,15 +292,25 @@ func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environm
 
 			// Check message
 			if msg, ok := logEntry["msg"].(string); !ok || msg != tc.expected {
-				t.Errorf(tc.expected, tc.message, logEntry["msg"])
+				t.Errorf("Expected message %s, got %v", tc.expected, logEntry["msg"])
 			}
 		})
 	}
 }
 
+// TestUnstructuredLogger tests the unstructured logger functionality
 func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environment variables
 	// we only test for the formatted logs here because the unstructured logs
 	// do not contain the key/value pair format that the structured logs do
+	const (
+		levelDebug  = "DEBUG"
+		levelInfo   = "INFO"
+		levelWarn   = "WARN"
+		levelError  = "ERROR"
+		levelDPanic = "DPANIC"
+		levelPanic  = "PANIC"
+	)
+
 	formattedLogTestCases := []struct {
 		level    string
 		message  string
@@ -194,14 +318,16 @@ func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses enviro
 		value    string
 		expected string
 	}{
-		{"DBG", "debug message %s and %s", "key", "value", "debug message key and value"},
-		{"INF", "info message %s and %s", "key", "value", "info message key and value"},
-		{"WRN", "warn message %s and %s", "key", "value", "warn message key and value"},
-		{"ERR", "error message %s and %s", "key", "value", "error message key and value"},
+		{levelDebug, "debug message %s and %s", "key", "value", "debug message key and value"},
+		{levelInfo, "info message %s and %s", "key", "value", "info message key and value"},
+		{levelWarn, "warn message %s and %s", "key", "value", "warn message key and value"},
+		{levelError, "error message %s and %s", "key", "value", "error message key and value"},
+		{levelDPanic, "dpanic message %s and %s", "key", "value", "dpanic message key and value"},
+		{levelPanic, "panic message %s and %s", "key", "value", "panic message key and value"},
 	}
 
 	for _, tc := range formattedLogTestCases { //nolint:paralleltest // Uses environment variables
-		t.Run("FormattedLogs", func(t *testing.T) {
+		t.Run("FormattedLogs_"+tc.level, func(t *testing.T) {
 
 			// we create a pipe to capture the output of the log
 			// so we can test that the logger logs the right message
@@ -212,21 +338,35 @@ func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses enviro
 			viper.SetDefault("debug", true)
 
 			Initialize()
-			os.Stderr = originalStderr
+
+			// Handle panic recovery for DPANIC and PANIC levels
+			defer func() {
+				if r := recover(); r != nil {
+					// Expected for panic levels
+					if tc.level != "PANIC" && tc.level != "DPANIC" {
+						t.Errorf("Unexpected panic for level %s: %v", tc.level, r)
+					}
+				}
+			}()
 
 			// Log the message based on the level
 			switch tc.level {
-			case "DBG":
-				log.Debugf(tc.message, tc.key, tc.value)
-			case "INF":
-				log.Infof(tc.message, tc.key, tc.value)
-			case "WRN":
-				log.Warnf(tc.message, tc.key, tc.value)
-			case "ERR":
-				log.Errorf(tc.message, tc.key, tc.value)
+			case levelDebug:
+				Debugf(tc.message, tc.key, tc.value)
+			case levelInfo:
+				Infof(tc.message, tc.key, tc.value)
+			case levelWarn:
+				Warnf(tc.message, tc.key, tc.value)
+			case levelError:
+				Errorf(tc.message, tc.key, tc.value)
+			case levelDPanic:
+				DPanicf(tc.message, tc.key, tc.value)
+			case levelPanic:
+				Panicf(tc.message, tc.key, tc.value)
 			}
 
 			w.Close()
+			os.Stderr = originalStderr
 
 			// Read the captured output
 			var capturedOutput bytes.Buffer
@@ -256,7 +396,7 @@ func TestInitialize(t *testing.T) { //nolint:paralleltest // Uses environment va
 		Initialize()
 
 		// Log a test message
-		log.Info("test message", "key", "value")
+		Info("test message")
 
 		// Restore stdout
 		w.Close()
@@ -268,7 +408,7 @@ func TestInitialize(t *testing.T) { //nolint:paralleltest // Uses environment va
 		output := buf.String()
 
 		// Verify JSON format
-		var logEntry map[string]interface{}
+		var logEntry map[string]any
 		if err := json.Unmarshal([]byte(output), &logEntry); err != nil {
 			t.Fatalf("Failed to parse JSON log output: %v", err)
 		}
@@ -293,7 +433,7 @@ func TestInitialize(t *testing.T) { //nolint:paralleltest // Uses environment va
 		Initialize()
 
 		// Log a test message
-		log.Info("test message", "key", "value")
+		Info("test message")
 
 		// Restore stderr
 		w.Close()
@@ -313,43 +453,4 @@ func TestInitialize(t *testing.T) { //nolint:paralleltest // Uses environment va
 			t.Errorf("Expected output to contain 'INF', got %s", output)
 		}
 	})
-}
-
-// TestGetLogger tests the GetLogger function
-func TestGetLogger(t *testing.T) { //nolint:paralleltest // Uses environment variables
-	// Set up structured logger for testing
-	os.Setenv("UNSTRUCTURED_LOGS", "false")
-	defer os.Unsetenv("UNSTRUCTURED_LOGS")
-
-	// Redirect stdout to capture output
-	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	// Initialize and get a component logger
-	Initialize()
-	componentLogger := GetLogger("test-component")
-
-	// Log a test message
-	componentLogger.Info("component message")
-
-	// Restore stdout
-	w.Close()
-	os.Stdout = oldStdout
-
-	// Read captured output
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	output := buf.String()
-
-	// Parse JSON output
-	var logEntry map[string]interface{}
-	if err := json.Unmarshal([]byte(output), &logEntry); err != nil {
-		t.Fatalf("Failed to parse JSON log output: %v", err)
-	}
-
-	// Verify the component was added
-	if component, ok := logEntry["component"].(string); !ok || component != "test-component" {
-		t.Errorf("Expected component='test-component', got %v", logEntry["component"])
-	}
 }

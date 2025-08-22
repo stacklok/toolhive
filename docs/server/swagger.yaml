@@ -190,6 +190,10 @@ components:
             Port is the port on which the workload is exposed.
             This is embedded in the URL.
           type: integer
+        remote:
+          description: Remote indicates whether this is a remote workload (true) or
+            a container workload (false).
+          type: boolean
         status:
           $ref: '#/components/schemas/runtime.WorkloadStatus'
         status_context:
@@ -1404,6 +1408,22 @@ components:
           type: array
           uniqueItems: false
       type: object
+    v1.workloadStatusResponse:
+      description: Response containing workload status information
+      properties:
+        status:
+          description: Current status of the workload
+          type: string
+          x-enum-varnames:
+          - WorkloadStatusRunning
+          - WorkloadStatusStopped
+          - WorkloadStatusError
+          - WorkloadStatusStarting
+          - WorkloadStatusStopping
+          - WorkloadStatusUnhealthy
+          - WorkloadStatusRemoving
+          - WorkloadStatusUnknown
+      type: object
 externalDocs:
   description: ""
   url: ""
@@ -2369,6 +2389,32 @@ paths:
                 type: string
           description: Not Found
       summary: Restart a workload
+      tags:
+      - workloads
+  /api/v1beta/workloads/{name}/status:
+    get:
+      description: Get the current status of a specific workload
+      parameters:
+      - description: Workload name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.workloadStatusResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+      summary: Get workload status
       tags:
       - workloads
   /api/v1beta/workloads/{name}/stop:

@@ -18,9 +18,11 @@ var (
 )
 
 var restartCmd = &cobra.Command{
-	Use:               "restart [workload-name]",
-	Short:             "Restart a tooling server",
-	Long:              `Restart a running tooling server managed by ToolHive. If the server is not running, it will be started. Supports both container-based and remote MCP servers.`,
+	Use:   "restart [workload-name]",
+	Short: "Restart a tooling server",
+	Long: `Restart a running tooling server managed by ToolHive.
+If the server is not running, it will be started.
+Supports both container-based and remote MCP servers.`,
 	Args:              cobra.RangeArgs(0, 1),
 	RunE:              restartCmdFunc,
 	ValidArgsFunction: completeMCPServerNames,

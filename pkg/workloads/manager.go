@@ -267,8 +267,7 @@ func (d *defaultManager) stopContainerWorkload(ctx context.Context, name string)
 	}
 
 	// Use the existing stopWorkloads method for container workloads
-	eg := d.stopWorkloads(ctx, []*rt.ContainerInfo{&container})
-	return eg.Wait()
+	return d.stopSingleContainerWorkload(&container)
 }
 
 func (d *defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
@@ -417,7 +416,7 @@ func (d *defaultManager) GetLogs(ctx context.Context, workloadName string, follo
 }
 
 // deleteWorkload handles deletion of a single workload
-func (d *defaultManager) deleteWorkload(ctx context.Context, name string) error {
+func (d *defaultManager) deleteWorkload(name string) error {
 	// Create a child context with a longer timeout
 	childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
 	defer cancel()
@@ -427,25 +426,26 @@ func (d *defaultManager) deleteWorkload(ctx context.Context, name string) error 
 	if err != nil {
 		// If we can't load the state, it might be a container workload or the workload doesn't exist
 		// Continue with the container-based deletion logic
-		return d.deleteContainerWorkload(childCtx, ctx, name)
+		return d.deleteContainerWorkload(childCtx, name)
 	}
 
 	// If this is a remote workload (has RemoteURL), handle it differently
 	if runConfig.RemoteURL != "" {
-		return d.deleteRemoteWorkload(childCtx, ctx, name, runConfig)
+		return d.deleteRemoteWorkload(childCtx, name, runConfig)
 	}
 
 	// This is a container-based workload, use the existing logic
-	return d.deleteContainerWorkload(childCtx, ctx, name)
+	return d.deleteContainerWorkload(childCtx, name)
 }
 
 // deleteRemoteWorkload handles deletion of a remote workload
-func (d *defaultManager) deleteRemoteWorkload(childCtx, ctx context.Context, name string, runConfig *runner.RunConfig) error {
+func (d *defaultManager) deleteRemoteWorkload(childCtx context.Context, name string, runConfig *runner.RunConfig) error {
 	logger.Infof("Removing remote workload %s...", name)
 
 	// Set status to removing
-	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusRemoving, ""); err != nil {
+	if err := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusRemoving, ""); err != nil {
 		logger.Warnf("Failed to set workload %s status to removing: %v", name, err)
+		return err
 	}
 
 	// Stop proxy if running
@@ -457,7 +457,7 @@ func (d *defaultManager) deleteRemoteWorkload(childCtx, ctx context.Context, nam
 	d.cleanupWorkloadResources(childCtx, name, runConfig.BaseName)
 
 	// Remove the workload status from the status store
-	if err := d.statuses.DeleteWorkloadStatus(ctx, name); err != nil {
+	if err := d.statuses.DeleteWorkloadStatus(childCtx, name); err != nil {
 		logger.Warnf("failed to delete workload status for %s: %v", name, err)
 	}
 
@@ -466,16 +466,16 @@ func (d *defaultManager) deleteRemoteWorkload(childCtx, ctx context.Context, nam
 }
 
 // deleteContainerWorkload handles deletion of a container-based workload (existing logic)
-func (d *defaultManager) deleteContainerWorkload(childCtx, ctx context.Context, name string) error {
+func (d *defaultManager) deleteContainerWorkload(childCtx context.Context, name string) error {
 
 	// Find and validate the container
-	container, err := d.getWorkloadContainer(childCtx, ctx, name)
+	container, err := d.getWorkloadContainer(childCtx, name)
 	if err != nil {
 		return err
 	}
 
 	// Set status to removing
-	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusRemoving, ""); err != nil {
+	if err := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusRemoving, ""); err != nil {
 		logger.Warnf("Failed to set workload %s status to removing: %v", name, err)
 	}
 
@@ -489,7 +489,7 @@ func (d *defaultManager) deleteContainerWorkload(childCtx, ctx context.Context, 
 		}
 
 		// Remove the container
-		if err := d.removeContainer(childCtx, ctx, name); err != nil {
+		if err := d.removeContainer(childCtx, name); err != nil {
 			return err
 		}
 
@@ -498,7 +498,7 @@ func (d *defaultManager) deleteContainerWorkload(childCtx, ctx context.Context, 
 	}
 
 	// Remove the workload status from the status store
-	if err := d.statuses.DeleteWorkloadStatus(ctx, name); err != nil {
+	if err := d.statuses.DeleteWorkloadStatus(childCtx, name); err != nil {
 		logger.Warnf("failed to delete workload status for %s: %v", name, err)
 	}
 
@@ -506,7 +506,7 @@ func (d *defaultManager) deleteContainerWorkload(childCtx, ctx context.Context, 
 }
 
 // getWorkloadContainer retrieves workload container info with error handling
-func (d *defaultManager) getWorkloadContainer(childCtx, ctx context.Context, name string) (*rt.ContainerInfo, error) {
+func (d *defaultManager) getWorkloadContainer(childCtx context.Context, name string) (*rt.ContainerInfo, error) {
 	container, err := d.runtime.GetWorkloadInfo(childCtx, name)
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
@@ -514,7 +514,7 @@ func (d *defaultManager) getWorkloadContainer(childCtx, ctx context.Context, nam
 			logger.Warnf("Warning: Failed to get workload %s: %v", name, err)
 			return nil, nil
 		}
-		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
 			logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
 		}
 		return nil, fmt.Errorf("failed to find workload %s: %v", name, err)
@@ -531,10 +531,10 @@ func (*defaultManager) stopProxyIfNeeded(name, baseName string) {
 }
 
 // removeContainer removes the container from the runtime
-func (d *defaultManager) removeContainer(childCtx, ctx context.Context, name string) error {
+func (d *defaultManager) removeContainer(childCtx context.Context, name string) error {
 	logger.Infof("Removing container %s...", name)
 	if err := d.runtime.RemoveWorkload(childCtx, name); err != nil {
-		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
 			logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
 		}
 		return fmt.Errorf("failed to remove container: %v", err)
@@ -570,7 +570,7 @@ func (d *defaultManager) cleanupWorkloadResources(childCtx context.Context, name
 	logger.Infof("Container %s removed", name)
 }
 
-func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*errgroup.Group, error) {
+func (d *defaultManager) DeleteWorkloads(_ context.Context, names []string) (*errgroup.Group, error) {
 	// Validate all workload names to prevent path traversal attacks
 	for _, name := range names {
 		if err := types.ValidateWorkloadName(name); err != nil {
@@ -582,7 +582,7 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 
 	for _, name := range names {
 		group.Go(func() error {
-			return d.deleteWorkload(ctx, name)
+			return d.deleteWorkload(name)
 		})
 	}
 
@@ -590,7 +590,7 @@ func (d *defaultManager) DeleteWorkloads(ctx context.Context, names []string) (*
 }
 
 // RestartWorkloads restarts the specified workloads by name.
-func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string, foreground bool) (*errgroup.Group, error) {
+func (d *defaultManager) RestartWorkloads(_ context.Context, names []string, foreground bool) (*errgroup.Group, error) {
 	// Validate all workload names to prevent path traversal attacks
 	for _, name := range names {
 		if err := types.ValidateWorkloadName(name); err != nil {
@@ -602,7 +602,7 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string, f
 
 	for _, name := range names {
 		group.Go(func() error {
-			return d.restartSingleWorkload(ctx, name, foreground)
+			return d.restartSingleWorkload(name, foreground)
 		})
 	}
 
@@ -610,7 +610,7 @@ func (d *defaultManager) RestartWorkloads(ctx context.Context, names []string, f
 }
 
 // restartSingleWorkload handles the restart logic for a single workload
-func (d *defaultManager) restartSingleWorkload(ctx context.Context, name string, foreground bool) error {
+func (d *defaultManager) restartSingleWorkload(name string, foreground bool) error {
 	// Create a child context with a longer timeout
 	childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
 	defer cancel()
@@ -620,31 +620,33 @@ func (d *defaultManager) restartSingleWorkload(ctx context.Context, name string,
 	if err != nil {
 		// If we can't load the state, it might be a container workload or the workload doesn't exist
 		// Try to restart it as a container workload
-		return d.restartContainerWorkload(ctx, childCtx, name, foreground)
+		return d.restartContainerWorkload(childCtx, name, foreground)
 	}
 
 	// Check if this is a remote workload
 	if runConfig.RemoteURL != "" {
-		return d.restartRemoteWorkload(ctx, childCtx, name, runConfig, foreground)
+		return d.restartRemoteWorkload(childCtx, name, runConfig, foreground)
 	}
 
 	// This is a container-based workload
-	return d.restartContainerWorkload(ctx, childCtx, name, foreground)
+	return d.restartContainerWorkload(childCtx, name, foreground)
 }
 
 // restartRemoteWorkload handles restarting a remote workload
-func (d *defaultManager) restartRemoteWorkload(ctx context.Context, childCtx context.Context, name string, runConfig *runner.RunConfig, foreground bool) error {
-	workloadState, err := d.getRemoteWorkloadState(childCtx, name, runConfig.BaseName)
-	if err != nil {
-		return err
-	}
+func (d *defaultManager) restartRemoteWorkload(
+	childCtx context.Context,
+	name string,
+	runConfig *runner.RunConfig,
+	foreground bool,
+) error {
+	workloadState := d.getRemoteWorkloadState(childCtx, name, runConfig.BaseName)
 
 	if d.isRemoteWorkloadAlreadyRunning(name, workloadState) {
 		return nil
 	}
 
 	// Set status to starting
-	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStarting, ""); err != nil {
+	if err := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusStarting, ""); err != nil {
 		logger.Warnf("Failed to set workload %s status to starting: %v", name, err)
 	}
 
@@ -656,11 +658,11 @@ func (d *defaultManager) restartRemoteWorkload(ctx context.Context, childCtx con
 	logger.Infof("Loaded configuration from state for %s", runConfig.BaseName)
 
 	// Start the remote workload using the loaded runner
-	return d.startWorkload(ctx, name, mcpRunner, foreground)
+	return d.startWorkload(childCtx, name, mcpRunner, foreground)
 }
 
 // restartContainerWorkload handles restarting a container-based workload
-func (d *defaultManager) restartContainerWorkload(ctx context.Context, childCtx context.Context, name string, foreground bool) error {
+func (d *defaultManager) restartContainerWorkload(childCtx context.Context, name string, foreground bool) error {
 	// Get workload state information
 	workloadState, err := d.getWorkloadState(childCtx, name)
 	if err != nil {
@@ -679,18 +681,18 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, childCtx 
 	}
 
 	// Set workload status to starting
-	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStarting, ""); err != nil {
+	if err := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusStarting, ""); err != nil {
 		logger.Warnf("Failed to set workload %s status to starting: %v", name, err)
 	}
 	logger.Infof("Loaded configuration from state for %s", workloadState.BaseName)
 
 	// Stop container if running but proxy is not
-	if err := d.stopContainerIfNeeded(childCtx, ctx, name, workloadState); err != nil {
+	if err := d.stopContainerIfNeeded(childCtx, name, workloadState); err != nil {
 		return err
 	}
 
 	// Start the workload
-	return d.startWorkload(ctx, name, mcpRunner, foreground)
+	return d.startWorkload(childCtx, name, mcpRunner, foreground)
 }
 
 // workloadState holds the current state of a workload for restart operations
@@ -729,7 +731,7 @@ func (d *defaultManager) getWorkloadState(ctx context.Context, name string) (*wo
 }
 
 // getRemoteWorkloadState retrieves the current state of a remote workload
-func (d *defaultManager) getRemoteWorkloadState(ctx context.Context, name, baseName string) (*workloadState, error) {
+func (d *defaultManager) getRemoteWorkloadState(ctx context.Context, name, baseName string) *workloadState {
 	workloadSt := &workloadState{
 		BaseName: baseName,
 	}
@@ -747,7 +749,7 @@ func (d *defaultManager) getRemoteWorkloadState(ctx context.Context, name, baseN
 	// Check if the detached process is actually running
 	workloadSt.ProxyRunning = proxy.IsRunning(baseName)
 
-	return workloadSt, nil
+	return workloadSt
 }
 
 // isWorkloadAlreadyRunning checks if the workload is already fully running
@@ -762,21 +764,22 @@ func (*defaultManager) isWorkloadAlreadyRunning(name string, workloadSt *workloa
 // isRemoteWorkloadAlreadyRunning checks if the remote workload is already fully running
 func (*defaultManager) isRemoteWorkloadAlreadyRunning(name string, workloadSt *workloadState) bool {
 	if workloadSt.Running && workloadSt.ProxyRunning {
-		logger.Infof("Remote workload %s is already running (status: %v, process: %v)", name, workloadSt.Running, workloadSt.ProxyRunning)
+		logger.Infof("Remote workload %s is already running (status: %v, process: %v)",
+			name, workloadSt.Running, workloadSt.ProxyRunning)
 		return true
 	}
 	return false
 }
 
 // stopContainerIfNeeded stops the container if it's running but proxy is not
-func (d *defaultManager) stopContainerIfNeeded(childCtx, ctx context.Context, name string, workloadSt *workloadState) error {
+func (d *defaultManager) stopContainerIfNeeded(childCtx context.Context, name string, workloadSt *workloadState) error {
 	if !workloadSt.Running {
 		return nil
 	}
 
 	logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
 	if err := d.runtime.StopWorkload(childCtx, name); err != nil {
-		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, ""); statusErr != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusError, ""); statusErr != nil {
 			logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
 		}
 		return fmt.Errorf("failed to stop container %s: %v", name, err)
@@ -878,43 +881,35 @@ func (*defaultManager) cleanupTempPermissionProfile(ctx context.Context, baseNam
 	return nil
 }
 
-// stopWorkloads stops the named workloads concurrently.
-// It assumes that the workloads exist in the running state.
-func (d *defaultManager) stopWorkloads(ctx context.Context, workloads []*rt.ContainerInfo) *errgroup.Group {
-	group := errgroup.Group{}
-	for _, workload := range workloads {
-		group.Go(func() error {
-			childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
-			defer cancel()
+// stopSingleContainerWorkload stops a single container workload
+func (d *defaultManager) stopSingleContainerWorkload(workload *rt.ContainerInfo) error {
+	childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
+	defer cancel()
 
-			name := labels.GetContainerBaseName(workload.Labels)
-			// Stop the proxy process
-			proxy.StopProcess(name)
+	name := labels.GetContainerBaseName(workload.Labels)
+	// Stop the proxy process
+	proxy.StopProcess(name)
 
-			logger.Infof("Stopping containers for %s...", name)
-			// Stop the container
-			if err := d.runtime.StopWorkload(childCtx, workload.Name); err != nil {
-				if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
-					logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
-				}
-				return fmt.Errorf("failed to stop container: %w", err)
-			}
-
-			if err := removeClientConfigurations(name); err != nil {
-				logger.Warnf("Warning: Failed to remove client configurations: %v", err)
-			} else {
-				logger.Infof("Client configurations for %s removed", name)
-			}
-
-			if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
-				logger.Warnf("Failed to set workload %s status to stopped: %v", name, err)
-			}
-			logger.Infof("Successfully stopped %s...", name)
-			return nil
-		})
+	logger.Infof("Stopping containers for %s...", name)
+	// Stop the container
+	if err := d.runtime.StopWorkload(childCtx, workload.Name); err != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
+			logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
+		}
+		return fmt.Errorf("failed to stop container: %w", err)
 	}
 
-	return &group
+	if err := removeClientConfigurations(name); err != nil {
+		logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+	} else {
+		logger.Infof("Client configurations for %s removed", name)
+	}
+
+	if err := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusStopped, ""); err != nil {
+		logger.Warnf("Failed to set workload %s status to stopped: %v", name, err)
+	}
+	logger.Infof("Successfully stopped %s...", name)
+	return nil
 }
 
 // MoveToGroup moves the specified workloads from one group to another by updating their runconfig.
@@ -971,7 +966,11 @@ func (d *defaultManager) ListWorkloadsInGroup(ctx context.Context, groupName str
 }
 
 // getRemoteWorkloadsFromState retrieves remote servers from the state store
-func (d *defaultManager) getRemoteWorkloadsFromState(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error) {
+func (d *defaultManager) getRemoteWorkloadsFromState(
+	ctx context.Context,
+	listAll bool,
+	labelFilters []string,
+) ([]core.Workload, error) {
 	// Create a state store
 	store, err := state.NewRunConfigStore(state.DefaultAppName)
 	if err != nil {

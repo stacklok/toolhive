@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-08-22T10:01:22Z",
+  "last_updated": "2025-08-22T11:58:47Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -3225,7 +3225,7 @@
             "allow_host": [
               "api.neo4j.io",
               "console.neo4j.io",
-              "*.neo4j.io"
+              ".neo4j.io"
             ],
             "allow_port": [
               443,
@@ -3291,8 +3291,8 @@
           "outbound": {
             "allow_host": [
               "localhost",
-              "*.neo4j.io",
-              "*.databases.neo4j.io"
+              ".neo4j.io",
+              ".databases.neo4j.io"
             ],
             "allow_port": [
               7687,
@@ -3368,8 +3368,8 @@
           "outbound": {
             "allow_host": [
               "localhost",
-              "*.neo4j.io",
-              "*.databases.neo4j.io"
+              ".neo4j.io",
+              ".databases.neo4j.io"
             ],
             "allow_port": [
               7687,
@@ -3533,14 +3533,6 @@
       ],
       "image": "ghcr.io/stacklok/dockyard/npx/mcp-server-circleci:0.14.0",
       "permissions": {
-        "read": [
-          ".circleci/config.yml",
-          ".cursorrules",
-          ".cursor/rules"
-        ],
-        "write": [
-          "${FILE_OUTPUT_DIRECTORY}"
-        ],
         "network": {
           "outbound": {
             "allow_host": [

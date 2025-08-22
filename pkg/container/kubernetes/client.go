@@ -99,6 +99,15 @@ func NewClient(_ context.Context) (*Client, error) {
 	return NewClientWithConfig(clientset, config), nil
 }
 
+// IsAvailable checks if kubernetes is available
+func IsAvailable() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := NewClient(ctx)
+	return err == nil
+}
+
 // NewClientWithConfig creates a new container client with a provided config
 // This is primarily used for testing with fake clients
 func NewClientWithConfig(clientset kubernetes.Interface, config *rest.Config) *Client {

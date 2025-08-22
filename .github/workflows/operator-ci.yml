@@ -188,7 +188,7 @@ jobs:
         go install github.com/stackloklabs/yardstick/cmd/yardstick-client@v0.0.2
         
     - name: Install Chainsaw
-      uses: kyverno/action-install-chainsaw@f2b47b97dc889c12702113753d713f01ec268de5 # v0.2.12
+      uses: kyverno/action-install-chainsaw@6354895e0f99ab23d3e38d85cf5c71b5dc21d727 # v0.2.13
       with:
         release: v0.2.12
 

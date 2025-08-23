@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-08-23T00:17:03Z",
+  "last_updated": "2025-08-23T05:07:03Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -610,34 +610,43 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "documentation",
-        "bestpractices",
-        "group",
-        "subscription",
+        "acr",
         "aks",
         "appconfig",
-        "role",
-        "datadog",
+        "azuremanagedlustre",
+        "azureterraformbestpractices",
+        "bestpractices",
+        "bicepschema",
+        "cloudarchitect",
         "cosmos",
+        "datadog",
+        "deploy",
+        "documentation",
+        "extension_az",
+        "extension_azd",
+        "extension_azqr",
         "foundry",
+        "functionapp",
         "grafana",
+        "group",
         "keyvault",
         "kusto",
+        "loadtesting",
         "marketplace",
         "monitor",
+        "mysql",
         "postgres",
+        "quota",
         "redis",
+        "resourcehealth",
+        "role",
         "search",
         "servicebus",
         "sql",
         "storage",
-        "workbooks",
-        "bicepschema",
-        "azureterraformbestpractices",
-        "loadtesting",
-        "extension_az",
-        "extension_azd",
-        "extension_azqr"
+        "subscription",
+        "virtualdesktop",
+        "workbooks"
       ],
       "metadata": {
         "stars": 1107,
@@ -655,7 +664,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.7",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.8",
       "permissions": {
         "network": {
           "outbound": {
@@ -4458,7 +4467,7 @@
         "ast",
         "code-analysis"
       ],
-      "image": "ghcr.io/semgrep/mcp:0.5.1",
+      "image": "ghcr.io/semgrep/mcp:0.6.0",
       "permissions": {
         "network": {
           "outbound": {

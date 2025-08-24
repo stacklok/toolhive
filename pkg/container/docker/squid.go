@@ -59,7 +59,7 @@ func createEgressSquidContainer(
 	endpointsConfig map[string]*network.EndpointSettings,
 	perm *permissions.NetworkPermissions,
 ) (string, error) {
-	squidConfPath, err := createTempSquidConf(perm, containerName)
+	squidConfPath, err := createTempEgressSquidConf(perm, containerName)
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary squid.conf: %v", err)
 	}
@@ -160,7 +160,7 @@ func createSquidContainer(
 	return squidContainerId, nil
 }
 
-func createTempSquidConf(
+func createTempEgressSquidConf(
 	networkPermissions *permissions.NetworkPermissions,
 	serverHostname string,
 ) (string, error) {

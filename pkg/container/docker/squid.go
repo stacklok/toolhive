@@ -18,6 +18,13 @@ import (
 
 const defaultSquidImage = "ghcr.io/stacklok/toolhive/egress-proxy:latest"
 
+type proxyDirection int
+
+const (
+	proxyIngress proxyDirection = iota
+	proxyEgress
+)
+
 // createIngressSquidContainer creates an instance of the squid proxy for ingress traffic.
 func createIngressSquidContainer(
 	ctx context.Context,
@@ -166,19 +173,7 @@ func createTempEgressSquidConf(
 ) (string, error) {
 	var sb strings.Builder
 
-	sb.WriteString(
-		"http_port 3128\n" +
-			"visible_hostname " + serverHostname + "-egress\n" +
-			"access_log stdio:/dev/stdout squid\n" +
-			"pid_filename /tmp/squid.pid\n" +
-			"# Disable memory and disk caching\n" +
-			"cache deny all\n" +
-			"cache_mem 0 MB\n" +
-			"maximum_object_size 0 KB\n" +
-			"maximum_object_size_in_memory 0 KB\n" +
-			"# Don't use cache directories\n" +
-			"cache_dir null /tmp\n" +
-			"cache_store_log none\n\n")
+	writeCommonConfig(&sb, serverHostname, proxyEgress)
 
 	if networkPermissions == nil || (networkPermissions.Outbound != nil && networkPermissions.Outbound.InsecureAllowAll) {
 		sb.WriteString("# Allow all traffic\nhttp_access allow all\n")
@@ -205,6 +200,30 @@ func createTempEgressSquidConf(
 	}
 
 	return tmpFile.Name(), nil
+}
+
+func writeCommonConfig(sb *strings.Builder, hostnameBase string, direction proxyDirection) {
+	var serverHostname string
+
+	if direction == proxyEgress {
+		serverHostname = hostnameBase + "-egress"
+		sb.WriteString("http_port 3128\n")
+	} else {
+		serverHostname = hostnameBase + "-ingress"
+	}
+
+	sb.WriteString(
+		"visible_hostname " + serverHostname + "\n" +
+			"access_log stdio:/dev/stdout squid\n" +
+			"pid_filename /tmp/squid.pid\n" +
+			"# Disable memory and disk caching\n" +
+			"cache deny all\n" +
+			"cache_mem 0 MB\n" +
+			"maximum_object_size 0 KB\n" +
+			"maximum_object_size_in_memory 0 KB\n" +
+			"# Don't use cache directories\n" +
+			"cache_dir null /tmp\n" +
+			"cache_store_log none\n\n")
 }
 
 func writeOutboundACLs(sb *strings.Builder, outbound *permissions.OutboundNetworkPermissions) {
@@ -253,18 +272,7 @@ func createTempIngressSquidConf(
 ) (string, error) {
 	var sb strings.Builder
 
-	sb.WriteString(
-		"visible_hostname " + serverHostname + "-ingress\n" +
-			"access_log stdio:/dev/stdout squid\n" +
-			"pid_filename /tmp/squid.pid\n" +
-			"# Disable memory and disk caching\n" +
-			"cache deny all\n" +
-			"cache_mem 0 MB\n" +
-			"maximum_object_size 0 KB\n" +
-			"maximum_object_size_in_memory 0 KB\n" +
-			"# Don't use cache directories\n" +
-			"cache_dir null /tmp\n" +
-			"cache_store_log none\n\n")
+	writeCommonConfig(&sb, serverHostname, proxyIngress)
 
 	writeIngressProxyConfig(&sb, serverHostname, upstreamPort, squidPort)
 	sb.WriteString("http_access deny all\n")

@@ -309,6 +309,20 @@ func (b *RunConfigBuilder) WithToolsFilter(toolsFilter []string) *RunConfigBuild
 	return b
 }
 
+// WithToolOverride sets the tool override map for the RunConfig
+// This method is mutually exclusive with WithToolOverrideFile
+func (b *RunConfigBuilder) WithToolOverride(toolOverride map[string]ToolOverride) *RunConfigBuilder {
+	b.config.ToolOverride = toolOverride
+	return b
+}
+
+// WithToolOverrideFile sets the path to the tool override file for the RunConfig
+// This method is mutually exclusive with WithToolOverride
+func (b *RunConfigBuilder) WithToolOverrideFile(toolOverrideFile string) *RunConfigBuilder {
+	b.config.ToolOverrideFile = toolOverrideFile
+	return b
+}
+
 // WithIgnoreConfig sets the ignore configuration
 func (b *RunConfigBuilder) WithIgnoreConfig(ignoreConfig *ignore.Config) *RunConfigBuilder {
 	b.config.IgnoreConfig = ignoreConfig
@@ -598,6 +612,20 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 		for _, tool := range c.ToolsFilter {
 			if !slices.Contains(imageMetadata.Tools, tool) {
 				return fmt.Errorf("tool %s not found in registry", tool)
+			}
+		}
+	}
+
+	// Validate tool overrides - ensure they are mutually exclusive
+	if len(c.ToolOverride) > 0 && c.ToolOverrideFile != "" {
+		return fmt.Errorf("both tool override map and tool override file are set, they are mutually exclusive")
+	}
+
+	// Validate tool override map entries if present
+	if len(c.ToolOverride) > 0 {
+		for toolName, override := range c.ToolOverride {
+			if override.Name == "" && override.Description == "" {
+				return fmt.Errorf("tool override for %s must have either Name or Description set", toolName)
 			}
 		}
 	}

@@ -216,6 +216,8 @@ func writeCommonConfig(sb *strings.Builder, hostnameBase string, direction proxy
 		"visible_hostname " + serverHostname + "\n" +
 			"access_log stdio:/dev/stdout squid\n" +
 			"pid_filename /tmp/squid.pid\n" +
+			"# Avoid allocation errors caused by max_filedescriptors inference\n" +
+			"max_filedescriptors 1024\n" +
 			"# Disable memory and disk caching\n" +
 			"cache deny all\n" +
 			"cache_mem 0 MB\n" +

@@ -224,7 +224,6 @@ func writeCommonConfig(sb *strings.Builder, hostnameBase string, direction proxy
 			"maximum_object_size 0 KB\n" +
 			"maximum_object_size_in_memory 0 KB\n" +
 			"# Don't use cache directories\n" +
-			"cache_dir null /tmp\n" +
 			"cache_store_log none\n\n")
 }
 

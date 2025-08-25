@@ -192,8 +192,7 @@ func (d *defaultManager) stopSingleWorkload(name string) error {
 
 	// Check if this is a remote workload
 	if runConfig.RemoteURL != "" {
-		d.stopRemoteWorkload(childCtx, name, runConfig)
-		return nil
+		return d.stopRemoteWorkload(childCtx, name, runConfig)
 	}
 
 	// This is a container-based workload
@@ -201,20 +200,23 @@ func (d *defaultManager) stopSingleWorkload(name string) error {
 }
 
 // stopRemoteWorkload stops a remote workload
-func (d *defaultManager) stopRemoteWorkload(ctx context.Context, name string, runConfig *runner.RunConfig) {
+func (d *defaultManager) stopRemoteWorkload(ctx context.Context, name string, runConfig *runner.RunConfig) error {
 	logger.Infof("Stopping remote workload %s...", name)
 
 	// Check if the workload is running by checking its status
 	workload, err := d.statuses.GetWorkload(ctx, name)
 	if err != nil {
-		// If we can't get the status, assume it's not running
-		logger.Debugf("Failed to get status for remote workload %s: %v", name, err)
-		return
+		if errors.Is(err, rt.ErrWorkloadNotFound) {
+			// Log but don't fail the entire operation for not found workload
+			logger.Warnf("Warning: Failed to stop workload %s: %v", name, err)
+			return nil
+		}
+		return fmt.Errorf("failed to find workload %s: %v", name, err)
 	}
 
 	if workload.Status != rt.WorkloadStatusRunning {
-		logger.Debugf("Remote workload %s is not running (status: %s)", name, workload.Status)
-		return
+		logger.Warnf("Warning: Failed to stop workload %s: %v", name, ErrWorkloadNotRunning)
+		return nil
 	}
 
 	// Set status to stopping
@@ -239,8 +241,8 @@ func (d *defaultManager) stopRemoteWorkload(ctx context.Context, name string, ru
 	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
 		logger.Debugf("Failed to set workload %s status to stopped: %v", name, err)
 	}
-
 	logger.Infof("Remote workload %s stopped successfully", name)
+	return nil
 }
 
 // stopContainerWorkload stops a container-based workload

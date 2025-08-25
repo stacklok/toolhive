@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-08-24T00:19:05Z",
+  "last_updated": "2025-08-24T09:23:25Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -425,9 +425,9 @@
         "list_icons"
       ],
       "metadata": {
-        "stars": 5291,
+        "stars": 6006,
         "pulls": 0,
-        "last_updated": "2025-08-22T02:32:58Z"
+        "last_updated": "2025-08-24T02:35:25Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -1092,9 +1092,9 @@
         "chroma_delete_documents"
       ],
       "metadata": {
-        "stars": 305,
+        "stars": 308,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:39:14Z"
+        "last_updated": "2025-08-24T02:35:25Z"
       },
       "repository_url": "https://github.com/chroma-core/chroma-mcp",
       "tags": [
@@ -1403,7 +1403,7 @@
       "metadata": {
         "stars": 2,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:39:15Z"
+        "last_updated": "2025-08-24T02:35:25Z"
       },
       "repository_url": "https://github.com/dolthub/dolt-mcp",
       "tags": [
@@ -3414,7 +3414,7 @@
       "metadata": {
         "stars": 59,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:39:15Z"
+        "last_updated": "2025-08-24T02:35:26Z"
       },
       "repository_url": "https://github.com/CircleCI-Public/mcp-server-circleci",
       "tags": [
@@ -3925,9 +3925,9 @@
         "get_block_info"
       ],
       "metadata": {
-        "stars": 61,
+        "stars": 62,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:39:15Z"
+        "last_updated": "2025-08-24T02:35:26Z"
       },
       "repository_url": "https://github.com/Bankless/onchain-mcp",
       "tags": [

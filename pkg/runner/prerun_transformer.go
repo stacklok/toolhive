@@ -188,7 +188,7 @@ func (t *PreRunTransformer) transformFromRegistry(
 
 	if server.IsRemote() {
 		// Remote server from registry
-		logger.Debugf("Found remote server in registry: %s", src.ServerName)
+		logger.Infof("Found remote server in registry: %s", src.ServerName)
 		return t.buildRunConfigFromSource(
 			src.ServerName, // imageURL (server name)
 			server,         // serverMetadata
@@ -208,7 +208,7 @@ func (t *PreRunTransformer) transformFromRegistry(
 		return nil, fmt.Errorf("failed to get image metadata from registry: %v", err)
 	}
 
-	logger.Debugf("Found container server in registry: %s -> %s", src.ServerName, imageMetadata.Image)
+	logger.Infof("Found container server in registry: %s -> %s", src.ServerName, imageMetadata.Image)
 
 	// Pull the image if necessary
 	if err := t.pullImageIfNeeded(imageMetadata.Image); err != nil {

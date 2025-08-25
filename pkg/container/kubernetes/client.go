@@ -978,6 +978,8 @@ func createPodTemplateFromPatch(patchJSON string) (*corev1apply.PodTemplateSpecA
 }
 
 // ensurePodTemplateConfig ensures the pod template has required configuration
+//
+//nolint:gocyclo // Complex but necessary for platform-aware security context configuration
 func ensurePodTemplateConfig(
 	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
 	containerLabels map[string]string,
@@ -1004,55 +1006,49 @@ func ensurePodTemplateConfig(
 		podTemplateSpec.Spec = podTemplateSpec.Spec.WithRestartPolicy(corev1.RestartPolicyAlways)
 	}
 
-	// Add pod-level security context if not already present
+	// Add pod-level security context using SecurityContextBuilder
 	if podTemplateSpec.Spec.SecurityContext == nil {
+		securityBuilder := NewSecurityContextBuilder(platform)
 		podTemplateSpec.Spec = podTemplateSpec.Spec.WithSecurityContext(
-			corev1apply.PodSecurityContext().
-				WithRunAsNonRoot(true).
-				WithRunAsUser(int64(1000)).
-				WithRunAsGroup(int64(1000)).
-				WithFSGroup(int64(1000)),
+			securityBuilder.BuildPodSecurityContextApplyConfiguration(),
 		)
 	} else {
-		// If the pod-level security context already exists, ensure it has the correct settings
-		if podTemplateSpec.Spec.SecurityContext.RunAsNonRoot == nil {
-			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithRunAsNonRoot(true)
+		// If the pod-level security context already exists, merge with platform-aware defaults
+		securityBuilder := NewSecurityContextBuilder(platform)
+		platformContext := securityBuilder.BuildPodSecurityContextApplyConfiguration()
+
+		// Merge existing context with platform-aware settings
+		if podTemplateSpec.Spec.SecurityContext.RunAsNonRoot == nil && platformContext.RunAsNonRoot != nil {
+			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithRunAsNonRoot(*platformContext.RunAsNonRoot)
 		}
 
-		if podTemplateSpec.Spec.SecurityContext.FSGroup == nil {
-			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithFSGroup(int64(1000))
+		if podTemplateSpec.Spec.SecurityContext.RunAsUser == nil && platformContext.RunAsUser != nil {
+			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithRunAsUser(*platformContext.RunAsUser)
 		}
 
-		if podTemplateSpec.Spec.SecurityContext.RunAsUser == nil {
-			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithRunAsUser(int64(1000))
+		if podTemplateSpec.Spec.SecurityContext.RunAsGroup == nil && platformContext.RunAsGroup != nil {
+			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithRunAsGroup(*platformContext.RunAsGroup)
 		}
 
-		if podTemplateSpec.Spec.SecurityContext.RunAsGroup == nil {
-			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithRunAsGroup(int64(1000))
-		}
-	}
-
-	if platform == PlatformOpenShift {
-		if podTemplateSpec.Spec.SecurityContext.RunAsUser != nil {
-			podTemplateSpec.Spec.SecurityContext.RunAsUser = nil
+		if podTemplateSpec.Spec.SecurityContext.FSGroup == nil && platformContext.FSGroup != nil {
+			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithFSGroup(*platformContext.FSGroup)
 		}
 
-		if podTemplateSpec.Spec.SecurityContext.RunAsGroup != nil {
-			podTemplateSpec.Spec.SecurityContext.RunAsGroup = nil
+		if podTemplateSpec.Spec.SecurityContext.SeccompProfile == nil && platformContext.SeccompProfile != nil {
+			podTemplateSpec.Spec.SecurityContext = podTemplateSpec.Spec.SecurityContext.WithSeccompProfile(platformContext.SeccompProfile)
 		}
 
-		if podTemplateSpec.Spec.SecurityContext.FSGroup != nil {
-			podTemplateSpec.Spec.SecurityContext.FSGroup = nil
-		}
-
-		if podTemplateSpec.Spec.SecurityContext.SeccompProfile == nil {
-			podTemplateSpec.Spec.SecurityContext.SeccompProfile =
-				corev1apply.SeccompProfile().WithType(
-					corev1.SeccompProfileTypeRuntimeDefault)
-		} else {
-			podTemplateSpec.Spec.SecurityContext.SeccompProfile =
-				podTemplateSpec.Spec.SecurityContext.SeccompProfile.WithType(
-					corev1.SeccompProfileTypeRuntimeDefault)
+		// For OpenShift, override certain fields even if they exist
+		if platform == PlatformOpenShift {
+			if podTemplateSpec.Spec.SecurityContext.RunAsUser != nil {
+				podTemplateSpec.Spec.SecurityContext.RunAsUser = nil
+			}
+			if podTemplateSpec.Spec.SecurityContext.RunAsGroup != nil {
+				podTemplateSpec.Spec.SecurityContext.RunAsGroup = nil
+			}
+			if podTemplateSpec.Spec.SecurityContext.FSGroup != nil {
+				podTemplateSpec.Spec.SecurityContext.FSGroup = nil
+			}
 		}
 	}
 
@@ -1095,6 +1091,8 @@ func ensureObjectMetaApplyConfigurationExists(
 }
 
 // configureContainer configures a container with the given settings
+//
+//nolint:gocyclo // Complex but necessary for platform-aware security context configuration
 func configureContainer(
 	container *corev1apply.ContainerApplyConfiguration,
 	image string,
@@ -1119,68 +1117,56 @@ func configureContainer(
 		WithTTY(false).
 		WithEnv(envVars...)
 
-	// Add container security context if not already present
+	// Add container security context using SecurityContextBuilder
+	securityBuilder := NewSecurityContextBuilder(platform)
 	if container.SecurityContext == nil {
-		container.WithSecurityContext(
-			corev1apply.SecurityContext().
-				WithPrivileged(false).
-				WithRunAsNonRoot(true).
-				WithAllowPrivilegeEscalation(false).
-				WithReadOnlyRootFilesystem(true).
-				WithRunAsUser(int64(1000)).
-				WithRunAsGroup(int64(1000)),
-		)
+		container.WithSecurityContext(securityBuilder.BuildContainerSecurityContextApplyConfiguration())
 	} else {
-		// If the container security context already exists, ensure it has the correct settings
-		if container.SecurityContext.RunAsNonRoot == nil {
-			container.SecurityContext = container.SecurityContext.WithRunAsNonRoot(true)
+		// If the container security context already exists, merge with platform-aware defaults
+		platformContext := securityBuilder.BuildContainerSecurityContextApplyConfiguration()
+
+		// Merge existing context with platform-aware settings
+		if container.SecurityContext.Privileged == nil && platformContext.Privileged != nil {
+			container.SecurityContext = container.SecurityContext.WithPrivileged(*platformContext.Privileged)
 		}
 
-		if container.SecurityContext.RunAsUser == nil {
-			container.SecurityContext = container.SecurityContext.WithRunAsUser(int64(1000))
+		if container.SecurityContext.RunAsNonRoot == nil && platformContext.RunAsNonRoot != nil {
+			container.SecurityContext = container.SecurityContext.WithRunAsNonRoot(*platformContext.RunAsNonRoot)
 		}
 
-		if container.SecurityContext.RunAsGroup == nil {
-			container.SecurityContext = container.SecurityContext.WithRunAsGroup(int64(1000))
+		if container.SecurityContext.RunAsUser == nil && platformContext.RunAsUser != nil {
+			container.SecurityContext = container.SecurityContext.WithRunAsUser(*platformContext.RunAsUser)
 		}
 
-		if container.SecurityContext.Privileged == nil {
-			container.SecurityContext = container.SecurityContext.WithPrivileged(false)
+		if container.SecurityContext.RunAsGroup == nil && platformContext.RunAsGroup != nil {
+			container.SecurityContext = container.SecurityContext.WithRunAsGroup(*platformContext.RunAsGroup)
 		}
 
-		if container.SecurityContext.ReadOnlyRootFilesystem == nil {
-			container.SecurityContext = container.SecurityContext.WithReadOnlyRootFilesystem(true)
+		if container.SecurityContext.AllowPrivilegeEscalation == nil && platformContext.AllowPrivilegeEscalation != nil {
+			container.SecurityContext = container.SecurityContext.WithAllowPrivilegeEscalation(*platformContext.AllowPrivilegeEscalation)
 		}
 
-		if container.SecurityContext.AllowPrivilegeEscalation == nil {
-			container.SecurityContext = container.SecurityContext.WithAllowPrivilegeEscalation(false)
-		}
-	}
-
-	if platform == PlatformOpenShift {
-		logger.Infof("Setting OpenShift security context requirements to container %s", *container.Name)
-
-		if container.SecurityContext.RunAsUser != nil {
-			container.SecurityContext.RunAsUser = nil
+		if container.SecurityContext.ReadOnlyRootFilesystem == nil && platformContext.ReadOnlyRootFilesystem != nil {
+			container.SecurityContext = container.SecurityContext.WithReadOnlyRootFilesystem(*platformContext.ReadOnlyRootFilesystem)
 		}
 
-		if container.SecurityContext.RunAsGroup != nil {
-			container.SecurityContext.RunAsGroup = nil
+		if container.SecurityContext.SeccompProfile == nil && platformContext.SeccompProfile != nil {
+			container.SecurityContext = container.SecurityContext.WithSeccompProfile(platformContext.SeccompProfile)
 		}
 
-		if container.SecurityContext.SeccompProfile == nil {
-			container.SecurityContext.SeccompProfile =
-				corev1apply.SeccompProfile().WithType(
-					corev1.SeccompProfileTypeRuntimeDefault)
-		} else {
-			container.SecurityContext.SeccompProfile =
-				container.SecurityContext.SeccompProfile.WithType(
-					corev1.SeccompProfileTypeRuntimeDefault)
+		if container.SecurityContext.Capabilities == nil && platformContext.Capabilities != nil {
+			container.SecurityContext = container.SecurityContext.WithCapabilities(platformContext.Capabilities)
 		}
 
-		if container.SecurityContext.Capabilities == nil {
-			container.SecurityContext.Capabilities = &corev1apply.CapabilitiesApplyConfiguration{
-				Drop: []corev1.Capability{"ALL"},
+		// For OpenShift, override certain fields even if they exist
+		if platform == PlatformOpenShift {
+			logger.Infof("Setting OpenShift security context requirements to container %s", *container.Name)
+
+			if container.SecurityContext.RunAsUser != nil {
+				container.SecurityContext.RunAsUser = nil
+			}
+			if container.SecurityContext.RunAsGroup != nil {
+				container.SecurityContext.RunAsGroup = nil
 			}
 		}
 	}

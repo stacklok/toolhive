@@ -102,9 +102,15 @@ func SetRegistryFile(registryPath string) error {
 		return fmt.Errorf("invalid JSON format in registry file: %w", err)
 	}
 
+	// Make the path absolute
+	absPath, err := filepath.Abs(registryPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve absolute path: %w", err)
+	}
+
 	// Update the configuration
 	err = UpdateConfig(func(c *Config) {
-		c.LocalRegistryPath = registryPath
+		c.LocalRegistryPath = absPath
 		c.RegistryUrl = "" // Clear URL when setting local path
 	})
 	if err != nil {

@@ -47,15 +47,11 @@ func TestConvertUpstreamToToolhive_DockerPackage(t *testing.T) {
 			},
 		},
 		XPublisher: &UpstreamPublisher{
-			Tool:    "toolhive",
-			Version: "1.0.0",
-			BuildInfo: map[string]any{
-				"toolhive": map[string]any{
-					"tier":      "Official",
-					"transport": "stdio",
-					"tools":     []any{"read_file", "write_file", "list_directory"},
-					"tags":      []any{"filesystem", "files"},
-				},
+			XDevToolhive: &ToolhivePublisherExtension{
+				Tier:      "Official",
+				Transport: "stdio",
+				Tools:     []string{"read_file", "write_file", "list_directory"},
+				Tags:      []string{"filesystem", "files"},
 			},
 		},
 	}
@@ -174,14 +170,10 @@ func TestConvertUpstreamToToolhive_RemoteServer(t *testing.T) {
 			},
 		},
 		XPublisher: &UpstreamPublisher{
-			Tool:    "toolhive",
-			Version: "1.0.0",
-			BuildInfo: map[string]any{
-				"toolhive": map[string]any{
-					"tier":      "Community",
-					"transport": "sse",
-					"tools":     []any{"remote_read", "remote_write"},
-				},
+			XDevToolhive: &ToolhivePublisherExtension{
+				Tier:      "Community",
+				Transport: "sse",
+				Tools:     []string{"remote_read", "remote_write"},
 			},
 		},
 	}
@@ -286,16 +278,10 @@ func TestConvertToolhiveToUpstream_ImageMetadata(t *testing.T) {
 
 	// Check x-publisher
 	require.NotNil(t, result.XPublisher)
-	assert.Equal(t, "toolhive", result.XPublisher.Tool)
-	assert.Equal(t, "1.0.0", result.XPublisher.Version)
 
-	// Check toolhive extension in build_info
-	require.NotNil(t, result.XPublisher.BuildInfo)
-	toolhiveData, ok := result.XPublisher.BuildInfo["toolhive"]
-	require.True(t, ok)
-
-	toolhiveExt, ok := toolhiveData.(*ToolhivePublisherExtension)
-	require.True(t, ok)
+	// Check toolhive extension
+	require.NotNil(t, result.XPublisher.XDevToolhive)
+	toolhiveExt := result.XPublisher.XDevToolhive
 	assert.Equal(t, "Official", toolhiveExt.Tier)
 	assert.Equal(t, "stdio", toolhiveExt.Transport)
 	assert.Equal(t, []string{"test_tool1", "test_tool2"}, toolhiveExt.Tools)

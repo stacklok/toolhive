@@ -186,10 +186,6 @@ const (
 
 // UpstreamPublisher contains optional publisher metadata (extension field)
 type UpstreamPublisher struct {
-	// Tool is the name of the publishing tool
-	Tool string `json:"tool,omitempty" yaml:"tool,omitempty"`
-	// Version is the version of the publishing tool
-	Version string `json:"version,omitempty" yaml:"version,omitempty"`
-	// BuildInfo contains additional build metadata
-	BuildInfo map[string]any `json:"build_info,omitempty" yaml:"build_info,omitempty"`
+	// XDevToolhive contains ToolHive-specific extension data
+	XDevToolhive *ToolhivePublisherExtension `json:"x-dev.toolhive,omitempty" yaml:"x-dev.toolhive,omitempty"`
 }

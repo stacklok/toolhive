@@ -8,6 +8,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
+// ToolhiveExtensionKey is the key used for ToolHive-specific metadata in the x-publisher field
+const ToolhiveExtensionKey = "x-dev.toolhive"
+
 // ToolhivePublisherExtension contains toolhive-specific metadata in the x-publisher field
 type ToolhivePublisherExtension struct {
 	// Tier represents the tier classification level of the server
@@ -40,12 +43,8 @@ func ConvertUpstreamToToolhive(upstream *UpstreamServerDetail) (ServerMetadata, 
 
 	// Extract toolhive-specific metadata from x-publisher field
 	var toolhiveExt *ToolhivePublisherExtension
-	if upstream.XPublisher != nil && upstream.XPublisher.BuildInfo != nil {
-		if toolhiveData, ok := upstream.XPublisher.BuildInfo["toolhive"]; ok {
-			if toolhiveMap, ok := toolhiveData.(map[string]any); ok {
-				toolhiveExt = parseToolhiveExtension(toolhiveMap)
-			}
-		}
+	if upstream.XPublisher != nil {
+		toolhiveExt = upstream.XPublisher.XDevToolhive
 	}
 
 	// Determine if this is a remote server or container server
@@ -197,56 +196,13 @@ func ConvertToolhiveToUpstream(server ServerMetadata) (*UpstreamServerDetail, er
 
 	// Add toolhive extension to x-publisher
 	upstream.XPublisher = &UpstreamPublisher{
-		Tool:    "toolhive",
-		Version: "1.0.0",
-		BuildInfo: map[string]any{
-			"toolhive":  toolhiveExt,
-			"timestamp": time.Now().Format(time.RFC3339),
-		},
+		XDevToolhive: toolhiveExt,
 	}
 
 	return upstream, nil
 }
 
 // Helper functions for conversion
-
-func parseToolhiveExtension(data map[string]any) *ToolhivePublisherExtension {
-	ext := &ToolhivePublisherExtension{}
-
-	if tier, ok := data["tier"].(string); ok {
-		ext.Tier = tier
-	}
-	if transport, ok := data["transport"].(string); ok {
-		ext.Transport = transport
-	}
-	if tools, ok := data["tools"].([]any); ok {
-		ext.Tools = convertInterfaceSliceToStringSlice(tools)
-	}
-	if tags, ok := data["tags"].([]any); ok {
-		ext.Tags = convertInterfaceSliceToStringSlice(tags)
-	}
-	if customMetadata, ok := data["custom_metadata"].(map[string]any); ok {
-		ext.CustomMetadata = customMetadata
-	}
-	if targetPort, ok := data["target_port"].(float64); ok {
-		ext.TargetPort = int(targetPort)
-	}
-	if dockerTags, ok := data["docker_tags"].([]any); ok {
-		ext.DockerTags = convertInterfaceSliceToStringSlice(dockerTags)
-	}
-
-	return ext
-}
-
-func convertInterfaceSliceToStringSlice(slice []any) []string {
-	result := make([]string, 0, len(slice))
-	for _, item := range slice {
-		if str, ok := item.(string); ok {
-			result = append(result, str)
-		}
-	}
-	return result
-}
 
 func convertStatus(status UpstreamServerStatus) string {
 	switch status {

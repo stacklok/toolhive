@@ -113,7 +113,7 @@ func ConvertUpstreamToToolhive(upstream *UpstreamServerDetail) (ServerMetadata, 
 - Servers with `packages` → `ImageMetadata`
 
 **Metadata Extraction**:
-- ToolHive extensions from `x-publisher.build_info.toolhive`
+- ToolHive extensions from `x-publisher.x-dev.toolhive`
 - Default values for missing ToolHive-specific fields
 - Conversion of upstream enums to ToolHive values
 
@@ -129,7 +129,7 @@ func ConvertToolhiveToUpstream(server ServerMetadata) (*UpstreamServerDetail, er
 - Environment variables → Package environment variables
 
 **Extension Population**:
-- ToolHive-specific metadata → `x-publisher.build_info.toolhive`
+- ToolHive-specific metadata → `x-publisher.x-dev.toolhive`
 - Standard upstream fields from ToolHive metadata
 - Publisher information for provenance
 

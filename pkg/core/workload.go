@@ -39,4 +39,6 @@ type Workload struct {
 	Group string `json:"group,omitempty"`
 	// ToolsFilter is the filter on tools applied to the workload.
 	ToolsFilter []string `json:"tools,omitempty"`
+	// Remote indicates whether this is a remote workload (true) or a container workload (false).
+	Remote bool `json:"remote,omitempty"`
 }

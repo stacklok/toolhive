@@ -38,6 +38,11 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 					{Name: "workload1", Group: "other-group"},
 					{Name: "workload2", Group: "another-group"},
 				}, nil)
+
+				sm.EXPECT().GetWorkload(gomock.Any(), gomock.Any()).Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil).AnyTimes()
 			},
 		},
 		{
@@ -58,6 +63,11 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 					{Name: "workload3", Group: "test-group"},
 					{Name: "workload4", Group: "test-group"},
 				}, nil)
+
+				sm.EXPECT().GetWorkload(gomock.Any(), gomock.Any()).Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil).AnyTimes()
 			},
 		},
 		{
@@ -76,6 +86,11 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 					{Name: "workload2", Group: "test-group"},
 					{Name: "workload3", Group: ""},
 				}, nil)
+
+				sm.EXPECT().GetWorkload(gomock.Any(), gomock.Any()).Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil).AnyTimes()
 			},
 		},
 		{
@@ -94,6 +109,11 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 					{Name: "stopped-workload", Group: "test-group", Status: runtime.WorkloadStatusStopped},
 					{Name: "other-group-workload", Group: "other-group", Status: runtime.WorkloadStatusRunning},
 				}, nil)
+
+				sm.EXPECT().GetWorkload(gomock.Any(), gomock.Any()).Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil).AnyTimes()
 			},
 		},
 		{
@@ -113,6 +133,11 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 			expectError:   false,
 			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
 				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return([]core.Workload{}, nil)
+
+				sm.EXPECT().GetWorkload(gomock.Any(), gomock.Any()).Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil).AnyTimes()
 			},
 		},
 	}

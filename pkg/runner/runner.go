@@ -321,7 +321,7 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (*oauth2.TokenS
 	authHandler := NewRemoteAuthHandler(r.Config.RemoteAuthConfig)
 
 	// Perform authentication
-	tokenSource, err := authHandler.Authenticate(ctx, r.Config.Image)
+	tokenSource, err := authHandler.Authenticate(ctx, r.Config.RemoteURL)
 	if err != nil {
 		return nil, fmt.Errorf("remote authentication failed: %w", err)
 	}

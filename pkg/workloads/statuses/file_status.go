@@ -74,28 +74,32 @@ type fileStatusManager struct {
 // TODO: This is a temporary solution to check if a workload is remote
 // because of the import cycle between this package and the runconfig package.
 // We can easily load run config and check if it has a RemoteURL field set when we resolve the import cycle.
-func (f *fileStatusManager) isRemoteWorkload(ctx context.Context, workloadName string) bool {
+func (f *fileStatusManager) isRemoteWorkload(ctx context.Context, workloadName string) (bool, error) {
 	// Check if the run configuration exists
 	exists, err := f.runConfigStore.Exists(ctx, workloadName)
-	if err != nil || !exists {
-		return false
+	if err != nil {
+		return false, err
+	}
+
+	if !exists {
+		return false, rt.ErrWorkloadNotFound
 	}
 
 	// Get a reader for the run configuration
 	reader, err := f.runConfigStore.GetReader(ctx, workloadName)
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer reader.Close()
 
 	// Read the configuration data
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		return false
+		return false, err
 	}
 
 	// Check if the JSON contains "remote_url" field
-	return strings.Contains(string(data), `"remote_url"`)
+	return strings.Contains(string(data), `"remote_url"`), nil
 }
 
 // workloadStatusFile represents the JSON structure stored on disk
@@ -138,7 +142,11 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 	// If file was found, check if this is a remote workload
 	if fileFound {
 		// Check if this is a remote workload using the state package
-		if f.isRemoteWorkload(ctx, workloadName) {
+		remote, err := f.isRemoteWorkload(ctx, workloadName)
+		if err != nil {
+			return core.Workload{}, err
+		}
+		if remote {
 			result.Remote = true
 		}
 
@@ -462,7 +470,11 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 			}
 
 			// Check if this is a remote workload using the state package
-			if f.isRemoteWorkload(ctx, workloadName) {
+			remote, err := f.isRemoteWorkload(ctx, workloadName)
+			if err != nil {
+				return err
+			}
+			if remote {
 				workload.Remote = true
 			}
 

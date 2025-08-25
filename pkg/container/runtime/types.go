@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -282,9 +283,16 @@ type Mount struct {
 	Type MountType
 }
 
-// IsKubernetesRuntime returns true if the runtime is Kubernetes
-// isn't the best way to do this, but for now it's good enough
+// IsKubernetesRuntime checks if the current runtime is Kubernetes
+// This checks the TOOLHIVE_RUNTIME environment variable first, then falls back to
+// checking if we're in a Kubernetes environment
 func IsKubernetesRuntime() bool {
+	// Check if TOOLHIVE_RUNTIME is explicitly set to kubernetes
+	if runtimeEnv := strings.TrimSpace(os.Getenv("TOOLHIVE_RUNTIME")); runtimeEnv == "kubernetes" {
+		return true
+	}
+
+	// Fall back to checking if we're in a Kubernetes environment
 	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
 }
 

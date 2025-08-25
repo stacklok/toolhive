@@ -140,6 +140,14 @@ type RunConfig struct {
 	// ToolsFilter is the list of tools to filter
 	ToolsFilter []string `json:"tools_filter,omitempty" yaml:"tools_filter,omitempty"`
 
+	// ToolOverride is the map of tool names to override. Tools to override are
+	// specified as ToolOverride structs.
+	ToolOverride map[string]ToolOverride `json:"tool_override,omitempty" yaml:"tool_override,omitempty"`
+
+	// ToolOverrideFile is the path to a file containing tool overrides.
+	// The file is a JSON struct mapping actual names to ToolOverride structs.
+	ToolOverrideFile string `json:"tool_override_file,omitempty" yaml:"tool_override_file,omitempty"`
+
 	// IgnoreConfig contains configuration for ignore processing
 	IgnoreConfig *ignore.Config `json:"ignore_config,omitempty" yaml:"ignore_config,omitempty"`
 
@@ -430,4 +438,14 @@ type RemoteAuthConfig struct {
 
 	// OAuth parameters for server-specific customization
 	OAuthParams map[string]string
+}
+
+// ToolOverride represents a tool override.
+// Both Name and Description can be overridden independently, but
+// they can't be both empty.
+type ToolOverride struct {
+	// Name is the redefined name of the tool
+	Name string `json:"name,omitempty"`
+	// Description is the redefined description of the tool
+	Description string `json:"description,omitempty"`
 }

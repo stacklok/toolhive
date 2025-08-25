@@ -6,12 +6,6 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch:
     # Allow manual triggering
-    inputs:
-      count:
-        description: 'Number of entries to update'
-        required: false
-        default: 150
-        type: number
 
 permissions:
   contents: write
@@ -24,57 +18,106 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
 
-      - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
-        with:
-          go-version-file: 'go.mod'
-          cache: true
-
-      - name: Build regup command
-        run: go build -o bin/regup ./cmd/regup
-
-      - name: Set count
-        id: set-count
+      - name: Get latest registry release
+        id: get-release
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "count=${{ github.event.inputs.count }}" >> $GITHUB_OUTPUT
-          else
-            echo "count=150" >> $GITHUB_OUTPUT
+          # Get the latest release info using gh CLI
+          RELEASE_INFO=$(gh release view --repo stacklok/toolhive-registry --json tagName,assets)
+          RELEASE_TAG=$(echo "$RELEASE_INFO" | jq -r '.tagName')
+          
+          # Check if registry.json asset exists
+          REGISTRY_ASSET=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name == "registry.json")')
+          if [ "$REGISTRY_ASSET" = "" ]; then
+            echo "Error: Could not find registry.json asset in latest release"
+            exit 1
           fi
+          
+          # Check if checksum asset exists
+          CHECKSUM_ASSET=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name == "registry.json.sha256")')
+          HAS_CHECKSUM=$([ "$CHECKSUM_ASSET" != "" ] && echo "true" || echo "false")
+          
+          echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+          echo "has_checksum=$HAS_CHECKSUM" >> $GITHUB_OUTPUT
+          echo "Found registry.json in release $RELEASE_TAG"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update registry
+      - name: Download and validate registry
         id: update
         run: |
-          # Run regup with the specified count and provenance verification
-          ./bin/regup update --count ${{ steps.set-count.outputs.count }} --verify-provenance
+          # Download the registry.json using gh CLI
+          gh release download "${{ steps.get-release.outputs.release_tag }}" \
+            --repo stacklok/toolhive-registry \
+            --pattern "registry.json*" \
+            --dir /tmp
           
-          # Check if there are changes
-          if git diff --exit-code pkg/registry/data/registry.json; then
+          # Verify checksum if available
+          if [ "${{ steps.get-release.outputs.has_checksum }}" = "true" ]; then
+            echo "Verifying checksum..."
+            pushd /tmp
+            sha256sum -c registry.json.sha256
+            popd
+            echo "✅ Checksum verification passed"
+          else
+            echo "⚠️ No checksum available for verification"
+          fi
+          
+          # Basic JSON validation
+          if ! jq empty /tmp/registry.json; then
+            echo "Error: Downloaded registry.json is not valid JSON"
+            exit 1
+          fi
+          echo "✅ Valid JSON structure"
+          
+          # Count servers for informational purposes
+          CONTAINER_COUNT=$(jq '.servers | length' /tmp/registry.json)
+          REMOTE_COUNT=$(jq '.remote_servers | length // 0' /tmp/registry.json)
+          TOTAL_COUNT=$((CONTAINER_COUNT + REMOTE_COUNT))
+          
+          if [ "$TOTAL_COUNT" -eq 0 ]; then
+            echo "Error: Registry contains no servers"
+            exit 1
+          fi
+          
+          echo "✅ Registry contains $TOTAL_COUNT servers ($CONTAINER_COUNT container-based, $REMOTE_COUNT remote)"
+          
+          # Check if the file is different from current
+          if cmp -s /tmp/registry.json pkg/registry/data/registry.json; then
             echo "changes=false" >> $GITHUB_OUTPUT
             echo "No changes to the registry"
           else
+            # Replace the current registry.json
+            cp /tmp/registry.json pkg/registry/data/registry.json
             echo "changes=true" >> $GITHUB_OUTPUT
-            echo "Changes detected in the registry"
-            # Log what changed for debugging
-            git diff --name-only --diff-filter=M pkg/registry/data/registry.json || true
-            git diff --stat pkg/registry/data/registry.json || true
+            echo "server_count=$TOTAL_COUNT" >> $GITHUB_OUTPUT
+            echo "Registry updated from release ${{ steps.get-release.outputs.release_tag }}"
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Pull Request
         if: steps.update.outputs.changes == 'true'
         uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "Refresh registry data - pulls, stars, etc."
-          title: "Refresh registry data - pulls, stars, etc."
+          commit-message: "Update registry from toolhive-registry release ${{ steps.get-release.outputs.release_tag }}"
+          title: "Update registry from toolhive-registry release ${{ steps.get-release.outputs.release_tag }}"
           body: |
-            This PR refreshes the registry with the latest GitHub stars and pulls information.
+            This PR updates the registry.json file from the latest release of the [toolhive-registry](https://github.com/stacklok/toolhive-registry) repository.
             
-            The update was performed automatically by the `regup` command with provenance verification enabled.
-
-            ** Note: Any servers that failed provenance verification have been automatically removed from the registry. **
-          branch: update-registry
+            **Release**: ${{ steps.get-release.outputs.release_tag }}
+            **Servers**: ${{ steps.update.outputs.server_count }}
+            **Checksum verified**: ${{ steps.get-release.outputs.has_checksum == 'true' && '✅' || '⚠️ No checksum available' }}
+            
+            ## Migration Notice
+            
+            The registry data is now maintained in the separate [toolhive-registry](https://github.com/stacklok/toolhive-registry) repository and distributed via GitHub releases. This replaces the previous `regup` automation that updated individual server metadata.
+            
+            ## Changes
+            
+            - Registry synchronized from external repository
+            - All server definitions and metadata updated
+            - Provenance and security information maintained by upstream
+          branch: update-registry-from-release
           base: main
           delete-branch: true

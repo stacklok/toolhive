@@ -213,6 +213,7 @@ func (d *defaultManager) stopRemoteWorkload(ctx context.Context, name string, ru
 	}
 
 	if workload.Status != rt.WorkloadStatusRunning {
+		logger.Debugf("Remote workload %s is not running (status: %s)", name, workload.Status)
 		return
 	}
 
@@ -641,13 +642,8 @@ func (d *defaultManager) restartRemoteWorkload(
 ) error {
 	workloadState := d.getRemoteWorkloadState(childCtx, name, runConfig.BaseName)
 
-	if d.isRemoteWorkloadAlreadyRunning(name, workloadState) {
+	if d.isWorkloadAlreadyRunning(name, workloadState) {
 		return nil
-	}
-
-	// Set status to starting
-	if err := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusStarting, ""); err != nil {
-		logger.Warnf("Failed to set workload %s status to starting: %v", name, err)
 	}
 
 	// Load runner configuration from state
@@ -655,6 +651,12 @@ func (d *defaultManager) restartRemoteWorkload(
 	if err != nil {
 		return fmt.Errorf("failed to load state for %s: %v", runConfig.BaseName, err)
 	}
+
+	// Set status to starting
+	if err := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusStarting, ""); err != nil {
+		logger.Warnf("Failed to set workload %s status to starting: %v", name, err)
+	}
+
 	logger.Infof("Loaded configuration from state for %s", runConfig.BaseName)
 
 	// Start the remote workload using the loaded runner
@@ -756,16 +758,6 @@ func (d *defaultManager) getRemoteWorkloadState(ctx context.Context, name, baseN
 func (*defaultManager) isWorkloadAlreadyRunning(name string, workloadSt *workloadState) bool {
 	if workloadSt.Running && workloadSt.ProxyRunning {
 		logger.Infof("Container %s and proxy are already running", name)
-		return true
-	}
-	return false
-}
-
-// isRemoteWorkloadAlreadyRunning checks if the remote workload is already fully running
-func (*defaultManager) isRemoteWorkloadAlreadyRunning(name string, workloadSt *workloadState) bool {
-	if workloadSt.Running && workloadSt.ProxyRunning {
-		logger.Infof("Remote workload %s is already running (status: %v, process: %v)",
-			name, workloadSt.Running, workloadSt.ProxyRunning)
 		return true
 	}
 	return false
@@ -906,7 +898,7 @@ func (d *defaultManager) stopSingleContainerWorkload(workload *rt.ContainerInfo)
 	}
 
 	if err := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusStopped, ""); err != nil {
-		logger.Debugf("Failed to set workload %s status to stopped: %v", name, err)
+		logger.Warnf("Failed to set workload %s status to stopped: %v", name, err)
 	}
 	logger.Infof("Successfully stopped %s...", name)
 	return nil

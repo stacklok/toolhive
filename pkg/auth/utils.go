@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"os/user"
+	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
 
@@ -52,4 +53,11 @@ func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidator
 
 	logger.Infof("Using local user authentication for user: %s", currentUser.Username)
 	return LocalUserMiddleware(currentUser.Username), nil, nil
+}
+
+// EscapeQuotes escapes quotes in a string for use in a quoted-string context.
+func EscapeQuotes(s string) string {
+	// Simple escape of backslashes and quotes is sufficient for quoted-string.
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	return strings.ReplaceAll(s, `"`, `\"`)
 }

@@ -785,3 +785,172 @@ func (m *mockResponseWriter) Write(data []byte) (int, error) {
 func (m *mockResponseWriter) WriteHeader(statusCode int) {
 	m.statusCode = statusCode
 }
+
+func TestNewToolFilterMiddleware(t *testing.T) {
+	t.Parallel()
+
+	// Initialize logger to avoid panic
+	logger.Initialize()
+
+	tests := []struct {
+		name        string
+		opts        []ToolMiddlewareOption
+		expectError bool
+	}{
+		{
+			name: "valid tools filter",
+			opts: []ToolMiddlewareOption{
+				WithToolsFilter("tool1", "tool2"),
+			},
+			expectError: false,
+		},
+		{
+			name: "empty tools filter - should fail",
+			opts: []ToolMiddlewareOption{
+				WithToolsFilter(),
+			},
+			expectError: true,
+		},
+		{
+			name:        "no options - should fail",
+			opts:        []ToolMiddlewareOption{},
+			expectError: true,
+		},
+		{
+			name: "multiple options",
+			opts: []ToolMiddlewareOption{
+				WithToolsFilter("tool1", "tool2"),
+				WithToolsOverride("tool3", "my-tool3", "My Tool3 Description"),
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			middleware, err := NewListToolsMappingMiddleware(tt.opts...)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, middleware)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, middleware)
+			}
+		})
+	}
+}
+
+func TestWithToolsFilter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		toolsFilter []string
+		expectError bool
+	}{
+		{
+			name:        "valid tools filter",
+			toolsFilter: []string{"tool1", "tool2", "tool3"},
+			expectError: false,
+		},
+		{
+			name:        "empty tools filter",
+			toolsFilter: []string{},
+			expectError: false,
+		},
+		{
+			name:        "nil tools filter",
+			toolsFilter: nil,
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			opt := WithToolsFilter(tt.toolsFilter...)
+			assert.NotNil(t, opt)
+
+			config := &toolMiddlewareConfig{
+				filterTools: make(map[string]struct{}),
+			}
+			err := opt(config)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				for _, tool := range tt.toolsFilter {
+					assert.NotNil(t, config.filterTools[tool])
+				}
+			}
+		})
+	}
+}
+
+func TestWithToolsOverride(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                    string
+		toolActualName          string
+		toolOverrideName        string
+		toolOverrideDescription string
+		expectError             bool
+	}{
+		{
+			name:                    "valid tools override",
+			toolActualName:          "tool1",
+			toolOverrideName:        "my-tool1",
+			toolOverrideDescription: "My Tool1 Description",
+			expectError:             false,
+		},
+		{
+			name:                    "empty tools override",
+			toolActualName:          "tool1",
+			toolOverrideName:        "",
+			toolOverrideDescription: "",
+			expectError:             true,
+		},
+		{
+			name:                    "empty tools override",
+			toolActualName:          "",
+			toolOverrideName:        "",
+			toolOverrideDescription: "",
+			expectError:             true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			opt := WithToolsOverride(tt.toolActualName, tt.toolOverrideName, tt.toolOverrideDescription)
+			assert.NotNil(t, opt)
+
+			config := &toolMiddlewareConfig{
+				actualToUserOverride: make(map[string]toolOverrideEntry),
+				userToActualOverride: make(map[string]toolOverrideEntry),
+			}
+			err := opt(config)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+
+				assert.Equal(t, tt.toolActualName, config.actualToUserOverride[tt.toolActualName].ActualName)
+				assert.Equal(t, tt.toolOverrideName, config.actualToUserOverride[tt.toolActualName].OverrideName)
+				assert.Equal(t, tt.toolOverrideDescription, config.actualToUserOverride[tt.toolActualName].OverrideDescription)
+
+				assert.Equal(t, tt.toolActualName, config.userToActualOverride[tt.toolOverrideName].ActualName)
+				assert.Equal(t, tt.toolOverrideName, config.userToActualOverride[tt.toolOverrideName].OverrideName)
+				assert.Equal(t, tt.toolOverrideDescription, config.userToActualOverride[tt.toolOverrideName].OverrideDescription)
+			}
+		})
+	}
+}

@@ -672,16 +672,20 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 }
 
 func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
-	// Check for the existence of the XDG_CONFIG_HOME and HOME environment variables
-	// and set them to /tmp if they don't exist
+	// Check for the existence of the XDG_CONFIG_HOME, HOME, and TOOLHIVE_RUNTIME environment variables
+	// and set them to defaults if they don't exist
 	xdgConfigHomeFound := false
 	homeFound := false
+	toolhiveRuntimeFound := false
 	for _, envVar := range env {
 		if envVar.Name == "XDG_CONFIG_HOME" {
 			xdgConfigHomeFound = true
 		}
 		if envVar.Name == "HOME" {
 			homeFound = true
+		}
+		if envVar.Name == "TOOLHIVE_RUNTIME" {
+			toolhiveRuntimeFound = true
 		}
 	}
 	if !xdgConfigHomeFound {
@@ -696,6 +700,13 @@ func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{
 			Name:  "HOME",
 			Value: "/tmp",
+		})
+	}
+	if !toolhiveRuntimeFound {
+		logger.Debugf("TOOLHIVE_RUNTIME not found, setting to kubernetes")
+		env = append(env, corev1.EnvVar{
+			Name:  "TOOLHIVE_RUNTIME",
+			Value: "kubernetes",
 		})
 	}
 	return env

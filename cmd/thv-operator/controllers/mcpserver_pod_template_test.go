@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -74,8 +75,9 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 		},
 	}
 
-	// Register the scheme
-	s := scheme.Scheme
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
@@ -162,8 +164,9 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 		},
 	}
 
-	// Register the scheme
-	s := scheme.Scheme
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
@@ -204,8 +207,9 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 		},
 	}
 
-	// Register the scheme
-	s := scheme.Scheme
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
@@ -306,8 +310,9 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 		},
 	}
 
-	// Register the scheme
-	s := scheme.Scheme
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
@@ -360,8 +365,9 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 		},
 	}
 
-	// Register the scheme
-	s := scheme.Scheme
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 

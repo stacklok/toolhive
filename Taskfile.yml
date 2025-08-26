@@ -42,21 +42,21 @@ tasks:
       - golangci-lint run --fix ./...
 
   test-unixlike:
-    desc: Run unit tests (excluding e2e tests) on Linux and macOS
+    desc: Run unit tests (excluding e2e tests) on Linux and macOS with race detection
     platforms: [linux, darwin]
     internal: true
     cmds:
-      - go test -v $(go list ./... | grep -v '/test/e2e')
+      - go test -v -race $(go list ./... | grep -v '/test/e2e')
 
   test-windows:
-    desc: Run unit tests (excluding e2e tests) on Windows
+    desc: Run unit tests (excluding e2e tests) on Windows with race detection
     platforms: [windows]
     internal: true
     vars:
       DIR_LIST:
         sh: go list ./... | findstr -V "\/test\/e2e"
     cmds:
-      - go test -v {{.DIR_LIST | catLines}}
+      - go test -v -race {{.DIR_LIST | catLines}}
 
   test:
     desc: Run unit tests (excluding e2e tests)
@@ -68,19 +68,19 @@ tasks:
         platforms: [windows]
 
   test-coverage-unixlike:
-    desc: Run unit tests with coverage analysis (excluding e2e tests) on Linux and macOS
+    desc: Run unit tests with coverage analysis and race detection (excluding e2e tests) on Linux and macOS
     platforms: [linux, darwin]
     internal: true
     cmds:
       - cmd: mkdir -p coverage
         platforms: [linux, darwin]
-      - go test -coverprofile=coverage/coverage.out $(go list ./... | grep -v '/test/e2e')
+      - go test -race -coverprofile=coverage/coverage.out $(go list ./... | grep -v '/test/e2e')
       - go tool cover -func=coverage/coverage.out
       - echo "Generating HTML coverage report in coverage/coverage.html"
       - go tool cover -html=coverage/coverage.out -o coverage/coverage.html
 
   test-coverage-windows:
-    desc: Run unit tests with coverage analysis (excluding e2e tests) on Windows
+    desc: Run unit tests with coverage analysis and race detection (excluding e2e tests) on Windows
     platforms: [windows]
     internal: true
     vars:
@@ -89,7 +89,7 @@ tasks:
     cmds:
       - cmd: cmd.exe /c mkdir coverage
         ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
-      - go test -coverprofile=coverage/coverage.out {{.DIR_LIST | catLines}}
+      - go test -race -coverprofile=coverage/coverage.out {{.DIR_LIST | catLines}}
       - go tool cover -func=coverage/coverage.out
       - echo "Generating HTML coverage report in coverage/coverage.html"
       - go tool cover -html=coverage/coverage.out -o coverage/coverage.html

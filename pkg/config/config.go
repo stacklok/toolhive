@@ -14,6 +14,7 @@ import (
 	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -58,14 +59,20 @@ func validateProviderType(provider string) (secrets.ProviderType, error) {
 // It first checks the TOOLHIVE_SECRETS_PROVIDER environment variable, and falls back to the config file.
 // Returns ErrSecretsNotSetup if secrets have not been configured yet.
 func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
+	return s.GetProviderTypeWithEnv(&env.OSReader{})
+}
+
+// GetProviderTypeWithEnv returns the secrets provider type using the provided environment reader.
+// This method allows for dependency injection of environment variable access for testing.
+func (s *Secrets) GetProviderTypeWithEnv(envReader env.Reader) (secrets.ProviderType, error) {
 	// Check if secrets setup has been completed
 	if !s.SetupCompleted {
 		return "", secrets.ErrSecretsNotSetup
 	}
 
 	// First check the environment variable
-	if envProvider := os.Getenv(secrets.ProviderEnvVar); envProvider != "" {
-		return validateProviderType(envProvider)
+	if envVar := envReader.Getenv(secrets.ProviderEnvVar); envVar != "" {
+		return validateProviderType(envVar)
 	}
 
 	// Fall back to config file

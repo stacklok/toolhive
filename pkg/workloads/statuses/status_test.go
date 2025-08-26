@@ -3,7 +3,6 @@ package statuses
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -11,8 +10,9 @@ import (
 	"go.uber.org/mock/gomock"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
+	envmocks "github.com/stacklok/toolhive/pkg/env/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -28,7 +28,7 @@ func TestNewStatusManagerFromRuntime(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	manager := NewStatusManagerFromRuntime(mockRuntime)
 
 	assert.NotNil(t, manager)
@@ -44,7 +44,7 @@ func TestRuntimeStatusManager_CreateWorkloadStatus(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	manager := &runtimeStatusManager{runtime: mockRuntime}
 
 	ctx := context.Background()
@@ -59,14 +59,14 @@ func TestRuntimeStatusManager_GetWorkload(t *testing.T) {
 	tests := []struct {
 		name          string
 		workloadName  string
-		setupMock     func(*mocks.MockRuntime)
+		setupMock     func(*rtmocks.MockRuntime)
 		expectedError string
 		expectedName  string
 	}{
 		{
 			name:         "successful get workload",
 			workloadName: "test-workload",
-			setupMock: func(m *mocks.MockRuntime) {
+			setupMock: func(m *rtmocks.MockRuntime) {
 				info := rt.ContainerInfo{
 					Name:    "test-workload",
 					Image:   "test-image:latest",
@@ -88,13 +88,13 @@ func TestRuntimeStatusManager_GetWorkload(t *testing.T) {
 		{
 			name:          "invalid workload name",
 			workloadName:  "",
-			setupMock:     func(_ *mocks.MockRuntime) {},
+			setupMock:     func(_ *rtmocks.MockRuntime) {},
 			expectedError: "workload name cannot be empty",
 		},
 		{
 			name:         "runtime error",
 			workloadName: "test-workload",
-			setupMock: func(m *mocks.MockRuntime) {
+			setupMock: func(m *rtmocks.MockRuntime) {
 				m.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").Return(rt.ContainerInfo{}, errors.New("runtime error"))
 			},
 			expectedError: "runtime error",
@@ -108,7 +108,7 @@ func TestRuntimeStatusManager_GetWorkload(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			mockRuntime := mocks.NewMockRuntime(ctrl)
+			mockRuntime := rtmocks.NewMockRuntime(ctrl)
 			tt.setupMock(mockRuntime)
 
 			manager := &runtimeStatusManager{runtime: mockRuntime}
@@ -168,7 +168,7 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 		name           string
 		listAll        bool
 		labelFilters   []string
-		setupMock      func(*mocks.MockRuntime)
+		setupMock      func(*rtmocks.MockRuntime)
 		expectedCount  int
 		expectedError  string
 		checkWorkloads func([]core.Workload)
@@ -176,7 +176,7 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 		{
 			name:    "list running workloads only",
 			listAll: false,
-			setupMock: func(m *mocks.MockRuntime) {
+			setupMock: func(m *rtmocks.MockRuntime) {
 				containers := []rt.ContainerInfo{runningContainer, stoppedContainer}
 				m.EXPECT().ListWorkloads(gomock.Any()).Return(containers, nil)
 			},
@@ -189,7 +189,7 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 		{
 			name:    "list all workloads",
 			listAll: true,
-			setupMock: func(m *mocks.MockRuntime) {
+			setupMock: func(m *rtmocks.MockRuntime) {
 				containers := []rt.ContainerInfo{runningContainer, stoppedContainer}
 				m.EXPECT().ListWorkloads(gomock.Any()).Return(containers, nil)
 			},
@@ -199,7 +199,7 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 			name:         "list with label filter",
 			listAll:      true,
 			labelFilters: []string{"environment=test"},
-			setupMock: func(m *mocks.MockRuntime) {
+			setupMock: func(m *rtmocks.MockRuntime) {
 				containers := []rt.ContainerInfo{runningContainer, stoppedContainer}
 				m.EXPECT().ListWorkloads(gomock.Any()).Return(containers, nil)
 			},
@@ -212,7 +212,7 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 			name:         "invalid label filter",
 			listAll:      true,
 			labelFilters: []string{"invalid-filter"},
-			setupMock: func(m *mocks.MockRuntime) {
+			setupMock: func(m *rtmocks.MockRuntime) {
 				// Runtime is called before label parsing, so we need to mock it
 				containers := []rt.ContainerInfo{runningContainer}
 				m.EXPECT().ListWorkloads(gomock.Any()).Return(containers, nil)
@@ -222,7 +222,7 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 		{
 			name:    "runtime error",
 			listAll: true,
-			setupMock: func(m *mocks.MockRuntime) {
+			setupMock: func(m *rtmocks.MockRuntime) {
 				m.EXPECT().ListWorkloads(gomock.Any()).Return(nil, errors.New("runtime error"))
 			},
 			expectedError: "failed to list containers",
@@ -236,7 +236,7 @@ func TestRuntimeStatusManager_ListWorkloads(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			mockRuntime := mocks.NewMockRuntime(ctrl)
+			mockRuntime := rtmocks.NewMockRuntime(ctrl)
 			tt.setupMock(mockRuntime)
 
 			manager := &runtimeStatusManager{runtime: mockRuntime}
@@ -265,7 +265,7 @@ func TestRuntimeStatusManager_SetWorkloadStatus(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	manager := &runtimeStatusManager{runtime: mockRuntime}
 
 	ctx := context.Background()
@@ -281,7 +281,7 @@ func TestRuntimeStatusManager_DeleteWorkloadStatus(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	manager := &runtimeStatusManager{runtime: mockRuntime}
 
 	ctx := context.Background()
@@ -423,7 +423,7 @@ func TestNewStatusManager(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 
 	tests := []struct {
 		name         string
@@ -445,27 +445,20 @@ func TestNewStatusManager(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
 
-			// Mock the IsKubernetesRuntime function by setting/unsetting the environment variable
-			originalEnv := ""
-			if currentEnv := os.Getenv("KUBERNETES_SERVICE_HOST"); currentEnv != "" {
-				originalEnv = currentEnv
-			}
-			t.Cleanup(func() {
-				if originalEnv != "" {
-					os.Setenv("KUBERNETES_SERVICE_HOST", originalEnv)
-				} else {
-					os.Unsetenv("KUBERNETES_SERVICE_HOST")
-				}
-			})
-
+			// Mock the environment variables using dependency injection
+			mockEnv := envmocks.NewMockReader(ctrl)
 			if tt.isKubernetes {
-				os.Setenv("KUBERNETES_SERVICE_HOST", "test-service")
+				mockEnv.EXPECT().Getenv("TOOLHIVE_RUNTIME").Return("")
+				mockEnv.EXPECT().Getenv("KUBERNETES_SERVICE_HOST").Return("test-service")
 			} else {
-				os.Unsetenv("KUBERNETES_SERVICE_HOST")
+				mockEnv.EXPECT().Getenv("TOOLHIVE_RUNTIME").Return("")
+				mockEnv.EXPECT().Getenv("KUBERNETES_SERVICE_HOST").Return("")
 			}
 
-			manager, err := NewStatusManager(mockRuntime)
+			manager, err := NewStatusManagerWithEnv(mockRuntime, mockEnv)
 
 			assert.NoError(t, err)
 			assert.NotNil(t, manager)

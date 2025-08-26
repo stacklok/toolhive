@@ -10,10 +10,15 @@ import (
 
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
+
+	"github.com/stacklok/toolhive/pkg/env/mocks"
 )
 
 // TestUnstructuredLogsCheck tests the unstructuredLogs function
-func TestUnstructuredLogsCheck(t *testing.T) { //nolint:paralleltest // Uses environment variables
+func TestUnstructuredLogsCheck(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		envValue string
@@ -25,18 +30,17 @@ func TestUnstructuredLogsCheck(t *testing.T) { //nolint:paralleltest // Uses env
 		{"Invalid Value", "not-a-bool", true},
 	}
 
-	for _, tt := range tests { //nolint:paralleltest // Uses environment variables
-		t.Run(tt.name, func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-			// Set environment variable
-			if tt.envValue != "" {
-				os.Setenv("UNSTRUCTURED_LOGS", tt.envValue)
-				defer os.Unsetenv("UNSTRUCTURED_LOGS")
-			} else {
-				os.Unsetenv("UNSTRUCTURED_LOGS")
-			}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
 
-			if got := unstructuredLogs(); got != tt.expected {
-				t.Errorf("unstructuredLogs() = %v, want %v", got, tt.expected)
+			mockEnv := mocks.NewMockReader(ctrl)
+			mockEnv.EXPECT().Getenv("UNSTRUCTURED_LOGS").Return(tt.envValue)
+
+			if got := unstructuredLogsWithEnv(mockEnv); got != tt.expected {
+				t.Errorf("unstructuredLogsWithEnv() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
@@ -44,7 +48,7 @@ func TestUnstructuredLogsCheck(t *testing.T) { //nolint:paralleltest // Uses env
 
 // TestStructuredLogger tests the structured logger functionality
 // TODO: Keeping this for migration but can be removed as we don't need really need to test zap
-func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environment variables
+func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses global logger state and output capture
 	const (
 		levelDebug  = "debug"
 		levelInfo   = "info"
@@ -66,19 +70,22 @@ func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environm
 		{levelPanic, "panic message"},
 	}
 
-	for _, tc := range basicLogTestCases { //nolint:paralleltest // Uses environment variables
-		t.Run("BasicLogs_"+tc.level, func(t *testing.T) {
+	for _, tc := range basicLogTestCases {
+		t.Run("BasicLogs_"+tc.level, func(t *testing.T) { //nolint:paralleltest // Uses global logger state and output capture
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
 			// we create a pipe to capture the output of the log
 			originalStdout := os.Stdout
 			r, w, _ := os.Pipe()
 			os.Stdout = w
 
-			os.Setenv("UNSTRUCTURED_LOGS", "false")
-			defer os.Unsetenv("UNSTRUCTURED_LOGS")
+			mockEnv := mocks.NewMockReader(ctrl)
+			mockEnv.EXPECT().Getenv("UNSTRUCTURED_LOGS").Return("false")
 
 			viper.SetDefault("debug", true)
 
-			Initialize()
+			InitializeWithEnv(mockEnv)
 
 			// Handle panic and fatal recovery
 			defer func() {
@@ -146,19 +153,22 @@ func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environm
 		{levelPanic, "panic message", "key", "value"},
 	}
 
-	for _, tc := range structuredLogTestCases { //nolint:paralleltest // Uses environment variables
-		t.Run("StructuredLogs_"+tc.level, func(t *testing.T) {
+	for _, tc := range structuredLogTestCases {
+		t.Run("StructuredLogs_"+tc.level, func(t *testing.T) { //nolint:paralleltest // Uses global logger state and output capture
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
 			// we create a pipe to capture the output of the log
 			originalStdout := os.Stdout
 			r, w, _ := os.Pipe()
 			os.Stdout = w
 
-			os.Setenv("UNSTRUCTURED_LOGS", "false")
-			defer os.Unsetenv("UNSTRUCTURED_LOGS")
+			mockEnv := mocks.NewMockReader(ctrl)
+			mockEnv.EXPECT().Getenv("UNSTRUCTURED_LOGS").Return("false")
 
 			viper.SetDefault("debug", true)
 
-			Initialize()
+			InitializeWithEnv(mockEnv)
 
 			// Handle panic and fatal recovery
 			defer func() {
@@ -233,19 +243,22 @@ func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environm
 		{levelPanic, "panic message %s and %s", "key", "value", "panic message key and value", true},
 	}
 
-	for _, tc := range formattedLogTestCases { //nolint:paralleltest // Uses environment variables
-		t.Run("FormattedLogs_"+tc.level, func(t *testing.T) {
+	for _, tc := range formattedLogTestCases {
+		t.Run("FormattedLogs_"+tc.level, func(t *testing.T) { //nolint:paralleltest // Uses global logger state and output capture
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
 			// we create a pipe to capture the output of the log
 			originalStdout := os.Stdout
 			r, w, _ := os.Pipe()
 			os.Stdout = w
 
-			os.Setenv("UNSTRUCTURED_LOGS", "false")
-			defer os.Unsetenv("UNSTRUCTURED_LOGS")
+			mockEnv := mocks.NewMockReader(ctrl)
+			mockEnv.EXPECT().Getenv("UNSTRUCTURED_LOGS").Return("false")
 
 			viper.SetDefault("debug", true)
 
-			Initialize()
+			InitializeWithEnv(mockEnv)
 
 			// Handle panic and fatal recovery
 			defer func() {
@@ -299,7 +312,7 @@ func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environm
 }
 
 // TestUnstructuredLogger tests the unstructured logger functionality
-func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses environment variables
+func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses global logger state and output capture
 	// we only test for the formatted logs here because the unstructured logs
 	// do not contain the key/value pair format that the structured logs do
 	const (
@@ -326,8 +339,10 @@ func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses enviro
 		{levelPanic, "panic message %s and %s", "key", "value", "panic message key and value"},
 	}
 
-	for _, tc := range formattedLogTestCases { //nolint:paralleltest // Uses environment variables
-		t.Run("FormattedLogs_"+tc.level, func(t *testing.T) {
+	for _, tc := range formattedLogTestCases {
+		t.Run("FormattedLogs_"+tc.level, func(t *testing.T) { //nolint:paralleltest // Uses global logger state and output capture
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
 
 			// we create a pipe to capture the output of the log
 			// so we can test that the logger logs the right message
@@ -335,9 +350,12 @@ func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses enviro
 			r, w, _ := os.Pipe()
 			os.Stderr = w
 
+			mockEnv := mocks.NewMockReader(ctrl)
+			mockEnv.EXPECT().Getenv("UNSTRUCTURED_LOGS").Return("true")
+
 			viper.SetDefault("debug", true)
 
-			Initialize()
+			InitializeWithEnv(mockEnv)
 
 			// Handle panic recovery for DPANIC and PANIC levels
 			defer func() {
@@ -380,12 +398,14 @@ func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses enviro
 }
 
 // TestInitialize tests the Initialize function
-func TestInitialize(t *testing.T) { //nolint:paralleltest // Uses environment variables
+func TestInitialize(t *testing.T) { //nolint:paralleltest // Uses global logger state and output capture
 	// Test structured logs (JSON)
-	t.Run("Structured Logs", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		// Set environment to use structured logs
-		os.Setenv("UNSTRUCTURED_LOGS", "false")
-		defer os.Unsetenv("UNSTRUCTURED_LOGS")
+	t.Run("Structured Logs", func(t *testing.T) { //nolint:paralleltest // Uses global logger state and output capture
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv("UNSTRUCTURED_LOGS").Return("false")
 
 		// Redirect stdout to capture output
 		oldStdout := os.Stdout
@@ -393,7 +413,7 @@ func TestInitialize(t *testing.T) { //nolint:paralleltest // Uses environment va
 		os.Stdout = w
 
 		// Run initialization
-		Initialize()
+		InitializeWithEnv(mockEnv)
 
 		// Log a test message
 		Info("test message")
@@ -419,10 +439,12 @@ func TestInitialize(t *testing.T) { //nolint:paralleltest // Uses environment va
 	})
 
 	// Test unstructured logs
-	t.Run("Unstructured Logs", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		// Set environment to use unstructured logs
-		os.Setenv("UNSTRUCTURED_LOGS", "true")
-		defer os.Unsetenv("UNSTRUCTURED_LOGS")
+	t.Run("Unstructured Logs", func(t *testing.T) { //nolint:paralleltest // Uses global logger state and output capture
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv("UNSTRUCTURED_LOGS").Return("true")
 
 		// Redirect stderr to capture output
 		oldStderr := os.Stderr
@@ -430,7 +452,7 @@ func TestInitialize(t *testing.T) { //nolint:paralleltest // Uses environment va
 		os.Stderr = w
 
 		// Run initialization
-		Initialize()
+		InitializeWithEnv(mockEnv)
 
 		// Log a test message
 		Info("test message")

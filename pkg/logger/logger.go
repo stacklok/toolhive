@@ -2,7 +2,6 @@
 package logger
 
 import (
-	"os"
 	"strconv"
 	"time"
 
@@ -11,6 +10,8 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"github.com/stacklok/toolhive/pkg/env"
 )
 
 // Debug logs a message at debug level using the singleton logger.
@@ -128,8 +129,14 @@ func NewLogr() logr.Logger {
 // with only time and LogLevelType (INFO, DEBUG, ERROR, WARN)).
 // Otherwise it will create a standard structured slog logger
 func Initialize() {
+	InitializeWithEnv(&env.OSReader{})
+}
+
+// InitializeWithEnv creates and configures the appropriate logger with a custom environment reader.
+// This allows for dependency injection of environment variable access for testing.
+func InitializeWithEnv(envReader env.Reader) {
 	var config zap.Config
-	if unstructuredLogs() {
+	if unstructuredLogsWithEnv(envReader) {
 		config = zap.NewDevelopmentConfig()
 		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 		config.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout(time.Kitchen)
@@ -152,7 +159,11 @@ func Initialize() {
 }
 
 func unstructuredLogs() bool {
-	unstructuredLogs, err := strconv.ParseBool(os.Getenv("UNSTRUCTURED_LOGS"))
+	return unstructuredLogsWithEnv(&env.OSReader{})
+}
+
+func unstructuredLogsWithEnv(envReader env.Reader) bool {
+	unstructuredLogs, err := strconv.ParseBool(envReader.Getenv("UNSTRUCTURED_LOGS"))
 	if err != nil {
 		// at this point if the error is not nil, the env var wasn't set, or is ""
 		// which means we just default to outputting unstructured logs.

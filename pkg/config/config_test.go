@@ -7,11 +7,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/env/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
+
 
 // SetupTestConfig creates a temporary config file and returns the config path
 func SetupTestConfig(t *testing.T, configContent *Config) (string, string) {
@@ -258,56 +261,105 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 	t.Parallel()
 	logger.Initialize()
 
-	// Save original env value and restore at the end
-	originalEnv := os.Getenv(secrets.ProviderEnvVar)
-	defer func() {
-		if originalEnv != "" {
-			os.Setenv(secrets.ProviderEnvVar, originalEnv)
-		} else {
-			os.Unsetenv(secrets.ProviderEnvVar)
+	t.Run("Environment variable takes precedence", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   string(secrets.OnePasswordType),
+			SetupCompleted: true,
 		}
-	}()
 
-	s := &Secrets{
-		ProviderType:   string(secrets.OnePasswordType), // Config says 1password
-		SetupCompleted: true,                            // Setup completed for testing
-	}
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return(string(secrets.EncryptedType))
+		got, err := s.GetProviderTypeWithEnv(mockEnv)
+		require.NoError(t, err)
+		assert.Equal(t, secrets.EncryptedType, got, "Environment variable should take precedence over config")
+	})
 
-	// Test 1: Environment variable takes precedence
-	os.Setenv(secrets.ProviderEnvVar, string(secrets.EncryptedType))
-	got, err := s.GetProviderType()
-	require.NoError(t, err)
-	assert.Equal(t, secrets.EncryptedType, got, "Environment variable should take precedence over config")
+	t.Run("Falls back to config when env var is unset", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
 
-	// Test 2: Falls back to config when env var is unset
-	os.Unsetenv(secrets.ProviderEnvVar)
-	got, err = s.GetProviderType()
-	require.NoError(t, err)
-	assert.Equal(t, secrets.OnePasswordType, got, "Should fallback to config value when env var is unset")
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   string(secrets.OnePasswordType),
+			SetupCompleted: true,
+		}
 
-	// Test 3: None provider via environment variable
-	os.Setenv(secrets.ProviderEnvVar, string(secrets.NoneType))
-	got, err = s.GetProviderType()
-	require.NoError(t, err)
-	assert.Equal(t, secrets.NoneType, got, "Environment variable should support none provider")
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return("")
+		got, err := s.GetProviderTypeWithEnv(mockEnv)
+		require.NoError(t, err)
+		assert.Equal(t, secrets.OnePasswordType, got, "Should fallback to config value when env var is unset")
+	})
 
-	// Test 4: None provider via config
-	os.Unsetenv(secrets.ProviderEnvVar)
-	s.ProviderType = string(secrets.NoneType)
-	got, err = s.GetProviderType()
-	require.NoError(t, err)
-	assert.Equal(t, secrets.NoneType, got, "Config should support none provider")
+	t.Run("None provider via environment variable", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
 
-	// Test 5: Invalid environment variable returns error
-	os.Setenv(secrets.ProviderEnvVar, "invalid")
-	_, err = s.GetProviderType()
-	assert.Error(t, err, "Should return error for invalid environment variable")
-	assert.Contains(t, err.Error(), "invalid secrets provider type", "Error should mention invalid provider type")
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   string(secrets.OnePasswordType),
+			SetupCompleted: true,
+		}
 
-	// Test 6: Setup not completed returns error
-	os.Unsetenv(secrets.ProviderEnvVar)
-	s.SetupCompleted = false
-	_, err = s.GetProviderType()
-	assert.Error(t, err, "Should return error when setup not completed")
-	assert.ErrorIs(t, err, secrets.ErrSecretsNotSetup, "Should return ErrSecretsNotSetup when setup not completed")
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return(string(secrets.NoneType))
+		got, err := s.GetProviderTypeWithEnv(mockEnv)
+		require.NoError(t, err)
+		assert.Equal(t, secrets.NoneType, got, "Environment variable should support none provider")
+	})
+
+	t.Run("None provider via config", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   string(secrets.NoneType),
+			SetupCompleted: true,
+		}
+
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return("")
+		got, err := s.GetProviderTypeWithEnv(mockEnv)
+		require.NoError(t, err)
+		assert.Equal(t, secrets.NoneType, got, "Config should support none provider")
+	})
+
+	t.Run("Invalid environment variable returns error", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   string(secrets.OnePasswordType),
+			SetupCompleted: true,
+		}
+
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return("invalid")
+		_, err := s.GetProviderTypeWithEnv(mockEnv)
+		assert.Error(t, err, "Should return error for invalid environment variable")
+		assert.Contains(t, err.Error(), "invalid secrets provider type", "Error should mention invalid provider type")
+	})
+
+	t.Run("Setup not completed returns error", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   string(secrets.OnePasswordType),
+			SetupCompleted: false,
+		}
+
+		// No expectation needed since the function returns early when SetupCompleted is false
+		_, err := s.GetProviderTypeWithEnv(mockEnv)
+		assert.Error(t, err, "Should return error when setup not completed")
+		assert.ErrorIs(t, err, secrets.ErrSecretsNotSetup, "Should return ErrSecretsNotSetup when setup not completed")
+	})
 }

@@ -15,6 +15,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
+// UserAgent is the user agent for the ToolHive MCP client
+const UserAgent = "ToolHive/1.0"
+
 // OIDCDiscoveryDocument represents the OIDC discovery document structure
 // This is a simplified wrapper around the Zitadel OIDC discovery
 type OIDCDiscoveryDocument struct {
@@ -67,12 +70,12 @@ func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client 
 		}
 	}
 
-	try := func(urlStr string) (*OIDCDiscoveryDocument, error) {
+	try := func(urlStr string, oidc bool) (*OIDCDiscoveryDocument, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
 		}
-		req.Header.Set("User-Agent", "ToolHive/1.0")
+		req.Header.Set("User-Agent", UserAgent)
 		req.Header.Set("Accept", "application/json")
 
 		resp, err := client.Do(req)
@@ -95,18 +98,18 @@ func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client 
 		if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&doc); err != nil {
 			return nil, fmt.Errorf("%s: unexpected response: %w", urlStr, err)
 		}
-		if err := validateOIDCDocument(&doc, issuer); err != nil {
+		if err := validateOIDCDocument(&doc, issuer, oidc); err != nil {
 			return nil, fmt.Errorf("%s: invalid metadata: %w", urlStr, err)
 		}
 		return &doc, nil
 	}
 
-	doc, err := try(oidcURL)
+	doc, err := try(oidcURL, true)
 	if err == nil {
 		return doc, nil
 	}
 	oidcErr := err
-	doc, err = try(oauthURL)
+	doc, err = try(oauthURL, false)
 	if err == nil {
 		return doc, nil
 	}
@@ -117,7 +120,7 @@ func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client 
 }
 
 // validateOIDCDocument validates the OIDC discovery document
-func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string) error {
+func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string, oidc bool) error {
 	if doc.Issuer == "" {
 		return fmt.Errorf("missing issuer")
 	}
@@ -134,8 +137,9 @@ func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string) err
 		return fmt.Errorf("missing token_endpoint")
 	}
 
-	if doc.JWKSURI == "" {
-		return fmt.Errorf("missing jwks_uri")
+	// Require jwks_uri for OIDC
+	if oidc && doc.JWKSURI == "" {
+		return fmt.Errorf("missing jwks_uri (OIDC requires it)")
 	}
 
 	// Validate URLs

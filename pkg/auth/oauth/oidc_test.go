@@ -951,7 +951,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 				}))
 			},
 			expectError: true,
-			errorMsg:    "404",
+			errorMsg:    "HTTP 404",
 		},
 		{
 			name:   "server returns wrong content type",

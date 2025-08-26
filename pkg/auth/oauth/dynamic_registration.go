@@ -18,6 +18,15 @@ import (
 // ToolHiveMCPClientName is the name of the ToolHive MCP client
 const ToolHiveMCPClientName = "ToolHive MCP Client"
 
+// AuthorizationCode is the grant type for authorization code
+const AuthorizationCode = "authorization_code"
+
+// ResponseTypeCode is the response type for code
+const ResponseTypeCode = "code"
+
+// TokenEndpointAuthMethodNone is the token endpoint auth method for none
+const TokenEndpointAuthMethodNone = "none"
+
 // DynamicClientRegistrationRequest represents the request for dynamic client registration (RFC 7591)
 type DynamicClientRegistrationRequest struct {
 	// Required field according to RFC 7591
@@ -34,16 +43,15 @@ type DynamicClientRegistrationRequest struct {
 // NewDynamicClientRegistrationRequest creates a new dynamic client registration request
 func NewDynamicClientRegistrationRequest(scopes []string, callbackPort int) *DynamicClientRegistrationRequest {
 
-	clientName := "ToolHive MCP Client"
 	redirectURIs := []string{fmt.Sprintf("http://localhost:%d/callback", callbackPort)}
 
 	// Create dynamic registration request
 	registrationRequest := &DynamicClientRegistrationRequest{
-		ClientName:              clientName,
+		ClientName:              ToolHiveMCPClientName,
 		RedirectURIs:            redirectURIs,
 		TokenEndpointAuthMethod: "none", // For PKCE flow
-		GrantTypes:              []string{"authorization_code"},
-		ResponseTypes:           []string{"code"},
+		GrantTypes:              []string{AuthorizationCode},
+		ResponseTypes:           []string{ResponseTypeCode},
 		Scopes:                  scopes,
 	}
 	return registrationRequest
@@ -108,13 +116,13 @@ func validateAndSetDefaults(request *DynamicClientRegistrationRequest) error {
 		request.ClientName = ToolHiveMCPClientName
 	}
 	if len(request.GrantTypes) == 0 {
-		request.GrantTypes = []string{"authorization_code"}
+		request.GrantTypes = []string{AuthorizationCode}
 	}
 	if len(request.ResponseTypes) == 0 {
-		request.ResponseTypes = []string{"code"}
+		request.ResponseTypes = []string{ResponseTypeCode}
 	}
 	if request.TokenEndpointAuthMethod == "" {
-		request.TokenEndpointAuthMethod = "none" // For PKCE flow
+		request.TokenEndpointAuthMethod = TokenEndpointAuthMethodNone // For PKCE flow
 	}
 
 	return nil
@@ -141,7 +149,7 @@ func createHTTPRequest(
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "ToolHive/1.0")
+	req.Header.Set("User-Agent", UserAgent)
 
 	return req, nil
 }

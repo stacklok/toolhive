@@ -42,7 +42,7 @@ const (
 	ColimaDesktopMacSocketPath = ".colima/default/docker.sock"
 )
 
-var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker, runtime.TypeColima}
+var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker}
 
 // NewDockerClient creates a new container client
 func NewDockerClient(ctx context.Context) (*client.Client, string, runtime.Type, error) {

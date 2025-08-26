@@ -85,13 +85,6 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 		}
 	}
 
-	if rt == runtime.TypeColima {
-		socketPath, err := findColimaSocket()
-		if err == nil {
-			return socketPath, runtime.TypeColima, nil
-		}
-	}
-
 	return "", "", ErrRuntimeNotFound
 }
 
@@ -173,21 +166,7 @@ func findDockerSocket() (string, error) {
 		logger.Debugf("Failed to check Rancher Desktop socket at %s: %v", rancherDesktopPath, err)
 	}
 
-	return "", fmt.Errorf("docker socket not found in standard locations")
-}
-
-// findColimaSocket attempts to locate a Colima socket
-func findColimaSocket() (string, error) {
-	// Check standard Colima location
-	_, err := os.Stat(ColimaDesktopMacSocketPath)
-	if err == nil {
-		logger.Debugf("Found Colima socket at %s", ColimaDesktopMacSocketPath)
-		return ColimaDesktopMacSocketPath, nil
-	}
-
-	logger.Debugf("Failed to check Colima socket at %s: %v", ColimaDesktopMacSocketPath, err)
-
-	// Check user-specific location for Colima
+	// Try Rancher Desktop socket path on macOS
 	if home := os.Getenv("HOME"); home != "" {
 		userSocketPath := filepath.Join(home, ColimaDesktopMacSocketPath)
 		_, err := os.Stat(userSocketPath)
@@ -200,5 +179,5 @@ func findColimaSocket() (string, error) {
 		logger.Debugf("Failed to check Colima socket at %s: %v", userSocketPath, err)
 	}
 
-	return "", fmt.Errorf("colima socket not found in standard locations")
+	return "", fmt.Errorf("docker socket not found in standard locations")
 }

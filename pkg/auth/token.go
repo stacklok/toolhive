@@ -57,6 +57,7 @@ type TokenValidator struct {
 	jwksClient    *jwk.Cache
 	introspectURL string       // Optional introspection endpoint
 	client        *http.Client // HTTP client for making requests
+	resourceURL   string       // (RFC 9728)
 
 	// Lazy JWKS registration
 	jwksRegistered      bool
@@ -217,6 +218,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		clientSecret:  config.ClientSecret,
 		jwksClient:    cache,
 		client:        config.httpClient,
+		resourceURL:   config.ResourceURL,
 	}, nil
 }
 
@@ -457,20 +459,46 @@ func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) 
 // ClaimsContextKey is the key used to store claims in the request context.
 type ClaimsContextKey struct{}
 
+// buildWWWAuthenticate builds a RFC 6750 / RFC 9728 compliant value for the
+// WWW-Authenticate header. It always includes realm and, if set, resource_metadata.
+// If includeError is true, it appends error="invalid_token" and an optional description.
+func (v *TokenValidator) buildWWWAuthenticate(includeError bool, errDescription string) string {
+	var parts []string
+
+	// realm (RFC 6750)
+	if v.issuer != "" {
+		parts = append(parts, fmt.Sprintf(`realm="%s"`, EscapeQuotes(v.issuer)))
+	}
+
+	// resource_metadata (RFC 9728)
+	if v.resourceURL != "" {
+		parts = append(parts, fmt.Sprintf(`resource_metadata="%s"`, EscapeQuotes(v.resourceURL)))
+	}
+
+	// error fields (RFC 6750 §3)
+	if includeError {
+		parts = append(parts, `error="invalid_token"`)
+		if errDescription != "" {
+			parts = append(parts, fmt.Sprintf(`error_description="%s"`, EscapeQuotes(errDescription)))
+		}
+	}
+	return "Bearer " + strings.Join(parts, ", ")
+}
+
 // Middleware creates an HTTP middleware that validates JWT tokens.
 func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get the token from the Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			w.Header().Set("WWW-Authenticate", fmt.Sprintf("Bearer realm=\"%s\"", v.issuer))
+			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(false, ""))
 			http.Error(w, "Authorization header required", http.StatusUnauthorized)
 			return
 		}
 
 		// Check if the Authorization header has the Bearer prefix
 		if !strings.HasPrefix(authHeader, "Bearer ") {
-			w.Header().Set("WWW-Authenticate", fmt.Sprintf("Bearer realm=\"%s\"", v.issuer))
+			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(false, ""))
 			http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
 			return
 		}
@@ -481,10 +509,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// Validate the token
 		claims, err := v.ValidateToken(r.Context(), tokenString)
 		if err != nil {
-			w.Header().Set("WWW-Authenticate", fmt.Sprintf(
-				"Bearer realm=\"%s\", error=\"invalid_token\", error_description=\"%v\"",
-				v.issuer, err,
-			))
+			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(true, err.Error()))
 			http.Error(w, fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
 			return
 		}

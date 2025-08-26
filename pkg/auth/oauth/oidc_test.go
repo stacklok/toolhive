@@ -96,7 +96,7 @@ func testDiscoverOIDCEndpoints(
 	}
 
 	// Validate that we got the required fields
-	if err := validateOIDCDocument(&doc, issuer); err != nil {
+	if err := validateOIDCDocument(&doc, issuer, true); err != nil {
 		return nil, fmt.Errorf("invalid OIDC configuration: %w", err)
 	}
 
@@ -433,7 +433,7 @@ func TestValidateOIDCDocument(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateOIDCDocument(tt.doc, tt.expectedIssuer)
+			err := validateOIDCDocument(tt.doc, tt.expectedIssuer, true)
 
 			if tt.expectError {
 				require.Error(t, err)

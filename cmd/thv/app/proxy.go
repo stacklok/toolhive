@@ -227,7 +227,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		proxyHost, port, serverName, proxyTargetURI,
 		nil, authInfoHandler,
 		false,
-		true, // isRemote
+		false, // isRemote
 		"",
 		middlewares...)
 	if err := proxy.Start(ctx); err != nil {

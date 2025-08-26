@@ -662,7 +662,8 @@ func (d *defaultManager) restartRemoteWorkload(
 	logger.Infof("Loaded configuration from state for %s", runConfig.BaseName)
 
 	// Start the remote workload using the loaded runner
-	return d.startWorkload(childCtx, name, mcpRunner, foreground)
+	// Use background context to avoid timeout cancellation - same reasoning as container workloads
+	return d.startWorkload(context.Background(), name, mcpRunner, foreground)
 }
 
 // restartContainerWorkload handles restarting a container-based workload

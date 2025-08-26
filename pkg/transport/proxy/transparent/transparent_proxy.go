@@ -138,7 +138,7 @@ func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
 // manualForward manually forwards a request to the remote server using an HTTP client
 func (t *tracingTransport) manualForward(req *http.Request) (*http.Response, error) {
 	// Create a new request to the target URL
-	targetURL := t.p.targetURI + req.URL.Path
+	targetURL := t.p.targetURI
 	if req.URL.RawQuery != "" {
 		targetURL += "?" + req.URL.RawQuery
 	}

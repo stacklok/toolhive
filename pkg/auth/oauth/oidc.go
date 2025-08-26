@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ type OIDCDiscoveryDocument struct {
 	TokenEndpoint                 string   `json:"token_endpoint"`
 	UserinfoEndpoint              string   `json:"userinfo_endpoint"`
 	JWKSURI                       string   `json:"jwks_uri"`
+	RegistrationEndpoint          string   `json:"registration_endpoint,omitempty"`
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
 }
 
@@ -49,20 +51,12 @@ func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client 
 		return nil, fmt.Errorf("issuer must use HTTPS: %s", issuer)
 	}
 
-	// Construct the well-known endpoint URL
-	wellKnownURL := strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration"
+	// Build both well-known URLs (handles tenant/realm paths)
+	base := issuerURL.Scheme + "://" + issuerURL.Host
+	tenant := strings.Trim(issuerURL.EscapedPath(), "/")
+	oidcURL := base + path.Join("/", tenant, ".well-known", "openid-configuration")
+	oauthURL := base + path.Join("/.well-known/oauth-authorization-server", tenant)
 
-	// Create HTTP request with timeout
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnownURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set User-Agent header
-	req.Header.Set("User-Agent", "ToolHive/1.0")
-	req.Header.Set("Accept", "application/json")
-
-	// Use provided client or create default HTTP client with timeout and security settings
 	if client == nil {
 		client = &http.Client{
 			Timeout: 30 * time.Second,
@@ -73,42 +67,53 @@ func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client 
 		}
 	}
 
-	// Make the request
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch OIDC configuration: %w", err)
+	try := func(urlStr string) (*OIDCDiscoveryDocument, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+		if err != nil {
+			return nil, fmt.Errorf("build request: %w", err)
+		}
+		req.Header.Set("User-Agent", "ToolHive/1.0")
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("GET %s: %w", urlStr, err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("%s: HTTP %d", urlStr, resp.StatusCode)
+		}
+		ct := strings.ToLower(resp.Header.Get("Content-Type"))
+		if !strings.Contains(ct, "application/json") {
+			return nil, fmt.Errorf("%s: unexpected content-type %q", urlStr, ct)
+		}
+
+		// Limit response size to prevent DoS
+		const maxResponseSize = 1024 * 1024 // 1MB
+		var doc OIDCDiscoveryDocument
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&doc); err != nil {
+			return nil, fmt.Errorf("%s: unexpected response: %w", urlStr, err)
+		}
+		if err := validateOIDCDocument(&doc, issuer); err != nil {
+			return nil, fmt.Errorf("%s: invalid metadata: %w", urlStr, err)
+		}
+		return &doc, nil
 	}
-	defer resp.Body.Close()
 
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("OIDC discovery endpoint returned status %d", resp.StatusCode)
+	doc, err := try(oidcURL)
+	if err == nil {
+		return doc, nil
 	}
-
-	// Check content type
-	contentType := resp.Header.Get("Content-Type")
-	if !strings.Contains(contentType, "application/json") {
-		return nil, fmt.Errorf("unexpected content type: %s", contentType)
+	oidcErr := err
+	doc, err = try(oauthURL)
+	if err == nil {
+		return doc, nil
 	}
+	oauthErr := err
 
-	// Limit response size to prevent DoS
-	const maxResponseSize = 1024 * 1024 // 1MB
-	limitedReader := io.LimitReader(resp.Body, maxResponseSize)
-
-	// Parse the response
-	var doc OIDCDiscoveryDocument
-	decoder := json.NewDecoder(limitedReader)
-	// Allow unknown fields for better compatibility with different OIDC providers
-	if err := decoder.Decode(&doc); err != nil {
-		return nil, fmt.Errorf("failed to decode OIDC configuration: %w", err)
-	}
-
-	// Validate that we got the required fields
-	if err := validateOIDCDocument(&doc, issuer); err != nil {
-		return nil, fmt.Errorf("invalid OIDC configuration: %w", err)
-	}
-
-	return &doc, nil
+	return nil, fmt.Errorf("unable to discover OIDC endpoints at %q or %q: OIDC error: %v, OAuth error: %v",
+		oidcURL, oauthURL, oidcErr, oauthErr)
 }
 
 // validateOIDCDocument validates the OIDC discovery document

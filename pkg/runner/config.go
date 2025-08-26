@@ -416,7 +416,6 @@ func LoadState(ctx context.Context, name string) (*RunConfig, error) {
 
 // RemoteAuthConfig holds configuration for remote authentication
 type RemoteAuthConfig struct {
-	EnableRemoteAuth bool
 	ClientID         string
 	ClientSecret     string
 	ClientSecretFile string

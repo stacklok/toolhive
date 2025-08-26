@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	httpsScheme = "https"
+	httpsScheme   = "https"
+	wellKnownPath = "/.well-known/openid-configuration"
 )
 
 // testDiscoverOIDCEndpoints is a test version that skips TLS verification
@@ -130,7 +131,7 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 			serverResponse: func() *httptest.Server {
 				var server *httptest.Server
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path != "/.well-known/openid-configuration" {
+					if r.URL.Path != wellKnownPath {
 						t.Errorf("unexpected path: %s", r.URL.Path)
 					}
 
@@ -950,7 +951,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 				}))
 			},
 			expectError: true,
-			errorMsg:    "OIDC discovery endpoint returned status 404",
+			errorMsg:    "404",
 		},
 		{
 			name:   "server returns wrong content type",
@@ -962,7 +963,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 				}))
 			},
 			expectError: true,
-			errorMsg:    "unexpected content type",
+			errorMsg:    "unexpected content-type",
 		},
 		{
 			name:   "server returns invalid JSON",
@@ -974,7 +975,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 				}))
 			},
 			expectError: true,
-			errorMsg:    "failed to decode OIDC configuration",
+			errorMsg:    "unexpected response",
 		},
 		{
 			name:   "missing required fields",

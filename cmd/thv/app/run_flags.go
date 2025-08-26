@@ -495,19 +495,18 @@ func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.Remote
 
 	if remoteServerMetadata.OAuthConfig != nil {
 		return &runner.RemoteAuthConfig{
-			EnableRemoteAuth: runFlags.RemoteAuthFlags.EnableRemoteAuth || runFlags.RemoteAuthFlags.RemoteAuthClientID != "",
-			ClientID:         runFlags.RemoteAuthFlags.RemoteAuthClientID,
-			ClientSecret:     runFlags.RemoteAuthFlags.RemoteAuthClientSecret,
-			Scopes:           remoteServerMetadata.OAuthConfig.Scopes,
-			SkipBrowser:      runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
-			Timeout:          runFlags.RemoteAuthFlags.RemoteAuthTimeout,
-			CallbackPort:     remoteServerMetadata.OAuthConfig.CallbackPort,
-			Issuer:           remoteServerMetadata.OAuthConfig.Issuer,
-			AuthorizeURL:     remoteServerMetadata.OAuthConfig.AuthorizeURL,
-			TokenURL:         remoteServerMetadata.OAuthConfig.TokenURL,
-			OAuthParams:      remoteServerMetadata.OAuthConfig.OAuthParams,
-			Headers:          remoteServerMetadata.Headers,
-			EnvVars:          remoteServerMetadata.EnvVars,
+			ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
+			ClientSecret: runFlags.RemoteAuthFlags.RemoteAuthClientSecret,
+			Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
+			SkipBrowser:  runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
+			Timeout:      runFlags.RemoteAuthFlags.RemoteAuthTimeout,
+			CallbackPort: remoteServerMetadata.OAuthConfig.CallbackPort,
+			Issuer:       remoteServerMetadata.OAuthConfig.Issuer,
+			AuthorizeURL: remoteServerMetadata.OAuthConfig.AuthorizeURL,
+			TokenURL:     remoteServerMetadata.OAuthConfig.TokenURL,
+			OAuthParams:  remoteServerMetadata.OAuthConfig.OAuthParams,
+			Headers:      remoteServerMetadata.Headers,
+			EnvVars:      remoteServerMetadata.EnvVars,
 		}
 	}
 	return nil
@@ -515,21 +514,18 @@ func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.Remote
 
 // getRemoteAuthFromRunFlags creates RemoteAuthConfig from RunFlags
 func getRemoteAuthFromRunFlags(runFlags *RunFlags) *runner.RemoteAuthConfig {
-	if runFlags.RemoteAuthFlags.EnableRemoteAuth || runFlags.RemoteAuthFlags.RemoteAuthClientID != "" {
-		return &runner.RemoteAuthConfig{
-			ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
-			ClientSecret: runFlags.RemoteAuthFlags.RemoteAuthClientSecret,
-			Scopes:       runFlags.RemoteAuthFlags.RemoteAuthScopes,
-			SkipBrowser:  runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
-			Timeout:      runFlags.RemoteAuthFlags.RemoteAuthTimeout,
-			CallbackPort: runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,
-			Issuer:       runFlags.RemoteAuthFlags.RemoteAuthIssuer,
-			AuthorizeURL: runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
-			TokenURL:     runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
-			OAuthParams:  runFlags.OAuthParams,
-		}
+	return &runner.RemoteAuthConfig{
+		ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
+		ClientSecret: runFlags.RemoteAuthFlags.RemoteAuthClientSecret,
+		Scopes:       runFlags.RemoteAuthFlags.RemoteAuthScopes,
+		SkipBrowser:  runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
+		Timeout:      runFlags.RemoteAuthFlags.RemoteAuthTimeout,
+		CallbackPort: runFlags.RemoteAuthFlags.RemoteAuthCallbackPort,
+		Issuer:       runFlags.RemoteAuthFlags.RemoteAuthIssuer,
+		AuthorizeURL: runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
+		TokenURL:     runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
+		OAuthParams:  runFlags.OAuthParams,
 	}
-	return nil
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags

@@ -15,7 +15,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
-
 // SetupTestConfig creates a temporary config file and returns the config path
 func SetupTestConfig(t *testing.T, configContent *Config) (string, string) {
 	t.Helper()

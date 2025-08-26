@@ -243,8 +243,8 @@ func TestStructuredLogger(t *testing.T) { //nolint:paralleltest // Uses global l
 		{levelPanic, "panic message %s and %s", "key", "value", "panic message key and value", true},
 	}
 
-	for _, tc := range formattedLogTestCases {
-		t.Run("FormattedLogs_"+tc.level, func(t *testing.T) { //nolint:paralleltest // Uses global logger state and output capture
+	for _, tc := range formattedLogTestCases { //nolint:paralleltest // Uses global logger state and output capture
+		t.Run("FormattedLogs_"+tc.level, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -339,8 +339,8 @@ func TestUnstructuredLogger(t *testing.T) { //nolint:paralleltest // Uses global
 		{levelPanic, "panic message %s and %s", "key", "value", "panic message key and value"},
 	}
 
-	for _, tc := range formattedLogTestCases {
-		t.Run("FormattedLogs_"+tc.level, func(t *testing.T) { //nolint:paralleltest // Uses global logger state and output capture
+	for _, tc := range formattedLogTestCases { //nolint:paralleltest // Uses global logger state and output capture
+		t.Run("FormattedLogs_"+tc.level, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 

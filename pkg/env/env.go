@@ -15,6 +15,6 @@ type Reader interface {
 type OSReader struct{}
 
 // Getenv returns the value of the environment variable named by the key
-func (r *OSReader) Getenv(key string) string {
+func (*OSReader) Getenv(key string) string {
 	return os.Getenv(key)
 }

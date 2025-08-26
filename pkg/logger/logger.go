@@ -158,10 +158,6 @@ func InitializeWithEnv(envReader env.Reader) {
 	zap.ReplaceGlobals(zap.Must(config.Build()))
 }
 
-func unstructuredLogs() bool {
-	return unstructuredLogsWithEnv(&env.OSReader{})
-}
-
 func unstructuredLogsWithEnv(envReader env.Reader) bool {
 	unstructuredLogs, err := strconv.ParseBool(envReader.Getenv("UNSTRUCTURED_LOGS"))
 	if err != nil {

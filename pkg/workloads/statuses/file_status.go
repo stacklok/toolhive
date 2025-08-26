@@ -151,7 +151,7 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		}
 
 		// If workload is running, validate against runtime
-		if result.Status == rt.WorkloadStatusRunning {
+		if result.Status == rt.WorkloadStatusRunning || result.Status == rt.WorkloadStatusUnhealthy {
 			return f.validateRunningWorkload(ctx, workloadName, result)
 		}
 

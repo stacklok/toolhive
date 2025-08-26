@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 )
 
 const testKeyID = "test-key-1"
+const issuer = "https://issuer.example.com"
 
 //nolint:gocyclo // This test function is complex but manageable
 func TestTokenValidator(t *testing.T) {
@@ -962,5 +964,306 @@ func TestNewAuthInfoHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func parseAuthParams(ch string) map[string]string {
+	out := map[string]string{}
+	ch = strings.TrimSpace(ch)
+	if i := strings.IndexByte(ch, ' '); i >= 0 {
+		ch = strings.TrimSpace(ch[i+1:])
+	}
+	var parts []string
+	var b strings.Builder
+	inQ := false
+	for i := 0; i < len(ch); i++ {
+		c := ch[i]
+		switch c {
+		case '"':
+			inQ = !inQ
+			b.WriteByte(c)
+		case ',':
+			if inQ {
+				b.WriteByte(c)
+			} else {
+				parts = append(parts, strings.TrimSpace(b.String()))
+				b.Reset()
+			}
+		default:
+			b.WriteByte(c)
+		}
+	}
+	if b.Len() > 0 {
+		parts = append(parts, strings.TrimSpace(b.String()))
+	}
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		k := strings.ToLower(strings.TrimSpace(kv[0]))
+		v := strings.TrimSpace(kv[1])
+		if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+			v = strings.ReplaceAll(v[1:len(v)-1], `\"`, `"`)
+			v = strings.ReplaceAll(v, `\\`, `\`)
+		}
+		out[k] = v
+	}
+	return out
+}
+func TestMiddleware_WWWAuthenticate_NoHeader_And_WrongScheme(t *testing.T) {
+	t.Parallel()
+
+	resourceMeta := "https://resource.example.com/.well-known/oauth-protected-resource"
+
+	tests := []struct {
+		name      string
+		setHeader func(req *http.Request)
+	}{
+		{
+			name:      "missing Authorization",
+			setHeader: func(_ *http.Request) {},
+		},
+		{
+			name: "wrong scheme Basic",
+			setHeader: func(r *http.Request) {
+				r.Header.Set("Authorization", "Basic Zm9vOmJhcg==")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tv := &TokenValidator{
+				issuer:      issuer,
+				resourceURL: resourceMeta,
+			}
+
+			hitDownstream := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hitDownstream = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			// Create a NEW server per subtest (so no cross-parallel sharing)
+			srv := httptest.NewServer(tv.Middleware(next))
+			t.Cleanup(srv.Close)
+
+			req, _ := http.NewRequest("GET", srv.URL+"/", nil)
+			tt.setHeader(req)
+
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			defer res.Body.Close()
+
+			if res.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("expected 401, got %d", res.StatusCode)
+			}
+			if hitDownstream {
+				t.Fatalf("downstream should not have been reached on 401")
+			}
+
+			h := res.Header.Get("WWW-Authenticate")
+			if h == "" {
+				t.Fatalf("WWW-Authenticate header missing")
+			}
+
+			params := parseAuthParams(h)
+			if got := params["realm"]; got != issuer {
+				t.Fatalf("realm mismatch: want %q, got %q", issuer, got)
+			}
+			if v, ok := params["resource_metadata"]; ok && v == "" {
+				t.Fatalf("resource_metadata present but empty")
+			}
+			if _, ok := params["error"]; ok {
+				t.Fatalf("unexpected error param for %s", tt.name)
+			}
+			if _, ok := params["error_description"]; ok {
+				t.Fatalf("unexpected error_description for %s", tt.name)
+			}
+		})
+	}
+}
+
+func TestMiddleware_WWWAuthenticate_InvalidOpaqueToken_NoIntrospectionConfigured(t *testing.T) {
+	t.Parallel()
+
+	tv := &TokenValidator{
+		issuer: issuer,
+		// introspectURL intentionally empty to force the error path
+	}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := httptest.NewServer(tv.Middleware(next))
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
+	req.Header.Set("Authorization", "Bearer not-a-jwt") // triggers opaque → introspection path
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", res.StatusCode)
+	}
+	h := res.Header.Get("WWW-Authenticate")
+	if h == "" {
+		t.Fatalf("WWW-Authenticate header missing")
+	}
+	p := parseAuthParams(h)
+	if p["realm"] != issuer {
+		t.Fatalf("realm mismatch: want %q got %q", issuer, p["realm"])
+	}
+	if p["error"] != "invalid_token" {
+		t.Fatalf("expected error=invalid_token, got %q", p["error"])
+	}
+	if p["error_description"] == "" {
+		t.Fatalf("expected non-empty error_description")
+	}
+}
+
+func TestMiddleware_WWWAuthenticate_WithMockIntrospection(t *testing.T) {
+	t.Parallel()
+
+	// Introspection mock that varies by token value
+	mux := http.NewServeMux()
+	mux.HandleFunc("/introspect", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch r.Form.Get("token") {
+		case "good":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"active": true,
+				"exp":    float64(time.Now().Add(60 * time.Second).Unix()),
+				"iss":    issuer,
+			})
+		case "inactive":
+			_ = json.NewEncoder(w).Encode(map[string]any{"active": false})
+		case "unauth":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"nope"}`))
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"active": false})
+		}
+	})
+	introspectTS := httptest.NewServer(mux)
+	t.Cleanup(introspectTS.Close)
+
+	type tc struct {
+		name       string
+		auth       string
+		wantStatus int
+		wantError  bool
+		errSubstr  string
+		hitNext    bool
+	}
+	cases := []tc{
+		{
+			name:       "inactive => 401",
+			auth:       "Bearer inactive",
+			wantStatus: http.StatusUnauthorized,
+			wantError:  true,
+			hitNext:    false,
+		},
+		{
+			name:       "unauth introspection => 401",
+			auth:       "Bearer unauth",
+			wantStatus: http.StatusUnauthorized,
+			wantError:  true,
+			errSubstr:  "introspection unauthorized",
+			hitNext:    false,
+		},
+		{
+			name:       "good => passes",
+			auth:       "Bearer good",
+			wantStatus: http.StatusOK,
+			wantError:  false,
+			hitNext:    true,
+		},
+	}
+
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			tv := &TokenValidator{
+				issuer:        issuer,
+				introspectURL: introspectTS.URL + "/introspect",
+				clientID:      "cid",
+				clientSecret:  "csecret",
+				client:        http.DefaultClient,
+			}
+
+			hit := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hit = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			// NEW: server per subtest
+			srv := httptest.NewServer(tv.Middleware(next))
+			t.Cleanup(srv.Close)
+
+			req, _ := http.NewRequest("GET", srv.URL+"/", nil)
+			req.Header.Set("Authorization", c.auth)
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			defer res.Body.Close()
+
+			if res.StatusCode != c.wantStatus {
+				t.Fatalf("status mismatch: want %d got %d", c.wantStatus, res.StatusCode)
+			}
+			if hit != c.hitNext {
+				t.Fatalf("downstream hit mismatch: want %v got %v", c.hitNext, hit)
+			}
+
+			h := res.Header.Get("WWW-Authenticate")
+			if c.wantStatus == http.StatusUnauthorized {
+				if h == "" {
+					t.Fatalf("missing WWW-Authenticate header")
+				}
+				p := parseAuthParams(h)
+				if p["realm"] != issuer {
+					t.Fatalf("realm mismatch: %q", p["realm"])
+				}
+				if c.wantError && p["error"] != "invalid_token" {
+					t.Fatalf("expected error=invalid_token, got %q", p["error"])
+				}
+				if c.errSubstr != "" && !strings.Contains(p["error_description"], c.errSubstr) {
+					t.Fatalf("error_description %q missing %q", p["error_description"], c.errSubstr)
+				}
+			} else if h != "" {
+				t.Fatalf("did not expect WWW-Authenticate header on success")
+			}
+		})
+	}
+}
+
+func TestBuildWWWAuthenticate_Format(t *testing.T) {
+	t.Parallel()
+	tv := &TokenValidator{
+		issuer:      "https://issuer.example.com",
+		resourceURL: "https://resource.example.com/.well-known/oauth-protected-resource",
+	}
+	got := tv.buildWWWAuthenticate(true, `failed to parse "token", reason`)
+	want := `Bearer realm="https://issuer.example.com", resource_metadata="https://resource.example.com/.well-known/oauth-protected-resource", error="invalid_token", error_description="failed to parse \"token\", reason"`
+	if got != want {
+		t.Fatalf("format mismatch:\nwant: %s\n got: %s", want, got)
 	}
 }

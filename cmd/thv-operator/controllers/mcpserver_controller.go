@@ -1338,6 +1338,20 @@ func (*MCPServerReconciler) generateKubernetesOIDCArgs(m *mcpv1alpha1.MCPServer)
 		args = append(args, "--jwks-allow-private-ip")
 	}
 
+	// Client ID (format: {serviceAccount}.{namespace}.svc.cluster.local)
+	serviceAccount := config.ServiceAccount
+	if serviceAccount == "" {
+		serviceAccount = "default" // Use default service account if not specified
+	}
+
+	namespace := config.Namespace
+	if namespace == "" {
+		namespace = m.Namespace // Use MCPServer's namespace if not specified
+	}
+
+	clientID := fmt.Sprintf("%s.%s.svc.cluster.local", serviceAccount, namespace)
+	args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
+
 	return args
 }
 
@@ -1438,6 +1452,11 @@ func (*MCPServerReconciler) generateInlineOIDCArgs(m *mcpv1alpha1.MCPServer) []s
 	// Allow private IP access (optional)
 	if config.JWKSAllowPrivateIP {
 		args = append(args, "--jwks-allow-private-ip")
+	}
+
+	// Client ID (optional)
+	if config.ClientID != "" {
+		args = append(args, fmt.Sprintf("--oidc-client-id=%s", config.ClientID))
 	}
 
 	return args

@@ -343,7 +343,7 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
 
 	// Create a new mock reader for each call to avoid race conditions
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").DoAndReturn(func(ctx context.Context, workloadName string) (io.ReadCloser, error) {
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`)), nil
 	}).AnyTimes()
 

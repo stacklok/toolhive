@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -63,7 +65,7 @@ type HTTPSSEProxy struct {
 
 	// SSE clients
 	sseClients      map[string]*ssecommon.SSEClient
-	sseClientsMutex sync.Mutex
+	sseClientsMutex sync.RWMutex
 
 	// Pending messages for SSE clients
 	pendingMessages []*ssecommon.PendingSSEMessage
@@ -74,6 +76,10 @@ type HTTPSSEProxy struct {
 
 	// Health checker
 	healthChecker *healthcheck.HealthChecker
+
+	// Track closed clients to prevent double-close
+	closedClients      map[string]bool
+	closedClientsMutex sync.Mutex
 }
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
@@ -90,6 +96,7 @@ func NewHTTPSSEProxy(
 		sseClients:        make(map[string]*ssecommon.SSEClient),
 		pendingMessages:   []*ssecommon.PendingSSEMessage{},
 		prometheusHandler: prometheusHandler,
+		closedClients:     make(map[string]bool),
 	}
 
 	// Create MCP pinger and health checker
@@ -138,23 +145,42 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 		logger.Info("Prometheus metrics endpoint enabled at /metrics")
 	}
 
+	// Create a listener to get the actual port when using port 0
+	addr := fmt.Sprintf("%s:%d", p.host, p.port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to create listener: %w", err)
+	}
+
+	// Update the server address with the actual address
+	actualAddr := listener.Addr().String()
+
 	// Create the server
 	p.server = &http.Server{
-		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 
+	// Store the actual address
+	p.server.Addr = actualAddr
+
 	// Start the server in a goroutine
 	go func() {
-		logger.Infof("HTTP proxy started for container %s on port %d", p.containerName, p.port)
-		logger.Infof("SSE endpoint: http://%s:%d%s", p.host, p.port, ssecommon.HTTPSSEEndpoint)
-		logger.Infof("JSON-RPC endpoint: http://%s:%d%s", p.host, p.port, ssecommon.HTTPMessagesEndpoint)
+		// Parse the actual port for logging
+		_, portStr, _ := net.SplitHostPort(actualAddr)
+		actualPort, _ := strconv.Atoi(portStr)
 
-		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Infof("HTTP proxy started for container %s on port %d", p.containerName, actualPort)
+		logger.Infof("SSE endpoint: http://%s%s", actualAddr, ssecommon.HTTPSSEEndpoint)
+		logger.Infof("JSON-RPC endpoint: http://%s%s", actualAddr, ssecommon.HTTPMessagesEndpoint)
+
+		if err := p.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			logger.Errorf("HTTP server error: %v", err)
 		}
 	}()
+
+	// Give the server a moment to start
+	time.Sleep(10 * time.Millisecond)
 
 	return nil
 }
@@ -201,9 +227,9 @@ func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg jsonrpc2.
 	sseMsg := ssecommon.NewSSEMessage("message", string(data))
 
 	// Check if there are any connected clients
-	p.sseClientsMutex.Lock()
+	p.sseClientsMutex.RLock()
 	hasClients := len(p.sseClients) > 0
-	p.sseClientsMutex.Unlock()
+	p.sseClientsMutex.RUnlock()
 
 	if hasClients {
 		// Send the message to all connected clients
@@ -281,10 +307,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	// Create a goroutine to monitor for client disconnection
 	go func() {
 		<-ctx.Done()
-		p.sseClientsMutex.Lock()
-		delete(p.sseClients, clientID)
-		p.sseClientsMutex.Unlock()
-		close(messageCh)
+		p.removeClient(clientID)
 		logger.Infof("Client %s disconnected", clientID)
 	}()
 
@@ -324,9 +347,9 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Check if the session exists
-	p.sseClientsMutex.Lock()
+	p.sseClientsMutex.RLock()
 	_, exists := p.sseClients[sessionID]
-	p.sseClientsMutex.Unlock()
+	p.sseClientsMutex.RUnlock()
 
 	if !exists {
 		http.Error(w, "Could not find session", http.StatusNotFound)
@@ -368,23 +391,58 @@ func (p *HTTPSSEProxy) sendSSEEvent(msg *ssecommon.SSEMessage) error {
 	// Convert the message to an SSE-formatted string
 	sseString := msg.ToSSEString()
 
-	// Send to all clients
-	p.sseClientsMutex.Lock()
-	defer p.sseClientsMutex.Unlock()
+	// Hold the lock while sending to ensure channels aren't closed during send
+	// This is a read lock, so multiple sends can happen concurrently
+	p.sseClientsMutex.RLock()
+	defer p.sseClientsMutex.RUnlock()
 
 	for clientID, client := range p.sseClients {
 		select {
 		case client.MessageCh <- sseString:
 			// Message sent successfully
 		default:
-			// Channel is full or closed, remove the client
-			delete(p.sseClients, clientID)
-			close(client.MessageCh)
-			logger.Infof("Client %s removed (channel full or closed)", clientID)
+			// Channel is full, skip this client
+			// Don't remove the client here - let the disconnect monitor handle it
+			logger.Debugf("Client %s channel full, skipping message", clientID)
 		}
 	}
 
 	return nil
+}
+
+// removeClient safely removes a client and closes its channel
+func (p *HTTPSSEProxy) removeClient(clientID string) {
+	// Check if already closed
+	p.closedClientsMutex.Lock()
+	if p.closedClients[clientID] {
+		p.closedClientsMutex.Unlock()
+		return
+	}
+	p.closedClients[clientID] = true
+	p.closedClientsMutex.Unlock()
+
+	// Remove from clients map and get the client
+	// Use write lock to ensure no sends happen during removal
+	p.sseClientsMutex.Lock()
+	client, exists := p.sseClients[clientID]
+	if exists {
+		delete(p.sseClients, clientID)
+	}
+	p.sseClientsMutex.Unlock()
+
+	// Close the channel after removing from map
+	// This ensures no goroutine will try to send to it
+	if exists && client != nil {
+		close(client.MessageCh)
+	}
+
+	// Clean up closed clients map periodically (prevent memory leak)
+	p.closedClientsMutex.Lock()
+	if len(p.closedClients) > 1000 {
+		// Reset the map when it gets too large
+		p.closedClients = make(map[string]bool)
+	}
+	p.closedClientsMutex.Unlock()
 }
 
 // processPendingMessages processes any pending messages for a new client.

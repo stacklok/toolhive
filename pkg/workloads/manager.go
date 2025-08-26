@@ -662,7 +662,8 @@ func (d *defaultManager) restartRemoteWorkload(
 	logger.Infof("Loaded configuration from state for %s", runConfig.BaseName)
 
 	// Start the remote workload using the loaded runner
-	return d.startWorkload(childCtx, name, mcpRunner, foreground)
+	// Use background context to avoid timeout cancellation - same reasoning as container workloads
+	return d.startWorkload(context.Background(), name, mcpRunner, foreground)
 }
 
 // restartContainerWorkload handles restarting a container-based workload
@@ -695,8 +696,10 @@ func (d *defaultManager) restartContainerWorkload(childCtx context.Context, name
 		return err
 	}
 
-	// Start the workload
-	return d.startWorkload(childCtx, name, mcpRunner, foreground)
+	// Start the workload with background context to avoid timeout cancellation
+	// The childCtx with AsyncOperationTimeout is only for the restart setup operations,
+	// but the actual workload should run indefinitely with its own lifecycle management
+	return d.startWorkload(context.Background(), name, mcpRunner, foreground)
 }
 
 // workloadState holds the current state of a workload for restart operations

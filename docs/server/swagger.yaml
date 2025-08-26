@@ -190,6 +190,10 @@ components:
             Port is the port on which the workload is exposed.
             This is embedded in the URL.
           type: integer
+        remote:
+          description: Remote indicates whether this is a remote workload (true) or
+            a container workload (false).
+          type: boolean
         status:
           $ref: '#/components/schemas/runtime.WorkloadStatus'
         status_context:

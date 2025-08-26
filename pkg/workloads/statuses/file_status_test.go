@@ -17,7 +17,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
 	stateMocks "github.com/stacklok/toolhive/pkg/state/mocks"
@@ -29,10 +29,10 @@ func init() {
 }
 
 // newTestFileStatusManager creates a fileStatusManager for testing with proper initialization
-func newTestFileStatusManager(t *testing.T, ctrl *gomock.Controller) (*fileStatusManager, *mocks.MockRuntime, *stateMocks.MockStore) {
+func newTestFileStatusManager(t *testing.T, ctrl *gomock.Controller) (*fileStatusManager, *rtmocks.MockRuntime, *stateMocks.MockStore) {
 	t.Helper()
 	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	mockRunConfigStore := stateMocks.NewMockStore(ctrl)
 
 	manager := &fileStatusManager{
@@ -330,7 +330,7 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 	defer ctrl.Finish()
 
 	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	mockRunConfigStore := stateMocks.NewMockStore(ctrl)
 	manager := &fileStatusManager{
 		baseDir:        tempDir,
@@ -342,9 +342,10 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil).AnyTimes()
+	// Create a new mock reader for each call to avoid race conditions
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a workload status
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
@@ -379,7 +380,7 @@ func TestFileStatusManager_ValidateRunningWorkload_Remote(t *testing.T) {
 	defer ctrl.Finish()
 
 	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
@@ -416,7 +417,7 @@ func TestFileStatusManager_FullLifecycle(t *testing.T) {
 	defer ctrl.Finish()
 
 	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
@@ -459,7 +460,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 		setup            func(*fileStatusManager) error
 		listAll          bool
 		labelFilters     []string
-		setupRuntimeMock func(*mocks.MockRuntime)
+		setupRuntimeMock func(*rtmocks.MockRuntime)
 		expectedCount    int
 		expectedError    string
 		checkWorkloads   func([]core.Workload)
@@ -468,7 +469,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			name:    "empty directory",
 			setup:   func(_ *fileStatusManager) error { return nil },
 			listAll: true,
-			setupRuntimeMock: func(m *mocks.MockRuntime) {
+			setupRuntimeMock: func(m *rtmocks.MockRuntime) {
 				// Runtime is always called, even for empty directory
 				m.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
 			},
@@ -481,7 +482,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 				return f.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 			},
 			listAll: true,
-			setupRuntimeMock: func(m *mocks.MockRuntime) {
+			setupRuntimeMock: func(m *rtmocks.MockRuntime) {
 				// Runtime is always called - return empty for file-only workload
 				m.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
 			},
@@ -507,7 +508,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 				return nil
 			},
 			listAll: false, // Only running workloads
-			setupRuntimeMock: func(m *mocks.MockRuntime) {
+			setupRuntimeMock: func(m *rtmocks.MockRuntime) {
 				// Mock runtime call for running workload
 				info := rt.ContainerInfo{
 					Name:   "running-workload",
@@ -546,7 +547,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 				return nil
 			},
 			listAll: true, // All workloads
-			setupRuntimeMock: func(m *mocks.MockRuntime) {
+			setupRuntimeMock: func(m *rtmocks.MockRuntime) {
 				// Mock runtime call for running workload
 				info := rt.ContainerInfo{
 					Name:   "running-workload",
@@ -573,7 +574,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			},
 			listAll:      true,
 			labelFilters: []string{"invalid-filter"},
-			setupRuntimeMock: func(_ *mocks.MockRuntime) {
+			setupRuntimeMock: func(_ *rtmocks.MockRuntime) {
 				// Runtime is not called due to early filter parsing error
 			},
 			expectedError: "failed to parse label filters",
@@ -590,7 +591,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 				return nil
 			},
 			listAll: true,
-			setupRuntimeMock: func(m *mocks.MockRuntime) {
+			setupRuntimeMock: func(m *rtmocks.MockRuntime) {
 				containers := []rt.ContainerInfo{
 					{
 						Name:   "merge-workload",
@@ -1138,7 +1139,7 @@ func TestFileStatusManager_ListWorkloads_MissingRequiredFields(t *testing.T) {
 	defer ctrl.Finish()
 
 	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,

@@ -188,17 +188,21 @@ func (t *PreRunTransformer) transformFromRegistry(
 
 	if server.IsRemote() {
 		// Remote server from registry
-		logger.Infof("Found remote server in registry: %s", src.ServerName)
+		remoteServerMetadata, ok := server.(*registry.RemoteServerMetadata)
+		if !ok {
+			return nil, fmt.Errorf("server marked as remote but is not RemoteServerMetadata type")
+		}
+		logger.Infof("Found remote server in registry: %s -> %s", src.ServerName, remoteServerMetadata.URL)
 		return t.buildRunConfigFromSource(
-			src.ServerName, // imageURL (server name)
-			server,         // serverMetadata
+			"",     // imageURL (empty for remote servers - no Docker image)
+			server, // serverMetadata
 			runFlags,
 			cmdArgs,
 			debugMode,
 			validatedHost,
 			oidcConfig,
 			telemetryConfig,
-			"", // remoteURL (will be set from metadata)
+			remoteServerMetadata.URL, // remoteURL from registry metadata
 		)
 	}
 

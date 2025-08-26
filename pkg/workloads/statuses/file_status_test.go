@@ -94,16 +94,7 @@ func TestFileStatusManager_GetWorkload(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-<<<<<<< HEAD
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-	tempDir := t.TempDir()
-	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 	ctx := context.Background()
 
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
@@ -134,16 +125,7 @@ func TestFileStatusManager_GetWorkload_NotFound(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-<<<<<<< HEAD
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-	tempDir := t.TempDir()
-	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 	ctx := context.Background()
 
 	// Mock the run config store to return false for exists (not a remote workload)
@@ -164,16 +146,7 @@ func TestFileStatusManager_GetWorkload_RuntimeFallback(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-<<<<<<< HEAD
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-	tempDir := t.TempDir()
-	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 	ctx := context.Background()
 
 	// Mock the run config store to return false for exists (not a remote workload)
@@ -210,16 +183,7 @@ func TestFileStatusManager_GetWorkload_FileAndRuntimeCombination(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-<<<<<<< HEAD
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-	tempDir := t.TempDir()
-	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 	ctx := context.Background()
 
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
@@ -378,9 +342,10 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
 	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
 
-	// Create a mock reader that returns non-remote configuration data
-	mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`))
-	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil).AnyTimes()
+	// Create a new mock reader for each call to avoid race conditions
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").DoAndReturn(func(ctx context.Context, workloadName string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a workload status
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
@@ -415,7 +380,7 @@ func TestFileStatusManager_ValidateRunningWorkload_Remote(t *testing.T) {
 	defer ctrl.Finish()
 
 	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
@@ -697,12 +662,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-<<<<<<< HEAD
 			manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-			tempDir := t.TempDir()
-			mockRuntime := rtmocks.NewMockRuntime(ctrl)
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 			tt.setupRuntimeMock(mockRuntime)
 
 			// Mock the run config store to return true for exists and provide readers with non-remote data
@@ -743,16 +703,7 @@ func TestFileStatusManager_GetWorkload_UnhealthyDetection(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-<<<<<<< HEAD
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-	tempDir := t.TempDir()
-	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 	ctx := context.Background()
 
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
@@ -823,16 +774,7 @@ func TestFileStatusManager_GetWorkload_HealthyRunningWorkload(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-<<<<<<< HEAD
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-	tempDir := t.TempDir()
-	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 	ctx := context.Background()
 
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
@@ -880,18 +822,7 @@ func TestFileStatusManager_GetWorkload_ProxyNotRunning(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-<<<<<<< HEAD
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-	tempDir := t.TempDir()
-	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-
-	// Create file status manager directly instead of using NewFileStatusManager
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 	ctx := context.Background()
 
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
@@ -967,16 +898,7 @@ func TestFileStatusManager_GetWorkload_HealthyWithProxy(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-<<<<<<< HEAD
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-	tempDir := t.TempDir()
-	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 	ctx := context.Background()
 
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
@@ -1025,16 +947,7 @@ func TestFileStatusManager_ListWorkloads_WithValidation(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-<<<<<<< HEAD
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-	tempDir := t.TempDir()
-	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 	ctx := context.Background()
 
 	// Mock the run config store to return true for exists and provide readers with non-remote data
@@ -1139,16 +1052,7 @@ func TestFileStatusManager_GetWorkload_vs_ListWorkloads_Consistency(t *testing.T
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-<<<<<<< HEAD
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-	tempDir := t.TempDir()
-	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 	ctx := context.Background()
 
 	// Mock the run config store to return true for exists and provide a reader with non-remote data
@@ -1192,16 +1096,7 @@ func TestFileStatusManager_ListWorkloads_CorruptedFile(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-<<<<<<< HEAD
 	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
-=======
-	tempDir := t.TempDir()
-	mockRuntime := rtmocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
->>>>>>> 80a21827 (Isolate unit tests from environment variables and enable race detection)
 	ctx := context.Background()
 
 	// Mock the run config store to return true for exists and provide a reader with non-remote data

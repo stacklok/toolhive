@@ -16,6 +16,11 @@ type WorkloadInfo struct {
 	URL       string `json:"url,omitempty"`
 }
 
+// ListServersResponse represents the response from listing servers
+type ListServersResponse struct {
+	Servers []WorkloadInfo `json:"servers"`
+}
+
 // ListServers lists all running MCP servers
 func (h *Handler) ListServers(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// List all workloads (including stopped ones)
@@ -46,5 +51,10 @@ func (h *Handler) ListServers(ctx context.Context, _ mcp.CallToolRequest) (*mcp.
 		results = append(results, info)
 	}
 
-	return mcp.NewToolResultStructuredOnly(results), nil
+	// Create structured response
+	response := ListServersResponse{
+		Servers: results,
+	}
+
+	return mcp.NewToolResultStructuredOnly(response), nil
 }

@@ -239,13 +239,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
+	if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {
+		logger.Warnf("Warning: Failed to write PID file: %v", err)
+	}
 	if process.IsDetached() {
 		// We're a detached process running in foreground mode
 		// Write the PID to a file so the stop command can kill the process
-		if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to write PID file: %v", err)
-		}
-
 		logger.Infof("Running as detached process (PID: %d)", os.Getpid())
 	} else {
 		logger.Info("Press Ctrl+C to stop or wait for container to exit")

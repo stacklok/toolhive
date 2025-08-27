@@ -24,6 +24,7 @@ This command starts a standalone proxy without creating a workload, providing:
 - Automatic authentication detection via WWW-Authenticate headers
 - OIDC-based access control for incoming proxy requests
 - Secure credential handling via files or environment variables
+- Dynamic client registration (RFC 7591) for automatic OAuth client setup
 
 #### Authentication modes
 
@@ -41,6 +42,15 @@ OAuth client secrets can be provided via (in order of precedence):
 1. --remote-auth-client-secret flag (not recommended for production)
 2. --remote-auth-client-secret-file flag (secure file-based approach)
 3. TOOLHIVE_REMOTE_OAUTH_CLIENT_SECRET environment variable
+
+#### Dynamic client registration
+
+When no client credentials are provided, the proxy automatically registers an OAuth client
+with the authorization server using RFC 7591 dynamic client registration:
+
+- No need to pre-configure client ID and secret
+- Automatically discovers registration endpoint via OIDC
+- Supports PKCE flow for enhanced security
 
 #### Examples
 
@@ -74,6 +84,11 @@ Auto-detect authentication requirements:
 
 	thv proxy my-server --target-uri https://protected-api.com \
 	  --remote-auth-client-id my-client-id
+
+Dynamic client registration (automatic OAuth client setup):
+
+	thv proxy my-server --target-uri https://protected-api.com \
+	  --remote-auth --remote-auth-issuer https://auth.example.com
 
 ```
 thv proxy [flags] SERVER_NAME

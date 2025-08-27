@@ -58,6 +58,15 @@ ToolHive supports five ways to run an MCP server:
    This allows remote MCP servers to be managed like local workloads with full
    support for client configuration, tool filtering, import/export, etc.
 
+#### Dynamic client registration
+
+When no client credentials are provided, ToolHive automatically registers an OAuth client
+with the authorization server using RFC 7591 dynamic client registration:
+
+- No need to pre-configure client ID and secret
+- Automatically discovers registration endpoint via OIDC
+- Supports PKCE flow for enhanced security
+
 The container will be started with the specified transport mode and
 permission profile. Additional configuration can be provided via flags.
 

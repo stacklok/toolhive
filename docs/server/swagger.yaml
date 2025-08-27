@@ -634,8 +634,6 @@ components:
           type: string
         clientSecretFile:
           type: string
-        enableRemoteAuth:
-          type: boolean
         envVars:
           description: Environment variables for the client
           items:

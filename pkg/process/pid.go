@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // GetPIDFilePath returns the path to the PID file for a container
@@ -21,6 +23,7 @@ func GetPIDFilePath(containerBaseName string) string {
 func WritePIDFile(containerBaseName string, pid int) error {
 	// Get the PID file path
 	pidFilePath := GetPIDFilePath(containerBaseName)
+	logger.Debugf("Writing PID file to %s", pidFilePath)
 
 	// Write the PID to the file
 	return os.WriteFile(pidFilePath, []byte(fmt.Sprintf("%d", pid)), 0600)
@@ -28,6 +31,7 @@ func WritePIDFile(containerBaseName string, pid int) error {
 
 // WriteCurrentPIDFile writes the current process ID to a file
 func WriteCurrentPIDFile(containerBaseName string) error {
+	logger.Infof("Writing current PID (%d) to PID file", os.Getpid())
 	return WritePIDFile(containerBaseName, os.Getpid())
 }
 
@@ -35,6 +39,7 @@ func WriteCurrentPIDFile(containerBaseName string) error {
 func ReadPIDFile(containerBaseName string) (int, error) {
 	// Get the PID file path
 	pidFilePath := GetPIDFilePath(containerBaseName)
+	logger.Debugf("Reading PID file from %s", pidFilePath)
 
 	// Read the PID from the file
 	// #nosec G304 - This is safe as the path is constructed from a known prefix and container name
@@ -55,6 +60,7 @@ func ReadPIDFile(containerBaseName string) (int, error) {
 
 // RemovePIDFile removes the PID file
 func RemovePIDFile(containerBaseName string) error {
+	logger.Infof("Removing PID file for container %s", containerBaseName)
 	// Get the PID file path
 	pidFilePath := GetPIDFilePath(containerBaseName)
 

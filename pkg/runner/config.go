@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/validation"
 )
 
 // CurrentSchemaVersion is the current version of the RunConfig schema
@@ -364,19 +365,27 @@ func (c *RunConfig) WithEnvFile(filePath string) (*RunConfig, error) {
 }
 
 // WithContainerName generates container name if not already set
-func (c *RunConfig) WithContainerName() *RunConfig {
+// Returns the config and a boolean indicating if the name was sanitized
+func (c *RunConfig) WithContainerName() (*RunConfig, bool) {
+	var wasModified bool
+
 	if c.ContainerName == "" {
 		if c.Image != "" {
 			// For container-based servers
-			containerName, baseName := container.GetOrGenerateContainerName(c.Name, c.Image)
+			// Sanitize the name if provided to ensure it's safe for file paths
+			safeName := ""
+			if c.Name != "" {
+				safeName, wasModified = validation.SanitizeWorkloadName(c.Name)
+			}
+			containerName, baseName := container.GetOrGenerateContainerName(safeName, c.Image)
 			c.ContainerName = containerName
 			c.BaseName = baseName
 		} else if c.RemoteURL != "" && c.Name != "" {
-			// For remote servers, use the provided name as base name
-			c.BaseName = c.Name
+			// For remote servers, sanitize the provided name to ensure it's safe for file paths
+			c.BaseName, wasModified = validation.SanitizeWorkloadName(c.Name)
 		}
 	}
-	return c
+	return c, wasModified
 }
 
 // WithStandardLabels adds standard labels to the container

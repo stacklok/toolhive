@@ -575,7 +575,10 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	}
 
 	// Generate container name if not already set
-	c.WithContainerName()
+	_, wasModified := c.WithContainerName()
+	if wasModified && c.Name != "" {
+		logger.Warnf("The provided name '%s' contained invalid characters and was sanitized", c.Name)
+	}
 
 	// Add standard labels
 	c.WithStandardLabels()

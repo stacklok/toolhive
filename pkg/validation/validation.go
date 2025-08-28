@@ -39,3 +39,28 @@ func ValidateGroupName(name string) error {
 
 	return nil
 }
+
+// SanitizeWorkloadName sanitizes a user-provided workload name to ensure it's safe for file paths.
+// It allows only alphanumeric characters and dashes, replacing any other character with a dash.
+// Returns the sanitized name and a boolean indicating whether the name was modified.
+// This is used for both container names and remote server names.
+func SanitizeWorkloadName(name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+
+	var sanitized strings.Builder
+	modified := false
+
+	for _, c := range name {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' {
+			sanitized.WriteRune(c)
+		} else {
+			sanitized.WriteRune('-')
+			modified = true
+		}
+	}
+
+	result := sanitized.String()
+	return result, modified
+}

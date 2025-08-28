@@ -87,8 +87,9 @@ func ReadPIDFile(containerBaseName string) (int, error) {
 		// If we can't read from the new location, try the old location explicitly
 		oldPath := getOldPIDFilePath(containerBaseName)
 		if oldPath != pidFilePath {
-			// #nosec G304 - This is safe as the path is constructed from a known prefix and container name
-			pidBytes, err = os.ReadFile(oldPath)
+			// Clean the path to prevent directory traversal
+			cleanOldPath := filepath.Clean(oldPath)
+			pidBytes, err = os.ReadFile(cleanOldPath)
 			if err != nil {
 				return 0, fmt.Errorf("failed to read PID file from both new and old locations: %w", err)
 			}

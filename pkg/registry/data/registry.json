@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-08-22T11:58:47Z",
+  "last_updated": "2025-08-24T09:23:25Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -414,84 +414,6 @@
         }
       ]
     },
-    "aws-cost-analysis": {
-      "description": "Generate upfront AWS service cost estimates and cost insights. This server is deprecated, use aws-pricing instead.",
-      "tier": "Official",
-      "status": "Deprecated",
-      "transport": "stdio",
-      "tools": [
-        "analyze_cdk_project",
-        "analyze_terraform_project",
-        "get_pricing_from_web",
-        "get_pricing_from_api",
-        "get_bedrock_patterns",
-        "generate_cost_report"
-      ],
-      "metadata": {
-        "stars": 5950,
-        "pulls": 8163,
-        "last_updated": "2025-08-22T09:45:13Z"
-      },
-      "repository_url": "https://github.com/awslabs/mcp",
-      "tags": [
-        "aws",
-        "cost-analysis",
-        "pricing",
-        "estimates",
-        "cost-insights",
-        "aws-costs",
-        "aws-pricing"
-      ],
-      "image": "public.ecr.aws/f3y8w4n0/awslabs/cost-analysis-mcp-server:1.0.5",
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [
-              "aws.amazon.com",
-              "pricing.us-east-1.amazonaws.com",
-              "api.pricing.us-east-1.amazonaws.com",
-              "api.pricing.eu-central-1.amazonaws.com",
-              "api.pricing.ap-southeast-1.amazonaws.com"
-            ],
-            "allow_port": [
-              443
-            ]
-          }
-        }
-      },
-      "env_vars": [
-        {
-          "name": "AWS_ACCESS_KEY_ID",
-          "description": "AWS access key ID with access to the AWS Pricing API",
-          "required": false,
-          "secret": true
-        },
-        {
-          "name": "AWS_SECRET_ACCESS_KEY",
-          "description": "AWS secret access key",
-          "required": false,
-          "secret": true
-        },
-        {
-          "name": "AWS_SESSION_TOKEN",
-          "description": "AWS session token for temporary credentials",
-          "required": false,
-          "secret": true
-        },
-        {
-          "name": "AWS_REGION",
-          "description": "AWS region for the Pricing API endpoint (us-east-1, eu-central-1, ap-southeast-1)",
-          "required": false,
-          "default": "us-east-1"
-        },
-        {
-          "name": "FASTMCP_LOG_LEVEL",
-          "description": "Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
-          "required": false,
-          "default": "ERROR"
-        }
-      ]
-    },
     "aws-diagram": {
       "description": "Generate AWS diagrams, sequence diagrams, flow diagrams, and class diagrams using Python code.",
       "tier": "Official",
@@ -503,48 +425,9 @@
         "list_icons"
       ],
       "metadata": {
-        "stars": 5950,
-        "pulls": 7294,
-        "last_updated": "2025-08-22T09:45:11Z"
-      },
-      "repository_url": "https://github.com/awslabs/mcp",
-      "tags": [
-        "aws",
-        "diagram",
-        "sequence-diagram",
-        "flow-diagram",
-        "class-diagram",
-        "python"
-      ],
-      "image": "docker.io/mcp/aws-diagram:latest",
-      "permissions": {
-        "network": {
-          "outbound": {}
-        }
-      },
-      "env_vars": [
-        {
-          "name": "FASTMCP_LOG_LEVEL",
-          "description": "Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
-          "required": false,
-          "default": "ERROR"
-        }
-      ]
-    },
-    "aws-diagram-mcp-server": {
-      "description": "An AWS Labs Model Context Protocol (MCP) server that creates diagrams using the Python diagrams package DSL",
-      "tier": "Official",
-      "status": "Active",
-      "transport": "stdio",
-      "tools": [
-        "generate_diagram",
-        "get_diagram_examples",
-        "list_icons"
-      ],
-      "metadata": {
-        "stars": 5291,
+        "stars": 6006,
         "pulls": 0,
-        "last_updated": "2025-08-22T02:32:58Z"
+        "last_updated": "2025-08-24T02:35:25Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -554,7 +437,7 @@
         "architecture",
         "visualization"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/aws-diagram-mcp-server:1.0.5",
+      "image": "ghcr.io/stacklok/dockyard/uvx/aws-diagram:1.0.5",
       "permissions": {
         "network": {
           "outbound": {}
@@ -566,6 +449,12 @@
           "description": "Directory where diagrams will be saved",
           "required": false,
           "default": "/tmp/diagrams"
+        },
+        {
+          "name": "FASTMCP_LOG_LEVEL",
+          "description": "Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+          "required": false,
+          "default": "ERROR"
         }
       ],
       "provenance": {
@@ -583,22 +472,22 @@
       "transport": "stdio",
       "tools": [
         "read_documentation",
-        "recommend",
-        "search_documentation"
+        "search_documentation",
+        "recommend"
       ],
       "metadata": {
         "stars": 5950,
-        "pulls": 10451,
-        "last_updated": "2025-08-22T09:45:09Z"
+        "pulls": 0,
+        "last_updated": "2025-08-22T09:40:58Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
         "aws",
-        "content",
         "documentation",
-        "knowledge-base"
+        "cloud",
+        "reference"
       ],
-      "image": "docker.io/mcp/aws-documentation:latest",
+      "image": "ghcr.io/stacklok/dockyard/uvx/aws-documentation:1.1.2",
       "permissions": {
         "network": {
           "outbound": {
@@ -625,36 +514,7 @@
           "required": false,
           "default": "ERROR"
         }
-      ]
-    },
-    "aws-documentation-mcp-server": {
-      "description": "An AWS Labs Model Context Protocol (MCP) server for AWS Documentation",
-      "tier": "Official",
-      "status": "Active",
-      "transport": "stdio",
-      "tools": [
-        "read_documentation",
-        "search_documentation",
-        "recommend"
       ],
-      "metadata": {
-        "stars": 5950,
-        "pulls": 0,
-        "last_updated": "2025-08-22T09:40:58Z"
-      },
-      "repository_url": "https://github.com/awslabs/mcp",
-      "tags": [
-        "aws",
-        "documentation",
-        "cloud",
-        "reference"
-      ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/aws-documentation-mcp-server:1.1.2",
-      "permissions": {
-        "network": {
-          "outbound": {}
-        }
-      },
       "provenance": {
         "sigstore_url": "tuf-repo-cdn.sigstore.dev",
         "repository_uri": "https://github.com/stacklok/dockyard",
@@ -750,34 +610,43 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "documentation",
-        "bestpractices",
-        "group",
-        "subscription",
+        "acr",
         "aks",
         "appconfig",
-        "role",
-        "datadog",
+        "azuremanagedlustre",
+        "azureterraformbestpractices",
+        "bestpractices",
+        "bicepschema",
+        "cloudarchitect",
         "cosmos",
+        "datadog",
+        "deploy",
+        "documentation",
+        "extension_az",
+        "extension_azd",
+        "extension_azqr",
         "foundry",
+        "functionapp",
         "grafana",
+        "group",
         "keyvault",
         "kusto",
+        "loadtesting",
         "marketplace",
         "monitor",
+        "mysql",
         "postgres",
+        "quota",
         "redis",
+        "resourcehealth",
+        "role",
         "search",
         "servicebus",
         "sql",
         "storage",
-        "workbooks",
-        "bicepschema",
-        "azureterraformbestpractices",
-        "loadtesting",
-        "extension_az",
-        "extension_azd",
-        "extension_azqr"
+        "subscription",
+        "virtualdesktop",
+        "workbooks"
       ],
       "metadata": {
         "stars": 1107,
@@ -795,7 +664,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.7",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.8",
       "permissions": {
         "network": {
           "outbound": {
@@ -1223,9 +1092,9 @@
         "chroma_delete_documents"
       ],
       "metadata": {
-        "stars": 305,
+        "stars": 308,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:39:14Z"
+        "last_updated": "2025-08-24T02:35:25Z"
       },
       "repository_url": "https://github.com/chroma-core/chroma-mcp",
       "tags": [
@@ -1534,7 +1403,7 @@
       "metadata": {
         "stars": 2,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:39:15Z"
+        "last_updated": "2025-08-24T02:35:25Z"
       },
       "repository_url": "https://github.com/dolthub/dolt-mcp",
       "tags": [
@@ -1763,7 +1632,7 @@
         "curl",
         "modelcontextprotocol"
       ],
-      "image": "ghcr.io/stackloklabs/gofetch/server:0.0.4",
+      "image": "ghcr.io/stackloklabs/gofetch/server:0.0.5",
       "permissions": {
         "network": {
           "outbound": {
@@ -2014,6 +1883,7 @@
         "cancel_workflow_run",
         "create_and_submit_pull_request_review",
         "create_branch",
+        "create_gist",
         "create_issue",
         "create_or_update_file",
         "create_pending_pull_request_review",
@@ -2029,11 +1899,13 @@
         "get_commit",
         "get_dependabot_alert",
         "get_discussion",
-        "get_discussion_comment",
+        "get_discussion_comments",
         "get_file_contents",
+        "get_global_security_advisory",
         "get_issue",
         "get_issue_comments",
         "get_job_logs",
+        "get_latest_release",
         "get_me",
         "get_notification_details",
         "get_pull_request",
@@ -2042,8 +1914,11 @@
         "get_pull_request_files",
         "get_pull_request_reviews",
         "get_pull_request_status",
+        "get_release_by_tag",
         "get_secret_scanning_alert",
         "get_tag",
+        "get_team_members",
+        "get_teams",
         "get_workflow_run",
         "get_workflow_run_logs",
         "get_workflow_run_usage",
@@ -2053,9 +1928,15 @@
         "list_dependabot_alerts",
         "list_discussion_categories",
         "list_discussions",
+        "list_gists",
+        "list_global_security_advisories",
+        "list_issue_types",
         "list_issues",
         "list_notifications",
+        "list_org_repository_security_advisories",
         "list_pull_requests",
+        "list_releases",
+        "list_repository_security_advisories",
         "list_secret_scanning_alerts",
         "list_sub_issues",
         "list_tags",
@@ -2081,6 +1962,7 @@
         "search_repositories",
         "search_users",
         "submit_pending_pull_request_review",
+        "update_gist",
         "update_issue",
         "update_pull_request",
         "update_pull_request_branch"
@@ -2104,7 +1986,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.12.1",
+      "image": "ghcr.io/github/github-mcp-server:v0.13.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -2126,8 +2008,23 @@
           "secret": true
         },
         {
-          "name": "GH_HOST",
+          "name": "GITHUB_HOST",
           "description": "GitHub Enterprise Server hostname (optional)",
+          "required": false
+        },
+        {
+          "name": "GITHUB_TOOLSETS",
+          "description": "Comma-separated list of toolsets to enable (e.g., 'repos,issues,pull_requests'). If not set, all toolsets are enabled. See the README for available toolsets.",
+          "required": false
+        },
+        {
+          "name": "GITHUB_DYNAMIC_TOOLSETS",
+          "description": "Set to '1' to enable dynamic toolset discovery",
+          "required": false
+        },
+        {
+          "name": "GITHUB_READ_ONLY",
+          "description": "Set to '1' to enable read-only mode, preventing any modifications to GitHub resources",
           "required": false
         }
       ],
@@ -3517,7 +3414,7 @@
       "metadata": {
         "stars": 59,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:39:15Z"
+        "last_updated": "2025-08-24T02:35:26Z"
       },
       "repository_url": "https://github.com/CircleCI-Public/mcp-server-circleci",
       "tags": [
@@ -4028,9 +3925,9 @@
         "get_block_info"
       ],
       "metadata": {
-        "stars": 61,
+        "stars": 62,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:39:15Z"
+        "last_updated": "2025-08-24T02:35:26Z"
       },
       "repository_url": "https://github.com/Bankless/onchain-mcp",
       "tags": [
@@ -4570,7 +4467,7 @@
         "ast",
         "code-analysis"
       ],
-      "image": "ghcr.io/semgrep/mcp:0.5.1",
+      "image": "ghcr.io/semgrep/mcp:0.6.0",
       "permissions": {
         "network": {
           "outbound": {

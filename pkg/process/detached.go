@@ -1,6 +1,8 @@
 package process
 
-import "os"
+import (
+	"os"
+)
 
 // ToolHiveDetachedEnv is the environment variable used to indicate that the process is running in detached mode.
 const ToolHiveDetachedEnv = "TOOLHIVE_DETACHED"

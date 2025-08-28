@@ -152,8 +152,7 @@ spec:
                         description: Audience is the expected audience for the token
                         type: string
                       clientId:
-                        description: ClientID is deprecated and will be removed in
-                          a future release.
+                        description: ClientID is the OIDC client ID
                         type: string
                       clientSecret:
                         description: ClientSecret is the client secret for introspection
@@ -217,8 +216,9 @@ spec:
                           If empty, uses the MCPServer's namespace
                         type: string
                       serviceAccount:
-                        description: ServiceAccount is deprecated and will be removed
-                          in a future release.
+                        description: |-
+                          ServiceAccount is the name of the service account to validate tokens for
+                          If empty, uses the pod's service account
                         type: string
                       useClusterAuth:
                         description: |-
@@ -8428,6 +8428,59 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              telemetry:
+                description: Telemetry defines observability configuration for the
+                  MCP server
+                properties:
+                  openTelemetry:
+                    description: OpenTelemetry defines OpenTelemetry configuration
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled controls whether OpenTelemetry is enabled
+                        type: boolean
+                      endpoint:
+                        description: Endpoint is the OTLP endpoint URL for tracing
+                          and metrics
+                        type: string
+                      headers:
+                        description: |-
+                          Headers contains authentication headers for the OTLP endpoint
+                          Specified as key=value pairs
+                        items:
+                          type: string
+                        type: array
+                      insecure:
+                        default: false
+                        description: Insecure indicates whether to use HTTP instead
+                          of HTTPS for the OTLP endpoint
+                        type: boolean
+                      metrics:
+                        description: Metrics defines OpenTelemetry metrics-specific
+                          configuration
+                        properties:
+                          enabled:
+                            default: true
+                            description: Enabled controls whether OTLP metrics are
+                              sent
+                            type: boolean
+                        type: object
+                      serviceName:
+                        description: |-
+                          ServiceName is the service name for telemetry
+                          If not specified, defaults to the MCPServer name
+                        type: string
+                    type: object
+                  prometheus:
+                    description: Prometheus defines Prometheus-specific configuration
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled controls whether Prometheus metrics endpoint
+                          is exposed
+                        type: boolean
+                    type: object
+                type: object
               tools:
                 description: ToolsFilter is the filter on tools applied to the MCP
                   server

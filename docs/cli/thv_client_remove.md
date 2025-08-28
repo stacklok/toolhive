@@ -26,6 +26,7 @@ Valid clients:
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
   - cursor: Cursor editor
+  - lm-studio: LM Studio application
   - roo-code: Roo Code extension for VS Code
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition

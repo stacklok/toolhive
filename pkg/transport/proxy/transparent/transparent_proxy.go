@@ -138,7 +138,7 @@ func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
 // manualForward manually forwards a request to the remote server using an HTTP client
 func (t *tracingTransport) manualForward(req *http.Request) (*http.Response, error) {
 	// Create a new request to the target URL
-	targetURL := t.p.targetURI + req.URL.Path
+	targetURL := t.p.targetURI
 	if req.URL.RawQuery != "" {
 		targetURL += "?" + req.URL.RawQuery
 	}
@@ -275,9 +275,16 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 	originalBody := resp.Body
 	resp.Body = pr
 
+	// NOTE: it would be better to have a proper function instead of a goroutine, as this
+	// makes it harder to debug and test.
 	go func() {
 		defer pw.Close()
 		scanner := bufio.NewScanner(originalBody)
+		// NOTE: The following line mitigates the issue of the response body being too large.
+		// By default, the maximum token size of the scanner is 64KB, which is too small in
+		// the case of e.g. images. This raises the limit to 1MB. This is a workaround, and
+		// not a proper fix.
+		scanner.Buffer(make([]byte, 0, 1024), 1024*1024*1)
 		found := false
 
 		for scanner.Scan() {
@@ -300,6 +307,13 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 				return
 			}
 		}
+
+		// NOTE: this line is always necessary since scanner.Scan() will return false
+		// in case of an error.
+		if err := scanner.Err(); err != nil {
+			logger.Errorf("Failed to scan response body: %v", err)
+		}
+
 		_, err := io.Copy(pw, originalBody)
 		if err != nil && err != io.EOF {
 			logger.Errorf("Failed to copy response body: %v", err)
@@ -350,7 +364,8 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	var finalHandler http.Handler = handler
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
 		finalHandler = p.middlewares[i](finalHandler)
-		logger.Infof("Applied middleware %d\n", i+1)
+		// TODO: we should really log the middleware name here
+		logger.Infof("Applied middleware %d", i+1)
 	}
 
 	// Add the proxy handler for all paths except /health

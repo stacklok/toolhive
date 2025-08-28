@@ -1,0 +1,76 @@
+# Helm values for kube-prometheus-stack to enable remote write receiver
+# This configuration enables the --web.enable-remote-write-receiver flag
+# which is required for the OTEL collector to send metrics to Prometheus
+
+prometheus:
+  prometheusSpec:
+    # Enable remote write receiver API endpoint
+    # This adds the --web.enable-remote-write-receiver flag to Prometheus
+    additionalArgs:
+      - name: "web.enable-remote-write-receiver"
+    
+    # Add scrape config for OTEL Collector metrics endpoint
+    # additionalScrapeConfigs:
+    #   - job_name: 'toolhive-otel-metrics'
+    #     static_configs:
+    #       - targets: ['otel-collector-opentelemetry-collector.monitoring:8889']
+    #     scrape_interval: 15s
+    #     metrics_path: /metrics
+    
+    # Optional: Configure retention and storage
+    retention: "15d"
+    retentionSize: "50GB"
+    
+    # Optional: Enable ServiceMonitor for Prometheus to scrape itself
+    serviceMonitorSelectorNilUsesHelmValues: false
+    
+    # Optional: Resource limits and requests
+    resources:
+      requests:
+        memory: "2Gi"
+        cpu: "1"
+      limits:
+        memory: "4Gi"
+        cpu: "2"
+
+# Grafana configuration (optional)
+grafana:
+  enabled: true
+  adminPassword: "admin"  # Change this in production
+  
+  # Pre-configure Prometheus as datasource
+  sidecar:
+    datasources:
+      enabled: true
+      defaultDatasourceEnabled: true
+
+# AlertManager configuration (optional)
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    resources:
+      requests:
+        memory: "200Mi"
+        cpu: "100m"
+      limits:
+        memory: "500Mi"
+        cpu: "500m"
+
+# Node Exporter configuration (optional)
+nodeExporter:
+  enabled: true
+
+# Prometheus Operator configuration
+prometheusOperator:
+  enabled: true
+  resources:
+    requests:
+      memory: "200Mi"
+      cpu: "100m"
+    limits:
+      memory: "500Mi"
+      cpu: "500m"
+
+# Kube State Metrics configuration (optional)
+kubeStateMetrics:
+  enabled: true

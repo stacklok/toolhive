@@ -18,9 +18,11 @@ var (
 )
 
 var restartCmd = &cobra.Command{
-	Use:               "restart [workload-name]",
-	Short:             "Restart a tooling server",
-	Long:              `Restart a running tooling server managed by ToolHive. If the server is not running, it will be started.`,
+	Use:   "restart [workload-name]",
+	Short: "Restart a tooling server",
+	Long: `Restart a running tooling server managed by ToolHive.
+If the server is not running, it will be started.
+Supports both container-based and remote MCP servers.`,
 	Args:              cobra.RangeArgs(0, 1),
 	RunE:              restartCmdFunc,
 	ValidArgsFunction: completeMCPServerNames,
@@ -76,7 +78,7 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to restart workload %s: %v", workloadName, err)
 	}
 
-	fmt.Printf("Container %s restarted successfully\n", workloadName)
+	fmt.Printf("Workload %s restarted successfully\n", workloadName)
 	return nil
 }
 
@@ -88,7 +90,7 @@ func restartAllContainers(ctx context.Context, workloadManager workloads.Manager
 	}
 
 	if len(allWorkloads) == 0 {
-		fmt.Println("No MCP servers found to restart")
+		fmt.Println("No workloads found to restart")
 		return nil
 	}
 
@@ -124,7 +126,7 @@ func restartWorkloadsByGroup(ctx context.Context, workloadManager workloads.Mana
 	}
 
 	if len(workloadNames) == 0 {
-		fmt.Printf("No MCP servers found in group '%s' to restart\n", groupName)
+		fmt.Printf("No workloads found in group '%s' to restart\n", groupName)
 		return nil
 	}
 
@@ -142,7 +144,7 @@ func restartMultipleWorkloads(
 	failedCount := 0
 	var errors []string
 
-	fmt.Printf("Restarting %d MCP server(s)...\n", len(workloadNames))
+	fmt.Printf("Restarting %d workload(s)...\n", len(workloadNames))
 
 	var restartRequests []*errgroup.Group
 	// First, trigger the restarts concurrently.

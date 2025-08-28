@@ -123,6 +123,7 @@ components:
       - AmpCursor
       - AmpVSCodeInsider
       - AmpWindsurf
+      - LMStudio
     client.MCPClientStatus:
       properties:
         client_type:
@@ -142,6 +143,7 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - LMStudio
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -190,6 +192,10 @@ components:
             Port is the port on which the workload is exposed.
             This is embedded in the URL.
           type: integer
+        remote:
+          description: Remote indicates whether this is a remote workload (true) or
+            a container workload (false).
+          type: boolean
         status:
           $ref: '#/components/schemas/runtime.WorkloadStatus'
         status_context:
@@ -630,8 +636,6 @@ components:
           type: string
         clientSecretFile:
           type: string
-        enableRemoteAuth:
-          type: boolean
         envVars:
           description: Environment variables for the client
           items:
@@ -779,6 +783,18 @@ components:
           description: ThvCABundle is the path to the CA certificate bundle for ToolHive
             HTTP operations
           type: string
+        tool_override:
+          additionalProperties:
+            $ref: '#/components/schemas/runner.ToolOverride'
+          description: |-
+            ToolOverride is the map of tool names to override. Tools to override are
+            specified as ToolOverride structs.
+          type: object
+        tool_override_file:
+          description: |-
+            ToolOverrideFile is the path to a file containing tool overrides.
+            The file is a JSON struct mapping actual names to ToolOverride structs.
+          type: string
         tools_filter:
           description: ToolsFilter is the list of tools to filter
           items:
@@ -801,6 +817,15 @@ components:
             type: string
           type: array
           uniqueItems: false
+      type: object
+    runner.ToolOverride:
+      properties:
+        description:
+          description: Description is the redefined description of the tool
+          type: string
+        name:
+          description: Name is the redefined name of the tool
+          type: string
       type: object
     runtime.WorkloadStatus:
       description: Status is the current status of the workload.
@@ -942,6 +967,7 @@ components:
             - AmpCursor
             - AmpVSCodeInsider
             - AmpWindsurf
+            - LMStudio
           type: array
           uniqueItems: false
       type: object
@@ -990,6 +1016,7 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - LMStudio
       type: object
     v1.createClientResponse:
       properties:
@@ -1016,6 +1043,7 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - LMStudio
       type: object
     v1.createGroupRequest:
       properties:
@@ -1046,6 +1074,9 @@ components:
             type: string
           description: Environment variables to set in the container
           type: object
+        group:
+          description: Group name this workload belongs to
+          type: string
         host:
           description: Host to bind to
           type: string
@@ -1330,6 +1361,9 @@ components:
             type: string
           description: Environment variables to set in the container
           type: object
+        group:
+          description: Group name this workload belongs to
+          type: string
         host:
           description: Host to bind to
           type: string

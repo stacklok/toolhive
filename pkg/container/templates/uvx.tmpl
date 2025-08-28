@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.13-slim AS builder
 
 {{if .CACertContent}}
 # Add custom CA certificate BEFORE any network operations
@@ -8,22 +8,13 @@ RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
     rm /tmp/custom-ca.crt
 {{end}}
 
-# Install uv package manager and CA certificates
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
-    pip install --no-cache-dir uv && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Set working directory
-WORKDIR /app
-
-# Create a non-root user to run the application and set proper permissions
-RUN groupadd -r appgroup && \
-    useradd -r -g appgroup -m appuser && \
-    mkdir -p /app && \
-    chown -R appuser:appgroup /app && \
-    mkdir -p /home/appuser/.cache && \
-    chown -R appuser:appgroup /home/appuser
+# Install build dependencies and uv package manager
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    && pip install --no-cache-dir uv \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 {{if .CACertContent}}
 # Properly install the custom CA certificate using standard tools
@@ -34,16 +25,91 @@ RUN mkdir -p /usr/local/share/ca-certificates && \
     update-ca-certificates
 {{end}}
 
-# Set environment variables for better performance in containers
+# Set environment variables for build
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     UV_SYSTEM_PYTHON=1
 
+# Set working directory for package installation
+WORKDIR /build
+
+{{if .IsLocalPath}}
+# Copy the local source code
+COPY . /build/
+# Install the local package and its dependencies
+RUN uv pip install --system /build/
+{{else}}
+# Install the tool using uv tool install
+# This properly handles package-to-executable mapping and dependencies
+# We set UV_TOOL_DIR to a custom location so we can copy it to the runtime stage
+ENV UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/opt/uv-tools/bin
+RUN uv tool install {{.MCPPackage}} && \
+    # List installed executables for debugging
+    ls -la /opt/uv-tools/bin/
+{{end}}
+
+# Final stage - runtime image with pre-installed packages
+FROM python:3.13-slim
+
+{{if .CACertContent}}
+# Add custom CA certificate for runtime
+COPY ca-cert.crt /tmp/custom-ca.crt
+RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
+    rm /tmp/custom-ca.crt
+{{end}}
+
+# Install only runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Create a non-root user to run the application
+RUN groupadd -r appgroup && \
+    useradd -r -g appgroup -m appuser && \
+    mkdir -p /app && \
+    chown -R appuser:appgroup /app && \
+    mkdir -p /home/appuser/.cache && \
+    chown -R appuser:appgroup /home/appuser
+
+{{if .CACertContent}}
+# Install CA certificate for runtime
+RUN mkdir -p /usr/local/share/ca-certificates && \
+    cp /tmp/custom-ca.crt /usr/local/share/ca-certificates/custom-ca.crt 2>/dev/null || \
+    echo "CA cert already added to bundle" && \
+    chmod 644 /usr/local/share/ca-certificates/custom-ca.crt 2>/dev/null || true && \
+    update-ca-certificates
+{{end}}
+
+{{if .IsLocalPath}}
+# Copy the system Python packages if local installation
+COPY --from=builder --chown=appuser:appgroup /usr/local/lib/python3.13 /usr/local/lib/python3.13
+{{else}}
+# Copy the uv tool installation from builder
+COPY --from=builder --chown=appuser:appgroup /opt/uv-tools /opt/uv-tools
+{{end}}
+
+{{if .IsLocalPath}}
+# Copy the application files if local
+COPY --from=builder --chown=appuser:appgroup /build/ /app/
+{{end}}
+
+# Set environment variables for runtime
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/opt/uv-tools/bin \
+    PATH="/opt/uv-tools/bin:$PATH"
+
 # Switch to non-root user
 USER appuser
 
-# Run the MCP server using uvx (alias for uv tool run)
-# The entrypoint will be constructed dynamically based on the package and arguments
-ENTRYPOINT ["uvx", "{{.MCPPackage}}"{{range .MCPArgs}}, "{{.}}"{{end}}]
+# Run the pre-installed MCP package
+# uv tool install puts the correct executable in the bin directory
+# We use sh -c to allow the package name to be resolved from PATH
+ENTRYPOINT ["sh", "-c", "exec {{.MCPPackage}} {{range .MCPArgs}}\"{{.}}\" {{end}}\"$@\"", "--"]

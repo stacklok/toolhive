@@ -1074,6 +1074,9 @@ components:
             type: string
           description: Environment variables to set in the container
           type: object
+        group:
+          description: Group name this workload belongs to
+          type: string
         host:
           description: Host to bind to
           type: string
@@ -1358,6 +1361,9 @@ components:
             type: string
           description: Environment variables to set in the container
           type: object
+        group:
+          description: Group name this workload belongs to
+          type: string
         host:
           description: Host to bind to
           type: string

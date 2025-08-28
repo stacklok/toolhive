@@ -123,6 +123,7 @@ components:
       - AmpCursor
       - AmpVSCodeInsider
       - AmpWindsurf
+      - LMStudio
     client.MCPClientStatus:
       properties:
         client_type:
@@ -142,6 +143,7 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - LMStudio
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -965,6 +967,7 @@ components:
             - AmpCursor
             - AmpVSCodeInsider
             - AmpWindsurf
+            - LMStudio
           type: array
           uniqueItems: false
       type: object
@@ -1013,6 +1016,7 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - LMStudio
       type: object
     v1.createClientResponse:
       properties:
@@ -1039,6 +1043,7 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - LMStudio
       type: object
     v1.createGroupRequest:
       properties:

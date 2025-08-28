@@ -173,19 +173,8 @@ func (p *HTTPProxy) handleBatchRequest(w http.ResponseWriter, body []byte) bool 
 		}
 
 		// Wait for response (sequential, can be improved for concurrency)
-		select {
-		case resp := <-p.responseCh:
-			if r, ok := resp.(*jsonrpc2.Response); ok && r.ID.IsValid() {
-				data, err := jsonrpc2.EncodeMessage(r)
-				if err != nil {
-					logger.Errorf("Failed to encode JSON-RPC response: %v", err)
-					continue
-				}
-				responses = append(responses, data)
-			}
-		case <-time.After(10 * time.Second):
-			logger.Warnf("Timeout waiting for response from container for batch message")
-			// Optionally, append a JSON-RPC error response here
+		if response := p.waitForBatchResponse(); response != nil {
+			responses = append(responses, response)
 		}
 	}
 
@@ -252,28 +241,44 @@ func (p *HTTPProxy) handleRequestResponse(w http.ResponseWriter, msg jsonrpc2.Me
 		http.Error(w, "Failed to send message to destination", http.StatusInternalServerError)
 		return
 	}
-	select {
-	case resp := <-p.responseCh:
-		if r, ok := resp.(*jsonrpc2.Response); ok && r.ID.IsValid() {
-			w.Header().Set("Content-Type", "application/json")
-			data, err := jsonrpc2.EncodeMessage(r)
-			if err != nil {
-				logger.Errorf("Failed to encode JSON-RPC response: %v", err)
-				http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+
+	// Keep reading from responseCh until we get a proper response (not a notification)
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case resp := <-p.responseCh:
+			// Check if this is a notification message - handle it and continue waiting
+			if isNotification(resp) {
+				logger.Debugf("Ignoring notification (no SSE stream available): %T", resp)
+				continue
+			}
+
+			// Check if this is a valid response
+			if r, ok := resp.(*jsonrpc2.Response); ok && r.ID.IsValid() {
+				w.Header().Set("Content-Type", "application/json")
+				data, err := jsonrpc2.EncodeMessage(r)
+				if err != nil {
+					logger.Errorf("Failed to encode JSON-RPC response: %v", err)
+					http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+					return
+				}
+				if _, err := w.Write(data); err != nil {
+					logger.Errorf("Failed to write response: %v", err)
+				}
+				return
+			} else {
+				logger.Warnf("Received invalid message that is not a notification or valid response: %T", resp)
+				w.Header().Set("Content-Type", "application/json")
+				errResp := getInvalidJsonrpcError()
+				if err := json.NewEncoder(w).Encode(errResp); err != nil {
+					logger.Errorf("Failed to encode error response: %v", err)
+				}
 				return
 			}
-			if _, err := w.Write(data); err != nil {
-				logger.Errorf("Failed to write response: %v", err)
-			}
-		} else {
-			w.Header().Set("Content-Type", "application/json")
-			errResp := getInvalidJsonrpcError()
-			if err := json.NewEncoder(w).Encode(errResp); err != nil {
-				logger.Errorf("Failed to encode error response: %v", err)
-			}
+		case <-timeout:
+			http.Error(w, "Timeout waiting for response from container", http.StatusGatewayTimeout)
+			return
 		}
-	case <-time.After(10 * time.Second):
-		http.Error(w, "Timeout waiting for response from container", http.StatusGatewayTimeout)
 	}
 }
 
@@ -298,4 +303,34 @@ func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message,
 		return nil, false
 	}
 	return msg, true
+}
+
+// waitForBatchResponse waits for a response from the container, ignoring notifications.
+// Returns the encoded response data or nil if timeout/error occurs.
+func (p *HTTPProxy) waitForBatchResponse() json.RawMessage {
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case resp := <-p.responseCh:
+			// Check if this is a notification message - handle it and continue waiting
+			if isNotification(resp) {
+				// TODO: We could buffer these notifications and send them via SSE if needed
+				logger.Debugf("Ignoring notification (no SSE stream available): %T", resp)
+				continue
+			}
+
+			// Check if this is a valid response
+			if r, ok := resp.(*jsonrpc2.Response); ok && r.ID.IsValid() {
+				data, err := jsonrpc2.EncodeMessage(r)
+				if err != nil {
+					logger.Errorf("Failed to encode JSON-RPC response: %v", err)
+					return nil
+				}
+				return data
+			}
+		case <-timeout:
+			logger.Warnf("Timeout waiting for response from container for batch message")
+			return nil
+		}
+	}
 }

@@ -82,6 +82,7 @@ func TestGenerateOIDCArgs(t *testing.T) {
 				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
 				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
 				"--jwks-allow-private-ip",
+				"--oidc-client-id=default.test-namespace.svc.cluster.local",
 			},
 		},
 		{
@@ -96,10 +97,11 @@ func TestGenerateOIDCArgs(t *testing.T) {
 					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
 						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
-							Namespace: "custom-namespace",
-							Audience:  "custom-audience",
-							Issuer:    "https://custom.issuer.com",
-							JWKSURL:   "https://custom.issuer.com/jwks",
+							ServiceAccount: "custom-sa",
+							Namespace:      "custom-namespace",
+							Audience:       "custom-audience",
+							Issuer:         "https://custom.issuer.com",
+							JWKSURL:        "https://custom.issuer.com/jwks",
 						},
 					},
 				},
@@ -111,6 +113,7 @@ func TestGenerateOIDCArgs(t *testing.T) {
 				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
 				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
 				"--jwks-allow-private-ip",
+				"--oidc-client-id=custom-sa.custom-namespace.svc.cluster.local",
 			},
 		},
 		{
@@ -128,6 +131,7 @@ func TestGenerateOIDCArgs(t *testing.T) {
 							Issuer:   "https://accounts.google.com",
 							Audience: "my-google-client",
 							JWKSURL:  "https://www.googleapis.com/oauth2/v3/certs",
+							ClientID: "my-client-id",
 						},
 					},
 				},
@@ -136,6 +140,7 @@ func TestGenerateOIDCArgs(t *testing.T) {
 				"--oidc-issuer=https://accounts.google.com",
 				"--oidc-audience=my-google-client",
 				"--oidc-jwks-url=https://www.googleapis.com/oauth2/v3/certs",
+				"--oidc-client-id=my-client-id",
 			},
 		},
 		{
@@ -272,6 +277,7 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
 				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
 				"--jwks-allow-private-ip",
+				"--oidc-client-id=default.test-namespace.svc.cluster.local",
 			},
 		},
 		{
@@ -294,6 +300,7 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
 				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
 				"--jwks-allow-private-ip",
+				"--oidc-client-id=default.test-namespace.svc.cluster.local",
 			},
 		},
 		{
@@ -305,8 +312,10 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type:       mcpv1alpha1.OIDCConfigTypeKubernetes,
-						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{},
+						Type: mcpv1alpha1.OIDCConfigTypeKubernetes,
+						Kubernetes: &mcpv1alpha1.KubernetesOIDCConfig{
+							ServiceAccount: "my-service-account",
+						},
 					},
 				},
 			},
@@ -316,6 +325,7 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
 				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
 				"--jwks-allow-private-ip",
+				"--oidc-client-id=my-service-account.test-namespace.svc.cluster.local",
 			},
 		},
 		{
@@ -340,6 +350,7 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 				"--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
 				"--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
 				"--jwks-allow-private-ip",
+				"--oidc-client-id=default.my-namespace.svc.cluster.local",
 			},
 		},
 	}
@@ -414,6 +425,7 @@ func TestGenerateInlineOIDCArgs(t *testing.T) {
 							Issuer:   "https://accounts.google.com",
 							Audience: "my-audience",
 							JWKSURL:  "https://www.googleapis.com/oauth2/v3/certs",
+							ClientID: "my-client-id",
 						},
 					},
 				},
@@ -422,6 +434,7 @@ func TestGenerateInlineOIDCArgs(t *testing.T) {
 				"--oidc-issuer=https://accounts.google.com",
 				"--oidc-audience=my-audience",
 				"--oidc-jwks-url=https://www.googleapis.com/oauth2/v3/certs",
+				"--oidc-client-id=my-client-id",
 			},
 		},
 	}

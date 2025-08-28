@@ -134,21 +134,25 @@ func (f *Factory) ListAvailableRuntimes() map[string]*RuntimeInfo {
 }
 
 // autoDetectRuntime returns the first available runtime based on auto-detection
-// This preserves the original logic: check if we're in Kubernetes first, then fall back to Docker
+// This checks runtimes in a predictable order: Docker first, then Kubernetes
 func (f *Factory) autoDetectRuntime() (string, *RuntimeInfo) {
-	// Use the same detection logic as the original implementation
-	if runtime.IsKubernetesRuntime() {
-		if info, exists := f.GetRuntime(kubernetes.RuntimeName); exists && (info.AutoDetector == nil || info.AutoDetector()) {
-			return kubernetes.RuntimeName, info
-		}
-	} else {
-		if info, exists := f.GetRuntime(docker.RuntimeName); exists && (info.AutoDetector == nil || info.AutoDetector()) {
-			return docker.RuntimeName, info
+	available := f.ListAvailableRuntimes()
+
+	// Define the preferred order of runtime detection
+	preferredOrder := []string{
+		docker.RuntimeName,     // "docker"
+		kubernetes.RuntimeName, // "kubernetes"
+	}
+
+	// Check runtimes in the preferred order
+	for _, runtimeName := range preferredOrder {
+		if info, exists := available[runtimeName]; exists {
+			return runtimeName, info
 		}
 	}
 
-	// Fallback: return any other available runtime
-	available := f.ListAvailableRuntimes()
+	// Fallback: if none of the preferred runtimes are available,
+	// return any other available runtime (for extensibility)
 	for name, info := range available {
 		return name, info
 	}

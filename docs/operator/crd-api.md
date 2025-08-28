@@ -118,7 +118,7 @@ _Appears in:_
 | `audience` _string_ | Audience is the expected audience for the token |  |  |
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  |  |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint |  |  |
-| `clientId` _string_ | ClientID is deprecated and will be removed in a future release. |  |  |
+| `clientId` _string_ | ClientID is the OIDC client ID |  |  |
 | `clientSecret` _string_ | ClientSecret is the client secret for introspection (optional) |  |  |
 | `thvCABundlePath` _string_ | ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests<br />The file must be mounted into the pod (e.g., via ConfigMap or Secret volume) |  |  |
 | `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests<br />The file must be mounted into the pod (e.g., via Secret volume) |  |  |
@@ -138,7 +138,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `serviceAccount` _string_ | ServiceAccount is deprecated and will be removed in a future release. |  |  |
+| `serviceAccount` _string_ | ServiceAccount is the name of the service account to validate tokens for<br />If empty, uses the pod's service account |  |  |
 | `namespace` _string_ | Namespace is the namespace of the service account<br />If empty, uses the MCPServer's namespace |  |  |
 | `audience` _string_ | Audience is the expected audience for the token | toolhive |  |
 | `issuer` _string_ | Issuer is the OIDC issuer URL | https://kubernetes.default.svc |  |

@@ -37,6 +37,7 @@ This command starts a standalone proxy without creating a workload, providing:
 - Automatic authentication detection via WWW-Authenticate headers
 - OIDC-based access control for incoming proxy requests
 - Secure credential handling via files or environment variables
+- Dynamic client registration (RFC 7591) for automatic OAuth client setup
 
 #### Authentication modes
 
@@ -54,6 +55,15 @@ OAuth client secrets can be provided via (in order of precedence):
 1. --remote-auth-client-secret flag (not recommended for production)
 2. --remote-auth-client-secret-file flag (secure file-based approach)
 3. ` + envOAuthClientSecret + ` environment variable
+
+#### Dynamic client registration
+
+When no client credentials are provided, the proxy automatically registers an OAuth client
+with the authorization server using RFC 7591 dynamic client registration:
+
+- No need to pre-configure client ID and secret
+- Automatically discovers registration endpoint via OIDC
+- Supports PKCE flow for enhanced security
 
 #### Examples
 
@@ -86,7 +96,12 @@ Proxy with OIDC protection for incoming requests:
 Auto-detect authentication requirements:
 
 	thv proxy my-server --target-uri https://protected-api.com \
-	  --remote-auth-client-id my-client-id`,
+	  --remote-auth-client-id my-client-id
+
+Dynamic client registration (automatic OAuth client setup):
+
+	thv proxy my-server --target-uri https://protected-api.com \
+	  --remote-auth --remote-auth-issuer https://auth.example.com`,
 	Args: cobra.ExactArgs(1),
 	RunE: proxyCmdFunc,
 }
@@ -227,7 +242,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		proxyHost, port, serverName, proxyTargetURI,
 		nil, authInfoHandler,
 		false,
-		true, // isRemote
+		false, // isRemote
 		"",
 		middlewares...)
 	if err := proxy.Start(ctx); err != nil {
@@ -265,10 +280,6 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 	}
 
 	if remoteAuthFlags.EnableRemoteAuth {
-		// If OAuth is explicitly enabled, validate configuration
-		if remoteAuthFlags.RemoteAuthClientID == "" {
-			return nil, nil, fmt.Errorf("remote-auth-client-id is required when remote authentication is enabled")
-		}
 
 		// Check if we have either OIDC issuer or manual OAuth endpoints
 		hasOIDCConfig := remoteAuthFlags.RemoteAuthIssuer != ""
@@ -311,10 +322,6 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 
 	if authInfo != nil {
 		logger.Infof("Detected authentication requirement from server: %s", authInfo.Realm)
-
-		if remoteAuthFlags.RemoteAuthClientID == "" {
-			return nil, nil, fmt.Errorf("detected OAuth requirement but no remote-auth-client-id provided")
-		}
 
 		// Perform OAuth flow with discovered configuration
 		flowConfig := &discovery.OAuthFlowConfig{

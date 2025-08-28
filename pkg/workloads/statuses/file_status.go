@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport/proxy"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -43,9 +45,16 @@ func NewFileStatusManager(runtime rt.Runtime) (StatusManager, error) {
 		return nil, fmt.Errorf("failed to create status directory %s: %w", baseDir, err)
 	}
 
+	// Create run config store for accessing run configurations
+	runConfigStore, err := state.NewRunConfigStore(state.DefaultAppName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create run config store: %w", err)
+	}
+
 	return &fileStatusManager{
-		baseDir: baseDir,
-		runtime: runtime,
+		baseDir:        baseDir,
+		runtime:        runtime,
+		runConfigStore: runConfigStore,
 	}, nil
 }
 
@@ -55,6 +64,42 @@ func NewFileStatusManager(runtime rt.Runtime) (StatusManager, error) {
 type fileStatusManager struct {
 	baseDir string
 	runtime rt.Runtime
+	// runConfigStore is used to access run configurations without import cycles
+	// TODO: This is a temporary solution to check if a workload is remote
+	runConfigStore state.Store
+}
+
+// isRemoteWorkload checks if a workload is remote by attempting to load its run configuration
+// and checking if it has a RemoteURL field set.
+// TODO: This is a temporary solution to check if a workload is remote
+// because of the import cycle between this package and the runconfig package.
+// We can easily load run config and check if it has a RemoteURL field set when we resolve the import cycle.
+func (f *fileStatusManager) isRemoteWorkload(ctx context.Context, workloadName string) (bool, error) {
+	// Check if the run configuration exists
+	exists, err := f.runConfigStore.Exists(ctx, workloadName)
+	if err != nil {
+		return false, err
+	}
+
+	if !exists {
+		return false, rt.ErrWorkloadNotFound
+	}
+
+	// Get a reader for the run configuration
+	reader, err := f.runConfigStore.GetReader(ctx, workloadName)
+	if err != nil {
+		return false, err
+	}
+	defer reader.Close()
+
+	// Read the configuration data
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return false, err
+	}
+
+	// Check if the JSON contains "remote_url" field
+	return strings.Contains(string(data), `"remote_url"`), nil
 }
 
 // workloadStatusFile represents the JSON structure stored on disk
@@ -94,13 +139,23 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		return core.Workload{}, err
 	}
 
-	// If file was found and workload is running, validate against runtime
-	if fileFound && result.Status == rt.WorkloadStatusRunning {
-		return f.validateRunningWorkload(ctx, workloadName, result)
-	}
-
-	// If file was found and workload is not running, return file data
+	// If file was found, check if this is a remote workload
 	if fileFound {
+		// Check if this is a remote workload using the state package
+		remote, err := f.isRemoteWorkload(ctx, workloadName)
+		if err != nil {
+			return core.Workload{}, err
+		}
+		if remote {
+			result.Remote = true
+		}
+
+		// If workload is running, validate against runtime
+		if result.Status == rt.WorkloadStatusRunning {
+			return f.validateRunningWorkload(ctx, workloadName, result)
+		}
+
+		// Return file data
 		return result, nil
 	}
 
@@ -414,6 +469,15 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 				CreatedAt:     statusFile.CreatedAt,
 			}
 
+			// Check if this is a remote workload using the state package
+			remote, err := f.isRemoteWorkload(ctx, workloadName)
+			if err != nil {
+				return err
+			}
+			if remote {
+				workload.Remote = true
+			}
+
 			workloads[workloadName] = workload
 			return nil
 		})
@@ -434,6 +498,12 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 func (f *fileStatusManager) validateRunningWorkload(
 	ctx context.Context, workloadName string, result core.Workload,
 ) (core.Workload, error) {
+	// For remote workloads, we don't need to validate against the container runtime
+	// since they don't have containers
+	if result.Remote {
+		return result, nil
+	}
+
 	// Get raw container info from runtime (before label filtering)
 	containerInfo, err := f.runtime.GetWorkloadInfo(ctx, workloadName)
 	if err != nil {
@@ -481,6 +551,13 @@ func (f *fileStatusManager) handleRuntimeMismatch(
 func (f *fileStatusManager) handleRuntimeMissing(
 	ctx context.Context, workloadName string, fileWorkload core.Workload,
 ) (core.Workload, error) {
+	// Check if this is a remote workload using the Remote field
+	if fileWorkload.Remote {
+		// Remote workloads don't exist in the container runtime, so it's normal for them to be missing
+		// Don't mark them as unhealthy
+		return fileWorkload, nil
+	}
+
 	if fileWorkload.Status == rt.WorkloadStatusRunning || fileWorkload.Status == rt.WorkloadStatusStopped {
 		// The workload cannot be running or stopped if the runtime container is not found
 		contextMsg := fmt.Sprintf("workload %s not found in runtime, marking as unhealthy", workloadName)
@@ -603,6 +680,10 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 
 	// Then, merge with file workloads, validating running workloads
 	for name, fileWorkload := range fileWorkloads {
+
+		if fileWorkload.Remote { // Remote workloads are not managed by the container runtime
+			continue
+		}
 		if runtimeContainer, exists := runtimeWorkloadMap[name]; exists {
 			// Validate running workloads similar to GetWorkload
 			validatedWorkload, err := f.validateWorkloadInList(ctx, name, fileWorkload, runtimeContainer)

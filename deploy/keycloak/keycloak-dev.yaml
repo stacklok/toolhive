@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keycloak
+---
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: Keycloak
+metadata:
+  name: keycloak-dev
+  namespace: keycloak
+spec:
+  instances: 1
+  startOptimized: false  # Use start-dev mode for development
+  hostname:
+    hostname: keycloak
+  http:
+    # Enable HTTP for development (no TLS complexity in kind)
+    httpEnabled: true
+    httpPort: 8080
+  proxy:
+    headers: xforwarded
+  # Use embedded H2 database for development
+  db:
+    vendor: dev-file  # Embedded H2 with file persistence
+  # Resource limits for development
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  # Additional server configuration for development
+  additionalOptions:
+    - name: health-enabled
+      value: "true"
+    - name: metrics-enabled 
+      value: "true"
+    - name: log-level
+      value: INFO

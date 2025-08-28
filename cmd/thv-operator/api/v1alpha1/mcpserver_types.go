@@ -300,7 +300,8 @@ type OIDCConfigRef struct {
 
 // KubernetesOIDCConfig configures OIDC for Kubernetes service account token validation
 type KubernetesOIDCConfig struct {
-	// ServiceAccount is deprecated and will be removed in a future release.
+	// ServiceAccount is the name of the service account to validate tokens for
+	// If empty, uses the pod's service account
 	// +optional
 	ServiceAccount string `json:"serviceAccount,omitempty"`
 
@@ -367,7 +368,7 @@ type InlineOIDCConfig struct {
 	// +optional
 	IntrospectionURL string `json:"introspectionUrl,omitempty"`
 
-	// ClientID is deprecated and will be removed in a future release.
+	// ClientID is the OIDC client ID
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
 

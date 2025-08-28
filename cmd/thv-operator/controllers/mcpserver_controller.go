@@ -672,16 +672,20 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 }
 
 func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
-	// Check for the existence of the XDG_CONFIG_HOME and HOME environment variables
-	// and set them to /tmp if they don't exist
+	// Check for the existence of the XDG_CONFIG_HOME, HOME, and TOOLHIVE_RUNTIME environment variables
+	// and set them to defaults if they don't exist
 	xdgConfigHomeFound := false
 	homeFound := false
+	toolhiveRuntimeFound := false
 	for _, envVar := range env {
 		if envVar.Name == "XDG_CONFIG_HOME" {
 			xdgConfigHomeFound = true
 		}
 		if envVar.Name == "HOME" {
 			homeFound = true
+		}
+		if envVar.Name == "TOOLHIVE_RUNTIME" {
+			toolhiveRuntimeFound = true
 		}
 	}
 	if !xdgConfigHomeFound {
@@ -696,6 +700,13 @@ func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{
 			Name:  "HOME",
 			Value: "/tmp",
+		})
+	}
+	if !toolhiveRuntimeFound {
+		logger.Debugf("TOOLHIVE_RUNTIME not found, setting to kubernetes")
+		env = append(env, corev1.EnvVar{
+			Name:  "TOOLHIVE_RUNTIME",
+			Value: "kubernetes",
 		})
 	}
 	return env
@@ -1327,6 +1338,20 @@ func (*MCPServerReconciler) generateKubernetesOIDCArgs(m *mcpv1alpha1.MCPServer)
 		args = append(args, "--jwks-allow-private-ip")
 	}
 
+	// Client ID (format: {serviceAccount}.{namespace}.svc.cluster.local)
+	serviceAccount := config.ServiceAccount
+	if serviceAccount == "" {
+		serviceAccount = "default" // Use default service account if not specified
+	}
+
+	namespace := config.Namespace
+	if namespace == "" {
+		namespace = m.Namespace // Use MCPServer's namespace if not specified
+	}
+
+	clientID := fmt.Sprintf("%s.%s.svc.cluster.local", serviceAccount, namespace)
+	args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
+
 	return args
 }
 
@@ -1427,6 +1452,11 @@ func (*MCPServerReconciler) generateInlineOIDCArgs(m *mcpv1alpha1.MCPServer) []s
 	// Allow private IP access (optional)
 	if config.JWKSAllowPrivateIP {
 		args = append(args, "--jwks-allow-private-ip")
+	}
+
+	// Client ID (optional)
+	if config.ClientID != "" {
+		args = append(args, fmt.Sprintf("--oidc-client-id=%s", config.ClientID))
 	}
 
 	return args

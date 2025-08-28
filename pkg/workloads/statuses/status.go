@@ -7,6 +7,7 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -38,7 +39,13 @@ func NewStatusManagerFromRuntime(runtime rt.Runtime) StatusManager {
 // based on the runtime environment. If running in Kubernetes, it returns the runtime-based
 // implementation. Otherwise, it returns the file-based implementation.
 func NewStatusManager(runtime rt.Runtime) (StatusManager, error) {
-	if rt.IsKubernetesRuntime() {
+	return NewStatusManagerWithEnv(runtime, &env.OSReader{})
+}
+
+// NewStatusManagerWithEnv creates a new status manager instance using the provided environment reader.
+// This allows for dependency injection of environment variable access for testing.
+func NewStatusManagerWithEnv(runtime rt.Runtime, envReader env.Reader) (StatusManager, error) {
+	if rt.IsKubernetesRuntimeWithEnv(envReader) {
 		return NewStatusManagerFromRuntime(runtime), nil
 	}
 	return NewFileStatusManager(runtime)

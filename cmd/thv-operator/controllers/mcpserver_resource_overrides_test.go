@@ -15,6 +15,7 @@
 package controllers
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -266,7 +267,8 @@ func TestResourceOverrides(t *testing.T) {
 			}
 
 			// Test deployment creation
-			deployment := r.deploymentForMCPServer(tt.mcpServer)
+			ctx := context.Background()
+			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer)
 			require.NotNil(t, deployment)
 
 			assert.Equal(t, tt.expectedDeploymentLabels, deployment.Labels)
@@ -386,7 +388,8 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 	}
 
 	// Create a deployment using the current implementation
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment)
 
 	// Test with the current deployment - this should NOT need update
@@ -558,7 +561,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 			t.Parallel()
 
 			// Create a deployment and manually set up its state to isolate proxy env testing
-			deployment := r.deploymentForMCPServer(tt.mcpServer)
+			ctx := context.Background()
+			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer)
 			require.NotNil(t, deployment)
 			require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 
@@ -644,7 +648,8 @@ func TestDeploymentNeedsUpdateToolsFilter(t *testing.T) {
 				},
 			}
 
-			deployment := r.deploymentForMCPServer(mcpServer)
+			ctx := context.Background()
+			deployment := r.deploymentForMCPServer(ctx, mcpServer)
 			require.NotNil(t, deployment)
 
 			mcpServer.Spec.ToolsFilter = tt.newToolsFilter

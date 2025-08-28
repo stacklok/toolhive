@@ -12,7 +12,7 @@ helm upgrade -i otel-collector open-telemetry/opentelemetry-collector -f otel-va
 ```
 
 The current values file has the following setup:
-- [Kubestats](https://opentelemetry.io/docs/platforms/kubernetes/collector/components/#kubeletstats-receiver) present enabled to recieve pod/container metrics from the kube API
+- [Kubestats](https://opentelemetry.io/docs/platforms/kubernetes/collector/components/#kubeletstats-receiver) present enabled to receive pod/container metrics from the kube API
 - exports to prometheus via remote-write
 - exports to prometheus allow for prometheus to scrape metrics from the OTEL collector (this is recommended over the remote-write)
 
@@ -27,7 +27,7 @@ helm upgrade -i kube-prometheus-stack prometheus-community/kube-prometheus-stack
 ```
 
 The current values file has the following setup:
-- Enable the remote-write receieve (to allow for OTEL to directly push metrics to prometheus rather than prometheus scraping them from the OTEL collector)
+- Enable the remote-write receive (to allow for OTEL to directly push metrics to prometheus rather than prometheus scraping them from the OTEL collector)
 - Scrape config that scrapes the metrics from the OTEL collector
 - Grafana is enabled
 - kube state metrics enabled

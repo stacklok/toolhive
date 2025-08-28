@@ -488,7 +488,8 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 
 				// 3) PID file should be created at the known location.
 				By("verifying PID file is created")
-				pidFile := process.GetPIDFilePath(serverName)
+				pidFile, err := process.GetPIDFilePath(serverName)
+				Expect(err).ToNot(HaveOccurred(), "should be able to get PID file path")
 				Eventually(func() bool {
 					_, statErr := os.Stat(pidFile)
 					return statErr == nil

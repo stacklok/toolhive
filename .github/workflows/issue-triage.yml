@@ -79,6 +79,7 @@ jobs:
              - Be specific but comprehensive
              - Consider platform labels (kubernetes) if applicable
              - If you find similar issues using mcp__github__search_issues, consider using a "duplicate" label if appropriate. Only do so if the issue is a duplicate of another OPEN issue.
+             - DO NOT add labels that pertain to priority, such as p0, p1, p2, etc.
 
           5. Apply the selected labels:
              - Use mcp__github__update_issue to apply your selected labels

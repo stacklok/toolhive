@@ -393,7 +393,7 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 	require.NotNil(t, deployment)
 
 	// Test with the current deployment - this should NOT need update
-	needsUpdate := deploymentNeedsUpdate(deployment, mcpServer)
+	needsUpdate := r.deploymentNeedsUpdate(deployment, mcpServer)
 
 	// With the service account bug fixed, this should now return false
 	assert.False(t, needsUpdate, "deploymentNeedsUpdate should return false when deployment matches MCPServer spec")
@@ -573,7 +573,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 			deployment.Spec.Template.Spec.Containers[0].Image = getToolhiveRunnerImage()
 
 			// Test if deployment needs update - should correlate with env change expectation
-			needsUpdate := deploymentNeedsUpdate(deployment, tt.mcpServer)
+			needsUpdate := r.deploymentNeedsUpdate(deployment, tt.mcpServer)
 
 			if tt.expectEnvChange {
 				assert.True(t, needsUpdate, "Expected deployment update due to proxy env change")
@@ -654,7 +654,7 @@ func TestDeploymentNeedsUpdateToolsFilter(t *testing.T) {
 
 			mcpServer.Spec.ToolsFilter = tt.newToolsFilter
 
-			needsUpdate := deploymentNeedsUpdate(deployment, mcpServer)
+			needsUpdate := r.deploymentNeedsUpdate(deployment, mcpServer)
 			assert.Equal(t, tt.expectEnvChange, needsUpdate)
 		})
 	}

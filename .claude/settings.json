@@ -12,7 +12,18 @@
       "Bash(pre-commit install:*)",
       "Bash(pre-commit autoupdate:*)",
       "Bash(helm-docs:*)",
-      "Bash(codespell:*)"
+      "Bash(codespell:*)",
+      "Bash(task operator-install-crds)",
+      "Bash(task operator-uninstall-crds)",
+      "Bash(task operator-deploy-latest)",
+      "Bash(task operator-deploy-local)",
+      "Bash(task operator-undeploy)",
+      "Bash(task operator-generate)",
+      "Bash(task operator-manifests)",
+      "Bash(task operator-test)",
+      "Bash(task operator-e2e-test)",
+      "Bash(task crdref-install)",
+      "Bash(task crdref-gen)"
     ],
     "deny": []
   }

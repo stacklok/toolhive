@@ -257,7 +257,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Check if the deployment spec changed
-	if deploymentNeedsUpdate(deployment, mcpServer) {
+	if r.deploymentNeedsUpdate(deployment, mcpServer) {
 		// Update the deployment
 		newDeployment := r.deploymentForMCPServer(ctx, mcpServer)
 		deployment.Spec = newDeployment.Spec
@@ -510,6 +510,19 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		args = append(args, fmt.Sprintf("--tools=%s", strings.Join(m.Spec.ToolsFilter, ",")))
 	}
 
+	// Add OpenTelemetry configuration args
+	if m.Spec.Telemetry != nil {
+		if m.Spec.Telemetry.OpenTelemetry != nil {
+			otelArgs := r.generateOpenTelemetryArgs(m)
+			args = append(args, otelArgs...)
+		}
+
+		if m.Spec.Telemetry.Prometheus != nil {
+			prometheusArgs := r.generatePrometheusArgs(m)
+			args = append(args, prometheusArgs...)
+		}
+	}
+
 	// Add the image
 	args = append(args, m.Spec.Image)
 
@@ -521,6 +534,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 
 	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}
+
+	// Add OpenTelemetry environment variables
+	if m.Spec.Telemetry != nil && m.Spec.Telemetry.OpenTelemetry != nil {
+		otelEnvVars := r.generateOpenTelemetryEnvVars(m)
+		env = append(env, otelEnvVars...)
+	}
 
 	// Add user-specified proxy environment variables from ResourceOverrides
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
@@ -889,7 +908,7 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 // deploymentNeedsUpdate checks if the deployment needs to be updated
 //
 //nolint:gocyclo
-func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1.MCPServer) bool {
+func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1.MCPServer) bool {
 	// Check if the container args have changed
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {
 		container := deployment.Spec.Template.Spec.Containers[0]
@@ -987,6 +1006,14 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 
 		// Check if the proxy environment variables have changed
 		expectedProxyEnv := []corev1.EnvVar{}
+
+		// Add OpenTelemetry environment variables first
+		if mcpServer.Spec.Telemetry != nil && mcpServer.Spec.Telemetry.OpenTelemetry != nil {
+			otelEnvVars := r.generateOpenTelemetryEnvVars(mcpServer)
+			expectedProxyEnv = append(expectedProxyEnv, otelEnvVars...)
+		}
+
+		// Add user-specified environment variables
 		if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
 			for _, envVar := range mcpServer.Spec.ResourceOverrides.ProxyDeployment.Env {
 				expectedProxyEnv = append(expectedProxyEnv, corev1.EnvVar{
@@ -1057,6 +1084,15 @@ func deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1
 					return true
 				}
 			}
+		}
+
+		// Check if OpenTelemetry arguments have changed
+		var otelConfig *mcpv1alpha1.OpenTelemetryConfig
+		if mcpServer.Spec.Telemetry != nil {
+			otelConfig = mcpServer.Spec.Telemetry.OpenTelemetry
+		}
+		if !equalOpenTelemetryArgs(otelConfig, container.Args) {
+			return true
 		}
 
 	}
@@ -1520,6 +1556,80 @@ func (*MCPServerReconciler) generateAuthzArgs(m *mcpv1alpha1.MCPServer) []string
 	return args
 }
 
+// generatePrometheusArgs generates Prometheus command-line arguments based on the configuration
+func (*MCPServerReconciler) generatePrometheusArgs(m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+
+	if m.Spec.Telemetry == nil || m.Spec.Telemetry.Prometheus == nil {
+		return args
+	}
+
+	// Add Prometheus metrics path flag if Prometheus is enabled in telemetry config
+	if m.Spec.Telemetry.Prometheus.Enabled {
+		args = append(args, "--enable-prometheus-metrics-path")
+	}
+
+	return args
+}
+
+// generateOpenTelemetryArgs generates OpenTelemetry command-line arguments based on the configuration
+func (*MCPServerReconciler) generateOpenTelemetryArgs(m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+
+	if m.Spec.Telemetry == nil || m.Spec.Telemetry.OpenTelemetry == nil {
+		return args
+	}
+
+	otel := m.Spec.Telemetry.OpenTelemetry
+
+	// Add endpoint
+	if otel.Endpoint != "" {
+		args = append(args, fmt.Sprintf("--otel-endpoint=%s", otel.Endpoint))
+	}
+
+	// Add service name
+	if otel.ServiceName != "" {
+		args = append(args, fmt.Sprintf("--otel-service-name=%s", otel.ServiceName))
+	}
+
+	// Add headers (multiple --otel-headers flags)
+	for _, header := range otel.Headers {
+		args = append(args, fmt.Sprintf("--otel-headers=%s", header))
+	}
+
+	// Add insecure flag
+	if otel.Insecure {
+		args = append(args, "--otel-insecure")
+	}
+
+	return args
+}
+
+// generateOpenTelemetryEnvVars generates OpenTelemetry environment variables for the proxy container
+func (*MCPServerReconciler) generateOpenTelemetryEnvVars(m *mcpv1alpha1.MCPServer) []corev1.EnvVar {
+	var envVars []corev1.EnvVar
+
+	if m.Spec.Telemetry == nil || m.Spec.Telemetry.OpenTelemetry == nil {
+		return envVars
+	}
+
+	otel := m.Spec.Telemetry.OpenTelemetry
+
+	// Add service name
+	serviceName := otel.ServiceName
+	if serviceName == "" {
+		serviceName = m.Name // Default to MCPServer name if not specified
+	}
+
+	// Enable resource detection
+	envVars = append(envVars, corev1.EnvVar{
+		Name:  "OTEL_RESOURCE_ATTRIBUTES",
+		Value: fmt.Sprintf("service.name=%s,service.namespace=%s", serviceName, m.Namespace),
+	})
+
+	return envVars
+}
+
 // ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline configuration
 func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
 	// Only create ConfigMap for inline authorization configuration
@@ -1641,4 +1751,85 @@ func canonicalToolsList(list []string) string {
 	cp := slices.Clone(list)
 	slices.Sort(cp)
 	return strings.Join(cp, ",")
+}
+
+// equalOpenTelemetryArgs checks if OpenTelemetry command-line arguments have changed
+func equalOpenTelemetryArgs(spec *mcpv1alpha1.OpenTelemetryConfig, args []string) bool {
+	if spec == nil {
+		return !hasOtelArgs(args)
+	}
+
+	return equalServiceName(spec, args) &&
+		equalHeaders(spec, args) &&
+		equalInsecureFlag(spec, args)
+}
+
+func hasOtelArgs(args []string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--otel-") {
+			return true
+		}
+	}
+	return false
+}
+
+func equalServiceName(spec *mcpv1alpha1.OpenTelemetryConfig, args []string) bool {
+	expectedArg := ""
+	if spec.ServiceName != "" {
+		expectedArg = fmt.Sprintf("--otel-service-name=%s", spec.ServiceName)
+	}
+
+	foundArg := ""
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--otel-service-name=") {
+			foundArg = arg
+			break
+		}
+	}
+
+	return expectedArg == foundArg
+}
+
+func equalHeaders(spec *mcpv1alpha1.OpenTelemetryConfig, args []string) bool {
+	expectedCount := len(spec.Headers)
+	currentCount := countHeaderArgs(args)
+
+	if expectedCount != currentCount {
+		return false
+	}
+
+	return allHeadersPresent(spec.Headers, args)
+}
+
+func countHeaderArgs(args []string) int {
+	count := 0
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--otel-headers=") {
+			count++
+		}
+	}
+	return count
+}
+
+func allHeadersPresent(expectedHeaders []string, args []string) bool {
+	for _, expectedHeader := range expectedHeaders {
+		expectedArg := fmt.Sprintf("--otel-headers=%s", expectedHeader)
+		if !contains(args, expectedArg) {
+			return false
+		}
+	}
+	return true
+}
+
+func equalInsecureFlag(spec *mcpv1alpha1.OpenTelemetryConfig, args []string) bool {
+	return spec.Insecure == contains(args, "--otel-insecure")
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }

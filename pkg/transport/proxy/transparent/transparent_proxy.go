@@ -311,7 +311,8 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	var finalHandler http.Handler = handler
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
 		finalHandler = p.middlewares[i](finalHandler)
-		logger.Infof("Applied middleware %d\n", i+1)
+		// TODO: we should really log the middleware name here
+		logger.Infof("Applied middleware %d", i+1)
 	}
 
 	// Add the proxy handler for all paths except /health

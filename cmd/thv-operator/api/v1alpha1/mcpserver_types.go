@@ -79,6 +79,10 @@ type MCPServerSpec struct {
 	// ToolsFilter is the filter on tools applied to the MCP server
 	// +optional
 	ToolsFilter []string `json:"tools,omitempty"`
+
+	// Telemetry defines observability configuration for the MCP server
+	// +optional
+	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -434,6 +438,64 @@ type InlineAuthzConfig struct {
 	// +kubebuilder:default="[]"
 	// +optional
 	EntitiesJSON string `json:"entitiesJson,omitempty"`
+}
+
+// TelemetryConfig defines observability configuration for the MCP server
+type TelemetryConfig struct {
+	// OpenTelemetry defines OpenTelemetry configuration
+	// +optional
+	OpenTelemetry *OpenTelemetryConfig `json:"openTelemetry,omitempty"`
+
+	// Prometheus defines Prometheus-specific configuration
+	// +optional
+	Prometheus *PrometheusConfig `json:"prometheus,omitempty"`
+}
+
+// OpenTelemetryConfig defines pure OpenTelemetry configuration
+type OpenTelemetryConfig struct {
+	// Enabled controls whether OpenTelemetry is enabled
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Endpoint is the OTLP endpoint URL for tracing and metrics
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// ServiceName is the service name for telemetry
+	// If not specified, defaults to the MCPServer name
+	// +optional
+	ServiceName string `json:"serviceName,omitempty"`
+
+	// Headers contains authentication headers for the OTLP endpoint
+	// Specified as key=value pairs
+	// +optional
+	Headers []string `json:"headers,omitempty"`
+
+	// Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint
+	// +kubebuilder:default=false
+	// +optional
+	Insecure bool `json:"insecure,omitempty"`
+
+	// Metrics defines OpenTelemetry metrics-specific configuration
+	// +optional
+	Metrics *OpenTelemetryMetricsConfig `json:"metrics,omitempty"`
+}
+
+// PrometheusConfig defines Prometheus-specific configuration
+type PrometheusConfig struct {
+	// Enabled controls whether Prometheus metrics endpoint is exposed
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+// OpenTelemetryMetricsConfig defines OpenTelemetry metrics configuration
+type OpenTelemetryMetricsConfig struct {
+	// Enabled controls whether OTLP metrics are sent
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // MCPServerStatus defines the observed state of MCPServer

@@ -238,6 +238,7 @@ _Appears in:_
 | `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the MCP server |  |  |
 | `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  |  |
 | `tools` _string array_ | ToolsFilter is the filter on tools applied to the MCP server |  |  |
+| `telemetry` _[TelemetryConfig](#telemetryconfig)_ | Telemetry defines observability configuration for the MCP server |  |  |
 
 
 #### MCPServerStatus
@@ -295,6 +296,43 @@ _Appears in:_
 | `inline` _[InlineOIDCConfig](#inlineoidcconfig)_ | Inline contains direct OIDC configuration<br />Only used when Type is "inline" |  |  |
 
 
+#### OpenTelemetryConfig
+
+
+
+OpenTelemetryConfig defines pure OpenTelemetry configuration
+
+
+
+_Appears in:_
+- [TelemetryConfig](#telemetryconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether OpenTelemetry is enabled | false |  |
+| `endpoint` _string_ | Endpoint is the OTLP endpoint URL for tracing and metrics |  |  |
+| `serviceName` _string_ | ServiceName is the service name for telemetry<br />If not specified, defaults to the MCPServer name |  |  |
+| `headers` _string array_ | Headers contains authentication headers for the OTLP endpoint<br />Specified as key=value pairs |  |  |
+| `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint | false |  |
+| `metrics` _[OpenTelemetryMetricsConfig](#opentelemetrymetricsconfig)_ | Metrics defines OpenTelemetry metrics-specific configuration |  |  |
+
+
+#### OpenTelemetryMetricsConfig
+
+
+
+OpenTelemetryMetricsConfig defines OpenTelemetry metrics configuration
+
+
+
+_Appears in:_
+- [OpenTelemetryConfig](#opentelemetryconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether OTLP metrics are sent | true |  |
+
+
 #### OutboundNetworkPermissions
 
 
@@ -331,6 +369,22 @@ _Appears in:_
 | `key` _string_ | Key is the key in the ConfigMap that contains the permission profile<br />Only used when Type is "configmap" |  |  |
 
 
+
+
+#### PrometheusConfig
+
+
+
+PrometheusConfig defines Prometheus-specific configuration
+
+
+
+_Appears in:_
+- [TelemetryConfig](#telemetryconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether Prometheus metrics endpoint is exposed | false |  |
 
 
 #### ProxyDeploymentOverrides
@@ -436,6 +490,23 @@ _Appears in:_
 | `name` _string_ | Name is the name of the secret |  | Required: \{\} <br /> |
 | `key` _string_ | Key is the key in the secret itself |  | Required: \{\} <br /> |
 | `targetEnvName` _string_ | TargetEnvName is the environment variable to be used when setting up the secret in the MCP server<br />If left unspecified, it defaults to the key |  |  |
+
+
+#### TelemetryConfig
+
+
+
+TelemetryConfig defines observability configuration for the MCP server
+
+
+
+_Appears in:_
+- [MCPServerSpec](#mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `openTelemetry` _[OpenTelemetryConfig](#opentelemetryconfig)_ | OpenTelemetry defines OpenTelemetry configuration |  |  |
+| `prometheus` _[PrometheusConfig](#prometheusconfig)_ | Prometheus defines Prometheus-specific configuration |  |  |
 
 
 #### Volume

@@ -18,7 +18,7 @@ ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
 ToolHive (thv) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers.
 It is written in Go and has extensive test coverage—including input validation—to ensure reliability and security.
 
-Under the hood, ToolHive acts as a very thin client for the Docker/Podman Unix socket API.
+Under the hood, ToolHive acts as a very thin client for the Docker/Podman/Colima Unix socket API.
 This design choice allows it to remain both efficient and lightweight while still providing powerful,
 container-based isolation for running MCP servers.
 

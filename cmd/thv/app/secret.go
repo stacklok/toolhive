@@ -423,6 +423,10 @@ For more information, visit: https://developer.1password.com/docs/service-accoun
 		fmt.Println(`Setting up none secrets provider...
 Secrets functionality will be disabled.
 No secrets will be stored or retrieved.`)
+	case secrets.EnvironmentType:
+		fmt.Println(`Setting up environment variable secrets provider...
+Secrets will be read from environment variables with the TOOLHIVE_SECRET_ prefix.
+This provider is read-only and suitable for CI/CD and containerized environments.`)
 	}
 
 	// SetSecretsProvider will handle validation and configuration

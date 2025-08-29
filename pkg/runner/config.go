@@ -24,7 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
-	"github.com/stacklok/toolhive/pkg/validation"
+	workloadtypes "github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 // CurrentSchemaVersion is the current version of the RunConfig schema
@@ -375,14 +375,14 @@ func (c *RunConfig) WithContainerName() (*RunConfig, bool) {
 			// Sanitize the name if provided to ensure it's safe for file paths
 			safeName := ""
 			if c.Name != "" {
-				safeName, wasModified = validation.SanitizeWorkloadName(c.Name)
+				safeName, wasModified = workloadtypes.SanitizeWorkloadName(c.Name)
 			}
 			containerName, baseName := container.GetOrGenerateContainerName(safeName, c.Image)
 			c.ContainerName = containerName
 			c.BaseName = baseName
 		} else if c.RemoteURL != "" && c.Name != "" {
 			// For remote servers, sanitize the provided name to ensure it's safe for file paths
-			c.BaseName, wasModified = validation.SanitizeWorkloadName(c.Name)
+			c.BaseName, wasModified = workloadtypes.SanitizeWorkloadName(c.Name)
 		}
 	}
 	return c, wasModified

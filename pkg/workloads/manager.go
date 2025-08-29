@@ -726,9 +726,17 @@ func (d *defaultManager) getWorkloadState(ctx context.Context, name string) (*wo
 			return nil, fmt.Errorf("failed to find workload %s: %v", name, err)
 		}
 	} else {
-		// Container found, check if it's running and get the base name
-		workloadSt.Running = container.IsRunning()
-		workloadSt.BaseName = labels.GetContainerBaseName(container.Labels)
+		// Verify exact name match to prevent Docker prefix matching false positives
+		if container.Name != name {
+			logger.Warnf("Warning: Found container %s but requested %s (prefix match)", container.Name, name)
+			// Treat as if container not found
+			workloadSt.BaseName = name
+			workloadSt.Running = false
+		} else {
+			// Container found with exact name, check if it's running and get the base name
+			workloadSt.Running = container.IsRunning()
+			workloadSt.BaseName = labels.GetContainerBaseName(container.Labels)
+		}
 	}
 
 	// Check if the proxy process is running

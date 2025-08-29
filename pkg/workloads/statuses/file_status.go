@@ -416,6 +416,11 @@ func (f *fileStatusManager) getWorkloadFromRuntime(ctx context.Context, workload
 		return core.Workload{}, fmt.Errorf("failed to get workload info from runtime: %w", err)
 	}
 
+	// Verify exact name match to prevent Docker prefix matching false positives
+	if info.Name != workloadName {
+		return core.Workload{}, rt.ErrWorkloadNotFound
+	}
+
 	return types.WorkloadFromContainerInfo(&info)
 }
 

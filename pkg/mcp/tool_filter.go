@@ -14,7 +14,6 @@ import (
 )
 
 var errToolNameNotFound = errors.New("tool name not found")
-var errToolNotInFilter = errors.New("tool not in filter")
 var errBug = errors.New("there's a bug")
 
 // toolOverrideEntry is a struct that represents a tool override entry.
@@ -40,6 +39,33 @@ type toolMiddlewareConfig struct {
 	filterTools          map[string]struct{}
 	actualToUserOverride map[string]toolOverrideEntry
 	userToActualOverride map[string]toolOverrideEntry
+}
+
+func (c *toolMiddlewareConfig) isToolInFilter(toolName string) bool {
+	if len(c.filterTools) == 0 {
+		return true
+	}
+
+	_, ok := c.filterTools[toolName]
+	return ok
+}
+
+func (c *toolMiddlewareConfig) getToolCallActualName(toolName string) (string, bool) {
+	if len(c.userToActualOverride) == 0 {
+		return "", false
+	}
+
+	entry, ok := c.userToActualOverride[toolName]
+	return entry.ActualName, ok
+}
+
+func (c *toolMiddlewareConfig) getToolListOverride(toolName string) (*toolOverrideEntry, bool) {
+	if len(c.actualToUserOverride) == 0 {
+		return nil, false
+	}
+
+	entry, ok := c.actualToUserOverride[toolName]
+	return &entry, ok
 }
 
 // ToolMiddlewareOption is a function that can be used to configure the tool
@@ -128,7 +154,7 @@ func NewListToolsMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewa
 			// modify it before returning it to the client.
 			rw := &toolFilterWriter{
 				ResponseWriter: w,
-				filterTools:    config.filterTools,
+				config:         config,
 			}
 
 			// Call the next handler
@@ -181,8 +207,16 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 			// just pass it through.
 			var toolCallRequest toolCallRequest
 			err = json.Unmarshal(bodyBytes, &toolCallRequest)
-			if err == nil && toolCallRequest.Params != nil && toolCallRequest.Method == "tools/call" {
-				err = processToolCallRequest(config.filterTools, toolCallRequest)
+			if err == nil && toolCallRequest.Method == "tools/call" {
+				fix := processToolCallRequest(config, toolCallRequest)
+
+				switch fix := fix.(type) {
+
+				// If the tool call request is allowed, and the tool name is not overridden,
+				// we just pass it through unmodified.
+				case *toolCallNoAction:
+					next.ServeHTTP(w, r)
+					return
 
 				// NOTE: ideally, trying to call that was filtered out by config should be
 				// equivalent to calling a nonexisting tool; in such cases and when the SSE
@@ -197,11 +231,33 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 				// different thread of execution. As a consequence, the best thing we can
 				// do that is still compliant with the spec is to return a 400 Bad Request
 				// to the client.
-				if errors.Is(err, errToolNotInFilter) {
+				case *toolCallFilter:
 					w.WriteHeader(http.StatusBadRequest)
 					return
-				}
-				if err != nil {
+
+				// In case of a tool name override, we need to fix the tool call request
+				// and then forward it to the next handler.
+				case *toolCallOverride:
+					(*toolCallRequest.Params)["name"] = fix.Name()
+					bodyBytes, err = json.Marshal(toolCallRequest)
+					if err != nil {
+						logger.Errorf("Error marshalling tool call request: %v", err)
+						next.ServeHTTP(w, r)
+						return
+					}
+					r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+				// According to the current version of the MCP spec at
+				// https://modelcontextprotocol.io/specification/2025-06-18/schema#calltoolrequest
+				// this case can only happen if the request is malformed. The proxied MCP
+				// server should be able to process the request, but since we detect it here
+				// we short-circuit returning an error.
+				case *toolCallBogus:
+					w.WriteHeader(http.StatusBadRequest)
+					return
+
+				// This should never happen, but we handle it just in case.
+				default:
 					logger.Errorf("Error processing tool call of a filtered tool: %v", err)
 					next.ServeHTTP(w, r)
 					return
@@ -216,8 +272,8 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 // toolFilterWriter wraps http.ResponseWriter to capture and process SSE responses
 type toolFilterWriter struct {
 	http.ResponseWriter
-	buffer      []byte
-	filterTools map[string]struct{}
+	buffer []byte
+	config *toolMiddlewareConfig
 }
 
 // WriteHeader captures the status code
@@ -245,7 +301,7 @@ func (rw *toolFilterWriter) Flush() {
 		}
 
 		var b bytes.Buffer
-		if err := processBuffer(rw.filterTools, rw.buffer, mimeType, &b); err != nil {
+		if err := processBuffer(rw.config, rw.buffer, mimeType, &b); err != nil {
 			logger.Errorf("Error flushing response: %v", err)
 		}
 
@@ -277,7 +333,12 @@ type toolCallRequest struct {
 }
 
 // processSSEBuffer processes any complete SSE events in the buffer
-func processBuffer(filterTools map[string]struct{}, buffer []byte, mimeType string, w io.Writer) error {
+func processBuffer(
+	config *toolMiddlewareConfig,
+	buffer []byte,
+	mimeType string,
+	w io.Writer,
+) error {
 	if len(buffer) == 0 {
 		return nil
 	}
@@ -287,10 +348,10 @@ func processBuffer(filterTools map[string]struct{}, buffer []byte, mimeType stri
 		var toolsListResponse toolsListResponse
 		err := json.Unmarshal(buffer, &toolsListResponse)
 		if err == nil && toolsListResponse.Result.Tools != nil {
-			return processToolsListResponse(filterTools, toolsListResponse, w)
+			return processToolsListResponse(config, toolsListResponse, w)
 		}
 	case "text/event-stream":
-		return processSSEEvents(filterTools, buffer, w)
+		return processEventStream(config, buffer, w)
 	default:
 		// NOTE: Content-Type header is mandatory in the spec, and as of the
 		// time of this writing, the only allowed content types are
@@ -302,11 +363,18 @@ func processBuffer(filterTools map[string]struct{}, buffer []byte, mimeType stri
 		return fmt.Errorf("unsupported mime type: %s", mimeType)
 	}
 
-	return fmt.Errorf("%w: tool filtering middleware", errBug)
+	// If we get this far, we have a valid buffer that we cannot process
+	// in any other way, so we just write it to the underlying writer.
+	_, err := w.Write(buffer)
+	return err
 }
 
 //nolint:gocyclo
-func processSSEEvents(filterTools map[string]struct{}, buffer []byte, w io.Writer) error {
+func processEventStream(
+	config *toolMiddlewareConfig,
+	buffer []byte,
+	w io.Writer,
+) error {
 	var linesep []byte
 	if bytes.Contains(buffer, []byte("\r\n")) {
 		linesep = []byte("\r\n")
@@ -337,7 +405,7 @@ func processSSEEvents(filterTools map[string]struct{}, buffer []byte, w io.Write
 					return fmt.Errorf("%w: %v", errBug, err)
 				}
 
-				if err := processToolsListResponse(filterTools, toolsListResponse, w); err != nil {
+				if err := processToolsListResponse(config, toolsListResponse, w); err != nil {
 					return err
 				}
 				written = true
@@ -372,15 +440,39 @@ func processSSEEvents(filterTools map[string]struct{}, buffer []byte, w io.Write
 
 // processToolsListResponse processes a tools list response filtering out
 // tools that are not in the filter list.
-func processToolsListResponse(filterTools map[string]struct{}, toolsListResponse toolsListResponse, w io.Writer) error {
+func processToolsListResponse(
+	config *toolMiddlewareConfig,
+	toolsListResponse toolsListResponse,
+	w io.Writer,
+) error {
 	filteredTools := []map[string]any{}
 	for _, tool := range *toolsListResponse.Result.Tools {
+		// NOTE: the spec does not allow for name to be missing.
 		toolName, ok := tool["name"].(string)
 		if !ok {
 			return errToolNameNotFound
 		}
 
-		if isToolInFilter(filterTools, toolName) {
+		// NOTE: the spec does not allow for empty tool names.
+		if toolName == "" {
+			return errToolNameNotFound
+		}
+
+		// If the tool is overridden, we need to use the override name and description.
+		if entry, ok := config.getToolListOverride(toolName); ok {
+			if entry.OverrideName != "" {
+				tool["name"] = entry.OverrideName
+			}
+			if entry.OverrideDescription != "" {
+				tool["description"] = entry.OverrideDescription
+			}
+			toolName = entry.OverrideName
+		}
+
+		// If the tool is in the filter, we add it to the filtered tools list.
+		// Note that lookup is done using the user-known name, which might be
+		// different from the actual tool name.
+		if config.isToolInFilter(toolName) {
 			filteredTools = append(filteredTools, tool)
 		}
 	}
@@ -393,23 +485,84 @@ func processToolsListResponse(filterTools map[string]struct{}, toolsListResponse
 	return nil
 }
 
-// processToolCallRequest processes a tool call request checking if the tool
-// is in the filter list.
-func processToolCallRequest(filterTools map[string]struct{}, toolCallRequest toolCallRequest) error {
-	toolName, ok := (*toolCallRequest.Params)["name"].(string)
-	if !ok {
-		return errToolNameNotFound
-	}
+// toolCallFix mimics a sum type in Go. The actual types represent the
+// possible manipulations to perform on the tool call request, namely:
+// - filter the tool call request
+// - override the tool call request
+// - return a bogus tool call request
+// - do nothing
+//
+// The actual types are not exported, and the only way to get a value of a specific type
+// is to use a type assertion.
+//
+// Technical note: it might be tempting to build this into toolMiddlewareConfig, but this
+// would leave out the case in which the request is malformed, scenario that does not
+// belong to the logic implementing config.
+type toolCallFixAction interface{}
 
-	if isToolInFilter(filterTools, toolName) {
-		return nil
-	}
+// toolCallFilter is a struct that represents a tool call filter, i.e.
+// the tool call request is not allowed.
+type toolCallFilter struct{}
 
-	return errToolNotInFilter
+// toolCallOverride is a struct that represents a tool call override, i.e.
+// the tool call request is allowed, but the tool name is overridden.
+type toolCallOverride struct {
+	actualName string
 }
 
-// isToolInFilter checks if a tool name is in the filter
-func isToolInFilter(filterTools map[string]struct{}, toolName string) bool {
-	_, ok := filterTools[toolName]
-	return ok
+// Name returns the actual name of the tool.
+func (t *toolCallOverride) Name() string {
+	return t.actualName
+}
+
+// toolCallBogus is a struct that represents a bogus tool call request, i.e.
+// the tool call request is not allowed and the tool name is not overridden.
+type toolCallBogus struct{}
+
+// toolCallNoAction is a struct that represents a tool call no action, i.e.
+// the tool call request is allowed and the tool name is not overridden.
+type toolCallNoAction struct{}
+
+// processToolCallRequest processes a tool call request checking if the tool
+// is in the filter list. Note that the tool name received in the toolCallRequest
+// is going to be the user-provided name, which might be different from the actual
+// tool name.
+func processToolCallRequest(
+	config *toolMiddlewareConfig,
+	toolCallRequest toolCallRequest,
+) toolCallFixAction {
+	// NOTE: the spec does not allow for nil params.
+	if toolCallRequest.Params == nil {
+		return &toolCallBogus{}
+	}
+
+	// NOTE: the spec does not allow for name to be missing.
+	toolName, ok := (*toolCallRequest.Params)["name"].(string)
+	if !ok {
+		return &toolCallBogus{}
+	}
+
+	// NOTE: the spec does not allow for empty tool names.
+	if toolName == "" {
+		return &toolCallBogus{}
+	}
+
+	// If the tool is not in the filter list, return an error.
+	// Note that the tool name we use here is the user-provided name, which
+	// might be different from the actual tool name, but filters are expressed
+	// in terms of tool names as known to the user, so this is correct.
+	if !config.isToolInFilter(toolName) {
+		return &toolCallFilter{}
+	}
+
+	// If the tool is allowed by the filter, and has an override, return the
+	// actual name to fix the tool call request.
+	if actualName, ok := config.getToolCallActualName(toolName); ok {
+		return &toolCallOverride{actualName: actualName}
+	}
+
+	// If the tool is allowed by the filter, and does not have an override,
+	// return an empty string and no error, signaling the fact that the tool
+	// call request is ok as is.
+	return &toolCallNoAction{}
 }

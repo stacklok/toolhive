@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/adrg/xdg"
@@ -52,6 +53,9 @@ const (
 
 	// NoneType represents the none secret provider.
 	NoneType ProviderType = "none"
+
+	// EnvironmentType represents the environment variable secret provider
+	EnvironmentType ProviderType = "environment"
 )
 
 // ErrUnknownManagerType is returned when an invalid value for ProviderType is specified.
@@ -98,11 +102,36 @@ func ValidateProviderWithPassword(ctx context.Context, providerType ProviderType
 		return validateOnePasswordProvider(ctx, provider, result)
 	case NoneType:
 		return validateNoneProvider(result)
+	case EnvironmentType:
+		return ValidateEnvironmentProvider(ctx, provider, result)
 	default:
 		result.Error = fmt.Errorf("unknown provider type: %s", providerType)
 		result.Message = "Unknown provider type"
 		return result
 	}
+}
+
+// ValidateEnvironmentProvider tests environment provider functionality
+func ValidateEnvironmentProvider(ctx context.Context, provider Provider, result *SetupResult) *SetupResult {
+	// Test basic functionality by attempting to get a test secret
+	// We don't expect it to exist, but we should get a proper "not found" error
+	_, err := provider.GetSecret(ctx, "nonexistent-test-secret")
+	if err == nil {
+		result.Error = fmt.Errorf("expected error for nonexistent secret, but got none")
+		result.Message = "Environment provider validation failed"
+		return result
+	}
+
+	// Check that we get the expected error message
+	if !strings.Contains(err.Error(), "secret not found") {
+		result.Error = fmt.Errorf("unexpected error format: %v", err)
+		result.Message = "Environment provider validation failed"
+		return result
+	}
+
+	result.Success = true
+	result.Message = "Environment provider validation successful"
+	return result
 }
 
 // validateEncryptedProvider tests basic encrypted provider functionality
@@ -186,6 +215,10 @@ func CreateSecretProvider(managerType ProviderType) (Provider, error) {
 // If password is empty, it uses the current functionality (read from keyring or stdin).
 // If password is provided, it uses that password and stores it in the keyring if not already setup.
 func CreateSecretProviderWithPassword(managerType ProviderType, password string) (Provider, error) {
+	// Create the primary provider
+	var primary Provider
+	var err error
+
 	switch managerType {
 	case EncryptedType:
 		// Enforce keyring availability for encrypted provider
@@ -203,14 +236,42 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 		if err != nil {
 			return nil, fmt.Errorf("unable to access secrets file path %v", err)
 		}
-		return NewEncryptedManager(secretsPath, key[:])
+		primary, err = NewEncryptedManager(secretsPath, key[:])
+		if err != nil {
+			return nil, err
+		}
 	case OnePasswordType:
-		return NewOnePasswordManager()
+		primary, err = NewOnePasswordManager()
 	case NoneType:
-		return NewNoneManager()
+		primary, err = NewNoneManager()
+	case EnvironmentType:
+		// Direct environment provider - no fallback needed
+		return NewEnvironmentProvider(), nil
 	default:
 		return nil, ErrUnknownManagerType
 	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Wrap with fallback provider if enabled
+	if shouldEnableFallback() {
+		return NewFallbackProvider(primary), nil
+	}
+
+	return primary, nil
+}
+
+// shouldEnableFallback determines if environment variable fallback should be enabled
+func shouldEnableFallback() bool {
+	// Check for explicit opt-out
+	if os.Getenv("TOOLHIVE_DISABLE_ENV_FALLBACK") == "true" {
+		return false
+	}
+
+	// Enable by default for non-environment providers
+	return true
 }
 
 // GetSecretsPassword returns the password to use for encrypting and decrypting secrets.

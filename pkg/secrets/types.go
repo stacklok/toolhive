@@ -7,6 +7,11 @@ import (
 	"regexp"
 )
 
+const (
+	// EnvVarPrefix is the prefix used for environment variable secrets
+	EnvVarPrefix = "TOOLHIVE_SECRET_"
+)
+
 // regex to extract name and target from secret parameter, e.g. "name,target=target"
 var secretParamRegex = regexp.MustCompile(`^([^,]+),target=(.+)$`)
 

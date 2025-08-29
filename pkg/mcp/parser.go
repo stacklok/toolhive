@@ -116,10 +116,11 @@ func shouldParseMCPRequest(r *http.Request) bool {
 		return false
 	}
 
-	// Parse requests to MCP message endpoints
-	return strings.Contains(r.URL.Path, "/messages") ||
-		strings.Contains(r.URL.Path, "/message") ||
-		strings.Contains(r.URL.Path, "/mcp")
+	// Parse all other JSON POST requests
+	// The MCP spec allows for various endpoints:
+	// - Streamable HTTP transport: single endpoint
+	// - SSE transport: two distinct endpoints (one for SSE stream, one for messages)
+	return true
 }
 
 // parseMCPRequest parses the JSON-RPC message and extracts MCP-specific information.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 
 	"golang.org/x/oauth2"
@@ -97,8 +98,8 @@ func NewHTTPTransport(
 }
 
 // SetRemoteURL sets the remote URL for the MCP server
-func (t *HTTPTransport) SetRemoteURL(url string) {
-	t.remoteURL = url
+func (t *HTTPTransport) SetRemoteURL(remoteURL string) {
+	t.remoteURL = remoteURL
 }
 
 // SetTokenSource sets the OAuth token source for remote authentication
@@ -271,8 +272,17 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	var targetURI string
 
 	if t.remoteURL != "" {
-		// For remote MCP servers, use the remote URL directly
-		targetURI = t.remoteURL
+		remoteURL, err := url.Parse(t.remoteURL)
+		if err != nil {
+			return fmt.Errorf("failed to parse remote URL: %w", err)
+		}
+		// If the remote URL is a full URL, we need to extract the scheme and host
+		// and use them to construct the target URI
+		targetURI = (&url.URL{
+			Scheme: remoteURL.Scheme,
+			Host:   remoteURL.Host,
+		}).String()
+
 		logger.Infof("Setting up transparent proxy to forward from host port %d to remote URL %s",
 			t.proxyPort, targetURI)
 	} else {

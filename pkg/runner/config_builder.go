@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -94,7 +95,15 @@ func (b *RunConfigBuilder) WithHost(host string) *RunConfigBuilder {
 
 // WithTargetHost sets the target host (applies default if empty)
 func (b *RunConfigBuilder) WithTargetHost(targetHost string) *RunConfigBuilder {
-	if targetHost == "" {
+	if b.config.RemoteURL != "" {
+		remoteURL, err := url.Parse(b.config.RemoteURL)
+		if err == nil {
+			targetHost = remoteURL.Host
+		} else {
+			logger.Warnf("Failed to parse remote URL: %v", err)
+			targetHost = transport.LocalhostIPv4
+		}
+	} else if targetHost == "" {
 		targetHost = transport.LocalhostIPv4
 	}
 	b.config.TargetHost = targetHost

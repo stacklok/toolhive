@@ -206,7 +206,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		logger.Warnf("Warning: Failed to create client manager: %v", err)
 	} else {
 		transportType := labels.GetTransportType(r.Config.ContainerLabels)
-		serverURL := transport.GenerateMCPServerURL(transportType, "localhost", r.Config.Port, r.Config.ContainerName)
+		serverURL := transport.GenerateMCPServerURL(
+			transportType,
+			"localhost",
+			r.Config.Port,
+			r.Config.ContainerName,
+			r.Config.RemoteURL)
 
 		if err := clientManager.AddServerToClients(ctx, r.Config.ContainerName, serverURL, transportType, r.Config.Group); err != nil {
 			logger.Warnf("Warning: Failed to add server to client configurations: %v", err)

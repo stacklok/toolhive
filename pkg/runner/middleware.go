@@ -29,6 +29,16 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 func PopulateMiddlewareConfigs(config *RunConfig) error {
 	var middlewareConfigs []types.MiddlewareConfig
 
+	// Authentication middleware (always present)
+	authParams := auth.MiddlewareParams{
+		OIDCConfig: config.OIDCConfig,
+	}
+	authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, authParams)
+	if err != nil {
+		return fmt.Errorf("failed to create auth middleware config: %w", err)
+	}
+	middlewareConfigs = append(middlewareConfigs, *authConfig)
+
 	// Tools filter middleware (if enabled)
 	if len(config.ToolsFilter) > 0 {
 		// Add tool filter middleware
@@ -48,16 +58,6 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		}
 		middlewareConfigs = append(middlewareConfigs, *toolCallFilterConfig)
 	}
-
-	// Authentication middleware (always present)
-	authParams := auth.MiddlewareParams{
-		OIDCConfig: config.OIDCConfig,
-	}
-	authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, authParams)
-	if err != nil {
-		return fmt.Errorf("failed to create auth middleware config: %w", err)
-	}
-	middlewareConfigs = append(middlewareConfigs, *authConfig)
 
 	// MCP Parser middleware (always present)
 	mcpParserParams := mcp.ParserMiddlewareParams{}

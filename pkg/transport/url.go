@@ -32,9 +32,9 @@ func GenerateMCPServerURL(transportType string, host string, port int, container
 		return fmt.Sprintf("http://%s:%d%s#%s", host, port, path, containerName)
 	} else if transportType == types.TransportTypeStreamableHTTP.String() {
 		if path == "" || path == "/" {
-			path = streamable.HTTPStreamableHTTPEndpoint
+			path = "/" + streamable.HTTPStreamableHTTPEndpoint
 		}
-		return fmt.Sprintf("http://%s:%d/%s", host, port, path)
+		return fmt.Sprintf("http://%s:%d%s", host, port, path)
 	}
 	return ""
 }

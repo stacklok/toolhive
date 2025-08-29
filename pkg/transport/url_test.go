@@ -20,7 +20,6 @@ func TestGenerateMCPServerURL(t *testing.T) {
 		targetURI     string
 		expected      string
 	}{
-		// Basic functionality tests (existing)
 		{
 			name:          "SSE transport",
 			transportType: types.TransportTypeSSE.String(),
@@ -57,7 +56,6 @@ func TestGenerateMCPServerURL(t *testing.T) {
 			targetURI:     "",
 			expected:      "",
 		},
-		// Major targetURI test cases - SSE transport
 		{
 			name:          "SSE transport with targetURI path",
 			transportType: types.TransportTypeSSE.String(),
@@ -93,7 +91,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 			port:          12345,
 			containerName: "test-container",
 			targetURI:     "http://remote-server.com/path",
-			expected:      "http://localhost:12345//path",
+			expected:      "http://localhost:12345/path",
 		},
 		{
 			name:          "Streamable HTTP transport with targetURI domain only",

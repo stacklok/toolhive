@@ -23,6 +23,7 @@ func TestParsingMiddlewareWithRealMCPClients(t *testing.T) {
 		name        string
 		ssePath     string
 		messagePath string
+		endpoint    string // for streamable-http transport
 		transport   string // "sse" or "streamable-http"
 	}{
 		{
@@ -45,10 +46,12 @@ func TestParsingMiddlewareWithRealMCPClients(t *testing.T) {
 		},
 		{
 			name:      "Streamable HTTP with standard path",
+			endpoint:  "/mcp",
 			transport: "streamable-http",
 		},
 		{
 			name:      "Streamable HTTP with custom path",
+			endpoint:  "/api/v1/rpc",
 			transport: "streamable-http",
 		},
 	}
@@ -80,13 +83,9 @@ func TestParsingMiddlewareWithRealMCPClients(t *testing.T) {
 				testServerURL = setupSSEServer(t, mcpServer, tc.ssePath, tc.messagePath, parsingCaptureMiddleware)
 				mcpClient, err = client.NewSSEMCPClient(testServerURL + tc.ssePath)
 			} else {
-				// For streamable HTTP, use a single endpoint
-				endpoint := "/mcp"
-				if tc.name == "Streamable HTTP with custom path" {
-					endpoint = "/api/v1/rpc"
-				}
-				testServerURL = setupStreamableHTTPServer(t, mcpServer, endpoint, parsingCaptureMiddleware)
-				mcpClient, err = client.NewStreamableHttpClient(testServerURL + endpoint)
+				// For streamable HTTP, use the specified endpoint
+				testServerURL = setupStreamableHTTPServer(t, mcpServer, tc.endpoint, parsingCaptureMiddleware)
+				mcpClient, err = client.NewStreamableHttpClient(testServerURL + tc.endpoint)
 			}
 			require.NoError(t, err)
 

@@ -135,70 +135,27 @@ func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
 	return tr.RoundTrip(req)
 }
 
-// manualForward manually forwards a request to the remote server using an HTTP client
-func (t *tracingTransport) manualForward(req *http.Request) (*http.Response, error) {
-	// Create a new request to the target URL
-	targetURL := t.p.targetURI
-	if req.URL.RawQuery != "" {
-		targetURL += "?" + req.URL.RawQuery
-	}
-
-	newReq, err := http.NewRequest(req.Method, targetURL, req.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create new request: %w", err)
-	}
-
-	// Copy headers from the original request
-	for name, values := range req.Header {
-		for _, value := range values {
-			newReq.Header.Add(name, value)
-		}
-	}
-
-	// Create HTTP client and make the request
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	return client.Do(newReq)
-}
-
 // nolint:gocyclo // This function handles multiple request types and is complex by design
 func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.p.isRemote {
-		// Route based on transport type for remote servers
-		switch t.p.transportType {
-		case "sse":
-			// Use reverse proxy for SSE (streaming)
-			return t.forward(req)
-		case "streamable-http":
-			// Use manual HTTP client for streamable-http (request/response)
-			resp, err := t.manualForward(req)
-			if err != nil {
-				if errors.Is(err, context.Canceled) {
-					// Expected during shutdown or client disconnect—silently ignore
-					return nil, err
-				}
-				logger.Errorf("Failed to forward request: %v", err)
-				return nil, err
-			}
-			return resp, nil
-		default:
-			// Default to manual forwarding for unknown transport types
-			logger.Warnf("Unknown transport type '%s', using manual forwarding", t.p.transportType)
-			return t.manualForward(req)
+		// In case of remote servers, req.Host is set to the proxy host (localhost) which may cause 403 error,
+		// so we need to set it to the target URI host
+		if req.URL.Host != req.Host {
+			req.Host = req.URL.Host
 		}
 	}
 
-	// Original logic for local containers
 	reqBody := readRequestBody(req)
 
+	// thv proxy does not provide the transport type, so we need to detect it from the request
 	path := req.URL.Path
 	isMCP := strings.HasPrefix(path, "/mcp")
 	isJSON := strings.Contains(req.Header.Get("Content-Type"), "application/json")
 	sawInitialize := false
 
-	if isMCP && isJSON && len(reqBody) > 0 {
+	if len(reqBody) > 0 &&
+		((isMCP && isJSON) ||
+			t.p.transportType == types.TransportTypeStreamableHTTP.String()) {
 		sawInitialize = t.detectInitialize(reqBody)
 	}
 
@@ -343,17 +300,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		return p.modifyForSessionID(resp)
 	}
 
-	// Create a handler that logs requests and strips /mcp path for remote servers
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// For remote servers, strip the /mcp path since they expect requests at the root
-		if p.isRemote && strings.HasPrefix(r.URL.Path, "/mcp") {
-			// Strip /mcp from the path for remote servers
-			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/mcp")
-			if r.URL.Path == "" {
-				r.URL.Path = "/"
-			}
-			logger.Infof("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, targetURL)
-		}
 		proxy.ServeHTTP(w, r)
 	})
 

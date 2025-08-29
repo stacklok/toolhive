@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-08-24T09:23:25Z",
+  "last_updated": "2025-08-29T00:17:30Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -133,9 +133,9 @@
         "read_paper"
       ],
       "metadata": {
-        "stars": 1607,
+        "stars": 1619,
         "pulls": 77,
-        "last_updated": "2025-08-22T09:41:01Z"
+        "last_updated": "2025-08-27T02:30:22Z"
       },
       "repository_url": "https://github.com/blazickjp/arxiv-mcp-server",
       "tags": [
@@ -476,9 +476,9 @@
         "recommend"
       ],
       "metadata": {
-        "stars": 5950,
+        "stars": 6051,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:40:58Z"
+        "last_updated": "2025-08-26T02:32:12Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -664,7 +664,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.8",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.9",
       "permissions": {
         "network": {
           "outbound": {
@@ -787,9 +787,9 @@
         "browser_close_session"
       ],
       "metadata": {
-        "stars": 1122,
+        "stars": 1153,
         "pulls": 65,
-        "last_updated": "2025-08-22T09:41:01Z"
+        "last_updated": "2025-08-28T02:30:18Z"
       },
       "repository_url": "https://github.com/brightdata/brightdata-mcp",
       "tags": [
@@ -948,9 +948,9 @@
         "getUrl"
       ],
       "metadata": {
-        "stars": 2476,
+        "stars": 2496,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:40:58Z"
+        "last_updated": "2025-08-26T02:32:12Z"
       },
       "repository_url": "https://github.com/browserbase/mcp-server-browserbase",
       "tags": [
@@ -1042,7 +1042,7 @@
         "devops",
         "testing"
       ],
-      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.5.10",
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.5.11",
       "permissions": {
         "network": {
           "outbound": {
@@ -1151,9 +1151,9 @@
         "create_project"
       ],
       "metadata": {
-        "stars": 328,
+        "stars": 335,
         "pulls": 273,
-        "last_updated": "2025-08-22T09:41:00Z"
+        "last_updated": "2025-08-27T02:30:21Z"
       },
       "repository_url": "https://github.com/GoogleCloudPlatform/cloud-run-mcp",
       "tags": [
@@ -1418,7 +1418,7 @@
         "merging",
         "reproducibility"
       ],
-      "image": "docker.io/dolthub/dolt-mcp:0.1.1",
+      "image": "docker.io/dolthub/dolt-mcp:0.2.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -1818,7 +1818,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.12.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.13.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -2035,6 +2035,190 @@
         "runner_environment": "github-hosted",
         "cert_issuer": "https://token.actions.githubusercontent.com"
       }
+    },
+    "gitlab": {
+      "description": "Provides integration with a GitLab instance to manage projects, issues, merge requests, and more.",
+      "tier": "Community",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "merge_merge_request",
+        "create_or_update_file",
+        "search_repositories",
+        "create_repository",
+        "get_file_contents",
+        "push_files",
+        "create_issue",
+        "create_merge_request",
+        "fork_repository",
+        "create_branch",
+        "get_merge_request",
+        "get_merge_request_diffs",
+        "list_merge_request_diffs",
+        "get_branch_diffs",
+        "update_merge_request",
+        "create_note",
+        "create_merge_request_thread",
+        "mr_discussions",
+        "update_merge_request_note",
+        "create_merge_request_note",
+        "get_draft_note",
+        "list_draft_notes",
+        "create_draft_note",
+        "update_draft_note",
+        "delete_draft_note",
+        "publish_draft_note",
+        "bulk_publish_draft_notes",
+        "update_issue_note",
+        "create_issue_note",
+        "list_issues",
+        "my_issues",
+        "get_issue",
+        "update_issue",
+        "delete_issue",
+        "list_issue_links",
+        "list_issue_discussions",
+        "get_issue_link",
+        "create_issue_link",
+        "delete_issue_link",
+        "list_namespaces",
+        "get_namespace",
+        "verify_namespace",
+        "get_project",
+        "list_projects",
+        "list_project_members",
+        "list_labels",
+        "get_label",
+        "create_label",
+        "update_label",
+        "delete_label",
+        "list_group_projects",
+        "list_wiki_pages",
+        "get_wiki_page",
+        "create_wiki_page",
+        "update_wiki_page",
+        "delete_wiki_page",
+        "get_repository_tree",
+        "list_pipelines",
+        "get_pipeline",
+        "list_pipeline_jobs",
+        "list_pipeline_trigger_jobs",
+        "get_pipeline_job",
+        "get_pipeline_job_output",
+        "create_pipeline",
+        "retry_pipeline",
+        "cancel_pipeline",
+        "list_merge_requests",
+        "list_milestones",
+        "get_milestone",
+        "create_milestone",
+        "edit_milestone",
+        "delete_milestone",
+        "get_milestone_issue",
+        "get_milestone_merge_requests",
+        "promote_milestone",
+        "get_milestone_burndown_events",
+        "get_users",
+        "list_commits",
+        "get_commit",
+        "get_commit_diff",
+        "list_group_iterations",
+        "upload_markdown",
+        "download_attachment"
+      ],
+      "metadata": {
+        "stars": 509,
+        "pulls": 9715,
+        "last_updated": "2025-08-26T17:28:57Z"
+      },
+      "repository_url": "https://github.com/zereight/gitlab-mcp",
+      "tags": [
+        "gitlab",
+        "version-control",
+        "repository",
+        "issues",
+        "merge-requests",
+        "wiki",
+        "milestones",
+        "pipelines"
+      ],
+      "image": "iwakitakuma/gitlab-mcp:2.0.3",
+      "target_port": 3002,
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              ".gitlab.com",
+              ".gitlab-static.net",
+              ".gitlab.io",
+              ".gitlab.net"
+            ],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "env_vars": [
+        {
+          "name": "GITLAB_PERSONAL_ACCESS_TOKEN",
+          "description": "Your GitLab personal access token.",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "GITLAB_API_URL",
+          "description": "Your GitLab API URL.",
+          "required": false,
+          "default": "https://gitlab.com/api/v4"
+        },
+        {
+          "name": "GITLAB_PROJECT_ID",
+          "description": "Default project ID. If set, overwrite this value when making an API request.",
+          "required": false
+        },
+        {
+          "name": "GITLAB_ALLOWED_PROJECT_IDS",
+          "description": "Optional comma-separated list of allowed project IDs. When set with a single value, acts as a default project.",
+          "required": false
+        },
+        {
+          "name": "GITLAB_READ_ONLY_MODE",
+          "description": "When set to 'true', restricts the server to only expose read-only operations.",
+          "required": false
+        },
+        {
+          "name": "USE_GITLAB_WIKI",
+          "description": "When set to 'true', enables the wiki-related tools. By default, wiki features are disabled.",
+          "required": false
+        },
+        {
+          "name": "USE_MILESTONE",
+          "description": "When set to 'true', enables the milestone-related tools. By default, milestone features are disabled.",
+          "required": false
+        },
+        {
+          "name": "USE_PIPELINE",
+          "description": "When set to 'true', enables the pipeline-related tools. By default, pipeline features are disabled.",
+          "required": false
+        },
+        {
+          "name": "GITLAB_AUTH_COOKIE_PATH",
+          "description": "Path to an authentication cookie file for GitLab instances that require cookie-based authentication.",
+          "required": false
+        },
+        {
+          "name": "SSE",
+          "description": "When set to 'true', enables the Server-Sent Events transport.",
+          "required": false
+        },
+        {
+          "name": "STREAMABLE_HTTP",
+          "description": "When set to 'true', enables the Streamable HTTP transport. If both SSE and STREAMABLE_HTTP are set to 'true', Streamable HTTP is used.",
+          "required": false,
+          "default": "true"
+        }
+      ]
     },
     "grafana": {
       "description": "Provides access to your Grafana instance and the surrounding ecosystem, enabling dashboard search, datasource queries, alerting management, incident response, and Sift investigations.",
@@ -2354,9 +2538,9 @@
         "list_microsoft_calendars"
       ],
       "metadata": {
-        "stars": 348,
+        "stars": 349,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:40:59Z"
+        "last_updated": "2025-08-26T02:32:14Z"
       },
       "repository_url": "https://github.com/graphlit/graphlit-mcp-server",
       "tags": [
@@ -2653,9 +2837,9 @@
         "pg_upgrade"
       ],
       "metadata": {
-        "stars": 57,
+        "stars": 62,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:40:59Z"
+        "last_updated": "2025-08-27T02:30:20Z"
       },
       "repository_url": "https://github.com/heroku/heroku-mcp-server",
       "tags": [
@@ -2745,9 +2929,9 @@
         "dbg_enable_breakpoint"
       ],
       "metadata": {
-        "stars": 3219,
+        "stars": 3336,
         "pulls": 99,
-        "last_updated": "2025-08-22T09:41:01Z"
+        "last_updated": "2025-08-28T02:30:19Z"
       },
       "repository_url": "https://github.com/mrexodia/ida-pro-mcp",
       "tags": [
@@ -2895,9 +3079,9 @@
         "refine_ui"
       ],
       "metadata": {
-        "stars": 3402,
+        "stars": 3455,
         "pulls": 128,
-        "last_updated": "2025-08-22T09:41:02Z"
+        "last_updated": "2025-08-28T02:30:19Z"
       },
       "repository_url": "https://github.com/21st-dev/magic-mcp",
       "tags": [
@@ -3041,9 +3225,9 @@
         "dynamic_tools_from_ide"
       ],
       "metadata": {
-        "stars": 913,
+        "stars": 916,
         "pulls": 77,
-        "last_updated": "2025-08-22T09:41:02Z"
+        "last_updated": "2025-08-28T02:30:20Z"
       },
       "repository_url": "https://github.com/JetBrains/mcp-jetbrains",
       "tags": [
@@ -3103,9 +3287,9 @@
         "enable_features"
       ],
       "metadata": {
-        "stars": 636,
+        "stars": 650,
         "pulls": 141,
-        "last_updated": "2025-08-22T09:41:02Z"
+        "last_updated": "2025-08-28T02:30:21Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3810,9 +3994,9 @@
         "API-create-a-comment"
       ],
       "metadata": {
-        "stars": 3013,
-        "pulls": 24143,
-        "last_updated": "2025-08-22T09:40:58Z"
+        "stars": 3036,
+        "pulls": 25300,
+        "last_updated": "2025-08-26T02:32:13Z"
       },
       "repository_url": "https://github.com/makenotion/notion-mcp-server",
       "tags": [
@@ -4083,9 +4267,9 @@
         "share-traces"
       ],
       "metadata": {
-        "stars": 6734,
+        "stars": 6771,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:39:15Z"
+        "last_updated": "2025-08-26T02:32:11Z"
       },
       "repository_url": "https://github.com/Arize-ai/phoenix",
       "tags": [
@@ -4170,7 +4354,7 @@
         "browser",
         "navigate"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.34",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.35",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -4573,86 +4757,6 @@
         "cert_issuer": "https://token.actions.githubusercontent.com"
       }
     },
-    "sentry-mcp-server": {
-      "description": "Sentry's MCP service for human-in-the-loop coding agents, optimized for developer workflows and debugging use cases",
-      "tier": "Official",
-      "status": "Active",
-      "transport": "stdio",
-      "tools": [
-        "whoami",
-        "find_organizations",
-        "find_teams",
-        "find_projects",
-        "find_releases",
-        "get_issue_details",
-        "get_trace_details",
-        "get_event_attachment",
-        "update_issue",
-        "search_events",
-        "create_team",
-        "create_project",
-        "update_project",
-        "create_dsn",
-        "find_dsns",
-        "analyze_issue_with_seer",
-        "search_docs",
-        "get_doc",
-        "search_issues"
-      ],
-      "metadata": {
-        "stars": 314,
-        "pulls": 0,
-        "last_updated": "2025-08-22T09:40:59Z"
-      },
-      "repository_url": "https://github.com/getsentry/sentry-mcp",
-      "tags": [
-        "sentry",
-        "debugging",
-        "monitoring",
-        "error-tracking",
-        "observability"
-      ],
-      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:latest",
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [
-              ".sentry.io",
-              "sentry.io"
-            ],
-            "allow_port": [
-              443
-            ]
-          }
-        }
-      },
-      "env_vars": [
-        {
-          "name": "SENTRY_ACCESS_TOKEN",
-          "description": "Sentry user auth token with necessary scopes",
-          "required": true,
-          "secret": true
-        },
-        {
-          "name": "SENTRY_HOST",
-          "description": "Sentry host URL (e.g., sentry.example.com)",
-          "required": false
-        },
-        {
-          "name": "OPENAI_API_KEY",
-          "description": "OpenAI API key for AI-powered search tools (search_events, search_issues)",
-          "required": false,
-          "secret": true
-        }
-      ],
-      "provenance": {
-        "sigstore_url": "tuf-repo-cdn.sigstore.dev",
-        "repository_uri": "https://github.com/stacklok/dockyard",
-        "signer_identity": "/.github/workflows/build-containers.yml",
-        "runner_environment": "github-hosted",
-        "cert_issuer": "https://token.actions.githubusercontent.com"
-      }
-    },
     "sequentialthinking": {
       "description": "Enables dynamic problem-solving with a structured, reflective approach that can adapt and evolve as understanding deepens.",
       "tier": "Community",
@@ -4824,87 +4928,6 @@
         "stars": 1974,
         "pulls": 102,
         "last_updated": "2025-08-22T09:41:06Z"
-      },
-      "repository_url": "https://github.com/supabase-community/supabase-mcp",
-      "tags": [
-        "supabase",
-        "database",
-        "backend",
-        "baas",
-        "postgresql"
-      ],
-      "image": "ghcr.io/stacklok/dockyard/npx/supabase-mcp-server:latest",
-      "permissions": {
-        "network": {
-          "outbound": {
-            "allow_host": [
-              ".supabase.co",
-              ".supabase.com"
-            ],
-            "allow_port": [
-              443
-            ]
-          }
-        }
-      },
-      "env_vars": [
-        {
-          "name": "SUPABASE_ACCESS_TOKEN",
-          "description": "Personal access token from Supabase dashboard",
-          "required": true,
-          "secret": true
-        }
-      ],
-      "provenance": {
-        "sigstore_url": "tuf-repo-cdn.sigstore.dev",
-        "repository_uri": "https://github.com/stacklok/dockyard",
-        "signer_identity": "/.github/workflows/build-containers.yml",
-        "runner_environment": "github-hosted",
-        "cert_issuer": "https://token.actions.githubusercontent.com"
-      }
-    },
-    "supabase-mcp-server": {
-      "description": "Connect your Supabase projects to AI assistants for managing tables, fetching config, and querying data",
-      "tier": "Official",
-      "status": "Active",
-      "transport": "stdio",
-      "tools": [
-        "list_projects",
-        "get_project",
-        "create_project",
-        "pause_project",
-        "restore_project",
-        "list_organizations",
-        "get_organization",
-        "get_cost",
-        "confirm_cost",
-        "search_docs",
-        "list_tables",
-        "list_extensions",
-        "list_migrations",
-        "apply_migration",
-        "execute_sql",
-        "get_logs",
-        "get_advisors",
-        "get_project_url",
-        "get_anon_key",
-        "generate_typescript_types",
-        "list_edge_functions",
-        "deploy_edge_function",
-        "create_branch",
-        "list_branches",
-        "delete_branch",
-        "merge_branch",
-        "reset_branch",
-        "rebase_branch",
-        "list_storage_buckets",
-        "get_storage_config",
-        "update_storage_config"
-      ],
-      "metadata": {
-        "stars": 1974,
-        "pulls": 0,
-        "last_updated": "2025-08-22T09:41:00Z"
       },
       "repository_url": "https://github.com/supabase-community/supabase-mcp",
       "tags": [

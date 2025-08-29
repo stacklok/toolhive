@@ -16,16 +16,21 @@ func TestProcessToolCallRequest(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		filterTools map[string]struct{}
-		request     toolCallRequest
-		expectError error
+		name           string
+		config         *toolMiddlewareConfig
+		request        toolCallRequest
+		expectedResult string // "filter", "override", "bogus", "noaction"
+		expectedName   string // only relevant for override case
 	}{
 		{
 			name: "tool in filter - should succeed",
-			filterTools: map[string]struct{}{
-				"test_tool":  {},
-				"other_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"test_tool":  {},
+					"other_tool": {},
+				},
+				actualToUserOverride: map[string]toolOverrideEntry{},
+				userToActualOverride: map[string]toolOverrideEntry{},
 			},
 			request: toolCallRequest{
 				JSONRPC: "2.0",
@@ -38,12 +43,15 @@ func TestProcessToolCallRequest(t *testing.T) {
 					},
 				},
 			},
-			expectError: nil,
+			expectedResult: "noaction",
+			expectedName:   "",
 		},
 		{
 			name: "tool not in filter - should fail",
-			filterTools: map[string]struct{}{
-				"allowed_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
 			},
 			request: toolCallRequest{
 				JSONRPC: "2.0",
@@ -56,12 +64,15 @@ func TestProcessToolCallRequest(t *testing.T) {
 					},
 				},
 			},
-			expectError: errToolNotInFilter,
+			expectedResult: "filter",
+			expectedName:   "",
 		},
 		{
 			name: "tool name not found in params - should fail",
-			filterTools: map[string]struct{}{
-				"test_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"test_tool": {},
+				},
 			},
 			request: toolCallRequest{
 				JSONRPC: "2.0",
@@ -73,12 +84,15 @@ func TestProcessToolCallRequest(t *testing.T) {
 					},
 				},
 			},
-			expectError: errToolNameNotFound,
+			expectedResult: "bogus",
+			expectedName:   "",
 		},
 		{
 			name: "tool name is not string - should fail",
-			filterTools: map[string]struct{}{
-				"test_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"test_tool": {},
+				},
 			},
 			request: toolCallRequest{
 				JSONRPC: "2.0",
@@ -89,11 +103,14 @@ func TestProcessToolCallRequest(t *testing.T) {
 					"arguments": map[string]any{},
 				},
 			},
-			expectError: errToolNameNotFound,
+			expectedResult: "bogus",
+			expectedName:   "",
 		},
 		{
-			name:        "empty filter - should fail for any tool",
-			filterTools: map[string]struct{}{},
+			name: "empty filter - should succeed",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{},
+			},
 			request: toolCallRequest{
 				JSONRPC: "2.0",
 				ID:      1,
@@ -102,7 +119,108 @@ func TestProcessToolCallRequest(t *testing.T) {
 					"name": "any_tool",
 				},
 			},
-			expectError: errToolNotInFilter,
+			expectedResult: "noaction",
+			expectedName:   "",
+		},
+		{
+			name: "empty params",
+			config: &toolMiddlewareConfig{
+				filterTools:          map[string]struct{}{"any_tool": {}},
+				actualToUserOverride: map[string]toolOverrideEntry{},
+				userToActualOverride: map[string]toolOverrideEntry{},
+			},
+			request: toolCallRequest{
+				JSONRPC: "2.0",
+				ID:      1,
+				Method:  "tools/call",
+				Params:  &map[string]any{},
+			},
+			expectedResult: "bogus",
+			expectedName:   "",
+		},
+		{
+			name: "params with nil name",
+			config: &toolMiddlewareConfig{
+				filterTools:          map[string]struct{}{"any_tool": {}},
+				actualToUserOverride: map[string]toolOverrideEntry{},
+				userToActualOverride: map[string]toolOverrideEntry{},
+			},
+			request: toolCallRequest{
+				JSONRPC: "2.0",
+				ID:      1,
+				Method:  "tools/call",
+				Params: &map[string]any{
+					"name": nil,
+				},
+			},
+			expectedResult: "bogus",
+			expectedName:   "",
+		},
+		{
+			name: "tool with override - should return override",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"user_tool": {},
+				},
+				actualToUserOverride: map[string]toolOverrideEntry{
+					"actual_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly name",
+					},
+				},
+				userToActualOverride: map[string]toolOverrideEntry{
+					"user_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly name",
+					},
+				},
+			},
+			request: toolCallRequest{
+				JSONRPC: "2.0",
+				ID:      1,
+				Method:  "tools/call",
+				Params: &map[string]any{
+					"name": "user_tool",
+				},
+			},
+			expectedResult: "override",
+			expectedName:   "actual_tool",
+		},
+		{
+			name: "empty tool name - should fail",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
+			},
+			request: toolCallRequest{
+				JSONRPC: "2.0",
+				ID:      1,
+				Method:  "tools/call",
+				Params: &map[string]any{
+					"name": "",
+				},
+			},
+			expectedResult: "bogus",
+			expectedName:   "",
+		},
+		{
+			name: "nil params - should fail",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
+			},
+			request: toolCallRequest{
+				JSONRPC: "2.0",
+				ID:      1,
+				Method:  "tools/call",
+				Params:  nil,
+			},
+			expectedResult: "bogus",
+			expectedName:   "",
 		},
 	}
 
@@ -110,11 +228,24 @@ func TestProcessToolCallRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := processToolCallRequest(tt.filterTools, tt.request)
-			if tt.expectError != nil {
-				assert.ErrorIs(t, err, tt.expectError)
-			} else {
-				assert.NoError(t, err)
+			result := processToolCallRequest(tt.config, tt.request)
+
+			switch tt.expectedResult {
+			case "filter":
+				_, ok := result.(*toolCallFilter)
+				assert.True(t, ok, "Expected toolCallFilter result")
+			case "override":
+				override, ok := result.(*toolCallOverride)
+				assert.True(t, ok, "Expected toolCallOverride result")
+				assert.Equal(t, tt.expectedName, override.Name())
+			case "bogus":
+				_, ok := result.(*toolCallBogus)
+				assert.True(t, ok, "Expected toolCallBogus result")
+			case "noaction":
+				_, ok := result.(*toolCallNoAction)
+				assert.True(t, ok, "Expected toolCallNoAction result")
+			default:
+				t.Errorf("Unknown expected result: %s", tt.expectedResult)
 			}
 		})
 	}
@@ -124,17 +255,20 @@ func TestProcessToolsListResponse(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		filterTools   map[string]struct{}
-		inputResponse toolsListResponse
-		expectedTools []string
-		expectError   error
+		name                 string
+		config               *toolMiddlewareConfig
+		inputResponse        toolsListResponse
+		expectedTools        []string
+		expectedDescriptions map[string]string // map of tool name to expected description
+		expectError          error
 	}{
 		{
 			name: "filter tools - keep only allowed tools",
-			filterTools: map[string]struct{}{
-				"allowed_tool1": {},
-				"allowed_tool2": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool1": {},
+					"allowed_tool2": {},
+				},
 			},
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
@@ -150,14 +284,20 @@ func TestProcessToolsListResponse(t *testing.T) {
 				},
 			},
 			expectedTools: []string{"allowed_tool1", "allowed_tool2"},
-			expectError:   nil,
+			expectedDescriptions: map[string]string{
+				"allowed_tool1": "First tool",
+				"allowed_tool2": "Second tool",
+			},
+			expectError: nil,
 		},
 		{
 			name: "no filter - keep all tools",
-			filterTools: map[string]struct{}{
-				"tool1": {},
-				"tool2": {},
-				"tool3": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"tool1": {},
+					"tool2": {},
+					"tool3": {},
+				},
 			},
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
@@ -173,12 +313,19 @@ func TestProcessToolsListResponse(t *testing.T) {
 				},
 			},
 			expectedTools: []string{"tool1", "tool2", "tool3"},
-			expectError:   nil,
+			expectedDescriptions: map[string]string{
+				"tool1": "First tool",
+				"tool2": "Second tool",
+				"tool3": "Third tool",
+			},
+			expectError: nil,
 		},
 		{
 			name: "tool without name field - should fail",
-			filterTools: map[string]struct{}{
-				"allowed_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
 			},
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
@@ -191,12 +338,15 @@ func TestProcessToolsListResponse(t *testing.T) {
 					},
 				},
 			},
-			expectError: errToolNameNotFound,
+			expectedDescriptions: nil,
+			expectError:          errToolNameNotFound,
 		},
 		{
 			name: "tool name is not string - should fail",
-			filterTools: map[string]struct{}{
-				"allowed_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
 			},
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
@@ -209,12 +359,113 @@ func TestProcessToolsListResponse(t *testing.T) {
 					},
 				},
 			},
-			expectError: errToolNameNotFound,
+			expectedDescriptions: nil,
+			expectError:          errToolNameNotFound,
+		},
+		{
+			name: "empty tool name - should fail",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
+			},
+			inputResponse: toolsListResponse{
+				JSONRPC: "2.0",
+				ID:      1,
+				Result: struct {
+					Tools *[]map[string]any `json:"tools"`
+				}{
+					Tools: &[]map[string]any{
+						{"name": "", "description": "Tool with empty name"},
+					},
+				},
+			},
+			expectedDescriptions: nil,
+			expectError:          errToolNameNotFound,
+		},
+		{
+			name: "tool with override - name and description changed",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"user_friendly_name": {},
+				},
+				actualToUserOverride: map[string]toolOverrideEntry{
+					"actual_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_friendly_name",
+						OverrideDescription: "User friendly description",
+					},
+				},
+				userToActualOverride: map[string]toolOverrideEntry{
+					"user_friendly_name": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_friendly_name",
+						OverrideDescription: "User friendly description",
+					},
+				},
+			},
+			inputResponse: toolsListResponse{
+				JSONRPC: "2.0",
+				ID:      1,
+				Result: struct {
+					Tools *[]map[string]any `json:"tools"`
+				}{
+					Tools: &[]map[string]any{
+						{"name": "actual_tool", "description": "Original description"},
+					},
+				},
+			},
+			expectedTools: []string{"user_friendly_name"},
+			expectedDescriptions: map[string]string{
+				"user_friendly_name": "User friendly description",
+			},
+			expectError: nil,
+		},
+		{
+			name: "tool with override - filtered out after override",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+				actualToUserOverride: map[string]toolOverrideEntry{
+					"actual_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "blocked_tool",
+						OverrideDescription: "Blocked tool description",
+					},
+				},
+				userToActualOverride: map[string]toolOverrideEntry{
+					"blocked_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "blocked_tool",
+						OverrideDescription: "Blocked tool description",
+					},
+				},
+			},
+			inputResponse: toolsListResponse{
+				JSONRPC: "2.0",
+				ID:      1,
+				Result: struct {
+					Tools *[]map[string]any `json:"tools"`
+				}{
+					Tools: &[]map[string]any{
+						{"name": "actual_tool", "description": "Original description"},
+						{"name": "allowed_tool", "description": "Allowed tool"},
+					},
+				},
+			},
+			expectedTools: []string{"allowed_tool"},
+			expectedDescriptions: map[string]string{
+				"allowed_tool": "Allowed tool",
+			},
+			expectError: nil,
 		},
 		{
 			name: "empty tools list - should succeed",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
 			},
 			inputResponse: toolsListResponse{
 				JSONRPC: "2.0",
@@ -225,8 +476,137 @@ func TestProcessToolsListResponse(t *testing.T) {
 					Tools: &[]map[string]any{},
 				},
 			},
-			expectedTools: []string{},
-			expectError:   nil,
+			expectedTools:        []string{},
+			expectedDescriptions: map[string]string{},
+			expectError:          nil,
+		},
+		{
+			name: "multiple tools with overrides",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"user_tool1": {},
+					"user_tool2": {},
+				},
+				actualToUserOverride: map[string]toolOverrideEntry{
+					"actual_tool1": {
+						ActualName:          "actual_tool1",
+						OverrideName:        "user_tool1",
+						OverrideDescription: "User friendly tool 1",
+					},
+					"actual_tool2": {
+						ActualName:          "actual_tool2",
+						OverrideName:        "user_tool2",
+						OverrideDescription: "User friendly tool 2",
+					},
+				},
+				userToActualOverride: map[string]toolOverrideEntry{
+					"user_tool1": {
+						ActualName:          "actual_tool1",
+						OverrideName:        "user_tool1",
+						OverrideDescription: "User friendly tool 1",
+					},
+					"user_tool2": {
+						ActualName:          "actual_tool2",
+						OverrideName:        "user_tool2",
+						OverrideDescription: "User friendly tool 2",
+					},
+				},
+			},
+			inputResponse: toolsListResponse{
+				JSONRPC: "2.0",
+				ID:      1,
+				Result: struct {
+					Tools *[]map[string]any `json:"tools"`
+				}{
+					Tools: &[]map[string]any{
+						{"name": "actual_tool1", "description": "Original description 1"},
+						{"name": "actual_tool2", "description": "Original description 2"},
+						{"name": "other_tool", "description": "Other tool"},
+					},
+				},
+			},
+			expectedTools: []string{"user_tool1", "user_tool2"},
+			expectedDescriptions: map[string]string{
+				"user_tool1": "User friendly tool 1",
+				"user_tool2": "User friendly tool 2",
+			},
+			expectError: nil,
+		},
+		{
+			name: "tool override with description verification",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"user_tool": {},
+				},
+				actualToUserOverride: map[string]toolOverrideEntry{
+					"actual_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly description",
+					},
+				},
+				userToActualOverride: map[string]toolOverrideEntry{
+					"user_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly description",
+					},
+				},
+			},
+			inputResponse: toolsListResponse{
+				JSONRPC: "2.0",
+				ID:      1,
+				Result: struct {
+					Tools *[]map[string]any `json:"tools"`
+				}{
+					Tools: &[]map[string]any{
+						{"name": "actual_tool", "description": "Original description", "inputSchema": map[string]any{"type": "object"}},
+					},
+				},
+			},
+			expectedTools: []string{"user_tool"},
+			expectedDescriptions: map[string]string{
+				"user_tool": "User friendly description",
+			},
+			expectError: nil,
+		},
+		{
+			name: "verify description override",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"user_tool": {},
+				},
+				actualToUserOverride: map[string]toolOverrideEntry{
+					"actual_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly description",
+					},
+				},
+				userToActualOverride: map[string]toolOverrideEntry{
+					"user_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly description",
+					},
+				},
+			},
+			inputResponse: toolsListResponse{
+				JSONRPC: "2.0",
+				ID:      1,
+				Result: struct {
+					Tools *[]map[string]any `json:"tools"`
+				}{
+					Tools: &[]map[string]any{
+						{"name": "actual_tool", "description": "Original description", "inputSchema": map[string]any{"type": "object"}},
+					},
+				},
+			},
+			expectedTools: []string{"user_tool"},
+			expectedDescriptions: map[string]string{
+				"user_tool": "User friendly description",
+			},
+			expectError: nil,
 		},
 	}
 
@@ -235,7 +615,7 @@ func TestProcessToolsListResponse(t *testing.T) {
 			t.Parallel()
 
 			var buf bytes.Buffer
-			err := processToolsListResponse(tt.filterTools, tt.inputResponse, &buf)
+			err := processToolsListResponse(tt.config, tt.inputResponse, &buf)
 
 			if tt.expectError != nil {
 				assert.ErrorIs(t, err, tt.expectError)
@@ -259,7 +639,42 @@ func TestProcessToolsListResponse(t *testing.T) {
 				}
 			}
 
-			assert.ElementsMatch(t, tt.expectedTools, actualTools)
+			// Only compare expected tools if we're not expecting an error
+			if tt.expectError == nil {
+				assert.ElementsMatch(t, tt.expectedTools, actualTools)
+
+				// Verify descriptions if expectedDescriptions is provided
+				if tt.expectedDescriptions != nil {
+					require.NotNil(t, outputResponse.Result.Tools)
+
+					// Create a map of actual tool descriptions for easy lookup
+					actualDescriptions := make(map[string]string)
+					for _, tool := range *outputResponse.Result.Tools {
+						if name, ok := tool["name"].(string); ok {
+							if description, ok := tool["description"].(string); ok {
+								actualDescriptions[name] = description
+							}
+						}
+					}
+
+					// Verify each expected description
+					for toolName, expectedDescription := range tt.expectedDescriptions {
+						actualDescription, exists := actualDescriptions[toolName]
+						assert.True(t, exists, "Tool %s should exist in output", toolName)
+						assert.Equal(t, expectedDescription, actualDescription,
+							"Description for tool %s should match expected", toolName)
+					}
+
+					// For test cases with inputSchema, verify that other fields are preserved
+					if len(*outputResponse.Result.Tools) == 1 {
+						tool := (*outputResponse.Result.Tools)[0]
+						if _, hasInputSchema := tool["inputSchema"]; hasInputSchema {
+							// Verify that other fields are preserved
+							assert.Equal(t, map[string]any{"type": "object"}, tool["inputSchema"])
+						}
+					}
+				}
+			}
 		})
 	}
 }
@@ -269,15 +684,17 @@ func TestProcessSSEEvents(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		filterTools map[string]struct{}
+		config      *toolMiddlewareConfig
 		inputBuffer []byte
 		expected    string
 		expectError bool
 	}{
 		{
 			name: "SSE with non-tools data - pass through unchanged",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
 			},
 			inputBuffer: []byte(`event: message
 data: {"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}
@@ -291,9 +708,11 @@ data: {"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}
 		},
 		{
 			name: "SSE with mixed content - filter tools and pass through other data",
-			filterTools: map[string]struct{}{
-				"tool1": {},
-				"tool3": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"tool1": {},
+					"tool3": {},
+				},
 			},
 			inputBuffer: []byte(`event: message
 data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1","description":"First"},{"name":"tool2","description":"Second"},{"name":"tool3","description":"Third"}]}}
@@ -313,8 +732,10 @@ data: {"type":"info","message":"Processing complete"}
 		},
 		{
 			name: "SSE with CRLF line endings",
-			filterTools: map[string]struct{}{
-				"allowed_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
 			},
 			inputBuffer: []byte("event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"},{\"name\":\"blocked_tool\",\"description\":\"Blocked\"}]}}\r\n\r\n"),
 			expected:    "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\n\r\n\r\n",
@@ -322,8 +743,10 @@ data: {"type":"info","message":"Processing complete"}
 		},
 		{
 			name: "SSE with CR line endings",
-			filterTools: map[string]struct{}{
-				"allowed_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
 			},
 			inputBuffer: []byte("event: message\rdata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"allowed_tool\",\"description\":\"Allowed\"}]}}\r\r"),
 			expected:    "event: message\rdata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"description\":\"Allowed\",\"name\":\"allowed_tool\"}]}}\n\r\r",
@@ -331,16 +754,20 @@ data: {"type":"info","message":"Processing complete"}
 		},
 		{
 			name: "SSE with unsupported line separator - should fail",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
 			},
 			inputBuffer: []byte("event: message\vdata: {\"jsonrpc\":\"2.0\",\"id\":1}\v\v"),
 			expectError: true,
 		},
 		{
 			name: "SSE with malformed JSON in data - pass through unchanged",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
 			},
 			inputBuffer: []byte(`event: message
 data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1"}]}
@@ -352,6 +779,39 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1"}]}
 `,
 			expectError: false,
 		},
+		{
+			name: "SSE with only line separators",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
+			},
+			inputBuffer: []byte("\n\n"),
+			expected:    "\n",
+			expectError: false,
+		},
+		{
+			name: "SSE with single line",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
+			},
+			inputBuffer: []byte("event: message\n"),
+			expected:    "event: message\n",
+			expectError: false,
+		},
+		{
+			name: "SSE with data line without event line",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
+			},
+			inputBuffer: []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n"),
+			expected:    "data: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n",
+			expectError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -359,7 +819,7 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1"}]}
 			t.Parallel()
 
 			var buf bytes.Buffer
-			err := processSSEEvents(tt.filterTools, tt.inputBuffer, &buf)
+			err := processEventStream(tt.config, tt.inputBuffer, &buf)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -377,15 +837,17 @@ func TestProcessBuffer(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		filterTools map[string]struct{}
+		config      *toolMiddlewareConfig
 		buffer      []byte
 		mimeType    string
 		expectError bool
 	}{
 		{
 			name: "JSON with tools list",
-			filterTools: map[string]struct{}{
-				"allowed_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
 			},
 			buffer:      []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","description":"Allowed"},{"name":"blocked_tool","description":"Blocked"}]}}`),
 			mimeType:    "application/json",
@@ -393,8 +855,10 @@ func TestProcessBuffer(t *testing.T) {
 		},
 		{
 			name: "SSE with tools list",
-			filterTools: map[string]struct{}{
-				"allowed_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
 			},
 			buffer: []byte(`event: message
 data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","description":"Allowed"},{"name":"blocked_tool","description":"Blocked"}]}}
@@ -405,8 +869,10 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","descrip
 		},
 		{
 			name: "Unsupported mime type",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
 			},
 			buffer:      []byte(`some data`),
 			mimeType:    "text/plain",
@@ -414,8 +880,10 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","descrip
 		},
 		{
 			name: "Empty buffer",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"any_tool": {},
+				},
 			},
 			buffer:      []byte{},
 			mimeType:    "application/json",
@@ -428,7 +896,7 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","descrip
 			t.Parallel()
 
 			var buf bytes.Buffer
-			err := processBuffer(tt.filterTools, tt.buffer, tt.mimeType, &buf)
+			err := processBuffer(tt.config, tt.buffer, tt.mimeType, &buf)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -439,33 +907,133 @@ data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"allowed_tool","descrip
 	}
 }
 
-func TestIsToolInFilter(t *testing.T) {
+func TestToolMiddlewareConfig(t *testing.T) {
 	t.Parallel()
 
-	filterTools := map[string]struct{}{
-		"tool1": {},
-		"tool2": {},
-	}
-
 	tests := []struct {
-		name     string
-		toolName string
-		expected bool
+		name           string
+		config         *toolMiddlewareConfig
+		toolName       string
+		expectedFilter bool
+		expectedCall   string
+		expectedList   *toolOverrideEntry
 	}{
 		{
-			name:     "tool in filter",
-			toolName: "tool1",
-			expected: true,
+			name: "tool in filter - should be allowed",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+					"other_tool":   {},
+				},
+			},
+			toolName:       "allowed_tool",
+			expectedFilter: true,
+			expectedCall:   "",
+			expectedList:   nil,
 		},
 		{
-			name:     "tool not in filter",
-			toolName: "tool3",
-			expected: false,
+			name: "tool not in filter - should be blocked",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+			},
+			toolName:       "blocked_tool",
+			expectedFilter: false,
+			expectedCall:   "",
+			expectedList:   nil,
 		},
 		{
-			name:     "empty tool name",
-			toolName: "",
-			expected: false,
+			name: "nil filter - all tools allowed",
+			config: &toolMiddlewareConfig{
+				filterTools: nil,
+			},
+			toolName:       "any_tool",
+			expectedFilter: true,
+			expectedCall:   "",
+			expectedList:   nil,
+		},
+		{
+			name: "tool call override - should return actual name",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"user_tool": {},
+				},
+				actualToUserOverride: map[string]toolOverrideEntry{
+					"actual_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly description",
+					},
+				},
+				userToActualOverride: map[string]toolOverrideEntry{
+					"user_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly description",
+					},
+				},
+			},
+			toolName:       "user_tool",
+			expectedFilter: true,
+			expectedCall:   "actual_tool",
+			expectedList:   nil,
+		},
+		{
+			name: "tool list override - should return override entry",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"user_tool": {},
+				},
+				actualToUserOverride: map[string]toolOverrideEntry{
+					"actual_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly description",
+					},
+				},
+				userToActualOverride: map[string]toolOverrideEntry{
+					"user_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly description",
+					},
+				},
+			},
+			toolName:       "actual_tool",
+			expectedFilter: false, // actual_tool not in filter, only user_tool is
+			expectedCall:   "",
+			expectedList: &toolOverrideEntry{
+				ActualName:          "actual_tool",
+				OverrideName:        "user_tool",
+				OverrideDescription: "User friendly description",
+			},
+		},
+		{
+			name: "no override found - should return empty",
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"allowed_tool": {},
+				},
+				actualToUserOverride: map[string]toolOverrideEntry{
+					"actual_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly description",
+					},
+				},
+				userToActualOverride: map[string]toolOverrideEntry{
+					"user_tool": {
+						ActualName:          "actual_tool",
+						OverrideName:        "user_tool",
+						OverrideDescription: "User friendly description",
+					},
+				},
+			},
+			toolName:       "unknown_tool",
+			expectedFilter: false,
+			expectedCall:   "",
+			expectedList:   nil,
 		},
 	}
 
@@ -473,8 +1041,39 @@ func TestIsToolInFilter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := isToolInFilter(filterTools, tt.toolName)
-			assert.Equal(t, tt.expected, result)
+			// Test isToolInFilter
+			result := tt.config.isToolInFilter(tt.toolName)
+			assert.Equal(t, tt.expectedFilter, result, "isToolInFilter should return expected result")
+
+			// Test getToolCallActualName
+			actualName, found := tt.config.getToolCallActualName(tt.toolName)
+			if tt.expectedCall != "" {
+				assert.True(t, found, "getToolCallActualName should find override")
+				assert.Equal(t, tt.expectedCall, actualName, "getToolCallActualName should return expected actual name")
+			} else {
+				assert.False(t, found, "getToolCallActualName should not find override")
+				assert.Equal(t, "", actualName, "getToolCallActualName should return empty string when no override")
+			}
+
+			// Test getToolListOverride
+			overrideEntry, found := tt.config.getToolListOverride(tt.toolName)
+			if tt.expectedList != nil {
+				assert.True(t, found, "getToolListOverride should find override")
+				assert.Equal(t, tt.expectedList.ActualName, overrideEntry.ActualName, "ActualName should match")
+				assert.Equal(t, tt.expectedList.OverrideName, overrideEntry.OverrideName, "OverrideName should match")
+				assert.Equal(t, tt.expectedList.OverrideDescription, overrideEntry.OverrideDescription, "OverrideDescription should match")
+			} else {
+				assert.False(t, found, "getToolListOverride should not find override")
+				// When no override is found, it returns nil if the map is nil, or a pointer to zero-value struct
+				if tt.config.actualToUserOverride == nil {
+					assert.Nil(t, overrideEntry, "getToolListOverride should return nil when map is nil")
+				} else {
+					assert.NotNil(t, overrideEntry, "getToolListOverride should return a pointer (even if to zero-value)")
+					assert.Equal(t, "", overrideEntry.ActualName, "ActualName should be empty when no override")
+					assert.Equal(t, "", overrideEntry.OverrideName, "OverrideName should be empty when no override")
+					assert.Equal(t, "", overrideEntry.OverrideDescription, "OverrideDescription should be empty when no override")
+				}
+			}
 		})
 	}
 }
@@ -496,9 +1095,11 @@ func TestProcessToolsListResponse_JSONEncoding(t *testing.T) {
 	t.Parallel()
 
 	// Test that the JSON encoding preserves the structure correctly
-	filterTools := map[string]struct{}{
-		"tool1": {},
-		"tool3": {},
+	config := &toolMiddlewareConfig{
+		filterTools: map[string]struct{}{
+			"tool1": {},
+			"tool3": {},
+		},
 	}
 
 	inputResponse := createToolsListResponse([]map[string]any{
@@ -508,7 +1109,7 @@ func TestProcessToolsListResponse_JSONEncoding(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := processToolsListResponse(filterTools, inputResponse, &buf)
+	err := processToolsListResponse(config, inputResponse, &buf)
 	require.NoError(t, err)
 
 	// Verify the output can be parsed back as valid JSON
@@ -533,126 +1134,6 @@ func TestProcessToolsListResponse_JSONEncoding(t *testing.T) {
 	assert.ElementsMatch(t, []string{"tool1", "tool3"}, toolNames)
 }
 
-func TestProcessSSEEvents_EdgeCases(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		filterTools map[string]struct{}
-		inputBuffer []byte
-		expected    string
-	}{
-		{
-			name: "SSE with only line separators",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
-			},
-			inputBuffer: []byte("\n\n"),
-			expected:    "\n",
-		},
-		{
-			name: "SSE with single line",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
-			},
-			inputBuffer: []byte("event: message\n"),
-			expected:    "event: message\n",
-		},
-		{
-			name: "SSE with data line without event line",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
-			},
-			inputBuffer: []byte("data: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n"),
-			expected:    "data: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var buf bytes.Buffer
-			err := processSSEEvents(tt.filterTools, tt.inputBuffer, &buf)
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.expected, buf.String())
-		})
-	}
-}
-
-func TestProcessToolCallRequest_EdgeCases(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		filterTools map[string]struct{}
-		request     toolCallRequest
-		expectError error
-	}{
-		{
-			name: "nil params",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
-			},
-			request: toolCallRequest{
-				JSONRPC: "2.0",
-				ID:      1,
-				Method:  "tools/call",
-				Params:  nil,
-			},
-			expectError: errToolNameNotFound,
-		},
-		{
-			name: "empty params",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
-			},
-			request: toolCallRequest{
-				JSONRPC: "2.0",
-				ID:      1,
-				Method:  "tools/call",
-				Params:  &map[string]any{},
-			},
-			expectError: errToolNameNotFound,
-		},
-		{
-			name: "params with nil name",
-			filterTools: map[string]struct{}{
-				"any_tool": {},
-			},
-			request: toolCallRequest{
-				JSONRPC: "2.0",
-				ID:      1,
-				Method:  "tools/call",
-				Params: &map[string]any{
-					"name": nil,
-				},
-			},
-			expectError: errToolNameNotFound,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// For nil params, we expect a panic, so we need to recover
-			if tt.request.Params == nil {
-				defer func() {
-					if r := recover(); r != nil {
-						// Expected panic for nil params
-						logger.Infof("Recovered from panic: %v", r)
-					}
-				}()
-			}
-
-			err := processToolCallRequest(tt.filterTools, tt.request)
-			assert.ErrorIs(t, err, tt.expectError)
-		})
-	}
-}
-
 func TestToolFilterWriter_Flush(t *testing.T) {
 	t.Parallel()
 
@@ -664,7 +1145,7 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 		writeData   []byte
 		contentType string
 		statusCode  int
-		filterTools map[string]struct{}
+		config      *toolMiddlewareConfig
 		expectWrite bool
 		expectReset bool
 	}{
@@ -673,8 +1154,10 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 			writeData:   []byte{},
 			contentType: "application/json",
 			statusCode:  200,
-			filterTools: map[string]struct{}{
-				"tool1": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"tool1": {},
+				},
 			},
 			expectWrite: false,
 			expectReset: false,
@@ -684,8 +1167,10 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 			writeData:   []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1","description":"First"},{"name":"tool2","description":"Second"}]}}`),
 			contentType: "application/json",
 			statusCode:  200,
-			filterTools: map[string]struct{}{
-				"tool1": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"tool1": {},
+				},
 			},
 			expectWrite: true,
 			expectReset: true,
@@ -695,8 +1180,10 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 			writeData:   []byte(`{"test":"data"}`),
 			contentType: "",
 			statusCode:  200,
-			filterTools: map[string]struct{}{
-				"tool1": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"tool1": {},
+				},
 			},
 			expectWrite: true,
 			expectReset: false, // Buffer is not reset when no content type
@@ -706,8 +1193,10 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 			writeData:   []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"tool1","description":"First"}]}}`),
 			contentType: "application/json",
 			statusCode:  201,
-			filterTools: map[string]struct{}{
-				"tool1": {},
+			config: &toolMiddlewareConfig{
+				filterTools: map[string]struct{}{
+					"tool1": {},
+				},
 			},
 			expectWrite: true,
 			expectReset: true,
@@ -729,7 +1218,7 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 			rw := &toolFilterWriter{
 				ResponseWriter: mockWriter,
 				buffer:         []byte{},
-				filterTools:    tt.filterTools,
+				config:         tt.config,
 			}
 
 			// Set status code using WriteHeader

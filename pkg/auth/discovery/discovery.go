@@ -291,9 +291,9 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		}
 	}
 
-	// Check if we have manual OAuth endpoints configured
+	// Check if we have OAuth endpoints configured
 	if config.AuthorizeURL != "" && config.TokenURL != "" {
-		logger.Infof("Using manual OAuth endpoints - authorize_url: %s, token_url: %s",
+		logger.Infof("Using OAuth endpoints - authorize_url: %s, token_url: %s",
 			config.AuthorizeURL, config.TokenURL)
 
 		oauthConfig, err = oauth.CreateOAuthConfigManual(

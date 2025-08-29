@@ -42,7 +42,7 @@ type toolMiddlewareConfig struct {
 }
 
 func (c *toolMiddlewareConfig) isToolInFilter(toolName string) bool {
-	if c.filterTools == nil {
+	if len(c.filterTools) == 0 {
 		return true
 	}
 
@@ -51,7 +51,7 @@ func (c *toolMiddlewareConfig) isToolInFilter(toolName string) bool {
 }
 
 func (c *toolMiddlewareConfig) getToolCallActualName(toolName string) (string, bool) {
-	if c.userToActualOverride == nil {
+	if len(c.userToActualOverride) == 0 {
 		return "", false
 	}
 
@@ -60,7 +60,7 @@ func (c *toolMiddlewareConfig) getToolCallActualName(toolName string) (string, b
 }
 
 func (c *toolMiddlewareConfig) getToolListOverride(toolName string) (*toolOverrideEntry, bool) {
-	if c.actualToUserOverride == nil {
+	if len(c.actualToUserOverride) == 0 {
 		return nil, false
 	}
 
@@ -246,7 +246,6 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 						return
 					}
 					r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-					return
 
 				// According to the current version of the MCP spec at
 				// https://modelcontextprotocol.io/specification/2025-06-18/schema#calltoolrequest
@@ -364,7 +363,10 @@ func processBuffer(
 		return fmt.Errorf("unsupported mime type: %s", mimeType)
 	}
 
-	return fmt.Errorf("%w: tool filtering middleware", errBug)
+	// If we get this far, we have a valid buffer that we cannot process
+	// in any other way, so we just write it to the underlying writer.
+	_, err := w.Write(buffer)
+	return err
 }
 
 //nolint:gocyclo
@@ -458,8 +460,12 @@ func processToolsListResponse(
 
 		// If the tool is overridden, we need to use the override name and description.
 		if entry, ok := config.getToolListOverride(toolName); ok {
-			tool["name"] = entry.OverrideName
-			tool["description"] = entry.OverrideDescription
+			if entry.OverrideName != "" {
+				tool["name"] = entry.OverrideName
+			}
+			if entry.OverrideDescription != "" {
+				tool["description"] = entry.OverrideDescription
+			}
 			toolName = entry.OverrideName
 		}
 

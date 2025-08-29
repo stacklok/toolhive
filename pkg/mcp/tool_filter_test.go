@@ -107,7 +107,7 @@ func TestProcessToolCallRequest(t *testing.T) {
 			expectedName:   "",
 		},
 		{
-			name: "empty filter - should fail for any tool",
+			name: "empty filter - should succeed",
 			config: &toolMiddlewareConfig{
 				filterTools: map[string]struct{}{},
 			},
@@ -119,7 +119,7 @@ func TestProcessToolCallRequest(t *testing.T) {
 					"name": "any_tool",
 				},
 			},
-			expectedResult: "filter",
+			expectedResult: "noaction",
 			expectedName:   "",
 		},
 		{

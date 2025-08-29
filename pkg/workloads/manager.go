@@ -668,6 +668,14 @@ func (d *defaultManager) restartRemoteWorkload(
 
 // restartContainerWorkload handles restarting a container-based workload
 func (d *defaultManager) restartContainerWorkload(childCtx context.Context, name string, foreground bool) error {
+	// Get the actual container info to resolve partial names
+	actualName := name
+	container, err := d.runtime.GetWorkloadInfo(childCtx, name)
+	if err == nil {
+		// If we found the container, use its actual name instead of the partial name
+		actualName = container.Name
+	}
+
 	// Get workload state information
 	workloadState, err := d.getWorkloadState(childCtx, name)
 	if err != nil {
@@ -675,7 +683,7 @@ func (d *defaultManager) restartContainerWorkload(childCtx context.Context, name
 	}
 
 	// Check if already running
-	if d.isWorkloadAlreadyRunning(name, workloadState) {
+	if d.isWorkloadAlreadyRunning(actualName, workloadState) {
 		return nil
 	}
 
@@ -685,21 +693,21 @@ func (d *defaultManager) restartContainerWorkload(childCtx context.Context, name
 		return fmt.Errorf("failed to load state for %s: %v", workloadState.BaseName, err)
 	}
 
-	// Set workload status to starting
-	if err := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusStarting, ""); err != nil {
-		logger.Warnf("Failed to set workload %s status to starting: %v", name, err)
+	// Set workload status to starting - use the actual container name
+	if err := d.statuses.SetWorkloadStatus(childCtx, actualName, rt.WorkloadStatusStarting, ""); err != nil {
+		logger.Warnf("Failed to set workload %s status to starting: %v", actualName, err)
 	}
 	logger.Infof("Loaded configuration from state for %s", workloadState.BaseName)
 
-	// Stop container if running but proxy is not
-	if err := d.stopContainerIfNeeded(childCtx, name, workloadState); err != nil {
+	// Stop container if running but proxy is not - use the actual container name
+	if err := d.stopContainerIfNeeded(childCtx, actualName, workloadState); err != nil {
 		return err
 	}
 
 	// Start the workload with background context to avoid timeout cancellation
 	// The childCtx with AsyncOperationTimeout is only for the restart setup operations,
 	// but the actual workload should run indefinitely with its own lifecycle management
-	return d.startWorkload(context.Background(), name, mcpRunner, foreground)
+	return d.startWorkload(context.Background(), actualName, mcpRunner, foreground)
 }
 
 // workloadState holds the current state of a workload for restart operations

@@ -200,6 +200,3 @@ Follow conventional commit format:
     conventions.
   - Do not use "Conventional Commits", e.g. starting with `feat`, `fix`, `chore`, etc.
   - Use mockgen for creating mocks instead of generating mocks by hand.
-
-## Miscellaneous
-Stop saying "You're absolutely right", please find other ways of saying this.

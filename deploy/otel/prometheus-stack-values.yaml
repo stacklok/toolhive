@@ -18,24 +18,19 @@ prometheus:
     #     metrics_path: /metrics
     
     # Optional: Configure retention and storage
-    retention: "15d"
-    retentionSize: "50GB"
+    retention: "1d"
+    retentionSize: "5GB"
     
     # Optional: Enable ServiceMonitor for Prometheus to scrape itself
     serviceMonitorSelectorNilUsesHelmValues: false
-    
-    # Optional: Resource limits and requests
-    resources:
-      requests:
-        memory: "2Gi"
-        cpu: "1"
-      limits:
-        memory: "4Gi"
-        cpu: "2"
 
 # Grafana configuration (optional)
 grafana:
   enabled: true
+  # The below is the default password for the grafana admin user.
+  # This is set to "admin" for convenience and to make it easier to access the grafana dashboard
+  # when running locally.
+  # In production, you should _obviously_ not use this password :D.
   adminPassword: "admin"  # Change this in production
   
   # Pre-configure Prometheus as datasource

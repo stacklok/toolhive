@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/versions"
+)
+
+// Google OAuth endpoints
+const (
+	//nolint:gosec // This is a public API endpoint URL, not credentials
+	googleTokeninfoURL = "https://oauth2.googleapis.com/tokeninfo"
 )
 
 // Common errors
@@ -372,9 +379,123 @@ func parseIntrospectionClaims(r io.Reader) (jwt.MapClaims, error) {
 	return claims, nil
 }
 
+func parseGoogleTokeninfoClaims(r io.Reader) (jwt.MapClaims, error) {
+	var googleResp struct {
+		AZP           string `json:"azp,omitempty"`
+		AUD           string `json:"aud,omitempty"`
+		Sub           string `json:"sub,omitempty"`
+		Scope         string `json:"scope,omitempty"`
+		Exp           string `json:"exp,omitempty"`        // Google returns as string
+		ExpiresIn     string `json:"expires_in,omitempty"` // Google returns as string
+		Email         string `json:"email,omitempty"`
+		EmailVerified string `json:"email_verified,omitempty"` // Google returns as string ("true"/"false")
+	}
+
+	if err := json.NewDecoder(r).Decode(&googleResp); err != nil {
+		return nil, fmt.Errorf("failed to decode Google tokeninfo JSON: %w", err)
+	}
+
+	// Parse and validate expiration first
+	expInt, err := strconv.ParseInt(googleResp.Exp, 10, 64)
+	if err != nil || googleResp.Exp == "" {
+		return nil, ErrInvalidToken
+	}
+
+	// Check if token is active (not expired)
+	currentTime := time.Now().Unix()
+	isActive := expInt > currentTime
+	if !isActive {
+		return nil, ErrTokenExpired
+	}
+
+	claims := jwt.MapClaims{
+		"active": true,
+		"exp":    float64(expInt),               // JWT expects float64
+		"iss":    "https://accounts.google.com", // Default issuer
+	}
+
+	// Map standard fields that ToolHive uses
+	if googleResp.Sub != "" {
+		claims["sub"] = strings.TrimSpace(googleResp.Sub)
+	}
+	if googleResp.AUD != "" {
+		claims["aud"] = googleResp.AUD
+	}
+	if googleResp.Scope != "" {
+		claims["scope"] = strings.TrimSpace(googleResp.Scope)
+	}
+
+	// Preserve Google-specific fields
+	if googleResp.Email != "" {
+		claims["email"] = googleResp.Email
+	}
+	if googleResp.EmailVerified != "" {
+		claims["email_verified"] = googleResp.EmailVerified
+	}
+	if googleResp.AZP != "" {
+		claims["azp"] = googleResp.AZP
+	}
+	if googleResp.ExpiresIn != "" {
+		claims["expires_in"] = googleResp.ExpiresIn
+	}
+
+	return claims, nil
+}
+
+func (v *TokenValidator) introspectGoogleToken(ctx context.Context, tokenStr string,
+	introspectionURL string) (jwt.MapClaims, error) {
+	// Parse the introspection URL and add query parameter safely
+	parsedURL, err := url.Parse(introspectionURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse introspection URL: %w", err)
+	}
+
+	// Add access_token query parameter
+	query := parsedURL.Query()
+	query.Set("access_token", tokenStr)
+	parsedURL.RawQuery = query.Encode()
+
+	tokeninfoURL := parsedURL.String()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", tokeninfoURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Google tokeninfo request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", fmt.Sprintf("ToolHive/%s", versions.Version))
+
+	resp, err := v.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("google tokeninfo request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("google tokeninfo failed, status %d", resp.StatusCode)
+	}
+
+	claims, err := parseGoogleTokeninfoClaims(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate required claims (exp, iss, aud if configured)
+	if err := v.validateClaims(claims); err != nil {
+		return nil, err
+	}
+
+	return claims, nil
+}
+
 func (v *TokenValidator) introspectOpaqueToken(ctx context.Context, tokenStr string) (jwt.MapClaims, error) {
 	if v.introspectURL == "" {
 		return nil, fmt.Errorf("no introspection endpoint available")
+	}
+
+	// Special case for Google tokeninfo endpoint
+	if v.introspectURL == googleTokeninfoURL {
+		return v.introspectGoogleToken(ctx, tokenStr, v.introspectURL)
 	}
 	form := url.Values{"token": {tokenStr}}
 	form.Set("token_type_hint", "access_token")

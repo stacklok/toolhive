@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-08-29T00:17:30Z",
+  "last_updated": "2025-08-30T00:17:07Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -2370,9 +2370,9 @@
         "list_microsoft_calendars"
       ],
       "metadata": {
-        "stars": 348,
+        "stars": 352,
         "pulls": 109,
-        "last_updated": "2025-08-22T09:41:04Z"
+        "last_updated": "2025-08-29T02:30:29Z"
       },
       "repository_url": "https://github.com/graphlit/graphlit-mcp-server",
       "tags": [
@@ -3135,9 +3135,9 @@
         "run_chdb_select_query"
       ],
       "metadata": {
-        "stars": 503,
+        "stars": 509,
         "pulls": 81,
-        "last_updated": "2025-08-22T09:41:03Z"
+        "last_updated": "2025-08-29T02:30:28Z"
       },
       "repository_url": "https://github.com/ClickHouse/mcp-clickhouse",
       "tags": [
@@ -3354,9 +3354,9 @@
         "write_neo4j_cypher"
       ],
       "metadata": {
-        "stars": 636,
+        "stars": 656,
         "pulls": 91,
-        "last_updated": "2025-08-22T09:41:03Z"
+        "last_updated": "2025-08-29T02:30:28Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3431,9 +3431,9 @@
         "list_memories"
       ],
       "metadata": {
-        "stars": 636,
+        "stars": 656,
         "pulls": 105,
-        "last_updated": "2025-08-22T09:41:03Z"
+        "last_updated": "2025-08-29T02:30:28Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3683,9 +3683,9 @@
         "provision_neon_auth"
       ],
       "metadata": {
-        "stars": 424,
+        "stars": 440,
         "pulls": 55,
-        "last_updated": "2025-08-22T09:41:04Z"
+        "last_updated": "2025-08-29T02:30:29Z"
       },
       "repository_url": "https://github.com/neondatabase-labs/mcp-server-neon",
       "tags": [
@@ -4314,7 +4314,7 @@
       "description": "Provides browser automation capabilities using Playwright",
       "tier": "Official",
       "status": "Active",
-      "transport": "sse",
+      "transport": "streamable-http",
       "tools": [
         "browser_close",
         "browser_resize",

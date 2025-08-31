@@ -46,7 +46,11 @@ RUN uv pip install --system /build/
 # We set UV_TOOL_DIR to a custom location so we can copy it to the runtime stage
 ENV UV_TOOL_DIR=/opt/uv-tools \
     UV_TOOL_BIN_DIR=/opt/uv-tools/bin
-RUN uv tool install {{.MCPPackage}} && \
+# Convert @ version separator to == for Python package specification
+RUN package="{{.MCPPackage}}"; \
+    # Replace @ with == for uv tool install (Python uses == for version pinning)
+    package_spec=$(echo "$package" | sed 's/@/==/'); \
+    uv tool install "$package_spec" && \
     # List installed executables for debugging
     ls -la /opt/uv-tools/bin/
 {{end}}
@@ -112,4 +116,6 @@ USER appuser
 # Run the pre-installed MCP package
 # uv tool install puts the correct executable in the bin directory
 # We use sh -c to allow the package name to be resolved from PATH
-ENTRYPOINT ["sh", "-c", "exec {{.MCPPackage}} {{range .MCPArgs}}\"{{.}}\" {{end}}\"$@\"", "--"]
+# Strip version specifier (if present) from package name for execution
+# Handles format like package@version
+ENTRYPOINT ["sh", "-c", "package='{{.MCPPackage}}'; exec \"${package%%@*}\" {{range .MCPArgs}}\"{{.}}\" {{end}}\"$@\"", "--"]

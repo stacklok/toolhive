@@ -14,13 +14,70 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-func TestGetClientStatus(t *testing.T) { //nolint:paralleltest // Uses global XDG state via MockConfig
+// createTestClientIntegrations creates fake client integrations for testing
+// These match the file structure that the tests create
+func createTestClientIntegrations() []mcpClientConfig {
+	return []mcpClientConfig{
+		{
+			ClientType:   ClaudeCode,
+			Description:  "Claude Code CLI (Test)",
+			SettingsFile: ".claude.json",
+			RelPath:      []string{}, // File is directly in home directory
+			Extension:    JSON,
+		},
+		{
+			ClientType:   Cursor,
+			Description:  "Cursor editor (Test)",
+			SettingsFile: ".cursor",
+			RelPath:      []string{}, // File is directly in home directory
+			Extension:    JSON,
+		},
+		{
+			ClientType:   VSCode,
+			Description:  "VS Code (Test)",
+			SettingsFile: "settings.json",
+			RelPath:      []string{}, // For test simplicity, no nested path
+			Extension:    JSON,
+		},
+	}
+}
+
+// createTestConfigProvider creates a config provider for testing with the provided configuration.
+func createTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider, func()) {
+	t.Helper()
+
+	// Create a temporary directory for the test
+	tempDir := t.TempDir()
+
+	// Create the config directory structure
+	configDir := filepath.Join(tempDir, "toolhive")
+	err := os.MkdirAll(configDir, 0755)
+	require.NoError(t, err)
+
+	// Set up the config file path
+	configPath := filepath.Join(configDir, "config.yaml")
+
+	// Create a path-based config provider
+	provider := config.NewPathProvider(configPath)
+
+	// Write the config file if one is provided
+	if cfg != nil {
+		err = provider.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		require.NoError(t, err)
+	}
+
+	return provider, func() {
+		// Cleanup is handled by t.TempDir()
+	}
+}
+
+func TestGetClientStatus(t *testing.T) {
+	t.Parallel()
+
 	// Setup a temporary home directory for testing
 	tempHome, err := os.MkdirTemp("", "toolhive-test-home")
 	require.NoError(t, err)
 	defer os.RemoveAll(tempHome)
-
-	t.Setenv("HOME", tempHome)
 
 	// Create mock config with registered clients
 	mockConfig := &config.Config{
@@ -28,7 +85,7 @@ func TestGetClientStatus(t *testing.T) { //nolint:paralleltest // Uses global XD
 			RegisteredClients: []string{string(ClaudeCode)},
 		},
 	}
-	cleanup := MockConfig(t, mockConfig)
+	configProvider, cleanup := createTestConfigProvider(t, mockConfig)
 	defer cleanup()
 
 	// Create a mock Cursor config file
@@ -39,7 +96,34 @@ func TestGetClientStatus(t *testing.T) { //nolint:paralleltest // Uses global XD
 	_, err = os.Create(filepath.Join(tempHome, ".claude.json"))
 	require.NoError(t, err)
 
-	statuses, err := GetClientStatus(context.Background())
+	// Create explicit client integrations for this test to avoid race conditions with global variable
+	clientIntegrations := []mcpClientConfig{
+		{
+			ClientType:   ClaudeCode,
+			Description:  "Claude Code CLI (Test)",
+			SettingsFile: ".claude.json",
+			RelPath:      []string{}, // Empty RelPath means check just the settings file
+			Extension:    JSON,
+		},
+		{
+			ClientType:   Cursor,
+			Description:  "Cursor editor (Test)",
+			SettingsFile: "mcp.json",
+			RelPath:      []string{".cursor"}, // Check .cursor directory
+			Extension:    JSON,
+		},
+		{
+			ClientType:   VSCode,
+			Description:  "Visual Studio Code (Test)",
+			SettingsFile: "mcp.json",
+			RelPath:      []string{".config", "Code", "User"}, // This path won't exist in test
+			Extension:    JSON,
+		},
+	}
+
+	// Use ClientManager with test dependencies - no groups manager to avoid system dependencies
+	manager := NewTestClientManager(tempHome, nil, clientIntegrations, configProvider)
+	statuses, err := manager.GetClientStatus(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, statuses)
 
@@ -65,15 +149,13 @@ func TestGetClientStatus(t *testing.T) { //nolint:paralleltest // Uses global XD
 	assert.False(t, vscodeStatus.Registered)
 }
 
-func TestGetClientStatus_Sorting(t *testing.T) { //nolint:paralleltest // Uses global XDG state via MockConfig
+func TestGetClientStatus_Sorting(t *testing.T) {
+	t.Parallel()
+
 	// Setup a temporary home directory for testing
-	origHome := os.Getenv("HOME")
 	tempHome, err := os.MkdirTemp("", "toolhive-test-home")
 	require.NoError(t, err)
 	defer os.RemoveAll(tempHome)
-
-	t.Setenv("HOME", tempHome)
-	defer t.Setenv("HOME", origHome)
 
 	// Create mock config with no registered clients
 	mockConfig := &config.Config{
@@ -81,10 +163,15 @@ func TestGetClientStatus_Sorting(t *testing.T) { //nolint:paralleltest // Uses g
 			RegisteredClients: []string{},
 		},
 	}
-	cleanup := MockConfig(t, mockConfig)
+	configProvider, cleanup := createTestConfigProvider(t, mockConfig)
 	defer cleanup()
 
-	statuses, err := GetClientStatus(context.Background())
+	// Use fake test data instead of real client integrations to avoid race conditions
+	testClientIntegrations := createTestClientIntegrations()
+
+	// Use ClientManager with test dependencies - no groups manager to avoid system dependencies
+	manager := NewTestClientManager(tempHome, nil, testClientIntegrations, configProvider)
+	statuses, err := manager.GetClientStatus(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, statuses)
 	require.Greater(t, len(statuses), 1, "Need at least 2 clients to test sorting")
@@ -100,18 +187,15 @@ func TestGetClientStatus_Sorting(t *testing.T) { //nolint:paralleltest // Uses g
 }
 
 func TestGetClientStatus_WithGroups(t *testing.T) {
+	t.Parallel()
 	// Initialize logger to prevent panic
 	logger.Initialize()
 
-	// Set up a temporary home directory for testing
-	tempHome, err := os.MkdirTemp("", "toolhive-test-home")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempHome)
-
-	t.Setenv("HOME", tempHome)
+	// Set up a temporary home directory for testing (for dependency injection only)
+	tempHome := t.TempDir()
 
 	// Create mock client config files
-	_, err = os.Create(filepath.Join(tempHome, ".cursor"))
+	_, err := os.Create(filepath.Join(tempHome, ".cursor"))
 	require.NoError(t, err)
 
 	_, err = os.Create(filepath.Join(tempHome, ".claude.json"))
@@ -139,8 +223,27 @@ func TestGetClientStatus_WithGroups(t *testing.T) {
 	err = groupManager.RegisterClients(ctx, []string{"test-dev-group"}, []string{string(ClaudeCode), string(Cursor)})
 	require.NoError(t, err)
 
-	// Now test GetClientStatus
-	statuses, err := GetClientStatus(ctx)
+	// Now test GetClientStatus using ClientManager with dependency injection
+	// Use explicit client integrations for this test to avoid race conditions with global variable
+	clientIntegrations := []mcpClientConfig{
+		{
+			ClientType:   ClaudeCode,
+			Description:  "Claude Code CLI (Test)",
+			SettingsFile: ".claude.json",
+			RelPath:      []string{}, // Empty RelPath means check just the settings file
+			Extension:    JSON,
+		},
+		{
+			ClientType:   Cursor,
+			Description:  "Cursor editor (Test)",
+			SettingsFile: "mcp.json",
+			RelPath:      []string{".cursor"}, // Check .cursor directory
+			Extension:    JSON,
+		},
+	}
+
+	manager := NewTestClientManager(tempHome, groupManager, clientIntegrations, config.NewDefaultProvider())
+	statuses, err := manager.GetClientStatus(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, statuses)
 

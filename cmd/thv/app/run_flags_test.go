@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/adrg/xdg"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,28 +13,37 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-// mockConfig creates a temporary config file with the provided configuration.
-func mockConfig(t *testing.T, cfg *config.Config) func() {
+// createTestConfigProvider creates a config provider for testing with the provided configuration.
+func createTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider, func()) {
 	t.Helper()
+
+	// Create a temporary directory for the test
 	tempDir := t.TempDir()
-	originalXDGConfigHome := os.Getenv("XDG_CONFIG_HOME")
-	t.Setenv("XDG_CONFIG_HOME", tempDir)
-	xdg.Reload()
+
+	// Create the config directory structure
 	configDir := filepath.Join(tempDir, "toolhive")
 	err := os.MkdirAll(configDir, 0755)
 	require.NoError(t, err)
+
+	// Set up the config file path
+	configPath := filepath.Join(configDir, "config.yaml")
+
+	// Create a path-based config provider
+	provider := config.NewPathProvider(configPath)
+
+	// Write the config file if one is provided
 	if cfg != nil {
-		err = config.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		err = provider.UpdateConfig(func(c *config.Config) { *c = *cfg })
 		require.NoError(t, err)
 	}
-	return func() {
-		t.Setenv("XDG_CONFIG_HOME", originalXDGConfigHome)
-		xdg.Reload()
+
+	return provider, func() {
+		// Cleanup is handled by t.TempDir()
 	}
 }
 
-//nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
 func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
+	t.Parallel()
 	// Initialize logger to prevent nil pointer dereference
 	logger.Initialize()
 
@@ -152,14 +160,15 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			cmd := &cobra.Command{}
 			AddRunFlags(cmd, &RunFlags{})
 			tt.setupFlags(cmd)
-			cleanup := mockConfig(t, &config.Config{
+			configProvider, cleanup := createTestConfigProvider(t, &config.Config{
 				OTEL: tt.configOTEL,
 			})
 			defer cleanup()
-			configInstance := config.GetConfig()
+			configInstance := configProvider.GetConfig()
 			finalEndpoint, finalSamplingRate, finalEnvVars := getTelemetryFromFlags(
 				cmd,
 				configInstance,
@@ -176,8 +185,8 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
 func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
+	t.Parallel()
 	// This is a more complete integration test that tests telemetry processing
 	// within the full BuildRunnerConfig function context
 	logger.Initialize()
@@ -195,7 +204,7 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	require.NoError(t, err)
 	err = cmd.Flags().Set("otel-sampling-rate", "0.7")
 	require.NoError(t, err)
-	cleanup := mockConfig(t, &config.Config{
+	configProvider, cleanup := createTestConfigProvider(t, &config.Config{
 		OTEL: config.OpenTelemetryConfig{
 			Endpoint:     "https://config-fallback.example.com",
 			SamplingRate: 0.2,
@@ -204,7 +213,7 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	})
 	defer cleanup()
 
-	configInstance := config.GetConfig()
+	configInstance := configProvider.GetConfig()
 	finalEndpoint, finalSamplingRate, finalEnvVars := getTelemetryFromFlags(
 		cmd,
 		configInstance,

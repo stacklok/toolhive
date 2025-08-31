@@ -28,9 +28,10 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM python:3.13-slim AS builder",
 				"apt-get install -y --no-install-recommends",
 				"pip install --no-cache-dir uv",
-				"uv tool install example-package",
+				"package_spec=$(echo \"$package\" | sed 's/@/==/')",
+				"uv tool install \"$package_spec\"",
 				"COPY --from=builder --chown=appuser:appgroup /opt/uv-tools /opt/uv-tools",
-				"ENTRYPOINT [\"sh\", \"-c\", \"exec example-package \\\"--arg1\\\" \\\"--arg2\\\" \\\"value\\\" \\\"$@\\\"\", \"--\"]",
+				"ENTRYPOINT [\"sh\", \"-c\", \"package='example-package'; exec \\\"${package%%@*}\\\" \\\"--arg1\\\" \\\"--arg2\\\" \\\"value\\\" \\\"$@\\\"\", \"--\"]",
 			},
 			wantMatches: []string{
 				`FROM python:\d+\.\d+-slim AS builder`, // Match builder stage
@@ -54,9 +55,10 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM python:3.13-slim AS builder",
 				"apt-get install -y --no-install-recommends",
 				"pip install --no-cache-dir uv",
-				"uv tool install example-package",
+				"package_spec=$(echo \"$package\" | sed 's/@/==/')",
+				"uv tool install \"$package_spec\"",
 				"COPY --from=builder --chown=appuser:appgroup /opt/uv-tools /opt/uv-tools",
-				"ENTRYPOINT [\"sh\", \"-c\", \"exec example-package \\\"--arg1\\\" \\\"--arg2\\\" \\\"value\\\" \\\"$@\\\"\", \"--\"]",
+				"ENTRYPOINT [\"sh\", \"-c\", \"package='example-package'; exec \\\"${package%%@*}\\\" \\\"--arg1\\\" \\\"--arg2\\\" \\\"value\\\" \\\"$@\\\"\", \"--\"]",
 				"Add custom CA certificate BEFORE any network operations",
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
 				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",
@@ -125,6 +127,8 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			},
 			wantContains: []string{
 				"FROM golang:1.25-alpine AS builder",
+				"if ! echo \"$package\" | grep -q '@'; then",
+				"package=\"${package}@latest\"",
 				"go install \"$package\"",
 				"FROM alpine:3.20",
 				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
@@ -150,6 +154,8 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			},
 			wantContains: []string{
 				"FROM golang:1.25-alpine AS builder",
+				"if ! echo \"$package\" | grep -q '@'; then",
+				"package=\"${package}@latest\"",
 				"go install \"$package\"",
 				"FROM alpine:3.20",
 				"ENTRYPOINT [\"/app/mcp-server\", \"--arg1\", \"--arg2\", \"value\"]",

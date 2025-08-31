@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-08-30T00:17:07Z",
+  "last_updated": "2025-08-31T00:19:10Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -664,7 +664,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.9",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.10",
       "permissions": {
         "network": {
           "outbound": {
@@ -877,9 +877,9 @@
         "getUrl"
       ],
       "metadata": {
-        "stars": 2476,
+        "stars": 2514,
         "pulls": 133,
-        "last_updated": "2025-08-22T09:41:05Z"
+        "last_updated": "2025-08-30T02:27:20Z"
       },
       "repository_url": "https://github.com/browserbase/mcp-server-browserbase",
       "tags": [
@@ -1798,9 +1798,9 @@
         "set_during_runtime"
       ],
       "metadata": {
-        "stars": 9486,
+        "stars": 10099,
         "pulls": 2408,
-        "last_updated": "2025-08-22T09:41:06Z"
+        "last_updated": "2025-08-30T02:27:20Z"
       },
       "repository_url": "https://github.com/googleapis/genai-toolbox",
       "tags": [
@@ -3532,9 +3532,9 @@
         "box_metadata_template_create_tool"
       ],
       "metadata": {
-        "stars": 46,
+        "stars": 47,
         "pulls": 52,
-        "last_updated": "2025-08-22T09:41:05Z"
+        "last_updated": "2025-08-30T02:27:20Z"
       },
       "repository_url": "https://github.com/box-community/mcp-server-box",
       "tags": [
@@ -3784,38 +3784,27 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "atlas-list-orgs",
-        "atlas-list-projects",
-        "atlas-create-project",
-        "atlas-list-clusters",
-        "atlas-inspect-cluster",
-        "atlas-create-free-cluster",
-        "atlas-connect-cluster",
-        "atlas-inspect-access-list",
-        "atlas-create-access-list",
-        "atlas-list-db-users",
-        "atlas-create-db-user",
-        "atlas-list-alerts",
-        "connect",
-        "find",
         "aggregate",
-        "count",
-        "insert-one",
-        "insert-many",
-        "create-index",
-        "update-one",
-        "update-many",
-        "rename-collection",
-        "delete-one",
-        "delete-many",
-        "drop-collection",
-        "drop-database",
-        "list-databases",
-        "list-collections",
         "collection-indexes",
         "collection-schema",
         "collection-storage-size",
-        "db-stats"
+        "connect",
+        "count",
+        "create-collection",
+        "create-index",
+        "db-stats",
+        "delete-many",
+        "drop-collection",
+        "drop-database",
+        "explain",
+        "export",
+        "find",
+        "insert-many",
+        "list-collections",
+        "list-databases",
+        "mongodb-logs",
+        "rename-collection",
+        "update-many"
       ],
       "metadata": {
         "stars": 581,
@@ -3831,7 +3820,7 @@
         "data",
         "query"
       ],
-      "image": "docker.io/mongodb/mongodb-mcp-server:0.2.0",
+      "image": "docker.io/mongodb/mongodb-mcp-server:0.3.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -4704,9 +4693,9 @@
         "search_issues"
       ],
       "metadata": {
-        "stars": 314,
+        "stars": 327,
         "pulls": 127,
-        "last_updated": "2025-08-22T09:41:05Z"
+        "last_updated": "2025-08-30T02:27:20Z"
       },
       "repository_url": "https://github.com/getsentry/sentry-mcp",
       "tags": [
@@ -4979,9 +4968,9 @@
         "tavily-map"
       ],
       "metadata": {
-        "stars": 693,
+        "stars": 718,
         "pulls": 80,
-        "last_updated": "2025-08-22T09:41:04Z"
+        "last_updated": "2025-08-30T02:27:19Z"
       },
       "repository_url": "https://github.com/tavily-ai/tavily-mcp",
       "tags": [

@@ -163,45 +163,109 @@ func validatePath(path string) error {
 	return nil
 }
 
+// isWindowsPath checks if a path appears to be a Windows path
+func isWindowsPath(path string) bool {
+	// Match full Windows paths with drive letters (C:\path or C:/path)
+	if windowsPathRegex.MatchString(path) {
+		return true
+	}
+	// Also match paths that start with backslashes (could be Windows UNC or fragment)
+	if strings.HasPrefix(path, "\\") {
+		return true
+	}
+	return false
+}
+
 // cleanPath cleans a path using filepath.Clean
 func cleanPath(path string) string {
 	return filepath.Clean(path)
 }
 
-// parseResourceURI parses a resource URI format (scheme://resource:container-path)
-func parseResourceURI(declaration string) (source, target string, err error) {
+// validateResourceScheme checks if a resource URI scheme is valid
+func validateResourceScheme(scheme string) bool {
+	return regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`).MatchString(scheme)
+}
+
+// isValidContainerPath checks if a path looks like a valid container path
+func isValidContainerPath(path string) bool {
+	// Container paths can be:
+	// 1. Unix-style paths starting with /
+	// 2. Windows paths (which we'll reject later, but they're valid format)
+	// 3. Relative paths (no colons)
+	return strings.HasPrefix(path, "/") ||
+		isWindowsPath(path) ||
+		(path != "" && !strings.Contains(path, ":"))
+}
+
+// findResourceURISeparator finds the colon separator between resource name and container path
+func findResourceURISeparator(remainder string) int {
+	colonPositions := findColonPositions(remainder)
+
+	if len(colonPositions) == 0 {
+		return -1 // No separator colon found
+	}
+
+	// Try each colon position from right to left to find the separator
+	for i := len(colonPositions) - 1; i >= 0; i-- {
+		colonIdx := colonPositions[i]
+		if colonIdx+1 < len(remainder) {
+			possibleContainerPath := remainder[colonIdx+1:]
+			if isValidContainerPath(possibleContainerPath) {
+				return colonIdx
+			}
+		}
+	}
+
+	return -1 // No valid separator found
+}
+
+// splitResourceURI splits a resource URI declaration into scheme and remainder
+func splitResourceURI(declaration string) (scheme, remainder string, valid bool) {
 	// Check if it starts like a resource URI (scheme://)
 	if !strings.Contains(declaration, "://") {
-		return "", "", nil // Not a resource URI
+		return "", "", false // Not a resource URI
 	}
 
 	// Split on :// to get scheme and remainder
 	schemeParts := strings.SplitN(declaration, "://", 2)
 	if len(schemeParts) != 2 {
-		return "", "", nil // Not a valid resource URI format
+		return "", "", false // Not a valid resource URI format
 	}
 
-	scheme := schemeParts[0]
-	remainder := schemeParts[1]
+	scheme = schemeParts[0]
+	remainder = schemeParts[1]
 
 	// Validate scheme format
-	if !regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`).MatchString(scheme) {
-		return "", "", nil // Invalid scheme
+	if !validateResourceScheme(scheme) {
+		return "", "", false // Invalid scheme
 	}
 
-	// Find the last colon in the remainder - this should be the separator
-	// between resource name and container path
-	lastColonIdx := strings.LastIndex(remainder, ":")
-	if lastColonIdx == -1 {
-		return "", "", nil // No separator colon found
+	return scheme, remainder, true
+}
+
+// parseResourceURI parses a resource URI format (scheme://resource:container-path)
+func parseResourceURI(declaration string) (source, target string, err error) {
+	scheme, remainder, valid := splitResourceURI(declaration)
+	if !valid {
+		return "", "", nil // Not a valid resource URI
 	}
 
-	resourceName := remainder[:lastColonIdx]
-	containerPath := remainder[lastColonIdx+1:]
+	separatorIdx := findResourceURISeparator(remainder)
+	if separatorIdx == -1 {
+		return "", "", nil // No valid separator found
+	}
+
+	resourceName := remainder[:separatorIdx]
+	containerPath := remainder[separatorIdx+1:]
 
 	// Both parts should be non-empty
 	if resourceName == "" || containerPath == "" {
 		return "", "", nil // Invalid format
+	}
+
+	// Reject Windows paths in container/target path
+	if isWindowsPath(containerPath) {
+		return "", "", fmt.Errorf("windows paths are not allowed as container paths: %s", containerPath)
 	}
 
 	// Validate paths
@@ -248,6 +312,11 @@ func parseWindowsPath(declaration string, colonPositions []int) (source, target 
 		hostPath := declaration[:colonPositions[1]]
 		containerPath := declaration[colonPositions[1]+1:]
 
+		// Reject Windows paths in container/target path
+		if isWindowsPath(containerPath) {
+			return "", "", fmt.Errorf("windows paths are not allowed as container paths: %s", containerPath)
+		}
+
 		if err := validatePath(hostPath); err != nil {
 			return "", "", err
 		}
@@ -277,6 +346,11 @@ func parseHostContainerPath(declaration string, colonPositions []int) (source, t
 		colonIdx := colonPositions[0]
 		hostPath := declaration[:colonIdx]
 		containerPath := declaration[colonIdx+1:]
+
+		// Reject Windows paths in container/target path
+		if isWindowsPath(containerPath) {
+			return "", "", fmt.Errorf("windows paths are not allowed as container paths: %s", containerPath)
+		}
 
 		if err := validatePath(hostPath); err != nil {
 			return "", "", err

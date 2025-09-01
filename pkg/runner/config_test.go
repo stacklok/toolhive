@@ -418,7 +418,7 @@ func TestRunConfig_WithContainerName(t *testing.T) {
 			t.Parallel()
 			originalContainerName := tc.config.ContainerName
 
-			result := tc.config.WithContainerName()
+			result, _ := tc.config.WithContainerName()
 
 			assert.Equal(t, tc.config, result, "WithContainerName should return the same config instance")
 

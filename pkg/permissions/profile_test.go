@@ -91,6 +91,13 @@ func TestMountDeclaration_Parse(t *testing.T) {
 			expectedTarget: "",
 			expectError:    true,
 		},
+		{
+			name:           "Reject Resource URI with backslashes in target",
+			declaration:    "volume://C:\\Foo\\Bar:\\container\\path",
+			expectedSource: "",
+			expectedTarget: "",
+			expectError:    true,
+		},
 		// Security-focused tests
 		{
 			name:           "Path with spaces",
@@ -137,6 +144,13 @@ func TestMountDeclaration_Parse(t *testing.T) {
 		{
 			name:           "Reject Windows style path for target",
 			declaration:    "/foo/bar:C:\\container\\path",
+			expectedSource: "",
+			expectedTarget: "",
+			expectError:    true,
+		},
+		{
+			name:           "Reject backslashes in target",
+			declaration:    "/foo/bar:\\container\\path",
 			expectedSource: "",
 			expectedTarget: "",
 			expectError:    true,

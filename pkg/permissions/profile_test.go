@@ -25,6 +25,17 @@ func TestMountDeclaration_Parse(t *testing.T) {
 			expectError:    false,
 		},
 		{
+			// In Docker, a single Windows path gets mapped to a subdirectory
+			// of root with the name of the Windows path.
+			// e.g. C:\foo -> /C:\\foo
+			// While this behaviour is unusual, it's valid, and we should support it.
+			name:           "Single path (Windows)",
+			declaration:    "C:\\foo\\bar",
+			expectedSource: "C:\\foo\\bar",
+			expectedTarget: "C:\\foo\\bar",
+			expectError:    false,
+		},
+		{
 			name:           "Host path to container path",
 			declaration:    "/host/path:/container/path",
 			expectedSource: "/host/path",
@@ -39,11 +50,53 @@ func TestMountDeclaration_Parse(t *testing.T) {
 			expectError:    false,
 		},
 		{
+			name:           "Resource URI (Windows)",
+			declaration:    "volume://C:\\Foo\\Bar:/container/path",
+			expectedSource: "volume://C:\\Foo\\Bar",
+			expectedTarget: "/container/path",
+			expectError:    false,
+		},
+		{
+			name:           "Resource URI (Windows forward slashes)",
+			declaration:    "volume://C:/Foo/Bar:/container/path",
+			expectedSource: "volume://C:/Foo/Bar",
+			expectedTarget: "/container/path",
+			expectError:    false,
+		},
+		{
+			name:           "Resource URI (Windows mixed slashes)",
+			declaration:    "volume://C:\\Foo/Bar:/container/path",
+			expectedSource: "volume://C:\\Foo/Bar",
+			expectedTarget: "/container/path",
+			expectError:    false,
+		},
+		{
 			name:           "Different resource URI",
 			declaration:    "secret://mysecret:/container/path",
 			expectedSource: "secret://mysecret",
 			expectedTarget: "/container/path",
 			expectError:    false,
+		},
+		{
+			name:           "Reject Resource URI with Windows target",
+			declaration:    "volume://C:\\Foo\\Bar:C:\\container\\path",
+			expectedSource: "",
+			expectedTarget: "",
+			expectError:    true,
+		},
+		{
+			name:           "Reject Resource URI with Windows source and target",
+			declaration:    "volume://foo/bar:C:\\container\\path",
+			expectedSource: "",
+			expectedTarget: "",
+			expectError:    true,
+		},
+		{
+			name:           "Reject Resource URI with backslashes in target",
+			declaration:    "volume://C:\\Foo\\Bar:\\container\\path",
+			expectedSource: "",
+			expectedTarget: "",
+			expectError:    true,
 		},
 		// Security-focused tests
 		{
@@ -57,6 +110,69 @@ func TestMountDeclaration_Parse(t *testing.T) {
 			name:           "Path with special characters",
 			declaration:    "/path/with/special/chars!@#:/container/path",
 			expectedSource: "/path/with/special/chars!@#",
+			expectedTarget: "/container/path",
+			expectError:    false,
+		},
+		{
+			name:           "Path with Unicode characters",
+			declaration:    "/path/with/unicode/😀:/container/path",
+			expectedSource: "/path/with/unicode/😀",
+			expectedTarget: "/container/path",
+			expectError:    false,
+		},
+		{
+			name:           "Windows style path",
+			declaration:    "C:\\path\\to\\dir:/container/path",
+			expectedSource: "C:\\path\\to\\dir",
+			expectedTarget: "/container/path",
+			expectError:    false,
+		},
+		{
+			name:           "Windows style path (forward slashes)",
+			declaration:    "C:/path/to/dir:/container/path",
+			expectedSource: "C:/path/to/dir",
+			expectedTarget: "/container/path",
+			expectError:    false,
+		},
+		{
+			name:           "Windows style path (mixed slashes)",
+			declaration:    "C:\\path/to\\dir:/container/path", // Yes, this is allowed on Windows...
+			expectedSource: "C:\\path/to\\dir",
+			expectedTarget: "/container/path",
+			expectError:    false,
+		},
+		{
+			name:           "Reject Windows style path for target",
+			declaration:    "/foo/bar:C:\\container\\path",
+			expectedSource: "",
+			expectedTarget: "",
+			expectError:    true,
+		},
+		{
+			name:           "Reject backslashes in target",
+			declaration:    "/foo/bar:\\container\\path",
+			expectedSource: "",
+			expectedTarget: "",
+			expectError:    true,
+		},
+		{
+			name:           "Reject Windows style path for source and target",
+			declaration:    "C:\\path/to\\dir:C:\\container\\path",
+			expectedSource: "",
+			expectedTarget: "",
+			expectError:    true,
+		},
+		{
+			name:           "Path with trailing slash",
+			declaration:    "/path/to/dir/:/container/path/",
+			expectedSource: "/path/to/dir",
+			expectedTarget: "/container/path",
+			expectError:    false,
+		},
+		{
+			name:           "Path with multiple slashes",
+			declaration:    "/path//to///dir:/container//path",
+			expectedSource: "/path/to/dir",
 			expectedTarget: "/container/path",
 			expectError:    false,
 		},

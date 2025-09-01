@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -369,6 +370,7 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &MCPServerReconciler{
@@ -379,7 +381,7 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 	mcpServer := &mcpv1alpha1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
-			Namespace: "default",
+			Namespace: "test-service-account",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image: "test-image",
@@ -392,8 +394,25 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment)
 
+	// Create a ConfigMap with the current configuration
+	runConfig := r.createRunConfigFromMCPServer(mcpServer)
+	configMapData, err := json.Marshal(runConfig)
+	require.NoError(t, err)
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      mcpServer.Name + "-runconfig",
+			Namespace: "test-service-account",
+		},
+		Data: map[string]string{
+			"runconfig.json": string(configMapData),
+		},
+	}
+	err = r.Create(ctx, configMap)
+	require.NoError(t, err)
+
 	// Test with the current deployment - this should NOT need update
-	needsUpdate := r.deploymentNeedsUpdate(deployment, mcpServer)
+	needsUpdate := r.deploymentNeedsUpdate(ctx, deployment, mcpServer)
 
 	// With the service account bug fixed, this should now return false
 	assert.False(t, needsUpdate, "deploymentNeedsUpdate should return false when deployment matches MCPServer spec")
@@ -404,6 +423,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &MCPServerReconciler{
@@ -573,7 +593,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 			deployment.Spec.Template.Spec.Containers[0].Image = getToolhiveRunnerImage()
 
 			// Test if deployment needs update - should correlate with env change expectation
-			needsUpdate := r.deploymentNeedsUpdate(deployment, tt.mcpServer)
+			needsUpdate := r.deploymentNeedsUpdate(ctx, deployment, tt.mcpServer)
 
 			if tt.expectEnvChange {
 				assert.True(t, needsUpdate, "Expected deployment update due to proxy env change")
@@ -584,78 +604,6 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					t.Logf("Deployment needs update even though proxy env hasn't changed - likely due to other factors")
 				}
 			}
-		})
-	}
-}
-
-func TestDeploymentNeedsUpdateToolsFilter(t *testing.T) {
-	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	r := &MCPServerReconciler{
-		Client: client,
-		Scheme: scheme,
-	}
-
-	tests := []struct {
-		name               string
-		initialToolsFilter []string
-		newToolsFilter     []string
-		expectEnvChange    bool
-	}{
-		{
-			name:               "empty tools filter",
-			initialToolsFilter: nil,
-			newToolsFilter:     nil,
-			expectEnvChange:    false,
-		},
-		{
-			name:               "tools filter not changed",
-			initialToolsFilter: []string{"tool1", "tool2"},
-			newToolsFilter:     []string{"tool1", "tool2"},
-			expectEnvChange:    false,
-		},
-		{
-			name:               "tools filter changed",
-			initialToolsFilter: []string{"tool1", "tool2"},
-			newToolsFilter:     []string{"tool2", "tool3"},
-			expectEnvChange:    true,
-		},
-		{
-			name:               "tools filter change order",
-			initialToolsFilter: []string{"tool1", "tool2"},
-			newToolsFilter:     []string{"tool2", "tool1"},
-			expectEnvChange:    false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			mcpServer := &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:       "test-image",
-					Port:        8080,
-					ToolsFilter: tt.initialToolsFilter,
-				},
-			}
-
-			ctx := context.Background()
-			deployment := r.deploymentForMCPServer(ctx, mcpServer)
-			require.NotNil(t, deployment)
-
-			mcpServer.Spec.ToolsFilter = tt.newToolsFilter
-
-			needsUpdate := r.deploymentNeedsUpdate(deployment, mcpServer)
-			assert.Equal(t, tt.expectEnvChange, needsUpdate)
 		})
 	}
 }

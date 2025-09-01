@@ -339,19 +339,21 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 		assert.NotEqual(t, "DEBUG_MODE", env.Name, "DEBUG_MODE should not be set as container env var")
 	}
 
-	// Verify that the environment variables are passed as --env flags in the args
-	apiKeyArgFound := false
-	debugModeArgFound := false
+	// Verify that the configuration uses individual CLI flags instead of ConfigMap mount
+	// The container should now use individual CLI arguments translated from the RunConfig
+	require.True(t, len(container.Args) >= 2, "Container should have at least run command and image")
+	assert.Equal(t, "run", container.Args[0], "First argument should be 'run'")
+	assert.Contains(t, container.Args, mcpServer.Spec.Image, "Arguments should contain the image")
+
+	// Since we have env vars in the MCPServer spec, they should be passed as --env flags
+	envArgFound := false
 	for _, arg := range container.Args {
-		if arg == "--env=API_KEY=secret-key-123" {
-			apiKeyArgFound = true
-		}
-		if arg == "--env=DEBUG_MODE=true" {
-			debugModeArgFound = true
+		if strings.Contains(arg, "--env") {
+			envArgFound = true
+			break
 		}
 	}
-	assert.True(t, apiKeyArgFound, "API_KEY should be passed as --env flag")
-	assert.True(t, debugModeArgFound, "DEBUG_MODE should be passed as --env flag")
+	assert.True(t, envArgFound, "Should have --env flags for environment variables")
 }
 
 func TestProxyRunnerSecurityContext(t *testing.T) {

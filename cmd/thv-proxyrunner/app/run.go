@@ -1,11 +1,17 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/environment"
@@ -14,7 +20,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
-	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var runCmd = &cobra.Command{
@@ -87,10 +92,17 @@ var (
 
 	// Environment file processing
 	runEnvFileDir string
+
+	// ConfigMap loading
+	runFromConfigMap string
+
+	// Proxy mode for stdio transport
+	runProxyMode string
 )
 
 func init() {
 	runCmd.Flags().StringVar(&runTransport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
+	runCmd.Flags().StringVar(&runProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	runCmd.Flags().IntVar(&runProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
 	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
@@ -211,10 +223,25 @@ func init() {
 		"",
 		"Load environment variables from all files in a directory",
 	)
+	runCmd.Flags().StringVar(
+		&runFromConfigMap,
+		"from-configmap",
+		"",
+		"Load configuration from Kubernetes ConfigMap (format: namespace/name)",
+	)
+	// Hide the flag since it's only used by the operator
+	if err := runCmd.Flags().MarkHidden("from-configmap"); err != nil {
+		logger.Warnf("Error hiding from-configmap flag: %v", err)
+	}
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
+
+	// If --from-configmap is specified, load configuration from ConfigMap
+	if runFromConfigMap != "" {
+		return runFromConfigMapFunc(ctx, runFromConfigMap)
+	}
 
 	// Validate the host flag and default resolving to IP in case hostname is provided
 	validatedHost, err := ValidateAndNormaliseHostFlag(runHost)
@@ -274,7 +301,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		WithPermissionProfileNameOrPath(runPermissionProfile).
 		WithNetworkIsolation(runIsolateNetwork).
 		WithK8sPodPatch(runK8sPodPatch).
-		WithProxyMode(types.ProxyMode("sse")).
+		WithProxyMode(types.ProxyMode(runProxyMode)).
 		WithTransportAndPorts(runTransport, runProxyPort, runTargetPort).
 		WithAuditEnabled(runEnableAudit, runAuditConfig).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
@@ -296,11 +323,12 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}
 
-	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	mcpRunner := runner.NewRunner(runConfig, nil)
+	err = mcpRunner.Run(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("failed to run MCP server: %v", err)
 	}
-	return workloadManager.RunWorkload(ctx, runConfig)
+	return nil
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator
@@ -343,4 +371,72 @@ func ValidateAndNormaliseHostFlag(host string) (string, error) {
 	}
 
 	return "", fmt.Errorf("could not resolve host: %s", host)
+}
+
+// runFromConfigMapFunc loads configuration from a Kubernetes ConfigMap and runs the workload
+func runFromConfigMapFunc(ctx context.Context, configMapSpec string) error {
+	// Parse namespace/name format
+	parts := strings.SplitN(configMapSpec, "/", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid configmap format, expected namespace/name, got: %s", configMapSpec)
+	}
+	namespace, name := parts[0], parts[1]
+
+	// Create Kubernetes client using in-cluster config
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get in-cluster config: %w", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("failed to create Kubernetes client: %w", err)
+	}
+
+	// Get the ConfigMap
+	configMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get ConfigMap %s/%s: %w", namespace, name, err)
+	}
+
+	// Extract the runconfig.json data
+	runConfigJSON, exists := configMap.Data["runconfig.json"]
+	if !exists {
+		return fmt.Errorf("ConfigMap %s/%s does not contain runconfig.json key", namespace, name)
+	}
+
+	// Parse the RunConfig
+	var runConfig runner.RunConfig
+	if err := json.Unmarshal([]byte(runConfigJSON), &runConfig); err != nil {
+		return fmt.Errorf("failed to unmarshal RunConfig from ConfigMap: %w", err)
+	}
+
+	// Ensure ContainerName is set for Kubernetes deployment
+	// Use the simple name for StatefulSet and Pod naming
+	if runConfig.ContainerName == "" && runConfig.Name != "" {
+		runConfig.ContainerName = runConfig.Name
+		runConfig.BaseName = runConfig.Name
+	}
+
+	// Ensure ProxyMode has a default value if empty
+	if runConfig.ProxyMode == "" {
+		runConfig.ProxyMode = "sse"
+	}
+
+	// Create container runtime
+	rt, err := container.NewFactory().Create(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create container runtime: %v", err)
+	}
+
+	// Set the runtime in the config
+	runConfig.Deployer = rt
+
+	logger.Infof("Running workload %s from ConfigMap %s/%s", runConfig.Name, namespace, name)
+	mcpRunner := runner.NewRunner(&runConfig, nil)
+	err = mcpRunner.Run(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to run MCP server: %v", err)
+	}
+	return nil
 }

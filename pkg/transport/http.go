@@ -170,6 +170,11 @@ func (t *HTTPTransport) Setup(
 	t.deployer = runtime
 	t.containerName = containerName
 
+	// Ensure envVars map is initialized
+	if envVars == nil {
+		envVars = make(map[string]string)
+	}
+
 	env, ok := transportEnvMap[t.transportType]
 	if !ok {
 		return fmt.Errorf("unsupported transport type: %s", t.transportType)

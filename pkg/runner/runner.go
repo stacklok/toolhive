@@ -291,9 +291,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	}()
 
 	// At this point, we can consider the workload started successfully.
-	if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.ContainerName, rt.WorkloadStatusRunning, ""); err != nil {
-		// If we can't set the status to `running` - treat it as a fatal error.
-		return fmt.Errorf("failed to set workload status: %v", err)
+	// Only set status if statusManager is provided (not needed in Kubernetes environments)
+	if r.statusManager != nil {
+		if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.ContainerName, rt.WorkloadStatusRunning, ""); err != nil {
+			// If we can't set the status to `running` - treat it as a fatal error.
+			return fmt.Errorf("failed to set workload status: %v", err)
+		}
 	}
 
 	// Wait for either a signal or the done channel to be closed

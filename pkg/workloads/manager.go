@@ -1027,6 +1027,11 @@ func (d *defaultManager) getRemoteWorkloadsFromState(
 		return nil, fmt.Errorf("failed to create state store: %w", err)
 	}
 
+	// In Kubernetes environments (where store is nil), return empty list
+	if store == nil {
+		return []core.Workload{}, nil
+	}
+
 	// List all configurations
 	configNames, err := store.List(ctx)
 	if err != nil {

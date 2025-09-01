@@ -9,10 +9,8 @@ import (
 	"maps"
 	"os"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -70,6 +68,11 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 		APIGroups: []string{""},
 		Resources: []string{"pods/attach"},
 		Verbs:     []string{"create", "get"},
+	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"configmaps"},
+		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 	},
 }
 
@@ -185,6 +188,12 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Ensure run config ConfigMap
+	if err := r.ensureRunConfigConfigMap(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to ensure run config ConfigMap")
+		return ctrl.Result{}, err
+	}
+
 	// Check if the deployment already exists, if not create a new one
 	deployment := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, deployment)
@@ -257,7 +266,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Check if the deployment spec changed
-	if r.deploymentNeedsUpdate(deployment, mcpServer) {
+	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer) {
 		// Update the deployment
 		newDeployment := r.deploymentForMCPServer(ctx, mcpServer)
 		deployment.Spec = newDeployment.Spec
@@ -439,98 +448,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	ls := labelsForMCPServer(m.Name)
 	replicas := int32(1)
 
-	// Prepare container args
-	args := []string{"run", "--foreground=true"}
-	args = append(args, fmt.Sprintf("--proxy-port=%d", m.Spec.Port))
-	args = append(args, fmt.Sprintf("--name=%s", m.Name))
-	args = append(args, fmt.Sprintf("--transport=%s", m.Spec.Transport))
-	args = append(args, fmt.Sprintf("--host=%s", getProxyHost()))
-
-	if m.Spec.TargetPort != 0 {
-		args = append(args, fmt.Sprintf("--target-port=%d", m.Spec.TargetPort))
-	}
-
-	// Generate pod template patch for secrets and merge with user-provided patch
-
-	finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
-		WithServiceAccount(m.Spec.ServiceAccount).
-		WithSecrets(m.Spec.Secrets).
-		Build()
-	// Add pod template patch if we have one
-	if finalPodTemplateSpec != nil {
-		podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
-		if err != nil {
-			logger.Errorf("Failed to marshal pod template spec: %v", err)
-		} else {
-			args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
-		}
-	}
-
-	// Add permission profile args
-	if m.Spec.PermissionProfile != nil {
-		switch m.Spec.PermissionProfile.Type {
-		case mcpv1alpha1.PermissionProfileTypeBuiltin:
-			args = append(args, fmt.Sprintf("--permission-profile=%s", m.Spec.PermissionProfile.Name))
-		case mcpv1alpha1.PermissionProfileTypeConfigMap:
-			args = append(args, fmt.Sprintf("--permission-profile-path=/etc/toolhive/profiles/%s", m.Spec.PermissionProfile.Key))
-		}
-	}
-
-	// Add OIDC configuration args
-	if m.Spec.OIDCConfig != nil {
-		// Create a context with timeout for OIDC configuration operations
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		oidcArgs := r.generateOIDCArgs(ctx, m)
-		args = append(args, oidcArgs...)
-
-		// Add OAuth discovery resource URL for RFC 9728 compliance
-		resourceURL := m.Spec.OIDCConfig.ResourceURL
-		if resourceURL == "" {
-			resourceURL = createServiceURL(m.Name, m.Namespace, m.Spec.Port)
-		}
-		args = append(args, fmt.Sprintf("--resource-url=%s", resourceURL))
-	}
-
-	// Add authorization configuration args
-	if m.Spec.AuthzConfig != nil {
-		authzArgs := r.generateAuthzArgs(m)
-		args = append(args, authzArgs...)
-	}
-
-	// Add environment variables as --env flags for the MCP server
-	for _, e := range m.Spec.Env {
-		args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))
-	}
-
-	// Add tools filter args
-	if len(m.Spec.ToolsFilter) > 0 {
-		slices.Sort(m.Spec.ToolsFilter)
-		args = append(args, fmt.Sprintf("--tools=%s", strings.Join(m.Spec.ToolsFilter, ",")))
-	}
-
-	// Add OpenTelemetry configuration args
-	if m.Spec.Telemetry != nil {
-		if m.Spec.Telemetry.OpenTelemetry != nil {
-			otelArgs := r.generateOpenTelemetryArgs(m)
-			args = append(args, otelArgs...)
-		}
-
-		if m.Spec.Telemetry.Prometheus != nil {
-			prometheusArgs := r.generatePrometheusArgs(m)
-			args = append(args, prometheusArgs...)
-		}
-	}
-
-	// Add the image
-	args = append(args, m.Spec.Image)
-
-	// Add additional args
-	if len(m.Spec.Args) > 0 {
-		args = append(args, "--")
-		args = append(args, m.Spec.Args...)
-	}
+	// Prepare container args - translate RunConfig to individual CLI flags
+	runConfig := r.createRunConfigFromMCPServer(m)
+	args := r.buildArgsFromRunConfig(ctx, m, runConfig)
 
 	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}
@@ -554,6 +474,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	// Prepare container volume mounts
 	volumeMounts := []corev1.VolumeMount{}
 	volumes := []corev1.Volume{}
+
+	// Note: RunConfig ConfigMap is created for change detection but not mounted as volume
+	// since we translate the configuration to individual CLI arguments
 
 	// Add volume mounts for user-defined volumes
 	for _, v := range m.Spec.Volumes {
@@ -869,6 +792,8 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 
 // finalizeMCPServer performs the finalizer logic for the MCPServer
 func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
+
 	// Update the MCPServer status
 	m.Status.Phase = mcpv1alpha1.MCPServerPhaseTerminating
 	m.Status.Message = "MCP server is being terminated"
@@ -900,6 +825,20 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 	} else if !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to check Service %s: %w", serviceName, err)
 	}
+
+	// Step 4: Delete associated ConfigMap
+	configMapName := fmt.Sprintf("toolhive-config-%s", m.Name)
+	configMap := &corev1.ConfigMap{}
+	err = r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: m.Namespace}, configMap)
+	if err == nil {
+		if delErr := r.Delete(ctx, configMap); delErr != nil && !errors.IsNotFound(delErr) {
+			return fmt.Errorf("failed to delete ConfigMap %s: %w", configMapName, delErr)
+		}
+		ctxLogger.Info("Deleted ConfigMap", "name", configMapName, "namespace", m.Namespace)
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to check ConfigMap %s: %w", configMapName, err)
+	}
+
 	// The owner references will automatically delete the deployment and service
 	// when the MCPServer is deleted, so we don't need to do anything here.
 	return nil
@@ -908,193 +847,60 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 // deploymentNeedsUpdate checks if the deployment needs to be updated
 //
 //nolint:gocyclo
-func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1.MCPServer) bool {
-	// Check if the container args have changed
-	if len(deployment.Spec.Template.Spec.Containers) > 0 {
-		container := deployment.Spec.Template.Spec.Containers[0]
+func (r *MCPServerReconciler) deploymentNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	mcpServer *mcpv1alpha1.MCPServer,
+) bool {
+	if len(deployment.Spec.Template.Spec.Containers) == 0 {
+		return true
+	}
 
-		// Check if the toolhive runner image has changed
-		if container.Image != getToolhiveRunnerImage() {
-			return true
-		}
+	container := deployment.Spec.Template.Spec.Containers[0]
 
-		// Check if the args contain the correct image
-		imageArg := mcpServer.Spec.Image
-		found := false
-		for _, arg := range container.Args {
-			if arg == imageArg {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return true
-		}
+	// Check if the toolhive runner image has changed
+	if container.Image != getToolhiveRunnerImage() {
+		return true
+	}
 
-		// Check if the port has changed
-		portArg := fmt.Sprintf("--proxy-port=%d", mcpServer.Spec.Port)
-		found = false
-		for _, arg := range container.Args {
-			if arg == portArg {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return true
-		}
+	// Check if the container port has changed
+	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.Spec.Port {
+		return true
+	}
 
-		// Check if the transport has changed
-		transportArg := fmt.Sprintf("--transport=%s", mcpServer.Spec.Transport)
-		found = false
-		for _, arg := range container.Args {
-			if arg == transportArg {
-				found = true
-				break
-			}
+	// Check if ConfigMap was modified after the deployment was last updated
+	runConfigConfigMapName := fmt.Sprintf("%s-runconfig", mcpServer.Name)
+	if r.configMapNewerThanDeployment(ctx, deployment, mcpServer.Namespace, runConfigConfigMapName) {
+		return true
+	}
+
+	// Check if the proxy environment variables have changed
+	expectedProxyEnv := []corev1.EnvVar{}
+
+	// Add OpenTelemetry environment variables first
+	if mcpServer.Spec.Telemetry != nil && mcpServer.Spec.Telemetry.OpenTelemetry != nil {
+		otelEnvVars := r.generateOpenTelemetryEnvVars(mcpServer)
+		expectedProxyEnv = append(expectedProxyEnv, otelEnvVars...)
+	}
+
+	// Add user-specified environment variables
+	if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
+		for _, envVar := range mcpServer.Spec.ResourceOverrides.ProxyDeployment.Env {
+			expectedProxyEnv = append(expectedProxyEnv, corev1.EnvVar{
+				Name:  envVar.Name,
+				Value: envVar.Value,
+			})
 		}
-		if !found {
-			return true
-		}
+	}
+	// Add default environment variables that are always injected
+	expectedProxyEnv = ensureRequiredEnvVars(expectedProxyEnv)
+	if !reflect.DeepEqual(container.Env, expectedProxyEnv) {
+		return true
+	}
 
-		// Check if the tools filter has changed (order-independent)
-		if !equalToolsFilter(mcpServer.Spec.ToolsFilter, container.Args) {
-			return true
-		}
-
-		// Check if the pod template spec has changed
-
-		// TODO: Add more comprehensive checks for PodTemplateSpec changes beyond just the args
-		// This would involve comparing the actual pod template spec fields with what would be
-		// generated by the operator, rather than just checking the command-line arguments.
-		if mcpServer.Spec.PodTemplateSpec != nil {
-			podTemplatePatch, err := json.Marshal(mcpServer.Spec.PodTemplateSpec)
-			if err == nil {
-				podTemplatePatchArg := fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch))
-				found := false
-				for _, arg := range container.Args {
-					if arg == podTemplatePatchArg {
-						found = true
-						break
-					}
-				}
-				if !found {
-					return true
-				}
-			}
-		}
-
-		// Check if the container port has changed
-		if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.Spec.Port {
-			return true
-		}
-
-		// Check if the environment variables have changed (now passed as --env flags)
-		for _, envVar := range mcpServer.Spec.Env {
-			envArg := fmt.Sprintf("--env=%s=%s", envVar.Name, envVar.Value)
-			found := false
-			for _, arg := range container.Args {
-				if arg == envArg {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return true
-			}
-		}
-
-		// Check if the proxy environment variables have changed
-		expectedProxyEnv := []corev1.EnvVar{}
-
-		// Add OpenTelemetry environment variables first
-		if mcpServer.Spec.Telemetry != nil && mcpServer.Spec.Telemetry.OpenTelemetry != nil {
-			otelEnvVars := r.generateOpenTelemetryEnvVars(mcpServer)
-			expectedProxyEnv = append(expectedProxyEnv, otelEnvVars...)
-		}
-
-		// Add user-specified environment variables
-		if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
-			for _, envVar := range mcpServer.Spec.ResourceOverrides.ProxyDeployment.Env {
-				expectedProxyEnv = append(expectedProxyEnv, corev1.EnvVar{
-					Name:  envVar.Name,
-					Value: envVar.Value,
-				})
-			}
-		}
-		// Add default environment variables that are always injected
-		expectedProxyEnv = ensureRequiredEnvVars(expectedProxyEnv)
-		if !reflect.DeepEqual(container.Env, expectedProxyEnv) {
-			return true
-		}
-
-		// Check if the pod template spec has changed (including secrets)
-		expectedPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec).
-			WithServiceAccount(mcpServer.Spec.ServiceAccount).
-			WithSecrets(mcpServer.Spec.Secrets).
-			Build()
-
-		// Find the current pod template patch in the container args
-		var currentPodTemplatePatch string
-		for _, arg := range container.Args {
-			if strings.HasPrefix(arg, "--k8s-pod-patch=") {
-				currentPodTemplatePatch = arg[16:] // Remove "--k8s-pod-patch=" prefix
-				break
-			}
-		}
-
-		// Compare expected vs current pod template spec
-		if expectedPodTemplateSpec != nil {
-			expectedPatch, err := json.Marshal(expectedPodTemplateSpec)
-			if err != nil {
-				logger.Errorf("Failed to marshal expected pod template spec: %v", err)
-				return true // Assume change if we can't marshal
-			}
-			expectedPatchString := string(expectedPatch)
-
-			if currentPodTemplatePatch != expectedPatchString {
-				return true
-			}
-		} else if currentPodTemplatePatch != "" {
-			// Expected no patch but current has one
-			return true
-		}
-
-		// Check if the resource requirements have changed
-		if !reflect.DeepEqual(container.Resources, resourceRequirementsForMCPServer(mcpServer)) {
-			return true
-		}
-
-		// Check if the targetPort has changed
-		if mcpServer.Spec.TargetPort != 0 {
-			targetPortArg := fmt.Sprintf("--target-port=%d", mcpServer.Spec.TargetPort)
-			found := false
-			for _, arg := range container.Args {
-				if arg == targetPortArg {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return true
-			}
-		} else {
-			for _, arg := range container.Args {
-				if strings.HasPrefix(arg, "--target-port=") {
-					return true
-				}
-			}
-		}
-
-		// Check if OpenTelemetry arguments have changed
-		var otelConfig *mcpv1alpha1.OpenTelemetryConfig
-		if mcpServer.Spec.Telemetry != nil {
-			otelConfig = mcpServer.Spec.Telemetry.OpenTelemetry
-		}
-		if !equalOpenTelemetryArgs(otelConfig, container.Args) {
-			return true
-		}
-
+	// Check if the resource requirements have changed
+	if !reflect.DeepEqual(container.Resources, resourceRequirementsForMCPServer(mcpServer)) {
+		return true
 	}
 
 	// Check if the service account name has changed
@@ -1308,15 +1114,6 @@ func mergeLabels(defaultLabels, overrideLabels map[string]string) map[string]str
 // mergeAnnotations merges override annotations with default annotations, with default annotations taking precedence
 func mergeAnnotations(defaultAnnotations, overrideAnnotations map[string]string) map[string]string {
 	return mergeStringMaps(defaultAnnotations, overrideAnnotations)
-}
-
-// getProxyHost returns the host to bind the proxy to
-func getProxyHost() string {
-	host := os.Getenv("TOOLHIVE_PROXY_HOST")
-	if host == "" {
-		host = "0.0.0.0"
-	}
-	return host
 }
 
 // getToolhiveRunnerImage returns the image to use for the toolhive runner container
@@ -1716,41 +1513,6 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Complete(r)
-}
-
-// equalToolsFilter returns true when the desired toolsFilter slice and the
-// currently-applied `--tools=` argument in the container args represent the
-// same unordered set of tools.
-func equalToolsFilter(spec []string, args []string) bool {
-	// Build canonical form for spec
-	specCanon := canonicalToolsList(spec)
-
-	// Extract current tools argument (if any) from args
-	var currentArg string
-	for _, a := range args {
-		if strings.HasPrefix(a, "--tools=") {
-			currentArg = strings.TrimPrefix(a, "--tools=")
-			break
-		}
-	}
-
-	if specCanon == "" && currentArg == "" {
-		return true // both unset/empty
-	}
-
-	// Canonicalise current list
-	currentCanon := canonicalToolsList(strings.Split(strings.TrimSpace(currentArg), ","))
-	return specCanon == currentCanon
-}
-
-// canonicalToolsList sorts a slice and joins it with commas; empty slice yields "".
-func canonicalToolsList(list []string) string {
-	if len(list) == 0 || (len(list) == 1 && list[0] == "") {
-		return ""
-	}
-	cp := slices.Clone(list)
-	slices.Sort(cp)
-	return strings.Join(cp, ",")
 }
 
 // equalOpenTelemetryArgs checks if OpenTelemetry command-line arguments have changed

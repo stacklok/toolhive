@@ -164,8 +164,6 @@ var _ = Describe("Protocol Builds E2E", Serial, func() {
 			})
 
 			It("should fail gracefully with non-existent uvx package [Serial]", func() {
-				Skip("Skipping uvx error test - uvx builds succeed even with non-existent packages")
-
 				By("Trying to run with non-existent uvx package")
 				_, stderr, err := e2e.NewTHVCommand(config, "run",
 					"--name", serverName,

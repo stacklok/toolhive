@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-08-31T00:19:10Z",
+  "last_updated": "2025-09-01T00:20:36Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -649,9 +649,9 @@
         "workbooks"
       ],
       "metadata": {
-        "stars": 1107,
+        "stars": 1137,
         "pulls": 1809,
-        "last_updated": "2025-08-22T09:41:07Z"
+        "last_updated": "2025-08-31T02:31:31Z"
       },
       "repository_url": "https://github.com/Azure/azure-mcp",
       "tags": [
@@ -2142,7 +2142,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.3",
+      "image": "iwakitakuma/gitlab-mcp:2.0.4",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -2749,9 +2749,9 @@
         "pg_upgrade"
       ],
       "metadata": {
-        "stars": 57,
+        "stars": 62,
         "pulls": 104,
-        "last_updated": "2025-08-22T09:41:06Z"
+        "last_updated": "2025-08-31T02:31:31Z"
       },
       "repository_url": "https://github.com/heroku/heroku-mcp-server",
       "tags": [
@@ -3807,9 +3807,9 @@
         "update-many"
       ],
       "metadata": {
-        "stars": 581,
+        "stars": 592,
         "pulls": 5060,
-        "last_updated": "2025-08-22T09:41:07Z"
+        "last_updated": "2025-08-31T02:31:31Z"
       },
       "repository_url": "https://github.com/mongodb-js/mongodb-mcp-server",
       "tags": [
@@ -4793,9 +4793,9 @@
         "describe_table"
       ],
       "metadata": {
-        "stars": 9,
+        "stars": 10,
         "pulls": 4212,
-        "last_updated": "2025-08-22T09:41:07Z"
+        "last_updated": "2025-08-31T02:31:31Z"
       },
       "repository_url": "https://github.com/StacklokLabs/sqlite-mcp",
       "tags": [
@@ -4914,9 +4914,9 @@
         "update_storage_config"
       ],
       "metadata": {
-        "stars": 1974,
+        "stars": 2019,
         "pulls": 102,
-        "last_updated": "2025-08-22T09:41:06Z"
+        "last_updated": "2025-08-31T02:31:31Z"
       },
       "repository_url": "https://github.com/supabase-community/supabase-mcp",
       "tags": [

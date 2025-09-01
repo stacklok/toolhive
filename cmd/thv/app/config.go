@@ -130,7 +130,8 @@ func setCACertCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 func getCACertCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
 
 	if cfg.CACertificatePath == "" {
 		fmt.Println("No CA certificate is currently configured.")
@@ -148,7 +149,8 @@ func getCACertCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
 
 	if cfg.CACertificatePath == "" {
 		fmt.Println("No CA certificate is currently configured.")
@@ -171,9 +173,11 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 	input := args[0]
 	registryType, cleanPath := config.DetectRegistryType(input)
 
+	provider := config.NewDefaultProvider()
+
 	switch registryType {
 	case config.RegistryTypeURL:
-		err := config.SetRegistryURL(cleanPath, allowPrivateRegistryIp)
+		err := provider.SetRegistryURL(cleanPath, allowPrivateRegistryIp)
 		if err != nil {
 			return err
 		}
@@ -188,14 +192,15 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 		}
 		return nil
 	case config.RegistryTypeFile:
-		return config.SetRegistryFile(cleanPath)
+		return provider.SetRegistryFile(cleanPath)
 	default:
 		return fmt.Errorf("unsupported registry type")
 	}
 }
 
 func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	url, localPath, _, registryType := config.GetRegistryConfig()
+	provider := config.NewDefaultProvider()
+	url, localPath, _, registryType := provider.GetRegistryConfig()
 
 	switch registryType {
 	case config.RegistryTypeURL:
@@ -213,14 +218,15 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
-	url, localPath, _, registryType := config.GetRegistryConfig()
+	provider := config.NewDefaultProvider()
+	url, localPath, _, registryType := provider.GetRegistryConfig()
 
 	if registryType == "default" {
 		fmt.Println("No custom registry is currently configured.")
 		return nil
 	}
 
-	err := config.UnsetRegistry()
+	err := provider.UnsetRegistry()
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}

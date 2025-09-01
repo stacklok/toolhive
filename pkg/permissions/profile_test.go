@@ -25,6 +25,17 @@ func TestMountDeclaration_Parse(t *testing.T) {
 			expectError:    false,
 		},
 		{
+			// In Docker, a single Windows path gets mapped to a subdirectory
+			// of root with the name of the Windows path.
+			// e.g. C:\foo -> /C:\\foo
+			// While this behaviour is unusual, it's valid, and we should support it.
+			name:           "Single path (Windows)",
+			declaration:    "C:\\foo\\bar",
+			expectedSource: "C:\\foo\\bar",
+			expectedTarget: "C:\\foo\\bar",
+			expectError:    false,
+		},
+		{
 			name:           "Host path to container path",
 			declaration:    "/host/path:/container/path",
 			expectedSource: "/host/path",

@@ -27,7 +27,7 @@ require (
 	github.com/prometheus/client_golang v1.23.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/sigstore/protobuf-specs v0.5.0
-	github.com/sigstore/sigstore-go v1.1.2-0.20250811211025-bac873564adb
+	github.com/sigstore/sigstore-go v1.1.2-0.20250828195352-b9e47831ad9f
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/swag/v2 v2.0.0-rc4
@@ -196,8 +196,8 @@ require (
 	github.com/secure-systems-lab/go-securesystemslib v0.9.1 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
 	github.com/sigstore/rekor v1.4.0 // indirect
-	github.com/sigstore/rekor-tiles v0.1.9 // indirect
-	github.com/sigstore/sigstore v1.9.5 // indirect
+	github.com/sigstore/rekor-tiles v0.1.10 // indirect
+	github.com/sigstore/sigstore v1.9.6-0.20250729224751-181c5d3339b3 // indirect
 	github.com/sigstore/timestamp-authority v1.2.8 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect

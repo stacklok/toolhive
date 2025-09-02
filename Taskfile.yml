@@ -24,11 +24,6 @@ tasks:
     cmds:
       - go install go.uber.org/mock/mockgen@latest
 
-  gotestfmt-install:
-    desc: Install gotestfmt for pretty test output
-    cmds:
-      - go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
-
   gen:
     desc: Generate mock files using go generate
     deps: [mock-install]
@@ -47,12 +42,11 @@ tasks:
       - golangci-lint run --fix ./...
 
   test-unixlike:
-    desc: Run unit tests (excluding e2e tests) on Linux and macOS with race detection (formatted)
+    desc: Run unit tests (excluding e2e tests) on Linux and macOS with race detection
     platforms: [linux, darwin]
     internal: true
-    deps: [gotestfmt-install]
     cmds:
-      - bash -o pipefail -c 'set -euo pipefail; go test -json -v -race $(go list ./... | grep -v "/test/e2e") 2>&1 | tee /tmp/gotest.log | gotestfmt -hide successful-tests,successful-packages,empty-packages'
+      - go test -v -race $(go list ./... | grep -v '/test/e2e')
 
   test-windows:
     desc: Run unit tests (excluding e2e tests) on Windows with race detection

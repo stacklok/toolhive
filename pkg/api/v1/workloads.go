@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	thverrors "github.com/stacklok/toolhive/pkg/errors"
@@ -685,6 +686,35 @@ type updateRequest struct {
 	ToolsFilter []string `json:"tools"`
 	// Group name this workload belongs to
 	Group string `json:"group,omitempty"`
+
+	// Remote server specific fields
+	URL         string             `json:"url,omitempty"`
+	OAuthConfig *RemoteOAuthConfig `json:"oauth_config,omitempty"`
+	Headers     []*registry.Header `json:"headers,omitempty"`
+}
+
+// RemoteOAuthConfig represents OAuth configuration for remote servers
+//
+//	@Description	OAuth configuration for remote server authentication
+type RemoteOAuthConfig struct {
+	// OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
+	Issuer string `json:"issuer,omitempty"`
+	// OAuth authorization endpoint URL (alternative to issuer for non-OIDC OAuth)
+	AuthorizeURL string `json:"authorize_url,omitempty"`
+	// OAuth token endpoint URL (alternative to issuer for non-OIDC OAuth)
+	TokenURL string `json:"token_url,omitempty"`
+	// OAuth client ID for authentication
+	ClientID     string                   `json:"client_id,omitempty"`
+	ClientSecret *secrets.SecretParameter `json:"client_secret,omitempty"`
+
+	// OAuth scopes to request
+	Scopes []string `json:"scopes,omitempty"`
+	// Whether to use PKCE for the OAuth flow
+	UsePKCE bool `json:"use_pkce,omitempty"`
+	// Additional OAuth parameters for server-specific customization
+	OAuthParams map[string]string `json:"oauth_params,omitempty"`
+	// Specific port for OAuth callback server
+	CallbackPort int `json:"callback_port,omitempty"`
 }
 
 // createRequest represents the request to create a new workload
@@ -788,25 +818,57 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 		return nil, fmt.Errorf("group '%s' does not exist", groupName)
 	}
 
-	// Fetch or build the requested image
-	imageURL, serverMetadata, err := retriever.GetMCPServer(
-		ctx,
-		req.Image,
-		"", // We do not let the user specify a CA cert path here.
-		retriever.VerifyImageWarn,
-	)
-	if err != nil {
-		if errors.Is(err, retriever.ErrImageNotFound) {
-			return nil, fmt.Errorf("MCP server image not found")
+	var remoteAuthConfig *runner.RemoteAuthConfig
+	var imageURL string
+	var imageMetadata *registry.ImageMetadata
+	if req.URL != "" {
+		// Configure remote authentication if OAuth config is provided
+		remoteAuthConfig, err = s.createRequestToRemoteAuthConfig(ctx, req)
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("failed to retrieve MCP server image: %v", err)
+
+	} else {
+
+		var serverMetadata registry.ServerMetadata
+		// Fetch or build the requested image
+		imageURL, serverMetadata, err = retriever.GetMCPServer(
+			ctx,
+			req.Image,
+			"", // We do not let the user specify a CA cert path here.
+			retriever.VerifyImageWarn,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to retrieve MCP server image: %v", err)
+		}
+		// Handle server metadata - API only supports container servers
+		imageMetadata, _ = serverMetadata.(*registry.ImageMetadata)
+
+		if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
+			if remoteServerMetadata.OAuthConfig != nil {
+				clientSecret, err := s.resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
+				if err != nil {
+					return nil, err
+				}
+				remoteAuthConfig = &runner.RemoteAuthConfig{
+					ClientID:     req.OAuthConfig.ClientID,
+					ClientSecret: clientSecret,
+					Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
+					CallbackPort: remoteServerMetadata.OAuthConfig.CallbackPort,
+					Issuer:       remoteServerMetadata.OAuthConfig.Issuer,
+					AuthorizeURL: remoteServerMetadata.OAuthConfig.AuthorizeURL,
+					TokenURL:     remoteServerMetadata.OAuthConfig.TokenURL,
+					OAuthParams:  remoteServerMetadata.OAuthConfig.OAuthParams,
+					Headers:      remoteServerMetadata.Headers,
+					EnvVars:      remoteServerMetadata.EnvVars,
+				}
+			}
+		}
+
 	}
 
 	// Build RunConfig
 	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
-
-	// Handle server metadata - API only supports container servers
-	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
 
 	runConfig, err := runner.NewRunConfigBuilder().
 		WithRuntime(s.containerRuntime).
@@ -814,6 +876,8 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 		WithName(req.Name).
 		WithGroup(groupName).
 		WithImage(imageURL).
+		WithRemoteURL(req.URL).
+		WithRemoteAuth(remoteAuthConfig).
 		WithHost(req.Host).
 		WithTargetHost(transport.LocalhostIPv4).
 		WithDebug(s.debugMode).
@@ -852,6 +916,67 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 	return runConfig, nil
 }
 
+func (s *WorkloadRoutes) createRequestToRemoteAuthConfig(ctx context.Context, req *createRequest) (*runner.RemoteAuthConfig, error) {
+	if req.OAuthConfig == nil {
+		return nil, nil
+	}
+
+	// Resolve client secret from secret management if provided
+	clientSecret, err := s.resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create RemoteAuthConfig
+	return &runner.RemoteAuthConfig{
+		ClientID:     req.OAuthConfig.ClientID,
+		ClientSecret: clientSecret,
+		Scopes:       req.OAuthConfig.Scopes,
+		Issuer:       req.OAuthConfig.Issuer,
+		AuthorizeURL: req.OAuthConfig.AuthorizeURL,
+		TokenURL:     req.OAuthConfig.TokenURL,
+		OAuthParams:  req.OAuthConfig.OAuthParams,
+		CallbackPort: req.OAuthConfig.CallbackPort,
+		Headers:      req.Headers,
+	}, nil
+}
+
+func (s *WorkloadRoutes) resolveClientSecret(ctx context.Context, secretParam *secrets.SecretParameter) (string, error) {
+	var clientSecret string
+	if secretParam != nil {
+		// Get the secrets manager
+		secretsManager, err := s.getSecretsManager()
+		if err != nil {
+			return "", fmt.Errorf("failed to get secrets manager: %w", err)
+		}
+
+		// Get the secret from the secrets manager
+		secretValue, err := secretsManager.GetSecret(ctx, secretParam.Name)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve OAuth client secret: %w", err)
+		}
+		clientSecret = secretValue
+	}
+	return clientSecret, nil
+}
+
+// getSecretsManager is a helper function to get the secrets manager
+func (*WorkloadRoutes) getSecretsManager() (secrets.Provider, error) {
+	cfg := config.GetConfig()
+
+	// Check if secrets setup has been completed
+	if !cfg.Secrets.SetupCompleted {
+		return nil, secrets.ErrSecretsNotSetup
+	}
+
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return nil, err
+	}
+
+	return secrets.CreateSecretProvider(providerType)
+}
+
 // runConfigToCreateRequest converts a RunConfig to createRequest for API responses
 func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 	// Convert CLI secrets ([]string) back to SecretParameters
@@ -877,6 +1002,22 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 		}
 	}
 
+	// Get remote OAuth config from RunConfig
+	var remoteOAuthConfig *RemoteOAuthConfig
+	var headers []*registry.Header
+	if runConfig.RemoteAuthConfig != nil {
+		remoteOAuthConfig = &RemoteOAuthConfig{
+			Issuer:       runConfig.RemoteAuthConfig.Issuer,
+			AuthorizeURL: runConfig.RemoteAuthConfig.AuthorizeURL,
+			TokenURL:     runConfig.RemoteAuthConfig.TokenURL,
+			ClientID:     runConfig.RemoteAuthConfig.ClientID,
+			Scopes:       runConfig.RemoteAuthConfig.Scopes,
+			OAuthParams:  runConfig.RemoteAuthConfig.OAuthParams,
+			CallbackPort: runConfig.RemoteAuthConfig.CallbackPort,
+		}
+		headers = runConfig.RemoteAuthConfig.Headers
+	}
+
 	authzConfigPath := ""
 
 	return &createRequest{
@@ -896,6 +1037,9 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			NetworkIsolation:  runConfig.IsolateNetwork,
 			ToolsFilter:       runConfig.ToolsFilter,
 			Group:             runConfig.Group,
+			URL:               runConfig.RemoteURL,
+			OAuthConfig:       remoteOAuthConfig,
+			Headers:           headers,
 		},
 		Name: runConfig.Name,
 	}

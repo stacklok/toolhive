@@ -9,7 +9,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	thverrors "github.com/stacklok/toolhive/pkg/errors"
@@ -33,6 +32,7 @@ type WorkloadRoutes struct {
 	containerRuntime runtime.Runtime
 	debugMode        bool
 	groupManager     groups.Manager
+	secretsProvider  secrets.Provider
 }
 
 //	@title			ToolHive API
@@ -46,6 +46,7 @@ func WorkloadRouter(
 	workloadManager workloads.Manager,
 	containerRuntime runtime.Runtime,
 	groupManager groups.Manager,
+	secretsProvider secrets.Provider,
 	debugMode bool,
 ) http.Handler {
 	routes := WorkloadRoutes{
@@ -53,6 +54,7 @@ func WorkloadRouter(
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 		groupManager:     groupManager,
+		secretsProvider:  secretsProvider,
 	}
 
 	r := chi.NewRouter()
@@ -827,9 +829,7 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 		if err != nil {
 			return nil, err
 		}
-
 	} else {
-
 		var serverMetadata registry.ServerMetadata
 		// Fetch or build the requested image
 		imageURL, serverMetadata, err = retriever.GetMCPServer(
@@ -841,8 +841,6 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 		if err != nil {
 			return nil, fmt.Errorf("failed to retrieve MCP server image: %v", err)
 		}
-		// Handle server metadata - API only supports container servers
-		imageMetadata, _ = serverMetadata.(*registry.ImageMetadata)
 
 		if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 			if remoteServerMetadata.OAuthConfig != nil {
@@ -864,7 +862,8 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 				}
 			}
 		}
-
+		// Handle server metadata - API only supports container servers
+		imageMetadata, _ = serverMetadata.(*registry.ImageMetadata)
 	}
 
 	// Build RunConfig
@@ -944,37 +943,15 @@ func (s *WorkloadRoutes) createRequestToRemoteAuthConfig(ctx context.Context, re
 func (s *WorkloadRoutes) resolveClientSecret(ctx context.Context, secretParam *secrets.SecretParameter) (string, error) {
 	var clientSecret string
 	if secretParam != nil {
-		// Get the secrets manager
-		secretsManager, err := s.getSecretsManager()
-		if err != nil {
-			return "", fmt.Errorf("failed to get secrets manager: %w", err)
-		}
 
 		// Get the secret from the secrets manager
-		secretValue, err := secretsManager.GetSecret(ctx, secretParam.Name)
+		secretValue, err := s.secretsProvider.GetSecret(ctx, secretParam.Name)
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve OAuth client secret: %w", err)
 		}
 		clientSecret = secretValue
 	}
 	return clientSecret, nil
-}
-
-// getSecretsManager is a helper function to get the secrets manager
-func (*WorkloadRoutes) getSecretsManager() (secrets.Provider, error) {
-	cfg := config.GetConfig()
-
-	// Check if secrets setup has been completed
-	if !cfg.Secrets.SetupCompleted {
-		return nil, secrets.ErrSecretsNotSetup
-	}
-
-	providerType, err := cfg.Secrets.GetProviderType()
-	if err != nil {
-		return nil, err
-	}
-
-	return secrets.CreateSecretProvider(providerType)
 }
 
 // runConfigToCreateRequest converts a RunConfig to createRequest for API responses

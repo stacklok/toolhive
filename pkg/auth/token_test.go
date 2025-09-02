@@ -745,6 +745,12 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 
 	ctx := context.Background()
 	// Create a token validator that only uses introspection (no JWKS URL)
+	registry := NewRegistry()
+	registry.AddProvider(NewGoogleProvider(GoogleTokeninfoURL))
+	// Use the basic RFC7662 provider for tests (no custom networking restrictions)
+	rfc7662Provider := NewRFC7662Provider(introspectionServer.URL)
+	registry.AddProvider(rfc7662Provider)
+
 	validator := &TokenValidator{
 		introspectURL: introspectionServer.URL,
 		clientID:      "test-client-id",
@@ -752,6 +758,7 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 		client:        http.DefaultClient,
 		issuer:        "opaque-issuer",
 		audience:      "opaque-audience",
+		registry:      registry,
 	}
 
 	t.Run("valid opaque token", func(t *testing.T) {
@@ -1046,6 +1053,7 @@ func TestMiddleware_WWWAuthenticate_NoHeader_And_WrongScheme(t *testing.T) {
 			tv := &TokenValidator{
 				issuer:      issuer,
 				resourceURL: resourceMeta,
+				registry:    NewRegistry(),
 			}
 
 			hitDownstream := false
@@ -1177,8 +1185,16 @@ func TestParseGoogleTokeninfoClaims(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			reader := strings.NewReader(tc.responseBody)
-			claims, err := parseGoogleTokeninfoClaims(reader)
+			// Test the provider's parsing by creating a mock server
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, tc.responseBody)
+			}))
+			defer server.Close()
+
+			provider := NewGoogleProvider(server.URL)
+			claims, err := provider.IntrospectToken(context.Background(), "dummy-token")
 
 			if tc.expectError {
 				if err == nil {
@@ -1214,7 +1230,8 @@ func TestMiddleware_WWWAuthenticate_InvalidOpaqueToken_NoIntrospectionConfigured
 	t.Parallel()
 
 	tv := &TokenValidator{
-		issuer: issuer,
+		issuer:   issuer,
+		registry: NewRegistry(),
 		// introspectURL intentionally empty to force the error path
 	}
 
@@ -1323,6 +1340,7 @@ func TestMiddleware_WWWAuthenticate_WithMockIntrospection(t *testing.T) {
 				clientID:      "cid",
 				clientSecret:  "csecret",
 				client:        http.DefaultClient,
+				registry:      NewRegistry(),
 			}
 
 			hit := false
@@ -1468,15 +1486,11 @@ func TestIntrospectGoogleToken(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(tc.serverResponse))
 			defer server.Close()
 
-			// Create a validator with our test server URL
-			// Note: We're testing the introspectGoogleToken method directly,
-			// so the URL doesn't need to be the exact Google URL for this test
-			validator := &TokenValidator{
-				client: http.DefaultClient,
-			}
+			// Use the Google provider directly for testing
+			provider := NewGoogleProvider(server.URL)
 
 			ctx := context.Background()
-			claims, err := validator.introspectGoogleToken(ctx, tc.token, server.URL)
+			claims, err := provider.IntrospectToken(ctx, tc.token)
 
 			if tc.expectError {
 				if err == nil {
@@ -1542,16 +1556,10 @@ func TestTokenValidator_GoogleTokeninfoIntegration(t *testing.T) {
 	t.Run("Google tokeninfo direct call", func(t *testing.T) { //nolint:paralleltest // Server lifecycle requires sequential execution
 		// Note: Not using t.Parallel() here because we need the googleServer to stay alive
 
-		// Test the introspectGoogleToken method directly with our test server
-		testValidator := &TokenValidator{
-			client:   http.DefaultClient,
-			issuer:   "https://accounts.google.com",
-			audience: "test-client.apps.googleusercontent.com",
-		}
-
-		// Directly call introspectGoogleToken to test Google-specific functionality
+		// Use Google provider to test Google-specific functionality
+		provider := NewGoogleProvider(googleServer.URL)
 		ctx := context.Background()
-		claims, err := testValidator.introspectGoogleToken(ctx, "valid-google-token", googleServer.URL)
+		claims, err := provider.IntrospectToken(ctx, "valid-google-token")
 		if err != nil {
 			t.Fatalf("Expected no error but got: %v", err)
 		}
@@ -1582,10 +1590,11 @@ func TestTokenValidator_GoogleTokeninfoIntegration(t *testing.T) {
 		// Test 1: Google URL should route to Google handler (we can't easily test the full flow
 		// without mocking, but we can test that it attempts to use the Google method)
 		googleValidator := &TokenValidator{
-			introspectURL: googleTokeninfoURL,
+			introspectURL: GoogleTokeninfoURL,
 			client:        http.DefaultClient,
 			issuer:        "https://accounts.google.com",
 			audience:      "test-client.apps.googleusercontent.com",
+			registry:      NewRegistry(),
 		}
 
 		// This will fail because we can't reach the real Google endpoint,
@@ -1605,6 +1614,7 @@ func TestTokenValidator_GoogleTokeninfoIntegration(t *testing.T) {
 			client:        http.DefaultClient,
 			issuer:        "https://accounts.google.com",
 			audience:      "test-client.apps.googleusercontent.com",
+			registry:      NewRegistry(),
 		}
 
 		// This should use the standard RFC 7662 POST method, which our test server doesn't handle

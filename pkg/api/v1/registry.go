@@ -31,17 +31,23 @@ const (
 
 // getRegistryInfo returns the registry type and the source
 func getRegistryInfo() (RegistryType, string) {
-	url, localPath, _, registryType := config.GetRegistryConfig()
+	return getRegistryInfoWithProvider(config.NewDefaultProvider())
+}
 
-	switch registryType {
-	case "url":
-		return RegistryTypeURL, url
-	case "file":
-		return RegistryTypeFile, localPath
-	default:
-		// Default built-in registry
-		return RegistryTypeDefault, ""
+// getRegistryInfoWithProvider returns the registry type and the source using the provided config provider
+func getRegistryInfoWithProvider(configProvider config.Provider) (RegistryType, string) {
+	cfg := configProvider.GetConfig()
+
+	if cfg.RegistryUrl != "" {
+		return RegistryTypeURL, cfg.RegistryUrl
 	}
+
+	if cfg.LocalRegistryPath != "" {
+		return RegistryTypeFile, cfg.LocalRegistryPath
+	}
+
+	// Default built-in registry
+	return RegistryTypeDefault, ""
 }
 
 // getCurrentProvider returns the current registry provider

@@ -59,15 +59,27 @@ func GetPIDFilePathWithFallback(containerBaseName string) (string, error) {
 }
 
 // WritePIDFile writes a process ID to a file
+// For full version compatibility, it writes to both the new XDG location and the old temp location
 func WritePIDFile(containerBaseName string, pid int) error {
-	// Get the PID file path
-	pidFilePath, err := GetPIDFilePath(containerBaseName)
+	pidContent := []byte(fmt.Sprintf("%d", pid))
+
+	// Write to the new XDG location first
+	newPath, err := GetPIDFilePath(containerBaseName)
 	if err != nil {
 		return fmt.Errorf("failed to get PID file path: %v", err)
 	}
 
-	// Write the PID to the file
-	return os.WriteFile(pidFilePath, []byte(fmt.Sprintf("%d", pid)), 0600)
+	if err := os.WriteFile(newPath, pidContent, 0600); err != nil {
+		return fmt.Errorf("failed to write PID file: %v", err)
+	}
+
+	// Also write to the old temp location for backward/forward compatibility
+	// This is best-effort - don't fail the operation
+	oldPath := getOldPIDFilePath(containerBaseName)
+
+	_ = os.WriteFile(oldPath, pidContent, 0600)
+
+	return nil
 }
 
 // WriteCurrentPIDFile writes the current process ID to a file

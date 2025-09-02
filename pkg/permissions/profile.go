@@ -141,15 +141,9 @@ type MountDeclaration string
 
 // Regular expressions for parsing mount declarations
 var (
-	// resourceURIRegex matches resource URIs like "volume://name:container-path"
-	// The scheme must start with a letter and can contain letters, numbers, underscores, and hyphens
-	// The resource name can contain any characters except colon
-	// The container path can contain any characters except colon
-	resourceURIRegex = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9_-]*)://([^:]+):([^:]+)$`)
-
-	// hostPathRegex matches host-path:container-path format
-	// Both host path and container path can contain any characters except colon
-	hostPathRegex = regexp.MustCompile(`^([^:]+):([^:]+)$`)
+	// windowsPathRegex matches Windows-style paths with drive letters
+	// Matches patterns like C:, D:, etc. at the start of a path
+	windowsPathRegex = regexp.MustCompile(`^[a-zA-Z]:[/\\]`)
 
 	// commandInjectionPattern matches common command injection patterns
 	commandInjectionPattern = regexp.MustCompile(`[$&;|]|\$\(|\` + "`")
@@ -169,9 +163,224 @@ func validatePath(path string) error {
 	return nil
 }
 
+// isWindowsPath checks if a path appears to be a Windows path
+func isWindowsPath(path string) bool {
+	// Match full Windows paths with drive letters (C:\path or C:/path)
+	if windowsPathRegex.MatchString(path) {
+		return true
+	}
+	// Also match paths that start with backslashes (could be Windows UNC or fragment)
+	if strings.HasPrefix(path, "\\") {
+		return true
+	}
+	return false
+}
+
 // cleanPath cleans a path using filepath.Clean
 func cleanPath(path string) string {
 	return filepath.Clean(path)
+}
+
+// validateResourceScheme checks if a resource URI scheme is valid
+func validateResourceScheme(scheme string) bool {
+	return regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`).MatchString(scheme)
+}
+
+// isValidContainerPath checks if a path looks like a valid container path
+func isValidContainerPath(path string) bool {
+	// Container paths can be:
+	// 1. Unix-style paths starting with /
+	// 2. Windows paths (which we'll reject later, but they're valid format)
+	// 3. Relative paths (no colons)
+	return strings.HasPrefix(path, "/") ||
+		isWindowsPath(path) ||
+		(path != "" && !strings.Contains(path, ":"))
+}
+
+// findResourceURISeparator finds the colon separator between resource name and container path
+func findResourceURISeparator(remainder string) int {
+	colonPositions := findColonPositions(remainder)
+
+	if len(colonPositions) == 0 {
+		return -1 // No separator colon found
+	}
+
+	// Try each colon position from right to left to find the separator
+	for i := len(colonPositions) - 1; i >= 0; i-- {
+		colonIdx := colonPositions[i]
+		if colonIdx+1 < len(remainder) {
+			possibleContainerPath := remainder[colonIdx+1:]
+			if isValidContainerPath(possibleContainerPath) {
+				return colonIdx
+			}
+		}
+	}
+
+	return -1 // No valid separator found
+}
+
+// splitResourceURI splits a resource URI declaration into scheme and remainder
+func splitResourceURI(declaration string) (scheme, remainder string, valid bool) {
+	// Check if it starts like a resource URI (scheme://)
+	if !strings.Contains(declaration, "://") {
+		return "", "", false // Not a resource URI
+	}
+
+	// Split on :// to get scheme and remainder
+	schemeParts := strings.SplitN(declaration, "://", 2)
+	if len(schemeParts) != 2 {
+		return "", "", false // Not a valid resource URI format
+	}
+
+	scheme = schemeParts[0]
+	remainder = schemeParts[1]
+
+	// Validate scheme format
+	if !validateResourceScheme(scheme) {
+		return "", "", false // Invalid scheme
+	}
+
+	return scheme, remainder, true
+}
+
+// parseResourceURI parses a resource URI format (scheme://resource:container-path)
+func parseResourceURI(declaration string) (source, target string, err error) {
+	scheme, remainder, valid := splitResourceURI(declaration)
+	if !valid {
+		return "", "", nil // Not a valid resource URI
+	}
+
+	separatorIdx := findResourceURISeparator(remainder)
+	if separatorIdx == -1 {
+		return "", "", nil // No valid separator found
+	}
+
+	resourceName := remainder[:separatorIdx]
+	containerPath := remainder[separatorIdx+1:]
+
+	// Both parts should be non-empty
+	if resourceName == "" || containerPath == "" {
+		return "", "", nil // Invalid format
+	}
+
+	// Reject Windows paths in container/target path
+	if isWindowsPath(containerPath) {
+		return "", "", fmt.Errorf("windows paths are not allowed as container paths: %s", containerPath)
+	}
+
+	// Validate paths
+	if err := validatePath(resourceName); err != nil {
+		return "", "", err
+	}
+	if err := validatePath(containerPath); err != nil {
+		return "", "", err
+	}
+
+	// Clean paths
+	cleanedResource := cleanPath(resourceName)
+	cleanedTarget := cleanPath(containerPath)
+
+	return scheme + "://" + cleanedResource, cleanedTarget, nil
+}
+
+// findColonPositions returns all positions of colons in the string
+func findColonPositions(s string) []int {
+	positions := []int{}
+	for i, r := range s {
+		if r == ':' {
+			positions = append(positions, i)
+		}
+	}
+	return positions
+}
+
+// parseWindowsPath handles Windows-style path parsing
+func parseWindowsPath(declaration string, colonPositions []int) (source, target string, err error) {
+	// If there's only one colon and it's at position 1 (drive letter),
+	// treat this as a single path
+	if len(colonPositions) == 1 && colonPositions[0] == 1 {
+		if err := validatePath(declaration); err != nil {
+			return "", "", err
+		}
+		cleanedPath := cleanPath(declaration)
+		return cleanedPath, cleanedPath, nil
+	}
+
+	// If there are exactly two colons, and the first is at position 1 (drive letter),
+	// then the second one should be the separator
+	if len(colonPositions) == 2 && colonPositions[0] == 1 {
+		hostPath := declaration[:colonPositions[1]]
+		containerPath := declaration[colonPositions[1]+1:]
+
+		// Reject Windows paths in container/target path
+		if isWindowsPath(containerPath) {
+			return "", "", fmt.Errorf("windows paths are not allowed as container paths: %s", containerPath)
+		}
+
+		if err := validatePath(hostPath); err != nil {
+			return "", "", err
+		}
+		if err := validatePath(containerPath); err != nil {
+			return "", "", err
+		}
+
+		cleanedSource := cleanPath(hostPath)
+		cleanedTarget := cleanPath(containerPath)
+		return cleanedSource, cleanedTarget, nil
+	}
+
+	// If there are more than 2 colons and the first is at position 1,
+	// this is ambiguous and should be treated as invalid
+	if len(colonPositions) > 2 && colonPositions[0] == 1 {
+		return "", "", fmt.Errorf("invalid mount declaration format: %s "+
+			"(Windows paths with multiple colons are ambiguous)", declaration)
+	}
+
+	return "", "", nil // Not handled by Windows path logic
+}
+
+// parseHostContainerPath handles host:container path parsing for non-Windows paths
+func parseHostContainerPath(declaration string, colonPositions []int) (source, target string, err error) {
+	// For non-Windows paths: if there's exactly one colon, treat as host:container
+	if len(colonPositions) == 1 {
+		colonIdx := colonPositions[0]
+		hostPath := declaration[:colonIdx]
+		containerPath := declaration[colonIdx+1:]
+
+		// Reject Windows paths in container/target path
+		if isWindowsPath(containerPath) {
+			return "", "", fmt.Errorf("windows paths are not allowed as container paths: %s", containerPath)
+		}
+
+		if err := validatePath(hostPath); err != nil {
+			return "", "", err
+		}
+		if err := validatePath(containerPath); err != nil {
+			return "", "", err
+		}
+
+		cleanedSource := cleanPath(hostPath)
+		cleanedTarget := cleanPath(containerPath)
+		return cleanedSource, cleanedTarget, nil
+	}
+
+	// Multiple colons in non-Windows paths are invalid
+	if len(colonPositions) > 1 {
+		return "", "", fmt.Errorf("invalid mount declaration format: %s "+
+			"(multiple colons found, expected single colon separator)", declaration)
+	}
+
+	return "", "", nil // Not handled
+}
+
+// parseSinglePath handles single path declarations (no colons)
+func parseSinglePath(declaration string) (source, target string, err error) {
+	if err := validatePath(declaration); err != nil {
+		return "", "", err
+	}
+
+	cleanedPath := cleanPath(declaration)
+	return cleanedPath, cleanedPath, nil
 }
 
 // Parse parses a mount declaration and returns the source and target paths
@@ -180,57 +389,36 @@ func (m MountDeclaration) Parse() (source, target string, err error) {
 	declaration := string(m)
 
 	// Check if it's a resource URI
-	if matches := resourceURIRegex.FindStringSubmatch(declaration); matches != nil {
-		scheme := matches[1]
-		resourceName := matches[2]
-		containerPath := matches[3]
-
-		// Validate paths
-		if err := validatePath(resourceName); err != nil {
-			return "", "", err
-		}
-		if err := validatePath(containerPath); err != nil {
-			return "", "", err
-		}
-
-		// Clean paths
-		cleanedResource := cleanPath(resourceName)
-		cleanedTarget := cleanPath(containerPath)
-
-		return scheme + "://" + cleanedResource, cleanedTarget, nil
+	if source, target, err := parseResourceURI(declaration); err != nil {
+		return "", "", err
+	} else if source != "" {
+		return source, target, nil
 	}
 
-	// Check if it's a host-path:container-path format
-	if matches := hostPathRegex.FindStringSubmatch(declaration); matches != nil {
-		hostPath := matches[1]
-		containerPath := matches[2]
+	// Check if it contains a colon for host:container format
+	if strings.Contains(declaration, ":") {
+		colonPositions := findColonPositions(declaration)
 
-		// Validate paths
-		if err := validatePath(hostPath); err != nil {
-			return "", "", err
+		// Special case: Windows path handling
+		if windowsPathRegex.MatchString(declaration) {
+			if source, target, err := parseWindowsPath(declaration, colonPositions); err != nil {
+				return "", "", err
+			} else if source != "" {
+				return source, target, nil
+			}
 		}
-		if err := validatePath(containerPath); err != nil {
+
+		// Handle non-Windows host:container paths
+		if source, target, err := parseHostContainerPath(declaration, colonPositions); err != nil {
 			return "", "", err
+		} else if source != "" {
+			return source, target, nil
 		}
-
-		// Clean paths
-		cleanedSource := cleanPath(hostPath)
-		cleanedTarget := cleanPath(containerPath)
-
-		return cleanedSource, cleanedTarget, nil
 	}
 
 	// If it doesn't contain a colon, it's a single path
 	if !strings.Contains(declaration, ":") {
-		// Validate path
-		if err := validatePath(declaration); err != nil {
-			return "", "", err
-		}
-
-		// Clean path
-		cleanedPath := cleanPath(declaration)
-
-		return cleanedPath, cleanedPath, nil
+		return parseSinglePath(declaration)
 	}
 
 	// If we get here, the format is invalid
@@ -244,20 +432,55 @@ func (m MountDeclaration) IsValid() bool {
 	return err == nil
 }
 
-// IsResourceURI checks if the mount declaration is a resource URI
+// IsResourceURI checks if the mount declaration is a resource URI format
+// This only checks the format, not the security of the paths
 func (m MountDeclaration) IsResourceURI() bool {
-	return resourceURIRegex.MatchString(string(m))
+	declaration := string(m)
+
+	// Check if it contains ://
+	if !strings.Contains(declaration, "://") {
+		return false
+	}
+
+	// Split on :// to get scheme and remainder
+	schemeParts := strings.SplitN(declaration, "://", 2)
+	if len(schemeParts) != 2 {
+		return false
+	}
+
+	scheme := schemeParts[0]
+	remainder := schemeParts[1]
+
+	// Validate scheme format
+	if !regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`).MatchString(scheme) {
+		return false
+	}
+
+	// Find the last colon in the remainder
+	lastColonIdx := strings.LastIndex(remainder, ":")
+	if lastColonIdx == -1 {
+		return false
+	}
+
+	resourceName := remainder[:lastColonIdx]
+	containerPath := remainder[lastColonIdx+1:]
+
+	// Both parts should be non-empty
+	return resourceName != "" && containerPath != ""
 }
 
 // GetResourceType returns the resource type if the mount declaration is a resource URI
 // For example, "volume://name" would return "volume"
 func (m MountDeclaration) GetResourceType() (string, error) {
-	matches := resourceURIRegex.FindStringSubmatch(string(m))
-	if matches == nil {
+	if !m.IsResourceURI() {
 		return "", fmt.Errorf("not a resource URI: %s", m)
 	}
 
-	return matches[1], nil
+	declaration := string(m)
+
+	// Split on :// to get scheme (we know it's valid because IsResourceURI passed)
+	schemeParts := strings.SplitN(declaration, "://", 2)
+	return schemeParts[0], nil
 }
 
 // ParseMountDeclarations parses a list of mount declarations

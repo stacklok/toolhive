@@ -5,25 +5,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"time"
 
-	promclient "github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
-	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/stacklok/toolhive/pkg/telemetry/providers"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -85,128 +73,33 @@ type Provider struct {
 
 // NewProvider creates a new OpenTelemetry provider with the given configuration.
 func NewProvider(ctx context.Context, config Config) (*Provider, error) {
-	if config.Endpoint == "" && !config.EnablePrometheusMetricsPath {
-		return createNoOpProvider(config), nil
+	// Use the new factory pattern
+	builderConfig := providers.Config{
+		ServiceName:                 config.ServiceName,
+		ServiceVersion:              config.ServiceVersion,
+		OTLPEndpoint:                config.Endpoint,
+		Headers:                     config.Headers,
+		Insecure:                    config.Insecure,
+		SamplingRate:                config.SamplingRate,
+		EnablePrometheusMetricsPath: config.EnablePrometheusMetricsPath,
 	}
 
-	res, err := createResource(ctx, config)
+	builder := providers.NewBuilder(builderConfig)
+	composite, err := builder.Build(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to build telemetry providers: %w", err)
 	}
 
-	tracerProvider, err := createTracerProvider(ctx, config, res)
-	if err != nil {
-		return nil, err
-	}
-
-	meterProvider, prometheusHandler, err := createMeterProvider(ctx, config, res)
-	if err != nil {
-		return nil, err
-	}
-
-	setGlobalProviders(tracerProvider, meterProvider)
-
-	shutdown := createShutdownFunc(tracerProvider, meterProvider)
+	// Set global providers
+	setGlobalProviders(composite.TracerProvider(), composite.MeterProvider())
 
 	return &Provider{
 		config:            config,
-		tracerProvider:    tracerProvider,
-		meterProvider:     meterProvider,
-		prometheusHandler: prometheusHandler,
-		shutdown:          shutdown,
+		tracerProvider:    composite.TracerProvider(),
+		meterProvider:     composite.MeterProvider(),
+		prometheusHandler: composite.PrometheusHandler(),
+		shutdown:          composite.Shutdown,
 	}, nil
-}
-
-// createNoOpProvider creates a no-op provider when no telemetry is configured.
-func createNoOpProvider(config Config) *Provider {
-	return &Provider{
-		config:            config,
-		tracerProvider:    tracenoop.NewTracerProvider(),
-		meterProvider:     noop.NewMeterProvider(),
-		prometheusHandler: nil,
-		shutdown:          func(context.Context) error { return nil },
-	}
-}
-
-// createResource creates an OpenTelemetry resource with service information.
-func createResource(ctx context.Context, config Config) (*resource.Resource, error) {
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName(config.ServiceName),
-			semconv.ServiceVersion(config.ServiceVersion),
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create resource: %w", err)
-	}
-	return res, nil
-}
-
-// createTracerProvider creates a tracer provider based on configuration.
-func createTracerProvider(ctx context.Context, config Config, res *resource.Resource) (trace.TracerProvider, error) {
-	if config.Endpoint == "" {
-		return tracenoop.NewTracerProvider(), nil
-	}
-
-	traceExporter, err := createTraceExporter(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
-	}
-
-	sampler := sdktrace.TraceIDRatioBased(config.SamplingRate)
-	return sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(traceExporter),
-		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sampler),
-	), nil
-}
-
-// createMeterProvider creates a meter provider and Prometheus handler based on configuration.
-func createMeterProvider(ctx context.Context, config Config, res *resource.Resource) (metric.MeterProvider, http.Handler, error) {
-	var readers []sdkmetric.Reader
-	var prometheusHandler http.Handler
-
-	// Add OTLP metric reader if endpoint is configured
-	if config.Endpoint != "" {
-		metricExporter, err := createMetricExporter(ctx, config)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create metric exporter: %w", err)
-		}
-		readers = append(readers, sdkmetric.NewPeriodicReader(metricExporter))
-	}
-
-	// Add Prometheus reader if Prometheus metrics path is enabled
-	if config.EnablePrometheusMetricsPath {
-		// Create a dedicated registry for this provider to avoid conflicts
-		registry := promclient.NewRegistry()
-
-		// Add standard Go runtime metrics (best practice for production)
-		registry.MustRegister(collectors.NewGoCollector())
-		registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-
-		prometheusExporter, err := prometheus.New(prometheus.WithRegisterer(registry))
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create prometheus exporter: %w", err)
-		}
-		readers = append(readers, prometheusExporter)
-
-		// Create handler with proper error handling options
-		prometheusHandler = promhttp.HandlerFor(registry, promhttp.HandlerOpts{
-			ErrorHandling: promhttp.ContinueOnError,
-			ErrorLog:      nil, // Use default logger
-		})
-	}
-
-	// Create meter provider with configured readers
-	if len(readers) > 0 {
-		opts := []sdkmetric.Option{sdkmetric.WithResource(res)}
-		for _, reader := range readers {
-			opts = append(opts, sdkmetric.WithReader(reader))
-		}
-		return sdkmetric.NewMeterProvider(opts...), prometheusHandler, nil
-	}
-
-	return noop.NewMeterProvider(), prometheusHandler, nil
 }
 
 // setGlobalProviders sets the global OpenTelemetry providers.
@@ -217,74 +110,6 @@ func setGlobalProviders(tracerProvider trace.TracerProvider, meterProvider metri
 		propagation.TraceContext{},
 		propagation.Baggage{},
 	))
-}
-
-// createShutdownFunc creates a shutdown function for the providers.
-func createShutdownFunc(tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider) func(context.Context) error {
-	return func(ctx context.Context) error {
-		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-
-		// Shutdown meter provider if it's an SDK provider
-		if sdkMeterProvider, ok := meterProvider.(*sdkmetric.MeterProvider); ok {
-			if err := sdkMeterProvider.Shutdown(shutdownCtx); err != nil {
-				return fmt.Errorf("failed to shutdown meter provider: %w", err)
-			}
-		}
-
-		// Shutdown tracer provider if it's an SDK provider
-		if sdkTracerProvider, ok := tracerProvider.(*sdktrace.TracerProvider); ok {
-			if err := sdkTracerProvider.Shutdown(shutdownCtx); err != nil {
-				return fmt.Errorf("failed to shutdown tracer provider: %w", err)
-			}
-		}
-
-		return nil
-	}
-}
-
-// createTraceExporter creates an OTLP trace exporter based on the configuration.
-func createTraceExporter(ctx context.Context, config Config) (sdktrace.SpanExporter, error) {
-	if config.Endpoint == "" {
-		return nil, fmt.Errorf("OTLP endpoint is required when telemetry is enabled")
-	}
-
-	// Prepare options for OTLP HTTP exporter
-	opts := []otlptracehttp.Option{
-		otlptracehttp.WithEndpoint(config.Endpoint),
-	}
-
-	// Add headers if provided
-	if len(config.Headers) > 0 {
-		opts = append(opts, otlptracehttp.WithHeaders(config.Headers))
-	}
-
-	// Configure TLS
-	if config.Insecure {
-		opts = append(opts, otlptracehttp.WithInsecure())
-	}
-
-	return otlptracehttp.New(ctx, opts...)
-}
-
-// createMetricExporter creates an OTLP metric exporter based on the configuration.
-func createMetricExporter(ctx context.Context, config Config) (sdkmetric.Exporter, error) {
-	// Prepare options for OTLP HTTP exporter
-	opts := []otlpmetrichttp.Option{
-		otlpmetrichttp.WithEndpoint(config.Endpoint),
-	}
-
-	// Add headers if provided
-	if len(config.Headers) > 0 {
-		opts = append(opts, otlpmetrichttp.WithHeaders(config.Headers))
-	}
-
-	// Configure TLS
-	if config.Insecure {
-		opts = append(opts, otlpmetrichttp.WithInsecure())
-	}
-
-	return otlpmetrichttp.New(ctx, opts...)
 }
 
 // Middleware returns an HTTP middleware that instruments requests with OpenTelemetry.

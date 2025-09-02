@@ -173,10 +173,10 @@ var _ = Describe("Inspector", func() {
 		Context("when testing inspector connectivity", func() {
 			It("should make inspector UI accessible when running", func() {
 				By("Starting inspector in background using goroutine")
-				done := helper.startInspectorInBackground(30 * time.Second)
+				done := helper.startInspectorInBackground(60 * time.Second)
 
 				By("Waiting for inspector UI to be ready")
-				helper.waitForInspectorUI(20 * time.Second)
+				helper.waitForInspectorUI(45 * time.Second)
 
 				By("Verifying inspector UI responds with valid content")
 				helper.verifyInspectorUIAccessible()

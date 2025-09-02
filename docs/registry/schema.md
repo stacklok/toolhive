@@ -3,6 +3,14 @@
 This document describes the [JSON Schema](https://json-schema.org/) for the
 ToolHive MCP server registry and how to use it for validation and development.
 
+> **⚠️ Registry Migration Notice**
+>
+> The ToolHive registry has been migrated to a separate repository for better management and maintenance.
+>
+> **To contribute MCP servers, please visit: https://github.com/stacklok/toolhive-registry**
+>
+> The registry data in this repository is now automatically synchronized from the external registry.
+
 ## Overview
 
 The [`schema.json`](schema.json) file provides comprehensive validation for the
@@ -124,13 +132,28 @@ updates are necessary to ensure accuracy and completeness.
 
 ## Contributing
 
-When adding new server entries:
+**For adding new MCP servers:**
+
+Please visit the [toolhive-registry repository](https://github.com/stacklok/toolhive-registry) which now manages all MCP server definitions.
+
+**For schema improvements:**
+
+When modifying the registry schema in this repository:
 
 1. **Validate locally** before submitting PRs
 2. **Follow naming conventions** for consistency
 3. **Include comprehensive descriptions** for clarity
-4. **Specify minimal permissions** for security
-5. **Use appropriate tags** for discoverability
+4. **Test with existing registry data** to ensure compatibility
+5. **Update documentation** to reflect schema changes
+
+**Legacy server addition process (deprecated):**
+
+~~When adding new server entries:~~
+1. ~~**Validate locally** before submitting PRs~~
+2. ~~**Follow naming conventions** for consistency~~
+3. ~~**Include comprehensive descriptions** for clarity~~
+4. ~~**Specify minimal permissions** for security~~
+5. ~~**Use appropriate tags** for discoverability~~
 
 ## Related documentation
 

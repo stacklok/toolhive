@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -444,6 +446,100 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				cerr := e2e.StopAndRemoveMCPServer(config, serverName)
 				Expect(cerr).ToNot(HaveOccurred(), "cleanup should succeed")
 			}
+		})
+
+	})
+
+	Describe("Running OSV MCP server in the foreground", func() {
+		Context("when running OSV server in foreground", func() {
+			It("starts, creates PID file, stays healthy, then stops & removes PID file [Serial]", func() {
+				serverName := generateUniqueServerName("osv-foreground-test")
+
+				// 1) Start the foreground process in the background (goroutine) with a generous timeout.
+				done := make(chan struct{})
+				fgStdout := ""
+				fgStderr := ""
+				go func() {
+					out, errOut, _ := e2e.NewTHVCommand(
+						config, "run",
+						"--name", serverName,
+						"--transport", "sse",
+						"--foreground",
+						"osv",
+					).RunWithTimeout(5 * time.Minute)
+					fgStdout, fgStderr = out, errOut
+					close(done)
+				}()
+
+				// Always try to stop the server at the end so the goroutine returns.
+				defer func() {
+					_, _, _ = e2e.NewTHVCommand(config, "stop", serverName).Run()
+					select {
+					case <-done:
+					case <-time.After(15 * time.Second):
+						// Nothing else we can signal directly; the RunWithTimeout will eventually kill it.
+					}
+				}()
+
+				// 2) Wait until the server is reported as running.
+				By("waiting for foreground server to be running")
+				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				Expect(err).ToNot(HaveOccurred(), "server should reach running state")
+
+				// 3) PID file should be created at the known location.
+				By("verifying PID file is created")
+				pidFile, err := process.GetPIDFilePath(serverName)
+				Expect(err).ToNot(HaveOccurred(), "should be able to get PID file path")
+				Eventually(func() bool {
+					_, statErr := os.Stat(pidFile)
+					return statErr == nil
+				}, 15*time.Second, 200*time.Millisecond).Should(BeTrue(), "PID file should exist")
+
+				// 4) Read PID and sanity-check it's a live process.
+				pid, readErr := process.ReadPIDFile(serverName)
+				Expect(readErr).ToNot(HaveOccurred(), "should be able to read PID file")
+				Expect(pid).To(BeNumerically(">", 0), "PID should be a positive integer")
+
+				// Optional: on Unix, send signal 0 as a non-killing liveness probe.
+				if os.PathSeparator == '/' {
+					p, findErr := os.FindProcess(pid)
+					Expect(findErr).ToNot(HaveOccurred())
+					_ = p.Signal(syscall.Signal(0)) // best-effort; error handling not strict here
+				}
+
+				// 5) Dwell 5 seconds, then confirm health/ready.
+				By("waiting 5 seconds and checking health")
+				time.Sleep(5 * time.Second)
+
+				stdout, _ := e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring(serverName), "server should be listed")
+				Expect(stdout).To(ContainSubstring("running"), "server should be running")
+
+				if serverURL, gerr := e2e.GetMCPServerURL(config, serverName); gerr == nil {
+					rerr := e2e.WaitForMCPServerReady(config, serverURL, "sse", 15*time.Second)
+					Expect(rerr).ToNot(HaveOccurred(), "server should be protocol-ready")
+				}
+
+				// 6) Stop the server; this should unblock the goroutine.
+				By("stopping the foreground server")
+				_, _ = e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
+
+				// Wait for the run goroutine to exit.
+				select {
+				case <-done:
+					// ok
+				case <-time.After(15 * time.Second):
+					Fail("foreground run did not exit after stop; stdout="+fgStdout+" stderr="+fgStderr, 1)
+				}
+
+				// 7) PID file should be removed after stop.
+				By("verifying PID file removal")
+				Eventually(func() bool {
+					_, statErr := os.Stat(pidFile)
+					return os.IsNotExist(statErr)
+				}, 15*time.Second, 200*time.Millisecond).Should(BeTrue(), "PID file should be removed after stop")
+
+			})
 		})
 
 	})

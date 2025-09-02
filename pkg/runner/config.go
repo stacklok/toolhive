@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	workloadtypes "github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 // CurrentSchemaVersion is the current version of the RunConfig schema
@@ -139,6 +140,14 @@ type RunConfig struct {
 
 	// ToolsFilter is the list of tools to filter
 	ToolsFilter []string `json:"tools_filter,omitempty" yaml:"tools_filter,omitempty"`
+
+	// ToolOverride is the map of tool names to override. Tools to override are
+	// specified as ToolOverride structs.
+	ToolOverride map[string]ToolOverride `json:"tool_override,omitempty" yaml:"tool_override,omitempty"`
+
+	// ToolOverrideFile is the path to a file containing tool overrides.
+	// The file is a JSON struct mapping actual names to ToolOverride structs.
+	ToolOverrideFile string `json:"tool_override_file,omitempty" yaml:"tool_override_file,omitempty"`
 
 	// IgnoreConfig contains configuration for ignore processing
 	IgnoreConfig *ignore.Config `json:"ignore_config,omitempty" yaml:"ignore_config,omitempty"`
@@ -356,13 +365,27 @@ func (c *RunConfig) WithEnvFile(filePath string) (*RunConfig, error) {
 }
 
 // WithContainerName generates container name if not already set
-func (c *RunConfig) WithContainerName() *RunConfig {
-	if c.ContainerName == "" && c.Image != "" {
-		containerName, baseName := container.GetOrGenerateContainerName(c.Name, c.Image)
-		c.ContainerName = containerName
-		c.BaseName = baseName
+// Returns the config and a boolean indicating if the name was sanitized
+func (c *RunConfig) WithContainerName() (*RunConfig, bool) {
+	var wasModified bool
+
+	if c.ContainerName == "" {
+		if c.Image != "" {
+			// For container-based servers
+			// Sanitize the name if provided to ensure it's safe for file paths
+			safeName := ""
+			if c.Name != "" {
+				safeName, wasModified = workloadtypes.SanitizeWorkloadName(c.Name)
+			}
+			containerName, baseName := container.GetOrGenerateContainerName(safeName, c.Image)
+			c.ContainerName = containerName
+			c.BaseName = baseName
+		} else if c.RemoteURL != "" && c.Name != "" {
+			// For remote servers, sanitize the provided name to ensure it's safe for file paths
+			c.BaseName, wasModified = workloadtypes.SanitizeWorkloadName(c.Name)
+		}
 	}
-	return c
+	return c, wasModified
 }
 
 // WithStandardLabels adds standard labels to the container
@@ -402,7 +425,6 @@ func LoadState(ctx context.Context, name string) (*RunConfig, error) {
 
 // RemoteAuthConfig holds configuration for remote authentication
 type RemoteAuthConfig struct {
-	EnableRemoteAuth bool
 	ClientID         string
 	ClientSecret     string
 	ClientSecretFile string
@@ -424,4 +446,14 @@ type RemoteAuthConfig struct {
 
 	// OAuth parameters for server-specific customization
 	OAuthParams map[string]string
+}
+
+// ToolOverride represents a tool override.
+// Both Name and Description can be overridden independently, but
+// they can't be both empty.
+type ToolOverride struct {
+	// Name is the redefined name of the tool
+	Name string `json:"name,omitempty"`
+	// Description is the redefined description of the tool
+	Description string `json:"description,omitempty"`
 }

@@ -50,6 +50,8 @@ const (
 	AmpVSCodeInsider MCPClient = "amp-vscode-insider"
 	// AmpWindsurf represents the Sourcegraph Amp extension for Windsurf.
 	AmpWindsurf MCPClient = "amp-windsurf"
+	// LMStudio represents the LM Studio application.
+	LMStudio MCPClient = "lm-studio"
 )
 
 // Extension is extension of the client config file.
@@ -325,6 +327,21 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		IsTransportTypeFieldSupported: true,
 	},
+	{
+		ClientType:           LMStudio,
+		Description:          "LM Studio application",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".lmstudio"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
+	},
 }
 
 // ConfigFile represents a client configuration file
@@ -342,8 +359,17 @@ type MCPServerConfig struct {
 
 // FindClientConfig returns the client configuration file for a given client type.
 func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
+	manager, err := NewClientManager()
+	if err != nil {
+		return nil, err
+	}
+	return manager.FindClientConfig(clientType)
+}
+
+// FindClientConfig returns the client configuration file for a given client type using this manager's dependencies.
+func (cm *ClientManager) FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	// retrieve the metadata of the config files
-	configFile, err := retrieveConfigFileMetadata(clientType)
+	configFile, err := cm.retrieveConfigFileMetadata(clientType)
 	if err != nil {
 		if errors.Is(err, ErrConfigFileNotFound) {
 			// Propagate the error if the file is not found
@@ -362,7 +388,16 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 
 // FindRegisteredClientConfigs finds all registered client configs and creates them if they don't exist.
 func FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
-	clientStatuses, err := GetClientStatus(ctx)
+	manager, err := NewClientManager()
+	if err != nil {
+		return nil, err
+	}
+	return manager.FindRegisteredClientConfigs(ctx)
+}
+
+// FindRegisteredClientConfigs finds all registered client configs using this manager's dependencies
+func (cm *ClientManager) FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
+	clientStatuses, err := cm.GetClientStatus(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client status: %w", err)
 	}
@@ -372,11 +407,11 @@ func FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
 		if !clientStatus.Installed || !clientStatus.Registered {
 			continue
 		}
-		cf, err := FindClientConfig(clientStatus.ClientType)
+		cf, err := cm.FindClientConfig(clientStatus.ClientType)
 		if err != nil {
 			if errors.Is(err, ErrConfigFileNotFound) {
 				logger.Infof("Client config file not found for %s, creating it...", clientStatus.ClientType)
-				cf, err = CreateClientConfig(clientStatus.ClientType)
+				cf, err = cm.CreateClientConfig(clientStatus.ClientType)
 				if err != nil {
 					logger.Warnf("Unable to create client config for %s: %v", clientStatus.ClientType, err)
 					continue
@@ -395,15 +430,18 @@ func FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
 
 // CreateClientConfig creates a new client configuration file for a given client type.
 func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
-	// Get home directory
-	home, err := os.UserHomeDir()
+	manager, err := NewClientManager()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
+		return nil, err
 	}
+	return manager.CreateClientConfig(clientType)
+}
 
+// CreateClientConfig creates a new client configuration file for a given client type using this manager's dependencies.
+func (cm *ClientManager) CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
 	var clientCfg *mcpClientConfig
-	for _, cfg := range supportedClientIntegrations {
+	for _, cfg := range cm.clientIntegrations {
 		if cfg.ClientType == clientType {
 			clientCfg = &cfg
 			break
@@ -415,7 +453,7 @@ func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	}
 
 	// Build the path to the configuration file
-	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{home})
+	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{cm.homeDir})
 
 	// Validate that the file does not already exist
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -424,12 +462,12 @@ func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
 
 	// Create the file if it does not exist
 	logger.Infof("Creating new client config file at %s", path)
-	err = os.WriteFile(path, []byte("{}"), 0600)
+	err := os.WriteFile(path, []byte("{}"), 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client config file: %w", err)
 	}
 
-	return FindClientConfig(clientType)
+	return cm.FindClientConfig(clientType)
 }
 
 // Upsert updates/inserts an MCP server in a client configuration file
@@ -440,13 +478,22 @@ func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
 // build up more complex MCP server configurations for different clients
 // without leaking them into the CMD layer.
 func Upsert(cf ConfigFile, name string, url string, transportType string) error {
-	for i := range supportedClientIntegrations {
-		if cf.ClientType != supportedClientIntegrations[i].ClientType {
+	manager, err := NewClientManager()
+	if err != nil {
+		return err
+	}
+	return manager.Upsert(cf, name, url, transportType)
+}
+
+// Upsert updates/inserts an MCP server in a client configuration file using this manager's dependencies.
+func (cm *ClientManager) Upsert(cf ConfigFile, name string, url string, transportType string) error {
+	for i := range cm.clientIntegrations {
+		if cf.ClientType != cm.clientIntegrations[i].ClientType {
 			continue
 		}
-		isServerUrl := supportedClientIntegrations[i].MCPServersUrlLabel == "serverUrl"
-		mappedTransportType, ok := supportedClientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
-		if supportedClientIntegrations[i].IsTransportTypeFieldSupported && ok {
+		isServerUrl := cm.clientIntegrations[i].MCPServersUrlLabel == "serverUrl"
+		mappedTransportType, ok := cm.clientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
+		if cm.clientIntegrations[i].IsTransportTypeFieldSupported && ok {
 			if isServerUrl {
 				return cf.ConfigUpdater.Upsert(name, MCPServer{ServerUrl: url, Type: mappedTransportType})
 			}
@@ -460,17 +507,11 @@ func Upsert(cf ConfigFile, name string, url string, transportType string) error 
 	return nil
 }
 
-// retrieveConfigFileMetadata retrieves the metadata for client configuration files for a given client type.
-func retrieveConfigFileMetadata(clientType MCPClient) (*ConfigFile, error) {
-	// Get home directory
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
-	}
-
+// retrieveConfigFileMetadata retrieves the metadata for client configuration files using this manager's dependencies.
+func (cm *ClientManager) retrieveConfigFileMetadata(clientType MCPClient) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
 	var clientCfg *mcpClientConfig
-	for _, cfg := range supportedClientIntegrations {
+	for _, cfg := range cm.clientIntegrations {
 		if cfg.ClientType == clientType {
 			clientCfg = &cfg
 			break
@@ -482,7 +523,7 @@ func retrieveConfigFileMetadata(clientType MCPClient) (*ConfigFile, error) {
 	}
 
 	// Build the path to the configuration file
-	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{home})
+	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{cm.homeDir})
 
 	// Validate that the file exists
 	if err := validateConfigFileExists(path); err != nil {

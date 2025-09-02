@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -94,7 +95,15 @@ func (b *RunConfigBuilder) WithHost(host string) *RunConfigBuilder {
 
 // WithTargetHost sets the target host (applies default if empty)
 func (b *RunConfigBuilder) WithTargetHost(targetHost string) *RunConfigBuilder {
-	if targetHost == "" {
+	if b.config.RemoteURL != "" {
+		remoteURL, err := url.Parse(b.config.RemoteURL)
+		if err == nil {
+			targetHost = remoteURL.Host
+		} else {
+			logger.Warnf("Failed to parse remote URL: %v", err)
+			targetHost = transport.LocalhostIPv4
+		}
+	} else if targetHost == "" {
 		targetHost = transport.LocalhostIPv4
 	}
 	b.config.TargetHost = targetHost
@@ -306,6 +315,20 @@ func (b *RunConfigBuilder) WithTelemetryConfig(otelEndpoint string, otelEnablePr
 // WithToolsFilter sets the tools filter
 func (b *RunConfigBuilder) WithToolsFilter(toolsFilter []string) *RunConfigBuilder {
 	b.config.ToolsFilter = toolsFilter
+	return b
+}
+
+// WithToolOverride sets the tool override map for the RunConfig
+// This method is mutually exclusive with WithToolOverrideFile
+func (b *RunConfigBuilder) WithToolOverride(toolOverride map[string]ToolOverride) *RunConfigBuilder {
+	b.config.ToolOverride = toolOverride
+	return b
+}
+
+// WithToolOverrideFile sets the path to the tool override file for the RunConfig
+// This method is mutually exclusive with WithToolOverride
+func (b *RunConfigBuilder) WithToolOverrideFile(toolOverrideFile string) *RunConfigBuilder {
+	b.config.ToolOverrideFile = toolOverrideFile
 	return b
 }
 
@@ -561,7 +584,10 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	}
 
 	// Generate container name if not already set
-	c.WithContainerName()
+	_, wasModified := c.WithContainerName()
+	if wasModified && c.Name != "" {
+		logger.Warnf("The provided name '%s' contained invalid characters and was sanitized", c.Name)
+	}
 
 	// Add standard labels
 	c.WithStandardLabels()
@@ -598,6 +624,20 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 		for _, tool := range c.ToolsFilter {
 			if !slices.Contains(imageMetadata.Tools, tool) {
 				return fmt.Errorf("tool %s not found in registry", tool)
+			}
+		}
+	}
+
+	// Validate tool overrides - ensure they are mutually exclusive
+	if len(c.ToolOverride) > 0 && c.ToolOverrideFile != "" {
+		return fmt.Errorf("both tool override map and tool override file are set, they are mutually exclusive")
+	}
+
+	// Validate tool override map entries if present
+	if len(c.ToolOverride) > 0 {
+		for toolName, override := range c.ToolOverride {
+			if override.Name == "" && override.Description == "" {
+				return fmt.Errorf("tool override for %s must have either Name or Description set", toolName)
 			}
 		}
 	}

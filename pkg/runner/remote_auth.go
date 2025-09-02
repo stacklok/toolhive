@@ -39,16 +39,10 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 
 		// Handle OAuth authentication
 		if authInfo.Type == "OAuth" {
-			// Use realm as issuer if available, otherwise derive from URL
-			issuer := authInfo.Realm
+			issuer := h.config.Issuer
 			if issuer == "" {
-				if h.config.Issuer != "" {
-					issuer = h.config.Issuer
-				} else {
-					issuer = discovery.DeriveIssuerFromURL(remoteURL)
-				}
+				issuer = discovery.DeriveIssuerFromURL(remoteURL)
 			}
-
 			if issuer == "" {
 				return nil, fmt.Errorf("could not determine OAuth issuer from realm or URL")
 			}

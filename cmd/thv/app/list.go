@@ -59,15 +59,6 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	if len(workloadList) == 0 {
-		if listGroupFilter != "" {
-			fmt.Printf("No MCP servers found in group '%s'\n", listGroupFilter)
-		} else {
-			fmt.Println("No MCP servers found")
-		}
-		return nil
-	}
-
 	// Output based on format
 	switch listFormat {
 	case FormatJSON:
@@ -75,6 +66,15 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	case "mcpservers":
 		return printMCPServersOutput(workloadList)
 	default:
+		// For text format, handle empty list with a message
+		if len(workloadList) == 0 {
+			if listGroupFilter != "" {
+				fmt.Printf("No MCP servers found in group '%s'\n", listGroupFilter)
+			} else {
+				fmt.Println("No MCP servers found")
+			}
+			return nil
+		}
 		printTextOutput(workloadList)
 		return nil
 	}
@@ -82,6 +82,11 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 
 // printJSONOutput prints workload information in JSON format
 func printJSONOutput(workloadList []core.Workload) error {
+	// Ensure we have a non-nil slice to avoid null in JSON output
+	if workloadList == nil {
+		workloadList = []core.Workload{}
+	}
+
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(workloadList, "", "  ")
 	if err != nil {

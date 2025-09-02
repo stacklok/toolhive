@@ -65,7 +65,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 	// Generate URL for the MCP server
 	url := ""
 	if port > 0 {
-		url = transport.GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name)
+		url = transport.GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name, "")
 	}
 
 	tType, err := types.ParseTransportType(transportType)

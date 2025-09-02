@@ -70,7 +70,7 @@ func CreateToolFilterMiddleware(config *types.MiddlewareConfig, runner types.Mid
 		return fmt.Errorf("failed to unmarshal tool filter middleware parameters: %w", err)
 	}
 
-	middleware, err := NewToolFilterMiddleware(params.FilterTools)
+	middleware, err := NewListToolsMappingMiddleware(WithToolsFilter(params.FilterTools...))
 	if err != nil {
 		return fmt.Errorf("failed to create tool filter middleware: %w", err)
 	}
@@ -88,7 +88,7 @@ func CreateToolCallFilterMiddleware(config *types.MiddlewareConfig, runner types
 		return fmt.Errorf("failed to unmarshal tool call filter middleware parameters: %w", err)
 	}
 
-	middleware, err := NewToolCallFilterMiddleware(params.FilterTools)
+	middleware, err := NewToolCallMappingMiddleware(WithToolsFilter(params.FilterTools...))
 	if err != nil {
 		return fmt.Errorf("failed to create tool call filter middleware: %w", err)
 	}

@@ -683,6 +683,8 @@ type updateRequest struct {
 	NetworkIsolation bool `json:"network_isolation"`
 	// Tools filter
 	ToolsFilter []string `json:"tools"`
+	// Group name this workload belongs to
+	Group string `json:"group,omitempty"`
 }
 
 // createRequest represents the request to create a new workload
@@ -771,6 +773,21 @@ func (s *WorkloadRoutes) getWorkloadNamesFromRequest(ctx context.Context, req bu
 
 // createWorkloadFromRequest creates a workload from a request
 func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
+	// Default group if not specified
+	groupName := req.Group
+	if groupName == "" {
+		groupName = groups.DefaultGroup
+	}
+
+	// Validate that the group exists
+	exists, err := s.groupManager.Exists(ctx, groupName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check if group exists: %v", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("group '%s' does not exist", groupName)
+	}
+
 	// Fetch or build the requested image
 	imageURL, serverMetadata, err := retriever.GetMCPServer(
 		ctx,
@@ -795,6 +812,7 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 		WithRuntime(s.containerRuntime).
 		WithCmdArgs(req.CmdArguments).
 		WithName(req.Name).
+		WithGroup(groupName).
 		WithImage(imageURL).
 		WithHost(req.Host).
 		WithTargetHost(transport.LocalhostIPv4).
@@ -877,6 +895,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			ProxyMode:         string(runConfig.ProxyMode),
 			NetworkIsolation:  runConfig.IsolateNetwork,
 			ToolsFilter:       runConfig.ToolsFilter,
+			Group:             runConfig.Group,
 		},
 		Name: runConfig.Name,
 	}

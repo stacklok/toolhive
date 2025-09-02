@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -19,6 +18,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+const testValidJSON = `{"mcpServers": {}, "mcp": {"servers": {}}}`
+
 // createMockClientConfigs creates a set of mock client configurations for testing
 func createMockClientConfigs() []mcpClientConfig {
 	return []mcpClientConfig{
@@ -26,6 +27,14 @@ func createMockClientConfigs() []mcpClientConfig {
 			ClientType:           VSCode,
 			Description:          "Visual Studio Code (Mock)",
 			RelPath:              []string{"mock_vscode"},
+			SettingsFile:         "settings.json",
+			MCPServersPathPrefix: "/mcp/servers",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           VSCodeInsider,
+			Description:          "Visual Studio Code Insiders (Mock)",
+			RelPath:              []string{"mock_vscode_insider"},
 			SettingsFile:         "settings.json",
 			MCPServersPathPrefix: "/mcp/servers",
 			Extension:            JSON,
@@ -55,9 +64,41 @@ func createMockClientConfigs() []mcpClientConfig {
 			Extension:            JSON,
 		},
 		{
+			ClientType:           Cline,
+			Description:          "VS Code Cline extension (Mock)",
+			RelPath:              []string{"mock_cline"},
+			SettingsFile:         "cline_mcp_settings.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           Windsurf,
+			Description:          "Windsurf IDE (Mock)",
+			RelPath:              []string{"mock_windsurf"},
+			SettingsFile:         "mcp_config.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           WindsurfJetBrains,
+			Description:          "Windsurf plugin for JetBrains IDEs (Mock)",
+			RelPath:              []string{"mock_windsurf_jetbrains"},
+			SettingsFile:         "mcp_config.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
+		{
 			ClientType:           AmpCli,
 			Description:          "Sourcegraph Amp CLI (Mock)",
 			RelPath:              []string{"mock_amp_cli"},
+			SettingsFile:         "settings.json",
+			MCPServersPathPrefix: "/amp.mcpServers",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           AmpVSCode,
+			Description:          "VS Code Sourcegraph Amp extension (Mock)",
+			RelPath:              []string{"mock_amp_vscode"},
 			SettingsFile:         "settings.json",
 			MCPServersPathPrefix: "/amp.mcpServers",
 			Extension:            JSON,
@@ -70,64 +111,72 @@ func createMockClientConfigs() []mcpClientConfig {
 			MCPServersPathPrefix: "/amp.mcpServers",
 			Extension:            JSON,
 		},
+		{
+			ClientType:           AmpVSCodeInsider,
+			Description:          "VS Code Insiders Sourcegraph Amp extension (Mock)",
+			RelPath:              []string{"mock_amp_vscode_insider"},
+			SettingsFile:         "settings.json",
+			MCPServersPathPrefix: "/amp.mcpServers",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           AmpWindsurf,
+			Description:          "Windsurf Sourcegraph Amp extension (Mock)",
+			RelPath:              []string{"mock_amp_windsurf"},
+			SettingsFile:         "settings.json",
+			MCPServersPathPrefix: "/amp.mcpServers",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           LMStudio,
+			Description:          "LM Studio application (Mock)",
+			RelPath:              []string{"mock_lm_studio"},
+			SettingsFile:         "mcp_config.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
 	}
 }
 
-// MockConfig creates a temporary config file with the provided configuration.
-// It returns a cleanup function that should be deferred.
-func MockConfig(t *testing.T, cfg *config.Config) func() {
+// CreateTestConfigProvider creates a config provider for testing with the provided configuration.
+// It returns a config provider and a cleanup function that should be deferred.
+func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider, func()) {
 	t.Helper()
 
 	// Create a temporary directory for the test
 	tempDir := t.TempDir()
-
-	// TODO: see if there's a way to avoid changing env vars during tests.
-	// Save original XDG_CONFIG_HOME
-	originalXDGConfigHome := os.Getenv("XDG_CONFIG_HOME")
-	t.Setenv("XDG_CONFIG_HOME", tempDir)
-	xdg.Reload()
 
 	// Create the config directory structure
 	configDir := filepath.Join(tempDir, "toolhive")
 	err := os.MkdirAll(configDir, 0755)
 	require.NoError(t, err)
 
+	// Set up the config file path
+	configPath := filepath.Join(configDir, "config.yaml")
+
+	// Create a path-based config provider
+	provider := config.NewPathProvider(configPath)
+
 	// Write the config file if one is provided
 	if cfg != nil {
-		err = config.UpdateConfig(func(c *config.Config) { *c = *cfg })
+		err = provider.UpdateConfig(func(c *config.Config) { *c = *cfg })
 		require.NoError(t, err)
 	}
 
-	return func() {
-		t.Setenv("XDG_CONFIG_HOME", originalXDGConfigHome)
-		xdg.Reload()
+	return provider, func() {
+		// Cleanup is handled by t.TempDir()
 	}
 }
 
-func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environment variables
+func TestFindClientConfigs(t *testing.T) {
+	t.Parallel()
 	logger.Initialize()
 
 	// Setup a temporary home directory for testing
-	originalHome := os.Getenv("HOME")
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	defer func() {
-		t.Setenv("HOME", originalHome)
-	}()
 
-	// Save original supported clients and restore after test
-	originalClients := supportedClientIntegrations
-	defer func() {
-		supportedClientIntegrations = originalClients
-	}()
-
-	// Set up mock client configurations
-	supportedClientIntegrations = createMockClientConfigs()
-
-	// Create test config files for different clients
-	createTestConfigFiles(t, tempHome)
-
-	t.Run("InvalidConfigFileFormat", func(t *testing.T) { //nolint:paralleltest // Modifies global state
+	t.Run("InvalidConfigFileFormat", func(t *testing.T) {
+		t.Parallel() // Now we can use parallel since we don't modify global state
 		// Set up environment for unstructured logs and capture stderr before initializing logger
 		originalUnstructuredLogs := os.Getenv("UNSTRUCTURED_LOGS")
 		os.Setenv("UNSTRUCTURED_LOGS", "true")
@@ -149,24 +198,30 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 		err = os.WriteFile(invalidPath, []byte("{invalid json}"), 0644)
 		require.NoError(t, err)
 
-		// Create a custom client config that points to the invalid file
-		invalidClient := mcpClientConfig{
-			ClientType:           "invalid",
-			Description:          "Invalid client",
-			RelPath:              []string{".cursor"},
-			SettingsFile:         "invalid.json",
-			MCPServersPathPrefix: "/mcpServers",
-			Extension:            JSON,
+		// Create fake test client integrations with Cursor pointing to invalid JSON
+		// This tests the JSON validation error path
+		testClientIntegrations := []mcpClientConfig{
+			{
+				ClientType:   VSCode,
+				Description:  "VS Code (Test)",
+				SettingsFile: "settings.json",
+				RelPath:      []string{}, // File directly in temp home
+				Extension:    JSON,
+			},
+			{
+				ClientType:           Cursor,
+				Description:          "Cursor editor (Test)",
+				RelPath:              []string{".cursor"}, // Points to the .cursor directory where invalid.json is
+				SettingsFile:         "invalid.json",      // This file contains invalid JSON
+				MCPServersPathPrefix: "/mcpServers",
+				Extension:            JSON,
+			},
 		}
 
-		// Save the original supported clients
-		originalClients := supportedClientIntegrations
-		defer func() {
-			supportedClientIntegrations = originalClients
-		}()
-
-		// Add our invalid client to the supported clients
-		supportedClientIntegrations = append(supportedClientIntegrations, invalidClient)
+		// Create a valid VSCode config file
+		vscodeConfigPath := filepath.Join(tempHome, "settings.json")
+		err = os.WriteFile(vscodeConfigPath, []byte(testValidJSON), 0644)
+		require.NoError(t, err)
 
 		testConfig := &config.Config{
 			Secrets: config.Secrets{
@@ -174,22 +229,23 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 			},
 			Clients: config.Clients{
 				RegisteredClients: []string{
-					"invalid",      // Register the invalid client
+					string(Cursor), // Register cursor which will have invalid JSON
 					string(VSCode), // Also register a valid client for comparison
 				},
 			},
 		}
 
-		cleanup := MockConfig(t, testConfig)
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
 		defer cleanup()
 
-		// Find client configs - this should NOT fail due to the invalid JSON
+		// Find client configs using ClientManager - this should NOT fail due to the invalid JSON
 		// Instead, it should log a warning and continue
-		configs, err := FindRegisteredClientConfigs(context.Background())
+		manager := NewTestClientManager(tempHome, nil, testClientIntegrations, configProvider)
+		configs, err := manager.FindRegisteredClientConfigs(context.Background())
 		assert.NoError(t, err, "FindRegisteredClientConfigs should not return an error for invalid config files")
 
-		// The invalid client should be skipped, so we should get configs for valid clients only
-		// We expect 1 config (VSCode) since invalid should be skipped
+		// The cursor client with invalid JSON should be skipped, so we should get configs for valid clients only
+		// We expect 1 config (VSCode) since cursor with invalid JSON should be skipped
 		assert.Len(t, configs, 1, "Should find configs for valid clients only, skipping invalid ones")
 
 		// Restore stderr and capture log output
@@ -201,34 +257,24 @@ func TestFindClientConfigs(t *testing.T) { //nolint:paralleltest // Uses environ
 		logOutput := capturedOutput.String()
 
 		// Verify that the error was logged
-		assert.Contains(t, logOutput, "Unable to process client config for invalid", "Should log warning about invalid client config")
+		assert.Contains(t, logOutput, "Unable to process client config for cursor", "Should log warning about cursor client config")
 		assert.Contains(t, logOutput, "failed to validate config file format", "Should log the specific validation error")
 		assert.Contains(t, logOutput, "cursor", "Should mention cursor in the error message")
 	})
 }
 
 func TestSuccessfulClientConfigOperations(t *testing.T) {
+	t.Parallel()
 	logger.Initialize()
 
 	// Setup a temporary home directory for testing
-	originalHome := os.Getenv("HOME")
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	defer func() {
-		t.Setenv("HOME", originalHome)
-	}()
 
-	// Save original supported clients and restore after test
-	originalClients := supportedClientIntegrations
-	defer func() {
-		supportedClientIntegrations = originalClients
-	}()
+	// Create mock client configs explicitly (don't modify global variable)
+	mockClientConfigs := createMockClientConfigs()
 
-	// Set up mock client configurations
-	supportedClientIntegrations = createMockClientConfigs()
-
-	// Create test config files
-	createTestConfigFiles(t, tempHome)
+	// Create test config files using mock configs
+	createTestConfigFilesWithConfigs(t, tempHome, mockClientConfigs)
 
 	// Set up config for all sub-tests
 	testConfig := &config.Config{
@@ -243,22 +289,32 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				string(RooCode),
 				string(ClaudeCode),
 				string(Cline),
+				string(Windsurf),
+				string(WindsurfJetBrains),
 				string(AmpCli),
 				string(AmpVSCode),
 				string(AmpCursor),
 				string(AmpVSCodeInsider),
 				string(AmpWindsurf),
+				string(LMStudio),
 			},
 		},
 	}
 
-	cleanup := MockConfig(t, testConfig)
-	defer cleanup()
+	configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+	t.Cleanup(cleanup)
 
-	t.Run("FindAllConfiguredClients", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindRegisteredClientConfigs(context.Background())
+	t.Run("FindAllConfiguredClients", func(t *testing.T) {
+		t.Parallel()
+		// Create mock client configs explicitly (don't rely on global variable due to parallel tests)
+		mockClientConfigs := createMockClientConfigs()
+
+		// Create ClientManager with test dependencies using the mock client integrations
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		configs, err := manager.FindRegisteredClientConfigs(context.Background())
 		require.NoError(t, err)
-		assert.Len(t, configs, len(supportedClientIntegrations), "Should find all mock client configs")
+		assert.Len(t, configs, len(mockClientConfigs), "Should find all mock client configs")
 
 		// Verify each client type is found
 		foundTypes := make(map[MCPClient]bool)
@@ -272,8 +328,14 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 		}
 	})
 
-	t.Run("VerifyConfigFileContents", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindRegisteredClientConfigs(context.Background())
+	t.Run("VerifyConfigFileContents", func(t *testing.T) {
+		t.Parallel()
+		// Create mock client configs explicitly (don't rely on global variable due to parallel tests)
+		mockClientConfigs := createMockClientConfigs()
+
+		// Create ClientManager with test dependencies using the mock client integrations
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+		configs, err := manager.FindRegisteredClientConfigs(context.Background())
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
 
@@ -322,12 +384,21 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpWindsurf:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpWindsurf config should contain mcpServers key")
+			case LMStudio:
+				assert.Contains(t, string(content), `"mcpServers":`,
+					"LMStudio config should contain mcpServers key")
 			}
 		}
 	})
 
-	t.Run("AddAndVerifyMCPServer", func(t *testing.T) { //nolint:paralleltest // Uses environment variables
-		configs, err := FindRegisteredClientConfigs(context.Background())
+	t.Run("AddAndVerifyMCPServer", func(t *testing.T) {
+		t.Parallel()
+		// Create mock client configs explicitly (don't rely on global variable due to parallel tests)
+		mockClientConfigs := createMockClientConfigs()
+
+		// Create ClientManager with test dependencies using the mock client integrations
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+		configs, err := manager.FindRegisteredClientConfigs(context.Background())
 		require.NoError(t, err)
 		require.NotEmpty(t, configs)
 
@@ -348,7 +419,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -356,18 +427,17 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 	})
 }
 
-// Helper function to create test config files for different clients
-func createTestConfigFiles(t *testing.T, homeDir string) {
+// Helper function to create test config files for specific client configurations
+func createTestConfigFilesWithConfigs(t *testing.T, homeDir string, clientConfigs []mcpClientConfig) {
 	t.Helper()
-	// Create test config files for each mock client configuration
-	for _, cfg := range supportedClientIntegrations {
+	// Create test config files for each provided client configuration
+	for _, cfg := range clientConfigs {
 		// Build the full path for the config file
 		configDir := filepath.Join(homeDir, filepath.Join(cfg.RelPath...))
 		err := os.MkdirAll(configDir, 0755)
 		if err == nil {
 			configPath := filepath.Join(configDir, cfg.SettingsFile)
-			validJSON := `{"mcpServers": {}, "mcp": {"servers": {}}}`
-			err = os.WriteFile(configPath, []byte(validJSON), 0644)
+			err = os.WriteFile(configPath, []byte(testValidJSON), 0644)
 			require.NoError(t, err)
 		}
 	}

@@ -1,0 +1,45 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch-server-keycloak
+  namespace: toolhive-system
+spec:
+  # Simple echo MCP server for testing
+  image: ghcr.io/stackloklabs/gofetch/server:0.0.4
+  resourceOverrides:
+    proxyDeployment:
+      env:
+        # by default we deploy KC w/o SSL
+        - name: INSECURE_DISABLE_URL_VALIDATION
+          value: "true"
+  transport: streamable-http
+  port: 9090
+  targetPort: 9090
+  env:
+
+  # OIDC authentication with Keycloak
+  oidcConfig:
+    type: inline
+    inline:
+      # Keycloak issuer URL for the toolhive realm
+      issuer: http://keycloak:8080/realms/toolhive
+      # Explicit JWKS URL to avoid OIDC discovery issues
+      jwksUrl: http://keycloak-dev-service.keycloak.svc.cluster.local:8080/realms/toolhive/protocol/openid-connect/certs
+      # MCP server client ID - tokens must have this in their audience claim
+      audience: mcp-server
+      # Optional: Allow private IP addresses for development
+      jwksAllowPrivateIP: true
+
+  # Basic permission profile allowing network access
+  permissionProfile:
+    type: builtin
+    name: network
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

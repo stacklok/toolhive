@@ -125,10 +125,18 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 
 	v, _ := hujson.Parse(content)
 
+	// Check if the server exists by attempting the patch and handling the error gracefully
 	patch := fmt.Sprintf(`[{ "op": "remove", "path": "%s/%s" } ]`, jcu.MCPServersPathPrefix, serverName)
 	err = v.Patch([]byte(patch))
 	if err != nil {
+		// If the patch fails because the path doesn't exist, that's fine - nothing to remove
+		if strings.Contains(err.Error(), "value not found") || strings.Contains(err.Error(), "path not found") {
+			logger.Infof("MCPServer %s not found in client config file, nothing to remove", serverName)
+			return nil
+		}
+		// For other errors, return the error
 		logger.Errorf("Failed to patch file: %v", err)
+		return err
 	}
 
 	formatted, _ := hujson.Format(v.Pack())

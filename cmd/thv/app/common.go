@@ -57,10 +57,12 @@ func SetSecretsProvider(provider secrets.ProviderType) error {
 	case secrets.EncryptedType:
 	case secrets.OnePasswordType:
 	case secrets.NoneType:
+	case secrets.EnvironmentType:
 		// Valid provider type
 	default:
-		return fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s)",
-			provider, string(secrets.EncryptedType), string(secrets.OnePasswordType), string(secrets.NoneType))
+		return fmt.Errorf("invalid secrets provider type: %s (valid types: %s, %s, %s, %s)",
+			provider, string(secrets.EncryptedType), string(secrets.OnePasswordType),
+			string(secrets.NoneType), string(secrets.EnvironmentType))
 	}
 
 	// Validate that the provider can be created and works correctly

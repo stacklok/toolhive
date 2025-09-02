@@ -257,6 +257,10 @@ type OAuthFlowResult struct {
 	Config      *oauth.Config
 }
 
+func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
+	return config.ClientID == "" && config.ClientSecret == ""
+}
+
 // PerformOAuthFlow performs an OAuth authentication flow with the given configuration
 func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfig) (*OAuthFlowResult, error) {
 	logger.Infof("Starting OAuth authentication flow for issuer: %s", issuer)
@@ -267,10 +271,29 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 
 	var oauthConfig *oauth.Config
 	var err error
+	if shouldDynamicallyRegisterClient(config) {
+		discoveredDoc, err := oauth.DiscoverOIDCEndpoints(ctx, issuer)
+		if err != nil {
+			return nil, fmt.Errorf("failed to discover registration endpoint: %w", err)
+		}
+		registrationResponse, err := registerDynamicClient(ctx, config, discoveredDoc)
+		if err != nil {
+			return nil, err
+		}
 
-	// Check if we have manual OAuth endpoints configured
+		// Use the dynamically registered client credentials
+		config.ClientID = registrationResponse.ClientID
+		config.ClientSecret = registrationResponse.ClientSecret
+
+		if discoveredDoc.RegistrationEndpoint != "" {
+			config.AuthorizeURL = discoveredDoc.AuthorizationEndpoint
+			config.TokenURL = discoveredDoc.TokenEndpoint
+		}
+	}
+
+	// Check if we have OAuth endpoints configured
 	if config.AuthorizeURL != "" && config.TokenURL != "" {
-		logger.Infof("Using manual OAuth endpoints - authorize_url: %s, token_url: %s",
+		logger.Infof("Using OAuth endpoints - authorize_url: %s, token_url: %s",
 			config.AuthorizeURL, config.TokenURL)
 
 		oauthConfig, err = oauth.CreateOAuthConfigManual(
@@ -302,6 +325,10 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 	}
 
 	// Create OAuth flow
+	return newOAuthFlow(ctx, oauthConfig, config)
+}
+
+func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthFlowConfig) (*OAuthFlowResult, error) {
 	flow, err := oauth.NewFlow(oauthConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OAuth flow: %w", err)
@@ -342,4 +369,22 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		TokenSource: &source,
 		Config:      oauthConfig,
 	}, nil
+}
+
+func registerDynamicClient(
+	ctx context.Context,
+	config *OAuthFlowConfig,
+	discoveredDoc *oauth.OIDCDiscoveryDocument,
+) (*oauth.DynamicClientRegistrationResponse, error) {
+
+	// Use default client name if not provided
+	registrationRequest := oauth.NewDynamicClientRegistrationRequest(config.Scopes, config.CallbackPort)
+
+	// Perform dynamic client registration
+	registrationResponse, err := oauth.RegisterClientDynamically(ctx, discoveredDoc.RegistrationEndpoint, registrationRequest)
+	if err != nil {
+		return nil, fmt.Errorf("dynamic client registration failed: %w", err)
+	}
+
+	return registrationResponse, nil
 }

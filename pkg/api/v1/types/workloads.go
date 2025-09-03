@@ -151,6 +151,10 @@ func ValidateBulkOperationRequest(req BulkOperationRequest) error {
 
 // RunConfigToCreateRequest converts a RunConfig to createRequest for API responses
 func RunConfigToCreateRequest(runConfig *runner.RunConfig) *CreateRequest {
+	if runConfig == nil {
+		return nil
+	}
+
 	// Convert CLI secrets ([]string) back to SecretParameters
 	secretParams := make([]secrets.SecretParameter, 0, len(runConfig.Secrets))
 	for _, secretStr := range runConfig.Secrets {

@@ -277,19 +277,12 @@ func (f *fileStatusManager) DeleteWorkloadStatus(ctx context.Context, workloadNa
 
 // getStatusFilePath returns the file path for a given workload's status file.
 func (f *fileStatusManager) getStatusFilePath(workloadName string) string {
-	fileName := f.fileNameFromWorkloadName(workloadName)
-	return filepath.Join(f.baseDir, fmt.Sprintf("%s.json", fileName))
+	return filepath.Join(f.baseDir, fmt.Sprintf("%s.json", workloadName))
 }
 
 // getLockFilePath returns the lock file path for a given workload.
 func (f *fileStatusManager) getLockFilePath(workloadName string) string {
-	fileName := f.fileNameFromWorkloadName(workloadName)
-	return filepath.Join(f.baseDir, fmt.Sprintf("%s.lock", fileName))
-}
-
-func (f *fileStatusManager) fileNameFromWorkloadName(workloadName string) string {
-	// Drop slashes from the workload name to avoid problems.
-	return strings.ReplaceAll(workloadName, "/", "-")
+	return filepath.Join(f.baseDir, fmt.Sprintf("%s.lock", workloadName))
 }
 
 // ensureBaseDir creates the base directory if it doesn't exist.

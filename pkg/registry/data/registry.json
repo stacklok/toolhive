@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-08-29T00:17:30Z",
+  "last_updated": "2025-09-03T00:16:19Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -301,9 +301,9 @@
         "jira_batch_create_versions"
       ],
       "metadata": {
-        "stars": 2897,
+        "stars": 2967,
         "pulls": 12849,
-        "last_updated": "2025-08-22T09:41:08Z"
+        "last_updated": "2025-09-01T02:37:21Z"
       },
       "repository_url": "https://github.com/sooperset/mcp-atlassian",
       "tags": [
@@ -540,9 +540,9 @@
         "get_price_list_urls"
       ],
       "metadata": {
-        "stars": 5950,
+        "stars": 6147,
         "pulls": 8179,
-        "last_updated": "2025-08-22T09:42:37Z"
+        "last_updated": "2025-09-01T02:37:22Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -649,9 +649,9 @@
         "workbooks"
       ],
       "metadata": {
-        "stars": 1107,
+        "stars": 1137,
         "pulls": 1809,
-        "last_updated": "2025-08-22T09:41:07Z"
+        "last_updated": "2025-08-31T02:31:31Z"
       },
       "repository_url": "https://github.com/Azure/azure-mcp",
       "tags": [
@@ -664,7 +664,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.9",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.10",
       "permissions": {
         "network": {
           "outbound": {
@@ -877,9 +877,9 @@
         "getUrl"
       ],
       "metadata": {
-        "stars": 2476,
+        "stars": 2514,
         "pulls": 133,
-        "last_updated": "2025-08-22T09:41:05Z"
+        "last_updated": "2025-08-30T02:27:20Z"
       },
       "repository_url": "https://github.com/browserbase/mcp-server-browserbase",
       "tags": [
@@ -1670,9 +1670,9 @@
         "list_allowed_directories"
       ],
       "metadata": {
-        "stars": 65278,
+        "stars": 66404,
         "pulls": 20619,
-        "last_updated": "2025-08-22T09:42:37Z"
+        "last_updated": "2025-09-01T02:37:22Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1715,9 +1715,9 @@
         "firecrawl_map"
       ],
       "metadata": {
-        "stars": 4264,
+        "stars": 4381,
         "pulls": 12644,
-        "last_updated": "2025-08-22T09:42:38Z"
+        "last_updated": "2025-09-02T02:31:26Z"
       },
       "repository_url": "https://github.com/mendableai/firecrawl-mcp-server",
       "tags": [
@@ -1798,9 +1798,9 @@
         "set_during_runtime"
       ],
       "metadata": {
-        "stars": 9486,
+        "stars": 10099,
         "pulls": 2408,
-        "last_updated": "2025-08-22T09:41:06Z"
+        "last_updated": "2025-08-30T02:27:20Z"
       },
       "repository_url": "https://github.com/googleapis/genai-toolbox",
       "tags": [
@@ -1847,9 +1847,9 @@
         "git_init"
       ],
       "metadata": {
-        "stars": 65278,
+        "stars": 66503,
         "pulls": 10404,
-        "last_updated": "2025-08-22T09:42:39Z"
+        "last_updated": "2025-09-02T02:31:27Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1968,9 +1968,9 @@
         "update_pull_request_branch"
       ],
       "metadata": {
-        "stars": 21509,
+        "stars": 22113,
         "pulls": 5000,
-        "last_updated": "2025-08-22T09:42:39Z"
+        "last_updated": "2025-09-02T02:31:28Z"
       },
       "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
@@ -2142,7 +2142,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.3",
+      "image": "iwakitakuma/gitlab-mcp:2.0.4",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -2370,9 +2370,9 @@
         "list_microsoft_calendars"
       ],
       "metadata": {
-        "stars": 348,
+        "stars": 352,
         "pulls": 109,
-        "last_updated": "2025-08-22T09:41:04Z"
+        "last_updated": "2025-08-29T02:30:29Z"
       },
       "repository_url": "https://github.com/graphlit/graphlit-mcp-server",
       "tags": [
@@ -2749,9 +2749,9 @@
         "pg_upgrade"
       ],
       "metadata": {
-        "stars": 57,
+        "stars": 62,
         "pulls": 104,
-        "last_updated": "2025-08-22T09:41:06Z"
+        "last_updated": "2025-08-31T02:31:31Z"
       },
       "repository_url": "https://github.com/heroku/heroku-mcp-server",
       "tags": [
@@ -2985,7 +2985,7 @@
         "get",
         "list"
       ],
-      "image": "ghcr.io/stackloklabs/mkp/server:0.1.0",
+      "image": "ghcr.io/stackloklabs/mkp/server:0.2.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -3024,9 +3024,9 @@
         "help"
       ],
       "metadata": {
-        "stars": 8,
+        "stars": 11,
         "pulls": 4946,
-        "last_updated": "2025-08-22T09:42:38Z"
+        "last_updated": "2025-09-02T02:31:27Z"
       },
       "repository_url": "https://github.com/nirmata/kyverno-mcp",
       "tags": [
@@ -3135,9 +3135,9 @@
         "run_chdb_select_query"
       ],
       "metadata": {
-        "stars": 503,
+        "stars": 509,
         "pulls": 81,
-        "last_updated": "2025-08-22T09:41:03Z"
+        "last_updated": "2025-08-29T02:30:28Z"
       },
       "repository_url": "https://github.com/ClickHouse/mcp-clickhouse",
       "tags": [
@@ -3354,9 +3354,9 @@
         "write_neo4j_cypher"
       ],
       "metadata": {
-        "stars": 636,
+        "stars": 656,
         "pulls": 91,
-        "last_updated": "2025-08-22T09:41:03Z"
+        "last_updated": "2025-08-29T02:30:28Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3431,9 +3431,9 @@
         "list_memories"
       ],
       "metadata": {
-        "stars": 636,
+        "stars": 656,
         "pulls": 105,
-        "last_updated": "2025-08-22T09:41:03Z"
+        "last_updated": "2025-08-29T02:30:28Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3532,9 +3532,9 @@
         "box_metadata_template_create_tool"
       ],
       "metadata": {
-        "stars": 46,
+        "stars": 47,
         "pulls": 52,
-        "last_updated": "2025-08-22T09:41:05Z"
+        "last_updated": "2025-08-30T02:27:20Z"
       },
       "repository_url": "https://github.com/box-community/mcp-server-box",
       "tags": [
@@ -3683,9 +3683,9 @@
         "provision_neon_auth"
       ],
       "metadata": {
-        "stars": 424,
+        "stars": 440,
         "pulls": 55,
-        "last_updated": "2025-08-22T09:41:04Z"
+        "last_updated": "2025-08-29T02:30:29Z"
       },
       "repository_url": "https://github.com/neondatabase-labs/mcp-server-neon",
       "tags": [
@@ -3746,9 +3746,9 @@
         "open_nodes"
       ],
       "metadata": {
-        "stars": 65278,
+        "stars": 66404,
         "pulls": 15854,
-        "last_updated": "2025-08-22T09:42:37Z"
+        "last_updated": "2025-09-01T02:37:23Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -3784,43 +3784,32 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "atlas-list-orgs",
-        "atlas-list-projects",
-        "atlas-create-project",
-        "atlas-list-clusters",
-        "atlas-inspect-cluster",
-        "atlas-create-free-cluster",
-        "atlas-connect-cluster",
-        "atlas-inspect-access-list",
-        "atlas-create-access-list",
-        "atlas-list-db-users",
-        "atlas-create-db-user",
-        "atlas-list-alerts",
-        "connect",
-        "find",
         "aggregate",
-        "count",
-        "insert-one",
-        "insert-many",
-        "create-index",
-        "update-one",
-        "update-many",
-        "rename-collection",
-        "delete-one",
-        "delete-many",
-        "drop-collection",
-        "drop-database",
-        "list-databases",
-        "list-collections",
         "collection-indexes",
         "collection-schema",
         "collection-storage-size",
-        "db-stats"
+        "connect",
+        "count",
+        "create-collection",
+        "create-index",
+        "db-stats",
+        "delete-many",
+        "drop-collection",
+        "drop-database",
+        "explain",
+        "export",
+        "find",
+        "insert-many",
+        "list-collections",
+        "list-databases",
+        "mongodb-logs",
+        "rename-collection",
+        "update-many"
       ],
       "metadata": {
-        "stars": 581,
+        "stars": 592,
         "pulls": 5060,
-        "last_updated": "2025-08-22T09:41:07Z"
+        "last_updated": "2025-08-31T02:31:31Z"
       },
       "repository_url": "https://github.com/mongodb-js/mongodb-mcp-server",
       "tags": [
@@ -3831,7 +3820,7 @@
         "data",
         "query"
       ],
-      "image": "docker.io/mongodb/mongodb-mcp-server:0.2.0",
+      "image": "docker.io/mongodb/mongodb-mcp-server:0.3.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -4314,7 +4303,7 @@
       "description": "Provides browser automation capabilities using Playwright",
       "tier": "Official",
       "status": "Active",
-      "transport": "sse",
+      "transport": "streamable-http",
       "tools": [
         "browser_close",
         "browser_resize",
@@ -4354,7 +4343,7 @@
         "browser",
         "navigate"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.35",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.36",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -4427,9 +4416,9 @@
         "analyze_db_health"
       ],
       "metadata": {
-        "stars": 970,
-        "pulls": 19360,
-        "last_updated": "2025-08-22T09:42:37Z"
+        "stars": 1043,
+        "pulls": 22175,
+        "last_updated": "2025-09-01T02:37:23Z"
       },
       "repository_url": "https://github.com/crystaldba/postgres-mcp",
       "tags": [
@@ -4704,9 +4693,9 @@
         "search_issues"
       ],
       "metadata": {
-        "stars": 314,
+        "stars": 327,
         "pulls": 127,
-        "last_updated": "2025-08-22T09:41:05Z"
+        "last_updated": "2025-08-30T02:27:20Z"
       },
       "repository_url": "https://github.com/getsentry/sentry-mcp",
       "tags": [
@@ -4804,9 +4793,9 @@
         "describe_table"
       ],
       "metadata": {
-        "stars": 9,
+        "stars": 10,
         "pulls": 4212,
-        "last_updated": "2025-08-22T09:41:07Z"
+        "last_updated": "2025-08-31T02:31:31Z"
       },
       "repository_url": "https://github.com/StacklokLabs/sqlite-mcp",
       "tags": [
@@ -4925,9 +4914,9 @@
         "update_storage_config"
       ],
       "metadata": {
-        "stars": 1974,
+        "stars": 2019,
         "pulls": 102,
-        "last_updated": "2025-08-22T09:41:06Z"
+        "last_updated": "2025-08-31T02:31:31Z"
       },
       "repository_url": "https://github.com/supabase-community/supabase-mcp",
       "tags": [
@@ -4979,9 +4968,9 @@
         "tavily-map"
       ],
       "metadata": {
-        "stars": 693,
+        "stars": 718,
         "pulls": 80,
-        "last_updated": "2025-08-22T09:41:04Z"
+        "last_updated": "2025-08-30T02:27:19Z"
       },
       "repository_url": "https://github.com/tavily-ai/tavily-mcp",
       "tags": [
@@ -5080,9 +5069,9 @@
         "convert_time"
       ],
       "metadata": {
-        "stars": 65278,
+        "stars": 66503,
         "pulls": 10986,
-        "last_updated": "2025-08-22T09:42:38Z"
+        "last_updated": "2025-09-02T02:31:27Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [

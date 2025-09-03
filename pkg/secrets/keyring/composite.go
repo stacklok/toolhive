@@ -6,6 +6,8 @@ package keyring
 import (
 	"fmt"
 	"runtime"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 const linuxOS = "linux"
@@ -66,6 +68,8 @@ func (*compositeProvider) logProviderSelection(providerName string) {
 			fmt.Printf("Using keyring provider: %s\n", providerName)
 		}
 	}()
+
+	logger.Info(fmt.Sprintf("Using keyring provider: %s", providerName))
 }
 
 func (c *compositeProvider) Set(service, key, value string) error {

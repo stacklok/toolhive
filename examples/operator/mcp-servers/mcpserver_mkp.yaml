@@ -10,13 +10,8 @@ spec:
   permissionProfile:
     type: builtin
     name: network
-  podTemplateSpec:
-    spec:
-      # this will not be needed once we have implemented separate 
-      # service accounts for each MCP server and its proxyrunner
-      serviceAccountName: mkp-proxy-runner
-      containers:
-      - name: mcp
+  # We create this service account below with the desired permissions.
+  serviceAccount: mkp-sa
   resources:
     limits:
       cpu: "100m"
@@ -24,3 +19,25 @@ spec:
     requests:
       cpu: "50m"
       memory: "64Mi"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mkp-sa
+  namespace: toolhive-system
+---
+# NOTE: This ClusterRoleBinding uses cluster-admin for example purposes only.
+# In production, you should create a custom ClusterRole with the minimum
+# permissions required by your MCP server instead of using cluster-admin.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mkp-sa-cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: mkp-sa
+  namespace: toolhive-system
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io

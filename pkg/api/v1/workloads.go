@@ -303,6 +303,8 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		// Error messages already logged in createWorkloadFromRequest
 		if errors.Is(err, retriever.ErrImageNotFound) || err.Error() == "MCP server image not found" {
 			http.Error(w, err.Error(), http.StatusNotFound)
+		} else if errors.Is(err, retriever.ErrInvalidRunConfig) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 		} else {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
@@ -897,7 +899,7 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
 	if err != nil {
 		logger.Errorf("Failed to build run config: %v", err)
-		return nil, fmt.Errorf("invalid configuration: %v", err)
+		return nil, fmt.Errorf("%w: %v", retriever.ErrInvalidRunConfig, err)
 	}
 
 	// Save the workload state

@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/adrg/xdg"
+
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
 // getOldPIDFilePath returns the legacy path to the PID file for a container (for backward compatibility)
@@ -24,6 +26,11 @@ func getOldPIDFilePath(containerBaseName string) string {
 // GetPIDFilePath returns the path to the PID file for a container
 // It first tries the new XDG location, then falls back to the old temp directory location
 func GetPIDFilePath(containerBaseName string) (string, error) {
+	// Return empty path in Kubernetes runtime since PID files are not used
+	if runtime.IsKubernetesRuntime() {
+		return "", fmt.Errorf("PID file operations are not supported in Kubernetes runtime")
+	}
+
 	// Get the new XDG-based path
 	pidPath, err := xdg.DataFile(filepath.Join("toolhive", "pids", fmt.Sprintf("toolhive-%s.pid", containerBaseName)))
 	if err != nil {
@@ -36,6 +43,11 @@ func GetPIDFilePath(containerBaseName string) (string, error) {
 // It checks both the new XDG location and the old temp directory location
 // Note: containerBaseName is pre-sanitized by the caller
 func GetPIDFilePathWithFallback(containerBaseName string) (string, error) {
+	// Return empty path in Kubernetes runtime since PID files are not used
+	if runtime.IsKubernetesRuntime() {
+		return "", fmt.Errorf("PID file operations are not supported in Kubernetes runtime")
+	}
+
 	// First try the new XDG-based path
 	newPath, err := GetPIDFilePath(containerBaseName)
 	if err != nil {
@@ -61,6 +73,11 @@ func GetPIDFilePathWithFallback(containerBaseName string) (string, error) {
 // WritePIDFile writes a process ID to a file
 // For full version compatibility, it writes to both the new XDG location and the old temp location
 func WritePIDFile(containerBaseName string, pid int) error {
+	// Skip PID file operations in Kubernetes runtime
+	if runtime.IsKubernetesRuntime() {
+		return nil
+	}
+
 	pidContent := []byte(fmt.Sprintf("%d", pid))
 
 	// Write to the new XDG location first
@@ -91,6 +108,11 @@ func WriteCurrentPIDFile(containerBaseName string) error {
 // It checks both the new XDG location and the old temp directory location
 // Note: containerBaseName is pre-sanitized by the caller
 func ReadPIDFile(containerBaseName string) (int, error) {
+	// Skip PID file operations in Kubernetes runtime
+	if runtime.IsKubernetesRuntime() {
+		return 0, fmt.Errorf("PID file operations are not supported in Kubernetes runtime")
+	}
+
 	// Get the PID file path with fallback
 	pidFilePath, err := GetPIDFilePathWithFallback(containerBaseName)
 	if err != nil {
@@ -129,6 +151,11 @@ func ReadPIDFile(containerBaseName string) (int, error) {
 // RemovePIDFile removes the PID file
 // It attempts to remove from both the new XDG location and the old temp directory location
 func RemovePIDFile(containerBaseName string) error {
+	// Skip PID file operations in Kubernetes runtime
+	if runtime.IsKubernetesRuntime() {
+		return nil
+	}
+
 	var lastErr error
 
 	// Try to remove from the new location

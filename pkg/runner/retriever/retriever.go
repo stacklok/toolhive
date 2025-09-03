@@ -164,7 +164,8 @@ func resolveCACertPath(flagValue string) string {
 	}
 
 	// Otherwise, check configuration
-	cfg := config.GetConfig()
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
 	if cfg.CACertificatePath != "" {
 		logger.Debugf("Using configured CA certificate: %s", cfg.CACertificatePath)
 		return cfg.CACertificatePath

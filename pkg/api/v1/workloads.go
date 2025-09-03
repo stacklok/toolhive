@@ -1,7 +1,6 @@
 package v1
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,17 +8,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	apitypes "github.com/stacklok/toolhive/pkg/api/v1/types"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/core"
 	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
-	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -33,6 +29,7 @@ type WorkloadRoutes struct {
 	debugMode        bool
 	groupManager     groups.Manager
 	secretsProvider  secrets.Provider
+	workloadService  *WorkloadService
 }
 
 //	@title			ToolHive API
@@ -49,12 +46,21 @@ func WorkloadRouter(
 	secretsProvider secrets.Provider,
 	debugMode bool,
 ) http.Handler {
+	workloadService := NewWorkloadService(
+		workloadManager,
+		groupManager,
+		secretsProvider,
+		containerRuntime,
+		debugMode,
+	)
+
 	routes := WorkloadRoutes{
 		workloadManager:  workloadManager,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 		groupManager:     groupManager,
 		secretsProvider:  secretsProvider,
+		workloadService:  workloadService,
 	}
 
 	r := chi.NewRouter()
@@ -82,7 +88,7 @@ func WorkloadRouter(
 //		@Produce		json
 //		@Param			all	query		bool	false	"List all workloads, including stopped ones"
 //		@Param			group	query		string	false	"Filter workloads by group name"
-//		@Success		200	{object}	workloadListResponse
+//		@Success		200	{object}	types.WorkloadListResponse
 //		@Failure		404	{string}	string	"Group not found"
 //		@Router			/api/v1beta/workloads [get]
 func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +122,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(workloadListResponse{Workloads: workloadList})
+	err = json.NewEncoder(w).Encode(apitypes.WorkloadListResponse{Workloads: workloadList})
 	if err != nil {
 		http.Error(w, "Failed to marshal workload list", http.StatusInternalServerError)
 		return
@@ -130,7 +136,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 //	@Tags			workloads
 //	@Produce		json
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		200		{object}	createRequest
+//	@Success		200		{object}	types.CreateRequest
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [get]
 func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +166,7 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config := runConfigToCreateRequest(runConfig)
+	config := apitypes.RunConfigToCreateRequest(runConfig)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(config); err != nil {
@@ -261,14 +267,14 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Tags			workloads
 //	@Accept			json
 //	@Produce		json
-//	@Param			request	body		createRequest	true	"Create workload request"
-//	@Success		201		{object}	createWorkloadResponse
+//	@Param			request	body		types.CreateRequest	true	"Create workload request"
+//	@Success		201		{object}	types.CreateWorkloadResponse
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		409		{string}	string	"Conflict"
 //	@Router			/api/v1beta/workloads [post]
 func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var req createRequest
+	var req apitypes.CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
 		return
@@ -298,10 +304,10 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Create the workload using shared logic
-	runConfig, err := s.createWorkloadFromRequest(ctx, &req)
+	runConfig, err := s.workloadService.CreateWorkloadFromRequest(ctx, &req)
 	if err != nil {
 		// Error messages already logged in createWorkloadFromRequest
-		if errors.Is(err, retriever.ErrImageNotFound) || err.Error() == "MCP server image not found" {
+		if errors.Is(err, retriever.ErrImageNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 		} else if errors.Is(err, retriever.ErrInvalidRunConfig) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -314,7 +320,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	// Return name so that the client will get the auto-generated name.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	resp := createWorkloadResponse{
+	resp := apitypes.CreateWorkloadResponse{
 		Name: runConfig.ContainerName,
 		Port: runConfig.Port,
 	}
@@ -332,8 +338,8 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Accept			json
 //	@Produce		json
 //	@Param			name		path		string			true	"Workload name"
-//	@Param			request		body		updateRequest	true	"Update workload request"
-//	@Success		200			{object}	createWorkloadResponse
+//	@Param			request		body		types.UpdateRequest	true	"Update workload request"
+//	@Success		200			{object}	types.CreateWorkloadResponse
 //	@Failure		400			{string}	string	"Bad Request"
 //	@Failure		404			{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/edit [post]
@@ -342,7 +348,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 	name := chi.URLParam(r, "name")
 
 	// Parse request body
-	var updateReq updateRequest
+	var updateReq apitypes.UpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&updateReq); err != nil {
 		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
@@ -357,8 +363,8 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Convert updateRequest to createRequest with the existing workload name
-	createReq := createRequest{
-		updateRequest: updateReq,
+	createReq := apitypes.CreateRequest{
+		UpdateRequest: updateReq,
 		Name:          name, // Use the name from URL path, not from request body
 	}
 
@@ -377,7 +383,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Create the new workload using shared logic
-	runConfig, err := s.createWorkloadFromRequest(ctx, &createReq)
+	runConfig, err := s.workloadService.CreateWorkloadFromRequest(ctx, &createReq)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -385,7 +391,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 
 	// Return the same response format as create
 	w.Header().Set("Content-Type", "application/json")
-	resp := createWorkloadResponse{
+	resp := apitypes.CreateWorkloadResponse{
 		Name: runConfig.ContainerName,
 		Port: runConfig.Port,
 	}
@@ -401,25 +407,25 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Description	Stop multiple workloads by name or by group
 //	@Tags			workloads
 //	@Accept			json
-//	@Param			request	body		bulkOperationRequest	true	"Bulk stop request (names or group)"
+//	@Param			request	body		types.BulkOperationRequest	true	"Bulk stop request (names or group)"
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/stop [post]
 func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var req bulkOperationRequest
+	var req apitypes.BulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
 		return
 	}
 
-	if err := validateBulkOperationRequest(req); err != nil {
+	if err := apitypes.ValidateBulkOperationRequest(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	workloadNames, err := s.getWorkloadNamesFromRequest(ctx, req)
+	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -446,25 +452,25 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 //	@Description	Restart multiple workloads by name or by group
 //	@Tags			workloads
 //	@Accept			json
-//	@Param			request	body		bulkOperationRequest	true	"Bulk restart request (names or group)"
+//	@Param			request	body		types.BulkOperationRequest	true	"Bulk restart request (names or group)"
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/restart [post]
 func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var req bulkOperationRequest
+	var req apitypes.BulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
 		return
 	}
 
-	if err := validateBulkOperationRequest(req); err != nil {
+	if err := apitypes.ValidateBulkOperationRequest(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	workloadNames, err := s.getWorkloadNamesFromRequest(ctx, req)
+	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -492,25 +498,25 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 //	@Description	Delete multiple workloads by name or by group
 //	@Tags			workloads
 //	@Accept			json
-//	@Param			request	body		bulkOperationRequest	true	"Bulk delete request (names or group)"
+//	@Param			request	body		types.BulkOperationRequest	true	"Bulk delete request (names or group)"
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/delete [post]
 func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var req bulkOperationRequest
+	var req apitypes.BulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
 		return
 	}
 
-	if err := validateBulkOperationRequest(req); err != nil {
+	if err := apitypes.ValidateBulkOperationRequest(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	workloadNames, err := s.getWorkloadNamesFromRequest(ctx, req)
+	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -571,7 +577,7 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 //	@Tags			workloads
 //	@Produce		json
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		200		{object}	workloadStatusResponse
+//	@Success		200		{object}	types.WorkloadStatusResponse
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/status [get]
 func (s *WorkloadRoutes) getWorkloadStatus(w http.ResponseWriter, r *http.Request) {
@@ -592,7 +598,7 @@ func (s *WorkloadRoutes) getWorkloadStatus(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	response := workloadStatusResponse{
+	response := apitypes.WorkloadStatusResponse{
 		Status: workload.Status,
 	}
 
@@ -639,390 +645,3 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 }
 
 // Response type definitions.
-
-// workloadListResponse represents the response for listing workloads
-//
-//	@Description	Response containing a list of workloads
-type workloadListResponse struct {
-	// List of container information for each workload
-	Workloads []core.Workload `json:"workloads"`
-}
-
-// workloadStatusResponse represents the response for getting workload status
-//
-//	@Description	Response containing workload status information
-type workloadStatusResponse struct {
-	// Current status of the workload
-	Status runtime.WorkloadStatus `json:"status"`
-}
-
-// updateRequest represents the request to update an existing workload
-//
-//	@Description	Request to update an existing workload (name cannot be changed)
-type updateRequest struct {
-	// Docker image to use
-	Image string `json:"image"`
-	// Host to bind to
-	Host string `json:"host"`
-	// Command arguments to pass to the container
-	CmdArguments []string `json:"cmd_arguments"`
-	// Port to expose from the container
-	TargetPort int `json:"target_port"`
-	// Environment variables to set in the container
-	EnvVars map[string]string `json:"env_vars"`
-	// Secret parameters to inject
-	Secrets []secrets.SecretParameter `json:"secrets"`
-	// Volume mounts
-	Volumes []string `json:"volumes"`
-	// Transport configuration
-	Transport string `json:"transport"`
-	// Authorization configuration
-	AuthzConfig string `json:"authz_config"`
-	// OIDC configuration options
-	OIDC oidcOptions `json:"oidc"`
-	// Permission profile to apply
-	PermissionProfile *permissions.Profile `json:"permission_profile"`
-	// Proxy mode to use
-	ProxyMode string `json:"proxy_mode"`
-	// Whether network isolation is turned on. This applies the rules in the permission profile.
-	NetworkIsolation bool `json:"network_isolation"`
-	// Tools filter
-	ToolsFilter []string `json:"tools"`
-	// Group name this workload belongs to
-	Group string `json:"group,omitempty"`
-
-	// Remote server specific fields
-	URL         string             `json:"url,omitempty"`
-	OAuthConfig *RemoteOAuthConfig `json:"oauth_config,omitempty"`
-	Headers     []*registry.Header `json:"headers,omitempty"`
-}
-
-// RemoteOAuthConfig represents OAuth configuration for remote servers
-//
-//	@Description	OAuth configuration for remote server authentication
-type RemoteOAuthConfig struct {
-	// OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
-	Issuer string `json:"issuer,omitempty"`
-	// OAuth authorization endpoint URL (alternative to issuer for non-OIDC OAuth)
-	AuthorizeURL string `json:"authorize_url,omitempty"`
-	// OAuth token endpoint URL (alternative to issuer for non-OIDC OAuth)
-	TokenURL string `json:"token_url,omitempty"`
-	// OAuth client ID for authentication
-	ClientID     string                   `json:"client_id,omitempty"`
-	ClientSecret *secrets.SecretParameter `json:"client_secret,omitempty"`
-
-	// OAuth scopes to request
-	Scopes []string `json:"scopes,omitempty"`
-	// Whether to use PKCE for the OAuth flow
-	UsePKCE bool `json:"use_pkce,omitempty"`
-	// Additional OAuth parameters for server-specific customization
-	OAuthParams map[string]string `json:"oauth_params,omitempty"`
-	// Specific port for OAuth callback server
-	CallbackPort int `json:"callback_port,omitempty"`
-}
-
-// createRequest represents the request to create a new workload
-//
-//	@Description	Request to create a new workload
-type createRequest struct {
-	updateRequest
-	// Name of the workload
-	Name string `json:"name"`
-}
-
-// oidcOptions represents OIDC configuration options
-//
-//	@Description	OIDC configuration for workload authentication
-type oidcOptions struct {
-	// OIDC issuer URL
-	Issuer string `json:"issuer"`
-	// Expected audience
-	Audience string `json:"audience"`
-	// JWKS URL for key verification
-	JwksURL string `json:"jwks_url"`
-	// Token introspection URL for OIDC
-	IntrospectionURL string `json:"introspection_url"`
-	// OAuth2 client ID
-	ClientID string `json:"client_id"`
-	// OAuth2 client secret
-	ClientSecret string `json:"client_secret"`
-}
-
-// createWorkloadResponse represents the response for workload creation
-//
-//	@Description	Response after successfully creating a workload
-type createWorkloadResponse struct {
-	// Name of the created workload
-	Name string `json:"name"`
-	// Port the workload is listening on
-	Port int `json:"port"`
-}
-
-// bulkOperationRequest represents a request for bulk operations on workloads
-type bulkOperationRequest struct {
-	// Names of the workloads to operate on
-	Names []string `json:"names"`
-	// Group name to operate on (mutually exclusive with names)
-	Group string `json:"group,omitempty"`
-}
-
-// validateBulkOperationRequest validates the bulk operation request
-func validateBulkOperationRequest(req bulkOperationRequest) error {
-	if len(req.Names) > 0 && req.Group != "" {
-		return fmt.Errorf("cannot specify both names and group")
-	}
-	if len(req.Names) == 0 && req.Group == "" {
-		return fmt.Errorf("must specify either names or group")
-	}
-	return nil
-}
-
-// getWorkloadNamesFromRequest gets workload names from either the names field or group
-func (s *WorkloadRoutes) getWorkloadNamesFromRequest(ctx context.Context, req bulkOperationRequest) ([]string, error) {
-	if len(req.Names) > 0 {
-		return req.Names, nil
-	}
-
-	if err := validation.ValidateGroupName(req.Group); err != nil {
-		return nil, fmt.Errorf("invalid group name: %w", err)
-	}
-
-	// Check if the group exists
-	exists, err := s.groupManager.Exists(ctx, req.Group)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check if group exists: %v", err)
-	}
-	if !exists {
-		return nil, fmt.Errorf("group '%s' does not exist", req.Group)
-	}
-
-	// Get all workload names in the group
-	workloadNames, err := s.workloadManager.ListWorkloadsInGroup(ctx, req.Group)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list workloads in group: %v", err)
-	}
-
-	return workloadNames, nil
-}
-
-// createWorkloadFromRequest creates a workload from a request
-func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
-	// Default group if not specified
-	groupName := req.Group
-	if groupName == "" {
-		groupName = groups.DefaultGroup
-	}
-
-	// Validate that the group exists
-	exists, err := s.groupManager.Exists(ctx, groupName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check if group exists: %v", err)
-	}
-	if !exists {
-		return nil, fmt.Errorf("group '%s' does not exist", groupName)
-	}
-
-	var remoteAuthConfig *runner.RemoteAuthConfig
-	var imageURL string
-	var imageMetadata *registry.ImageMetadata
-	if req.URL != "" {
-		// Configure remote authentication if OAuth config is provided
-		remoteAuthConfig, err = s.createRequestToRemoteAuthConfig(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		var serverMetadata registry.ServerMetadata
-		// Fetch or build the requested image
-		imageURL, serverMetadata, err = retriever.GetMCPServer(
-			ctx,
-			req.Image,
-			"", // We do not let the user specify a CA cert path here.
-			retriever.VerifyImageWarn,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve MCP server image: %v", err)
-		}
-
-		if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
-			if remoteServerMetadata.OAuthConfig != nil {
-				clientSecret, err := s.resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
-				if err != nil {
-					return nil, err
-				}
-				remoteAuthConfig = &runner.RemoteAuthConfig{
-					ClientID:     req.OAuthConfig.ClientID,
-					ClientSecret: clientSecret,
-					Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
-					CallbackPort: remoteServerMetadata.OAuthConfig.CallbackPort,
-					Issuer:       remoteServerMetadata.OAuthConfig.Issuer,
-					AuthorizeURL: remoteServerMetadata.OAuthConfig.AuthorizeURL,
-					TokenURL:     remoteServerMetadata.OAuthConfig.TokenURL,
-					OAuthParams:  remoteServerMetadata.OAuthConfig.OAuthParams,
-					Headers:      remoteServerMetadata.Headers,
-					EnvVars:      remoteServerMetadata.EnvVars,
-				}
-			}
-		}
-		// Handle server metadata - API only supports container servers
-		imageMetadata, _ = serverMetadata.(*registry.ImageMetadata)
-	}
-
-	// Build RunConfig
-	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
-
-	runConfig, err := runner.NewRunConfigBuilder().
-		WithRuntime(s.containerRuntime).
-		WithCmdArgs(req.CmdArguments).
-		WithName(req.Name).
-		WithGroup(groupName).
-		WithImage(imageURL).
-		WithRemoteURL(req.URL).
-		WithRemoteAuth(remoteAuthConfig).
-		WithHost(req.Host).
-		WithTargetHost(transport.LocalhostIPv4).
-		WithDebug(s.debugMode).
-		WithVolumes(req.Volumes).
-		WithSecrets(runSecrets).
-		WithAuthzConfigPath(req.AuthzConfig).
-		WithAuditConfigPath("").
-		WithPermissionProfile(req.PermissionProfile).
-		WithNetworkIsolation(req.NetworkIsolation).
-		WithK8sPodPatch("").
-		WithProxyMode(types.ProxyMode(req.ProxyMode)).
-		WithTransportAndPorts(req.Transport, 0, req.TargetPort).
-		WithAuditEnabled(false, "").
-		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
-			"", "", "", "", "", false).
-		WithTelemetryConfig("", false, "", 0.0, nil, false, nil).
-		WithToolsFilter(req.ToolsFilter).
-		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
-	if err != nil {
-		logger.Errorf("Failed to build run config: %v", err)
-		return nil, fmt.Errorf("%w: %v", retriever.ErrInvalidRunConfig, err)
-	}
-
-	// Save the workload state
-	if err := runConfig.SaveState(ctx); err != nil {
-		logger.Errorf("Failed to save workload config: %v", err)
-		return nil, fmt.Errorf("failed to save workload config")
-	}
-
-	// Start workload
-	if err := s.workloadManager.RunWorkloadDetached(ctx, runConfig); err != nil {
-		logger.Errorf("Failed to start workload: %v", err)
-		return nil, fmt.Errorf("failed to start workload")
-	}
-
-	return runConfig, nil
-}
-
-func (s *WorkloadRoutes) createRequestToRemoteAuthConfig(
-	ctx context.Context,
-	req *createRequest,
-) (*runner.RemoteAuthConfig, error) {
-	if req.OAuthConfig == nil {
-		return nil, nil
-	}
-
-	// Resolve client secret from secret management if provided
-	clientSecret, err := s.resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create RemoteAuthConfig
-	return &runner.RemoteAuthConfig{
-		ClientID:     req.OAuthConfig.ClientID,
-		ClientSecret: clientSecret,
-		Scopes:       req.OAuthConfig.Scopes,
-		Issuer:       req.OAuthConfig.Issuer,
-		AuthorizeURL: req.OAuthConfig.AuthorizeURL,
-		TokenURL:     req.OAuthConfig.TokenURL,
-		OAuthParams:  req.OAuthConfig.OAuthParams,
-		CallbackPort: req.OAuthConfig.CallbackPort,
-		Headers:      req.Headers,
-	}, nil
-}
-
-func (s *WorkloadRoutes) resolveClientSecret(ctx context.Context, secretParam *secrets.SecretParameter) (string, error) {
-	var clientSecret string
-	if secretParam != nil {
-
-		// Get the secret from the secrets manager
-		secretValue, err := s.secretsProvider.GetSecret(ctx, secretParam.Name)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve OAuth client secret: %w", err)
-		}
-		clientSecret = secretValue
-	}
-	return clientSecret, nil
-}
-
-// runConfigToCreateRequest converts a RunConfig to createRequest for API responses
-func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
-	// Convert CLI secrets ([]string) back to SecretParameters
-	secretParams := make([]secrets.SecretParameter, 0, len(runConfig.Secrets))
-	for _, secretStr := range runConfig.Secrets {
-		// Parse the CLI format: "<name>,target=<target>"
-		if secretParam, err := secrets.ParseSecretParameter(secretStr); err == nil {
-			secretParams = append(secretParams, secretParam)
-		}
-		// Ignore invalid secrets rather than failing the entire conversion
-	}
-
-	// Get OIDC fields from RunConfig
-	var oidcConfig oidcOptions
-	if runConfig.OIDCConfig != nil {
-		oidcConfig = oidcOptions{
-			Issuer:           runConfig.OIDCConfig.Issuer,
-			Audience:         runConfig.OIDCConfig.Audience,
-			JwksURL:          runConfig.OIDCConfig.JWKSURL,
-			IntrospectionURL: runConfig.OIDCConfig.IntrospectionURL,
-			ClientID:         runConfig.OIDCConfig.ClientID,
-			ClientSecret:     runConfig.OIDCConfig.ClientSecret,
-		}
-	}
-
-	// Get remote OAuth config from RunConfig
-	var remoteOAuthConfig *RemoteOAuthConfig
-	var headers []*registry.Header
-	if runConfig.RemoteAuthConfig != nil {
-		remoteOAuthConfig = &RemoteOAuthConfig{
-			Issuer:       runConfig.RemoteAuthConfig.Issuer,
-			AuthorizeURL: runConfig.RemoteAuthConfig.AuthorizeURL,
-			TokenURL:     runConfig.RemoteAuthConfig.TokenURL,
-			ClientID:     runConfig.RemoteAuthConfig.ClientID,
-			Scopes:       runConfig.RemoteAuthConfig.Scopes,
-			OAuthParams:  runConfig.RemoteAuthConfig.OAuthParams,
-			CallbackPort: runConfig.RemoteAuthConfig.CallbackPort,
-		}
-		headers = runConfig.RemoteAuthConfig.Headers
-	}
-
-	authzConfigPath := ""
-
-	return &createRequest{
-		updateRequest: updateRequest{
-			Image:             runConfig.Image,
-			Host:              runConfig.Host,
-			CmdArguments:      runConfig.CmdArgs,
-			TargetPort:        runConfig.TargetPort,
-			EnvVars:           runConfig.EnvVars,
-			Secrets:           secretParams,
-			Volumes:           runConfig.Volumes,
-			Transport:         string(runConfig.Transport),
-			AuthzConfig:       authzConfigPath,
-			OIDC:              oidcConfig,
-			PermissionProfile: runConfig.PermissionProfile,
-			ProxyMode:         string(runConfig.ProxyMode),
-			NetworkIsolation:  runConfig.IsolateNetwork,
-			ToolsFilter:       runConfig.ToolsFilter,
-			Group:             runConfig.Group,
-			URL:               runConfig.RemoteURL,
-			OAuthConfig:       remoteOAuthConfig,
-			Headers:           headers,
-		},
-		Name: runConfig.Name,
-	}
-}

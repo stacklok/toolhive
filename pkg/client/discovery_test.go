@@ -8,9 +8,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -201,27 +203,22 @@ func TestGetClientStatus_WithGroups(t *testing.T) {
 	_, err = os.Create(filepath.Join(tempHome, ".claude.json"))
 	require.NoError(t, err)
 
-	// Create a real groups manager for testing
-	groupManager, err := groups.NewManager()
-	require.NoError(t, err)
+	// Create a mock groups manager instead of a real one to avoid modifying host configuration
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
 
-	// Clean up any existing test groups
+	mockGroupManager := mocks.NewMockManager(ctrl)
+
+	// Set up mock expectations
 	ctx := context.Background()
-	existingGroups, _ := groupManager.List(ctx)
-	for _, group := range existingGroups {
-		if group.Name == "test-dev-group" || group.Name == "test-prod-group" {
-			groupManager.Delete(ctx, group.Name)
-		}
+	mockGroups := []*groups.Group{
+		{
+			Name:              "test-dev-group",
+			RegisteredClients: []string{string(ClaudeCode), string(Cursor)},
+		},
 	}
 
-	// Create test groups with registered clients
-	err = groupManager.Create(ctx, "test-dev-group")
-	require.NoError(t, err)
-	defer groupManager.Delete(ctx, "test-dev-group")
-
-	// Register clients with groups
-	err = groupManager.RegisterClients(ctx, []string{"test-dev-group"}, []string{string(ClaudeCode), string(Cursor)})
-	require.NoError(t, err)
+	mockGroupManager.EXPECT().List(ctx).Return(mockGroups, nil).AnyTimes()
 
 	// Now test GetClientStatus using ClientManager with dependency injection
 	// Use explicit client integrations for this test to avoid race conditions with global variable
@@ -242,7 +239,16 @@ func TestGetClientStatus_WithGroups(t *testing.T) {
 		},
 	}
 
-	manager := NewTestClientManager(tempHome, groupManager, clientIntegrations, config.NewDefaultProvider())
+	// Create a test config provider instead of using the default one
+	testConfig := &config.Config{
+		Clients: config.Clients{
+			RegisteredClients: []string{}, // Empty to test group-based registration
+		},
+	}
+	configProvider, cleanup := createTestConfigProvider(t, testConfig)
+	defer cleanup()
+
+	manager := NewTestClientManager(tempHome, mockGroupManager, clientIntegrations, configProvider)
 	statuses, err := manager.GetClientStatus(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, statuses)

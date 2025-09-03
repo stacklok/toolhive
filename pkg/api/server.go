@@ -228,7 +228,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 
 // getSecretsManager is a helper function to get the secrets manager
 func getSecretsManager() (secrets.Provider, error) {
-	cfg := config.GetConfig()
+	cfg := config.NewDefaultProvider().GetConfig()
 
 	// Check if secrets setup has been completed
 	if !cfg.Secrets.SetupCompleted {

@@ -6,26 +6,30 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
-	"github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
 
 func TestSecretsRouter(t *testing.T) {
 	t.Parallel()
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
 
-	mockProvider := mocks.NewMockProvider(ctrl)
-	router := SecretsRouter(mockProvider)
+	// Create a test config provider to avoid using the singleton
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	provider := config.NewPathProvider(configPath)
+
+	routes := NewSecretsRoutesWithProvider(provider)
+	router := secretsRouterWithRoutes(routes)
 	assert.NotNil(t, router)
 }
 
@@ -52,6 +56,17 @@ func TestSetupSecretsProvider_ValidRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Create a temporary config directory for this test
+			tempDir := t.TempDir()
+			configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+			// Ensure the directory exists
+			err := os.MkdirAll(filepath.Dir(configPath), 0755)
+			require.NoError(t, err)
+
+			// Create a test config provider
+			configProvider := config.NewPathProvider(configPath)
+
 			body, err := json.Marshal(tt.requestBody)
 			require.NoError(t, err)
 
@@ -59,7 +74,7 @@ func TestSetupSecretsProvider_ValidRequests(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 
-			routes := &SecretsRoutes{}
+			routes := NewSecretsRoutesWithProvider(configProvider)
 			routes.setupSecretsProvider(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
@@ -107,8 +122,18 @@ func TestSetupSecretsProvider_InvalidRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Create a temporary config directory for this test
+			tempDir := t.TempDir()
+			configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+			// Ensure the directory exists
+			err := os.MkdirAll(filepath.Dir(configPath), 0755)
+			require.NoError(t, err)
+
+			// Create a test config provider
+			configProvider := config.NewPathProvider(configPath)
+
 			var body []byte
-			var err error
 			if str, ok := tt.requestBody.(string); ok {
 				body = []byte(str)
 			} else {
@@ -120,7 +145,7 @@ func TestSetupSecretsProvider_InvalidRequests(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 
-			routes := &SecretsRoutes{}
+			routes := NewSecretsRoutesWithProvider(configProvider)
 			routes.setupSecretsProvider(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
@@ -170,8 +195,18 @@ func TestCreateSecret_InvalidRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Create a temporary config directory for this test
+			tempDir := t.TempDir()
+			configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+			// Ensure the directory exists
+			err := os.MkdirAll(filepath.Dir(configPath), 0755)
+			require.NoError(t, err)
+
+			// Create a test config provider
+			configProvider := config.NewPathProvider(configPath)
+
 			var body []byte
-			var err error
 			if str, ok := tt.requestBody.(string); ok {
 				body = []byte(str)
 			} else {
@@ -183,7 +218,7 @@ func TestCreateSecret_InvalidRequests(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 
-			routes := &SecretsRoutes{}
+			routes := NewSecretsRoutesWithProvider(configProvider)
 			routes.createSecret(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
@@ -235,8 +270,18 @@ func TestUpdateSecret_InvalidRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Create a temporary config directory for this test
+			tempDir := t.TempDir()
+			configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+			// Ensure the directory exists
+			err := os.MkdirAll(filepath.Dir(configPath), 0755)
+			require.NoError(t, err)
+
+			// Create a test config provider
+			configProvider := config.NewPathProvider(configPath)
+
 			var body []byte
-			var err error
 			if str, ok := tt.requestBody.(string); ok {
 				body = []byte(str)
 			} else {
@@ -255,7 +300,7 @@ func TestUpdateSecret_InvalidRequests(t *testing.T) {
 
 			w := httptest.NewRecorder()
 
-			routes := &SecretsRoutes{}
+			routes := NewSecretsRoutesWithProvider(configProvider)
 			routes.updateSecret(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
@@ -287,6 +332,17 @@ func TestDeleteSecret_InvalidRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Create a temporary config directory for this test
+			tempDir := t.TempDir()
+			configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+			// Ensure the directory exists
+			err := os.MkdirAll(filepath.Dir(configPath), 0755)
+			require.NoError(t, err)
+
+			// Create a test config provider
+			configProvider := config.NewPathProvider(configPath)
+
 			url := "/default/keys/" + tt.secretKey
 			req := httptest.NewRequest(http.MethodDelete, url, nil)
 
@@ -297,7 +353,7 @@ func TestDeleteSecret_InvalidRequests(t *testing.T) {
 
 			w := httptest.NewRecorder()
 
-			routes := &SecretsRoutes{}
+			routes := NewSecretsRoutesWithProvider(configProvider)
 			routes.deleteSecret(w, req)
 
 			assert.Equal(t, tt.expectedCode, w.Code)
@@ -411,12 +467,24 @@ func TestErrorHandling(t *testing.T) {
 
 	t.Run("malformed json request", func(t *testing.T) {
 		t.Parallel()
+
+		// Create a temporary config directory for this test
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+		// Ensure the directory exists
+		err := os.MkdirAll(filepath.Dir(configPath), 0755)
+		require.NoError(t, err)
+
+		// Create a test config provider
+		configProvider := config.NewPathProvider(configPath)
+
 		malformedJSON := `{"provider_type": "encrypted", "invalid": json}`
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(malformedJSON))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		routes := &SecretsRoutes{}
+		routes := NewSecretsRoutesWithProvider(configProvider)
 		routes.setupSecretsProvider(w, req)
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -425,11 +493,23 @@ func TestErrorHandling(t *testing.T) {
 
 	t.Run("empty request body", func(t *testing.T) {
 		t.Parallel()
+
+		// Create a temporary config directory for this test
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+		// Ensure the directory exists
+		err := os.MkdirAll(filepath.Dir(configPath), 0755)
+		require.NoError(t, err)
+
+		// Create a test config provider
+		configProvider := config.NewPathProvider(configPath)
+
 		req := httptest.NewRequest(http.MethodPost, "/default/keys", strings.NewReader(""))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
-		routes := &SecretsRoutes{}
+		routes := NewSecretsRoutesWithProvider(configProvider)
 		routes.createSecret(w, req)
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -437,11 +517,23 @@ func TestErrorHandling(t *testing.T) {
 
 	t.Run("missing content type header", func(t *testing.T) {
 		t.Parallel()
+
+		// Create a temporary config directory for this test
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+		// Ensure the directory exists
+		err := os.MkdirAll(filepath.Dir(configPath), 0755)
+		require.NoError(t, err)
+
+		// Create a test config provider
+		configProvider := config.NewPathProvider(configPath)
+
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"provider_type": "none"}`))
 		// Deliberately not setting Content-Type header
 		w := httptest.NewRecorder()
 
-		routes := &SecretsRoutes{}
+		routes := NewSecretsRoutesWithProvider(configProvider)
 		routes.setupSecretsProvider(w, req)
 
 		// Should still work as the handler doesn't strictly require content-type
@@ -455,10 +547,20 @@ func TestRouterIntegration(t *testing.T) {
 
 	t.Run("router setup test", func(t *testing.T) {
 		t.Parallel()
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-		mockProvider := mocks.NewMockProvider(ctrl)
-		router := SecretsRouter(mockProvider)
+
+		// Create a temporary config directory for this test
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+		// Ensure the directory exists
+		err := os.MkdirAll(filepath.Dir(configPath), 0755)
+		require.NoError(t, err)
+
+		// Create a test config provider
+		configProvider := config.NewPathProvider(configPath)
+
+		routes := NewSecretsRoutesWithProvider(configProvider)
+		router := secretsRouterWithRoutes(routes)
 
 		// Test POST / endpoint
 		setupReq := setupSecretsRequest{

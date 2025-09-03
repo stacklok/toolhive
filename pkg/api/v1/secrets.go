@@ -21,15 +21,32 @@ const (
 
 // SecretsRoutes defines the routes for the secrets API.
 type SecretsRoutes struct {
-	provider secrets.Provider
+	configProvider config.Provider
+	provider       secrets.Provider
+}
+
+// NewSecretsRoutes creates a new SecretsRoutes with the default config provider
+func NewSecretsRoutes(provider secrets.Provider) *SecretsRoutes {
+	return &SecretsRoutes{
+		configProvider: config.NewDefaultProvider(),
+		provider:       provider,
+	}
+}
+
+// NewSecretsRoutesWithProvider creates a new SecretsRoutes with a custom config provider
+func NewSecretsRoutesWithProvider(provider config.Provider) *SecretsRoutes {
+	return &SecretsRoutes{
+		configProvider: provider,
+	}
 }
 
 // SecretsRouter creates a new router for the secrets API.
-func SecretsRouter(secretsProvider secrets.Provider) http.Handler {
-	routes := SecretsRoutes{
-		provider: secretsProvider,
-	}
+func SecretsRouter(provider secrets.Provider) http.Handler {
+	routes := NewSecretsRoutes(provider)
+	return secretsRouterWithRoutes(routes)
+}
 
+func secretsRouterWithRoutes(routes *SecretsRoutes) http.Handler {
 	r := chi.NewRouter()
 
 	// Setup secrets provider
@@ -63,7 +80,7 @@ func SecretsRouter(secretsProvider secrets.Provider) http.Handler {
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets [post]
-func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Request) {
+func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Request) {
 	var req setupSecretsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Errorf("Failed to decode request body: %v", err)
@@ -91,7 +108,7 @@ func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Check current secrets provider configuration for appropriate messaging
-	cfg := config.GetConfig()
+	cfg := s.configProvider.GetConfig()
 	isReconfiguration := false
 	isInitialSetup := !cfg.Secrets.SetupCompleted
 	if cfg.Secrets.SetupCompleted {
@@ -161,7 +178,7 @@ func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Update the secrets provider type and mark setup as completed
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := s.configProvider.UpdateConfig(func(c *config.Config) {
 		c.Secrets.ProviderType = string(providerType)
 		c.Secrets.SetupCompleted = true
 	})
@@ -203,7 +220,7 @@ func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Reques
 //	@Failure		500	{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets/default [get]
 func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, _ *http.Request) {
-	cfg := config.GetConfig()
+	cfg := s.configProvider.GetConfig()
 
 	// Check if secrets provider is setup
 	if !cfg.Secrets.SetupCompleted {

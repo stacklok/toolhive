@@ -51,8 +51,10 @@ func TestRegistryRouter(t *testing.T) {
 
 	logger.Initialize()
 
-	router := RegistryRouter()
-	assert.NotNil(t, router)
+	// Create a test config provider to avoid using the singleton
+	provider, _ := CreateTestConfigProvider(t, nil)
+	routes := NewRegistryRoutesWithProvider(provider)
+	assert.NotNil(t, routes)
 }
 
 //nolint:paralleltest // Cannot use t.Parallel() with t.Setenv() in Go 1.24+
@@ -114,8 +116,6 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 
 	logger.Initialize()
 
-	routes := &RegistryRoutes{}
-
 	tests := []struct {
 		name         string
 		requestBody  string
@@ -151,6 +151,20 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
+			// Create a temporary config for this test
+			tempDir := t.TempDir()
+			configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+			// Ensure the directory exists
+			err := os.MkdirAll(filepath.Dir(configPath), 0755)
+			require.NoError(t, err)
+
+			// Create a test config provider
+			configProvider := config.NewPathProvider(configPath)
+
+			// Create routes with the test config provider
+			routes := NewRegistryRoutesWithProvider(configProvider)
 
 			req := httptest.NewRequest("PUT", "/default", strings.NewReader(tt.requestBody))
 			req.Header.Set("Content-Type", "application/json")

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -102,7 +103,7 @@ func init() {
 	// Add run flags
 	AddRunFlags(runCmd, &runFlags)
 
-	runCmd.PreRunE = validateGroupFlag()
+	runCmd.PreRunE = validateRunFlags
 
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
 	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
@@ -380,6 +381,12 @@ func runFromConfigFile(ctx context.Context) error {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
+	// Save the run config to disk in the usual directory (before running)
+	// This ensures that imported configs are persisted like normal runs
+	if err := runConfig.SaveState(ctx); err != nil {
+		return fmt.Errorf("failed to save run configuration: %v", err)
+	}
+
 	// Run the workload based on foreground flag
 	if runFlags.Foreground {
 		err = workloadManager.RunWorkload(ctx, runConfig)
@@ -388,6 +395,33 @@ func runFromConfigFile(ctx context.Context) error {
 	}
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// validateRunFlags validates run command flags
+func validateRunFlags(cmd *cobra.Command, args []string) error {
+	// Validate group flag
+	if err := validateGroupFlag()(cmd, args); err != nil {
+		return err
+	}
+
+	// Validate --from-config flag usage
+	fromConfigFlag := cmd.Flags().Lookup("from-config")
+	if fromConfigFlag != nil && fromConfigFlag.Value.String() != "" {
+		// When --from-config is used, no other flags should be changed
+		var conflictingFlags []string
+		cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+			// Skip the from-config flag itself and only check flags that were changed
+			if flag.Name != "from-config" && flag.Changed {
+				conflictingFlags = append(conflictingFlags, "--"+flag.Name)
+			}
+		})
+
+		if len(conflictingFlags) > 0 {
+			return fmt.Errorf("--from-config cannot be used with other configuration flags: %v", conflictingFlags)
+		}
 	}
 
 	return nil

@@ -286,7 +286,8 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 
 // setupTelemetryConfiguration sets up telemetry configuration with config fallbacks
 func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *telemetry.Config {
-	config := cfg.GetConfig()
+	configProvider := cfg.NewDefaultProvider()
+	config := configProvider.GetConfig()
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(cmd, config,
 		runFlags.OtelEndpoint, runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables)
 
@@ -306,7 +307,8 @@ func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.En
 	if process.IsDetached() || runtime.IsKubernetesRuntime() {
 		envVarValidator = &runner.DetachedEnvVarValidator{}
 	} else {
-		envVarValidator = &runner.CLIEnvVarValidator{}
+		cfgProvider := cfg.NewDefaultProvider()
+		envVarValidator = runner.NewCLIEnvVarValidator(cfgProvider)
 	}
 
 	return rt, envVarValidator, nil

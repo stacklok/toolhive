@@ -886,6 +886,103 @@ components:
           description: ServiceVersion is the service version for telemetry
           type: string
       type: object
+    types.BulkOperationRequest:
+      properties:
+        group:
+          description: Group name to operate on (mutually exclusive with names)
+          type: string
+        names:
+          description: Names of the workloads to operate on
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
+    types.CreateRequest:
+      description: Request to create a new workload
+      properties:
+        authz_config:
+          description: Authorization configuration
+          type: string
+        cmd_arguments:
+          description: Command arguments to pass to the container
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        env_vars:
+          additionalProperties:
+            type: string
+          description: Environment variables to set in the container
+          type: object
+        group:
+          description: Group name this workload belongs to
+          type: string
+        headers:
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+          uniqueItems: false
+        host:
+          description: Host to bind to
+          type: string
+        image:
+          description: Docker image to use
+          type: string
+        name:
+          description: Name of the workload
+          type: string
+        network_isolation:
+          description: Whether network isolation is turned on. This applies the rules
+            in the permission profile.
+          type: boolean
+        oauth_config:
+          $ref: '#/components/schemas/types.RemoteOAuthConfig'
+        oidc:
+          $ref: '#/components/schemas/types.oidcOptions'
+        permission_profile:
+          $ref: '#/components/schemas/permissions.Profile'
+        proxy_mode:
+          description: Proxy mode to use
+          type: string
+        secrets:
+          description: Secret parameters to inject
+          items:
+            $ref: '#/components/schemas/secrets.SecretParameter'
+          type: array
+          uniqueItems: false
+        target_port:
+          description: Port to expose from the container
+          type: integer
+        tools:
+          description: Tools filter
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport:
+          description: Transport configuration
+          type: string
+        url:
+          description: Remote server specific fields
+          type: string
+        volumes:
+          description: Volume mounts
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
+    types.CreateWorkloadResponse:
+      description: Response after successfully creating a workload
+      properties:
+        name:
+          description: Name of the created workload
+          type: string
+        port:
+          description: Port the workload is listening on
+          type: integer
+      type: object
     types.MiddlewareConfig:
       properties:
         parameters:
@@ -903,22 +1000,7 @@ components:
       x-enum-varnames:
       - ProxyModeSSE
       - ProxyModeStreamableHTTP
-    types.TransportType:
-      description: TransportType is the type of transport used for this workload.
-      type: string
-      x-enum-varnames:
-      - TransportTypeStdio
-      - TransportTypeSSE
-      - TransportTypeStreamableHTTP
-      - TransportTypeInspector
-    v1.RegistryType:
-      description: Type of registry (file, url, or default)
-      type: string
-      x-enum-varnames:
-      - RegistryTypeFile
-      - RegistryTypeURL
-      - RegistryTypeDefault
-    v1.RemoteOAuthConfig:
+    types.RemoteOAuthConfig:
       description: OAuth configuration for remote server authentication
       properties:
         authorize_url:
@@ -955,6 +1037,141 @@ components:
           description: Whether to use PKCE for the OAuth flow
           type: boolean
       type: object
+    types.TransportType:
+      description: TransportType is the type of transport used for this workload.
+      type: string
+      x-enum-varnames:
+      - TransportTypeStdio
+      - TransportTypeSSE
+      - TransportTypeStreamableHTTP
+      - TransportTypeInspector
+    types.UpdateRequest:
+      description: Request to update an existing workload (name cannot be changed)
+      properties:
+        authz_config:
+          description: Authorization configuration
+          type: string
+        cmd_arguments:
+          description: Command arguments to pass to the container
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        env_vars:
+          additionalProperties:
+            type: string
+          description: Environment variables to set in the container
+          type: object
+        group:
+          description: Group name this workload belongs to
+          type: string
+        headers:
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+          uniqueItems: false
+        host:
+          description: Host to bind to
+          type: string
+        image:
+          description: Docker image to use
+          type: string
+        network_isolation:
+          description: Whether network isolation is turned on. This applies the rules
+            in the permission profile.
+          type: boolean
+        oauth_config:
+          $ref: '#/components/schemas/types.RemoteOAuthConfig'
+        oidc:
+          $ref: '#/components/schemas/types.oidcOptions'
+        permission_profile:
+          $ref: '#/components/schemas/permissions.Profile'
+        proxy_mode:
+          description: Proxy mode to use
+          type: string
+        secrets:
+          description: Secret parameters to inject
+          items:
+            $ref: '#/components/schemas/secrets.SecretParameter'
+          type: array
+          uniqueItems: false
+        target_port:
+          description: Port to expose from the container
+          type: integer
+        tools:
+          description: Tools filter
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport:
+          description: Transport configuration
+          type: string
+        url:
+          description: Remote server specific fields
+          type: string
+        volumes:
+          description: Volume mounts
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
+    types.WorkloadListResponse:
+      description: Response containing a list of workloads
+      properties:
+        workloads:
+          description: List of container information for each workload
+          items:
+            $ref: '#/components/schemas/core.Workload'
+          type: array
+          uniqueItems: false
+      type: object
+    types.WorkloadStatusResponse:
+      description: Response containing workload status information
+      properties:
+        status:
+          description: Current status of the workload
+          type: string
+          x-enum-varnames:
+          - WorkloadStatusRunning
+          - WorkloadStatusStopped
+          - WorkloadStatusError
+          - WorkloadStatusStarting
+          - WorkloadStatusStopping
+          - WorkloadStatusUnhealthy
+          - WorkloadStatusRemoving
+          - WorkloadStatusUnknown
+      type: object
+    types.oidcOptions:
+      description: OIDC configuration options
+      properties:
+        audience:
+          description: Expected audience
+          type: string
+        client_id:
+          description: OAuth2 client ID
+          type: string
+        client_secret:
+          description: OAuth2 client secret
+          type: string
+        introspection_url:
+          description: Token introspection URL for OIDC
+          type: string
+        issuer:
+          description: OIDC issuer URL
+          type: string
+        jwks_url:
+          description: JWKS URL for key verification
+          type: string
+      type: object
+    v1.RegistryType:
+      description: Type of registry (file, url, or default)
+      type: string
+      x-enum-varnames:
+      - RegistryTypeFile
+      - RegistryTypeURL
+      - RegistryTypeDefault
     v1.UpdateRegistryRequest:
       description: Request containing registry configuration updates
       properties:
@@ -1005,18 +1222,6 @@ components:
             - AmpVSCodeInsider
             - AmpWindsurf
             - LMStudio
-          type: array
-          uniqueItems: false
-      type: object
-    v1.bulkOperationRequest:
-      properties:
-        group:
-          description: Group name to operate on (mutually exclusive with names)
-          type: string
-        names:
-          description: Names of the workloads to operate on
-          items:
-            type: string
           type: array
           uniqueItems: false
       type: object
@@ -1094,81 +1299,6 @@ components:
           description: Name of the created group
           type: string
       type: object
-    v1.createRequest:
-      description: Request to create a new workload
-      properties:
-        authz_config:
-          description: Authorization configuration
-          type: string
-        cmd_arguments:
-          description: Command arguments to pass to the container
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        env_vars:
-          additionalProperties:
-            type: string
-          description: Environment variables to set in the container
-          type: object
-        group:
-          description: Group name this workload belongs to
-          type: string
-        headers:
-          items:
-            $ref: '#/components/schemas/registry.Header'
-          type: array
-          uniqueItems: false
-        host:
-          description: Host to bind to
-          type: string
-        image:
-          description: Docker image to use
-          type: string
-        name:
-          description: Name of the workload
-          type: string
-        network_isolation:
-          description: Whether network isolation is turned on. This applies the rules
-            in the permission profile.
-          type: boolean
-        oauth_config:
-          $ref: '#/components/schemas/v1.RemoteOAuthConfig'
-        oidc:
-          $ref: '#/components/schemas/v1.oidcOptions'
-        permission_profile:
-          $ref: '#/components/schemas/permissions.Profile'
-        proxy_mode:
-          description: Proxy mode to use
-          type: string
-        secrets:
-          description: Secret parameters to inject
-          items:
-            $ref: '#/components/schemas/secrets.SecretParameter'
-          type: array
-          uniqueItems: false
-        target_port:
-          description: Port to expose from the container
-          type: integer
-        tools:
-          description: Tools filter
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        transport:
-          description: Transport configuration
-          type: string
-        url:
-          description: Remote server specific fields
-          type: string
-        volumes:
-          description: Volume mounts
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-      type: object
     v1.createSecretRequest:
       description: Request to create a new secret
       properties:
@@ -1188,16 +1318,6 @@ components:
         message:
           description: Success message
           type: string
-      type: object
-    v1.createWorkloadResponse:
-      description: Response after successfully creating a workload
-      properties:
-        name:
-          description: Name of the created workload
-          type: string
-        port:
-          description: Port the workload is listening on
-          type: integer
       type: object
     v1.getRegistryResponse:
       description: Response containing registry details
@@ -1286,28 +1406,6 @@ components:
           type: array
           uniqueItems: false
       type: object
-    v1.oidcOptions:
-      description: OIDC configuration options
-      properties:
-        audience:
-          description: Expected audience
-          type: string
-        client_id:
-          description: OAuth2 client ID
-          type: string
-        client_secret:
-          description: OAuth2 client secret
-          type: string
-        introspection_url:
-          description: Token introspection URL for OIDC
-          type: string
-        issuer:
-          description: OIDC issuer URL
-          type: string
-        jwks_url:
-          description: JWKS URL for key verification
-          type: string
-      type: object
     v1.providerCapabilitiesResponse:
       description: Capabilities of the secrets provider
       properties:
@@ -1391,78 +1489,6 @@ components:
           description: Type of the secrets provider that was setup
           type: string
       type: object
-    v1.updateRequest:
-      description: Request to update an existing workload (name cannot be changed)
-      properties:
-        authz_config:
-          description: Authorization configuration
-          type: string
-        cmd_arguments:
-          description: Command arguments to pass to the container
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        env_vars:
-          additionalProperties:
-            type: string
-          description: Environment variables to set in the container
-          type: object
-        group:
-          description: Group name this workload belongs to
-          type: string
-        headers:
-          items:
-            $ref: '#/components/schemas/registry.Header'
-          type: array
-          uniqueItems: false
-        host:
-          description: Host to bind to
-          type: string
-        image:
-          description: Docker image to use
-          type: string
-        network_isolation:
-          description: Whether network isolation is turned on. This applies the rules
-            in the permission profile.
-          type: boolean
-        oauth_config:
-          $ref: '#/components/schemas/v1.RemoteOAuthConfig'
-        oidc:
-          $ref: '#/components/schemas/v1.oidcOptions'
-        permission_profile:
-          $ref: '#/components/schemas/permissions.Profile'
-        proxy_mode:
-          description: Proxy mode to use
-          type: string
-        secrets:
-          description: Secret parameters to inject
-          items:
-            $ref: '#/components/schemas/secrets.SecretParameter'
-          type: array
-          uniqueItems: false
-        target_port:
-          description: Port to expose from the container
-          type: integer
-        tools:
-          description: Tools filter
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        transport:
-          description: Transport configuration
-          type: string
-        url:
-          description: Remote server specific fields
-          type: string
-        volumes:
-          description: Volume mounts
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-      type: object
     v1.updateSecretRequest:
       description: Request to update an existing secret
       properties:
@@ -1484,32 +1510,6 @@ components:
       properties:
         version:
           type: string
-      type: object
-    v1.workloadListResponse:
-      description: Response containing a list of workloads
-      properties:
-        workloads:
-          description: List of container information for each workload
-          items:
-            $ref: '#/components/schemas/core.Workload'
-          type: array
-          uniqueItems: false
-      type: object
-    v1.workloadStatusResponse:
-      description: Response containing workload status information
-      properties:
-        status:
-          description: Current status of the workload
-          type: string
-          x-enum-varnames:
-          - WorkloadStatusRunning
-          - WorkloadStatusStopped
-          - WorkloadStatusError
-          - WorkloadStatusStarting
-          - WorkloadStatusStopping
-          - WorkloadStatusUnhealthy
-          - WorkloadStatusRemoving
-          - WorkloadStatusUnknown
       type: object
 externalDocs:
   description: ""
@@ -2253,7 +2253,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.workloadListResponse'
+                $ref: '#/components/schemas/types.WorkloadListResponse'
           description: OK
         "404":
           content:
@@ -2270,7 +2270,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.createRequest'
+              $ref: '#/components/schemas/types.CreateRequest'
         description: Create workload request
         required: true
       responses:
@@ -2278,7 +2278,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.createWorkloadResponse'
+                $ref: '#/components/schemas/types.CreateWorkloadResponse'
           description: Created
         "400":
           content:
@@ -2341,7 +2341,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.createRequest'
+                $ref: '#/components/schemas/types.CreateRequest'
           description: OK
         "404":
           content:
@@ -2366,7 +2366,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.updateRequest'
+              $ref: '#/components/schemas/types.UpdateRequest'
         description: Update workload request
         required: true
       responses:
@@ -2374,7 +2374,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.createWorkloadResponse'
+                $ref: '#/components/schemas/types.CreateWorkloadResponse'
           description: OK
         "400":
           content:
@@ -2493,7 +2493,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/v1.workloadStatusResponse'
+                $ref: '#/components/schemas/types.WorkloadStatusResponse'
           description: OK
         "404":
           content:
@@ -2543,7 +2543,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
+              $ref: '#/components/schemas/types.BulkOperationRequest'
         description: Bulk delete request (names or group)
         required: true
       responses:
@@ -2569,7 +2569,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
+              $ref: '#/components/schemas/types.BulkOperationRequest'
         description: Bulk restart request (names or group)
         required: true
       responses:
@@ -2595,7 +2595,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/v1.bulkOperationRequest'
+              $ref: '#/components/schemas/types.BulkOperationRequest'
         description: Bulk stop request (names or group)
         required: true
       responses:

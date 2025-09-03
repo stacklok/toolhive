@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/stacklok/toolhive/pkg/config"
 )
 
@@ -215,10 +217,24 @@ func getTypeName(v interface{}) string {
 
 func TestGetRegistry(t *testing.T) {
 	t.Parallel()
-	provider, err := GetDefaultProvider()
-	if err != nil {
-		t.Fatalf("Failed to get registry provider: %v", err)
-	}
+
+	// Create a temporary config for testing
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+	// Ensure the directory exists
+	err := os.MkdirAll(filepath.Dir(configPath), 0755)
+	require.NoError(t, err)
+
+	// Create a test config provider
+	configProvider := config.NewPathProvider(configPath)
+
+	// Create a test config
+	cfg, err := configProvider.LoadOrCreateConfig()
+	require.NoError(t, err)
+
+	// Create provider with test config
+	provider := NewRegistryProvider(cfg)
 	reg, err := provider.GetRegistry()
 	if err != nil {
 		t.Fatalf("Failed to get registry: %v", err)
@@ -244,11 +260,26 @@ func TestGetRegistry(t *testing.T) {
 
 func TestGetServer(t *testing.T) {
 	t.Parallel()
+
+	// Create a temporary config for testing
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+	// Ensure the directory exists
+	err := os.MkdirAll(filepath.Dir(configPath), 0755)
+	require.NoError(t, err)
+
+	// Create a test config provider
+	configProvider := config.NewPathProvider(configPath)
+
+	// Create a test config
+	cfg, err := configProvider.LoadOrCreateConfig()
+	require.NoError(t, err)
+
+	// Create provider with test config
+	provider := NewRegistryProvider(cfg)
+
 	// Test getting an existing server
-	provider, err := GetDefaultProvider()
-	if err != nil {
-		t.Fatalf("Failed to get registry provider: %v", err)
-	}
 	server, err := provider.GetServer("osv")
 	if err != nil {
 		t.Fatalf("Failed to get server: %v", err)
@@ -281,11 +312,26 @@ func TestGetServer(t *testing.T) {
 
 func TestSearchServers(t *testing.T) {
 	t.Parallel()
+
+	// Create a temporary config for testing
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+	// Ensure the directory exists
+	err := os.MkdirAll(filepath.Dir(configPath), 0755)
+	require.NoError(t, err)
+
+	// Create a test config provider
+	configProvider := config.NewPathProvider(configPath)
+
+	// Create a test config
+	cfg, err := configProvider.LoadOrCreateConfig()
+	require.NoError(t, err)
+
+	// Create provider with test config
+	provider := NewRegistryProvider(cfg)
+
 	// Test searching for servers
-	provider, err := GetDefaultProvider()
-	if err != nil {
-		t.Fatalf("Failed to get registry provider: %v", err)
-	}
 	servers, err := provider.SearchServers("search")
 	if err != nil {
 		t.Fatalf("Failed to search servers: %v", err)
@@ -308,7 +354,25 @@ func TestSearchServers(t *testing.T) {
 
 func TestListServers(t *testing.T) {
 	t.Parallel()
-	provider, err := GetDefaultProvider()
+
+	// Create a temporary config for testing
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
+
+	// Ensure the directory exists
+	err := os.MkdirAll(filepath.Dir(configPath), 0755)
+	require.NoError(t, err)
+
+	// Create a test config provider
+	configProvider := config.NewPathProvider(configPath)
+
+	// Reset the default provider to ensure clean state
+	ResetDefaultProvider()
+	t.Cleanup(func() {
+		ResetDefaultProvider()
+	})
+
+	provider, err := GetDefaultProviderWithConfig(configProvider)
 	if err != nil {
 		t.Fatalf("Failed to get registry provider: %v", err)
 	}

@@ -16,7 +16,8 @@ var migrationOnce sync.Once
 // This is called once at application startup
 func CheckAndPerformAutoDiscoveryMigration() {
 	migrationOnce.Do(func() {
-		appConfig := config.GetConfig()
+		cfgprv := config.NewDefaultProvider()
+		appConfig := cfgprv.GetConfig()
 
 		// Check if auto-discovery flag is set to true, use of deprecated object is expected here
 		if appConfig.Clients.AutoDiscovery {
@@ -43,7 +44,8 @@ func performAutoDiscoveryMigration() {
 	}
 
 	// Get current config to see what's already registered
-	appConfig := config.GetConfig()
+	cfgprv := config.NewDefaultProvider()
+	appConfig := cfgprv.GetConfig()
 
 	var clientsToRegister []string
 	var alreadyRegistered = appConfig.Clients.RegisteredClients

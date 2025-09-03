@@ -15,6 +15,7 @@ import (
 type DefaultGroupMigrator struct {
 	groupManager     groups.Manager
 	workloadsManager workloads.Manager
+	configProvider   config.Provider
 }
 
 // Migrate performs the complete default group migration
@@ -124,7 +125,7 @@ func (m *DefaultGroupMigrator) migrateWorkloadsToDefaultGroup(ctx context.Contex
 
 // migrateClientConfigs migrates client configurations from global config to default group
 func (m *DefaultGroupMigrator) migrateClientConfigs(ctx context.Context) error {
-	appConfig := config.GetConfig()
+	appConfig := m.configProvider.GetConfig()
 
 	// If there are no registered clients, nothing to migrate
 	if len(appConfig.Clients.RegisteredClients) == 0 {

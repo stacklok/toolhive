@@ -12,6 +12,7 @@
 </p>
 
 [![Release][release-img]][release] [![Build status][ci-img]][ci]
+[![Coverage Status][coveralls-img]][coveralls]
 [![License: Apache 2.0][license-img]][license]
 [![Star on GitHub][stars-img]][stars] [![Discord][discord-img]][discord]
 
@@ -104,6 +105,8 @@ This project is licensed under the [Apache 2.0 License](./LICENSE).
 [release]: https://github.com/stacklok/toolhive/releases/latest
 [ci-img]: https://img.shields.io/github/actions/workflow/status/stacklok/toolhive/run-on-main.yml?style=flat&logo=github&label=Build
 [ci]: https://github.com/stacklok/toolhive/actions/workflows/run-on-main.yml
+[coveralls-img]: https://coveralls.io/repos/github/stacklok/toolhive/badge.svg?branch=main
+[coveralls]: https://coveralls.io/github/stacklok/toolhive?branch=main
 [license-img]: https://img.shields.io/badge/License-Apache2.0-blue.svg?style=flat
 [license]: https://opensource.org/licenses/Apache-2.0
 [stars-img]: https://img.shields.io/github/stars/stacklok/toolhive.svg?style=flat&logo=github&label=Stars

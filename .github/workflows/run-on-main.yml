@@ -16,6 +16,7 @@ jobs:
   tests:
     name: Tests
     uses: ./.github/workflows/test.yml
+    secrets: inherit
   e2e-tests:
     name: E2E Tests
     uses: ./.github/workflows/e2e-tests.yml

@@ -75,11 +75,6 @@ type fileStatusManager struct {
 // because of the import cycle between this package and the runconfig package.
 // We can easily load run config and check if it has a RemoteURL field set when we resolve the import cycle.
 func (f *fileStatusManager) isRemoteWorkload(ctx context.Context, workloadName string) (bool, error) {
-	// In Kubernetes environments (where runConfigStore is nil), assume not remote
-	if f.runConfigStore == nil {
-		return false, nil
-	}
-
 	// Check if the run configuration exists
 	exists, err := f.runConfigStore.Exists(ctx, workloadName)
 	if err != nil {

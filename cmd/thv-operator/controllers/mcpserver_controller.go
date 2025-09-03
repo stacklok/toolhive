@@ -571,6 +571,18 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 
 	env = ensureRequiredEnvVars(env)
 
+	// Get ConfigMap timestamp for pod recreation trigger
+	podAnnotations := make(map[string]string)
+	configMapName := fmt.Sprintf("%s-runconfig", m.Name)
+	configMap := &corev1.ConfigMap{}
+	if r.Client != nil {
+		err := r.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: configMapName}, configMap)
+		if err == nil {
+			timestamp := configMap.Annotations["toolhive.stacklok.io/last-modified"]
+			podAnnotations["toolhive.stacklok.io/configmap-timestamp"] = timestamp
+		}
+	}
+
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        m.Name,
@@ -585,7 +597,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: ls, // Keep original labels for pod template
+					Labels:      ls, // Keep original labels for pod template
+					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: proxyRunnerServiceAccountName(m.Name),
@@ -870,7 +883,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 	// Check if ConfigMap was modified after the deployment was last updated
 	runConfigConfigMapName := fmt.Sprintf("%s-runconfig", mcpServer.Name)
-	if r.configMapNewerThanDeployment(ctx, deployment, mcpServer.Namespace, runConfigConfigMapName) {
+	if r.configMapNewerThanDeployment(ctx, deployment, mcpServer.Namespace, runConfigConfigMapName, nil) {
 		return true
 	}
 

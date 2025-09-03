@@ -109,11 +109,6 @@ func (t *StdioTransport) Setup(
 	t.deployer = runtime
 	t.containerName = containerName
 
-	// Ensure envVars map is initialized
-	if envVars == nil {
-		envVars = make(map[string]string)
-	}
-
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "stdio"
 

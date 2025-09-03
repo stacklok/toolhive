@@ -20,7 +20,7 @@ func NewRunConfigStore(appName string) (Store, error) {
 // NewRunConfigStoreWithDetector creates a local store (detector parameter ignored)
 func NewRunConfigStoreWithDetector(appName string, _ any) (Store, error) {
 	if runtime.IsKubernetesRuntime() {
-		return nil, nil // No store needed in Kubernetes environments
+		return NewKubernetesStore(), nil
 	}
 	return NewLocalStore(appName, RunConfigsDir)
 }
@@ -33,7 +33,7 @@ func NewGroupConfigStore(appName string) (Store, error) {
 // NewGroupConfigStoreWithDetector creates a local store (detector parameter ignored)
 func NewGroupConfigStoreWithDetector(appName string, _ any) (Store, error) {
 	if runtime.IsKubernetesRuntime() {
-		return nil, nil // No store needed in Kubernetes environments
+		return NewKubernetesStore(), nil
 	}
 	return NewLocalStore(appName, GroupConfigsDir)
 }

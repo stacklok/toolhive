@@ -14,7 +14,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
@@ -185,7 +184,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	if err := transportHandler.Setup(
 		ctx, r.Config.Deployer, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
-		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile, r.Config.K8sPodTemplatePatch,
+		r.Config.EnsureEnvVarsInitialized(), r.Config.ContainerLabels, r.Config.PermissionProfile, r.Config.K8sPodTemplatePatch,
 		r.Config.IsolateNetwork, r.Config.IgnoreConfig,
 	); err != nil {
 		return fmt.Errorf("failed to set up transport: %v", err)
@@ -289,15 +288,6 @@ func (r *Runner) Run(ctx context.Context) error {
 			time.Sleep(1 * time.Second)
 		}
 	}()
-
-	// At this point, we can consider the workload started successfully.
-	// Only set status if statusManager is provided (not needed in Kubernetes environments)
-	if r.statusManager != nil {
-		if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.ContainerName, rt.WorkloadStatusRunning, ""); err != nil {
-			// If we can't set the status to `running` - treat it as a fatal error.
-			return fmt.Errorf("failed to set workload status: %v", err)
-		}
-	}
 
 	// Wait for either a signal or the done channel to be closed
 	select {

@@ -210,6 +210,14 @@ func NewRunConfig() *RunConfig {
 	}
 }
 
+// EnsureEnvVarsInitialized ensures that EnvVars is initialized and returns the map
+func (c *RunConfig) EnsureEnvVarsInitialized() map[string]string {
+	if c.EnvVars == nil {
+		c.EnvVars = make(map[string]string)
+	}
+	return c.EnvVars
+}
+
 // WithAuthz adds authorization configuration to the RunConfig
 func (c *RunConfig) WithAuthz(config *authz.Config) *RunConfig {
 	c.AuthzConfig = config

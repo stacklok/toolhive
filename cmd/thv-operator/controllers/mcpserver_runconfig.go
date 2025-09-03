@@ -5,13 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -41,15 +46,102 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 			Name:      configMapName,
 			Namespace: m.Namespace,
 			Labels:    labelsForRunConfig(m.Name),
+			Annotations: map[string]string{
+				"toolhive.stacklok.io/last-modified": time.Now().UTC().Format(time.RFC3339),
+			},
 		},
 		Data: map[string]string{
 			"runconfig.json": string(runConfigJSON),
 		},
 	}
 
-	return r.ensureRBACResource(ctx, m, "runconfig-configmap", func() client.Object {
-		return configMap
-	})
+	return r.ensureRunConfigConfigMapResource(ctx, m, configMap)
+}
+
+// ensureRunConfigConfigMapResource ensures the RunConfig ConfigMap exists and is up to date
+// This method handles the special case of updating the last-modified annotation when content changes
+func (r *MCPServerReconciler) ensureRunConfigConfigMapResource(
+	ctx context.Context,
+	mcpServer *mcpv1alpha1.MCPServer,
+	desired *corev1.ConfigMap,
+) error {
+	current := &corev1.ConfigMap{}
+	objectKey := types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}
+	err := r.Get(ctx, objectKey, current)
+
+	if errors.IsNotFound(err) {
+		// ConfigMap doesn't exist, create it
+		if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
+			logger.Errorf("Failed to set controller reference for RunConfig ConfigMap: %v", err)
+			return nil
+		}
+
+		ctxLogger.Info("RunConfig ConfigMap does not exist, creating", "ConfigMap.Name", desired.Name)
+		if err := r.Create(ctx, desired); err != nil {
+			return fmt.Errorf("failed to create RunConfig ConfigMap: %w", err)
+		}
+		ctxLogger.Info("RunConfig ConfigMap created", "ConfigMap.Name", desired.Name)
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("failed to get RunConfig ConfigMap: %w", err)
+	}
+
+	// ConfigMap exists, check if content has changed
+	if !r.runConfigContentEquals(current, desired) {
+		// Content changed, update the timestamp annotation and the ConfigMap
+		if desired.Annotations == nil {
+			desired.Annotations = make(map[string]string)
+		}
+		desired.Annotations["toolhive.stacklok.io/last-modified"] = time.Now().UTC().Format(time.RFC3339)
+
+		// Copy resource version and other metadata for update
+		desired.ResourceVersion = current.ResourceVersion
+		desired.UID = current.UID
+
+		if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
+			logger.Errorf("Failed to set controller reference for RunConfig ConfigMap: %v", err)
+			return nil
+		}
+
+		ctxLogger.Info("RunConfig ConfigMap content changed, updating", "ConfigMap.Name", desired.Name)
+		if err := r.Update(ctx, desired); err != nil {
+			return fmt.Errorf("failed to update RunConfig ConfigMap: %w", err)
+		}
+		ctxLogger.Info("RunConfig ConfigMap updated", "ConfigMap.Name", desired.Name)
+	}
+
+	return nil
+}
+
+// runConfigContentEquals compares the actual content of RunConfig ConfigMaps, ignoring metadata
+func (*MCPServerReconciler) runConfigContentEquals(current, desired *corev1.ConfigMap) bool {
+	// Compare the data content
+	if !reflect.DeepEqual(current.Data, desired.Data) {
+		return false
+	}
+
+	// Compare labels (excluding the last-modified annotation)
+	if !reflect.DeepEqual(current.Labels, desired.Labels) {
+		return false
+	}
+
+	// Compare other annotations (excluding last-modified)
+	currentAnnotations := make(map[string]string)
+	desiredAnnotations := make(map[string]string)
+
+	for k, v := range current.Annotations {
+		if k != "toolhive.stacklok.io/last-modified" {
+			currentAnnotations[k] = v
+		}
+	}
+
+	for k, v := range desired.Annotations {
+		if k != "toolhive.stacklok.io/last-modified" {
+			desiredAnnotations[k] = v
+		}
+	}
+
+	return reflect.DeepEqual(currentAnnotations, desiredAnnotations)
 }
 
 // createRunConfigFromMCPServer converts MCPServer spec to RunConfig
@@ -127,11 +219,16 @@ func (r *MCPServerReconciler) buildArgsFromRunConfig(
 	m *mcpv1alpha1.MCPServer,
 	config *runner.RunConfig,
 ) []string {
-	// Check if RunConfig ConfigMap exists
+	// Try to get the RunConfig ConfigMap once
 	configMapName := fmt.Sprintf("%s-runconfig", m.Name)
-	if r.configMapExists(ctx, m.Namespace, configMapName) {
-		// Use --from-configmap flag instead of individual flags
-		return []string{"run", config.Image, "--from-configmap", fmt.Sprintf("%s/%s", m.Namespace, configMapName)}
+	configMap := &corev1.ConfigMap{}
+	// Return false if client is not available (e.g., in tests)
+	if r.Client != nil {
+		err := r.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: configMapName}, configMap)
+		if err == nil {
+			// Use --from-configmap flag instead of individual flags
+			return []string{"run", config.Image, "--from-configmap", fmt.Sprintf("%s/%s", m.Namespace, configMapName)}
+		}
 	}
 
 	// Fallback to individual flags if ConfigMap doesn't exist
@@ -407,40 +504,33 @@ func (*MCPServerReconciler) validateToolsFilter(config *runner.RunConfig) error 
 	return nil
 }
 
-// configMapExists checks if a ConfigMap exists in the specified namespace
-func (r *MCPServerReconciler) configMapExists(ctx context.Context, namespace, name string) bool {
-	// Return false if client is not available (e.g., in tests)
-	if r.Client == nil {
-		return false
-	}
-	err := r.Get(ctx, client.ObjectKey{
-		Namespace: namespace,
-		Name:      name,
-	}, &corev1.ConfigMap{})
-	return err == nil
-}
-
 // configMapNewerThanDeployment checks if a ConfigMap has been modified after the deployment was last updated
+// If configMap is provided, it will be used instead of fetching it again
 func (r *MCPServerReconciler) configMapNewerThanDeployment(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	namespace,
 	configMapName string,
+	configMap *corev1.ConfigMap,
 ) bool {
 	// Return false if client is not available (e.g., in tests)
 	if r.Client == nil {
 		return false
 	}
 
-	// Get the ConfigMap
-	var configMap corev1.ConfigMap
-	err := r.Get(ctx, client.ObjectKey{
-		Namespace: namespace,
-		Name:      configMapName,
-	}, &configMap)
-	if err != nil {
-		// ConfigMap doesn't exist or can't be read, deployment needs update to create it
-		return true
+	// Get the ConfigMap if not provided
+	var cm corev1.ConfigMap
+	if configMap != nil {
+		cm = *configMap
+	} else {
+		err := r.Get(ctx, client.ObjectKey{
+			Namespace: namespace,
+			Name:      configMapName,
+		}, &cm)
+		if err != nil {
+			// ConfigMap doesn't exist or can't be read, deployment needs update to create it
+			return true
+		}
 	}
 
 	// Get the last update time of the deployment
@@ -457,11 +547,12 @@ func (r *MCPServerReconciler) configMapNewerThanDeployment(
 	}
 
 	// Compare ConfigMap's last modification time with deployment's last update time
-	configMapLastModified := configMap.CreationTimestamp.Time
-	if configMap.GetResourceVersion() != "" {
-		// Use the ConfigMap's creation time as a proxy for modification time
-		// In a real scenario, you might want to use annotations to track the last modification
-		configMapLastModified = configMap.CreationTimestamp.Time
+	// Use annotation-based tracking for precise modification time
+	configMapLastModified := cm.CreationTimestamp.Time
+	if lastModifiedStr, exists := cm.Annotations["toolhive.stacklok.io/last-modified"]; exists {
+		if parsedTime, err := time.Parse(time.RFC3339, lastModifiedStr); err == nil {
+			configMapLastModified = parsedTime
+		}
 	}
 
 	// ConfigMap is newer if it was modified after the deployment was last updated

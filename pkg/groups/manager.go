@@ -34,11 +34,6 @@ func NewManager() (Manager, error) {
 
 // Create creates a new group with the given name
 func (m *manager) Create(ctx context.Context, name string) error {
-	// In Kubernetes environments (where store is nil), groups are not persisted
-	if m.groupStore == nil {
-		return nil // No-op for Kubernetes
-	}
-
 	// Check if group already exists
 	exists, err := m.groupStore.Exists(ctx, name)
 	if err != nil {
@@ -57,14 +52,6 @@ func (m *manager) Create(ctx context.Context, name string) error {
 
 // Get retrieves a group by name
 func (m *manager) Get(ctx context.Context, name string) (*Group, error) {
-	// In Kubernetes environments (where store is nil), return default group
-	if m.groupStore == nil {
-		return &Group{
-			Name:              name,
-			RegisteredClients: []string{},
-		}, nil
-	}
-
 	reader, err := m.groupStore.GetReader(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get reader for group: %w", err)
@@ -81,16 +68,6 @@ func (m *manager) Get(ctx context.Context, name string) (*Group, error) {
 
 // List returns all groups
 func (m *manager) List(ctx context.Context) ([]*Group, error) {
-	// In Kubernetes environments (where store is nil), return default group only
-	if m.groupStore == nil {
-		return []*Group{
-			{
-				Name:              DefaultGroupName,
-				RegisteredClients: []string{},
-			},
-		}, nil
-	}
-
 	names, err := m.groupStore.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list groups: %w", err)
@@ -115,19 +92,11 @@ func (m *manager) List(ctx context.Context) ([]*Group, error) {
 
 // Delete removes a group by name
 func (m *manager) Delete(ctx context.Context, name string) error {
-	// In Kubernetes environments (where store is nil), groups are not persisted
-	if m.groupStore == nil {
-		return nil // No-op for Kubernetes
-	}
 	return m.groupStore.Delete(ctx, name)
 }
 
 // Exists checks if a group exists
 func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
-	// In Kubernetes environments (where store is nil), only default group exists
-	if m.groupStore == nil {
-		return name == DefaultGroupName, nil
-	}
 	return m.groupStore.Exists(ctx, name)
 }
 
@@ -211,11 +180,6 @@ func (m *manager) UnregisterClients(ctx context.Context, groupNames []string, cl
 
 // saveGroup saves the group to the group state store
 func (m *manager) saveGroup(ctx context.Context, group *Group) error {
-	// In Kubernetes environments (where store is nil), groups are not persisted
-	if m.groupStore == nil {
-		return nil // No-op for Kubernetes
-	}
-
 	writer, err := m.groupStore.GetWriter(ctx, group.Name)
 	if err != nil {
 		return fmt.Errorf("failed to get writer for group: %w", err)

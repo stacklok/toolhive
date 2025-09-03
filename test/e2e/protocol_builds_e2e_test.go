@@ -73,7 +73,7 @@ var _ = Describe("Protocol Builds E2E", Serial, func() {
 			})
 		})
 
-		/*Context("when starting @modelcontextprotocol/server-sequential-thinking@latest", func() {
+		Context("when starting @modelcontextprotocol/server-sequential-thinking@latest", func() {
 			var serverName string
 
 			BeforeEach(func() {
@@ -161,7 +161,7 @@ var _ = Describe("Protocol Builds E2E", Serial, func() {
 				GinkgoWriter.Printf("✅ Protocol build successful: npx://@modelcontextprotocol/server-sequential-thinking\n")
 				GinkgoWriter.Printf("✅ Server running and provides sequential_thinking tool\n")
 			})
-		})*/
+		})
 
 		Context("when testing error conditions", func() {
 			var serverName string

@@ -136,7 +136,8 @@ func setOtelEndpointCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 func getOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
 
 	if cfg.OTEL.Endpoint == "" {
 		fmt.Println("No OpenTelemetry endpoint is currently configured.")
@@ -148,7 +149,8 @@ func getOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetOtelEndpointCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
 
 	if cfg.OTEL.Endpoint == "" {
 		fmt.Println("No OpenTelemetry endpoint is currently configured.")
@@ -191,7 +193,8 @@ func setOtelSamplingRateCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 func getOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
 
 	if cfg.OTEL.SamplingRate == 0.0 {
 		fmt.Println("No OpenTelemetry sampling rate is currently configured.")
@@ -203,7 +206,8 @@ func getOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetOtelSamplingRateCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
 
 	if cfg.OTEL.SamplingRate == 0.0 {
 		fmt.Println("No OpenTelemetry sampling rate is currently configured.")
@@ -243,7 +247,8 @@ func setOtelEnvVarsCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 func getOtelEnvVarsCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
 
 	if len(cfg.OTEL.EnvVars) == 0 {
 		fmt.Println("No OpenTelemetry environment variables are currently configured.")
@@ -255,7 +260,8 @@ func getOtelEnvVarsCmdFunc(_ *cobra.Command, _ []string) error {
 }
 
 func unsetOtelEnvVarsCmdFunc(_ *cobra.Command, _ []string) error {
-	cfg := config.GetConfig()
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
 
 	if len(cfg.OTEL.EnvVars) == 0 {
 		fmt.Println("No OpenTelemetry environment variables are currently configured.")

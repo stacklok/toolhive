@@ -66,8 +66,9 @@ type Manager interface {
 }
 
 type defaultManager struct {
-	runtime  rt.Runtime
-	statuses statuses.StatusManager
+	runtime        rt.Runtime
+	statuses       statuses.StatusManager
+	configProvider config.Provider
 }
 
 // ErrWorkloadNotRunning is returned when a container cannot be found by name.
@@ -91,8 +92,28 @@ func NewManager(ctx context.Context) (Manager, error) {
 	}
 
 	return &defaultManager{
-		runtime:  runtime,
-		statuses: statusManager,
+		runtime:        runtime,
+		statuses:       statusManager,
+		configProvider: config.NewDefaultProvider(),
+	}, nil
+}
+
+// NewManagerWithProvider creates a new container manager instance with a custom config provider.
+func NewManagerWithProvider(ctx context.Context, configProvider config.Provider) (Manager, error) {
+	runtime, err := ct.NewFactory().Create(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	statusManager, err := statuses.NewStatusManager(runtime)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create status manager: %w", err)
+	}
+
+	return &defaultManager{
+		runtime:        runtime,
+		statuses:       statusManager,
+		configProvider: configProvider,
 	}, nil
 }
 
@@ -104,8 +125,24 @@ func NewManagerFromRuntime(runtime rt.Runtime) (Manager, error) {
 	}
 
 	return &defaultManager{
-		runtime:  runtime,
-		statuses: statusManager,
+		runtime:        runtime,
+		statuses:       statusManager,
+		configProvider: config.NewDefaultProvider(),
+	}, nil
+}
+
+// NewManagerFromRuntimeWithProvider creates a new container manager instance from an existing runtime with a
+// custom config provider.
+func NewManagerFromRuntimeWithProvider(runtime rt.Runtime, configProvider config.Provider) (Manager, error) {
+	statusManager, err := statuses.NewStatusManager(runtime)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create status manager: %w", err)
+	}
+
+	return &defaultManager{
+		runtime:        runtime,
+		statuses:       statusManager,
+		configProvider: configProvider,
 	}, nil
 }
 
@@ -291,10 +328,10 @@ func (d *defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 	return err
 }
 
-func validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig) error {
+func (d *defaultManager) validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig) error {
 	// If there are run secrets, validate them
 	if len(runConfig.Secrets) > 0 {
-		cfg := config.GetConfig()
+		cfg := d.configProvider.GetConfig()
 
 		providerType, err := cfg.Secrets.GetProviderType()
 		if err != nil {
@@ -316,7 +353,7 @@ func validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig) 
 
 func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *runner.RunConfig) error {
 	// before running, validate the parameters for the workload
-	err := validateSecretParameters(ctx, runConfig)
+	err := d.validateSecretParameters(ctx, runConfig)
 	if err != nil {
 		return fmt.Errorf("failed to validate workload parameters: %w", err)
 	}
@@ -356,7 +393,7 @@ func (d *defaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// NOTE: This breaks the abstraction slightly since this is only relevant for the CLI, but there
 	// are checks inside `GetSecretsPassword` to ensure this does not get called in a detached process.
 	// This will be addressed in a future re-think of the secrets manager interface.
-	if needSecretsPassword(runConfig.Secrets) {
+	if d.needSecretsPassword(runConfig.Secrets) {
 		password, err := secrets.GetSecretsPassword("")
 		if err != nil {
 			return fmt.Errorf("failed to get secrets password: %v", err)
@@ -863,14 +900,14 @@ func (d *defaultManager) loadRunnerFromState(ctx context.Context, baseName strin
 	return runner.NewRunner(runConfig, d.statuses), nil
 }
 
-func needSecretsPassword(secretOptions []string) bool {
+func (d *defaultManager) needSecretsPassword(secretOptions []string) bool {
 	// If the user did not ask for any secrets, then don't attempt to instantiate
 	// the secrets manager.
 	if len(secretOptions) == 0 {
 		return false
 	}
 	// Ignore err - if the flag is not set, it's not needed.
-	providerType, _ := config.GetConfig().Secrets.GetProviderType()
+	providerType, _ := d.configProvider.GetConfig().Secrets.GetProviderType()
 	return providerType == secrets.EncryptedType
 }
 

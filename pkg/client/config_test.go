@@ -322,7 +322,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			foundTypes[cf.ClientType] = true
 		}
 
-		for _, expectedClient := range supportedClientIntegrations {
+		for _, expectedClient := range mockClientConfigs {
 			assert.True(t, foundTypes[expectedClient.ClientType],
 				"Should find config for client type %s", expectedClient.ClientType)
 		}
@@ -406,7 +406,8 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 		testURL := "http://localhost:9999/sse#test-server"
 
 		for _, cf := range configs {
-			err := Upsert(cf, testServer, testURL, types.TransportTypeSSE.String())
+			// Use the manager's Upsert method instead of the global function to avoid using the singleton config
+			err := manager.Upsert(cf, testServer, testURL, types.TransportTypeSSE.String())
 			require.NoError(t, err, "Should be able to add MCP server to %s config", cf.ClientType)
 
 			// Read the file and verify the server was added

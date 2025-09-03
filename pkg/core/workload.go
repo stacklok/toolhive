@@ -2,6 +2,7 @@
 package core
 
 import (
+	"sort"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -41,4 +42,11 @@ type Workload struct {
 	ToolsFilter []string `json:"tools,omitempty"`
 	// Remote indicates whether this is a remote workload (true) or a container workload (false).
 	Remote bool `json:"remote,omitempty"`
+}
+
+// SortWorkloadsByName sorts a slice of Workload by the Name field in ascending alphabetical order.
+func SortWorkloadsByName(workloads []Workload) {
+	sort.Slice(workloads, func(i, j int) bool {
+		return workloads[i].Name < workloads[j].Name
+	})
 }

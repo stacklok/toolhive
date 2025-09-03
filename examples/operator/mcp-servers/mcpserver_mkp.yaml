@@ -5,8 +5,12 @@ metadata:
   namespace: toolhive-system
 spec:
   image: ghcr.io/stackloklabs/mkp/server
-  transport: sse
+  transport: streamable-http
+  targetPort: 8080
   port: 8080
+  args:
+    # Change to true for read-write access.
+    - --read-write=false
   permissionProfile:
     type: builtin
     name: network
@@ -14,11 +18,11 @@ spec:
   serviceAccount: mkp-sa
   resources:
     limits:
-      cpu: "100m"
-      memory: "128Mi"
+      cpu: '100m'
+      memory: '128Mi'
     requests:
-      cpu: "50m"
-      memory: "64Mi"
+      cpu: '50m'
+      memory: '64Mi'
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -34,9 +38,9 @@ kind: ClusterRoleBinding
 metadata:
   name: mkp-sa-cluster-admin
 subjects:
-- kind: ServiceAccount
-  name: mkp-sa
-  namespace: toolhive-system
+  - kind: ServiceAccount
+    name: mkp-sa
+    namespace: toolhive-system
 roleRef:
   kind: ClusterRole
   name: cluster-admin

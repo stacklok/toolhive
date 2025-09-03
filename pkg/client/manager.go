@@ -45,8 +45,9 @@ type Manager interface {
 }
 
 type defaultManager struct {
-	runtime      rt.Runtime
-	groupManager groups.Manager
+	runtime        rt.Runtime
+	groupManager   groups.Manager
+	configProvider config.Provider
 }
 
 // NewManager creates a new client manager instance.
@@ -62,13 +63,40 @@ func NewManager(ctx context.Context) (Manager, error) {
 	}
 
 	return &defaultManager{
-		runtime:      runtime,
-		groupManager: groupManager,
+		runtime:        runtime,
+		groupManager:   groupManager,
+		configProvider: config.NewDefaultProvider(),
 	}, nil
 }
 
+// NewManagerWithProvider creates a new client manager instance with a custom config provider.
+// This is useful for testing to avoid using the singleton config.
+func NewManagerWithProvider(ctx context.Context, configProvider config.Provider) (Manager, error) {
+	runtime, err := ct.NewFactory().Create(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	groupManager, err := groups.NewManager()
+	if err != nil {
+		return nil, err
+	}
+
+	return &defaultManager{
+		runtime:        runtime,
+		groupManager:   groupManager,
+		configProvider: configProvider,
+	}, nil
+}
+
+// SetConfigProvider sets a custom config provider for testing purposes.
+// This allows tests to inject a test config provider to avoid modifying the real config file.
+func (m *defaultManager) SetConfigProvider(provider config.Provider) {
+	m.configProvider = provider
+}
+
 func (m *defaultManager) ListClients(ctx context.Context) ([]RegisteredClient, error) {
-	cfg := config.GetConfig()
+	cfg := m.configProvider.GetConfig()
 
 	// Get all groups
 	allGroups, err := m.groupManager.List(ctx)
@@ -288,7 +316,7 @@ func (m *defaultManager) getTargetClients(ctx context.Context, serverName, group
 	}
 
 	// Server has no group - use backward compatible behavior (update all registered clients)
-	appConfig := config.GetConfig()
+	appConfig := m.configProvider.GetConfig()
 	targetClients := appConfig.Clients.RegisteredClients
 	logger.Infof(
 		"Server %s has no group, updating %d globally registered client(s) for backward compatibility",

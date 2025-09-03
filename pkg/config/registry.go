@@ -34,8 +34,8 @@ func DetectRegistryType(input string) (registryType string, cleanPath string) {
 	return RegistryTypeFile, filepath.Clean(input)
 }
 
-// SetRegistryURL validates and sets a registry URL
-func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
+// setRegistryURL validates and sets a registry URL using the provided provider
+func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryIp bool) error {
 	parsedURL, err := neturl.Parse(registryURL)
 	if err != nil {
 		return fmt.Errorf("invalid registry URL: %w", err)
@@ -65,7 +65,7 @@ func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
 	}
 
 	// Update the configuration
-	err = UpdateConfig(func(c *Config) {
+	err = provider.UpdateConfig(func(c *Config) {
 		c.RegistryUrl = registryURL
 		c.LocalRegistryPath = "" // Clear local path when setting URL
 		c.AllowPrivateRegistryIp = allowPrivateRegistryIp
@@ -77,8 +77,8 @@ func SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
 	return nil
 }
 
-// SetRegistryFile validates and sets a local registry file
-func SetRegistryFile(registryPath string) error {
+// setRegistryFile validates and sets a local registry file using the provided provider
+func setRegistryFile(provider Provider, registryPath string) error {
 	// Validate that the file exists and is readable
 	if _, err := os.Stat(registryPath); err != nil {
 		return fmt.Errorf("local registry file not found or not accessible: %w", err)
@@ -109,7 +109,7 @@ func SetRegistryFile(registryPath string) error {
 	}
 
 	// Update the configuration
-	err = UpdateConfig(func(c *Config) {
+	err = provider.UpdateConfig(func(c *Config) {
 		c.LocalRegistryPath = absPath
 		c.RegistryUrl = "" // Clear URL when setting local path
 	})
@@ -120,9 +120,9 @@ func SetRegistryFile(registryPath string) error {
 	return nil
 }
 
-// UnsetRegistry resets registry configuration to defaults
-func UnsetRegistry() error {
-	err := UpdateConfig(func(c *Config) {
+// unsetRegistry resets registry configuration to defaults using the provided provider
+func unsetRegistry(provider Provider) error {
+	err := provider.UpdateConfig(func(c *Config) {
 		c.RegistryUrl = ""
 		c.LocalRegistryPath = ""
 		c.AllowPrivateRegistryIp = false
@@ -133,9 +133,9 @@ func UnsetRegistry() error {
 	return nil
 }
 
-// GetRegistryConfig returns current registry configuration
-func GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string) {
-	cfg := GetConfig()
+// getRegistryConfig returns current registry configuration using the provided provider
+func getRegistryConfig(provider Provider) (url, localPath string, allowPrivateIP bool, registryType string) {
+	cfg := provider.GetConfig()
 
 	if cfg.RegistryUrl != "" {
 		return cfg.RegistryUrl, "", cfg.AllowPrivateRegistryIp, RegistryTypeURL

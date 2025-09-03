@@ -277,12 +277,19 @@ func (f *fileStatusManager) DeleteWorkloadStatus(ctx context.Context, workloadNa
 
 // getStatusFilePath returns the file path for a given workload's status file.
 func (f *fileStatusManager) getStatusFilePath(workloadName string) string {
-	return filepath.Join(f.baseDir, fmt.Sprintf("%s.json", workloadName))
+	fileName := f.fileNameFromWorkloadName(workloadName)
+	return filepath.Join(f.baseDir, fmt.Sprintf("%s.json", fileName))
 }
 
 // getLockFilePath returns the lock file path for a given workload.
 func (f *fileStatusManager) getLockFilePath(workloadName string) string {
-	return filepath.Join(f.baseDir, fmt.Sprintf("%s.lock", workloadName))
+	fileName := f.fileNameFromWorkloadName(workloadName)
+	return filepath.Join(f.baseDir, fmt.Sprintf("%s.lock", fileName))
+}
+
+func (f *fileStatusManager) fileNameFromWorkloadName(workloadName string) string {
+	// Drop slashes from the workload name to avoid problems.
+	return strings.ReplaceAll(workloadName, "/", "-")
 }
 
 // ensureBaseDir creates the base directory if it doesn't exist.
@@ -290,10 +297,14 @@ func (f *fileStatusManager) ensureBaseDir() error {
 	return os.MkdirAll(f.baseDir, 0750)
 }
 
+// TODO: This can probably be de-duped with withFileReadLock
 // withFileLock executes the provided function while holding a write lock on the workload's lock file.
 func (f *fileStatusManager) withFileLock(ctx context.Context, workloadName string, fn func(string) error) error {
+	// Remove any slashes from the workload name to avoid problems.
+	workloadName = strings.ReplaceAll(workloadName, "/", "-")
+
 	// Validate workload name
-	if strings.Contains(workloadName, "..") || strings.ContainsAny(workloadName, "/\\") {
+	if strings.Contains(workloadName, "..") {
 		return fmt.Errorf("invalid workload name '%s': contains forbidden characters", workloadName)
 	}
 	if err := f.ensureBaseDir(); err != nil {
@@ -333,6 +344,16 @@ func (f *fileStatusManager) withFileLock(ctx context.Context, workloadName strin
 
 // withFileReadLock executes the provided function while holding a read lock on the workload's lock file.
 func (f *fileStatusManager) withFileReadLock(ctx context.Context, workloadName string, fn func(string) error) error {
+	// Remove any slashes from the workload name to avoid problems.
+	workloadName = strings.ReplaceAll(workloadName, "/", "-")
+
+	// Validate workload name
+	if strings.Contains(workloadName, "..") {
+		return fmt.Errorf("invalid workload name '%s': contains forbidden characters", workloadName)
+	}
+	if err := f.ensureBaseDir(); err != nil {
+		return fmt.Errorf("failed to create base directory: %w", err)
+	}
 	statusFilePath := f.getStatusFilePath(workloadName)
 	lockFilePath := f.getLockFilePath(workloadName)
 

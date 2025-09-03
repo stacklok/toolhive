@@ -915,7 +915,10 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 	return runConfig, nil
 }
 
-func (s *WorkloadRoutes) createRequestToRemoteAuthConfig(ctx context.Context, req *createRequest) (*runner.RemoteAuthConfig, error) {
+func (s *WorkloadRoutes) createRequestToRemoteAuthConfig(
+	ctx context.Context,
+	req *createRequest,
+) (*runner.RemoteAuthConfig, error) {
 	if req.OAuthConfig == nil {
 		return nil, nil
 	}

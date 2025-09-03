@@ -12,14 +12,20 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
 
 func TestSecretsRouter(t *testing.T) {
 	t.Parallel()
-	router := SecretsRouter()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockProvider := mocks.NewMockProvider(ctrl)
+	router := SecretsRouter(mockProvider)
 	assert.NotNil(t, router)
 }
 
@@ -449,7 +455,10 @@ func TestRouterIntegration(t *testing.T) {
 
 	t.Run("router setup test", func(t *testing.T) {
 		t.Parallel()
-		router := SecretsRouter()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		mockProvider := mocks.NewMockProvider(ctrl)
+		router := SecretsRouter(mockProvider)
 
 		// Test POST / endpoint
 		setupReq := setupSecretsRequest{

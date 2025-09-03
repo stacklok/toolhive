@@ -29,6 +29,7 @@ import (
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -216,7 +217,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 		}
 	}
 	if b.secretsProvider == nil {
-		b.secretsProvider, err = secrets.CreateSecretProvider(secrets.EncryptedType)
+		b.secretsProvider, err = getSecretsManager()
 		if err != nil {
 			return fmt.Errorf("failed to create secrets provider: %v", err)
 		}
@@ -225,12 +226,35 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 	return nil
 }
 
+// getSecretsManager is a helper function to get the secrets manager
+func getSecretsManager() (secrets.Provider, error) {
+	cfg := config.GetConfig()
+
+	// Check if secrets setup has been completed
+	if !cfg.Secrets.SetupCompleted {
+		return nil, secrets.ErrSecretsNotSetup
+	}
+
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return nil, err
+	}
+
+	return secrets.CreateSecretProvider(providerType)
+}
+
 // setupDefaultRoutes sets up the default API routes
 func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 	routers := map[string]http.Handler{
-		"/health":               v1.HealthcheckRouter(b.containerRuntime),
-		"/api/v1beta/version":   v1.VersionRouter(),
-		"/api/v1beta/workloads": v1.WorkloadRouter(b.workloadManager, b.containerRuntime, b.groupManager, b.secretsProvider, b.debugMode),
+		"/health":             v1.HealthcheckRouter(b.containerRuntime),
+		"/api/v1beta/version": v1.VersionRouter(),
+		"/api/v1beta/workloads": v1.WorkloadRouter(
+			b.workloadManager,
+			b.containerRuntime,
+			b.groupManager,
+			b.secretsProvider,
+			b.debugMode,
+		),
 		"/api/v1beta/registry":  v1.RegistryRouter(),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(b.clientManager, b.workloadManager, b.groupManager),

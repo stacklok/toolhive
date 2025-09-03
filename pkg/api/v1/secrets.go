@@ -452,23 +452,6 @@ func (s *SecretsRoutes) deleteSecret(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// getSecretsManager is a helper function to get the secrets manager
-func getSecretsManager() (secrets.Provider, error) {
-	cfg := config.GetConfig()
-
-	// Check if secrets setup has been completed
-	if !cfg.Secrets.SetupCompleted {
-		return nil, secrets.ErrSecretsNotSetup
-	}
-
-	providerType, err := cfg.Secrets.GetProviderType()
-	if err != nil {
-		return nil, err
-	}
-
-	return secrets.CreateSecretProvider(providerType)
-}
-
 // Request and response type definitions
 
 // setupSecretsRequest represents the request for initializing a secrets provider

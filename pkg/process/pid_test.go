@@ -82,10 +82,10 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		assert.Equal(t, newPID, pid, "Should read from new location when both exist")
 	})
 
-	t.Run("WritePIDFile_UsesNewLocation", func(t *testing.T) {
+	t.Run("WritePIDFile_WritesBothLocations", func(t *testing.T) {
 		t.Parallel()
 
-		containerName := "test-container-write-new"
+		containerName := "test-container-write-both"
 		testPID := 33333
 
 		// Clean up any existing files
@@ -109,10 +109,17 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		_, err = os.Stat(newPath)
 		assert.NoError(t, err, "PID file should exist in new location")
 
-		// Verify old location was not used
+		// Verify it was also written to old location for compatibility
 		oldPath := getOldPIDFilePath(containerName)
 		_, err = os.Stat(oldPath)
-		assert.True(t, os.IsNotExist(err), "PID file should not exist in old location")
+		assert.NoError(t, err, "PID file should also exist in old location for version compatibility")
+
+		// Verify both files contain the same PID
+		newPidBytes, err := os.ReadFile(newPath)
+		require.NoError(t, err, "Should read new location file")
+		oldPidBytes, err := os.ReadFile(oldPath)
+		require.NoError(t, err, "Should read old location file")
+		assert.Equal(t, newPidBytes, oldPidBytes, "Both files should contain the same PID")
 	})
 
 	t.Run("RemovePIDFile_RemovesBothLocations", func(t *testing.T) {

@@ -30,6 +30,8 @@ var (
 	ErrBadProtocolScheme = errors.New("invalid protocol scheme provided for MCP server")
 	// ErrImageNotFound is returned when the specified image is not found in the registry.
 	ErrImageNotFound = errors.New("image not found in registry, please check the image name or tag")
+	// ErrInvalidRunConfig is returned when the run configuration built by RunConfigBuilder is invalid
+	ErrInvalidRunConfig = errors.New("invalid run configuration provided")
 )
 
 // GetMCPServer retrieves the MCP server definition from the registry.

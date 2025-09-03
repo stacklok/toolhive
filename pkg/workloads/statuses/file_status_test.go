@@ -119,6 +119,39 @@ func TestFileStatusManager_GetWorkload(t *testing.T) {
 	assert.Empty(t, workload.StatusContext)
 }
 
+func TestFileStatusManager_GetWorkloadSlashes(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	workloadName := "test/workload"
+
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadName).Return(true, nil).AnyTimes()
+
+	// Create a mock reader that returns non-remote configuration data
+	mockReader := io.NopCloser(strings.NewReader(`{"name": "test/workload", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).Return(mockReader, nil).AnyTimes()
+
+	// Create a workload status
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, "")
+	require.NoError(t, err)
+
+	// Mock runtime to return error for fallback case (in case file is not found)
+	mockRuntime.EXPECT().GetWorkloadInfo(gomock.Any(), workloadName).Return(rt.ContainerInfo{}, errors.New("workload not found")).AnyTimes()
+
+	// Get the workload (no runtime call expected for starting workload)
+	workload, err := manager.GetWorkload(ctx, workloadName)
+	require.NoError(t, err)
+	assert.Equal(t, workloadName, workload.Name)
+	assert.Equal(t, rt.WorkloadStatusStarting, workload.Status)
+	assert.Empty(t, workload.StatusContext)
+}
+
 func TestFileStatusManager_GetWorkload_NotFound(t *testing.T) {
 	t.Parallel()
 
@@ -241,6 +274,42 @@ func TestFileStatusManager_SetWorkloadStatus(t *testing.T) {
 
 	// Update the status
 	manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "container started")
+
+	// Note: Cannot verify status was updated via GetWorkload since current implementation returns empty Workload
+	// Instead verify by reading the file directly
+
+	// Verify the file on disk
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, "container started", statusFileData.StatusContext)
+	// CreatedAt should be preserved, UpdatedAt should be newer
+	assert.False(t, statusFileData.CreatedAt.IsZero())
+	assert.False(t, statusFileData.UpdatedAt.IsZero())
+	assert.True(t, statusFileData.UpdatedAt.After(statusFileData.CreatedAt) ||
+		statusFileData.UpdatedAt.Equal(statusFileData.CreatedAt))
+}
+
+func TestFileStatusManager_SetWorkloadStatusSlashes(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	workloadName := "test/workload"
+
+	// Create a workload status
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, "")
+	require.NoError(t, err)
+
+	// Update the status
+	manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusRunning, "container started")
 
 	// Note: Cannot verify status was updated via GetWorkload since current implementation returns empty Workload
 	// Instead verify by reading the file directly

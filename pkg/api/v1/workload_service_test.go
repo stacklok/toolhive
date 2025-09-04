@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	apitypes "github.com/stacklok/toolhive/pkg/api/v1/types"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
@@ -96,9 +95,9 @@ func TestWorkloadService_createRequestToRemoteAuthConfig(t *testing.T) {
 			secretsProvider: mockSecretsProvider,
 		}
 
-		req := &apitypes.CreateRequest{
-			UpdateRequest: apitypes.UpdateRequest{
-				OAuthConfig: apitypes.RemoteOAuthConfig{
+		req := &createRequest{
+			updateRequest: updateRequest{
+				OAuthConfig: remoteOAuthConfig{
 					ClientID:     "client-id",
 					ClientSecret: &secrets.SecretParameter{Name: "secret-name"},
 					Scopes:       []string{"read", "write"},
@@ -140,9 +139,9 @@ func TestWorkloadService_createRequestToRemoteAuthConfig(t *testing.T) {
 			secretsProvider: mockSecretsProvider,
 		}
 
-		req := &apitypes.CreateRequest{
-			UpdateRequest: apitypes.UpdateRequest{
-				OAuthConfig: apitypes.RemoteOAuthConfig{
+		req := &createRequest{
+			updateRequest: updateRequest{
+				OAuthConfig: remoteOAuthConfig{
 					ClientSecret: &secrets.SecretParameter{Name: "secret-name"},
 				},
 			},
@@ -164,7 +163,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 
 		service := &WorkloadService{}
 
-		req := apitypes.BulkOperationRequest{
+		req := bulkOperationRequest{
 			Names: []string{"workload1", "workload2"},
 		}
 
@@ -195,7 +194,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 			workloadManager: mockWorkloadManager,
 		}
 
-		req := apitypes.BulkOperationRequest{
+		req := bulkOperationRequest{
 			Group: "test-group",
 		}
 
@@ -210,7 +209,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 
 		service := &WorkloadService{}
 
-		req := apitypes.BulkOperationRequest{
+		req := bulkOperationRequest{
 			Group: "invalid-group-name-with-special-chars!@#",
 		}
 
@@ -236,7 +235,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 			groupManager: mockGroupManager,
 		}
 
-		req := apitypes.BulkOperationRequest{
+		req := bulkOperationRequest{
 			Group: "non-existent-group",
 		}
 
@@ -268,7 +267,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 			workloadManager: mockWorkloadManager,
 		}
 
-		req := apitypes.BulkOperationRequest{
+		req := bulkOperationRequest{
 			Group: "test-group",
 		}
 

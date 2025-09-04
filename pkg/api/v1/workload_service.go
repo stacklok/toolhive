@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	apitypes "github.com/stacklok/toolhive/pkg/api/v1/types"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -199,7 +198,7 @@ func (s *WorkloadService) resolveClientSecret(ctx context.Context, secretParam *
 }
 
 // GetWorkloadNamesFromRequest gets workload names from either the names field or group
-func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req apitypes.BulkOperationRequest) ([]string, error) {
+func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req bulkOperationRequest) ([]string, error) {
 	if len(req.Names) > 0 {
 		return req.Names, nil
 	}

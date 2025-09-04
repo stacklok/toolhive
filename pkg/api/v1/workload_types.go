@@ -1,5 +1,4 @@
-// Package types contains types for the API v1.
-package types
+package v1
 
 import (
 	"fmt"
@@ -12,26 +11,26 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
-// WorkloadListResponse represents the response for listing workloads
+// workloadListResponse represents the response for listing workloads
 //
 //	@Description	Response containing a list of workloads
-type WorkloadListResponse struct {
+type workloadListResponse struct {
 	// List of container information for each workload
 	Workloads []core.Workload `json:"workloads"`
 }
 
-// WorkloadStatusResponse represents the response for getting workload status
+// workloadStatusResponse represents the response for getting workload status
 //
 //	@Description	Response containing workload status information
-type WorkloadStatusResponse struct {
+type workloadStatusResponse struct {
 	// Current status of the workload
 	Status runtime.WorkloadStatus `json:"status"`
 }
 
-// UpdateRequest represents the request to update an existing workload
+// updateRequest represents the request to update an existing workload
 //
 //	@Description	Request to update an existing workload (name cannot be changed)
-type UpdateRequest struct {
+type updateRequest struct {
 	// Docker image to use
 	Image string `json:"image"`
 	// Host to bind to
@@ -65,14 +64,16 @@ type UpdateRequest struct {
 
 	// Remote server specific fields
 	URL         string             `json:"url,omitempty"`
-	OAuthConfig RemoteOAuthConfig  `json:"oauth_config,omitempty"`
+	OAuthConfig remoteOAuthConfig  `json:"oauth_config,omitempty"`
 	Headers     []*registry.Header `json:"headers,omitempty"`
 }
 
-// RemoteOAuthConfig represents OAuth configuration for remote servers
+// remoteOAuthConfig represents OAuth configuration for remote servers
 //
 //	@Description	OAuth configuration for remote server authentication
-type RemoteOAuthConfig struct {
+//
+// @name remoteOAuthConfig
+type remoteOAuthConfig struct {
 	// OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
 	Issuer string `json:"issuer,omitempty"`
 	// OAuth authorization endpoint URL (alternative to issuer for non-OIDC OAuth)
@@ -95,11 +96,11 @@ type RemoteOAuthConfig struct {
 	SkipBrowser bool `json:"skip_browser,omitempty"`
 }
 
-// CreateRequest represents the request to create a new workload
+// createRequest represents the request to create a new workload
 //
 //	@Description	Request to create a new workload
-type CreateRequest struct {
-	UpdateRequest
+type createRequest struct {
+	updateRequest
 	// Name of the workload
 	Name string `json:"name"`
 }
@@ -122,26 +123,26 @@ type oidcOptions struct {
 	ClientSecret string `json:"client_secret"`
 }
 
-// CreateWorkloadResponse represents the response for workload creation
+// createWorkloadResponse represents the response for workload creation
 //
 //	@Description	Response after successfully creating a workload
-type CreateWorkloadResponse struct {
+type createWorkloadResponse struct {
 	// Name of the created workload
 	Name string `json:"name"`
 	// Port the workload is listening on
 	Port int `json:"port"`
 }
 
-// BulkOperationRequest represents a request for bulk operations on workloads
-type BulkOperationRequest struct {
+// bulkOperationRequest represents a request for bulk operations on workloads
+type bulkOperationRequest struct {
 	// Names of the workloads to operate on
 	Names []string `json:"names"`
 	// Group name to operate on (mutually exclusive with names)
 	Group string `json:"group,omitempty"`
 }
 
-// ValidateBulkOperationRequest validates the bulk operation request
-func ValidateBulkOperationRequest(req BulkOperationRequest) error {
+// validateBulkOperationRequest validates the bulk operation request
+func validateBulkOperationRequest(req bulkOperationRequest) error {
 	if len(req.Names) > 0 && req.Group != "" {
 		return fmt.Errorf("cannot specify both names and group")
 	}
@@ -151,8 +152,8 @@ func ValidateBulkOperationRequest(req BulkOperationRequest) error {
 	return nil
 }
 
-// RunConfigToCreateRequest converts a RunConfig to createRequest for API responses
-func RunConfigToCreateRequest(runConfig *runner.RunConfig) *CreateRequest {
+// runConfigToCreateRequest converts a RunConfig to createRequest for API responses
+func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 	if runConfig == nil {
 		return nil
 	}
@@ -181,10 +182,10 @@ func RunConfigToCreateRequest(runConfig *runner.RunConfig) *CreateRequest {
 	}
 
 	// Get remote OAuth config from RunConfig
-	var remoteOAuthConfig RemoteOAuthConfig
+	var oAuthConfig remoteOAuthConfig
 	var headers []*registry.Header
 	if runConfig.RemoteAuthConfig != nil {
-		remoteOAuthConfig = RemoteOAuthConfig{
+		oAuthConfig = remoteOAuthConfig{
 			Issuer:       runConfig.RemoteAuthConfig.Issuer,
 			AuthorizeURL: runConfig.RemoteAuthConfig.AuthorizeURL,
 			TokenURL:     runConfig.RemoteAuthConfig.TokenURL,
@@ -199,8 +200,8 @@ func RunConfigToCreateRequest(runConfig *runner.RunConfig) *CreateRequest {
 
 	authzConfigPath := ""
 
-	return &CreateRequest{
-		UpdateRequest: UpdateRequest{
+	return &createRequest{
+		updateRequest: updateRequest{
 			Image:             runConfig.Image,
 			Host:              runConfig.Host,
 			CmdArguments:      runConfig.CmdArgs,
@@ -217,7 +218,7 @@ func RunConfigToCreateRequest(runConfig *runner.RunConfig) *CreateRequest {
 			ToolsFilter:       runConfig.ToolsFilter,
 			Group:             runConfig.Group,
 			URL:               runConfig.RemoteURL,
-			OAuthConfig:       remoteOAuthConfig,
+			OAuthConfig:       oAuthConfig,
 			Headers:           headers,
 		},
 		Name: runConfig.Name,

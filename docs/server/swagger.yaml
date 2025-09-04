@@ -1,69 +1,6 @@
 components:
   schemas:
-    github_com_stacklok_toolhive_pkg_api_v1_types.RemoteOAuthConfig:
-      description: OAuth configuration for remote server authentication
-      properties:
-        authorize_url:
-          description: OAuth authorization endpoint URL (alternative to issuer for
-            non-OIDC OAuth)
-          type: string
-        callback_port:
-          description: Specific port for OAuth callback server
-          type: integer
-        client_id:
-          description: OAuth client ID for authentication
-          type: string
-        client_secret:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter'
-        issuer:
-          description: OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
-          type: string
-        oauth_params:
-          additionalProperties:
-            type: string
-          description: Additional OAuth parameters for server-specific customization
-          type: object
-        scopes:
-          description: OAuth scopes to request
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        skip_browser:
-          description: Whether to skip opening browser for OAuth flow (defaults to
-            false)
-          type: boolean
-        token_url:
-          description: OAuth token endpoint URL (alternative to issuer for non-OIDC
-            OAuth)
-          type: string
-        use_pkce:
-          description: Whether to use PKCE for the OAuth flow
-          type: boolean
-      type: object
-    github_com_stacklok_toolhive_pkg_api_v1_types.oidcOptions:
-      description: OIDC configuration options
-      properties:
-        audience:
-          description: Expected audience
-          type: string
-        client_id:
-          description: OAuth2 client ID
-          type: string
-        client_secret:
-          description: OAuth2 client secret
-          type: string
-        introspection_url:
-          description: Token introspection URL for OIDC
-          type: string
-        issuer:
-          description: OIDC issuer URL
-          type: string
-        jwks_url:
-          description: JWKS URL for key verification
-          type: string
-      type: object
-    github_com_stacklok_toolhive_pkg_audit.Config:
+    audit.Config:
       description: AuditConfig contains the audit logging configuration
       properties:
         component:
@@ -101,7 +38,7 @@ components:
             in audit logs (in bytes)
           type: integer
       type: object
-    github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig:
+    auth.TokenValidatorConfig:
       description: OIDCConfig contains OIDC configuration
       properties:
         allowPrivateIP:
@@ -139,7 +76,7 @@ components:
             (RFC 9728)
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_authz.CedarConfig:
+    authz.CedarConfig:
       description: |-
         Cedar is the Cedar-specific configuration.
         This is only used when Type is ConfigTypeCedarV1.
@@ -154,23 +91,23 @@ components:
           type: array
           uniqueItems: false
       type: object
-    github_com_stacklok_toolhive_pkg_authz.Config:
+    authz.Config:
       description: AuthzConfig contains the authorization configuration
       properties:
         cedar:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authz.CedarConfig'
+          $ref: '#/components/schemas/authz.CedarConfig'
         type:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authz.ConfigType'
+          $ref: '#/components/schemas/authz.ConfigType'
         version:
           description: Version is the version of the configuration format.
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_authz.ConfigType:
+    authz.ConfigType:
       description: Type is the type of authorization configuration.
       type: string
       x-enum-varnames:
       - ConfigTypeCedarV1
-    github_com_stacklok_toolhive_pkg_client.MCPClient:
+    client.MCPClient:
       type: string
       x-enum-varnames:
       - RooCode
@@ -188,7 +125,7 @@ components:
       - AmpWindsurf
       - LMStudio
       - Goose
-    github_com_stacklok_toolhive_pkg_client.MCPClientStatus:
+    client.MCPClientStatus:
       properties:
         client_type:
           description: ClientType is the type of MCP client
@@ -218,7 +155,7 @@ components:
             ToolHive configuration
           type: boolean
       type: object
-    github_com_stacklok_toolhive_pkg_client.RegisteredClient:
+    client.RegisteredClient:
       properties:
         groups:
           items:
@@ -226,21 +163,9 @@ components:
           type: array
           uniqueItems: false
         name:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_client.MCPClient'
+          $ref: '#/components/schemas/client.MCPClient'
       type: object
-    github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus:
-      description: Status is the current status of the workload.
-      type: string
-      x-enum-varnames:
-      - WorkloadStatusRunning
-      - WorkloadStatusStopped
-      - WorkloadStatusError
-      - WorkloadStatusStarting
-      - WorkloadStatusStopping
-      - WorkloadStatusUnhealthy
-      - WorkloadStatusRemoving
-      - WorkloadStatusUnknown
-    github_com_stacklok_toolhive_pkg_core.Workload:
+    core.Workload:
       properties:
         created_at:
           description: CreatedAt is the timestamp when the workload was created.
@@ -274,7 +199,7 @@ components:
             a container workload (false).
           type: boolean
         status:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_container_runtime.WorkloadStatus'
+          $ref: '#/components/schemas/runtime.WorkloadStatus'
         status_context:
           description: |-
             StatusContext provides additional context about the workload's status.
@@ -292,12 +217,12 @@ components:
           type: array
           uniqueItems: false
         transport_type:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.TransportType'
+          $ref: '#/components/schemas/types.TransportType'
         url:
           description: URL is the URL of the workload exposed by the ToolHive proxy.
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_groups.Group:
+    groups.Group:
       properties:
         name:
           type: string
@@ -307,7 +232,7 @@ components:
           type: array
           uniqueItems: false
       type: object
-    github_com_stacklok_toolhive_pkg_ignore.Config:
+    ignore.Config:
       description: IgnoreConfig contains configuration for ignore processing
       properties:
         loadGlobal:
@@ -317,13 +242,13 @@ components:
           description: Whether to print resolved overlay paths for debugging
           type: boolean
       type: object
-    github_com_stacklok_toolhive_pkg_permissions.NetworkPermissions:
+    permissions.NetworkPermissions:
       description: Network defines network permissions
       properties:
         outbound:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_permissions.OutboundNetworkPermissions'
+          $ref: '#/components/schemas/permissions.OutboundNetworkPermissions'
       type: object
-    github_com_stacklok_toolhive_pkg_permissions.OutboundNetworkPermissions:
+    permissions.OutboundNetworkPermissions:
       description: Outbound defines outbound network permissions
       properties:
         allow_host:
@@ -342,14 +267,14 @@ components:
           description: InsecureAllowAll allows all outbound network connections
           type: boolean
       type: object
-    github_com_stacklok_toolhive_pkg_permissions.Profile:
+    permissions.Profile:
       description: PermissionProfile is the permission profile to use
       properties:
         name:
           description: Name is the name of the profile
           type: string
         network:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_permissions.NetworkPermissions'
+          $ref: '#/components/schemas/permissions.NetworkPermissions'
         privileged:
           description: |-
             Privileged indicates whether the container should run in privileged mode
@@ -376,7 +301,7 @@ components:
           type: array
           uniqueItems: false
       type: object
-    github_com_stacklok_toolhive_pkg_registry.EnvVar:
+    registry.EnvVar:
       properties:
         default:
           description: |-
@@ -401,7 +326,7 @@ components:
             If true, the value will be stored as a secret rather than as a plain environment variable
           type: boolean
       type: object
-    github_com_stacklok_toolhive_pkg_registry.Header:
+    registry.Header:
       properties:
         choices:
           description: Choices provides a list of valid values for the header (optional)
@@ -432,7 +357,7 @@ components:
             If true, the value will be stored as a secret rather than as plain text
           type: boolean
       type: object
-    github_com_stacklok_toolhive_pkg_registry.ImageMetadata:
+    registry.ImageMetadata:
       description: Container server details (if it's a container server)
       properties:
         args:
@@ -463,23 +388,23 @@ components:
           description: EnvVars defines environment variables that can be passed to
             the server
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.EnvVar'
+            $ref: '#/components/schemas/registry.EnvVar'
           type: array
           uniqueItems: false
         image:
           description: Image is the Docker image reference for the MCP server
           type: string
         metadata:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.Metadata'
+          $ref: '#/components/schemas/registry.Metadata'
         name:
           description: |-
             Name is the identifier for the MCP server, used when referencing the server in commands
             If not provided, it will be auto-generated from the registry key
           type: string
         permissions:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_permissions.Profile'
+          $ref: '#/components/schemas/permissions.Profile'
         provenance:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.Provenance'
+          $ref: '#/components/schemas/registry.Provenance'
         repository_url:
           description: RepositoryURL is the URL to the source code repository for
             the server
@@ -516,7 +441,7 @@ components:
             For remote servers: sse or streamable-http (stdio not supported)
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_registry.Metadata:
+    registry.Metadata:
       description: Metadata contains additional information about the server such
         as popularity metrics
       properties:
@@ -532,7 +457,7 @@ components:
             the server
           type: integer
       type: object
-    github_com_stacklok_toolhive_pkg_registry.OAuthConfig:
+    registry.OAuthConfig:
       description: |-
         OAuthConfig provides OAuth/OIDC configuration for authentication to the remote server
         Used with the thv proxy command's --remote-auth flags
@@ -581,11 +506,11 @@ components:
             Defaults to true for enhanced security
           type: boolean
       type: object
-    github_com_stacklok_toolhive_pkg_registry.Provenance:
+    registry.Provenance:
       description: Provenance contains verification and signing metadata
       properties:
         attestation:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.VerifiedAttestation'
+          $ref: '#/components/schemas/registry.VerifiedAttestation'
         cert_issuer:
           type: string
         repository_ref:
@@ -599,7 +524,7 @@ components:
         sigstore_url:
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_registry.Registry:
+    registry.Registry:
       description: Full registry data
       properties:
         last_updated:
@@ -608,14 +533,14 @@ components:
           type: string
         remote_servers:
           additionalProperties:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.RemoteServerMetadata'
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
           description: |-
             RemoteServers is a map of server names to their corresponding remote server definitions
             These are MCP servers accessed via HTTP/HTTPS using the thv proxy command
           type: object
         servers:
           additionalProperties:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.ImageMetadata'
+            $ref: '#/components/schemas/registry.ImageMetadata'
           description: Servers is a map of server names to their corresponding server
             definitions
           type: object
@@ -623,7 +548,7 @@ components:
           description: Version is the schema version of the registry
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_registry.RemoteServerMetadata:
+    registry.RemoteServerMetadata:
       description: Remote server details (if it's a remote server)
       properties:
         custom_metadata:
@@ -639,7 +564,7 @@ components:
             EnvVars defines environment variables that can be passed to configure the client
             These might be needed for client-side configuration when connecting to the remote server
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.EnvVar'
+            $ref: '#/components/schemas/registry.EnvVar'
           type: array
           uniqueItems: false
         headers:
@@ -647,18 +572,18 @@ components:
             Headers defines HTTP headers that can be passed to the remote server for authentication
             These are used with the thv proxy command's authentication features
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.Header'
+            $ref: '#/components/schemas/registry.Header'
           type: array
           uniqueItems: false
         metadata:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.Metadata'
+          $ref: '#/components/schemas/registry.Metadata'
         name:
           description: |-
             Name is the identifier for the MCP server, used when referencing the server in commands
             If not provided, it will be auto-generated from the registry key
           type: string
         oauth_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.OAuthConfig'
+          $ref: '#/components/schemas/registry.OAuthConfig'
         repository_url:
           description: RepositoryURL is the URL to the source code repository for
             the server
@@ -694,13 +619,13 @@ components:
           description: URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_registry.VerifiedAttestation:
+    registry.VerifiedAttestation:
       properties:
         predicate: {}
         predicate_type:
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_runner.RemoteAuthConfig:
+    runner.RemoteAuthConfig:
       description: RemoteAuthConfig contains OAuth configuration for remote MCP servers
       properties:
         authorizeURL:
@@ -716,12 +641,12 @@ components:
         envVars:
           description: Environment variables for the client
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.EnvVar'
+            $ref: '#/components/schemas/registry.EnvVar'
           type: array
         headers:
           description: Headers for HTTP requests
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.Header'
+            $ref: '#/components/schemas/registry.Header'
           type: array
         issuer:
           description: OAuth endpoint configuration (from registry)
@@ -743,15 +668,15 @@ components:
         tokenURL:
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_runner.RunConfig:
+    runner.RunConfig:
       properties:
         audit_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_audit.Config'
+          $ref: '#/components/schemas/audit.Config'
         audit_config_path:
           description: AuditConfigPath is the path to the audit configuration file
           type: string
         authz_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authz.Config'
+          $ref: '#/components/schemas/authz.Config'
         authz_config_path:
           description: AuthzConfigPath is the path to the authorization configuration
             file
@@ -789,7 +714,7 @@ components:
           description: Host is the host for the HTTP proxy
           type: string
         ignore_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ignore.Config'
+          $ref: '#/components/schemas/ignore.Config'
         image:
           description: Image is the Docker image to run
           type: string
@@ -811,16 +736,16 @@ components:
             MiddlewareConfigs contains the list of middleware to apply to the transport
             and the configuration for each middleware.
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig'
+            $ref: '#/components/schemas/types.MiddlewareConfig'
           type: array
           uniqueItems: false
         name:
           description: Name is the name of the MCP server
           type: string
         oidc_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth.TokenValidatorConfig'
+          $ref: '#/components/schemas/auth.TokenValidatorConfig'
         permission_profile:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_permissions.Profile'
+          $ref: '#/components/schemas/permissions.Profile'
         permission_profile_name_or_path:
           description: PermissionProfileNameOrPath is the name or path of the permission
             profile
@@ -829,9 +754,9 @@ components:
           description: Port is the port for the HTTP proxy to listen on (host port)
           type: integer
         proxy_mode:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.ProxyMode'
+          $ref: '#/components/schemas/types.ProxyMode'
         remote_auth_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.RemoteAuthConfig'
+          $ref: '#/components/schemas/runner.RemoteAuthConfig'
         remote_url:
           description: RemoteURL is the URL of the remote MCP server (if running remotely)
           type: string
@@ -855,14 +780,14 @@ components:
             to SSE transport)
           type: integer
         telemetry_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_telemetry.Config'
+          $ref: '#/components/schemas/telemetry.Config'
         thv_ca_bundle:
           description: ThvCABundle is the path to the CA certificate bundle for ToolHive
             HTTP operations
           type: string
         tool_override:
           additionalProperties:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.ToolOverride'
+            $ref: '#/components/schemas/runner.ToolOverride'
           description: |-
             ToolOverride is the map of tool names to override. Tools to override are
             specified as ToolOverride structs.
@@ -895,7 +820,7 @@ components:
           type: array
           uniqueItems: false
       type: object
-    github_com_stacklok_toolhive_pkg_runner.ToolOverride:
+    runner.ToolOverride:
       properties:
         description:
           description: Description is the redefined description of the tool
@@ -904,14 +829,26 @@ components:
           description: Name is the redefined name of the tool
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_secrets.SecretParameter:
+    runtime.WorkloadStatus:
+      description: Status is the current status of the workload.
+      type: string
+      x-enum-varnames:
+      - WorkloadStatusRunning
+      - WorkloadStatusStopped
+      - WorkloadStatusError
+      - WorkloadStatusStarting
+      - WorkloadStatusStopping
+      - WorkloadStatusUnhealthy
+      - WorkloadStatusRemoving
+      - WorkloadStatusUnknown
+    secrets.SecretParameter:
       properties:
         name:
           type: string
         target:
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_telemetry.Config:
+    telemetry.Config:
       description: TelemetryConfig contains the OpenTelemetry configuration
       properties:
         enablePrometheusMetricsPath:
@@ -951,7 +888,7 @@ components:
           description: ServiceVersion is the service version for telemetry
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig:
+    types.MiddlewareConfig:
       properties:
         parameters:
           description: |-
@@ -962,13 +899,13 @@ components:
           description: Type is a string representing the middleware type.
           type: string
       type: object
-    github_com_stacklok_toolhive_pkg_transport_types.ProxyMode:
+    types.ProxyMode:
       description: ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
       type: string
       x-enum-varnames:
       - ProxyModeSSE
       - ProxyModeStreamableHTTP
-    github_com_stacklok_toolhive_pkg_transport_types.TransportType:
+    types.TransportType:
       description: TransportType is the type of transport used for this workload.
       type: string
       x-enum-varnames:
@@ -976,14 +913,14 @@ components:
       - TransportTypeSSE
       - TransportTypeStreamableHTTP
       - TransportTypeInspector
-    pkg_api_v1.RegistryType:
+    v1.RegistryType:
       description: Type of registry (file, url, or default)
       type: string
       x-enum-varnames:
       - RegistryTypeFile
       - RegistryTypeURL
       - RegistryTypeDefault
-    pkg_api_v1.UpdateRegistryRequest:
+    v1.UpdateRegistryRequest:
       description: Request containing registry configuration updates
       properties:
         allow_private_ip:
@@ -996,7 +933,7 @@ components:
           description: Registry URL (for remote registries)
           type: string
       type: object
-    pkg_api_v1.UpdateRegistryResponse:
+    v1.UpdateRegistryResponse:
       description: Response containing update result
       properties:
         message:
@@ -1006,7 +943,7 @@ components:
           description: Registry type after update
           type: string
       type: object
-    pkg_api_v1.bulkClientRequest:
+    v1.bulkClientRequest:
       properties:
         groups:
           description: Groups is the list of groups configured on the client.
@@ -1037,7 +974,7 @@ components:
           type: array
           uniqueItems: false
       type: object
-    pkg_api_v1.bulkOperationRequest:
+    v1.bulkOperationRequest:
       properties:
         group:
           description: Group name to operate on (mutually exclusive with names)
@@ -1049,15 +986,15 @@ components:
           type: array
           uniqueItems: false
       type: object
-    pkg_api_v1.clientStatusResponse:
+    v1.clientStatusResponse:
       properties:
         clients:
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_client.MCPClientStatus'
+            $ref: '#/components/schemas/client.MCPClientStatus'
           type: array
           uniqueItems: false
       type: object
-    pkg_api_v1.createClientRequest:
+    v1.createClientRequest:
       properties:
         groups:
           description: Groups is the list of groups configured on the client.
@@ -1085,7 +1022,7 @@ components:
           - LMStudio
           - Goose
       type: object
-    pkg_api_v1.createClientResponse:
+    v1.createClientResponse:
       properties:
         groups:
           description: Groups is the list of groups configured on the client.
@@ -1113,19 +1050,19 @@ components:
           - LMStudio
           - Goose
       type: object
-    pkg_api_v1.createGroupRequest:
+    v1.createGroupRequest:
       properties:
         name:
           description: Name of the group to create
           type: string
       type: object
-    pkg_api_v1.createGroupResponse:
+    v1.createGroupResponse:
       properties:
         name:
           description: Name of the created group
           type: string
       type: object
-    pkg_api_v1.createRequest:
+    v1.createRequest:
       description: Request to create a new workload
       properties:
         authz_config:
@@ -1147,7 +1084,7 @@ components:
           type: string
         headers:
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.Header'
+            $ref: '#/components/schemas/registry.Header'
           type: array
           uniqueItems: false
         host:
@@ -1164,18 +1101,18 @@ components:
             in the permission profile.
           type: boolean
         oauth_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_api_v1_types.RemoteOAuthConfig'
+          $ref: '#/components/schemas/v1.remoteOAuthConfig'
         oidc:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_api_v1_types.oidcOptions'
+          $ref: '#/components/schemas/v1.oidcOptions'
         permission_profile:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_permissions.Profile'
+          $ref: '#/components/schemas/permissions.Profile'
         proxy_mode:
           description: Proxy mode to use
           type: string
         secrets:
           description: Secret parameters to inject
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter'
+            $ref: '#/components/schemas/secrets.SecretParameter'
           type: array
           uniqueItems: false
         target_port:
@@ -1200,7 +1137,7 @@ components:
           type: array
           uniqueItems: false
       type: object
-    pkg_api_v1.createSecretRequest:
+    v1.createSecretRequest:
       description: Request to create a new secret
       properties:
         key:
@@ -1210,7 +1147,7 @@ components:
           description: Secret value
           type: string
       type: object
-    pkg_api_v1.createSecretResponse:
+    v1.createSecretResponse:
       description: Response after creating a secret
       properties:
         key:
@@ -1220,7 +1157,7 @@ components:
           description: Success message
           type: string
       type: object
-    pkg_api_v1.createWorkloadResponse:
+    v1.createWorkloadResponse:
       description: Response after successfully creating a workload
       properties:
         name:
@@ -1230,7 +1167,7 @@ components:
           description: Port the workload is listening on
           type: integer
       type: object
-    pkg_api_v1.getRegistryResponse:
+    v1.getRegistryResponse:
       description: Response containing registry details
       properties:
         last_updated:
@@ -1240,7 +1177,7 @@ components:
           description: Name of the registry
           type: string
         registry:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.Registry'
+          $ref: '#/components/schemas/registry.Registry'
         server_count:
           description: Number of servers in the registry
           type: integer
@@ -1259,11 +1196,11 @@ components:
           description: Version of the registry schema
           type: string
       type: object
-    pkg_api_v1.getSecretsProviderResponse:
+    v1.getSecretsProviderResponse:
       description: Response containing secrets provider details
       properties:
         capabilities:
-          $ref: '#/components/schemas/pkg_api_v1.providerCapabilitiesResponse'
+          $ref: '#/components/schemas/v1.providerCapabilitiesResponse'
         name:
           description: Name of the secrets provider
           type: string
@@ -1271,53 +1208,75 @@ components:
           description: Type of the secrets provider
           type: string
       type: object
-    pkg_api_v1.getServerResponse:
+    v1.getServerResponse:
       description: Response containing server details
       properties:
         is_remote:
           description: Indicates if this is a remote server
           type: boolean
         remote_server:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.RemoteServerMetadata'
+          $ref: '#/components/schemas/registry.RemoteServerMetadata'
         server:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.ImageMetadata'
+          $ref: '#/components/schemas/registry.ImageMetadata'
       type: object
-    pkg_api_v1.groupListResponse:
+    v1.groupListResponse:
       properties:
         groups:
           description: List of groups
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_groups.Group'
+            $ref: '#/components/schemas/groups.Group'
           type: array
           uniqueItems: false
       type: object
-    pkg_api_v1.listSecretsResponse:
+    v1.listSecretsResponse:
       description: Response containing a list of secret keys
       properties:
         keys:
           description: List of secret keys
           items:
-            $ref: '#/components/schemas/pkg_api_v1.secretKeyResponse'
+            $ref: '#/components/schemas/v1.secretKeyResponse'
           type: array
           uniqueItems: false
       type: object
-    pkg_api_v1.listServersResponse:
+    v1.listServersResponse:
       description: Response containing a list of servers
       properties:
         remote_servers:
           description: List of remote servers in the registry (if any)
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.RemoteServerMetadata'
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
           type: array
           uniqueItems: false
         servers:
           description: List of container servers in the registry
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.ImageMetadata'
+            $ref: '#/components/schemas/registry.ImageMetadata'
           type: array
           uniqueItems: false
       type: object
-    pkg_api_v1.providerCapabilitiesResponse:
+    v1.oidcOptions:
+      description: OIDC configuration options
+      properties:
+        audience:
+          description: Expected audience
+          type: string
+        client_id:
+          description: OAuth2 client ID
+          type: string
+        client_secret:
+          description: OAuth2 client secret
+          type: string
+        introspection_url:
+          description: Token introspection URL for OIDC
+          type: string
+        issuer:
+          description: OIDC issuer URL
+          type: string
+        jwks_url:
+          description: JWKS URL for key verification
+          type: string
+      type: object
+    v1.providerCapabilitiesResponse:
       description: Capabilities of the secrets provider
       properties:
         can_cleanup:
@@ -1336,7 +1295,7 @@ components:
           description: Whether the provider can write secrets
           type: boolean
       type: object
-    pkg_api_v1.registryInfo:
+    v1.registryInfo:
       description: Basic information about a registry
       properties:
         last_updated:
@@ -1353,22 +1312,63 @@ components:
             built-in)
           type: string
         type:
-          $ref: '#/components/schemas/pkg_api_v1.RegistryType'
+          $ref: '#/components/schemas/v1.RegistryType'
         version:
           description: Version of the registry schema
           type: string
       type: object
-    pkg_api_v1.registryListResponse:
+    v1.registryListResponse:
       description: Response containing a list of registries
       properties:
         registries:
           description: List of registries
           items:
-            $ref: '#/components/schemas/pkg_api_v1.registryInfo'
+            $ref: '#/components/schemas/v1.registryInfo'
           type: array
           uniqueItems: false
       type: object
-    pkg_api_v1.secretKeyResponse:
+    v1.remoteOAuthConfig:
+      description: OAuth configuration for remote server authentication
+      properties:
+        authorize_url:
+          description: OAuth authorization endpoint URL (alternative to issuer for
+            non-OIDC OAuth)
+          type: string
+        callback_port:
+          description: Specific port for OAuth callback server
+          type: integer
+        client_id:
+          description: OAuth client ID for authentication
+          type: string
+        client_secret:
+          $ref: '#/components/schemas/secrets.SecretParameter'
+        issuer:
+          description: OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
+          type: string
+        oauth_params:
+          additionalProperties:
+            type: string
+          description: Additional OAuth parameters for server-specific customization
+          type: object
+        scopes:
+          description: OAuth scopes to request
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        skip_browser:
+          description: Whether to skip opening browser for OAuth flow (defaults to
+            false)
+          type: boolean
+        token_url:
+          description: OAuth token endpoint URL (alternative to issuer for non-OIDC
+            OAuth)
+          type: string
+        use_pkce:
+          description: Whether to use PKCE for the OAuth flow
+          type: boolean
+      type: object
+    v1.secretKeyResponse:
       description: Secret key information
       properties:
         description:
@@ -1378,7 +1378,7 @@ components:
           description: Secret key name
           type: string
       type: object
-    pkg_api_v1.setupSecretsRequest:
+    v1.setupSecretsRequest:
       description: Request to setup a secrets provider
       properties:
         password:
@@ -1390,7 +1390,7 @@ components:
           description: Type of the secrets provider (encrypted, 1password, none)
           type: string
       type: object
-    pkg_api_v1.setupSecretsResponse:
+    v1.setupSecretsResponse:
       description: Response after initializing a secrets provider
       properties:
         message:
@@ -1400,7 +1400,7 @@ components:
           description: Type of the secrets provider that was setup
           type: string
       type: object
-    pkg_api_v1.updateRequest:
+    v1.updateRequest:
       description: Request to update an existing workload (name cannot be changed)
       properties:
         authz_config:
@@ -1422,7 +1422,7 @@ components:
           type: string
         headers:
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_registry.Header'
+            $ref: '#/components/schemas/registry.Header'
           type: array
           uniqueItems: false
         host:
@@ -1436,18 +1436,18 @@ components:
             in the permission profile.
           type: boolean
         oauth_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_api_v1_types.RemoteOAuthConfig'
+          $ref: '#/components/schemas/v1.remoteOAuthConfig'
         oidc:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_api_v1_types.oidcOptions'
+          $ref: '#/components/schemas/v1.oidcOptions'
         permission_profile:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_permissions.Profile'
+          $ref: '#/components/schemas/permissions.Profile'
         proxy_mode:
           description: Proxy mode to use
           type: string
         secrets:
           description: Secret parameters to inject
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter'
+            $ref: '#/components/schemas/secrets.SecretParameter'
           type: array
           uniqueItems: false
         target_port:
@@ -1472,14 +1472,14 @@ components:
           type: array
           uniqueItems: false
       type: object
-    pkg_api_v1.updateSecretRequest:
+    v1.updateSecretRequest:
       description: Request to update an existing secret
       properties:
         value:
           description: New secret value
           type: string
       type: object
-    pkg_api_v1.updateSecretResponse:
+    v1.updateSecretResponse:
       description: Response after updating a secret
       properties:
         key:
@@ -1489,22 +1489,22 @@ components:
           description: Success message
           type: string
       type: object
-    pkg_api_v1.versionResponse:
+    v1.versionResponse:
       properties:
         version:
           type: string
       type: object
-    pkg_api_v1.workloadListResponse:
+    v1.workloadListResponse:
       description: Response containing a list of workloads
       properties:
         workloads:
           description: List of container information for each workload
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_core.Workload'
+            $ref: '#/components/schemas/core.Workload'
           type: array
           uniqueItems: false
       type: object
-    pkg_api_v1.workloadStatusResponse:
+    v1.workloadStatusResponse:
       description: Response containing workload status information
       properties:
         status:
@@ -1551,7 +1551,7 @@ paths:
             application/json:
               schema:
                 items:
-                  $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_client.RegisteredClient'
+                  $ref: '#/components/schemas/client.RegisteredClient'
                 type: array
           description: OK
       summary: List all clients
@@ -1563,7 +1563,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.createClientRequest'
+              $ref: '#/components/schemas/v1.createClientRequest'
         description: Client to register
         required: true
       responses:
@@ -1571,7 +1571,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.createClientResponse'
+                $ref: '#/components/schemas/v1.createClientResponse'
           description: OK
         "400":
           content:
@@ -1645,7 +1645,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.bulkClientRequest'
+              $ref: '#/components/schemas/v1.bulkClientRequest'
         description: Clients to register
         required: true
       responses:
@@ -1654,7 +1654,7 @@ paths:
             application/json:
               schema:
                 items:
-                  $ref: '#/components/schemas/pkg_api_v1.createClientResponse'
+                  $ref: '#/components/schemas/v1.createClientResponse'
                 type: array
           description: OK
         "400":
@@ -1673,7 +1673,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.bulkClientRequest'
+              $ref: '#/components/schemas/v1.bulkClientRequest'
         description: Clients to unregister
         required: true
       responses:
@@ -1696,7 +1696,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.clientStatusResponse'
+                $ref: '#/components/schemas/v1.clientStatusResponse'
           description: OK
       summary: List all clients status
       tags:
@@ -1709,7 +1709,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.groupListResponse'
+                $ref: '#/components/schemas/v1.groupListResponse'
           description: OK
         "500":
           content:
@@ -1726,7 +1726,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.createGroupRequest'
+              $ref: '#/components/schemas/v1.createGroupRequest'
         description: Group creation request
         required: true
       responses:
@@ -1734,7 +1734,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.createGroupResponse'
+                $ref: '#/components/schemas/v1.createGroupResponse'
           description: Created
         "400":
           content:
@@ -1809,7 +1809,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_groups.Group'
+                $ref: '#/components/schemas/groups.Group'
           description: OK
         "404":
           content:
@@ -1834,7 +1834,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.registryListResponse'
+                $ref: '#/components/schemas/v1.registryListResponse'
           description: OK
       summary: List registries
       tags:
@@ -1896,7 +1896,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.getRegistryResponse'
+                $ref: '#/components/schemas/v1.getRegistryResponse'
           description: OK
         "404":
           content:
@@ -1920,7 +1920,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.UpdateRegistryRequest'
+              $ref: '#/components/schemas/v1.UpdateRegistryRequest'
         description: Registry configuration
         required: true
       responses:
@@ -1928,7 +1928,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.UpdateRegistryResponse'
+                $ref: '#/components/schemas/v1.UpdateRegistryResponse'
           description: OK
         "400":
           content:
@@ -1960,7 +1960,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.listServersResponse'
+                $ref: '#/components/schemas/v1.listServersResponse'
           description: OK
         "404":
           content:
@@ -1992,7 +1992,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.getServerResponse'
+                $ref: '#/components/schemas/v1.getServerResponse'
           description: OK
         "404":
           content:
@@ -2010,7 +2010,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.setupSecretsRequest'
+              $ref: '#/components/schemas/v1.setupSecretsRequest'
         description: Setup secrets provider request
         required: true
       responses:
@@ -2018,7 +2018,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.setupSecretsResponse'
+                $ref: '#/components/schemas/v1.setupSecretsResponse'
           description: Created
         "400":
           content:
@@ -2043,7 +2043,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.getSecretsProviderResponse'
+                $ref: '#/components/schemas/v1.getSecretsProviderResponse'
           description: OK
         "404":
           content:
@@ -2068,7 +2068,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.listSecretsResponse'
+                $ref: '#/components/schemas/v1.listSecretsResponse'
           description: OK
         "404":
           content:
@@ -2098,7 +2098,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.createSecretRequest'
+              $ref: '#/components/schemas/v1.createSecretRequest'
         description: Create secret request
         required: true
       responses:
@@ -2106,7 +2106,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.createSecretResponse'
+                $ref: '#/components/schemas/v1.createSecretResponse'
           description: Created
         "400":
           content:
@@ -2193,7 +2193,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.updateSecretRequest'
+              $ref: '#/components/schemas/v1.updateSecretRequest'
         description: Update secret request
         required: true
       responses:
@@ -2201,7 +2201,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.updateSecretResponse'
+                $ref: '#/components/schemas/v1.updateSecretResponse'
           description: OK
         "400":
           content:
@@ -2238,7 +2238,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.versionResponse'
+                $ref: '#/components/schemas/v1.versionResponse'
           description: OK
       summary: Get server version
       tags:
@@ -2262,7 +2262,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.workloadListResponse'
+                $ref: '#/components/schemas/v1.workloadListResponse'
           description: OK
         "404":
           content:
@@ -2279,7 +2279,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.createRequest'
+              $ref: '#/components/schemas/v1.createRequest'
         description: Create workload request
         required: true
       responses:
@@ -2287,7 +2287,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.createWorkloadResponse'
+                $ref: '#/components/schemas/v1.createWorkloadResponse'
           description: Created
         "400":
           content:
@@ -2350,7 +2350,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.createRequest'
+                $ref: '#/components/schemas/v1.createRequest'
           description: OK
         "404":
           content:
@@ -2375,7 +2375,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.updateRequest'
+              $ref: '#/components/schemas/v1.updateRequest'
         description: Update workload request
         required: true
       responses:
@@ -2383,7 +2383,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.createWorkloadResponse'
+                $ref: '#/components/schemas/v1.createWorkloadResponse'
           description: OK
         "400":
           content:
@@ -2415,7 +2415,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_runner.RunConfig'
+                $ref: '#/components/schemas/runner.RunConfig'
           description: OK
         "404":
           content:
@@ -2502,7 +2502,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.workloadStatusResponse'
+                $ref: '#/components/schemas/v1.workloadStatusResponse'
           description: OK
         "404":
           content:
@@ -2552,7 +2552,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.bulkOperationRequest'
+              $ref: '#/components/schemas/v1.bulkOperationRequest'
         description: Bulk delete request (names or group)
         required: true
       responses:
@@ -2578,7 +2578,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.bulkOperationRequest'
+              $ref: '#/components/schemas/v1.bulkOperationRequest'
         description: Bulk restart request (names or group)
         required: true
       responses:
@@ -2604,7 +2604,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/pkg_api_v1.bulkOperationRequest'
+              $ref: '#/components/schemas/v1.bulkOperationRequest'
         description: Bulk stop request (names or group)
         required: true
       responses:

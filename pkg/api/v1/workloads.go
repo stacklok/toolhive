@@ -8,7 +8,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	apitypes "github.com/stacklok/toolhive/pkg/api/v1/types"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -80,13 +79,6 @@ func WorkloadRouter(
 
 	return r
 }
-
-type createRequest = apitypes.CreateRequest
-type createWorkloadResponse = apitypes.CreateWorkloadResponse
-type updateRequest = apitypes.UpdateRequest
-type workloadListResponse = apitypes.WorkloadListResponse
-type workloadStatusResponse = apitypes.WorkloadStatusResponse
-type bulkOperationRequest = apitypes.BulkOperationRequest
 
 //	 listWorkloads
 //		@Summary		List all workloads
@@ -173,7 +165,7 @@ func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config := apitypes.RunConfigToCreateRequest(runConfig)
+	config := runConfigToCreateRequest(runConfig)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(config); err != nil {
@@ -371,7 +363,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 
 	// Convert updateRequest to createRequest with the existing workload name
 	createReq := createRequest{
-		UpdateRequest: updateReq,
+		updateRequest: updateReq,
 		Name:          name, // Use the name from URL path, not from request body
 	}
 
@@ -427,7 +419,7 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := apitypes.ValidateBulkOperationRequest(req); err != nil {
+	if err := validateBulkOperationRequest(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -472,7 +464,7 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := apitypes.ValidateBulkOperationRequest(req); err != nil {
+	if err := validateBulkOperationRequest(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -518,7 +510,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := apitypes.ValidateBulkOperationRequest(req); err != nil {
+	if err := validateBulkOperationRequest(req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

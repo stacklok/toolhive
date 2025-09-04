@@ -1,4 +1,4 @@
-package types
+package v1
 
 import (
 	"testing"
@@ -17,27 +17,27 @@ func TestValidateBulkOperationRequest(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		request BulkOperationRequest
+		request bulkOperationRequest
 		wantErr bool
 		errMsg  string
 	}{
 		{
 			name: "valid with names only",
-			request: BulkOperationRequest{
+			request: bulkOperationRequest{
 				Names: []string{"workload1", "workload2"},
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid with group only",
-			request: BulkOperationRequest{
+			request: bulkOperationRequest{
 				Group: "test-group",
 			},
 			wantErr: false,
 		},
 		{
 			name: "invalid - both names and group",
-			request: BulkOperationRequest{
+			request: bulkOperationRequest{
 				Names: []string{"workload1"},
 				Group: "test-group",
 			},
@@ -46,13 +46,13 @@ func TestValidateBulkOperationRequest(t *testing.T) {
 		},
 		{
 			name:    "invalid - neither names nor group",
-			request: BulkOperationRequest{},
+			request: bulkOperationRequest{},
 			wantErr: true,
 			errMsg:  "must specify either names or group",
 		},
 		{
 			name: "invalid - empty names array",
-			request: BulkOperationRequest{
+			request: bulkOperationRequest{
 				Names: []string{},
 			},
 			wantErr: true,
@@ -64,7 +64,7 @@ func TestValidateBulkOperationRequest(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := ValidateBulkOperationRequest(tt.request)
+			err := validateBulkOperationRequest(tt.request)
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errMsg)
@@ -97,7 +97,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 			ToolsFilter:    []string{"tool1", "tool2"},
 		}
 
-		result := RunConfigToCreateRequest(runConfig)
+		result := runConfigToCreateRequest(runConfig)
 
 		require.NotNil(t, result)
 		assert.Equal(t, "test-workload", result.Name)
@@ -134,7 +134,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 			},
 		}
 
-		result := RunConfigToCreateRequest(runConfig)
+		result := runConfigToCreateRequest(runConfig)
 
 		require.NotNil(t, result)
 		assert.Equal(t, "https://oidc.example.com", result.OIDC.Issuer)
@@ -161,7 +161,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 			},
 		}
 
-		result := RunConfigToCreateRequest(runConfig)
+		result := runConfigToCreateRequest(runConfig)
 
 		require.NotNil(t, result)
 		require.NotNil(t, result.OAuthConfig)
@@ -186,7 +186,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 			PermissionProfile: profile,
 		}
 
-		result := RunConfigToCreateRequest(runConfig)
+		result := runConfigToCreateRequest(runConfig)
 
 		require.NotNil(t, result)
 		assert.Equal(t, profile, result.PermissionProfile)
@@ -200,7 +200,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 			Secrets: []string{"invalid-secret-format", "another-invalid"},
 		}
 
-		result := RunConfigToCreateRequest(runConfig)
+		result := runConfigToCreateRequest(runConfig)
 
 		require.NotNil(t, result)
 		// Invalid secrets should be ignored, resulting in empty secrets array
@@ -210,7 +210,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 	t.Run("nil runConfig", func(t *testing.T) {
 		t.Parallel()
 
-		result := RunConfigToCreateRequest(nil)
+		result := runConfigToCreateRequest(nil)
 		assert.Nil(t, result)
 	})
 }

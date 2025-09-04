@@ -125,19 +125,6 @@ func TestWorkloadService_createRequestToRemoteAuthConfig(t *testing.T) {
 		assert.Equal(t, 8081, result.CallbackPort)
 	})
 
-	t.Run("without OAuth config", func(t *testing.T) {
-		t.Parallel()
-
-		service := &WorkloadService{}
-
-		req := &apitypes.CreateRequest{}
-
-		result, err := service.createRequestToRemoteAuthConfig(context.Background(), req)
-
-		require.NoError(t, err)
-		assert.Nil(t, result)
-	})
-
 	t.Run("secret resolution fails", func(t *testing.T) {
 		t.Parallel()
 

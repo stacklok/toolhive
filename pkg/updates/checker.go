@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/gofrs/flock"
 	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 
+	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -166,13 +166,12 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 	}
 
 	// Acquire lock just before writing to minimize lock time
-	lockFile := flock.New(d.updateFilePath + ".lock")
+	lockPath := d.updateFilePath + ".lock"
+	lockFile := lockfile.NewTrackedLock(lockPath)
 	if err := lockFile.Lock(); err != nil {
 		return fmt.Errorf("failed to acquire lock on update file: %w", err)
 	}
-	defer func() {
-		_ = lockFile.Unlock()
-	}()
+	defer lockfile.ReleaseTrackedLock(lockPath, lockFile)
 
 	if err := os.WriteFile(d.updateFilePath, updatedData, 0600); err != nil {
 		return fmt.Errorf("failed to write updated file: %w", err)

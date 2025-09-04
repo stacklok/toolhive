@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -250,7 +250,7 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 
 	// Use a separate lock file for cross-platform compatibility
 	lockPath := configPath + ".lock"
-	fileLock := flock.New(lockPath)
+	fileLock := lockfile.NewTrackedLock(lockPath)
 	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
 	defer cancel()
 
@@ -262,7 +262,7 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 	if !locked {
 		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
 	}
-	defer fileLock.Unlock()
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
 
 	// Load the config after acquiring the lock to avoid race conditions
 	c, err := LoadOrCreateConfigWithPath(configPath)

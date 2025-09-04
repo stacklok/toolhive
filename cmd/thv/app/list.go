@@ -87,6 +87,9 @@ func printJSONOutput(workloadList []core.Workload) error {
 		workloadList = []core.Workload{}
 	}
 
+	// Sort workloads alphabetically by name for deterministic output
+	core.SortWorkloadsByName(workloadList)
+
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(workloadList, "", "  ")
 	if err != nil {
@@ -127,6 +130,9 @@ func printMCPServersOutput(workloadList []core.Workload) error {
 
 // printTextOutput prints workload information in text format
 func printTextOutput(workloadList []core.Workload) {
+	// Sort workloads alphabetically by name for deterministic output
+	core.SortWorkloadsByName(workloadList)
+
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tTOOL TYPE\tGROUP\tCREATED AT")

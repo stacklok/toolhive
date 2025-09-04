@@ -82,7 +82,8 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM node:",
 				"npm install --save example-package",
 				"COPY --from=builder --chown=appuser:appgroup /build/node_modules /app/node_modules",
-				"ENTRYPOINT [\"npx\", \"--no-install\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
+				"echo \"exec npx $(echo example-package | sed 's/@[^@/]*$//'), \"--arg1\", \"--arg2\", \"value\"\" >> entrypoint.sh",
+				"ENTRYPOINT [\"./entrypoint.sh\"]",
 			},
 			wantMatches: []string{
 				`FROM node:\d+-alpine AS builder`, // Match builder stage
@@ -105,7 +106,8 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantContains: []string{
 				"FROM node:",
 				"npm install --save example-package",
-				"ENTRYPOINT [\"npx\", \"--no-install\", \"example-package\", \"--arg1\", \"--arg2\", \"value\"]",
+				"echo \"exec npx $(echo example-package | sed 's/@[^@/]*$//'), \"--arg1\", \"--arg2\", \"value\"\" >> entrypoint.sh",
+				"ENTRYPOINT [\"./entrypoint.sh\"]",
 				"Add custom CA certificate BEFORE any network operations",
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
 				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",

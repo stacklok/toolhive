@@ -144,7 +144,8 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		// Check if this is a remote workload using the state package
 		remote, err := f.isRemoteWorkload(ctx, workloadName)
 		if err != nil {
-			return core.Workload{}, err
+			// error is expected
+			logger.Debugf("failed to check if remote workload %s is remote: %v", workloadName, err)
 		}
 		if remote {
 			result.Remote = true
@@ -290,10 +291,14 @@ func (f *fileStatusManager) ensureBaseDir() error {
 	return os.MkdirAll(f.baseDir, 0750)
 }
 
+// TODO: This can probably be de-duped with withFileReadLock
 // withFileLock executes the provided function while holding a write lock on the workload's lock file.
 func (f *fileStatusManager) withFileLock(ctx context.Context, workloadName string, fn func(string) error) error {
+	// Remove any slashes from the workload name to avoid problems.
+	workloadName = strings.ReplaceAll(workloadName, "/", "-")
+
 	// Validate workload name
-	if strings.Contains(workloadName, "..") || strings.ContainsAny(workloadName, "/\\") {
+	if strings.Contains(workloadName, "..") {
 		return fmt.Errorf("invalid workload name '%s': contains forbidden characters", workloadName)
 	}
 	if err := f.ensureBaseDir(); err != nil {
@@ -333,6 +338,16 @@ func (f *fileStatusManager) withFileLock(ctx context.Context, workloadName strin
 
 // withFileReadLock executes the provided function while holding a read lock on the workload's lock file.
 func (f *fileStatusManager) withFileReadLock(ctx context.Context, workloadName string, fn func(string) error) error {
+	// Remove any slashes from the workload name to avoid problems.
+	workloadName = strings.ReplaceAll(workloadName, "/", "-")
+
+	// Validate workload name
+	if strings.Contains(workloadName, "..") {
+		return fmt.Errorf("invalid workload name '%s': contains forbidden characters", workloadName)
+	}
+	if err := f.ensureBaseDir(); err != nil {
+		return fmt.Errorf("failed to create base directory: %w", err)
+	}
 	statusFilePath := f.getStatusFilePath(workloadName)
 	lockFilePath := f.getLockFilePath(workloadName)
 
@@ -477,7 +492,8 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 			// Check if this is a remote workload using the state package
 			remote, err := f.isRemoteWorkload(ctx, workloadName)
 			if err != nil {
-				return err
+				// This error is expected
+				logger.Debugf("failed to check if remote workload %s is remote: %v", workloadName, err)
 			}
 			if remote {
 				workload.Remote = true

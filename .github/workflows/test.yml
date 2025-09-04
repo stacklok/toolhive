@@ -14,10 +14,16 @@ jobs:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
 
       - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
         with:
           go-version-file: 'go.mod'
           cache: true
+
+      - name: Set up gotestfmt
+        uses: gotesttools/gotestfmt-action@v2
+        # Optional: pass GITHUB_TOKEN to avoid rate limiting.
+        # with:  
+        #   token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Task
         uses: arduino/setup-task@v2
@@ -25,5 +31,16 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run tests
-        run: task test
+      - name: Run tests with coverage
+        run: task test-coverage
+
+      - name: Upload coverage reports to Codecov with GitHub Action
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: stacklok/toolhive
+
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@v2
+        with:
+          file: coverage/coverage.out

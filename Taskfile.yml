@@ -46,7 +46,10 @@ tasks:
     platforms: [linux, darwin]
     internal: true
     cmds:
-      - go test -v -race $(go list ./... | grep -v '/test/e2e')
+      - go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+      # we have to use ldflags to avoid the LC_DYSYMTAB linker error. 
+      # https://github.com/stacklok/toolhive/issues/1687
+      - go test -ldflags=-extldflags=-Wl,-w -v -json -race $(go list ./... | grep -v '/test/e2e') | gotestfmt
 
   test-windows:
     desc: Run unit tests (excluding e2e tests) on Windows with race detection
@@ -74,7 +77,10 @@ tasks:
     cmds:
       - cmd: mkdir -p coverage
         platforms: [linux, darwin]
-      - go test -race -coverprofile=coverage/coverage.out $(go list ./... | grep -v '/test/e2e')
+      - go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+      # we have to use ldflags to avoid the LC_DYSYMTAB linker error. 
+      # https://github.com/stacklok/toolhive/issues/1687
+      - go test -ldflags=-extldflags=-Wl,-w -json -race -coverprofile=coverage/coverage.out $(go list ./... | grep -v '/test/e2e') | gotestfmt
       - go tool cover -func=coverage/coverage.out
       - echo "Generating HTML coverage report in coverage/coverage.html"
       - go tool cover -html=coverage/coverage.out -o coverage/coverage.html

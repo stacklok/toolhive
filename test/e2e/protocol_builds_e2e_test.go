@@ -32,7 +32,7 @@ var _ = Describe("Protocol Builds E2E", Serial, func() {
 			var serverName string
 
 			BeforeEach(func() {
-				serverName = generateUniqueProtocolServerName("sequential-thinking-test")
+				serverName = generateUniqueProtocolServerName("sequential-thinking-noversion-test")
 			})
 
 			AfterEach(func() {
@@ -48,6 +48,96 @@ var _ = Describe("Protocol Builds E2E", Serial, func() {
 					"--name", serverName,
 					"--transport", "stdio",
 					"npx://@modelcontextprotocol/server-sequential-thinking").ExpectSuccess()
+
+				// The command should indicate success and show build process
+				output := stdout + stderr
+				Expect(output).To(ContainSubstring("Building Docker image"), "Should show Docker build process")
+				Expect(output).To(ContainSubstring("Successfully built"), "Should successfully build the image")
+
+				By("Waiting for the server to be running")
+				err := e2e.WaitForMCPServer(config, serverName, 120*time.Second) // Longer timeout for protocol builds
+				Expect(err).ToNot(HaveOccurred(), "Server should be running within 120 seconds")
+
+				By("Verifying the server appears in the list")
+				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
+				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
+				Expect(stdout).To(ContainSubstring("npx-modelcontextprotocol-server-sequential-thinking"), "Should show the built image name")
+
+				By("Listing tools and verifying sequentialthinking tool exists")
+				stdout, _ = e2e.NewTHVCommand(config, "mcp", "list", "tools", "--server", serverName, "--timeout", "60s").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring("sequentialthinking"), "Should find sequentialthinking tool")
+
+				GinkgoWriter.Printf("✅ Protocol build successful: npx://@modelcontextprotocol/server-sequential-thinking\n")
+				GinkgoWriter.Printf("✅ Server running and provides sequential_thinking tool\n")
+			})
+		})
+
+		Context("when starting @modelcontextprotocol/server-sequential-thinking@latest", func() {
+			var serverName string
+
+			BeforeEach(func() {
+				serverName = generateUniqueProtocolServerName("sequential-thinking-latest-test")
+			})
+
+			AfterEach(func() {
+				if config.CleanupAfter {
+					err := e2e.StopAndRemoveMCPServer(config, serverName)
+					Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
+				}
+			})
+
+			It("should build and start successfully and provide sequential_thinking tool [Serial]", func() {
+				By("Starting the Sequential Thinking MCP server using npx:// protocol")
+				stdout, stderr := e2e.NewTHVCommand(config, "run",
+					"--name", serverName,
+					"--transport", "stdio",
+					"npx://@modelcontextprotocol/server-sequential-thinking@latest").ExpectSuccess()
+
+				// The command should indicate success and show build process
+				output := stdout + stderr
+				Expect(output).To(ContainSubstring("Building Docker image"), "Should show Docker build process")
+				Expect(output).To(ContainSubstring("Successfully built"), "Should successfully build the image")
+
+				By("Waiting for the server to be running")
+				err := e2e.WaitForMCPServer(config, serverName, 120*time.Second) // Longer timeout for protocol builds
+				Expect(err).ToNot(HaveOccurred(), "Server should be running within 120 seconds")
+
+				By("Verifying the server appears in the list")
+				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
+				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
+				Expect(stdout).To(ContainSubstring("npx-modelcontextprotocol-server-sequential-thinking"), "Should show the built image name")
+
+				By("Listing tools and verifying sequentialthinking tool exists")
+				stdout, _ = e2e.NewTHVCommand(config, "mcp", "list", "tools", "--server", serverName, "--timeout", "60s").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring("sequentialthinking"), "Should find sequentialthinking tool")
+
+				GinkgoWriter.Printf("✅ Protocol build successful: npx://@modelcontextprotocol/server-sequential-thinking\n")
+				GinkgoWriter.Printf("✅ Server running and provides sequential_thinking tool\n")
+			})
+		})
+
+		Context("when starting @modelcontextprotocol/server-sequential-thinking@2025.7.1", func() {
+			var serverName string
+
+			BeforeEach(func() {
+				serverName = generateUniqueProtocolServerName("sequential-thinking-pinned-test")
+			})
+
+			AfterEach(func() {
+				if config.CleanupAfter {
+					err := e2e.StopAndRemoveMCPServer(config, serverName)
+					Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
+				}
+			})
+
+			It("should build and start successfully and provide sequential_thinking tool [Serial]", func() {
+				By("Starting the Sequential Thinking MCP server using npx:// protocol")
+				stdout, stderr := e2e.NewTHVCommand(config, "run",
+					"--name", serverName,
+					"--transport", "stdio",
+					"npx://@modelcontextprotocol/server-sequential-thinking@2025.7.1").ExpectSuccess()
 
 				// The command should indicate success and show build process
 				output := stdout + stderr
@@ -172,6 +262,83 @@ var _ = Describe("Protocol Builds E2E", Serial, func() {
 
 				Expect(err).To(HaveOccurred(), "Should fail with non-existent package")
 				Expect(stderr).To(ContainSubstring("error"), "Error should mention the issue")
+			})
+		})
+	})
+	Describe("Running MCP server using go:// protocol scheme", func() {
+		Context("when starting osv-mcp server", func() {
+			var serverName string
+
+			BeforeEach(func() {
+				serverName = generateUniqueProtocolServerName("go-osv-mcp-test")
+			})
+
+			AfterEach(func() {
+				if config.CleanupAfter {
+					err := e2e.StopAndRemoveMCPServer(config, serverName)
+					Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
+				}
+			})
+
+			It("should build and start successfully and provide OSV tools [Serial]", func() {
+				By("Starting the OSV MCP server using go:// protocol")
+				stdout, stderr := e2e.NewTHVCommand(config, "run",
+					"--name", serverName,
+					"--transport", "streamable-http",
+					"go://github.com/StacklokLabs/osv-mcp/cmd/server@latest").ExpectSuccess()
+
+				// The command should indicate success and show build process
+				output := stdout + stderr
+				Expect(output).To(ContainSubstring("Building Docker image"), "Should show Docker build process")
+				Expect(output).To(ContainSubstring("Successfully built"), "Should successfully build the image")
+
+				By("Waiting for the server to be running")
+				err := e2e.WaitForMCPServer(config, serverName, 180*time.Second) // Slightly longer timeout for first-time Go builds
+				Expect(err).ToNot(HaveOccurred(), "Server should be running within 180 seconds")
+
+				By("Verifying the server appears in the list")
+				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
+				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
+				// Built image name should contain a cleaned go:// package identifier
+				Expect(stdout).To(ContainSubstring("go-github-com-stackloklabs-osv-mcp-cmd-server"), "Should show the built image name")
+
+				By("Listing tools and verifying OSV tools exist")
+				stdout, _ = e2e.NewTHVCommand(config, "mcp", "list", "tools", "--server", serverName, "--timeout", "60s").ExpectSuccess()
+				Expect(stdout).To(ContainSubstring("query_vulnerability"), "Should find query_vulnerability tool")
+
+				GinkgoWriter.Printf("✅ Protocol build successful: go://github.com/StacklokLabs/osv-mcp/cmd/server@latest\n")
+				GinkgoWriter.Printf("✅ Server running and provides OSV tools\n")
+			})
+		})
+
+		Context("when testing go:// error conditions", func() {
+			var serverName string
+
+			BeforeEach(func() {
+				serverName = generateUniqueProtocolServerName("go-error-test")
+			})
+
+			AfterEach(func() {
+				if config.CleanupAfter {
+					err := e2e.StopAndRemoveMCPServer(config, serverName)
+					Expect(err).ToNot(HaveOccurred(), "Should be able to stop and remove server")
+				}
+			})
+
+			It("should fail gracefully with non-existent go module [Serial]", func() {
+				By("Trying to run with non-existent go module")
+				_, stderr, err := e2e.NewTHVCommand(config, "run",
+					"--name", serverName,
+					"--transport", "streamable-http",
+					"go://github.com/not-real-org/not-real-repo@latest").ExpectFailure()
+
+				Expect(err).To(HaveOccurred(), "Should fail with non-existent module")
+				Expect(stderr).To(Or(
+					ContainSubstring("failed"),
+					ContainSubstring("error"),
+					ContainSubstring("unsupported"),
+				), "Error should mention the issue")
 			})
 		})
 	})

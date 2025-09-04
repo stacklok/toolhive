@@ -637,8 +637,7 @@ func (*mockWriteCloser) Close() error {
 }
 
 
-// TestManager_GroupNameCaseInsensitive tests that group names are normalized
-// and treated case-insensitively.
+// TestManager_GroupNameCaseInsensitive tests that group names are normalized and treated case-insensitively.
 func TestManager_GroupNameCaseInsensitive(t *testing.T) {
 	t.Parallel()
 

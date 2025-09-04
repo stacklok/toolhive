@@ -54,7 +54,6 @@ func (m *manager) Create(ctx context.Context, name string) error {
 
 // Get retrieves a group by name
 func (m *manager) Get(ctx context.Context, name string) (*Group, error) {
-	//
 	name = strings.ToLower(name)
 	reader, err := m.groupStore.GetReader(ctx, name)
 	if err != nil {
@@ -96,14 +95,12 @@ func (m *manager) List(ctx context.Context) ([]*Group, error) {
 
 // Delete removes a group by name
 func (m *manager) Delete(ctx context.Context, name string) error {
-	// 
 	name = strings.ToLower(name)
 	return m.groupStore.Delete(ctx, name)
 }
 
 // Exists checks if a group exists
 func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
-	// 
 	name = strings.ToLower(name)
 	return m.groupStore.Exists(ctx, name)
 }

@@ -17,7 +17,9 @@ func TestCreateTraceExporter(t *testing.T) {
 	tests := []struct {
 		name    string
 		config  Config
+		ctx     func() context.Context
 		wantErr bool
+		errMsg  string
 	}{
 		{
 			name: "valid config",
@@ -26,6 +28,7 @@ func TestCreateTraceExporter(t *testing.T) {
 				Headers:  map[string]string{"Authorization": "Bearer token"},
 				Insecure: true,
 			},
+			ctx:     func() context.Context { return context.Background() },
 			wantErr: false,
 		},
 		{
@@ -37,6 +40,7 @@ func TestCreateTraceExporter(t *testing.T) {
 					"x-env":     "test",
 				},
 			},
+			ctx:     func() context.Context { return context.Background() },
 			wantErr: false,
 		},
 		{
@@ -45,7 +49,22 @@ func TestCreateTraceExporter(t *testing.T) {
 				Endpoint: "secure.example.com:4318",
 				Insecure: false,
 			},
+			ctx:     func() context.Context { return context.Background() },
 			wantErr: false,
+		},
+		{
+			name: "error creating sdk-span-exporter due to error (cancelled context)",
+			config: Config{
+				Endpoint: "secure.example.com:4318",
+				Insecure: true,
+			},
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			wantErr: true,
+			errMsg:  "context canceled",
 		},
 	}
 
@@ -53,12 +72,15 @@ func TestCreateTraceExporter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx := context.Background()
+			ctx := tt.ctx()
 			exporter, err := createTraceExporter(ctx, tt.config)
 
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, exporter)
+				if tt.errMsg != "" {
+					assert.Contains(t, err.Error(), tt.errMsg)
+				}
 			} else {
 				assert.NoError(t, err)
 				assert.NotNil(t, exporter)
@@ -76,7 +98,9 @@ func TestNewTracerProvider(t *testing.T) {
 		name       string
 		config     Config
 		expectNoOp bool
+		ctx        func() context.Context
 		wantErr    bool
+		errMsg     string
 	}{
 		{
 			name: "valid config with endpoint",
@@ -87,6 +111,7 @@ func TestNewTracerProvider(t *testing.T) {
 				Insecure:     true,
 			},
 			expectNoOp: false,
+			ctx:        func() context.Context { return context.Background() },
 			wantErr:    false,
 		},
 		{
@@ -95,6 +120,7 @@ func TestNewTracerProvider(t *testing.T) {
 				SamplingRate: 0.1,
 			},
 			expectNoOp: true,
+			ctx:        func() context.Context { return context.Background() },
 			wantErr:    false,
 		},
 		{
@@ -105,7 +131,24 @@ func TestNewTracerProvider(t *testing.T) {
 				Insecure:     true,
 			},
 			expectNoOp: false,
+			ctx:        func() context.Context { return context.Background() },
 			wantErr:    false,
+		},
+		{
+			name: "expect error creating trace exporter due to canceled context",
+			config: Config{
+				Endpoint:     "localhost:4318",
+				SamplingRate: 1.0, // Always sample
+				Insecure:     true,
+			},
+			expectNoOp: false,
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			wantErr: true,
+			errMsg:  "failed to create trace exporter",
 		},
 	}
 
@@ -113,7 +156,7 @@ func TestNewTracerProvider(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx := context.Background()
+			ctx := tt.ctx()
 			res, err := resource.New(ctx,
 				resource.WithAttributes(
 					semconv.ServiceName("test-service"),
@@ -127,6 +170,9 @@ func TestNewTracerProvider(t *testing.T) {
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, provider)
+				if tt.errMsg != "" {
+					assert.Contains(t, err.Error(), tt.errMsg)
+				}
 			} else {
 				assert.NoError(t, err)
 				assert.NotNil(t, provider)

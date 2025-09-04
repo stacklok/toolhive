@@ -14,6 +14,7 @@ func TestCreateMetricExporter(t *testing.T) {
 		name    string
 		config  Config
 		wantErr bool
+		errMsg  string
 	}{
 		{
 			name: "valid config",
@@ -32,6 +33,15 @@ func TestCreateMetricExporter(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "error creating metrics exporter due to malformed endpoint",
+			config: Config{
+				Endpoint: "malformed//:4318",
+				Insecure: false,
+			},
+			wantErr: true,
+			errMsg:  "invalid URL escape",
+		},
 	}
 
 	for _, tt := range tests {
@@ -44,6 +54,9 @@ func TestCreateMetricExporter(t *testing.T) {
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, exporter)
+				if tt.errMsg != "" {
+					assert.Contains(t, err.Error(), tt.errMsg)
+				}
 			} else {
 				assert.NoError(t, err)
 				assert.NotNil(t, exporter)
@@ -91,6 +104,19 @@ func TestNewMetricReader(t *testing.T) {
 				Insecure: false,
 			},
 			wantErr: false,
+		},
+		{
+			name: "expect error creating metrics exporter due to malformed endpoint",
+			config: Config{
+				Endpoint: "malformed//:4318",
+				Headers: map[string]string{
+					"x-api-key": "secret",
+					"x-env":     "production",
+				},
+				Insecure: false,
+			},
+			wantErr: true,
+			errMsg:  "invalid URL escape",
 		},
 	}
 

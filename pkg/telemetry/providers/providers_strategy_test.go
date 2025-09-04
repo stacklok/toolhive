@@ -271,6 +271,26 @@ func TestStrategySelector_IsFullyNoOp(t *testing.T) {
 	}
 }
 
+func TestNoOpMeterStrategy_CreateMeterProvider(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	res := createTestResource(t)
+	config := Config{}
+
+	strategy := &NoOpMeterStrategy{}
+	provider, err := strategy.CreateMeterProvider(ctx, config, res)
+
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+
+	// Verify it's actually a no-op provider
+	assert.Nil(t, provider.PrometheusHandler)
+	assert.Nil(t, provider.ShutdownFunc)
+	typeName := getTypeName(provider.MeterProvider)
+	assert.Contains(t, typeName, "noop", "Expected no-op meter provider, got %s", typeName)
+}
+
 func TestUnifiedMeterStrategy_Configurations(t *testing.T) {
 	t.Parallel()
 

@@ -28,10 +28,12 @@ type Config struct {
 	ServiceVersion string
 
 	// OTLP configuration
-	OTLPEndpoint string
-	Headers      map[string]string
-	Insecure     bool
-	SamplingRate float64
+	OTLPEndpoint   string
+	Headers        map[string]string
+	Insecure       bool
+	TracingEnabled bool    // TracingEnabled controls whether tracing is enabled for OTLP
+	MetricsEnabled bool    // MetricsEnabled controls whether metrics are enabled for OTLP
+	SamplingRate   float64 // SamplingRate controls trace sampling (0.0 to 1.0)
 
 	// Prometheus configuration
 	EnablePrometheusMetricsPath bool

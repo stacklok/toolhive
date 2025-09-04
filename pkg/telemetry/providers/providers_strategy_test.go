@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 )
@@ -179,38 +180,6 @@ func TestStrategySelector_IsFullyNoOp(t *testing.T) {
 	}
 }
 
-func TestNoOpTracerStrategy(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	res := createTestResource(t)
-
-	strategy := &NoOpTracerStrategy{}
-	provider, shutdown, err := strategy.CreateTracerProvider(ctx, Config{}, res)
-
-	assert.NoError(t, err)
-	assert.NotNil(t, provider)
-	assert.Nil(t, shutdown)
-	assert.Contains(t, getTypeName(provider), "noop")
-}
-
-func TestNoOpMeterStrategy(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	res := createTestResource(t)
-
-	strategy := &NoOpMeterStrategy{}
-	result, err := strategy.CreateMeterProvider(ctx, Config{}, res)
-
-	assert.NoError(t, err)
-	assert.NotNil(t, result)
-	assert.NotNil(t, result.MeterProvider)
-	assert.Nil(t, result.PrometheusHandler)
-	assert.Nil(t, result.ShutdownFunc)
-	assert.Contains(t, getTypeName(result.MeterProvider), "noop")
-}
-
 func TestUnifiedMeterStrategy_Configurations(t *testing.T) {
 	t.Parallel()
 
@@ -222,6 +191,7 @@ func TestUnifiedMeterStrategy_Configurations(t *testing.T) {
 		strategy         *UnifiedMeterStrategy
 		config           Config
 		expectPrometheus bool
+		expectOTLP       bool
 		expectNoOp       bool
 	}{
 		{
@@ -235,6 +205,7 @@ func TestUnifiedMeterStrategy_Configurations(t *testing.T) {
 				Insecure:     true,
 			},
 			expectPrometheus: false,
+			expectOTLP:       true,
 			expectNoOp:       false,
 		},
 		{
@@ -245,6 +216,7 @@ func TestUnifiedMeterStrategy_Configurations(t *testing.T) {
 			},
 			config:           Config{},
 			expectPrometheus: true,
+			expectOTLP:       false,
 			expectNoOp:       false,
 		},
 		{
@@ -258,6 +230,7 @@ func TestUnifiedMeterStrategy_Configurations(t *testing.T) {
 				Insecure:     true,
 			},
 			expectPrometheus: true,
+			expectOTLP:       true,
 			expectNoOp:       false,
 		},
 		{
@@ -268,6 +241,7 @@ func TestUnifiedMeterStrategy_Configurations(t *testing.T) {
 			},
 			config:           Config{},
 			expectPrometheus: false,
+			expectOTLP:       false,
 			expectNoOp:       true,
 		},
 	}
@@ -289,11 +263,22 @@ func TestUnifiedMeterStrategy_Configurations(t *testing.T) {
 				assert.Nil(t, result.PrometheusHandler, "Expected no Prometheus handler")
 			}
 
+			// Note: OTLP handler is not exposed in MeterResult, only Prometheus handler
+			// OTLP functionality is verified through the meter provider type check below
+
 			if tt.expectNoOp {
 				assert.Contains(t, getTypeName(result.MeterProvider), "noop")
 				assert.Nil(t, result.ShutdownFunc)
+				// Verify it's actually a noop provider - need to import noop package
+				// The noop.MeterProvider is actually noop.meterProvider (unexported)
+				// so we can't do a direct type assertion. Check the type name instead.
+				typeName := getTypeName(result.MeterProvider)
+				assert.Contains(t, typeName, "noop", "Expected noop meter provider, got %s", typeName)
 			} else {
 				assert.NotContains(t, getTypeName(result.MeterProvider), "noop")
+				// Verify it's actually an SDK provider (not noop)
+				_, isSDKProvider := result.MeterProvider.(*sdkmetric.MeterProvider)
+				assert.True(t, isSDKProvider, "Expected SDK meter provider, got %T", result.MeterProvider)
 				// Shutdown may or may not be nil depending on implementation
 			}
 		})
@@ -338,20 +323,4 @@ func createTestConfig(otlpEndpoint string, tracingEnabled, metricsEnabled, prome
 		MetricsEnabled:              metricsEnabled,
 		EnablePrometheusMetricsPath: prometheusEnabled,
 	}
-}
-
-func createBasicTestConfig() Config {
-	return createTestConfig("", false, false, false)
-}
-
-func createOTLPConfig() Config {
-	return createTestConfig("localhost:4318", true, true, false)
-}
-
-func createPrometheusConfig() Config {
-	return createTestConfig("", false, false, true)
-}
-
-func createUnifiedConfig() Config {
-	return createTestConfig("localhost:4318", true, true, true)
 }

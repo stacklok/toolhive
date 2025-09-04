@@ -150,7 +150,6 @@ func TestOTLPTracerStrategy_CreateTracerProvider(t *testing.T) {
 	}
 }
 
-
 func TestStrategySelector_SelectMeterStrategy(t *testing.T) {
 	t.Parallel()
 
@@ -402,17 +401,4 @@ func createTestResourceWithName(t *testing.T, serviceName, serviceVersion string
 	)
 	require.NoError(t, err)
 	return res
-}
-
-func createTestConfig(otlpEndpoint string, tracingEnabled, metricsEnabled, prometheusEnabled bool) Config {
-	return Config{
-		ServiceName:                 "test-service",
-		ServiceVersion:              "1.0.0",
-		OTLPEndpoint:                otlpEndpoint,
-		Insecure:                    true,
-		SamplingRate:                0.1,
-		TracingEnabled:              tracingEnabled,
-		MetricsEnabled:              metricsEnabled,
-		EnablePrometheusMetricsPath: prometheusEnabled,
-	}
 }

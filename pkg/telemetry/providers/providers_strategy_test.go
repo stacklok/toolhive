@@ -59,6 +59,98 @@ func TestStrategySelector_SelectTracerStrategy(t *testing.T) {
 	}
 }
 
+func TestNoOpTracerStrategy_CreateTracerProvider(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	res := createTestResource(t)
+	config := Config{}
+
+	strategy := &NoOpTracerStrategy{}
+	provider, shutdown, err := strategy.CreateTracerProvider(ctx, config, res)
+
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+	assert.Nil(t, shutdown, "Expected no shutdown function for no-op tracer")
+
+	// Verify it's actually a no-op provider
+	typeName := getTypeName(provider)
+	assert.Contains(t, typeName, "noop", "Expected no-op tracer provider, got %s", typeName)
+}
+
+func TestOTLPTracerStrategy_CreateTracerProvider(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		config    Config
+		expectErr bool
+	}{
+		{
+			name: "Valid OTLP config",
+			config: Config{
+				OTLPEndpoint: "localhost:4318",
+				Insecure:     true,
+				SamplingRate: 0.1,
+			},
+			expectErr: false,
+		},
+		{
+			name: "Valid OTLP config with headers",
+			config: Config{
+				OTLPEndpoint: "localhost:4318",
+				Insecure:     true,
+				SamplingRate: 1.0,
+				Headers:      map[string]string{"Authorization": "Bearer token"},
+			},
+			expectErr: false,
+		},
+		{
+			name: "Valid secure OTLP config",
+			config: Config{
+				OTLPEndpoint: "https://api.example.com:4318",
+				Insecure:     false,
+				SamplingRate: 0.5,
+			},
+			expectErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture range variable
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			res := createTestResource(t)
+			strategy := &OTLPTracerStrategy{}
+
+			provider, shutdown, err := strategy.CreateTracerProvider(ctx, tt.config, res)
+
+			if tt.expectErr {
+				assert.Error(t, err)
+				assert.Nil(t, provider)
+				assert.Nil(t, shutdown)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, provider)
+				require.NotNil(t, shutdown, "Expected shutdown function for OTLP tracer")
+
+				// Verify it's not a no-op provider
+				typeName := getTypeName(provider)
+				assert.NotContains(t, typeName, "noop", "Expected non-noop tracer provider, got %s", typeName)
+
+				// Clean up
+				if shutdown != nil {
+					err := shutdown(ctx)
+					assert.NoError(t, err, "Shutdown should not error")
+				}
+			}
+		})
+	}
+}
+
+
 func TestStrategySelector_SelectMeterStrategy(t *testing.T) {
 	t.Parallel()
 

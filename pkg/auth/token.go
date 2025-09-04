@@ -123,8 +123,10 @@ func (g *GoogleProvider) IntrospectToken(ctx context.Context, token string) (jwt
 	}
 	defer resp.Body.Close()
 
-	// Read the response
-	body, err := io.ReadAll(resp.Body)
+	// Read the response with a reasonable limit to prevent DoS attacks
+	const maxResponseSize = 64 * 1024 // 64KB should be more than enough for tokeninfo response
+	limitedReader := io.LimitReader(resp.Body, maxResponseSize)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read Google tokeninfo response: %w", err)
 	}
@@ -298,8 +300,10 @@ func (r *RFC7662Provider) IntrospectToken(ctx context.Context, token string) (jw
 	}
 	defer resp.Body.Close()
 
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	// Read response body with a reasonable limit to prevent DoS attacks
+	const maxResponseSize = 64 * 1024 // 64KB should be more than enough for introspection response
+	limitedReader := io.LimitReader(resp.Body, maxResponseSize)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read introspection response: %w", err)
 	}

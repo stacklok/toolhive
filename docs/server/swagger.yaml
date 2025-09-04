@@ -187,6 +187,7 @@ components:
       - AmpVSCodeInsider
       - AmpWindsurf
       - LMStudio
+      - Goose
     github_com_stacklok_toolhive_pkg_client.MCPClientStatus:
       properties:
         client_type:
@@ -207,6 +208,7 @@ components:
           - AmpVSCodeInsider
           - AmpWindsurf
           - LMStudio
+          - Goose
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -1004,16 +1006,6 @@ components:
           description: Registry type after update
           type: string
       type: object
-    pkg_api_v1.WorkloadListResponse:
-      description: Response containing a list of workloads
-      properties:
-        workloads:
-          description: List of container information for each workload
-          items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_core.Workload'
-          type: array
-          uniqueItems: false
-      type: object
     pkg_api_v1.bulkClientRequest:
       properties:
         groups:
@@ -1041,6 +1033,7 @@ components:
             - AmpVSCodeInsider
             - AmpWindsurf
             - LMStudio
+            - Goose
           type: array
           uniqueItems: false
       type: object
@@ -1090,6 +1083,7 @@ components:
           - AmpVSCodeInsider
           - AmpWindsurf
           - LMStudio
+          - Goose
       type: object
     pkg_api_v1.createClientResponse:
       properties:
@@ -1117,6 +1111,7 @@ components:
           - AmpVSCodeInsider
           - AmpWindsurf
           - LMStudio
+          - Goose
       type: object
     pkg_api_v1.createGroupRequest:
       properties:
@@ -1498,6 +1493,16 @@ components:
       properties:
         version:
           type: string
+      type: object
+    pkg_api_v1.workloadListResponse:
+      description: Response containing a list of workloads
+      properties:
+        workloads:
+          description: List of container information for each workload
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_core.Workload'
+          type: array
+          uniqueItems: false
       type: object
     pkg_api_v1.workloadStatusResponse:
       description: Response containing workload status information
@@ -2257,7 +2262,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/pkg_api_v1.WorkloadListResponse'
+                $ref: '#/components/schemas/pkg_api_v1.workloadListResponse'
           description: OK
         "404":
           content:

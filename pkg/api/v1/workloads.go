@@ -95,7 +95,7 @@ type bulkOperationRequest = apitypes.BulkOperationRequest
 //		@Produce		json
 //		@Param			all	query		bool	false	"List all workloads, including stopped ones"
 //		@Param			group	query		string	false	"Filter workloads by group name"
-//		@Success		200	{object}	WorkloadListResponse
+//		@Success		200	{object}	workloadListResponse
 //		@Failure		404	{string}	string	"Group not found"
 //		@Router			/api/v1beta/workloads [get]
 func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {

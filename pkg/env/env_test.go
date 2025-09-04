@@ -5,20 +5,21 @@ import (
 	"testing"
 )
 
-func TestOSReader_Getenv(t *testing.T) {
+func TestOSReader_Getenv(t *testing.T) { //nolint:paralleltest // Modifies environment variables
+	// Cannot run in parallel because it modifies environment variables
 	testKey := "TEST_ENV_VARIABLE_FOR_TESTING"
 	testValue := "test_value_123"
 
 	// Set an environment variable for testing
 	originalValue, wasSet := os.LookupEnv(testKey)
 	os.Setenv(testKey, testValue)
-	defer func() {
+	t.Cleanup(func() {
 		if wasSet {
 			os.Setenv(testKey, originalValue)
 		} else {
 			os.Unsetenv(testKey)
 		}
-	}()
+	})
 
 	reader := &OSReader{}
 
@@ -44,8 +45,9 @@ func TestOSReader_Getenv(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range tests { //nolint:paralleltest // Test modifies environment variables
 		t.Run(tt.name, func(t *testing.T) {
+			// Cannot run in parallel because parent test modifies environment variables
 			got := reader.Getenv(tt.key)
 			if got != tt.want {
 				t.Errorf("OSReader.Getenv() = %v, want %v", got, tt.want)
@@ -56,6 +58,7 @@ func TestOSReader_Getenv(t *testing.T) {
 
 // TestReader_InterfaceCompliance ensures OSReader implements the Reader interface
 func TestReader_InterfaceCompliance(t *testing.T) {
+	t.Parallel()
 	var _ Reader = &OSReader{}
 	// If this compiles, the test passes
 }

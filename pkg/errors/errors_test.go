@@ -6,10 +6,11 @@ import (
 )
 
 func TestError_Error(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
-		name    string
-		err     *Error
-		want    string
+		name string
+		err  *Error
+		want string
 	}{
 		{
 			name: "error with cause",
@@ -33,6 +34,7 @@ func TestError_Error(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := tt.err.Error()
 			if got != tt.want {
 				t.Errorf("Error.Error() = %v, want %v", got, tt.want)
@@ -42,6 +44,7 @@ func TestError_Error(t *testing.T) {
 }
 
 func TestError_Unwrap(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("underlying error")
 	err := &Error{
 		Type:    ErrInternal,
@@ -65,6 +68,7 @@ func TestError_Unwrap(t *testing.T) {
 }
 
 func TestNewError(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("underlying error")
 	err := NewError(ErrInvalidArgument, "test message", cause)
 
@@ -80,6 +84,7 @@ func TestNewError(t *testing.T) {
 }
 
 func TestNewErrorConstructors(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("cause")
 
 	tests := []struct {
@@ -151,6 +156,7 @@ func TestNewErrorConstructors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := tt.constructor("test message", cause)
 			if err.Type != tt.wantType {
 				t.Errorf("%s().Type = %v, want %v", tt.name, err.Type, tt.wantType)
@@ -166,6 +172,7 @@ func TestNewErrorConstructors(t *testing.T) {
 }
 
 func TestErrorTypeCheckers(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		err     error
@@ -266,6 +273,7 @@ func TestErrorTypeCheckers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := tt.checker(tt.err)
 			if got != tt.want {
 				t.Errorf("%s() = %v, want %v", tt.name, got, tt.want)

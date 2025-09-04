@@ -10,6 +10,7 @@ import (
 )
 
 func TestSortWorkloadsByName(t *testing.T) {
+	t.Parallel()
 	baseTime := time.Now()
 
 	tests := []struct {
@@ -173,6 +174,7 @@ func TestSortWorkloadsByName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Make a copy to avoid modifying the test data
 			workloadsCopy := make([]Workload, len(tt.workloads))
 			copy(workloadsCopy, tt.workloads)
@@ -187,6 +189,7 @@ func TestSortWorkloadsByName(t *testing.T) {
 }
 
 func TestWorkload_Fields(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	w := Workload{
 		Name:          "test-workload",

@@ -7,7 +7,8 @@ import (
 	"testing"
 )
 
-func TestGetVersionInfo(t *testing.T) {
+func TestGetVersionInfo(t *testing.T) { //nolint:paralleltest // Modifies global variables
+	// Cannot run in parallel because it modifies global variables
 	// Save original values
 	origVersion := Version
 	origCommit := Commit
@@ -101,8 +102,9 @@ func TestGetVersionInfo(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range tests { //nolint:paralleltest // Test modifies global variables
 		t.Run(tt.name, func(t *testing.T) {
+			// Cannot run in parallel because parent test modifies global variables
 			// Set test values
 			Version = tt.version
 			Commit = tt.commit
@@ -123,6 +125,7 @@ func TestGetVersionInfo(t *testing.T) {
 }
 
 func TestVersionInfo_Fields(t *testing.T) {
+	t.Parallel()
 	vi := VersionInfo{
 		Version:   "test-version",
 		Commit:    "test-commit",

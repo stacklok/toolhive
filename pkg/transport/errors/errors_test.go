@@ -6,6 +6,7 @@ import (
 )
 
 func TestErrUnsupportedTransport(t *testing.T) {
+	t.Parallel()
 	if ErrUnsupportedTransport == nil {
 		t.Error("ErrUnsupportedTransport should not be nil")
 	}
@@ -28,6 +29,7 @@ func TestErrUnsupportedTransport(t *testing.T) {
 }
 
 func TestErrContainerNameNotSet(t *testing.T) {
+	t.Parallel()
 	if ErrContainerNameNotSet == nil {
 		t.Error("ErrContainerNameNotSet should not be nil")
 	}

@@ -31,7 +31,9 @@ type NoOpTracerStrategy struct{}
 
 // CreateTracerProvider creates a no-op tracer provider
 func (*NoOpTracerStrategy) CreateTracerProvider(
-	_ context.Context, _ Config, _ *resource.Resource,
+	_ context.Context,
+	_ Config,
+	_ *resource.Resource,
 ) (trace.TracerProvider, func(context.Context) error, error) {
 	logger.Debugf("Creating no-op tracer provider")
 	return tracenoop.NewTracerProvider(), nil, nil
@@ -43,7 +45,9 @@ type OTLPTracerStrategy struct{}
 
 // CreateTracerProvider creates an OTLP tracer provider with the configured endpoint and sampling rate
 func (*OTLPTracerStrategy) CreateTracerProvider(
-	ctx context.Context, config Config, res *resource.Resource,
+	ctx context.Context,
+	config Config,
+	res *resource.Resource,
 ) (trace.TracerProvider, func(context.Context) error, error) {
 	logger.Infof("Creating OTLP tracer provider for endpoint: %s with sampling rate: %.2f",
 		config.OTLPEndpoint, config.SamplingRate)
@@ -80,7 +84,9 @@ type NoOpMeterStrategy struct{}
 
 // CreateMeterProvider creates a no-op meter provider
 func (*NoOpMeterStrategy) CreateMeterProvider(
-	_ context.Context, _ Config, _ *resource.Resource,
+	_ context.Context,
+	_ Config,
+	_ *resource.Resource,
 ) (*MeterResult, error) {
 	logger.Debugf("Creating no-op meter provider")
 	return &MeterResult{
@@ -99,7 +105,9 @@ type UnifiedMeterStrategy struct {
 
 // CreateMeterProvider creates a unified meter provider with OTLP and/or Prometheus readers
 func (s *UnifiedMeterStrategy) CreateMeterProvider(
-	ctx context.Context, config Config, res *resource.Resource,
+	ctx context.Context,
+	config Config,
+	res *resource.Resource,
 ) (*MeterResult, error) {
 	var readers []sdkmetric.Reader
 	var prometheusHandler http.Handler

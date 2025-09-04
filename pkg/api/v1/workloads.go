@@ -810,30 +810,30 @@ func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *cre
 	// Handle server metadata - API only supports container servers
 	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
 
-	runConfig, err := runner.NewRunConfigBuilder().
-		WithRuntime(s.containerRuntime).
-		WithCmdArgs(req.CmdArguments).
-		WithName(req.Name).
-		WithGroup(groupName).
-		WithImage(imageURL).
-		WithHost(req.Host).
-		WithTargetHost(transport.LocalhostIPv4).
-		WithDebug(s.debugMode).
-		WithVolumes(req.Volumes).
-		WithSecrets(runSecrets).
-		WithAuthzConfigPath(req.AuthzConfig).
-		WithAuditConfigPath("").
-		WithPermissionProfile(req.PermissionProfile).
-		WithNetworkIsolation(req.NetworkIsolation).
-		WithK8sPodPatch("").
-		WithProxyMode(types.ProxyMode(req.ProxyMode)).
-		WithTransportAndPorts(req.Transport, 0, req.TargetPort).
-		WithAuditEnabled(false, "").
-		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
-			"", "", "", "", "", false).
-		WithTelemetryConfig("", false, "", 0.0, nil, false, nil).
-		WithToolsFilter(req.ToolsFilter).
-		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
+	runConfig, err := runner.NewRunConfigBuilder(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{},
+		runner.WithRuntime(s.containerRuntime),
+		runner.WithCmdArgs(req.CmdArguments),
+		runner.WithName(req.Name),
+		runner.WithGroup(groupName),
+		runner.WithImage(imageURL),
+		runner.WithHost(req.Host),
+		runner.WithTargetHost(transport.LocalhostIPv4),
+		runner.WithDebug(s.debugMode),
+		runner.WithVolumes(req.Volumes),
+		runner.WithSecrets(runSecrets),
+		runner.WithAuthzConfigPath(req.AuthzConfig),
+		runner.WithAuditConfigPath(""),
+		runner.WithPermissionProfile(req.PermissionProfile),
+		runner.WithNetworkIsolation(req.NetworkIsolation),
+		runner.WithK8sPodPatch(""),
+		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),
+		runner.WithTransportAndPorts(req.Transport, 0, req.TargetPort),
+		runner.WithAuditEnabled(false, ""),
+		runner.WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
+			"", "", "", "", "", false),
+		runner.WithTelemetryConfig("", false, "", 0.0, nil, false, nil),
+		runner.WithToolsFilter(req.ToolsFilter),
+	)
 	if err != nil {
 		logger.Errorf("Failed to build run config: %v", err)
 		return nil, fmt.Errorf("%w: %v", retriever.ErrInvalidRunConfig, err)

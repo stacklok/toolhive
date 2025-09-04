@@ -32,314 +32,381 @@ type RunConfigBuilder struct {
 	targetPort int
 }
 
-// NewRunConfigBuilder creates a new RunConfigBuilder with default values
-func NewRunConfigBuilder() *RunConfigBuilder {
-	return &RunConfigBuilder{
-		config: &RunConfig{
-			ContainerLabels: make(map[string]string),
-			EnvVars:         make(map[string]string),
-		},
-	}
-}
+// RunConfigBuilderOption is a function that modifies the RunConfigBuilder
+type RunConfigBuilderOption func(*RunConfigBuilder) error
 
 // WithRuntime sets the container runtime
-func (b *RunConfigBuilder) WithRuntime(deployer rt.Deployer) *RunConfigBuilder {
-	b.config.Deployer = deployer
-	return b
+func WithRuntime(deployer rt.Deployer) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.Deployer = deployer
+		return nil
+	}
 }
 
 // WithImage sets the Docker image
-func (b *RunConfigBuilder) WithImage(image string) *RunConfigBuilder {
-	b.config.Image = image
-	return b
+func WithImage(image string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.Image = image
+		return nil
+	}
 }
 
 // WithRemoteURL sets the remote URL for the MCP server
-func (b *RunConfigBuilder) WithRemoteURL(remoteURL string) *RunConfigBuilder {
-	b.config.RemoteURL = remoteURL
-	return b
+func WithRemoteURL(remoteURL string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.RemoteURL = remoteURL
+		return nil
+	}
 }
 
 // WithRemoteAuth sets the remote authentication configuration
-func (b *RunConfigBuilder) WithRemoteAuth(config *RemoteAuthConfig) *RunConfigBuilder {
-	b.config.RemoteAuthConfig = config
-	return b
+func WithRemoteAuth(config *RemoteAuthConfig) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.RemoteAuthConfig = config
+		return nil
+	}
 }
 
 // WithName sets the MCP server name
-func (b *RunConfigBuilder) WithName(name string) *RunConfigBuilder {
-	b.config.Name = name
-	return b
+func WithName(name string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.Name = name
+		return nil
+	}
 }
 
 // WithMiddlewareConfig sets the middleware configuration
-func (b *RunConfigBuilder) WithMiddlewareConfig(middlewareConfig []types.MiddlewareConfig) *RunConfigBuilder {
-	b.config.MiddlewareConfigs = middlewareConfig
-	return b
+func WithMiddlewareConfig(middlewareConfig []types.MiddlewareConfig) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.MiddlewareConfigs = middlewareConfig
+		return nil
+	}
 }
 
 // WithCmdArgs sets the command arguments
-func (b *RunConfigBuilder) WithCmdArgs(args []string) *RunConfigBuilder {
-	b.config.CmdArgs = args
-	return b
+func WithCmdArgs(args []string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.CmdArgs = args
+		return nil
+	}
 }
 
 // WithHost sets the host (applies default if empty)
-func (b *RunConfigBuilder) WithHost(host string) *RunConfigBuilder {
-	if host == "" {
-		host = transport.LocalhostIPv4
+func WithHost(host string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		if host == "" {
+			host = transport.LocalhostIPv4
+		}
+		b.config.Host = host
+		return nil
 	}
-	b.config.Host = host
-	return b
 }
 
 // WithTargetHost sets the target host (applies default if empty)
-func (b *RunConfigBuilder) WithTargetHost(targetHost string) *RunConfigBuilder {
-	if b.config.RemoteURL != "" {
-		remoteURL, err := url.Parse(b.config.RemoteURL)
-		if err == nil {
-			targetHost = remoteURL.Host
-		} else {
-			logger.Warnf("Failed to parse remote URL: %v", err)
+func WithTargetHost(targetHost string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		if b.config.RemoteURL != "" {
+			remoteURL, err := url.Parse(b.config.RemoteURL)
+			if err == nil {
+				targetHost = remoteURL.Host
+			} else {
+				logger.Warnf("Failed to parse remote URL: %v", err)
+				targetHost = transport.LocalhostIPv4
+			}
+		} else if targetHost == "" {
 			targetHost = transport.LocalhostIPv4
 		}
-	} else if targetHost == "" {
-		targetHost = transport.LocalhostIPv4
+		b.config.TargetHost = targetHost
+		return nil
 	}
-	b.config.TargetHost = targetHost
-	return b
 }
 
 // WithDebug sets debug mode
-func (b *RunConfigBuilder) WithDebug(debug bool) *RunConfigBuilder {
-	b.config.Debug = debug
-	return b
+func WithDebug(debug bool) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.Debug = debug
+		return nil
+	}
 }
 
 // WithVolumes sets the volume mounts
-func (b *RunConfigBuilder) WithVolumes(volumes []string) *RunConfigBuilder {
-	b.config.Volumes = volumes
-	return b
+func WithVolumes(volumes []string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.Volumes = volumes
+		return nil
+	}
 }
 
 // WithSecrets sets the secrets list
-func (b *RunConfigBuilder) WithSecrets(secrets []string) *RunConfigBuilder {
-	b.config.Secrets = secrets
-	return b
+func WithSecrets(secrets []string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.Secrets = secrets
+		return nil
+	}
 }
 
 // WithAuthzConfigPath sets the authorization config path
-func (b *RunConfigBuilder) WithAuthzConfigPath(path string) *RunConfigBuilder {
-	b.config.AuthzConfigPath = path
-	return b
+func WithAuthzConfigPath(path string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.AuthzConfigPath = path
+		return nil
+	}
 }
 
 // WithAuthzConfig sets the authorization config data
-func (b *RunConfigBuilder) WithAuthzConfig(config *authz.Config) *RunConfigBuilder {
-	b.config.AuthzConfig = config
-	return b
+func WithAuthzConfig(config *authz.Config) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.AuthzConfig = config
+		return nil
+	}
 }
 
 // WithAuditConfigPath sets the audit config path
-func (b *RunConfigBuilder) WithAuditConfigPath(path string) *RunConfigBuilder {
-	b.config.AuditConfigPath = path
-	return b
+func WithAuditConfigPath(path string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.AuditConfigPath = path
+		return nil
+	}
 }
 
 // WithPermissionProfileNameOrPath sets the permission profile name or path.
 // If called multiple times or mixed with WithPermissionProfile,
 // the last call takes precedence.
-func (b *RunConfigBuilder) WithPermissionProfileNameOrPath(profile string) *RunConfigBuilder {
-	b.config.PermissionProfileNameOrPath = profile
-	b.config.PermissionProfile = nil // Clear any existing profile
-	return b
+func WithPermissionProfileNameOrPath(profile string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.PermissionProfileNameOrPath = profile
+		b.config.PermissionProfile = nil // Clear any existing profile
+		return nil
+	}
 }
 
 // WithPermissionProfile sets the permission profile directly.
 // If called multiple times or mixed with WithPermissionProfile,
 // the last call takes precedence.
-func (b *RunConfigBuilder) WithPermissionProfile(profile *permissions.Profile) *RunConfigBuilder {
-	b.config.PermissionProfile = profile
-	b.config.PermissionProfileNameOrPath = "" // Clear any existing name or path
-	return b
+func WithPermissionProfile(profile *permissions.Profile) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.PermissionProfile = profile
+		b.config.PermissionProfileNameOrPath = "" // Clear any existing name or path
+		return nil
+	}
 }
 
 // WithNetworkIsolation sets network isolation
-func (b *RunConfigBuilder) WithNetworkIsolation(isolate bool) *RunConfigBuilder {
-	b.config.IsolateNetwork = isolate
-	return b
+func WithNetworkIsolation(isolate bool) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.IsolateNetwork = isolate
+		return nil
+	}
 }
 
 // WithK8sPodPatch sets the Kubernetes pod template patch
-func (b *RunConfigBuilder) WithK8sPodPatch(patch string) *RunConfigBuilder {
-	b.config.K8sPodTemplatePatch = patch
-	return b
+func WithK8sPodPatch(patch string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.K8sPodTemplatePatch = patch
+		return nil
+	}
 }
 
 // WithProxyMode sets the proxy mode
-func (b *RunConfigBuilder) WithProxyMode(mode types.ProxyMode) *RunConfigBuilder {
-	b.config.ProxyMode = mode
-	return b
+func WithProxyMode(mode types.ProxyMode) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.ProxyMode = mode
+		return nil
+	}
 }
 
 // WithGroup sets the group name for the workload
-func (b *RunConfigBuilder) WithGroup(groupName string) *RunConfigBuilder {
-	b.config.Group = groupName
-	return b
+func WithGroup(groupName string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.Group = groupName
+		return nil
+	}
 }
 
 // WithLabels sets custom labels from command-line flags
-func (b *RunConfigBuilder) WithLabels(labelStrings []string) *RunConfigBuilder {
-	if len(labelStrings) == 0 {
-		return b
-	}
-
-	// Initialize ContainerLabels if it's nil
-	if b.config.ContainerLabels == nil {
-		b.config.ContainerLabels = make(map[string]string)
-	}
-
-	// Parse and add each label
-	for _, labelString := range labelStrings {
-		key, value, err := labels.ParseLabelWithValidation(labelString)
-		if err != nil {
-			logger.Warnf("Skipping invalid label: %s (%v)", labelString, err)
-			continue
+func WithLabels(labelStrings []string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		if len(labelStrings) == 0 {
+			return nil
 		}
-		b.config.ContainerLabels[key] = value
-	}
 
-	return b
+		// Initialize ContainerLabels if it's nil
+		if b.config.ContainerLabels == nil {
+			b.config.ContainerLabels = make(map[string]string)
+		}
+
+		// Parse and add each label
+		for _, labelString := range labelStrings {
+			key, value, err := labels.ParseLabelWithValidation(labelString)
+			if err != nil {
+				logger.Warnf("Skipping invalid label: %s (%v)", labelString, err)
+				continue
+			}
+			b.config.ContainerLabels[key] = value
+		}
+
+		return nil
+	}
 }
 
 // WithTransportAndPorts sets transport and port configuration
-func (b *RunConfigBuilder) WithTransportAndPorts(mcpTransport string, port, targetPort int) *RunConfigBuilder {
-	b.transportString = mcpTransport
-	b.port = port
-	b.targetPort = targetPort
-	return b
+func WithTransportAndPorts(mcpTransport string, port, targetPort int) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.transportString = mcpTransport
+		b.port = port
+		b.targetPort = targetPort
+		return nil
+	}
 }
 
 // WithAuditEnabled configures audit settings
-func (b *RunConfigBuilder) WithAuditEnabled(enableAudit bool, auditConfigPath string) *RunConfigBuilder {
-	if enableAudit && auditConfigPath == "" {
-		b.config.AuditConfig = audit.DefaultConfig()
+func WithAuditEnabled(enableAudit bool, auditConfigPath string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		if enableAudit && auditConfigPath == "" {
+			b.config.AuditConfig = audit.DefaultConfig()
+		}
+		return nil
 	}
-	return b
 }
 
 // WithOIDCConfig configures OIDC settings
-func (b *RunConfigBuilder) WithOIDCConfig(
-	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID string, oidcClientSecret string,
-	thvCABundle, jwksAuthTokenFile, resourceURL string,
+func WithOIDCConfig(
+	oidcIssuer string,
+	oidcAudience string,
+	oidcJwksURL string,
+	oidcIntrospectionURL string,
+	oidcClientID string,
+	oidcClientSecret string,
+	thvCABundle string,
+	jwksAuthTokenFile string,
+	resourceURL string,
 	jwksAllowPrivateIP bool,
-) *RunConfigBuilder {
-	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
-		oidcClientID != "" || oidcClientSecret != "" {
-		b.config.OIDCConfig = &auth.TokenValidatorConfig{
-			Issuer:           oidcIssuer,
-			Audience:         oidcAudience,
-			JWKSURL:          oidcJwksURL,
-			IntrospectionURL: oidcIntrospectionURL,
-			ClientID:         oidcClientID,
-			ClientSecret:     oidcClientSecret,
-			AllowPrivateIP:   jwksAllowPrivateIP,
+) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
+			oidcClientID != "" || oidcClientSecret != "" {
+			b.config.OIDCConfig = &auth.TokenValidatorConfig{
+				Issuer:           oidcIssuer,
+				Audience:         oidcAudience,
+				JWKSURL:          oidcJwksURL,
+				IntrospectionURL: oidcIntrospectionURL,
+				ClientID:         oidcClientID,
+				ClientSecret:     oidcClientSecret,
+				AllowPrivateIP:   jwksAllowPrivateIP,
+			}
 		}
-	}
-	// Set JWKS-related configuration
-	b.config.ThvCABundle = thvCABundle
-	b.config.JWKSAuthTokenFile = jwksAuthTokenFile
 
-	// Set ResourceURL if OIDCConfig exists or if resourceURL is not empty
-	if b.config.OIDCConfig != nil {
-		b.config.OIDCConfig.ResourceURL = resourceURL
-	} else if resourceURL != "" {
-		// Create OIDCConfig just for ResourceURL if it doesn't exist but resourceURL is provided
-		b.config.OIDCConfig = &auth.TokenValidatorConfig{
-			ResourceURL: resourceURL,
+		// Set JWKS-related configuration
+		b.config.ThvCABundle = thvCABundle
+		b.config.JWKSAuthTokenFile = jwksAuthTokenFile
+
+		// Set ResourceURL if OIDCConfig exists or if resourceURL is not empty
+		if b.config.OIDCConfig != nil {
+			b.config.OIDCConfig.ResourceURL = resourceURL
+		} else if resourceURL != "" {
+			// Create OIDCConfig just for ResourceURL if it doesn't exist but resourceURL is provided
+			b.config.OIDCConfig = &auth.TokenValidatorConfig{
+				ResourceURL: resourceURL,
+			}
 		}
+
+		return nil
 	}
-	return b
 }
 
 // WithTelemetryConfig configures telemetry settings
-func (b *RunConfigBuilder) WithTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
-	otelServiceName string, otelSamplingRate float64, otelHeaders []string, otelInsecure bool,
-	otelEnvironmentVariables []string) *RunConfigBuilder {
-
-	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
-		return b
-	}
-
-	// Parse headers from key=value format
-	headers := make(map[string]string)
-	for _, header := range otelHeaders {
-		parts := strings.SplitN(header, "=", 2)
-		if len(parts) == 2 {
-			headers[parts[0]] = parts[1]
+func WithTelemetryConfig(
+	otelEndpoint string,
+	otelEnablePrometheusMetricsPath bool,
+	otelServiceName string,
+	otelSamplingRate float64,
+	otelHeaders []string,
+	otelInsecure bool,
+	otelEnvironmentVariables []string,
+) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
+			return nil
 		}
-	}
 
-	// Use provided service name or default
-	serviceName := otelServiceName
-	if serviceName == "" {
-		serviceName = telemetry.DefaultConfig().ServiceName
-	}
-
-	// Process environment variables - split comma-separated values
-	var processedEnvVars []string
-	for _, envVarEntry := range otelEnvironmentVariables {
-		// Split by comma and trim whitespace
-		envVars := strings.Split(envVarEntry, ",")
-		for _, envVar := range envVars {
-			trimmed := strings.TrimSpace(envVar)
-			if trimmed != "" {
-				processedEnvVars = append(processedEnvVars, trimmed)
+		// Parse headers from key=value format
+		headers := make(map[string]string)
+		for _, header := range otelHeaders {
+			parts := strings.SplitN(header, "=", 2)
+			if len(parts) == 2 {
+				headers[parts[0]] = parts[1]
 			}
 		}
-	}
 
-	b.config.TelemetryConfig = &telemetry.Config{
-		Endpoint:                    otelEndpoint,
-		ServiceName:                 serviceName,
-		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
-		SamplingRate:                otelSamplingRate,
-		Headers:                     headers,
-		Insecure:                    otelInsecure,
-		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
-		EnvironmentVariables:        processedEnvVars,
+		// Use provided service name or default
+		serviceName := otelServiceName
+		if serviceName == "" {
+			serviceName = telemetry.DefaultConfig().ServiceName
+		}
+
+		// Process environment variables - split comma-separated values
+		var processedEnvVars []string
+		for _, envVarEntry := range otelEnvironmentVariables {
+			// Split by comma and trim whitespace
+			envVars := strings.Split(envVarEntry, ",")
+			for _, envVar := range envVars {
+				trimmed := strings.TrimSpace(envVar)
+				if trimmed != "" {
+					processedEnvVars = append(processedEnvVars, trimmed)
+				}
+			}
+		}
+
+		b.config.TelemetryConfig = &telemetry.Config{
+			Endpoint:                    otelEndpoint,
+			ServiceName:                 serviceName,
+			ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+			SamplingRate:                otelSamplingRate,
+			Headers:                     headers,
+			Insecure:                    otelInsecure,
+			EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
+			EnvironmentVariables:        processedEnvVars,
+		}
+		return nil
 	}
-	return b
 }
 
 // WithToolsFilter sets the tools filter
-func (b *RunConfigBuilder) WithToolsFilter(toolsFilter []string) *RunConfigBuilder {
-	b.config.ToolsFilter = toolsFilter
-	return b
+func WithToolsFilter(toolsFilter []string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.ToolsFilter = toolsFilter
+		return nil
+	}
 }
 
 // WithToolOverride sets the tool override map for the RunConfig
 // This method is mutually exclusive with WithToolOverrideFile
-func (b *RunConfigBuilder) WithToolOverride(toolOverride map[string]ToolOverride) *RunConfigBuilder {
-	b.config.ToolOverride = toolOverride
-	return b
+func WithToolOverride(toolOverride map[string]ToolOverride) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.ToolOverride = toolOverride
+		return nil
+	}
 }
 
 // WithToolOverrideFile sets the path to the tool override file for the RunConfig
 // This method is mutually exclusive with WithToolOverride
-func (b *RunConfigBuilder) WithToolOverrideFile(toolOverrideFile string) *RunConfigBuilder {
-	b.config.ToolOverrideFile = toolOverrideFile
-	return b
+func WithToolOverrideFile(toolOverrideFile string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.ToolOverrideFile = toolOverrideFile
+		return nil
+	}
 }
 
 // WithIgnoreConfig sets the ignore configuration
-func (b *RunConfigBuilder) WithIgnoreConfig(ignoreConfig *ignore.Config) *RunConfigBuilder {
-	b.config.IgnoreConfig = ignoreConfig
-	return b
+func WithIgnoreConfig(ignoreConfig *ignore.Config) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		b.config.IgnoreConfig = ignoreConfig
+		return nil
+	}
 }
 
 // WithMiddlewareFromFlags creates middleware configurations directly from flag values
-func (b *RunConfigBuilder) WithMiddlewareFromFlags(
+func WithMiddlewareFromFlags(
 	oidcConfig *auth.TokenValidatorConfig,
 	toolsFilter []string,
 	telemetryConfig *telemetry.Config,
@@ -348,27 +415,29 @@ func (b *RunConfigBuilder) WithMiddlewareFromFlags(
 	auditConfigPath string,
 	serverName string,
 	transportType string,
-) *RunConfigBuilder {
-	var middlewareConfigs []types.MiddlewareConfig
+) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		var middlewareConfigs []types.MiddlewareConfig
 
-	// Add tool filter middlewares
-	middlewareConfigs = b.addToolFilterMiddlewares(middlewareConfigs, toolsFilter)
+		// Add tool filter middlewares
+		middlewareConfigs = addToolFilterMiddlewares(middlewareConfigs, toolsFilter)
 
-	// Add core middlewares (always present)
-	middlewareConfigs = b.addCoreMiddlewares(middlewareConfigs, oidcConfig)
+		// Add core middlewares (always present)
+		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig)
 
-	// Add optional middlewares
-	middlewareConfigs = b.addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
-	middlewareConfigs = b.addAuthzMiddleware(middlewareConfigs, authzConfigPath)
-	middlewareConfigs = b.addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName)
+		// Add optional middlewares
+		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
+		middlewareConfigs = addAuthzMiddleware(middlewareConfigs, authzConfigPath)
+		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName)
 
-	// Set the populated middleware configs
-	b.config.MiddlewareConfigs = middlewareConfigs
-	return b
+		// Set the populated middleware configs
+		b.config.MiddlewareConfigs = middlewareConfigs
+		return nil
+	}
 }
 
 // addToolFilterMiddlewares adds tool filter middlewares if tools filter is provided
-func (*RunConfigBuilder) addToolFilterMiddlewares(
+func addToolFilterMiddlewares(
 	middlewareConfigs []types.MiddlewareConfig, toolsFilter []string,
 ) []types.MiddlewareConfig {
 	if len(toolsFilter) == 0 {
@@ -393,7 +462,7 @@ func (*RunConfigBuilder) addToolFilterMiddlewares(
 }
 
 // addCoreMiddlewares adds core middlewares that are always present
-func (*RunConfigBuilder) addCoreMiddlewares(
+func addCoreMiddlewares(
 	middlewareConfigs []types.MiddlewareConfig, oidcConfig *auth.TokenValidatorConfig,
 ) []types.MiddlewareConfig {
 	// Authentication middleware (always present)
@@ -414,7 +483,7 @@ func (*RunConfigBuilder) addCoreMiddlewares(
 }
 
 // addTelemetryMiddleware adds telemetry middleware if enabled
-func (*RunConfigBuilder) addTelemetryMiddleware(
+func addTelemetryMiddleware(
 	middlewareConfigs []types.MiddlewareConfig,
 	telemetryConfig *telemetry.Config,
 	serverName, transportType string,
@@ -436,7 +505,7 @@ func (*RunConfigBuilder) addTelemetryMiddleware(
 }
 
 // addAuthzMiddleware adds authorization middleware if config path is provided
-func (*RunConfigBuilder) addAuthzMiddleware(
+func addAuthzMiddleware(
 	middlewareConfigs []types.MiddlewareConfig, authzConfigPath string,
 ) []types.MiddlewareConfig {
 	if authzConfigPath == "" {
@@ -461,7 +530,7 @@ func (*RunConfigBuilder) addAuthzMiddleware(
 }
 
 // addAuditMiddleware adds audit middleware if enabled or config path is provided
-func (*RunConfigBuilder) addAuditMiddleware(
+func addAuditMiddleware(
 	middlewareConfigs []types.MiddlewareConfig,
 	enableAudit bool,
 	auditConfigPath, serverName string,
@@ -490,13 +559,28 @@ func (*RunConfigBuilder) addAuditMiddleware(
 	return middlewareConfigs
 }
 
-// Build creates the final RunConfig instance with validation and processing
-func (b *RunConfigBuilder) Build(
+// NewRunConfigBuilder creates the final RunConfig instance with validation and processing
+func NewRunConfigBuilder(
 	ctx context.Context,
 	imageMetadata *registry.ImageMetadata,
 	envVars map[string]string,
 	envVarValidator EnvVarValidator,
+	runConfigOptions ...RunConfigBuilderOption,
 ) (*RunConfig, error) {
+	b := &RunConfigBuilder{
+		config: &RunConfig{
+			ContainerLabels: make(map[string]string),
+			EnvVars:         make(map[string]string),
+		},
+	}
+
+	// Apply all the options
+	for _, option := range runConfigOptions {
+		if err := option(b); err != nil {
+			return nil, fmt.Errorf("failed to apply run config option: %v", err)
+		}
+	}
+
 	// When using the CLI validation strategy, this is where the prompting for
 	// missing environment variables will happen.
 	processedEnvVars, err := envVarValidator.Validate(ctx, imageMetadata, b.config, envVars)
@@ -746,17 +830,21 @@ func (b *RunConfigBuilder) processVolumeMounts() error {
 }
 
 // WithEnvFile adds environment variables from a single file
-func (b *RunConfigBuilder) WithEnvFile(filePath string) (*RunConfigBuilder, error) {
-	if _, err := b.config.WithEnvFile(filePath); err != nil {
-		return nil, err
+func WithEnvFile(filePath string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		if _, err := b.config.WithEnvFile(filePath); err != nil {
+			return err
+		}
+		return nil
 	}
-	return b, nil
 }
 
 // WithEnvFilesFromDirectory adds environment variables from all files in a directory
-func (b *RunConfigBuilder) WithEnvFilesFromDirectory(dirPath string) (*RunConfigBuilder, error) {
-	if _, err := b.config.WithEnvFilesFromDirectory(dirPath); err != nil {
-		return nil, err
+func WithEnvFilesFromDirectory(dirPath string) RunConfigBuilderOption {
+	return func(b *RunConfigBuilder) error {
+		if _, err := b.config.WithEnvFilesFromDirectory(dirPath); err != nil {
+			return err
+		}
+		return nil
 	}
-	return b, nil
 }

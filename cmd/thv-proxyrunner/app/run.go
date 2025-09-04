@@ -258,40 +258,43 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to parse environment variables: %v", err)
 	}
 
-	// Initialize a new RunConfig with values from command-line flags
-	builder := runner.NewRunConfigBuilder().
-		WithRuntime(rt).
-		WithCmdArgs(cmdArgs).
-		WithName(runName).
-		WithImage(mcpServerImage).
-		WithHost(runHost).
-		WithTargetHost(transport.LocalhostIPv4).
-		WithDebug(debugMode).
-		WithVolumes(runVolumes).
-		WithSecrets(runSecrets).
-		WithAuthzConfigPath(runAuthzConfig).
-		WithAuditConfigPath(runAuditConfig).
-		WithPermissionProfileNameOrPath(runPermissionProfile).
-		WithNetworkIsolation(runIsolateNetwork).
-		WithK8sPodPatch(runK8sPodPatch).
-		WithProxyMode(types.ProxyMode("sse")).
-		WithTransportAndPorts(runTransport, runProxyPort, runTargetPort).
-		WithAuditEnabled(runEnableAudit, runAuditConfig).
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-			runThvCABundle, runJWKSAuthTokenFile, runResourceURL, runJWKSAllowPrivateIP).
-		WithTelemetryConfig(runOtelEndpoint, enablePrometheusMetricsPath, runOtelServiceName,
-			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
-		WithToolsFilter(runToolsFilter)
+	// Initialize a new set of options with values from command-line flags
+	opts := []runner.RunConfigBuilderOption{
+		runner.WithRuntime(rt),
+		runner.WithCmdArgs(cmdArgs),
+		runner.WithName(runName),
+		runner.WithImage(mcpServerImage),
+		runner.WithHost(runHost),
+		runner.WithTargetHost(transport.LocalhostIPv4),
+		runner.WithDebug(debugMode),
+		runner.WithVolumes(runVolumes),
+		runner.WithSecrets(runSecrets),
+		runner.WithAuthzConfigPath(runAuthzConfig),
+		runner.WithAuditConfigPath(runAuditConfig),
+		runner.WithPermissionProfileNameOrPath(runPermissionProfile),
+		runner.WithNetworkIsolation(runIsolateNetwork),
+		runner.WithK8sPodPatch(runK8sPodPatch),
+		runner.WithProxyMode(types.ProxyMode("sse")),
+		runner.WithTransportAndPorts(runTransport, runProxyPort, runTargetPort),
+		runner.WithAuditEnabled(runEnableAudit, runAuditConfig),
+		runner.WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
+			runThvCABundle, runJWKSAuthTokenFile, runResourceURL, runJWKSAllowPrivateIP,
+		),
+		runner.WithTelemetryConfig(runOtelEndpoint, enablePrometheusMetricsPath, runOtelServiceName,
+			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables,
+		),
+		runner.WithToolsFilter(runToolsFilter),
+	}
 
 	// Process environment files
 	if runEnvFileDir != "" {
-		builder, err = builder.WithEnvFilesFromDirectory(runEnvFileDir)
+		opts = append(opts, runner.WithEnvFilesFromDirectory(runEnvFileDir))
 		if err != nil {
 			return fmt.Errorf("failed to process env files from directory %s: %v", runEnvFileDir, err)
 		}
 	}
 
-	runConfig, err := builder.Build(ctx, imageMetadata, envVarsMap, envVarValidator)
+	runConfig, err := runner.NewRunConfigBuilder(ctx, imageMetadata, envVarsMap, envVarValidator, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig: %v", err)
 	}

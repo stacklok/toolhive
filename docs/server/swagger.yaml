@@ -124,6 +124,7 @@ components:
       - AmpVSCodeInsider
       - AmpWindsurf
       - LMStudio
+      - Goose
     client.MCPClientStatus:
       properties:
         client_type:
@@ -144,6 +145,7 @@ components:
           - AmpVSCodeInsider
           - AmpWindsurf
           - LMStudio
+          - Goose
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -968,6 +970,7 @@ components:
             - AmpVSCodeInsider
             - AmpWindsurf
             - LMStudio
+            - Goose
           type: array
           uniqueItems: false
       type: object
@@ -1017,6 +1020,7 @@ components:
           - AmpVSCodeInsider
           - AmpWindsurf
           - LMStudio
+          - Goose
       type: object
     v1.createClientResponse:
       properties:
@@ -1044,6 +1048,7 @@ components:
           - AmpVSCodeInsider
           - AmpWindsurf
           - LMStudio
+          - Goose
       type: object
     v1.createGroupRequest:
       properties:

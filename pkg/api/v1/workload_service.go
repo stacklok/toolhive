@@ -45,7 +45,7 @@ func NewWorkloadService(
 }
 
 // CreateWorkloadFromRequest creates a workload from a request
-func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *apitypes.CreateRequest) (*runner.RunConfig, error) {
+func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
 	// Default group if not specified
 	groupName := req.Group
 	if groupName == "" {
@@ -160,11 +160,8 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *ap
 // createRequestToRemoteAuthConfig converts API request to runner RemoteAuthConfig
 func (s *WorkloadService) createRequestToRemoteAuthConfig(
 	ctx context.Context,
-	req *apitypes.CreateRequest,
+	req *createRequest,
 ) (*runner.RemoteAuthConfig, error) {
-	if req.OAuthConfig == nil {
-		return nil, nil
-	}
 
 	// Resolve client secret from secret management if provided
 	clientSecret, err := s.resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
@@ -182,6 +179,7 @@ func (s *WorkloadService) createRequestToRemoteAuthConfig(
 		TokenURL:     req.OAuthConfig.TokenURL,
 		OAuthParams:  req.OAuthConfig.OAuthParams,
 		CallbackPort: req.OAuthConfig.CallbackPort,
+		SkipBrowser:  req.OAuthConfig.SkipBrowser,
 		Headers:      req.Headers,
 	}, nil
 }

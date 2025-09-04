@@ -65,7 +65,7 @@ type UpdateRequest struct {
 
 	// Remote server specific fields
 	URL         string             `json:"url,omitempty"`
-	OAuthConfig *RemoteOAuthConfig `json:"oauth_config,omitempty"`
+	OAuthConfig RemoteOAuthConfig  `json:"oauth_config,omitempty"`
 	Headers     []*registry.Header `json:"headers,omitempty"`
 }
 
@@ -91,6 +91,8 @@ type RemoteOAuthConfig struct {
 	OAuthParams map[string]string `json:"oauth_params,omitempty"`
 	// Specific port for OAuth callback server
 	CallbackPort int `json:"callback_port,omitempty"`
+	// Whether to skip opening browser for OAuth flow (defaults to false)
+	SkipBrowser bool `json:"skip_browser,omitempty"`
 }
 
 // CreateRequest represents the request to create a new workload
@@ -179,10 +181,10 @@ func RunConfigToCreateRequest(runConfig *runner.RunConfig) *CreateRequest {
 	}
 
 	// Get remote OAuth config from RunConfig
-	var remoteOAuthConfig *RemoteOAuthConfig
+	var remoteOAuthConfig RemoteOAuthConfig
 	var headers []*registry.Header
 	if runConfig.RemoteAuthConfig != nil {
-		remoteOAuthConfig = &RemoteOAuthConfig{
+		remoteOAuthConfig = RemoteOAuthConfig{
 			Issuer:       runConfig.RemoteAuthConfig.Issuer,
 			AuthorizeURL: runConfig.RemoteAuthConfig.AuthorizeURL,
 			TokenURL:     runConfig.RemoteAuthConfig.TokenURL,
@@ -190,6 +192,7 @@ func RunConfigToCreateRequest(runConfig *runner.RunConfig) *CreateRequest {
 			Scopes:       runConfig.RemoteAuthConfig.Scopes,
 			OAuthParams:  runConfig.RemoteAuthConfig.OAuthParams,
 			CallbackPort: runConfig.RemoteAuthConfig.CallbackPort,
+			SkipBrowser:  runConfig.RemoteAuthConfig.SkipBrowser,
 		}
 		headers = runConfig.RemoteAuthConfig.Headers
 	}

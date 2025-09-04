@@ -98,7 +98,7 @@ func TestWorkloadService_createRequestToRemoteAuthConfig(t *testing.T) {
 
 		req := &apitypes.CreateRequest{
 			UpdateRequest: apitypes.UpdateRequest{
-				OAuthConfig: &apitypes.RemoteOAuthConfig{
+				OAuthConfig: apitypes.RemoteOAuthConfig{
 					ClientID:     "client-id",
 					ClientSecret: &secrets.SecretParameter{Name: "secret-name"},
 					Scopes:       []string{"read", "write"},
@@ -155,7 +155,7 @@ func TestWorkloadService_createRequestToRemoteAuthConfig(t *testing.T) {
 
 		req := &apitypes.CreateRequest{
 			UpdateRequest: apitypes.UpdateRequest{
-				OAuthConfig: &apitypes.RemoteOAuthConfig{
+				OAuthConfig: apitypes.RemoteOAuthConfig{
 					ClientSecret: &secrets.SecretParameter{Name: "secret-name"},
 				},
 			},

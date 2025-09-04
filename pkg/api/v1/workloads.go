@@ -81,6 +81,13 @@ func WorkloadRouter(
 	return r
 }
 
+type createRequest = apitypes.CreateRequest
+type createWorkloadResponse = apitypes.CreateWorkloadResponse
+type updateRequest = apitypes.UpdateRequest
+type workloadListResponse = apitypes.WorkloadListResponse
+type workloadStatusResponse = apitypes.WorkloadStatusResponse
+type bulkOperationRequest = apitypes.BulkOperationRequest
+
 //	 listWorkloads
 //		@Summary		List all workloads
 //		@Description	Get a list of all running workloads, optionally filtered by group
@@ -88,7 +95,7 @@ func WorkloadRouter(
 //		@Produce		json
 //		@Param			all	query		bool	false	"List all workloads, including stopped ones"
 //		@Param			group	query		string	false	"Filter workloads by group name"
-//		@Success		200	{object}	types.WorkloadListResponse
+//		@Success		200	{object}	WorkloadListResponse
 //		@Failure		404	{string}	string	"Group not found"
 //		@Router			/api/v1beta/workloads [get]
 func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +129,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(apitypes.WorkloadListResponse{Workloads: workloadList})
+	err = json.NewEncoder(w).Encode(workloadListResponse{Workloads: workloadList})
 	if err != nil {
 		http.Error(w, "Failed to marshal workload list", http.StatusInternalServerError)
 		return
@@ -136,7 +143,7 @@ func (s *WorkloadRoutes) listWorkloads(w http.ResponseWriter, r *http.Request) {
 //	@Tags			workloads
 //	@Produce		json
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		200		{object}	types.CreateRequest
+//	@Success		200		{object}	createRequest
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name} [get]
 func (s *WorkloadRoutes) getWorkload(w http.ResponseWriter, r *http.Request) {
@@ -267,14 +274,14 @@ func (s *WorkloadRoutes) deleteWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Tags			workloads
 //	@Accept			json
 //	@Produce		json
-//	@Param			request	body		types.CreateRequest	true	"Create workload request"
-//	@Success		201		{object}	types.CreateWorkloadResponse
+//	@Param			request	body		createRequest	true	"Create workload request"
+//	@Success		201		{object}	createWorkloadResponse
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		409		{string}	string	"Conflict"
 //	@Router			/api/v1beta/workloads [post]
 func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var req apitypes.CreateRequest
+	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
 		return
@@ -320,7 +327,7 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 	// Return name so that the client will get the auto-generated name.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	resp := apitypes.CreateWorkloadResponse{
+	resp := createWorkloadResponse{
 		Name: runConfig.ContainerName,
 		Port: runConfig.Port,
 	}
@@ -338,8 +345,8 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Accept			json
 //	@Produce		json
 //	@Param			name		path		string			true	"Workload name"
-//	@Param			request		body		types.UpdateRequest	true	"Update workload request"
-//	@Success		200			{object}	types.CreateWorkloadResponse
+//	@Param			request		body		updateRequest	true	"Update workload request"
+//	@Success		200			{object}	createWorkloadResponse
 //	@Failure		400			{string}	string	"Bad Request"
 //	@Failure		404			{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/edit [post]
@@ -348,7 +355,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 	name := chi.URLParam(r, "name")
 
 	// Parse request body
-	var updateReq apitypes.UpdateRequest
+	var updateReq updateRequest
 	if err := json.NewDecoder(r.Body).Decode(&updateReq); err != nil {
 		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
@@ -363,7 +370,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Convert updateRequest to createRequest with the existing workload name
-	createReq := apitypes.CreateRequest{
+	createReq := createRequest{
 		UpdateRequest: updateReq,
 		Name:          name, // Use the name from URL path, not from request body
 	}
@@ -391,7 +398,7 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 
 	// Return the same response format as create
 	w.Header().Set("Content-Type", "application/json")
-	resp := apitypes.CreateWorkloadResponse{
+	resp := createWorkloadResponse{
 		Name: runConfig.ContainerName,
 		Port: runConfig.Port,
 	}
@@ -407,14 +414,14 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 //	@Description	Stop multiple workloads by name or by group
 //	@Tags			workloads
 //	@Accept			json
-//	@Param			request	body		types.BulkOperationRequest	true	"Bulk stop request (names or group)"
+//	@Param			request	body		bulkOperationRequest	true	"Bulk stop request (names or group)"
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/stop [post]
 func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var req apitypes.BulkOperationRequest
+	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
 		return
@@ -452,14 +459,14 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 //	@Description	Restart multiple workloads by name or by group
 //	@Tags			workloads
 //	@Accept			json
-//	@Param			request	body		types.BulkOperationRequest	true	"Bulk restart request (names or group)"
+//	@Param			request	body		bulkOperationRequest	true	"Bulk restart request (names or group)"
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/restart [post]
 func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var req apitypes.BulkOperationRequest
+	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
 		return
@@ -498,14 +505,14 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 //	@Description	Delete multiple workloads by name or by group
 //	@Tags			workloads
 //	@Accept			json
-//	@Param			request	body		types.BulkOperationRequest	true	"Bulk delete request (names or group)"
+//	@Param			request	body		bulkOperationRequest	true	"Bulk delete request (names or group)"
 //	@Success		202		{string}	string	"Accepted"
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Router			/api/v1beta/workloads/delete [post]
 func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var req apitypes.BulkOperationRequest
+	var req bulkOperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
 		return
@@ -577,7 +584,7 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 //	@Tags			workloads
 //	@Produce		json
 //	@Param			name	path		string	true	"Workload name"
-//	@Success		200		{object}	types.WorkloadStatusResponse
+//	@Success		200		{object}	workloadStatusResponse
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/status [get]
 func (s *WorkloadRoutes) getWorkloadStatus(w http.ResponseWriter, r *http.Request) {
@@ -598,7 +605,7 @@ func (s *WorkloadRoutes) getWorkloadStatus(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	response := apitypes.WorkloadStatusResponse{
+	response := workloadStatusResponse{
 		Status: workload.Status,
 	}
 

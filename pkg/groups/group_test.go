@@ -635,3 +635,74 @@ func (m *mockWriteCloser) Write(p []byte) (n int, err error) {
 func (*mockWriteCloser) Close() error {
 	return nil
 }
+
+
+// TestManager_GroupNameCaseInsensitive tests that group names are normalized
+// and treated case-insensitively.
+func TestManager_GroupNameCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		inputName   string
+		existing    string
+		setupMock   func(*mocks.MockStore, string)
+		expectError bool
+	}{
+		{
+			name:      "exists with different case",
+			inputName: "MyGroup",
+			existing:  "mygroup",
+			setupMock: func(mock *mocks.MockStore, existing string) {
+				// Manager should lowercase input, so Exists is called with "mygroup"
+				mock.EXPECT().
+					Exists(gomock.Any(), existing).
+					Return(true, nil)
+			},
+			expectError: false,
+		},
+		{
+			name:      "create duplicate with different case",
+			inputName: "MyGroup",
+			existing:  "mygroup",
+			setupMock: func(mock *mocks.MockStore, existing string) {
+				// Manager should lowercase input, so Exists is called with "mygroup"
+				mock.EXPECT().
+					Exists(gomock.Any(), existing).
+					Return(true, nil)
+			},
+			expectError: true, // expect duplicate error
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStore := mocks.NewMockStore(ctrl)
+			manager := &manager{groupStore: mockStore}
+
+			// set up the mock for this test
+			tt.setupMock(mockStore, tt.existing)
+
+			if tt.expectError {
+				err := manager.Create(context.Background(), tt.inputName)
+				if err == nil {
+					t.Errorf("expected error when creating duplicate with case-insensitive name, got nil")
+				}
+			} else {
+				exists, err := manager.Exists(context.Background(), tt.inputName)
+				if err != nil {
+					t.Fatalf("exists check failed: %v", err)
+				}
+				if !exists {
+					t.Errorf("expected group %q to exist regardless of case", tt.inputName)
+				}
+			}
+		})
+	}
+}
+

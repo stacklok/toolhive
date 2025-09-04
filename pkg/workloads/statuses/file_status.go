@@ -144,7 +144,8 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		// Check if this is a remote workload using the state package
 		remote, err := f.isRemoteWorkload(ctx, workloadName)
 		if err != nil {
-			return core.Workload{}, err
+			// error is expected
+			logger.Debugf("failed to check if remote workload %s is remote: %v", workloadName, err)
 		}
 		if remote {
 			result.Remote = true
@@ -491,7 +492,8 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 			// Check if this is a remote workload using the state package
 			remote, err := f.isRemoteWorkload(ctx, workloadName)
 			if err != nil {
-				return err
+				// This error is expected
+				logger.Debugf("failed to check if remote workload %s is remote: %v", workloadName, err)
 			}
 			if remote {
 				workload.Remote = true

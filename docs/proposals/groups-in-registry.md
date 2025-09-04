@@ -50,6 +50,15 @@ Groups will be consumed via a new `thv group run` command that takes a group nam
 thv group run mobile-app-team-toolkit
 ```
 
+Flags:
+I propose starting with a minimal subset of flags, and adding more as needed:
+- `--secret` Secrets to be fetched from the secrets manager and set as environment variables (format: NAME,target=SERVER_NAME.TARGET)
+- `--env` Environment variables to pass to an MCP server in the group (format: SERVER_NAME.KEY=VALUE)
+
+```bash
+thv group run mobile-app-team-toolkit --secret k8s_token,target=k8s.TOKEN --secret playwright_token,target=playwright.TOKEN --env api-server.DEBUG=true
+```
+
 ## Use Cases
 
 SMEs at companies will create specific groups for teams working on particular products or projects.

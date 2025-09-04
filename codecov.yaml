@@ -8,4 +8,3 @@ coverage:
     - "test/e2e"
     - "deploy"
     - "**/mocks/"
-    - "pkg/api/"

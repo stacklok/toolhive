@@ -127,7 +127,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		processedImage,
 		"inspector",
 		[]string{}, // No custom command needed
-		make(map[string]string),
+		nil,
 		labelsMap,              // Add toolhive label
 		&permissions.Profile{}, // Empty profile as we don't need special permissions
 		string(types.TransportTypeInspector),

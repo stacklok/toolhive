@@ -72,8 +72,7 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMapResource(
 	if errors.IsNotFound(err) {
 		// ConfigMap doesn't exist, create it
 		if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-			logger.Errorf("Failed to set controller reference for RunConfig ConfigMap: %v", err)
-			return nil
+			return fmt.Errorf("failed to set controller reference for RunConfig ConfigMap: %w", err)
 		}
 
 		ctxLogger.Info("RunConfig ConfigMap does not exist, creating", "ConfigMap.Name", desired.Name)
@@ -99,8 +98,7 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMapResource(
 		desired.UID = current.UID
 
 		if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-			logger.Errorf("Failed to set controller reference for RunConfig ConfigMap: %v", err)
-			return nil
+			return fmt.Errorf("failed to set controller reference for RunConfig ConfigMap: %w", err)
 		}
 
 		ctxLogger.Info("RunConfig ConfigMap content changed, updating", "ConfigMap.Name", desired.Name)

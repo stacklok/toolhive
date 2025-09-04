@@ -231,7 +231,7 @@ func init() {
 	)
 	// Hide the flag since it's only used by the operator
 	if err := runCmd.Flags().MarkHidden("from-configmap"); err != nil {
-		logger.Warnf("Error hiding from-configmap flag: %v", err)
+		panic(fmt.Sprintf("Error hiding from-configmap flag: %v", err))
 	}
 }
 

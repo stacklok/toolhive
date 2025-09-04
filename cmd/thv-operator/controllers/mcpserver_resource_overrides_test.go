@@ -381,7 +381,7 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 	mcpServer := &mcpv1alpha1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-server",
-			Namespace: "test-service-account",
+			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image: "test-image",
@@ -402,7 +402,7 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      mcpServer.Name + "-runconfig",
-			Namespace: "test-service-account",
+			Namespace: "default",
 		},
 		Data: map[string]string{
 			"runconfig.json": string(configMapData),

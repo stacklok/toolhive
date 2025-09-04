@@ -2,7 +2,6 @@
 package proxy
 
 import (
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 )
@@ -14,12 +13,6 @@ import (
 func StopProcess(containerBaseName string) {
 	if containerBaseName == "" {
 		logger.Warnf("Warning: Could not find base container name in labels")
-		return
-	}
-
-	// Skip PID file operations in Kubernetes - pods are managed by the cluster
-	if rt.IsKubernetesRuntime() {
-		logger.Debug("Skipping proxy process stop in Kubernetes - pods are managed by the cluster")
 		return
 	}
 

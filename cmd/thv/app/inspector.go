@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -95,6 +97,14 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 
 	serverName := args[0]
 
+	// Generate authentication token
+	tokenBytes := make([]byte, 32)
+	_, err := rand.Read(tokenBytes)
+	if err != nil {
+		return fmt.Errorf("failed to generate auth token: %v", err)
+	}
+	authToken := hex.EncodeToString(tokenBytes)
+
 	// find the port of the server if it is running / exists
 	serverPort, transportType, err := getServerPortAndTransport(ctx, serverName)
 	if err != nil {
@@ -127,7 +137,10 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		processedImage,
 		"inspector",
 		[]string{}, // No custom command needed
-		nil,
+		map[string]string{
+			"MCP_PROXY_AUTH_TOKEN": authToken,
+			"HOST":                 "0.0.0.0",
+		},
 		labelsMap,              // Add toolhive label
 		&permissions.Profile{}, // Empty profile as we don't need special permissions
 		string(types.TransportTypeInspector),
@@ -151,14 +164,14 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		var transportTypeStr string
 		if transportType == types.TransportTypeSSE || transportType == types.TransportTypeStdio {
 			suffix = "sse"
-			transportTypeStr = transportType.String()
+			transportTypeStr = "sse"
 		} else {
-			suffix = "mcp/"
+			suffix = "mcp"
 			transportTypeStr = "streamable-http"
 		}
 		inspectorURL := fmt.Sprintf(
-			"http://localhost:%d?transport=%s&serverUrl=http://host.docker.internal:%d/%s",
-			inspectorUIPort, transportTypeStr, serverPort, suffix)
+			"http://localhost:%d?transport=%s&serverUrl=http://host.docker.internal:%d/%s&MCP_PROXY_AUTH_TOKEN=%s",
+			inspectorUIPort, transportTypeStr, serverPort, suffix, authToken)
 		logger.Infof("Inspector UI is now available at %s", inspectorURL)
 		return nil
 	case <-ctx.Done():

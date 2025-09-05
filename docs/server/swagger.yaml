@@ -1082,6 +1082,11 @@ components:
         group:
           description: Group name this workload belongs to
           type: string
+        headers:
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+          uniqueItems: false
         host:
           description: Host to bind to
           type: string
@@ -1095,6 +1100,8 @@ components:
           description: Whether network isolation is turned on. This applies the rules
             in the permission profile.
           type: boolean
+        oauth_config:
+          $ref: '#/components/schemas/v1.remoteOAuthConfig'
         oidc:
           $ref: '#/components/schemas/v1.oidcOptions'
         permission_profile:
@@ -1119,6 +1126,9 @@ components:
           uniqueItems: false
         transport:
           description: Transport configuration
+          type: string
+        url:
+          description: Remote server specific fields
           type: string
         volumes:
           description: Volume mounts
@@ -1317,6 +1327,47 @@ components:
           type: array
           uniqueItems: false
       type: object
+    v1.remoteOAuthConfig:
+      description: OAuth configuration for remote server authentication
+      properties:
+        authorize_url:
+          description: OAuth authorization endpoint URL (alternative to issuer for
+            non-OIDC OAuth)
+          type: string
+        callback_port:
+          description: Specific port for OAuth callback server
+          type: integer
+        client_id:
+          description: OAuth client ID for authentication
+          type: string
+        client_secret:
+          $ref: '#/components/schemas/secrets.SecretParameter'
+        issuer:
+          description: OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
+          type: string
+        oauth_params:
+          additionalProperties:
+            type: string
+          description: Additional OAuth parameters for server-specific customization
+          type: object
+        scopes:
+          description: OAuth scopes to request
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        skip_browser:
+          description: Whether to skip opening browser for OAuth flow (defaults to
+            false)
+          type: boolean
+        token_url:
+          description: OAuth token endpoint URL (alternative to issuer for non-OIDC
+            OAuth)
+          type: string
+        use_pkce:
+          description: Whether to use PKCE for the OAuth flow
+          type: boolean
+      type: object
     v1.secretKeyResponse:
       description: Secret key information
       properties:
@@ -1369,6 +1420,11 @@ components:
         group:
           description: Group name this workload belongs to
           type: string
+        headers:
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+          uniqueItems: false
         host:
           description: Host to bind to
           type: string
@@ -1379,6 +1435,8 @@ components:
           description: Whether network isolation is turned on. This applies the rules
             in the permission profile.
           type: boolean
+        oauth_config:
+          $ref: '#/components/schemas/v1.remoteOAuthConfig'
         oidc:
           $ref: '#/components/schemas/v1.oidcOptions'
         permission_profile:
@@ -1403,6 +1461,9 @@ components:
           uniqueItems: false
         transport:
           description: Transport configuration
+          type: string
+        url:
+          description: Remote server specific fields
           type: string
         volumes:
           description: Volume mounts

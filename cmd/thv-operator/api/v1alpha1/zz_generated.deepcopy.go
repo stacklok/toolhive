@@ -487,6 +487,11 @@ func (in *PrometheusConfig) DeepCopy() *PrometheusConfig {
 func (in *ProxyDeploymentOverrides) DeepCopyInto(out *ProxyDeploymentOverrides) {
 	*out = *in
 	in.ResourceMetadataOverrides.DeepCopyInto(&out.ResourceMetadataOverrides)
+	if in.PodTemplateMetadataOverrides != nil {
+		in, out := &in.PodTemplateMetadataOverrides, &out.PodTemplateMetadataOverrides
+		*out = new(ResourceMetadataOverrides)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Env != nil {
 		in, out := &in.Env, &out.Env
 		*out = make([]EnvVar, len(*in))

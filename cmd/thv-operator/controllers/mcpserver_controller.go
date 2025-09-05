@@ -625,6 +625,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	deploymentLabels := ls
 	deploymentAnnotations := make(map[string]string)
 
+	deploymentTemplateLabels := ls
+	deploymentTemplateAnnotations := make(map[string]string)
+
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if m.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
 			deploymentLabels = mergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.Labels)
@@ -632,6 +635,21 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		if m.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
 			deploymentAnnotations = mergeAnnotations(make(map[string]string), m.Spec.ResourceOverrides.ProxyDeployment.Annotations)
 		}
+
+		if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides != nil {
+			if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels != nil {
+				deploymentLabels = mergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels)
+			}
+			if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations != nil {
+				deploymentTemplateAnnotations = mergeAnnotations(deploymentAnnotations,
+					m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations)
+			}
+		}
+	}
+
+	// Check for Vault Agent Injection and add env-file-dir argument if needed
+	if hasVaultAgentInjection(deploymentTemplateAnnotations) {
+		args = append(args, "--env-file-dir=/vault/secrets")
 	}
 
 	// Detect platform and prepare ProxyRunner's pod and container security context
@@ -662,7 +680,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: ls, // Keep original labels for pod template
+					Labels:      deploymentTemplateLabels,
+					Annotations: deploymentTemplateAnnotations,
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: proxyRunnerServiceAccountName(m.Name),
@@ -1308,6 +1327,17 @@ func mergeLabels(defaultLabels, overrideLabels map[string]string) map[string]str
 // mergeAnnotations merges override annotations with default annotations, with default annotations taking precedence
 func mergeAnnotations(defaultAnnotations, overrideAnnotations map[string]string) map[string]string {
 	return mergeStringMaps(defaultAnnotations, overrideAnnotations)
+}
+
+// hasVaultAgentInjection checks if Vault Agent Injection is enabled in the pod annotations
+func hasVaultAgentInjection(annotations map[string]string) bool {
+	if annotations == nil {
+		return false
+	}
+
+	// Check if vault.hashicorp.com/agent-inject annotation is present and set to "true"
+	value, exists := annotations["vault.hashicorp.com/agent-inject"]
+	return exists && value == "true"
 }
 
 // getProxyHost returns the host to bind the proxy to

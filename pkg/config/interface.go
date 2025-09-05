@@ -1,6 +1,12 @@
 package config
 
+import (
+	"github.com/stacklok/toolhive/pkg/container/runtime"
+)
+
 // Provider defines the interface for configuration operations
+//
+//go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=interface.go Provider
 type Provider interface {
 	GetConfig() *Config
 	UpdateConfig(updateFn func(*Config)) error
@@ -28,12 +34,12 @@ func (*DefaultProvider) GetConfig() *Config {
 
 // UpdateConfig updates the config using the default path
 func (*DefaultProvider) UpdateConfig(updateFn func(*Config)) error {
-	return UpdateConfig(updateFn)
+	return UpdateConfigAtPath("", updateFn)
 }
 
 // LoadOrCreateConfig loads or creates config using the default path
 func (*DefaultProvider) LoadOrCreateConfig() (*Config, error) {
-	return LoadOrCreateConfig()
+	return LoadOrCreateConfigWithDefaultPath()
 }
 
 // SetRegistryURL validates and sets a registry URL
@@ -105,4 +111,58 @@ func (p *PathProvider) UnsetRegistry() error {
 // GetRegistryConfig returns current registry configuration
 func (p *PathProvider) GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string) {
 	return getRegistryConfig(p)
+}
+
+// KubernetesProvider is a no-op implementation of Provider for Kubernetes environments.
+// In Kubernetes, configuration is managed by the cluster, not by local files.
+type KubernetesProvider struct{}
+
+// NewKubernetesProvider creates a new no-op config provider for Kubernetes environments
+func NewKubernetesProvider() *KubernetesProvider {
+	return &KubernetesProvider{}
+}
+
+// GetConfig returns a default config for Kubernetes environments
+func (*KubernetesProvider) GetConfig() *Config {
+	config := createNewConfigWithDefaults()
+	return &config
+}
+
+// UpdateConfig is a no-op for Kubernetes environments
+func (*KubernetesProvider) UpdateConfig(_ func(*Config)) error {
+	return nil
+}
+
+// LoadOrCreateConfig returns a default config for Kubernetes environments
+func (*KubernetesProvider) LoadOrCreateConfig() (*Config, error) {
+	config := createNewConfigWithDefaults()
+	return &config, nil
+}
+
+// SetRegistryURL is a no-op for Kubernetes environments
+func (*KubernetesProvider) SetRegistryURL(_ string, _ bool) error {
+	return nil
+}
+
+// SetRegistryFile is a no-op for Kubernetes environments
+func (*KubernetesProvider) SetRegistryFile(_ string) error {
+	return nil
+}
+
+// UnsetRegistry is a no-op for Kubernetes environments
+func (*KubernetesProvider) UnsetRegistry() error {
+	return nil
+}
+
+// GetRegistryConfig returns empty registry configuration for Kubernetes environments
+func (*KubernetesProvider) GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string) {
+	return "", "", false, ""
+}
+
+// NewProvider creates the appropriate config provider based on the runtime environment
+func NewProvider() Provider {
+	if runtime.IsKubernetesRuntime() {
+		return NewKubernetesProvider()
+	}
+	return NewDefaultProvider()
 }

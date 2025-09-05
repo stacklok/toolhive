@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofrs/flock"
 	"github.com/tailscale/hujson"
 	"github.com/tidwall/gjson"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -39,7 +39,8 @@ type JSONConfigUpdater struct {
 // Upsert inserts or updates an MCP server in the MCP client config file
 func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 	// Create a lock file
-	fileLock := flock.New(jcu.Path + ".lock")
+	lockPath := jcu.Path + ".lock"
+	fileLock := lockfile.NewTrackedLock(lockPath)
 
 	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
@@ -53,7 +54,7 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 	if !locked {
 		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
 	}
-	defer fileLock.Unlock()
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
 
 	content, err := os.ReadFile(jcu.Path)
 	if err != nil {
@@ -98,7 +99,8 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 // Remove removes an MCP server from the MCP client config file
 func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 	// Create a lock file
-	fileLock := flock.New(jcu.Path + ".lock")
+	lockPath := jcu.Path + ".lock"
+	fileLock := lockfile.NewTrackedLock(lockPath)
 
 	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
@@ -112,7 +114,7 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 	if !locked {
 		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
 	}
-	defer fileLock.Unlock()
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
 
 	content, err := os.ReadFile(jcu.Path)
 	if err != nil {
@@ -162,7 +164,8 @@ type YAMLConfigUpdater struct {
 // Upsert inserts or updates an MCP server in the config.yaml file using the converter
 func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
 	// Create a lock file
-	fileLock := flock.New(ycu.Path + ".lock")
+	lockPath := ycu.Path + ".lock"
+	fileLock := lockfile.NewTrackedLock(lockPath)
 
 	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
@@ -176,7 +179,7 @@ func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
 	if !locked {
 		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
 	}
-	defer fileLock.Unlock()
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
 
 	content, err := os.ReadFile(ycu.Path)
 	if err != nil && !os.IsNotExist(err) {
@@ -227,7 +230,8 @@ func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
 // Remove removes an entry from the config.yaml file using the converter
 func (ycu *YAMLConfigUpdater) Remove(serverName string) error {
 	// Create a lock file
-	fileLock := flock.New(ycu.Path + ".lock")
+	lockPath := ycu.Path + ".lock"
+	fileLock := lockfile.NewTrackedLock(lockPath)
 
 	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
 	defer cancel()
@@ -240,7 +244,7 @@ func (ycu *YAMLConfigUpdater) Remove(serverName string) error {
 	if !locked {
 		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
 	}
-	defer fileLock.Unlock()
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
 
 	// Read existing config
 	content, err := os.ReadFile(ycu.Path)

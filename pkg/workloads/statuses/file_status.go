@@ -11,11 +11,11 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/gofrs/flock"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport/proxy"
@@ -348,16 +348,8 @@ func (f *fileStatusManager) withFileLock(ctx context.Context, workloadName strin
 	lockFilePath := f.getLockFilePath(workloadName)
 
 	// Create file lock
-	fileLock := flock.New(lockFilePath)
-	defer func() {
-		if err := fileLock.Unlock(); err != nil {
-			logger.Warnf("failed to unlock file %s: %v", lockFilePath, err)
-		}
-		// Attempt to remove lock file (best effort)
-		if err := os.Remove(lockFilePath); err != nil && !os.IsNotExist(err) {
-			logger.Warnf("failed to remove lock file for workload %s: %v", workloadName, err)
-		}
-	}()
+	fileLock := lockfile.NewTrackedLock(lockFilePath)
+	defer lockfile.ReleaseTrackedLock(lockFilePath, fileLock)
 
 	// Create context with timeout
 	lockCtx, cancel := context.WithTimeout(ctx, lockTimeout)
@@ -391,12 +383,8 @@ func (f *fileStatusManager) withFileReadLock(ctx context.Context, workloadName s
 	lockFilePath := f.getLockFilePath(workloadName)
 
 	// Create file lock
-	fileLock := flock.New(lockFilePath)
-	defer func() {
-		if err := fileLock.Unlock(); err != nil {
-			logger.Warnf("failed to unlock file %s: %v", lockFilePath, err)
-		}
-	}()
+	fileLock := lockfile.NewTrackedLock(lockFilePath)
+	defer lockfile.ReleaseTrackedLock(lockFilePath, fileLock)
 
 	// Create context with timeout
 	lockCtx, cancel := context.WithTimeout(ctx, lockTimeout)

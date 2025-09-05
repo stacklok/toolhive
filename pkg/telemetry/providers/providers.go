@@ -1,4 +1,4 @@
-// Package providers contains telemetry provider implementations and factory logic
+// Package providers contains telemetry provider implementations and assembler logic
 package providers
 
 import (
@@ -36,9 +36,9 @@ type Config struct {
 	EnablePrometheusMetricsPath bool // EnablePrometheusMetricsPath enables Prometheus /metrics endpoint
 }
 
-// Builder builds telemetry providers based on configuration.
+// Assembler assembles telemetry providers based on configuration.
 // It validates configuration, creates resources, and assembles composite providers.
-type Builder struct {
+type Assembler struct {
 	config   Config             // config holds the telemetry configuration
 	resource *resource.Resource // resource holds the OpenTelemetry resource information
 }
@@ -52,15 +52,15 @@ type CompositeProvider struct {
 	shutdownFuncs     []func(context.Context) error // shutdownFuncs clean up resources on shutdown
 }
 
-// WithConfig creates a new provider builder with the given configuration
-func WithConfig(config Config) *Builder {
-	return &Builder{
+// WithConfig creates a new provider assembler with the given configuration
+func WithConfig(config Config) *Assembler {
+	return &Assembler{
 		config: config,
 	}
 }
 
-// Build creates the appropriate providers based on configuration
-func (b *Builder) Build(ctx context.Context) (*CompositeProvider, error) {
+// Assemble creates the appropriate providers based on configuration
+func (b *Assembler) Assemble(ctx context.Context) (*CompositeProvider, error) {
 
 	// Create resource for all providers
 	err := b.createResource(ctx)
@@ -77,12 +77,12 @@ func (b *Builder) Build(ctx context.Context) (*CompositeProvider, error) {
 		return b.createNoOpProvider(), nil
 	}
 
-	// Build composite provider using strategies
-	return b.buildProviders(ctx, selector, b.resource)
+	// Assemble composite provider using strategies
+	return b.assembleProviders(ctx, selector, b.resource)
 }
 
 // createResource creates an OpenTelemetry resource with service information
-func (b *Builder) createResource(ctx context.Context) error {
+func (b *Assembler) createResource(ctx context.Context) error {
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
 			semconv.ServiceName(b.config.ServiceName),
@@ -99,7 +99,7 @@ func (b *Builder) createResource(ctx context.Context) error {
 }
 
 // createNoOpProvider returns a composite provider with all no-op implementations
-func (*Builder) createNoOpProvider() *CompositeProvider {
+func (*Assembler) createNoOpProvider() *CompositeProvider {
 	return &CompositeProvider{
 		tracerProvider:    tracenoop.NewTracerProvider(),
 		meterProvider:     noop.NewMeterProvider(),
@@ -108,8 +108,8 @@ func (*Builder) createNoOpProvider() *CompositeProvider {
 	}
 }
 
-// buildProviders creates a composite provider using the selected strategies
-func (b *Builder) buildProviders(
+// assembleProviders creates a composite provider using the selected strategies
+func (b *Assembler) assembleProviders(
 	ctx context.Context,
 	selector *StrategySelector,
 	res *resource.Resource,
@@ -131,7 +131,7 @@ func (b *Builder) buildProviders(
 }
 
 // createMetricsProvider creates the metrics provider for the composite provider
-func (b *Builder) createMetricsProvider(
+func (b *Assembler) createMetricsProvider(
 	ctx context.Context,
 	composite *CompositeProvider,
 	selector *StrategySelector,
@@ -160,7 +160,7 @@ func (b *Builder) createMetricsProvider(
 }
 
 // createTracingProvider creates the tracing provider for the composite provider
-func (b *Builder) createTracingProvider(
+func (b *Assembler) createTracingProvider(
 	ctx context.Context,
 	composite *CompositeProvider,
 	selector *StrategySelector,

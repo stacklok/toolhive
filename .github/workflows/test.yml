@@ -21,9 +21,9 @@ jobs:
 
       - name: Set up gotestfmt
         uses: gotesttools/gotestfmt-action@v2
-        # Optional: pass GITHUB_TOKEN to avoid rate limiting.
-        # with:  
-        #   token: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # avoid rate limiting
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Task
         uses: arduino/setup-task@v2

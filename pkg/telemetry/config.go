@@ -27,7 +27,17 @@ type Config struct {
 	// ServiceVersion is the service version for telemetry
 	ServiceVersion string
 
+	// TracingEnabled controls whether distributed tracing is enabled
+	// When false, no tracer provider is created even if an endpoint is configured
+	TracingEnabled bool
+
+	// MetricsEnabled controls whether OTLP metrics are enabled
+	// When false, OTLP metrics are not sent even if an endpoint is configured
+	// This is independent of EnablePrometheusMetricsPath
+	MetricsEnabled bool
+
 	// SamplingRate is the trace sampling rate (0.0-1.0)
+	// Only used when TracingEnabled is true
 	SamplingRate float64
 
 	// Headers contains authentication headers for the OTLP endpoint
@@ -54,7 +64,9 @@ func DefaultConfig() Config {
 	return Config{
 		ServiceName:                 "toolhive-mcp-proxy",
 		ServiceVersion:              versionInfo.Version,
-		SamplingRate:                0.1, // 10% sampling by default
+		TracingEnabled:              true, // Enable tracing by default if endpoint is configured
+		MetricsEnabled:              true, // Enable metrics by default if endpoint is configured
+		SamplingRate:                0.05, // 5% sampling by default
 		Headers:                     make(map[string]string),
 		Insecure:                    false,
 		EnablePrometheusMetricsPath: false,      // No metrics endpoint by default
@@ -73,43 +85,52 @@ type Provider struct {
 
 // NewProvider creates a new OpenTelemetry provider with the given configuration.
 func NewProvider(ctx context.Context, config Config) (*Provider, error) {
+	// Validate configuration
+	if err := validateOtelConfig(config); err != nil {
+		return nil, err
+	}
+
 	// Use the new factory pattern
-	builderConfig := providers.Config{
+	telemetryConfig := providers.Config{
 		ServiceName:                 config.ServiceName,
 		ServiceVersion:              config.ServiceVersion,
 		OTLPEndpoint:                config.Endpoint,
 		Headers:                     config.Headers,
 		Insecure:                    config.Insecure,
+		TracingEnabled:              config.TracingEnabled,
+		MetricsEnabled:              config.MetricsEnabled,
 		SamplingRate:                config.SamplingRate,
 		EnablePrometheusMetricsPath: config.EnablePrometheusMetricsPath,
 	}
 
-	builder := providers.NewBuilder(builderConfig)
-	composite, err := builder.Build(ctx)
+	telemetryProviders, err := providers.WithConfig(telemetryConfig).Build(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build telemetry providers: %w", err)
 	}
 
-	// Set global providers
-	setGlobalProviders(composite.TracerProvider(), composite.MeterProvider())
-
-	return &Provider{
-		config:            config,
-		tracerProvider:    composite.TracerProvider(),
-		meterProvider:     composite.MeterProvider(),
-		prometheusHandler: composite.PrometheusHandler(),
-		shutdown:          composite.Shutdown,
-	}, nil
+	return setGlobalProvidersAndReturn(telemetryProviders, config)
 }
 
-// setGlobalProviders sets the global OpenTelemetry providers.
-func setGlobalProviders(tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider) {
-	otel.SetTracerProvider(tracerProvider)
+// setGlobalProvidersAndReturn sets the global providers for OTEL and returns the providers
+func setGlobalProvidersAndReturn(telemetryProviders *providers.CompositeProvider, config Config) (*Provider, error) {
+	tracingProvider := telemetryProviders.TracerProvider()
+	meterProvider := telemetryProviders.MeterProvider()
+
+	// set the global providers for OTEL
+	otel.SetTracerProvider(tracingProvider)
 	otel.SetMeterProvider(meterProvider)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
 	))
+
+	return &Provider{
+		config:            config,
+		tracerProvider:    tracingProvider,
+		meterProvider:     meterProvider,
+		prometheusHandler: telemetryProviders.PrometheusHandler(),
+		shutdown:          telemetryProviders.Shutdown,
+	}, nil
 }
 
 // Middleware returns an HTTP middleware that instruments requests with OpenTelemetry.
@@ -141,4 +162,14 @@ func (p *Provider) MeterProvider() metric.MeterProvider {
 // Returns nil if no metrics port is configured.
 func (p *Provider) PrometheusHandler() http.Handler {
 	return p.prometheusHandler
+}
+
+// validateOtelConfig validates the otel configuration
+func validateOtelConfig(config Config) error {
+	// If OTLP endpoint is configured but both tracing and metrics are disabled, that's an error
+	if config.Endpoint != "" && !config.TracingEnabled && !config.MetricsEnabled {
+		return fmt.Errorf("OTLP endpoint is configured but both tracing and metrics are disabled; " +
+			"either enable tracing or metrics, or remove the endpoint")
+	}
+	return nil
 }

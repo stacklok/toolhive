@@ -2,6 +2,16 @@ apiVersion: v1
 entries:
   toolhive-operator:
   - apiVersion: v2
+    appVersion: 0.2.9
+    created: "2025-09-05T20:33:55.938204079Z"
+    description: A Helm chart for deploying the ToolHive Operator into Kubernetes.
+    digest: 8637dbdf7ac222cd8968cffaade63c76dc5e2515d6d42d5ce5f4b787572e984b
+    name: toolhive-operator
+    type: application
+    urls:
+    - https://github.com/stacklok/toolhive/releases/download/toolhive-operator-0.2.8/toolhive-operator-0.2.8.tgz
+    version: 0.2.8
+  - apiVersion: v2
     appVersion: 0.2.8
     created: "2025-08-19T19:05:56.396558665Z"
     description: A Helm chart for deploying the ToolHive Operator into Kubernetes.
@@ -232,4 +242,4 @@ entries:
     urls:
     - https://github.com/stacklok/toolhive/releases/download/toolhive-operator-crds-0.0.7/toolhive-operator-crds-0.0.7.tgz
     version: 0.0.7
-generated: "2025-09-05T13:34:35.414265906Z"
+generated: "2025-09-05T20:33:55.938280561Z"

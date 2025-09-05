@@ -45,3 +45,23 @@ func createTraceExporter(ctx context.Context, config Config) (sdktrace.SpanExpor
 
 	return otlptracehttp.New(ctx, opts...)
 }
+
+// NewTracerProviderWithShutdown creates an OTLP tracer provider with a shutdown function
+func NewTracerProviderWithShutdown(
+	ctx context.Context,
+	config Config,
+	res *resource.Resource,
+) (trace.TracerProvider, func(context.Context) error, error) {
+	provider, err := NewTracerProvider(ctx, config, res)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Create shutdown function if it's an SDK provider
+	var shutdown func(context.Context) error
+	if sdkProvider, ok := provider.(*sdktrace.TracerProvider); ok {
+		shutdown = sdkProvider.Shutdown
+	}
+
+	return provider, shutdown, nil
+}

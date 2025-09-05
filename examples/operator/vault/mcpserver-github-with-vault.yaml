@@ -1,0 +1,33 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-vault-generic
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/github/github-mcp-server:latest
+  transport: stdio
+  port: 9095
+  permissionProfile:
+    type: builtin
+    name: network
+  resources:
+    limits:
+      cpu: '100m'
+      memory: '128Mi'
+    requests:
+      cpu: '50m'
+      memory: '64Mi'
+  resourceOverrides:
+    proxyDeployment:
+      podTemplateMetadataOverrides:
+        annotations:
+          # Enable Vault Agent injection
+          vault.hashicorp.com/agent-inject: "true"
+          vault.hashicorp.com/role: "toolhive-mcp-workloads"
+
+          # Inject GitHub configuration secret
+          vault.hashicorp.com/agent-inject-secret-github-config: "workload-secrets/data/github-mcp/config"
+          vault.hashicorp.com/agent-inject-template-github-config: |
+            {{- with secret "workload-secrets/data/github-mcp/config" -}}
+            GITHUB_PERSONAL_ACCESS_TOKEN={{ .Data.data.token }}
+            {{- end -}}

@@ -5,6 +5,8 @@ import (
 )
 
 // Provider defines the interface for configuration operations
+//
+//go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=interface.go Provider
 type Provider interface {
 	GetConfig() *Config
 	UpdateConfig(updateFn func(*Config)) error

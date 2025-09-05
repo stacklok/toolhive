@@ -1,0 +1,10 @@
+coverage:
+  ignore:
+    - "cmd/"
+    - "containers/egress-proxy"
+    - "docs/"
+    - "examples/"
+    - "hack"
+    - "test/e2e"
+    - "deploy"
+    - "**/mocks/"

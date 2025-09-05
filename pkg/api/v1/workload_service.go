@@ -66,6 +66,9 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 
 	if req.URL != "" {
 		// Configure remote authentication if OAuth config is provided
+		if req.Transport == "" {
+			req.Transport = types.TransportTypeStreamableHTTP.String()
+		}
 		remoteAuthConfig, err = s.createRequestToRemoteAuthConfig(ctx, req)
 		if err != nil {
 			return nil, err

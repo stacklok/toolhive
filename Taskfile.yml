@@ -12,7 +12,7 @@ tasks:
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
-      - swag init -g ./pkg/api/server.go --v3.1 -o docs/server
+      - swag init -g pkg/api/server.go --v3.1 -o docs/server
 
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation

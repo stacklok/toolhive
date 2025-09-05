@@ -1361,9 +1361,6 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 // addEgressEnvVars adds environment variables for egress proxy configuration.
 func addEgressEnvVars(envVars map[string]string, egressContainerName string) map[string]string {
 	egressHost := fmt.Sprintf("http://%s:3128", egressContainerName)
-	if envVars == nil {
-		envVars = make(map[string]string)
-	}
 	envVars["HTTP_PROXY"] = egressHost
 	envVars["HTTPS_PROXY"] = egressHost
 	envVars["http_proxy"] = egressHost

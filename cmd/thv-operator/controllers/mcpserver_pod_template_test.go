@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
@@ -320,13 +321,21 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
-	// Create a reconciler with the scheme
+	// Create a fake client with the scheme
+	fakeClient := fake.NewClientBuilder().WithScheme(s).Build()
+
+	// Create a reconciler with the scheme and client
 	r := &MCPServerReconciler{
+		Client: fakeClient,
 		Scheme: s,
 	}
 
-	// Generate the deployment
+	// Create the RunConfig ConfigMap that would normally be created by ensureRunConfigConfigMap
 	ctx := context.Background()
+	err := r.ensureRunConfigConfigMap(ctx, mcpServer)
+	require.NoError(t, err, "Failed to create RunConfig ConfigMap")
+
+	// Generate the deployment
 	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
@@ -339,19 +348,18 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 		assert.NotEqual(t, "DEBUG_MODE", env.Name, "DEBUG_MODE should not be set as container env var")
 	}
 
-	// Verify that the environment variables are passed as --env flags in the args
-	apiKeyArgFound := false
-	debugModeArgFound := false
+	// Verify that the configuration uses --from-configmap instead of individual --env flags
+	// The container should now use --from-configmap to load RunConfig from ConfigMap
+	require.True(t, len(container.Args) >= 4, "Container should have at least run, image, --from-configmap, namespace/name")
+	assert.Equal(t, "run", container.Args[0], "First argument should be 'run'")
+	assert.Equal(t, "test-image:latest", container.Args[1], "Second argument should be the image")
+	assert.Equal(t, "--from-configmap", container.Args[2], "Third argument should be '--from-configmap'")
+	assert.Equal(t, "default/test-mcp-server-env-runconfig", container.Args[3], "Fourth argument should be the ConfigMap reference")
+
+	// Verify there are no individual --env flags since we're using ConfigMap
 	for _, arg := range container.Args {
-		if arg == "--env=API_KEY=secret-key-123" {
-			apiKeyArgFound = true
-		}
-		if arg == "--env=DEBUG_MODE=true" {
-			debugModeArgFound = true
-		}
+		assert.NotEqual(t, "--env", arg, "Should not have individual --env flags when using --from-configmap")
 	}
-	assert.True(t, apiKeyArgFound, "API_KEY should be passed as --env flag")
-	assert.True(t, debugModeArgFound, "DEBUG_MODE should be passed as --env flag")
 }
 
 func TestProxyRunnerSecurityContext(t *testing.T) {

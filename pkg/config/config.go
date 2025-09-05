@@ -4,23 +4,15 @@ package config
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"path"
-	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/env"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
-
-// lockTimeout is the maximum time to wait for a file lock
-const lockTimeout = 1 * time.Second
 
 // Config represents the configuration of the application.
 type Config struct {
@@ -140,66 +132,26 @@ func applyBackwardCompatibility(config *Config) error {
 // LoadOrCreateConfig fetches the application configuration.
 // If it does not already exist - it will create a new config file with default values.
 func LoadOrCreateConfig() (*Config, error) {
-	return LoadOrCreateConfigWithPath("")
+	store, err := NewConfigStore()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create config store: %w", err)
+	}
+
+	ctx := context.Background()
+	return store.Load(ctx)
 }
 
 // LoadOrCreateConfigWithPath fetches the application configuration from a specific path.
 // If configPath is empty, it uses the default path.
 // If it does not already exist - it will create a new config file with default values.
 func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
-	var config Config
-	var err error
-
-	if configPath == "" {
-		configPath, err = getConfigPath()
-		if err != nil {
-			return nil, fmt.Errorf("unable to fetch config path: %w", err)
-		}
-	}
-
-	// Check to see if the config file already exists.
-	configPath = path.Clean(configPath)
-	newConfig := false
-	// #nosec G304: File path is not configurable at this time.
-	_, err = os.Stat(configPath)
+	store, err := NewConfigStoreWithDetector(configPath, nil)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			newConfig = true
-		} else {
-			return nil, fmt.Errorf("failed to stat secrets file: %w", err)
-		}
+		return nil, fmt.Errorf("failed to create config store: %w", err)
 	}
 
-	if newConfig {
-		// Create a new config with default values.
-		config = createNewConfigWithDefaults()
-
-		// Persist the new default to disk using the specific path
-		logger.Debugf("initializing configuration file at %s", configPath)
-		err = config.saveToPath(configPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to write default config: %w", err)
-		}
-	} else {
-		// Load the existing config and decode.
-		// #nosec G304: File path is not configurable at this time.
-		configFile, err := os.ReadFile(configPath)
-		if err != nil {
-			return nil, fmt.Errorf("unable to read config file %s: %w", configPath, err)
-		}
-		err = yaml.Unmarshal(configFile, &config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse config file yaml: %w", err)
-		}
-
-		// Apply backward compatibility fixes
-		err = applyBackwardCompatibility(&config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to apply backward compatibility fixes: %w", err)
-		}
-	}
-
-	return &config, nil
+	ctx := context.Background()
+	return store.Load(ctx)
 }
 
 // Save serializes the config struct and writes it to disk.
@@ -230,57 +182,58 @@ func (c *Config) saveToPath(configPath string) error {
 	return nil
 }
 
-// UpdateConfig locks a separate lock file, reads from disk, applies the changes
-// from the anonymous function, writes to disk and unlocks the file.
+// UpdateConfig loads config from appropriate store, applies changes, and saves back
 func UpdateConfig(updateFn func(*Config)) error {
-	return UpdateConfigAtPath("", updateFn)
+	return UpdateConfigWithStore(nil, updateFn)
 }
 
-// UpdateConfigAtPath locks a separate lock file, reads from disk, applies the changes
-// from the anonymous function, writes to disk and unlocks the file.
-// If configPath is empty, it uses the default path.
-func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
-	if configPath == "" {
-		var err error
-		configPath, err = getConfigPath()
+// UpdateConfigWithStore uses the provided store or creates a new one to update config
+func UpdateConfigWithStore(store Store, updateFn func(*Config)) error {
+	var err error
+	if store == nil {
+		store, err = NewConfigStore()
 		if err != nil {
-			return fmt.Errorf("unable to fetch config path: %w", err)
+			return fmt.Errorf("failed to create config store: %w", err)
 		}
 	}
 
-	// Use a separate lock file for cross-platform compatibility
-	lockPath := configPath + ".lock"
-	fileLock := flock.New(lockPath)
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
-	defer cancel()
+	ctx := context.Background()
 
-	// Try and acquire a file lock.
-	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	// Load current config
+	config, err := store.Load(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !locked {
-		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
-	}
-	defer fileLock.Unlock()
-
-	// Load the config after acquiring the lock to avoid race conditions
-	c, err := LoadOrCreateConfigWithPath(configPath)
-	if err != nil {
-		return fmt.Errorf("failed to load config from disk: %w", err)
+		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Apply changes to the config file.
-	updateFn(c)
+	// Apply changes
+	updateFn(config)
 
-	// Write the updated config to disk.
-	err = c.saveToPath(configPath)
+	// Save updated config
+	err = store.Save(ctx, config)
 	if err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
-	// Lock is released automatically when the function returns.
+	// Update singleton cache if this is the current config
+	if appConfig != nil {
+		lock.Lock()
+		appConfig = config
+		lock.Unlock()
+	}
+
 	return nil
+}
+
+// UpdateConfigAtPath loads config using appropriate store, applies changes, and saves back
+// If configPath is empty, it uses the default path.
+func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
+	store, err := NewConfigStoreWithDetector(configPath, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create config store: %w", err)
+	}
+
+	ctx := context.Background()
+	return store.Update(ctx, updateFn)
 }
 
 // OpenTelemetryConfig contains the settings for OpenTelemetry configuration.

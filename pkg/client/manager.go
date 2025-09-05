@@ -197,7 +197,7 @@ func (m *defaultManager) RemoveServerFromClients(ctx context.Context, serverName
 
 	// Remove the server from each target client
 	for _, clientName := range targetClients {
-		if err := m.removeServerFromClient(MCPClient(clientName), serverName); err != nil && err != ErrConfigFileNotFound {
+		if err := m.removeServerFromClient(MCPClient(clientName), serverName); err != nil && !errors.Is(err, ErrConfigFileNotFound) {
 			logger.Warnf("Warning: Failed to remove server from client %s: %v", clientName, err)
 		}
 	}

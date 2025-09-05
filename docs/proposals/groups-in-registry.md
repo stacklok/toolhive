@@ -64,4 +64,4 @@ thv group run mobile-app-team-toolkit --secret k8s_token,target=k8s.TOKEN --secr
 SMEs at companies will create specific groups for teams working on particular products or projects.
 
 ## Out of Scope / Future Considerations
-- Referencing servers within groups by name. In this proposal, all servers must be fully defined within the group. This avoids the complexity around refencing servers across registries, handling invalid references and override logic.
+- Referencing servers within groups by name. In this proposal, all servers must be fully defined within the group. This avoids the complexity around referencing servers across registries, handling invalid references and override logic.

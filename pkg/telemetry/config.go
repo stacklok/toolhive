@@ -90,7 +90,6 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 		return nil, err
 	}
 
-	// Use the new factory pattern
 	telemetryConfig := providers.Config{
 		ServiceName:                 config.ServiceName,
 		ServiceVersion:              config.ServiceVersion,
@@ -103,9 +102,9 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 		EnablePrometheusMetricsPath: config.EnablePrometheusMetricsPath,
 	}
 
-	telemetryProviders, err := providers.WithConfig(telemetryConfig).Build(ctx)
+	telemetryProviders, err := providers.WithConfig(telemetryConfig).Assemble(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build telemetry providers: %w", err)
+		return nil, fmt.Errorf("failed to assemble telemetry providers: %w", err)
 	}
 
 	return setGlobalProvidersAndReturn(telemetryProviders, config)

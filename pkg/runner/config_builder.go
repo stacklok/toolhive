@@ -303,6 +303,8 @@ func (b *RunConfigBuilder) WithTelemetryConfig(otelEndpoint string, otelEnablePr
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 serviceName,
 		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+		TracingEnabled:              true, // Default to enabled when telemetry is configured
+		MetricsEnabled:              true, // Default to enabled when telemetry is configured
 		SamplingRate:                otelSamplingRate,
 		Headers:                     headers,
 		Insecure:                    otelInsecure,

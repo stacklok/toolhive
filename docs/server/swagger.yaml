@@ -878,8 +878,16 @@ components:
           description: Insecure indicates whether to use HTTP instead of HTTPS for
             the OTLP endpoint
           type: boolean
+        metricsEnabled:
+          description: |-
+            MetricsEnabled controls whether OTLP metrics are enabled
+            When false, OTLP metrics are not sent even if an endpoint is configured
+            This is independent of EnablePrometheusMetricsPath
+          type: boolean
         samplingRate:
-          description: SamplingRate is the trace sampling rate (0.0-1.0)
+          description: |-
+            SamplingRate is the trace sampling rate (0.0-1.0)
+            Only used when TracingEnabled is true
           type: number
         serviceName:
           description: ServiceName is the service name for telemetry
@@ -887,6 +895,11 @@ components:
         serviceVersion:
           description: ServiceVersion is the service version for telemetry
           type: string
+        tracingEnabled:
+          description: |-
+            TracingEnabled controls whether distributed tracing is enabled
+            When false, no tracer provider is created even if an endpoint is configured
+          type: boolean
       type: object
     types.MiddlewareConfig:
       properties:

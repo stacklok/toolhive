@@ -38,18 +38,46 @@ grafana:
     datasources:
       enabled: true
       defaultDatasourceEnabled: true
+  
+  # Additional data sources configuration
+  additionalDataSources:
+    - name: Jaeger
+      type: jaeger
+      access: proxy
+      url: http://jaeger-all-in-one-jaeger.monitoring:16686
+      isDefault: false
+      version: 1
+      editable: true
+      jsonData:
+        httpMethod: GET
+        # Enable node graph for service dependencies visualization
+        nodeGraph:
+          enabled: true
+        # Enable trace to logs correlation (if loki is available)
+        tracesToLogs:
+          datasourceUid: 'loki'  # Optional: configure if Loki is available
+          tags: ['job', 'instance', 'pod', 'namespace']
+          mappedTags: [
+            { key: 'service.name', value: 'service' },
+            { key: 'service.namespace', value: 'namespace' }
+          ]
+          mapTagNamesEnabled: true
+          spanStartTimeShift: '1h'
+          spanEndTimeShift: '1h'
+        # Enable trace to metrics correlation
+        tracesToMetrics:
+          datasourceUid: 'prometheus'  # Link to Prometheus datasource
+          tags: [
+            { key: 'service.name', value: 'service' },
+            { key: 'service.namespace', value: 'namespace' }
+          ]
+          queries:
+            - name: 'Sample query'
+              query: 'sum(rate(traces_spanmetrics_latency_bucket{service="$service"}[5m]))'
 
 # AlertManager configuration (optional)
 alertmanager:
-  enabled: true
-  alertmanagerSpec:
-    resources:
-      requests:
-        memory: "200Mi"
-        cpu: "100m"
-      limits:
-        memory: "500Mi"
-        cpu: "500m"
+  enabled: false
 
 # Node Exporter configuration (optional)
 nodeExporter:

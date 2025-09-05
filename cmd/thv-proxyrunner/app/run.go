@@ -191,10 +191,14 @@ func init() {
 		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
 	runCmd.Flags().BoolVar(&runOtelInsecure, "otel-insecure", false,
 		"Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS")
-	runCmd.Flags().BoolVar(&enablePrometheusMetricsPath, "enable-prometheus-metrics-path", false,
-		"Enable Prometheus-style /metrics endpoint on the main transport port")
+	runCmd.Flags().BoolVar(&runOtelTracingEnabled, "otel-tracing-enabled", false,
+		"Enable distributed tracing (when OTLP endpoint is configured)")
+	runCmd.Flags().BoolVar(&runOtelMetricsEnabled, "otel-metrics-enabled", false,
+		"Enable OTLP metrics export (when OTLP endpoint is configured)")
 	runCmd.Flags().Float64Var(&runOtelTracingSamplingRate, "otel-tracing-sampling-rate", 0.0,
 		"OpenTelemetry trace sampling rate (0.0-1.0)")
+	runCmd.Flags().BoolVar(&enablePrometheusMetricsPath, "enable-prometheus-metrics-path", false,
+		"Enable Prometheus-style /metrics endpoint on the main transport port")
 	runCmd.Flags().BoolVar(&runIsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
 	runCmd.Flags().StringArrayVar(

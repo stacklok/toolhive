@@ -8,4 +8,4 @@ package inspector
 // TODO: https://github.com/modelcontextprotocol/inspector/issues/237
 // Pinning to a specific version for stability. The latest version
 // as of 2025-07-09 broke the inspector command.
-var Image = "npx://@modelcontextprotocol/inspector@0.15.0"
+var Image = "npx://@modelcontextprotocol/inspector@0.16.6"

@@ -73,6 +73,8 @@ var (
 	runOtelEndpoint             string
 	runOtelServiceName          string
 	runOtelHeaders              []string
+	runOtelTracingEnabled       bool
+	runOtelMetricsEnabled       bool
 	runOtelInsecure             bool
 	runOtelTracingSamplingRate  float64
 	enablePrometheusMetricsPath bool
@@ -281,8 +283,9 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		WithAuditEnabled(runEnableAudit, runAuditConfig).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
 			runThvCABundle, runJWKSAuthTokenFile, runResourceURL, runJWKSAllowPrivateIP).
-		WithTelemetryConfig(runOtelEndpoint, enablePrometheusMetricsPath, runOtelServiceName,
-			runOtelTracingSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
+		WithTelemetryConfig(runOtelEndpoint, enablePrometheusMetricsPath, runOtelTracingEnabled,
+			runOtelMetricsEnabled, runOtelServiceName, runOtelTracingSamplingRate,
+			runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
 		WithToolsFilter(runToolsFilter)
 
 	// Process environment files

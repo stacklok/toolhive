@@ -264,7 +264,8 @@ func (b *RunConfigBuilder) WithOIDCConfig(
 
 // WithTelemetryConfig configures telemetry settings
 func (b *RunConfigBuilder) WithTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
-	otelServiceName string, otelSamplingRate float64, otelHeaders []string, otelInsecure bool,
+	otelTracingEnabled bool, otelMetricsEnabled bool, otelServiceName string, otelSamplingRate float64,
+	otelHeaders []string, otelInsecure bool,
 	otelEnvironmentVariables []string) *RunConfigBuilder {
 
 	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
@@ -303,8 +304,8 @@ func (b *RunConfigBuilder) WithTelemetryConfig(otelEndpoint string, otelEnablePr
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 serviceName,
 		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
-		TracingEnabled:              true, // Default to enabled when telemetry is configured
-		MetricsEnabled:              true, // Default to enabled when telemetry is configured
+		TracingEnabled:              otelTracingEnabled,
+		MetricsEnabled:              otelMetricsEnabled,
 		SamplingRate:                otelSamplingRate,
 		Headers:                     headers,
 		Insecure:                    otelInsecure,

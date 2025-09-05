@@ -108,6 +108,7 @@ type workloadStatusFile struct {
 	StatusContext string            `json:"status_context,omitempty"`
 	CreatedAt     time.Time         `json:"created_at"`
 	UpdatedAt     time.Time         `json:"updated_at"`
+	ProcessID     int               `json:"process_id"`
 }
 
 // GetWorkload retrieves the status of a workload by its name.
@@ -210,12 +211,14 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 	return workloads, nil
 }
 
-// SetWorkloadStatus sets the status of a workload by its name.
-func (f *fileStatusManager) SetWorkloadStatus(
+// setWorkloadStatusInternal handles the core logic for updating workload status files.
+// pidPtr controls PID behavior: nil means preserve existing PID, non-nil means set to provided value.
+func (f *fileStatusManager) setWorkloadStatusInternal(
 	ctx context.Context,
 	workloadName string,
 	status rt.WorkloadStatus,
 	contextMsg string,
+	pidPtr *int,
 ) error {
 	err := f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
 		// Check if file exists
@@ -231,7 +234,7 @@ func (f *fileStatusManager) SetWorkloadStatus(
 		now := time.Now()
 
 		if fileExists {
-			// Read existing file to preserve created_at timestamp
+			// Read existing file to preserve created_at timestamp and other fields
 			statusFile, err = f.readStatusFile(statusFilePath)
 			if err != nil {
 				return fmt.Errorf("failed to read existing status for workload %s: %w", workloadName, err)
@@ -243,23 +246,47 @@ func (f *fileStatusManager) SetWorkloadStatus(
 			}
 		}
 
-		// Update status and context
+		// Update status, context, and optionally PID
 		statusFile.Status = status
 		statusFile.StatusContext = contextMsg
 		statusFile.UpdatedAt = now
+
+		// Only update PID if pidPtr is provided
+		if pidPtr != nil {
+			statusFile.ProcessID = *pidPtr
+		}
 
 		if err = f.writeStatusFile(statusFilePath, *statusFile); err != nil {
 			return fmt.Errorf("failed to write updated status for workload %s: %w", workloadName, err)
 		}
 
-		logger.Debugf("workload %s set to status %s (context: %s)", workloadName, status, contextMsg)
+		// Log with appropriate message based on whether PID was set
+		if pidPtr != nil {
+			logger.Debugf("workload %s set to status %s with PID %d (context: %s)", workloadName, status, *pidPtr, contextMsg)
+		} else {
+			logger.Debugf("workload %s set to status %s (context: %s)", workloadName, status, contextMsg)
+		}
 		return nil
 	})
 
 	if err != nil {
-		logger.Errorf("error updating workload %s status: %v", workloadName, err)
+		if pidPtr != nil {
+			logger.Errorf("error updating workload %s status and PID: %v", workloadName, err)
+		} else {
+			logger.Errorf("error updating workload %s status: %v", workloadName, err)
+		}
 	}
 	return err
+}
+
+// SetWorkloadStatus sets the status of a workload by its name.
+func (f *fileStatusManager) SetWorkloadStatus(
+	ctx context.Context,
+	workloadName string,
+	status rt.WorkloadStatus,
+	contextMsg string,
+) error {
+	return f.setWorkloadStatusInternal(ctx, workloadName, status, contextMsg, nil)
 }
 
 // DeleteWorkloadStatus removes the status of a workload by its name.
@@ -274,6 +301,18 @@ func (f *fileStatusManager) DeleteWorkloadStatus(ctx context.Context, workloadNa
 		logger.Debugf("workload %s status deleted", workloadName)
 		return nil
 	})
+}
+
+// SetWorkloadStatusAndPID sets the status and PID of a workload by its name.
+// It otherwise behaves like SetWorkloadStatus.
+func (f *fileStatusManager) SetWorkloadStatusAndPID(
+	ctx context.Context,
+	workloadName string,
+	status rt.WorkloadStatus,
+	contextMsg string,
+	pid int,
+) error {
+	return f.setWorkloadStatusInternal(ctx, workloadName, status, contextMsg, &pid)
 }
 
 // getStatusFilePath returns the file path for a given workload's status file.

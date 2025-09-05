@@ -140,22 +140,36 @@ func applyBackwardCompatibility(config *Config) error {
 // LoadOrCreateConfig fetches the application configuration.
 // If it does not already exist - it will create a new config file with default values.
 func LoadOrCreateConfig() (*Config, error) {
-	return LoadOrCreateConfigWithPath("")
+	provider := NewProvider()
+	return provider.LoadOrCreateConfig()
+}
+
+// LoadOrCreateConfigWithDefaultPath is the internal implementation for loading config with the default path.
+// This avoids circular dependency issues.
+func LoadOrCreateConfigWithDefaultPath() (*Config, error) {
+	configPath, err := getConfigPath()
+	if err != nil {
+		return nil, fmt.Errorf("unable to fetch config path: %w", err)
+	}
+	return LoadOrCreateConfigFromPath(configPath)
 }
 
 // LoadOrCreateConfigWithPath fetches the application configuration from a specific path.
 // If configPath is empty, it uses the default path.
 // If it does not already exist - it will create a new config file with default values.
 func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
+	if configPath == "" {
+		// When no path is specified, use the provider pattern to handle runtime-specific behavior
+		return LoadOrCreateConfig()
+	}
+
+	return LoadOrCreateConfigFromPath(configPath)
+}
+
+// LoadOrCreateConfigFromPath is the core implementation for loading/creating config from a specific path
+func LoadOrCreateConfigFromPath(configPath string) (*Config, error) {
 	var config Config
 	var err error
-
-	if configPath == "" {
-		configPath, err = getConfigPath()
-		if err != nil {
-			return nil, fmt.Errorf("unable to fetch config path: %w", err)
-		}
-	}
 
 	// Check to see if the config file already exists.
 	configPath = path.Clean(configPath)
@@ -233,7 +247,8 @@ func (c *Config) saveToPath(configPath string) error {
 // UpdateConfig locks a separate lock file, reads from disk, applies the changes
 // from the anonymous function, writes to disk and unlocks the file.
 func UpdateConfig(updateFn func(*Config)) error {
-	return UpdateConfigAtPath("", updateFn)
+	provider := NewProvider()
+	return provider.UpdateConfig(updateFn)
 }
 
 // UpdateConfigAtPath locks a separate lock file, reads from disk, applies the changes

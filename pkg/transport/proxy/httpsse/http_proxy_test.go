@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
@@ -30,7 +31,7 @@ func TestNewHTTPSSEProxy(t *testing.T) {
 	assert.Equal(t, 8080, proxy.port)
 	assert.Equal(t, "test-container", proxy.containerName)
 	assert.NotNil(t, proxy.messageCh)
-	assert.NotNil(t, proxy.sseClients)
+	assert.NotNil(t, proxy.sessionManager)
 	assert.NotNil(t, proxy.closedClients)
 	assert.NotNil(t, proxy.healthChecker)
 }
@@ -94,24 +95,23 @@ func TestSendMessageToDestination_ChannelFull(t *testing.T) {
 func TestRemoveClient(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
 
-	// Create a client
+	// Create a client session
 	clientID := "test-client-1"
-	messageCh := make(chan string, 10)
-
-	proxy.sseClientsMutex.Lock()
-	proxy.sseClients[clientID] = &ssecommon.SSEClient{
-		MessageCh: messageCh,
+	clientInfo := &ssecommon.SSEClient{
+		MessageCh: make(chan string, 10),
 		CreatedAt: time.Now(),
 	}
-	proxy.sseClientsMutex.Unlock()
+
+	// Add session to manager
+	sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
+	err := proxy.sessionManager.AddSession(sseSession)
+	require.NoError(t, err)
 
 	// Remove the client once
 	proxy.removeClient(clientID)
 
-	// Verify client was removed
-	proxy.sseClientsMutex.RLock()
-	_, exists := proxy.sseClients[clientID]
-	proxy.sseClientsMutex.RUnlock()
+	// Verify client was removed from session manager
+	_, exists := proxy.sessionManager.Get(clientID)
 	assert.False(t, exists)
 
 	// Verify client is marked as closed
@@ -132,18 +132,19 @@ func TestRemoveClient(t *testing.T) {
 func TestConcurrentClientRemoval(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
 
-	// Create multiple clients
+	// Create multiple client sessions
 	numClients := 100
 	for i := 0; i < numClients; i++ {
 		clientID := fmt.Sprintf("client-%d", i)
-		messageCh := make(chan string, 10)
-
-		proxy.sseClientsMutex.Lock()
-		proxy.sseClients[clientID] = &ssecommon.SSEClient{
-			MessageCh: messageCh,
+		clientInfo := &ssecommon.SSEClient{
+			MessageCh: make(chan string, 10),
 			CreatedAt: time.Now(),
 		}
-		proxy.sseClientsMutex.Unlock()
+
+		// Add session to manager
+		sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
+		err := proxy.sessionManager.AddSession(sseSession)
+		require.NoError(t, err)
 	}
 
 	// Concurrently remove all clients from multiple goroutines
@@ -170,9 +171,7 @@ func TestConcurrentClientRemoval(t *testing.T) {
 	})
 
 	// Verify all clients are removed
-	proxy.sseClientsMutex.RLock()
-	assert.Empty(t, proxy.sseClients)
-	proxy.sseClientsMutex.RUnlock()
+	assert.Equal(t, 0, proxy.sessionManager.Count())
 }
 
 // TestForwardResponseToClients tests forwarding responses to connected clients
@@ -182,16 +181,18 @@ func TestForwardResponseToClients(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
 	ctx := context.Background()
 
-	// Create a client
+	// Create a client session
 	clientID := testClientID
 	messageCh := make(chan string, 10)
-
-	proxy.sseClientsMutex.Lock()
-	proxy.sseClients[clientID] = &ssecommon.SSEClient{
+	clientInfo := &ssecommon.SSEClient{
 		MessageCh: messageCh,
 		CreatedAt: time.Now(),
 	}
-	proxy.sseClientsMutex.Unlock()
+
+	// Add session to manager
+	sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
+	err := proxy.sessionManager.AddSession(sseSession)
+	require.NoError(t, err)
 
 	// Create a test response
 	response, err := jsonrpc2.NewResponse(jsonrpc2.StringID("test"), "test result", nil)
@@ -238,30 +239,30 @@ func TestForwardResponseToClients_NoClients(t *testing.T) {
 func TestSendSSEEvent_ChannelFull(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
 
-	// Create a client with a small buffer
+	// Create a client session with a small buffer
 	clientID := testClientID
 	messageCh := make(chan string, 1)
-
-	proxy.sseClientsMutex.Lock()
-	proxy.sseClients[clientID] = &ssecommon.SSEClient{
+	clientInfo := &ssecommon.SSEClient{
 		MessageCh: messageCh,
 		CreatedAt: time.Now(),
 	}
-	proxy.sseClientsMutex.Unlock()
+
+	// Add session to manager
+	sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
+	err := proxy.sessionManager.AddSession(sseSession)
+	require.NoError(t, err)
 
 	// Fill the channel
 	messageCh <- "blocking message"
 
 	// Try to send another message
 	msg := ssecommon.NewSSEMessage("test", "test data")
-	err := proxy.sendSSEEvent(msg)
-	assert.NoError(t, err)
+	err2 := proxy.sendSSEEvent(msg)
+	assert.NoError(t, err2)
 
 	// In the improved implementation, we don't remove clients with full channels
 	// We just skip sending to them and let the disconnect monitor handle cleanup
-	proxy.sseClientsMutex.RLock()
-	_, exists := proxy.sseClients[clientID]
-	proxy.sseClientsMutex.RUnlock()
+	_, exists := proxy.sessionManager.Get(clientID)
 	assert.True(t, exists, "Client should still exist even with full channel")
 
 	// Clean up
@@ -322,10 +323,7 @@ func TestHandleSSEConnection(t *testing.T) {
 
 	// Verify a client was registered
 	time.Sleep(100 * time.Millisecond) // Give time for registration
-	proxy.sseClientsMutex.RLock()
-	numClients := len(proxy.sseClients)
-	proxy.sseClientsMutex.RUnlock()
-	assert.Equal(t, 1, numClients)
+	assert.Equal(t, 1, proxy.sessionManager.Count())
 }
 
 // TestHandlePostRequest tests handling of POST requests
@@ -334,16 +332,17 @@ func TestHandleSSEConnection(t *testing.T) {
 func TestHandlePostRequest(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
 
-	// Create a client
+	// Create a client session
 	sessionID := "test-session"
-	messageCh := make(chan string, 10)
-
-	proxy.sseClientsMutex.Lock()
-	proxy.sseClients[sessionID] = &ssecommon.SSEClient{
-		MessageCh: messageCh,
+	clientInfo := &ssecommon.SSEClient{
+		MessageCh: make(chan string, 10),
 		CreatedAt: time.Now(),
 	}
-	proxy.sseClientsMutex.Unlock()
+
+	// Add session to manager
+	sseSession := session.NewSSESessionWithClient(sessionID, clientInfo)
+	err := proxy.sessionManager.AddSession(sseSession)
+	require.NoError(t, err)
 
 	// Create a valid JSON-RPC message
 	msg, err := jsonrpc2.NewCall(jsonrpc2.StringID("test"), "test.method", nil)
@@ -413,17 +412,18 @@ func TestHandlePostRequest_InvalidSession(t *testing.T) {
 func TestRWMutexUsage(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
 
-	// Add multiple clients
+	// Add multiple client sessions
 	for i := 0; i < 10; i++ {
 		clientID := fmt.Sprintf("client-%d", i)
-		messageCh := make(chan string, 10)
-
-		proxy.sseClientsMutex.Lock()
-		proxy.sseClients[clientID] = &ssecommon.SSEClient{
-			MessageCh: messageCh,
+		clientInfo := &ssecommon.SSEClient{
+			MessageCh: make(chan string, 10),
 			CreatedAt: time.Now(),
 		}
-		proxy.sseClientsMutex.Unlock()
+
+		// Add session to manager
+		sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
+		err := proxy.sessionManager.AddSession(sseSession)
+		require.NoError(t, err)
 	}
 
 	// Test concurrent reads (should not block each other)
@@ -434,10 +434,8 @@ func TestRWMutexUsage(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			proxy.sseClientsMutex.RLock()
-			_ = len(proxy.sseClients)
+			_ = proxy.sessionManager.Count()
 			time.Sleep(10 * time.Millisecond) // Simulate some work
-			proxy.sseClientsMutex.RUnlock()
 		}()
 	}
 
@@ -455,17 +453,18 @@ func TestRWMutexUsage(t *testing.T) {
 func TestClosedClientsCleanup(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
 
-	// Add many closed clients to trigger cleanup
+	// Add many closed client sessions to trigger cleanup
 	for i := 0; i < 1100; i++ {
 		clientID := fmt.Sprintf("client-%d", i)
-		messageCh := make(chan string, 1)
-
-		proxy.sseClientsMutex.Lock()
-		proxy.sseClients[clientID] = &ssecommon.SSEClient{
-			MessageCh: messageCh,
+		clientInfo := &ssecommon.SSEClient{
+			MessageCh: make(chan string, 1),
 			CreatedAt: time.Now(),
 		}
-		proxy.sseClientsMutex.Unlock()
+
+		// Add session to manager
+		sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
+		err := proxy.sessionManager.AddSession(sseSession)
+		require.NoError(t, err)
 
 		// Remove the client
 		proxy.removeClient(clientID)

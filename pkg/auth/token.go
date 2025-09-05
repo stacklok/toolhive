@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,10 +18,307 @@ import (
 	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 
+	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/versions"
 )
+
+// TokenIntrospector defines the interface for token introspection providers
+type TokenIntrospector interface {
+	// Name returns the provider name
+	Name() string
+
+	// CanHandle returns true if this provider can handle the given introspection URL
+	CanHandle(introspectURL string) bool
+
+	// IntrospectToken introspects an opaque token and returns JWT claims
+	IntrospectToken(ctx context.Context, token string) (jwt.MapClaims, error)
+}
+
+// Registry maintains a list of available token introspection providers
+type Registry struct {
+	providers []TokenIntrospector
+}
+
+// NewRegistry creates a new provider registry
+func NewRegistry() *Registry {
+	return &Registry{
+		providers: []TokenIntrospector{},
+	}
+}
+
+// GetIntrospector returns the appropriate provider for the given introspection URL
+func (r *Registry) GetIntrospector(introspectURL string) TokenIntrospector {
+	for _, provider := range r.providers {
+		if provider.CanHandle(introspectURL) {
+			logger.Debugf("Selected provider for introspection: %s (url: %s)", provider.Name(), introspectURL)
+			return provider
+		}
+	}
+	// Create a new fallback provider instance with the specific URL
+	logger.Debugf("Using RFC7662 fallback provider for introspection: %s", introspectURL)
+	return NewRFC7662Provider(introspectURL)
+}
+
+// AddProvider adds a new provider to the registry
+func (r *Registry) AddProvider(provider TokenIntrospector) {
+	r.providers = append(r.providers, provider)
+}
+
+// GoogleTokeninfoURL is the Google OAuth2 tokeninfo endpoint URL
+const GoogleTokeninfoURL = "https://oauth2.googleapis.com/tokeninfo" //nolint:gosec
+
+// GoogleProvider implements token introspection for Google's tokeninfo API
+type GoogleProvider struct {
+	client *http.Client
+	url    string
+}
+
+// NewGoogleProvider creates a new Google token introspection provider
+func NewGoogleProvider(introspectURL string) *GoogleProvider {
+	return &GoogleProvider{
+		client: http.DefaultClient,
+		url:    introspectURL,
+	}
+}
+
+// Name returns the provider name
+func (*GoogleProvider) Name() string {
+	return "google"
+}
+
+// CanHandle returns true if this provider can handle the given introspection URL
+func (g *GoogleProvider) CanHandle(introspectURL string) bool {
+	return introspectURL == g.url
+}
+
+// IntrospectToken introspects a Google opaque token and returns JWT claims
+func (g *GoogleProvider) IntrospectToken(ctx context.Context, token string) (jwt.MapClaims, error) {
+	logger.Debugf("Using Google tokeninfo provider for token introspection: %s", g.url)
+
+	// Parse the URL and add query parameters
+	u, err := url.Parse(g.url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse introspection URL: %w", err)
+	}
+
+	// Add the access token as a query parameter
+	query := u.Query()
+	query.Set("access_token", token)
+	u.RawQuery = query.Encode()
+
+	// Create the GET request
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Google tokeninfo request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", oauth.UserAgent)
+
+	// Make the request
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("google tokeninfo request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the response with a reasonable limit to prevent DoS attacks
+	const maxResponseSize = 64 * 1024 // 64KB should be more than enough for tokeninfo response
+	limitedReader := io.LimitReader(resp.Body, maxResponseSize)
+	body, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Google tokeninfo response: %w", err)
+	}
+
+	// Check for HTTP errors
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("google tokeninfo request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse the Google response and convert to JWT claims
+	logger.Debugf("Successfully received Google tokeninfo response (status: %d)", resp.StatusCode)
+	return g.parseGoogleResponse(body)
+}
+
+// parseGoogleResponse parses Google's tokeninfo response and converts it to JWT claims
+func (*GoogleProvider) parseGoogleResponse(body []byte) (jwt.MapClaims, error) {
+	// Parse Google's response format
+	var googleResp struct {
+		// Standard OAuth fields
+		Aud   string `json:"aud,omitempty"`
+		Sub   string `json:"sub,omitempty"`
+		Scope string `json:"scope,omitempty"`
+
+		// Google returns Unix timestamp as string (RFC 7662 uses numeric)
+		Exp string `json:"exp,omitempty"`
+
+		// Google-specific fields
+		Azp           string `json:"azp,omitempty"`
+		ExpiresIn     string `json:"expires_in,omitempty"`
+		Email         string `json:"email,omitempty"`
+		EmailVerified string `json:"email_verified,omitempty"`
+	}
+
+	if err := json.Unmarshal(body, &googleResp); err != nil {
+		return nil, fmt.Errorf("failed to decode Google tokeninfo JSON: %w", err)
+	}
+
+	// Convert to JWT MapClaims format
+	claims := jwt.MapClaims{
+		"iss": "https://accounts.google.com", // Default Google issuer
+	}
+
+	// Copy standard fields
+	if googleResp.Sub != "" {
+		claims["sub"] = googleResp.Sub
+	}
+	if googleResp.Aud != "" {
+		claims["aud"] = googleResp.Aud
+	}
+	if googleResp.Scope != "" {
+		claims["scope"] = googleResp.Scope
+	}
+
+	// Handle expiration - convert string timestamp to float64
+	if googleResp.Exp != "" {
+		expInt, err := strconv.ParseInt(googleResp.Exp, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid exp format: %w", err)
+		}
+		claims["exp"] = float64(expInt) // JWT expects float64
+
+		// Check if token is expired and return error if so (consistent with RFC 7662 behavior)
+		isActive := time.Now().Unix() < expInt
+		claims["active"] = isActive
+		if !isActive {
+			return nil, ErrInvalidToken
+		}
+	} else {
+		return nil, fmt.Errorf("missing exp field in Google response")
+	}
+
+	// Copy Google-specific fields
+	if googleResp.Azp != "" {
+		claims["azp"] = googleResp.Azp
+	}
+	if googleResp.ExpiresIn != "" {
+		claims["expires_in"] = googleResp.ExpiresIn
+	}
+	if googleResp.Email != "" {
+		claims["email"] = googleResp.Email
+	}
+	if googleResp.EmailVerified != "" {
+		claims["email_verified"] = googleResp.EmailVerified
+	}
+
+	return claims, nil
+}
+
+// RFC7662Provider implements standard RFC 7662 OAuth 2.0 Token Introspection
+type RFC7662Provider struct {
+	client       *http.Client
+	clientID     string
+	clientSecret string
+	url          string
+}
+
+// NewRFC7662Provider creates a new RFC 7662 token introspection provider
+func NewRFC7662Provider(introspectURL string) *RFC7662Provider {
+	return &RFC7662Provider{
+		client: http.DefaultClient,
+		url:    introspectURL,
+	}
+}
+
+// NewRFC7662ProviderWithAuth creates a new RFC 7662 provider with client credentials
+func NewRFC7662ProviderWithAuth(
+	introspectURL, clientID, clientSecret, caCertPath, authTokenFile string, allowPrivateIP bool,
+) (*RFC7662Provider, error) {
+	// Create HTTP client with CA bundle and auth token support
+	client, err := networking.NewHttpClientBuilder().
+		WithCABundle(caCertPath).
+		WithTokenFromFile(authTokenFile).
+		WithPrivateIPs(allowPrivateIP).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+
+	return &RFC7662Provider{
+		client:       client,
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		url:          introspectURL,
+	}, nil
+}
+
+// Name returns the provider name
+func (*RFC7662Provider) Name() string {
+	return "rfc7662"
+}
+
+// CanHandle returns true if this provider can handle the given introspection URL
+// Returns true for any URL when no specific URL was configured (fallback behavior)
+// or when the URL matches the configured URL
+func (r *RFC7662Provider) CanHandle(introspectURL string) bool {
+	// If no URL was configured, this is a fallback provider that handles everything
+	if r.url == "" {
+		return true
+	}
+	// Otherwise, only handle the specific configured URL
+	return r.url == introspectURL
+}
+
+// IntrospectToken introspects a token using RFC 7662 standard
+func (r *RFC7662Provider) IntrospectToken(ctx context.Context, token string) (jwt.MapClaims, error) {
+	// Prepare form data for POST request
+	formData := url.Values{}
+	formData.Set("token", token)
+	formData.Set("token_type_hint", "access_token")
+
+	// Create POST request with form data
+	req, err := http.NewRequestWithContext(ctx, "POST", r.url, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create introspection request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", oauth.UserAgent)
+	req.Header.Set("Accept", "application/json")
+
+	// Add client authentication if configured
+	if r.clientID != "" && r.clientSecret != "" {
+		req.SetBasicAuth(r.clientID, r.clientSecret)
+	}
+
+	// Make the request
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("introspection request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body with a reasonable limit to prevent DoS attacks
+	const maxResponseSize = 64 * 1024 // 64KB should be more than enough for introspection response
+	limitedReader := io.LimitReader(resp.Body, maxResponseSize)
+	body, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read introspection response: %w", err)
+	}
+
+	// Check for HTTP errors
+	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, fmt.Errorf("introspection unauthorized")
+		}
+		return nil, fmt.Errorf("introspection failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse RFC 7662 response - use the existing parseIntrospectionClaims function
+	return parseIntrospectionClaims(strings.NewReader(string(body)))
+}
 
 // Common errors
 var (
@@ -58,6 +356,7 @@ type TokenValidator struct {
 	introspectURL string       // Optional introspection endpoint
 	client        *http.Client // HTTP client for making requests
 	resourceURL   string       // (RFC 9728)
+	registry      *Registry    // Token introspection providers
 
 	// Lazy JWKS registration
 	jwksRegistered      bool
@@ -117,7 +416,7 @@ func discoverOIDCConfiguration(
 	}
 
 	// Set User-Agent header
-	req.Header.Set("User-Agent", fmt.Sprintf("ToolHive/%s", versions.Version))
+	req.Header.Set("User-Agent", oauth.UserAgent)
 	req.Header.Set("Accept", "application/json")
 
 	// Create HTTP client with CA bundle and auth token support
@@ -209,6 +508,26 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 
 	// Skip synchronous JWKS registration - will be done lazily on first use
 
+	// Create provider registry with RFC7662 fallback
+	registry := NewRegistry()
+
+	// Add Google provider if the introspection URL matches
+	if config.IntrospectionURL == GoogleTokeninfoURL {
+		logger.Debugf("Registering Google tokeninfo provider: %s", config.IntrospectionURL)
+		registry.AddProvider(NewGoogleProvider(config.IntrospectionURL))
+	}
+
+	// Add RFC7662 provider with auth if configured
+	if config.ClientID != "" || config.ClientSecret != "" {
+		rfc7662Provider, err := NewRFC7662ProviderWithAuth(
+			config.IntrospectionURL, config.ClientID, config.ClientSecret, config.CACertPath, config.AuthTokenFile, config.AllowPrivateIP,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create RFC7662 provider: %w", err)
+		}
+		registry.AddProvider(rfc7662Provider)
+	}
+
 	return &TokenValidator{
 		issuer:        config.Issuer,
 		audience:      config.Audience,
@@ -219,6 +538,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		jwksClient:    cache,
 		client:        config.httpClient,
 		resourceURL:   config.ResourceURL,
+		registry:      registry,
 	}, nil
 }
 
@@ -372,48 +692,29 @@ func parseIntrospectionClaims(r io.Reader) (jwt.MapClaims, error) {
 	return claims, nil
 }
 
+// introspectOpaqueToken uses the provider pattern to introspect opaque tokens
 func (v *TokenValidator) introspectOpaqueToken(ctx context.Context, tokenStr string) (jwt.MapClaims, error) {
 	if v.introspectURL == "" {
 		return nil, fmt.Errorf("no introspection endpoint available")
 	}
-	form := url.Values{"token": {tokenStr}}
-	form.Set("token_type_hint", "access_token")
 
-	// Build POST request with encoding and required headers
-	req, err := http.NewRequestWithContext(ctx, "POST", v.introspectURL, strings.NewReader(form.Encode()))
+	// Find appropriate provider for the introspection URL
+	provider := v.registry.GetIntrospector(v.introspectURL)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider available for introspection URL: %s", v.introspectURL)
+	}
+
+	// Use provider to introspect the token
+	claims, err := provider.IntrospectToken(ctx, tokenStr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create introspection request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-
-	// if we have client id and secret, add them to the request
-	if v.clientID != "" && v.clientSecret != "" {
-		req.SetBasicAuth(v.clientID, v.clientSecret)
+		return nil, fmt.Errorf("%s introspection failed: %w", provider.Name(), err)
 	}
 
-	resp, err := v.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("introspection call failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("introspection unauthorized: %s", resp.Status)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("introspection failed, status %d", resp.StatusCode)
-	}
-
-	claims, err := parseIntrospectionClaims(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Validate required claims (e.g. exp)
+	// Validate required claims (exp, iss, aud if configured)
 	if err := v.validateClaims(claims); err != nil {
 		return nil, err
 	}
+
 	return claims, nil
 }
 

@@ -416,6 +416,7 @@ func buildRunnerConfig(
 	builder = builder.WithMiddlewareFromFlags(
 		oidcConfig,
 		runFlags.ToolsFilter,
+		nil,
 		telemetryConfig,
 		runFlags.AuthzConfig,
 		runFlags.EnableAudit,

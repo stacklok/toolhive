@@ -24,6 +24,7 @@ type WorkloadService struct {
 	secretsProvider  secrets.Provider
 	containerRuntime runtime.Runtime
 	debugMode        bool
+	imageRetriever   retriever.Retriever
 }
 
 // NewWorkloadService creates a new WorkloadService instance
@@ -40,6 +41,7 @@ func NewWorkloadService(
 		secretsProvider:  secretsProvider,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
+		imageRetriever:   retriever.GetMCPServer,
 	}
 }
 
@@ -76,7 +78,7 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 	} else {
 		var serverMetadata registry.ServerMetadata
 		// Fetch or build the requested image
-		imageURL, serverMetadata, err = retriever.GetMCPServer(
+		imageURL, serverMetadata, err = s.imageRetriever(
 			ctx,
 			req.Image,
 			"", // We do not let the user specify a CA cert path here.
@@ -113,7 +115,15 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 	// Build RunConfig
 	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
 
-	runConfig, err := runner.NewRunConfigBuilder().
+	toolsOverride := make(map[string]runner.ToolOverride)
+	for toolName, toolOverride := range req.ToolsOverride {
+		toolsOverride[toolName] = runner.ToolOverride{
+			Name:        toolOverride.Name,
+			Description: toolOverride.Description,
+		}
+	}
+
+	builder := runner.NewRunConfigBuilder().
 		WithRuntime(s.containerRuntime).
 		WithCmdArgs(req.CmdArguments).
 		WithName(req.Name).
@@ -138,8 +148,22 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 			"", "", "", "", "", false).
 		WithTelemetryConfig("", false, "", 0.0, nil, false, nil).
 		WithToolsFilter(req.ToolsFilter).
-		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
+		WithToolsOverride(toolsOverride)
 
+	// Configure middleware from flags
+	builder = builder.WithMiddlewareFromFlags(
+		nil,
+		req.ToolsFilter,
+		toolsOverride,
+		nil,
+		req.AuthzConfig,
+		false,
+		"",
+		req.Name,
+		req.Transport,
+	)
+
+	runConfig, err := builder.Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
 	if err != nil {
 		logger.Errorf("Failed to build run config: %v", err)
 		return nil, fmt.Errorf("%w: Failed to build run config: %v", retriever.ErrInvalidRunConfig, err)

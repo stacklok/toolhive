@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-02T00:17:21Z",
+  "last_updated": "2025-09-05T00:17:15Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -664,7 +664,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.10",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.11",
       "permissions": {
         "network": {
           "outbound": {
@@ -1027,9 +1027,9 @@
         "user_token_organization"
       ],
       "metadata": {
-        "stars": 31,
+        "stars": 34,
         "pulls": 3424,
-        "last_updated": "2025-08-22T09:42:42Z"
+        "last_updated": "2025-09-04T08:11:54Z"
       },
       "repository_url": "https://github.com/buildkite/buildkite-mcp-server",
       "tags": [
@@ -1491,9 +1491,9 @@
         "search"
       ],
       "metadata": {
-        "stars": 425,
+        "stars": 447,
         "pulls": 10995,
-        "last_updated": "2025-08-22T09:42:42Z"
+        "last_updated": "2025-09-04T08:11:55Z"
       },
       "repository_url": "https://github.com/elastic/mcp-server-elasticsearch",
       "tags": [
@@ -1582,9 +1582,9 @@
         "annotatedMessage"
       ],
       "metadata": {
-        "stars": 65278,
+        "stars": 66732,
         "pulls": 17019,
-        "last_updated": "2025-08-22T09:42:40Z"
+        "last_updated": "2025-09-04T02:27:25Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1715,9 +1715,9 @@
         "firecrawl_map"
       ],
       "metadata": {
-        "stars": 4264,
+        "stars": 4381,
         "pulls": 12644,
-        "last_updated": "2025-08-22T09:42:38Z"
+        "last_updated": "2025-09-02T02:31:26Z"
       },
       "repository_url": "https://github.com/mendableai/firecrawl-mcp-server",
       "tags": [
@@ -1847,9 +1847,9 @@
         "git_init"
       ],
       "metadata": {
-        "stars": 65278,
+        "stars": 66503,
         "pulls": 10404,
-        "last_updated": "2025-08-22T09:42:39Z"
+        "last_updated": "2025-09-02T02:31:27Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1968,9 +1968,9 @@
         "update_pull_request_branch"
       ],
       "metadata": {
-        "stars": 21509,
+        "stars": 22113,
         "pulls": 5000,
-        "last_updated": "2025-08-22T09:42:39Z"
+        "last_updated": "2025-09-02T02:31:28Z"
       },
       "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
@@ -1986,7 +1986,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.13.0",
+      "image": "ghcr.io/github/github-mcp-server:v0.14.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -2670,9 +2670,9 @@
         "get_error_log"
       ],
       "metadata": {
-        "stars": 162,
+        "stars": 170,
         "pulls": 17082,
-        "last_updated": "2025-08-22T09:42:42Z"
+        "last_updated": "2025-09-04T08:11:55Z"
       },
       "repository_url": "https://github.com/voska/hass-mcp",
       "tags": [
@@ -2985,7 +2985,7 @@
         "get",
         "list"
       ],
-      "image": "ghcr.io/stackloklabs/mkp/server:0.1.0",
+      "image": "ghcr.io/stackloklabs/mkp/server:0.2.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -3011,6 +3011,89 @@
         "cert_issuer": "https://token.actions.githubusercontent.com"
       }
     },
+    "kion": {
+      "description": "Integrate with a Kion.io instance for cloud management, FinOps, and governance",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "stdio",
+      "tools": [
+        "add_project_spend_plan_entries",
+        "allocate_funds",
+        "create_budget",
+        "create_funding_source",
+        "create_ou",
+        "create_project_with_budget",
+        "create_project_with_spend_plan",
+        "get_accounts",
+        "get_cloud_access_role_details",
+        "get_cloud_access_roles_on_entity",
+        "get_cloud_provider_services",
+        "get_cloud_providers",
+        "get_compliance_check",
+        "get_compliance_checks_paginated",
+        "get_compliance_findings",
+        "get_compliance_ous",
+        "get_compliance_program",
+        "get_compliance_standard",
+        "get_compliance_standard_project",
+        "get_compliance_standards_paginated",
+        "get_entity_by_id",
+        "get_label_key_id",
+        "get_labels",
+        "get_ou_budget",
+        "get_ou_funding_sources",
+        "get_ous",
+        "get_permission_scheme",
+        "get_project_budget",
+        "get_project_spend_plan_with_totals",
+        "get_projects",
+        "get_spend_report",
+        "get_suppressed_compliance_findings",
+        "get_tag_keys",
+        "get_tag_values",
+        "get_user_cloud_access_roles",
+        "get_user_groups",
+        "get_user_info",
+        "get_users",
+        "update_budget"
+      ],
+      "metadata": {
+        "stars": 7,
+        "pulls": 114,
+        "last_updated": "2025-09-03T18:57:03Z"
+      },
+      "repository_url": "https://github.com/kionsoftware/kion-mcp",
+      "tags": [
+        "kion",
+        "cloud-management",
+        "finops",
+        "cloudops",
+        "compliance",
+        "governance",
+        "cloud-costs"
+      ],
+      "image": "kionsoftware/kion-mcp:0.2.0",
+      "permissions": {
+        "network": {
+          "outbound": {
+            "insecure_allow_all": true
+          }
+        }
+      },
+      "env_vars": [
+        {
+          "name": "KION_BEARER_TOKEN",
+          "description": "App API key for authentication to your Kion instance",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "KION_SERVER_URL",
+          "description": "URL of your Kion instance",
+          "required": true
+        }
+      ]
+    },
     "kyverno": {
       "description": "Provides Kyverno policy management capabilities enabling AI assistants to interact with Kyverno policies in Kubernetes clusters for comprehensive policy management, security assessment, and compliance monitoring.",
       "tier": "Official",
@@ -3024,9 +3107,9 @@
         "help"
       ],
       "metadata": {
-        "stars": 8,
+        "stars": 11,
         "pulls": 4946,
-        "last_updated": "2025-08-22T09:42:38Z"
+        "last_updated": "2025-09-02T02:31:27Z"
       },
       "repository_url": "https://github.com/nirmata/kyverno-mcp",
       "tags": [
@@ -4151,9 +4234,9 @@
         "get_vulnerability"
       ],
       "metadata": {
-        "stars": 17,
+        "stars": 19,
         "pulls": 10318,
-        "last_updated": "2025-08-22T09:42:40Z"
+        "last_updated": "2025-09-04T02:27:25Z"
       },
       "repository_url": "https://github.com/StacklokLabs/osv-mcp",
       "tags": [
@@ -4200,9 +4283,9 @@
         "perplexity_reason"
       ],
       "metadata": {
-        "stars": 1519,
+        "stars": 1551,
         "pulls": 15188,
-        "last_updated": "2025-08-22T09:42:40Z"
+        "last_updated": "2025-09-04T02:27:26Z"
       },
       "repository_url": "https://github.com/ppl-ai/modelcontextprotocol",
       "tags": [
@@ -4369,9 +4452,9 @@
         "generate_plot"
       ],
       "metadata": {
-        "stars": 0,
+        "stars": 2,
         "pulls": 1314,
-        "last_updated": "2025-08-22T09:42:41Z"
+        "last_updated": "2025-09-04T08:11:53Z"
       },
       "repository_url": "https://github.com/StacklokLabs/plotting-mcp",
       "tags": [
@@ -4514,9 +4597,9 @@
         "unsubscribe"
       ],
       "metadata": {
-        "stars": 215,
+        "stars": 230,
         "pulls": 10366,
-        "last_updated": "2025-08-22T09:42:39Z"
+        "last_updated": "2025-09-04T02:27:25Z"
       },
       "repository_url": "https://github.com/redis/mcp-redis",
       "tags": [
@@ -4623,9 +4706,9 @@
         "write_custom_semgrep_rule"
       ],
       "metadata": {
-        "stars": 479,
+        "stars": 522,
         "pulls": 12180,
-        "last_updated": "2025-08-22T09:42:42Z"
+        "last_updated": "2025-09-04T08:11:56Z"
       },
       "repository_url": "https://github.com/semgrep/mcp",
       "tags": [
@@ -4640,7 +4723,7 @@
         "ast",
         "code-analysis"
       ],
-      "image": "ghcr.io/semgrep/mcp:0.6.0",
+      "image": "ghcr.io/semgrep/mcp:0.7.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -4755,9 +4838,9 @@
         "sequentialthinking"
       ],
       "metadata": {
-        "stars": 65278,
+        "stars": 66732,
         "pulls": 14819,
-        "last_updated": "2025-08-22T09:42:40Z"
+        "last_updated": "2025-09-04T02:27:26Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -5069,9 +5152,9 @@
         "convert_time"
       ],
       "metadata": {
-        "stars": 65278,
+        "stars": 66503,
         "pulls": 10986,
-        "last_updated": "2025-08-22T09:42:38Z"
+        "last_updated": "2025-09-02T02:31:27Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [

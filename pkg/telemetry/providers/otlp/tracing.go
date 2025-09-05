@@ -5,52 +5,12 @@ import (
 	"context"
 	"fmt"
 
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
-
-// Config holds OTLP-specific configuration
-type Config struct {
-	Endpoint     string
-	Headers      map[string]string
-	Insecure     bool
-	SamplingRate float64
-}
-
-// NewMetricReader creates an OTLP metric reader for use in a unified meter provider
-func NewMetricReader(ctx context.Context, config Config) (sdkmetric.Reader, error) {
-	if config.Endpoint == "" {
-		return nil, fmt.Errorf("OTLP endpoint is required")
-	}
-
-	exporter, err := createMetricExporter(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create OTLP metric exporter: %w", err)
-	}
-
-	return sdkmetric.NewPeriodicReader(exporter), nil
-}
-
-func createMetricExporter(ctx context.Context, config Config) (sdkmetric.Exporter, error) {
-	opts := []otlpmetrichttp.Option{
-		otlpmetrichttp.WithEndpoint(config.Endpoint),
-	}
-
-	if len(config.Headers) > 0 {
-		opts = append(opts, otlpmetrichttp.WithHeaders(config.Headers))
-	}
-
-	if config.Insecure {
-		opts = append(opts, otlpmetrichttp.WithInsecure())
-	}
-
-	return otlpmetrichttp.New(ctx, opts...)
-}
 
 // NewTracerProvider creates a standalone OTLP tracer provider
 func NewTracerProvider(ctx context.Context, config Config, res *resource.Resource) (trace.TracerProvider, error) {
@@ -84,4 +44,24 @@ func createTraceExporter(ctx context.Context, config Config) (sdktrace.SpanExpor
 	}
 
 	return otlptracehttp.New(ctx, opts...)
+}
+
+// NewTracerProviderWithShutdown creates an OTLP tracer provider with a shutdown function
+func NewTracerProviderWithShutdown(
+	ctx context.Context,
+	config Config,
+	res *resource.Resource,
+) (trace.TracerProvider, func(context.Context) error, error) {
+	provider, err := NewTracerProvider(ctx, config, res)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Create shutdown function if it's an SDK provider
+	var shutdown func(context.Context) error
+	if sdkProvider, ok := provider.(*sdktrace.TracerProvider); ok {
+		shutdown = sdkProvider.Shutdown
+	}
+
+	return provider, shutdown, nil
 }

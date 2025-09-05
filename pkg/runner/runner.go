@@ -140,7 +140,8 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Process secrets if provided
 	if len(r.Config.Secrets) > 0 {
-		cfg := config.GetConfig()
+		cfgprovider := config.NewDefaultProvider()
+		cfg := cfgprovider.GetConfig()
 
 		providerType, err := cfg.Secrets.GetProviderType()
 		if err != nil {

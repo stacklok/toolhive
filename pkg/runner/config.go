@@ -383,6 +383,7 @@ func (c *RunConfig) WithContainerName() (*RunConfig, bool) {
 		} else if c.RemoteURL != "" && c.Name != "" {
 			// For remote servers, sanitize the provided name to ensure it's safe for file paths
 			c.BaseName, wasModified = workloadtypes.SanitizeWorkloadName(c.Name)
+			c.ContainerName = c.Name
 		}
 	}
 	return c, wasModified

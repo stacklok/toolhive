@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofrs/flock"
 	"github.com/tailscale/hujson"
 	"github.com/tidwall/gjson"
+	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -38,7 +39,8 @@ type JSONConfigUpdater struct {
 // Upsert inserts or updates an MCP server in the MCP client config file
 func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 	// Create a lock file
-	fileLock := flock.New(jcu.Path + ".lock")
+	lockPath := jcu.Path + ".lock"
+	fileLock := lockfile.NewTrackedLock(lockPath)
 
 	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
@@ -52,7 +54,7 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 	if !locked {
 		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
 	}
-	defer fileLock.Unlock()
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
 
 	content, err := os.ReadFile(jcu.Path)
 	if err != nil {
@@ -97,7 +99,8 @@ func (jcu *JSONConfigUpdater) Upsert(serverName string, data MCPServer) error {
 // Remove removes an MCP server from the MCP client config file
 func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 	// Create a lock file
-	fileLock := flock.New(jcu.Path + ".lock")
+	lockPath := jcu.Path + ".lock"
+	fileLock := lockfile.NewTrackedLock(lockPath)
 
 	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
@@ -111,7 +114,7 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 	if !locked {
 		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
 	}
-	defer fileLock.Unlock()
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
 
 	content, err := os.ReadFile(jcu.Path)
 	if err != nil {
@@ -148,6 +151,139 @@ func (jcu *JSONConfigUpdater) Remove(serverName string) error {
 
 	logger.Infof("Successfully removed the MCPServer %s from the client config file", serverName)
 
+	return nil
+}
+
+// YAMLConfigUpdater is a ConfigUpdater that is responsible for updating
+// YAML config files using a converter interface for flexibility.
+type YAMLConfigUpdater struct {
+	Path      string
+	Converter YAMLConverter
+}
+
+// Upsert inserts or updates an MCP server in the config.yaml file using the converter
+func (ycu *YAMLConfigUpdater) Upsert(serverName string, data MCPServer) error {
+	// Create a lock file
+	lockPath := ycu.Path + ".lock"
+	fileLock := lockfile.NewTrackedLock(lockPath)
+
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
+	defer cancel()
+
+	// Try to acquire the lock with a timeout
+	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
+	}
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
+
+	content, err := os.ReadFile(ycu.Path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Use a generic map to preserve all existing fields, not just extensions
+	var config map[string]interface{}
+
+	// If file exists and is not empty, unmarshal existing config into generic map
+	if len(content) > 0 {
+		err = yaml.Unmarshal(content, &config)
+		if err != nil {
+			return fmt.Errorf("failed to parse existing YAML config: %w", err)
+		}
+	} else {
+		// Initialize empty map if file doesn't exist or is empty
+		config = make(map[string]interface{})
+	}
+
+	// Convert MCPServer using the converter
+	entry, err := ycu.Converter.ConvertFromMCPServer(serverName, data)
+	if err != nil {
+		return fmt.Errorf("failed to convert MCPServer: %w", err)
+	}
+
+	// Upsert the entry using the converter
+	err = ycu.Converter.UpsertEntry(config, serverName, entry)
+	if err != nil {
+		return fmt.Errorf("failed to upsert entry: %w", err)
+	}
+
+	// Marshal back to YAML
+	updatedContent, err := yaml.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal YAML: %w", err)
+	}
+
+	// Write back to file
+	if err := os.WriteFile(ycu.Path, updatedContent, 0600); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	logger.Infof("Successfully updated YAML client config file for server %s", serverName)
+	return nil
+}
+
+// Remove removes an entry from the config.yaml file using the converter
+func (ycu *YAMLConfigUpdater) Remove(serverName string) error {
+	// Create a lock file
+	lockPath := ycu.Path + ".lock"
+	fileLock := lockfile.NewTrackedLock(lockPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
+	defer cancel()
+
+	// Try to acquire the lock with a timeout
+	locked, err := fileLock.TryLockContext(ctx, 100*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
+	}
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
+
+	// Read existing config
+	content, err := os.ReadFile(ycu.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// File doesn't exist, nothing to remove
+			return nil
+		}
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	if len(content) == 0 {
+		// File is empty, nothing to remove
+		return nil
+	}
+
+	// Use a generic map to preserve all existing fields, not just extensions
+	var config map[string]interface{}
+	err = yaml.Unmarshal(content, &config)
+	if err != nil {
+		return fmt.Errorf("failed to parse YAML: %w", err)
+	}
+
+	err = ycu.Converter.RemoveEntry(config, serverName)
+	if err != nil {
+		return fmt.Errorf("failed to remove entry: %w", err)
+	}
+
+	updatedContent, err := yaml.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal YAML: %w", err)
+	}
+
+	// Write back to file
+	if err := os.WriteFile(ycu.Path, updatedContent, 0600); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	logger.Infof("Successfully removed server %s from YAML config file", serverName)
 	return nil
 }
 

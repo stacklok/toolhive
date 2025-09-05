@@ -15,20 +15,19 @@ import (
 func TestGetHealthcheck(t *testing.T) {
 	t.Parallel()
 
-	// Create a new gomock controller
-	ctrl := gomock.NewController(t)
-	t.Cleanup(func() {
-		ctrl.Finish()
-	})
-
-	// Create a mock runtime
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-
-	// Create healthcheck routes with the mock runtime
-	routes := &healthcheckRoutes{containerRuntime: mockRuntime}
-
 	t.Run("returns 204 when runtime is running", func(t *testing.T) {
 		t.Parallel()
+		// Create a new gomock controller for this subtest
+		ctrl := gomock.NewController(t)
+		t.Cleanup(func() {
+			ctrl.Finish()
+		})
+
+		// Create a mock runtime
+		mockRuntime := mocks.NewMockRuntime(ctrl)
+
+		// Create healthcheck routes with the mock runtime
+		routes := &healthcheckRoutes{containerRuntime: mockRuntime}
 
 		// Setup mock to return nil (no error) when IsRunning is called
 		mockRuntime.EXPECT().
@@ -49,6 +48,17 @@ func TestGetHealthcheck(t *testing.T) {
 
 	t.Run("returns 503 when runtime is not running", func(t *testing.T) {
 		t.Parallel()
+		// Create a new gomock controller for this subtest
+		ctrl := gomock.NewController(t)
+		t.Cleanup(func() {
+			ctrl.Finish()
+		})
+
+		// Create a mock runtime
+		mockRuntime := mocks.NewMockRuntime(ctrl)
+
+		// Create healthcheck routes with the mock runtime
+		routes := &healthcheckRoutes{containerRuntime: mockRuntime}
 
 		// Create an error to return
 		expectedError := errors.New("container runtime is not available")

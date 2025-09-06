@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/trace"
@@ -23,12 +22,12 @@ func TestWithConfig(t *testing.T) {
 		ServiceVersion: "1.0.0",
 	}
 
-	builder := WithConfig(config)
-	require.NotNil(t, builder)
-	assert.Equal(t, config, builder.config)
+	assembler := WithConfig(config)
+	require.NotNil(t, assembler)
+	assert.Equal(t, config, assembler.config)
 }
 
-func TestBuilder_CreateResource(t *testing.T) {
+func TestAssembler_CreateResource(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -45,13 +44,13 @@ func TestBuilder_CreateResource(t *testing.T) {
 
 	config.ServiceVersion = "1.2.3"
 
-	builder := WithConfig(config)
-	err := builder.createResource(ctx)
+	assembler := WithConfig(config)
+	err := assembler.createResource(ctx)
 	require.NoError(t, err)
-	require.NotNil(t, builder.resource)
+	require.NotNil(t, assembler.resource)
 
 	// Check attributes
-	attrs := builder.resource.Attributes()
+	attrs := assembler.resource.Attributes()
 	hasName := false
 	hasVersion := false
 	for _, attr := range attrs {
@@ -66,11 +65,11 @@ func TestBuilder_CreateResource(t *testing.T) {
 	assert.True(t, hasVersion, "service.version attribute should be present")
 }
 
-func TestBuilder_CreateNoOpProvider(t *testing.T) {
+func TestAssembler_CreateNoOpProvider(t *testing.T) {
 	t.Parallel()
 
-	builder := &Builder{}
-	provider := builder.createNoOpProvider()
+	assembler := &Assembler{}
+	provider := assembler.createNoOpProvider()
 
 	require.NotNil(t, provider)
 	assert.NotNil(t, provider.tracerProvider)
@@ -86,7 +85,7 @@ func TestBuilder_CreateNoOpProvider(t *testing.T) {
 	assert.IsType(t, noop.NewMeterProvider(), provider.meterProvider, "meter provider should be no-op")
 }
 
-func TestBuilder_Build_NoOpCase(t *testing.T) {
+func TestAssembler_Assemble_NoOpCase(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -98,8 +97,8 @@ func TestBuilder_Build_NoOpCase(t *testing.T) {
 		EnablePrometheusMetricsPath: false,
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	assembler := WithConfig(config)
+	provider, err := assembler.Assemble(ctx)
 
 	require.NoError(t, err)
 	require.NotNil(t, provider)
@@ -109,7 +108,7 @@ func TestBuilder_Build_NoOpCase(t *testing.T) {
 	assert.Nil(t, provider.PrometheusHandler())
 }
 
-func TestBuilder_Build_WithOTLPTracing(t *testing.T) {
+func TestAssembler_Assemble_WithOTLPTracing(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -123,18 +122,17 @@ func TestBuilder_Build_WithOTLPTracing(t *testing.T) {
 		SamplingRate:   0.5,
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	assembler := WithConfig(config)
+	provider, err := assembler.Assemble(ctx)
 
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 	assert.NotNil(t, provider.TracerProvider())
-	assert.Implements(t, (*trace.TracerProvider)(nil), provider.TracerProvider(), "should implement TracerProvider interface")
 	assert.IsType(t, noop.NewMeterProvider(), provider.MeterProvider(), "meter provider should be no-op when metrics disabled")
 	assert.Len(t, provider.shutdownFuncs, 1) // Should have one shutdown function for tracing
 }
 
-func TestBuilder_Build_WithPrometheus(t *testing.T) {
+func TestAssembler_Assemble_WithPrometheus(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -146,18 +144,17 @@ func TestBuilder_Build_WithPrometheus(t *testing.T) {
 		EnablePrometheusMetricsPath: true,
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	assembler := WithConfig(config)
+	provider, err := assembler.Assemble(ctx)
 
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 	assert.NotNil(t, provider.MeterProvider())
-	assert.Implements(t, (*metric.MeterProvider)(nil), provider.MeterProvider(), "should implement MeterProvider interface")
 	assert.NotNil(t, provider.PrometheusHandler())
 	assert.NotEmpty(t, provider.shutdownFuncs) // Should have shutdown function for Prometheus
 }
 
-func TestBuilder_Build_WithOTLPMetrics(t *testing.T) {
+func TestAssembler_Assemble_WithOTLPMetrics(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -170,17 +167,16 @@ func TestBuilder_Build_WithOTLPMetrics(t *testing.T) {
 		MetricsEnabled: true,
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	assembler := WithConfig(config)
+	provider, err := assembler.Assemble(ctx)
 
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 	assert.NotNil(t, provider.MeterProvider())
-	assert.Implements(t, (*trace.TracerProvider)(nil), provider.TracerProvider(), "should implement TracerProvider interface")
 	assert.NotEmpty(t, provider.shutdownFuncs) // Should have shutdown function for OTLP metrics
 }
 
-func TestBuilder_Build_WithEverything(t *testing.T) {
+func TestAssembler_Assemble_WithEverything(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -196,15 +192,13 @@ func TestBuilder_Build_WithEverything(t *testing.T) {
 		Headers:                     map[string]string{"test": "header"},
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	assembler := WithConfig(config)
+	provider, err := assembler.Assemble(ctx)
 
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 	assert.NotNil(t, provider.TracerProvider())
-	assert.Implements(t, (*trace.TracerProvider)(nil), provider.TracerProvider(), "should implement TracerProvider interface")
 	assert.NotNil(t, provider.MeterProvider())
-	assert.Implements(t, (*trace.TracerProvider)(nil), provider.TracerProvider(), "should implement TracerProvider interface")
 	assert.NotNil(t, provider.PrometheusHandler())
 	assert.NotEmpty(t, provider.shutdownFuncs) // Should have multiple shutdown functions
 }
@@ -312,8 +306,8 @@ func TestCompositeProvider_Shutdown(t *testing.T) {
 	}
 }
 
-// TestBuilder_Shutdown_WithErrors tests shutdown with failing shutdown functions
-func TestBuilder_Shutdown_WithErrors(t *testing.T) {
+// TestAssembler_Shutdown_WithErrors tests shutdown with failing shutdown functions
+func TestAssembler_Shutdown_WithErrors(t *testing.T) {
 	t.Parallel()
 
 	// Create a composite provider with a shutdown function that times out
@@ -395,8 +389,8 @@ func TestCompositeProvider_MultipleShutdown(t *testing.T) {
 		EnablePrometheusMetricsPath: true,
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	assembler := WithConfig(config)
+	provider, err := assembler.Assemble(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 
@@ -405,7 +399,7 @@ func TestCompositeProvider_MultipleShutdown(t *testing.T) {
 	_ = provider.Shutdown(ctx)
 }
 
-func TestBuilder_Build_WithHeaders(t *testing.T) {
+func TestAssembler_Assemble_WithHeaders(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -422,18 +416,16 @@ func TestBuilder_Build_WithHeaders(t *testing.T) {
 		MetricsEnabled: true,
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	assembler := WithConfig(config)
+	provider, err := assembler.Assemble(ctx)
 
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 	assert.NotNil(t, provider.TracerProvider())
-	assert.Implements(t, (*trace.TracerProvider)(nil), provider.TracerProvider(), "should implement TracerProvider interface")
 	assert.NotNil(t, provider.MeterProvider())
-	assert.Implements(t, (*metric.MeterProvider)(nil), provider.MeterProvider(), "should implement MeterProvider interface")
 }
 
-func TestBuilder_Build_DifferentSamplingRates(t *testing.T) {
+func TestAssembler_Assemble_DifferentSamplingRates(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -461,18 +453,17 @@ func TestBuilder_Build_DifferentSamplingRates(t *testing.T) {
 				SamplingRate:   tt.samplingRate,
 			}
 
-			builder := WithConfig(config)
-			provider, err := builder.Build(ctx)
+			assembler := WithConfig(config)
+			provider, err := assembler.Assemble(ctx)
 
 			require.NoError(t, err)
 			require.NotNil(t, provider)
 			assert.NotNil(t, provider.TracerProvider())
-			assert.Implements(t, (*trace.TracerProvider)(nil), provider.TracerProvider(), "should implement TracerProvider interface")
 		})
 	}
 }
 
-func TestBuilder_Build_EdgeCases(t *testing.T) {
+func TestAssembler_Assemble_EdgeCases(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -511,7 +502,7 @@ func TestBuilder_Build_EdgeCases(t *testing.T) {
 			name: "special characters in service name",
 			config: Config{
 				ServiceName:    "service-name_with.special@chars",
-				ServiceVersion: "1.0.0-beta+build.123",
+				ServiceVersion: "1.0.0-beta+assemble.123",
 			},
 		},
 	}
@@ -521,21 +512,19 @@ func TestBuilder_Build_EdgeCases(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			builder := WithConfig(tt.config)
-			provider, err := builder.Build(ctx)
+			assembler := WithConfig(tt.config)
+			provider, err := assembler.Assemble(ctx)
 
 			// All edge cases should still succeed
 			require.NoError(t, err)
 			require.NotNil(t, provider)
 			assert.NotNil(t, provider.TracerProvider())
-			assert.Implements(t, (*trace.TracerProvider)(nil), provider.TracerProvider(), "should implement TracerProvider interface")
 			assert.NotNil(t, provider.MeterProvider())
-			assert.Implements(t, (*metric.MeterProvider)(nil), provider.MeterProvider(), "should implement MeterProvider interface")
 		})
 	}
 }
 
-func TestBuilder_BuildProviders_DirectCall(t *testing.T) {
+func TestAssembler_AssembleProviders_DirectCall(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -547,23 +536,21 @@ func TestBuilder_BuildProviders_DirectCall(t *testing.T) {
 		MetricsEnabled: true,
 	}
 
-	builder := WithConfig(config)
+	assembler := WithConfig(config)
 	// First create resource
-	err := builder.createResource(ctx)
+	err := assembler.createResource(ctx)
 	require.NoError(t, err)
 
 	// Create selector
-	selector := NewStrategySelector(builder.config)
+	selector := NewStrategySelector(assembler.config)
 
-	// Call buildProviders directly
-	composite, err := builder.buildProviders(ctx, selector, builder.resource)
+	// Call assembleProviders directly
+	composite, err := assembler.assembleProviders(ctx, selector, assembler.resource)
 
 	require.NoError(t, err)
 	require.NotNil(t, composite)
 	assert.NotNil(t, composite.TracerProvider())
-	assert.Implements(t, (*trace.TracerProvider)(nil), composite.TracerProvider(), "should implement TracerProvider interface")
 	assert.NotNil(t, composite.MeterProvider())
-	assert.Implements(t, (*metric.MeterProvider)(nil), composite.MeterProvider(), "should implement MeterProvider interface")
 	assert.NotEmpty(t, composite.shutdownFuncs)
 }
 
@@ -615,26 +602,26 @@ func TestErrorStrategies(t *testing.T) {
 	})
 }
 
-// TestBuilder_ResourceCreationError tests handling of resource creation errors
-func TestBuilder_ResourceCreationError(t *testing.T) {
+// TestAssembler_ResourceCreationError tests handling of resource creation errors
+func TestAssembler_ResourceCreationError(t *testing.T) {
 	t.Parallel()
 
-	// Create a builder with invalid configuration that might cause resource creation issues
+	// Create a assembler with invalid configuration that might cause resource creation issues
 	config := Config{
 		ServiceName:    string([]byte{0xFF, 0xFE, 0xFD}), // Invalid UTF-8 characters
 		ServiceVersion: string([]byte{0xFF, 0xFE, 0xFD}),
 	}
 
 	ctx := context.Background()
-	builder := WithConfig(config)
+	assembler := WithConfig(config)
 
 	// Even with invalid characters, resource creation typically succeeds
 	// as OpenTelemetry handles them gracefully
-	err := builder.createResource(ctx)
+	err := assembler.createResource(ctx)
 	// This won't actually error, but we're testing the path
 	assert.NoError(t, err)
-	if builder.resource != nil {
-		attrs := builder.resource.Attributes()
+	if assembler.resource != nil {
+		attrs := assembler.resource.Attributes()
 		assert.NotNil(t, attrs)
 	}
 }

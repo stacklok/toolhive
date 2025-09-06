@@ -25,8 +25,8 @@ func TestUnifiedMeterProvider_BothProviders(t *testing.T) {
 		EnablePrometheusMetricsPath: true,
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	assembler := WithConfig(config)
+	provider, err := assembler.Assemble(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 	defer provider.Shutdown(ctx)
@@ -74,8 +74,8 @@ func TestUnifiedMeterProvider_PrometheusOnly(t *testing.T) {
 		EnablePrometheusMetricsPath: true,
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	assembler := WithConfig(config)
+	provider, err := assembler.Assemble(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 	defer provider.Shutdown(ctx)
@@ -114,8 +114,8 @@ func TestUnifiedMeterProvider_OTLPOnly(t *testing.T) {
 		EnablePrometheusMetricsPath: false,
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	assembler := WithConfig(config)
+	provider, err := assembler.Assemble(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 	defer provider.Shutdown(ctx)

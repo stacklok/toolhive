@@ -672,3 +672,159 @@ func TestRunConfigBuilder_ToolOverrideWithToolsFilter(t *testing.T) {
 		})
 	}
 }
+
+// TestNewOperatorRunConfigBuilder tests the NewOperatorRunConfigBuilder function
+func TestNewOperatorRunConfigBuilder(t *testing.T) {
+	t.Parallel()
+
+	builder := NewOperatorRunConfigBuilder()
+
+	assert.NotNil(t, builder, "NewOperatorRunConfigBuilder should return a non-nil builder")
+	assert.NotNil(t, builder.config, "Builder config should be initialized")
+	assert.NotNil(t, builder.config.EnvVars, "EnvVars should be initialized")
+	assert.NotNil(t, builder.config.ContainerLabels, "ContainerLabels should be initialized")
+}
+
+// TestWithEnvVars tests the WithEnvVars method
+func TestWithEnvVars(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		envVars  map[string]string
+		expected map[string]string
+	}{
+		{
+			name:     "Empty env vars",
+			envVars:  map[string]string{},
+			expected: map[string]string{},
+		},
+		{
+			name: "Single env var",
+			envVars: map[string]string{
+				"TEST_VAR": "test_value",
+			},
+			expected: map[string]string{
+				"TEST_VAR": "test_value",
+			},
+		},
+		{
+			name: "Multiple env vars",
+			envVars: map[string]string{
+				"VAR1": "value1",
+				"VAR2": "value2",
+				"VAR3": "value3",
+			},
+			expected: map[string]string{
+				"VAR1": "value1",
+				"VAR2": "value2",
+				"VAR3": "value3",
+			},
+		},
+		{
+			name:     "Nil env vars",
+			envVars:  nil,
+			expected: map[string]string{},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := NewRunConfigBuilder()
+			result := builder.WithEnvVars(tc.envVars)
+
+			assert.NotNil(t, result, "WithEnvVars should return the builder")
+			assert.Equal(t, tc.expected, builder.config.EnvVars, "Environment variables should match expected")
+		})
+	}
+}
+
+// TestWithEnvVarsOverwrite tests that WithEnvVars can overwrite existing env vars
+func TestWithEnvVarsOverwrite(t *testing.T) {
+	t.Parallel()
+
+	builder := NewRunConfigBuilder()
+
+	// Add initial env vars
+	initialEnvVars := map[string]string{
+		"EXISTING_VAR": "old_value",
+		"OTHER_VAR":    "other_value",
+	}
+	builder.WithEnvVars(initialEnvVars)
+
+	// Add new env vars that overwrite some existing ones
+	newEnvVars := map[string]string{
+		"EXISTING_VAR": "new_value",
+		"NEW_VAR":      "new_value",
+	}
+	result := builder.WithEnvVars(newEnvVars)
+
+	assert.NotNil(t, result, "WithEnvVars should return the builder")
+
+	expected := map[string]string{
+		"EXISTING_VAR": "new_value",   // Should be overwritten
+		"OTHER_VAR":    "other_value", // Should remain unchanged
+		"NEW_VAR":      "new_value",   // Should be added
+	}
+	assert.Equal(t, expected, builder.config.EnvVars, "Environment variables should be merged correctly")
+}
+
+// TestBuildForOperator tests the BuildForOperator method
+func TestBuildForOperator(t *testing.T) {
+	t.Parallel()
+
+	// Initialize logger to prevent nil pointer dereference
+	logger.Initialize()
+
+	testCases := []struct {
+		name         string
+		setupBuilder func(*RunConfigBuilder) *RunConfigBuilder
+		expectError  bool
+	}{
+		{
+			name: "Valid operator config with all fields",
+			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
+				return b.WithName("test-server").
+					WithImage("test-image:latest").
+					WithTransportAndPorts("stdio", 8080, 8080)
+			},
+			expectError: false,
+		},
+		{
+			name: "Valid operator config with minimal fields",
+			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
+				return b.WithName("test-server").
+					WithImage("test-image:latest")
+			},
+			expectError: false,
+		},
+		{
+			name: "Valid operator config with env vars",
+			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
+				return b.WithName("test-server").
+					WithImage("test-image:latest").
+					WithEnvVars(map[string]string{"TEST_VAR": "test_value"})
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := tc.setupBuilder(NewOperatorRunConfigBuilder())
+			config, err := builder.BuildForOperator()
+
+			if tc.expectError {
+				require.Error(t, err, "BuildForOperator should return an error")
+				assert.Nil(t, config, "Config should be nil on error")
+			} else {
+				require.NoError(t, err, "BuildForOperator should not return an error")
+				assert.NotNil(t, config, "Config should not be nil on success")
+			}
+		})
+	}
+}

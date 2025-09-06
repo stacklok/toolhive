@@ -185,6 +185,12 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Ensure RunConfig ConfigMap exists and is up to date
+	if err := r.ensureRunConfigConfigMap(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to ensure RunConfig ConfigMap")
+		return ctrl.Result{}, err
+	}
+
 	// Check if the deployment already exists, if not create a new one
 	deployment := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, deployment)
@@ -919,6 +925,20 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 	} else if !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to check Service %s: %w", serviceName, err)
 	}
+
+	// Step 4: Delete associated RunConfig ConfigMap
+	runConfigName := fmt.Sprintf("%s-runconfig", m.Name)
+	runConfigMap := &corev1.ConfigMap{}
+	err = r.Get(ctx, types.NamespacedName{Name: runConfigName, Namespace: m.Namespace}, runConfigMap)
+	if err == nil {
+		if delErr := r.Delete(ctx, runConfigMap); delErr != nil && !errors.IsNotFound(delErr) {
+			return fmt.Errorf("failed to delete RunConfig ConfigMap %s: %w", runConfigName, delErr)
+		}
+		ctxLogger.Info("Deleted RunConfig ConfigMap", "name", runConfigName, "namespace", m.Namespace)
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to check RunConfig ConfigMap %s: %w", runConfigName, err)
+	}
+
 	// The owner references will automatically delete the deployment and service
 	// when the MCPServer is deleted, so we don't need to do anything here.
 	return nil
@@ -1344,7 +1364,7 @@ func hasVaultAgentInjection(annotations map[string]string) bool {
 func getProxyHost() string {
 	host := os.Getenv("TOOLHIVE_PROXY_HOST")
 	if host == "" {
-		host = "0.0.0.0"
+		host = defaultProxyHost
 	}
 	return host
 }

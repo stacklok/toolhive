@@ -53,6 +53,15 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 		return customSocketPath, runtime.TypePodman, nil
 	}
 
+	if customSocketPath := os.Getenv(ColimaSocketEnv); customSocketPath != "" {
+		logger.Debugf("Using Colima socket from env: %s", customSocketPath)
+		// validate the socket path
+		if _, err := os.Stat(customSocketPath); err != nil {
+			return "", runtime.TypeColima, fmt.Errorf("invalid Colima socket path: %w", err)
+		}
+		return customSocketPath, runtime.TypeColima, nil
+	}
+
 	if customSocketPath := os.Getenv(DockerSocketEnv); customSocketPath != "" {
 		logger.Debugf("Using Docker socket from env: %s", customSocketPath)
 		// validate the socket path
@@ -66,6 +75,13 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 		socketPath, err := findPodmanSocket()
 		if err == nil {
 			return socketPath, runtime.TypePodman, nil
+		}
+	}
+
+	if rt == runtime.TypeColima {
+		socketPath, err := findColimaSocket()
+		if err == nil {
+			return socketPath, runtime.TypeColima, nil
 		}
 	}
 
@@ -117,6 +133,24 @@ func findPodmanSocket() (string, error) {
 	}
 
 	return "", fmt.Errorf("podman socket not found in standard locations")
+}
+
+// findColimaSocket attempts to locate a Colima socket
+func findColimaSocket() (string, error) {
+	// Check user-specific location for Colima
+	if home := os.Getenv("HOME"); home != "" {
+		colimaSocketPath := filepath.Join(home, ColimaSocketPath)
+		_, err := os.Stat(colimaSocketPath)
+
+		if err == nil {
+			logger.Debugf("Found Colima socket at %s", colimaSocketPath)
+			return colimaSocketPath, nil
+		}
+
+		logger.Debugf("Failed to check Colima socket at %s: %v", colimaSocketPath, err)
+	}
+
+	return "", fmt.Errorf("colima socket not found in standard locations")
 }
 
 // findDockerSocket attempts to locate a Docker socket

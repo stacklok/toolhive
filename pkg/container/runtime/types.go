@@ -187,6 +187,8 @@ const (
 	TypeDocker Type = "docker"
 	// TypeKubernetes represents the Kubernetes runtime
 	TypeKubernetes Type = "kubernetes"
+	// TypeColima represents the Colima runtime
+	TypeColima Type = "colima"
 )
 
 // MountType represents the type of mount

@@ -482,6 +482,10 @@ type OpenTelemetryConfig struct {
 	// Metrics defines OpenTelemetry metrics-specific configuration
 	// +optional
 	Metrics *OpenTelemetryMetricsConfig `json:"metrics,omitempty"`
+
+	// Tracing defines OpenTelemetry tracing configuration
+	// +optional
+	Tracing *OpenTelemetryTracingConfig `json:"tracing,omitempty"`
 }
 
 // PrometheusConfig defines Prometheus-specific configuration
@@ -492,10 +496,23 @@ type PrometheusConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 }
 
+// OpenTelemetryTracingConfig defines OpenTelemetry tracing configuration
+type OpenTelemetryTracingConfig struct {
+	// Enabled controls whether OTLP tracing is sent
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// SamplingRate is the trace sampling rate (0.0-1.0)
+	// +kubebuilder:default="0.05"
+	// +optional
+	SamplingRate string `json:"samplingRate,omitempty"`
+}
+
 // OpenTelemetryMetricsConfig defines OpenTelemetry metrics configuration
 type OpenTelemetryMetricsConfig struct {
 	// Enabled controls whether OTLP metrics are sent
-	// +kubebuilder:default=true
+	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 }

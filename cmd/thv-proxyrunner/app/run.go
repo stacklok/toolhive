@@ -73,7 +73,10 @@ var (
 	runOtelEndpoint             string
 	runOtelServiceName          string
 	runOtelHeaders              []string
+	runOtelTracingEnabled       bool
+	runOtelMetricsEnabled       bool
 	runOtelInsecure             bool
+	runOtelTracingSamplingRate  float64
 	enablePrometheusMetricsPath bool
 
 	// Network isolation flag
@@ -188,9 +191,14 @@ func init() {
 		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
 	runCmd.Flags().BoolVar(&runOtelInsecure, "otel-insecure", false,
 		"Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS")
+	runCmd.Flags().BoolVar(&runOtelTracingEnabled, "otel-tracing-enabled", false,
+		"Enable distributed tracing (when OTLP endpoint is configured)")
+	runCmd.Flags().BoolVar(&runOtelMetricsEnabled, "otel-metrics-enabled", false,
+		"Enable OTLP metrics export (when OTLP endpoint is configured)")
+	runCmd.Flags().Float64Var(&runOtelTracingSamplingRate, "otel-tracing-sampling-rate", 0.0,
+		"OpenTelemetry trace sampling rate (0.0-1.0)")
 	runCmd.Flags().BoolVar(&enablePrometheusMetricsPath, "enable-prometheus-metrics-path", false,
 		"Enable Prometheus-style /metrics endpoint on the main transport port")
-
 	runCmd.Flags().BoolVar(&runIsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
 	runCmd.Flags().StringArrayVar(
@@ -236,7 +244,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
-	finalOtelSamplingRate, finalOtelEnvironmentVariables := 0.0, []string{}
+	finalOtelEnvironmentVariables := []string{}
 
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
@@ -279,8 +287,9 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		WithAuditEnabled(runEnableAudit, runAuditConfig).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
 			runThvCABundle, runJWKSAuthTokenFile, runResourceURL, runJWKSAllowPrivateIP).
-		WithTelemetryConfig(runOtelEndpoint, enablePrometheusMetricsPath, runOtelServiceName,
-			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
+		WithTelemetryConfig(runOtelEndpoint, enablePrometheusMetricsPath, runOtelTracingEnabled,
+			runOtelMetricsEnabled, runOtelServiceName, runOtelTracingSamplingRate,
+			runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
 		WithToolsFilter(runToolsFilter)
 
 	// Process environment files

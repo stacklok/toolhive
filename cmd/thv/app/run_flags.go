@@ -70,6 +70,8 @@ type RunFlags struct {
 	// Telemetry configuration
 	OtelEndpoint                    string
 	OtelServiceName                 string
+	OtelTracingEnabled              bool
+	OtelMetricsEnabled              bool
 	OtelSamplingRate                float64
 	OtelHeaders                     []string
 	OtelInsecure                    bool
@@ -174,6 +176,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)")
 	cmd.Flags().StringVar(&config.OtelServiceName, "otel-service-name", "",
 		"OpenTelemetry service name (defaults to toolhive-mcp-proxy)")
+	cmd.Flags().BoolVar(&config.OtelTracingEnabled, "otel-tracing-enabled", false,
+		"Enable distributed tracing (when OTLP endpoint is configured)")
+	cmd.Flags().BoolVar(&config.OtelMetricsEnabled, "otel-metrics-enabled", false,
+		"Enable OTLP metrics export (when OTLP endpoint is configured)")
 	cmd.Flags().Float64Var(&config.OtelSamplingRate, "otel-sampling-rate", 0.1, "OpenTelemetry trace sampling rate (0.0-1.0)")
 	cmd.Flags().StringArrayVar(&config.OtelHeaders, "otel-headers", nil,
 		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
@@ -292,8 +298,8 @@ func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *teleme
 		runFlags.OtelEndpoint, runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables)
 
 	return createTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
-		runFlags.OtelServiceName, finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure,
-		finalOtelEnvironmentVariables)
+		runFlags.OtelServiceName, runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, finalOtelSamplingRate,
+		runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables)
 }
 
 // setupRuntimeAndValidation creates container runtime and selects environment variable validator
@@ -450,7 +456,8 @@ func buildRunnerConfig(
 	// Set additional configurations that are still needed in old format for other parts of the system
 	builder = builder.WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
 		runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP).
-		WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelServiceName,
+		WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
+			runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, runFlags.OtelServiceName,
 			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables).
 		WithToolsFilter(runFlags.ToolsFilter)
 
@@ -585,7 +592,7 @@ func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionUR
 
 // createTelemetryConfig creates a telemetry configuration if any telemetry parameters are provided
 func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
-	otelServiceName string, otelSamplingRate float64, otelHeaders []string,
+	otelServiceName string, otelTracingEnabled bool, otelMetricsEnabled bool, otelSamplingRate float64, otelHeaders []string,
 	otelInsecure bool, otelEnvironmentVariables []string) *telemetry.Config {
 	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
 		return nil
@@ -623,6 +630,8 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 serviceName,
 		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+		TracingEnabled:              otelTracingEnabled,
+		MetricsEnabled:              otelMetricsEnabled,
 		SamplingRate:                otelSamplingRate,
 		Headers:                     headers,
 		Insecure:                    otelInsecure,

@@ -136,7 +136,7 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 		WithAuditEnabled(false, "").
 		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
 			"", "", "", "", "", false).
-		WithTelemetryConfig("", false, "", 0.0, nil, false, nil).
+		WithTelemetryConfig("", false, false, false, "", 0.0, nil, false, nil).
 		WithToolsFilter(req.ToolsFilter).
 		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
 

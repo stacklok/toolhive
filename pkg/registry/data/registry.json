@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-05T00:17:15Z",
+  "last_updated": "2025-09-06T00:16:35Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -615,7 +615,6 @@
         "appconfig",
         "azuremanagedlustre",
         "azureterraformbestpractices",
-        "bestpractices",
         "bicepschema",
         "cloudarchitect",
         "cosmos",
@@ -627,6 +626,7 @@
         "extension_azqr",
         "foundry",
         "functionapp",
+        "get_bestpractices",
         "grafana",
         "group",
         "keyvault",
@@ -664,7 +664,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.11",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.12",
       "permissions": {
         "network": {
           "outbound": {
@@ -1276,9 +1276,9 @@
         "idp_investigate_entity"
       ],
       "metadata": {
-        "stars": 42,
+        "stars": 49,
         "pulls": 3771,
-        "last_updated": "2025-08-22T09:42:43Z"
+        "last_updated": "2025-09-05T02:29:05Z"
       },
       "repository_url": "https://github.com/crowdstrike/falcon-mcp",
       "tags": [
@@ -1617,7 +1617,7 @@
       "metadata": {
         "stars": 17,
         "pulls": 12390,
-        "last_updated": "2025-08-22T09:45:10Z"
+        "last_updated": "2025-09-05T02:29:06Z"
       },
       "repository_url": "https://github.com/stackloklabs/gofetch",
       "tags": [
@@ -1818,7 +1818,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.13.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.14.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -2969,9 +2969,9 @@
         "apply_resource"
       ],
       "metadata": {
-        "stars": 45,
+        "stars": 46,
         "pulls": 13952,
-        "last_updated": "2025-08-22T09:45:09Z"
+        "last_updated": "2025-09-05T02:29:06Z"
       },
       "repository_url": "https://github.com/StacklokLabs/mkp",
       "tags": [
@@ -3991,7 +3991,7 @@
       "metadata": {
         "stars": 38,
         "pulls": 10904,
-        "last_updated": "2025-08-22T09:45:09Z"
+        "last_updated": "2025-09-05T02:29:06Z"
       },
       "repository_url": "https://github.com/aantti/mcp-netbird",
       "tags": [
@@ -5108,9 +5108,9 @@
         "moduleDetails"
       ],
       "metadata": {
-        "stars": 862,
+        "stars": 901,
         "pulls": 9600,
-        "last_updated": "2025-08-22T09:45:09Z"
+        "last_updated": "2025-09-05T02:29:06Z"
       },
       "repository_url": "https://github.com/hashicorp/terraform-mcp-server",
       "tags": [

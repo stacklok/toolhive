@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-06T00:16:35Z",
+  "last_updated": "2025-09-07T00:18:28Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1221,9 +1221,9 @@
         "get-library-docs"
       ],
       "metadata": {
-        "stars": 26860,
+        "stars": 29129,
         "pulls": 313,
-        "last_updated": "2025-08-22T09:45:11Z"
+        "last_updated": "2025-09-06T02:26:40Z"
       },
       "repository_url": "https://github.com/upstash/context7",
       "tags": [
@@ -1632,7 +1632,7 @@
         "curl",
         "modelcontextprotocol"
       ],
-      "image": "ghcr.io/stackloklabs/gofetch/server:0.0.5",
+      "image": "ghcr.io/stackloklabs/gofetch/server:0.0.6",
       "permissions": {
         "network": {
           "outbound": {
@@ -2265,9 +2265,9 @@
         "fetch_pyroscope_profile"
       ],
       "metadata": {
-        "stars": 1444,
+        "stars": 1521,
         "pulls": 8120,
-        "last_updated": "2025-08-22T09:45:10Z"
+        "last_updated": "2025-09-06T02:26:40Z"
       },
       "repository_url": "https://github.com/grafana/mcp-grafana",
       "tags": [
@@ -4111,7 +4111,7 @@
       "metadata": {
         "stars": 10,
         "pulls": 8029,
-        "last_updated": "2025-08-22T09:45:11Z"
+        "last_updated": "2025-09-06T02:26:40Z"
       },
       "repository_url": "https://github.com/StacklokLabs/ocireg-mcp",
       "tags": [
@@ -4415,9 +4415,9 @@
         "browser_wait_for"
       ],
       "metadata": {
-        "stars": 17741,
+        "stars": 19104,
         "pulls": 23622,
-        "last_updated": "2025-08-22T09:45:10Z"
+        "last_updated": "2025-09-06T02:26:40Z"
       },
       "repository_url": "https://github.com/microsoft/playwright-mcp",
       "tags": [
@@ -4697,13 +4697,14 @@
       "status": "Active",
       "transport": "sse",
       "tools": [
-        "security_check",
-        "semgrep_scan",
-        "semgrep_scan_with_custom_rule",
         "get_abstract_syntax_tree",
-        "supported_languages",
+        "get_supported_languages",
+        "security_check",
+        "semgrep_findings",
         "semgrep_rule_schema",
-        "write_custom_semgrep_rule"
+        "semgrep_scan",
+        "semgrep_scan_local",
+        "semgrep_scan_with_custom_rule"
       ],
       "metadata": {
         "stars": 522,
@@ -4723,7 +4724,7 @@
         "ast",
         "code-analysis"
       ],
-      "image": "ghcr.io/semgrep/mcp:0.7.1",
+      "image": "ghcr.io/semgrep/mcp:0.7.2",
       "permissions": {
         "network": {
           "outbound": {
@@ -4922,9 +4923,9 @@
         "update_subscription"
       ],
       "metadata": {
-        "stars": 939,
+        "stars": 947,
         "pulls": 0,
-        "last_updated": "2025-08-22T09:45:11Z"
+        "last_updated": "2025-09-06T02:26:41Z"
       },
       "repository_url": "https://github.com/stripe/agent-toolkit",
       "tags": [

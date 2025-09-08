@@ -85,6 +85,7 @@ COPY --from=builder --chown=appuser:appgroup /build/ /app/
 {{else}}
 # Copy package.json to maintain the dependency tree
 COPY --from=builder --chown=appuser:appgroup /build/package.json /app/package.json
+COPY --from=builder --chown=appuser:appgroup /build/package-lock.json /app/package-lock.json
 {{end}}
 
 # Set NODE_PATH to find the pre-installed modules
@@ -94,6 +95,11 @@ ENV NODE_PATH=/app/node_modules \
 # Switch to non-root user
 USER appuser
 
-# Run the pre-installed MCP package directly using npx
-# The package is already installed, so npx will use the local version without downloading
-ENTRYPOINT ["npx", "--no-install", "{{.MCPPackage}}"{{range .MCPArgs}}, "{{.}}"{{end}}]
+# `MCPPackage` may include a version suffix (e.g., `package@1.2.3`), which we cannot use here.
+# Create a small wrapper script to handle this.
+RUN echo "#!/bin/sh" >> entrypoint.sh && \
+    echo "exec npx $(echo {{.MCPPackage}} | sed 's/@[^@/]*$//'){{range .MCPArgs}}, "{{.}}"{{end}}" >> entrypoint.sh && \
+    chmod +x entrypoint.sh
+
+# Run the preinstalled MCP package directly using npx.
+ENTRYPOINT ["./entrypoint.sh"]

@@ -23,6 +23,11 @@ import (
 	stateMocks "github.com/stacklok/toolhive/pkg/state/mocks"
 )
 
+const (
+	// testWorkloadWithSlash is a test workload name containing slashes
+	testWorkloadWithSlash = "test/workload"
+)
+
 func init() {
 	// Initialize logger for all tests
 	logger.Initialize()
@@ -115,6 +120,39 @@ func TestFileStatusManager_GetWorkload(t *testing.T) {
 	workload, err := manager.GetWorkload(ctx, "test-workload")
 	require.NoError(t, err)
 	assert.Equal(t, "test-workload", workload.Name)
+	assert.Equal(t, rt.WorkloadStatusStarting, workload.Status)
+	assert.Empty(t, workload.StatusContext)
+}
+
+func TestFileStatusManager_GetWorkloadSlashes(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	workloadName := testWorkloadWithSlash
+
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadName).Return(true, nil).AnyTimes()
+
+	// Create a mock reader that returns non-remote configuration data
+	mockReader := io.NopCloser(strings.NewReader(`{"name": "` + testWorkloadWithSlash + `", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).Return(mockReader, nil).AnyTimes()
+
+	// Create a workload status
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, "")
+	require.NoError(t, err)
+
+	// Mock runtime to return error for fallback case (in case file is not found)
+	mockRuntime.EXPECT().GetWorkloadInfo(gomock.Any(), workloadName).Return(rt.ContainerInfo{}, errors.New("workload not found")).AnyTimes()
+
+	// Get the workload (no runtime call expected for starting workload)
+	workload, err := manager.GetWorkload(ctx, workloadName)
+	require.NoError(t, err)
+	assert.Equal(t, workloadName, workload.Name)
 	assert.Equal(t, rt.WorkloadStatusStarting, workload.Status)
 	assert.Empty(t, workload.StatusContext)
 }
@@ -263,6 +301,42 @@ func TestFileStatusManager_SetWorkloadStatus(t *testing.T) {
 		statusFileData.UpdatedAt.Equal(statusFileData.CreatedAt))
 }
 
+func TestFileStatusManager_SetWorkloadStatusSlashes(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	workloadName := testWorkloadWithSlash
+
+	// Create a workload status
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, "")
+	require.NoError(t, err)
+
+	// Update the status
+	manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusRunning, "container started")
+
+	// Note: Cannot verify status was updated via GetWorkload since current implementation returns empty Workload
+	// Instead verify by reading the file directly
+
+	// Verify the file on disk
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, "container started", statusFileData.StatusContext)
+	// CreatedAt should be preserved, UpdatedAt should be newer
+	assert.False(t, statusFileData.CreatedAt.IsZero())
+	assert.False(t, statusFileData.UpdatedAt.IsZero())
+	assert.True(t, statusFileData.UpdatedAt.After(statusFileData.CreatedAt) ||
+		statusFileData.UpdatedAt.Equal(statusFileData.CreatedAt))
+}
+
 func TestFileStatusManager_SetWorkloadStatus_NotFound(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
@@ -289,6 +363,54 @@ func TestFileStatusManager_SetWorkloadStatus_NotFound(t *testing.T) {
 	assert.Equal(t, "test", statusFileData.StatusContext)
 	assert.False(t, statusFileData.CreatedAt.IsZero())
 	assert.False(t, statusFileData.UpdatedAt.IsZero())
+}
+
+func TestFileStatusManager_SetWorkloadStatus_PreservesPID(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// First, create a workload with status and PID using SetWorkloadStatusAndPID
+	err := manager.SetWorkloadStatusAndPID(ctx, "test-workload", rt.WorkloadStatusStarting, "initializing", 12345)
+	require.NoError(t, err)
+
+	// Read the file to verify initial state
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	originalData, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var originalStatusFile workloadStatusFile
+	err = json.Unmarshal(originalData, &originalStatusFile)
+	require.NoError(t, err)
+
+	// Verify initial state
+	assert.Equal(t, rt.WorkloadStatusStarting, originalStatusFile.Status)
+	assert.Equal(t, "initializing", originalStatusFile.StatusContext)
+	assert.Equal(t, 12345, originalStatusFile.ProcessID)
+
+	// Wait a bit to ensure timestamps are different
+	time.Sleep(10 * time.Millisecond)
+
+	// Now update ONLY the status using SetWorkloadStatus (should preserve PID)
+	err = manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "container ready")
+	require.NoError(t, err)
+
+	// Read the file again to verify PID was preserved
+	updatedData, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var updatedStatusFile workloadStatusFile
+	err = json.Unmarshal(updatedData, &updatedStatusFile)
+	require.NoError(t, err)
+
+	// Verify that status and context were updated but PID was preserved
+	assert.Equal(t, rt.WorkloadStatusRunning, updatedStatusFile.Status)        // Status updated
+	assert.Equal(t, "container ready", updatedStatusFile.StatusContext)        // Context updated
+	assert.Equal(t, 12345, updatedStatusFile.ProcessID)                        // PID preserved
+	assert.Equal(t, originalStatusFile.CreatedAt, updatedStatusFile.CreatedAt) // CreatedAt preserved
+	assert.True(t, updatedStatusFile.UpdatedAt.After(originalStatusFile.UpdatedAt) ||
+		updatedStatusFile.UpdatedAt.Equal(originalStatusFile.UpdatedAt)) // UpdatedAt updated
 }
 
 func TestFileStatusManager_DeleteWorkloadStatus(t *testing.T) {
@@ -1247,4 +1369,232 @@ func TestFileStatusManager_ReadStatusFile_Validation(t *testing.T) {
 			os.Remove(testFile)
 		})
 	}
+}
+
+func TestFileStatusManager_SetWorkloadStatusAndPID_Create(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Test setting status and PID for new workload (no status file exists)
+	err := manager.SetWorkloadStatusAndPID(ctx, "test-workload", rt.WorkloadStatusRunning, "container started", 12345)
+	require.NoError(t, err)
+
+	// Verify file was created
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	require.FileExists(t, statusFile)
+
+	// Verify file contents
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, "container started", statusFileData.StatusContext)
+	assert.Equal(t, 12345, statusFileData.ProcessID)
+	assert.False(t, statusFileData.CreatedAt.IsZero())
+	assert.False(t, statusFileData.UpdatedAt.IsZero())
+}
+
+func TestFileStatusManager_SetWorkloadStatusAndPID_Update(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Create workload with initial status first
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "initializing")
+	require.NoError(t, err)
+
+	// Read the file to get the original timestamps
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	originalData, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var originalStatusFile workloadStatusFile
+	err = json.Unmarshal(originalData, &originalStatusFile)
+	require.NoError(t, err)
+
+	// Set the status and PID on existing workload
+	err = manager.SetWorkloadStatusAndPID(ctx, "test-workload", rt.WorkloadStatusRunning, "container ready", 67890)
+	require.NoError(t, err)
+
+	// Verify file was updated
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	// Verify status, context, and PID were updated while preserving other fields
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)        // Status updated
+	assert.Equal(t, "container ready", statusFileData.StatusContext)        // Context updated
+	assert.Equal(t, 67890, statusFileData.ProcessID)                        // PID updated
+	assert.Equal(t, originalStatusFile.CreatedAt, statusFileData.CreatedAt) // CreatedAt preserved
+	assert.True(t, statusFileData.UpdatedAt.After(originalStatusFile.UpdatedAt) ||
+		statusFileData.UpdatedAt.Equal(originalStatusFile.UpdatedAt)) // UpdatedAt updated
+}
+
+func TestFileStatusManager_SetWorkloadStatusAndPID_WithSlashes(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	workloadName := testWorkloadWithSlash
+
+	// Test setting status and PID for workload name with slashes
+	err := manager.SetWorkloadStatusAndPID(ctx, workloadName, rt.WorkloadStatusRunning, "started", 11111)
+	require.NoError(t, err)
+
+	// Verify file was created with slashes replaced by dashes
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	require.FileExists(t, statusFile)
+
+	// Verify file contents
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, "started", statusFileData.StatusContext)
+	assert.Equal(t, 11111, statusFileData.ProcessID)
+}
+
+func TestFileStatusManager_SetWorkloadStatusAndPID_ZeroPID(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Test setting status with PID 0 (which is valid - means no process)
+	err := manager.SetWorkloadStatusAndPID(ctx, "test-workload", rt.WorkloadStatusStopped, "container stopped", 0)
+	require.NoError(t, err)
+
+	// Verify file was created with PID 0
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusStopped, statusFileData.Status)
+	assert.Equal(t, "container stopped", statusFileData.StatusContext)
+	assert.Equal(t, 0, statusFileData.ProcessID)
+}
+
+func TestFileStatusManager_SetWorkloadStatusAndPID_PreservesCreatedAt(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Create workload first
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "initializing")
+	require.NoError(t, err)
+
+	// Get the original created time
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	originalData, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var originalStatusFile workloadStatusFile
+	err = json.Unmarshal(originalData, &originalStatusFile)
+	require.NoError(t, err)
+	originalCreatedAt := originalStatusFile.CreatedAt
+
+	// Wait a bit to ensure timestamps would be different
+	time.Sleep(10 * time.Millisecond)
+
+	// Update using SetWorkloadStatusAndPID
+	err = manager.SetWorkloadStatusAndPID(ctx, "test-workload", rt.WorkloadStatusRunning, "now running", 54321)
+	require.NoError(t, err)
+
+	// Verify CreatedAt is preserved
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, originalCreatedAt, statusFileData.CreatedAt)
+	assert.True(t, statusFileData.UpdatedAt.After(originalCreatedAt))
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, "now running", statusFileData.StatusContext)
+	assert.Equal(t, 54321, statusFileData.ProcessID)
+}
+
+func TestFileStatusManager_SetWorkloadStatusAndPID_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Create initial workload
+	err := manager.SetWorkloadStatus(ctx, "concurrent-test", rt.WorkloadStatusStarting, "")
+	require.NoError(t, err)
+
+	// Wait a tiny bit to ensure the initial status file is fully written
+	time.Sleep(10 * time.Millisecond)
+
+	// Test concurrent status and PID updates with fewer goroutines to reduce contention
+	done := make(chan error, 3)
+
+	go func() {
+		err := manager.SetWorkloadStatusAndPID(ctx, "concurrent-test", rt.WorkloadStatusRunning, "running with PID", 1001)
+		done <- err
+	}()
+
+	go func() {
+		err := manager.SetWorkloadStatusAndPID(ctx, "concurrent-test", rt.WorkloadStatusStopping, "stopping", 1002)
+		done <- err
+	}()
+
+	go func() {
+		err := manager.SetWorkloadStatusAndPID(ctx, "concurrent-test", rt.WorkloadStatusStopped, "stopped", 0)
+		done <- err
+	}()
+
+	// Wait for all updates to complete and check for errors
+	for i := 0; i < 3; i++ {
+		select {
+		case err := <-done:
+			assert.NoError(t, err, "SetWorkloadStatusAndPID should not fail")
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for concurrent status and PID updates")
+		}
+	}
+
+	// Verify file exists and is valid
+	statusFile := filepath.Join(tempDir, "concurrent-test.json")
+	require.FileExists(t, statusFile)
+
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	// The final state should be one of the expected combinations
+	validStates := map[rt.WorkloadStatus]int{
+		rt.WorkloadStatusRunning:  1001,
+		rt.WorkloadStatusStopping: 1002,
+		rt.WorkloadStatusStopped:  0,
+	}
+
+	expectedPID, validStatus := validStates[statusFileData.Status]
+	assert.True(t, validStatus, "Final status %s should be one of the expected values", statusFileData.Status)
+	assert.Equal(t, expectedPID, statusFileData.ProcessID, "PID should match the expected value for status %s", statusFileData.Status)
 }

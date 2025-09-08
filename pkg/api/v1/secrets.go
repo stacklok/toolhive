@@ -20,12 +20,33 @@ const (
 )
 
 // SecretsRoutes defines the routes for the secrets API.
-type SecretsRoutes struct{}
+type SecretsRoutes struct {
+	configProvider config.Provider
+	provider       secrets.Provider
+}
+
+// NewSecretsRoutes creates a new SecretsRoutes with the default config provider
+func NewSecretsRoutes(provider secrets.Provider) *SecretsRoutes {
+	return &SecretsRoutes{
+		configProvider: config.NewDefaultProvider(),
+		provider:       provider,
+	}
+}
+
+// NewSecretsRoutesWithProvider creates a new SecretsRoutes with a custom config provider
+func NewSecretsRoutesWithProvider(provider config.Provider) *SecretsRoutes {
+	return &SecretsRoutes{
+		configProvider: provider,
+	}
+}
 
 // SecretsRouter creates a new router for the secrets API.
-func SecretsRouter() http.Handler {
-	routes := SecretsRoutes{}
+func SecretsRouter(provider secrets.Provider) http.Handler {
+	routes := NewSecretsRoutes(provider)
+	return secretsRouterWithRoutes(routes)
+}
 
+func secretsRouterWithRoutes(routes *SecretsRoutes) http.Handler {
 	r := chi.NewRouter()
 
 	// Setup secrets provider
@@ -59,7 +80,7 @@ func SecretsRouter() http.Handler {
 //	@Failure		400		{string}	string	"Bad Request"
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets [post]
-func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Request) {
+func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Request) {
 	var req setupSecretsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Errorf("Failed to decode request body: %v", err)
@@ -87,7 +108,7 @@ func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Check current secrets provider configuration for appropriate messaging
-	cfg := config.GetConfig()
+	cfg := s.configProvider.GetConfig()
 	isReconfiguration := false
 	isInitialSetup := !cfg.Secrets.SetupCompleted
 	if cfg.Secrets.SetupCompleted {
@@ -157,7 +178,7 @@ func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Update the secrets provider type and mark setup as completed
-	err := config.UpdateConfig(func(c *config.Config) {
+	err := s.configProvider.UpdateConfig(func(c *config.Config) {
 		c.Secrets.ProviderType = string(providerType)
 		c.Secrets.SetupCompleted = true
 	})
@@ -199,7 +220,7 @@ func (*SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Reques
 //	@Failure		500	{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets/default [get]
 func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, _ *http.Request) {
-	cfg := config.GetConfig()
+	cfg := s.configProvider.GetConfig()
 
 	// Check if secrets provider is setup
 	if !cfg.Secrets.SetupCompleted {
@@ -214,15 +235,7 @@ func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, _ *http.Reques
 		return
 	}
 
-	// Get provider capabilities
-	provider, err := s.getSecretsManager()
-	if err != nil {
-		logger.Errorf("Failed to create secrets provider: %v", err)
-		http.Error(w, "Failed to access secrets provider", http.StatusInternalServerError)
-		return
-	}
-
-	capabilities := provider.Capabilities()
+	capabilities := s.provider.Capabilities()
 
 	w.Header().Set("Content-Type", "application/json")
 	resp := getSecretsProviderResponse{
@@ -255,24 +268,14 @@ func (s *SecretsRoutes) getSecretsProvider(w http.ResponseWriter, _ *http.Reques
 //	@Failure		500	{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/secrets/default/keys [get]
 func (s *SecretsRoutes) listSecrets(w http.ResponseWriter, r *http.Request) {
-	provider, err := s.getSecretsManager()
-	if err != nil {
-		if errors.Is(err, secrets.ErrSecretsNotSetup) {
-			http.Error(w, "Secrets provider not setup", http.StatusNotFound)
-			return
-		}
-		logger.Errorf("Failed to get secrets manager: %v", err)
-		http.Error(w, "Failed to access secrets provider", http.StatusInternalServerError)
-		return
-	}
 
 	// Check if provider supports listing
-	if !provider.Capabilities().CanList {
+	if !s.provider.Capabilities().CanList {
 		http.Error(w, "Secrets provider does not support listing keys", http.StatusMethodNotAllowed)
 		return
 	}
 
-	secretDescriptions, err := provider.ListSecrets(r.Context())
+	secretDescriptions, err := s.provider.ListSecrets(r.Context())
 	if err != nil {
 		logger.Errorf("Failed to list secrets: %v", err)
 		http.Error(w, "Failed to list secrets", http.StatusInternalServerError)
@@ -324,26 +327,15 @@ func (s *SecretsRoutes) createSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := s.getSecretsManager()
-	if err != nil {
-		if errors.Is(err, secrets.ErrSecretsNotSetup) {
-			http.Error(w, "Secrets provider not setup", http.StatusNotFound)
-			return
-		}
-		logger.Errorf("Failed to get secrets manager: %v", err)
-		http.Error(w, "Failed to access secrets provider", http.StatusInternalServerError)
-		return
-	}
-
 	// Check if provider supports writing
-	if !provider.Capabilities().CanWrite {
+	if !s.provider.Capabilities().CanWrite {
 		http.Error(w, "Secrets provider does not support creating secrets", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// Check if secret already exists (if provider supports reading)
-	if provider.Capabilities().CanRead {
-		_, err := provider.GetSecret(r.Context(), req.Key)
+	if s.provider.Capabilities().CanRead {
+		_, err := s.provider.GetSecret(r.Context(), req.Key)
 		if err == nil {
 			http.Error(w, "Secret already exists", http.StatusConflict)
 			return
@@ -351,7 +343,7 @@ func (s *SecretsRoutes) createSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create the secret
-	if err := provider.SetSecret(r.Context(), req.Key, req.Value); err != nil {
+	if err := s.provider.SetSecret(r.Context(), req.Key, req.Value); err != nil {
 		logger.Errorf("Failed to create secret: %v", err)
 		http.Error(w, "Failed to create secret", http.StatusInternalServerError)
 		return
@@ -404,26 +396,15 @@ func (s *SecretsRoutes) updateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := s.getSecretsManager()
-	if err != nil {
-		if errors.Is(err, secrets.ErrSecretsNotSetup) {
-			http.Error(w, "Secrets provider not setup", http.StatusNotFound)
-			return
-		}
-		logger.Errorf("Failed to get secrets manager: %v", err)
-		http.Error(w, "Failed to access secrets provider", http.StatusInternalServerError)
-		return
-	}
-
 	// Check if provider supports writing
-	if !provider.Capabilities().CanWrite {
+	if !s.provider.Capabilities().CanWrite {
 		http.Error(w, "Secrets provider does not support updating secrets", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// Check if secret exists (if provider supports reading)
-	if provider.Capabilities().CanRead {
-		_, err := provider.GetSecret(r.Context(), key)
+	if s.provider.Capabilities().CanRead {
+		_, err := s.provider.GetSecret(r.Context(), key)
 		if err != nil {
 			http.Error(w, "Secret not found", http.StatusNotFound)
 			return
@@ -431,7 +412,7 @@ func (s *SecretsRoutes) updateSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update the secret
-	if err := provider.SetSecret(r.Context(), key, req.Value); err != nil {
+	if err := s.provider.SetSecret(r.Context(), key, req.Value); err != nil {
 		logger.Errorf("Failed to update secret: %v", err)
 		http.Error(w, "Failed to update secret", http.StatusInternalServerError)
 		return
@@ -467,25 +448,14 @@ func (s *SecretsRoutes) deleteSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := s.getSecretsManager()
-	if err != nil {
-		if errors.Is(err, secrets.ErrSecretsNotSetup) {
-			http.Error(w, "Secrets provider not setup", http.StatusNotFound)
-			return
-		}
-		logger.Errorf("Failed to get secrets manager: %v", err)
-		http.Error(w, "Failed to access secrets provider", http.StatusInternalServerError)
-		return
-	}
-
 	// Check if provider supports deletion
-	if !provider.Capabilities().CanDelete {
+	if !s.provider.Capabilities().CanDelete {
 		http.Error(w, "Secrets provider does not support deleting secrets", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// Delete the secret
-	if err := provider.DeleteSecret(r.Context(), key); err != nil {
+	if err := s.provider.DeleteSecret(r.Context(), key); err != nil {
 		logger.Errorf("Failed to delete secret: %v", err)
 		// Check if it's a "not found" error
 		if err.Error() == "cannot delete non-existent secret: "+key {
@@ -497,23 +467,6 @@ func (s *SecretsRoutes) deleteSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// getSecretsManager is a helper function to get the secrets manager
-func (*SecretsRoutes) getSecretsManager() (secrets.Provider, error) {
-	cfg := config.GetConfig()
-
-	// Check if secrets setup has been completed
-	if !cfg.Secrets.SetupCompleted {
-		return nil, secrets.ErrSecretsNotSetup
-	}
-
-	providerType, err := cfg.Secrets.GetProviderType()
-	if err != nil {
-		return nil, err
-	}
-
-	return secrets.CreateSecretProvider(providerType)
 }
 
 // Request and response type definitions

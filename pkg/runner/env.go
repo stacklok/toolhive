@@ -65,11 +65,20 @@ func (*DetachedEnvVarValidator) Validate(
 // CLIEnvVarValidator implements the EnvVarValidator interface for
 // CLI usage. If any missing, mandatory variables are found, this code will
 // prompt the user to supply them through stdin.
-type CLIEnvVarValidator struct{}
+type CLIEnvVarValidator struct {
+	configProvider config.Provider
+}
+
+// NewCLIEnvVarValidator creates a new CLI environment variable validator with the given config provider.
+func NewCLIEnvVarValidator(configProvider config.Provider) *CLIEnvVarValidator {
+	return &CLIEnvVarValidator{
+		configProvider: configProvider,
+	}
+}
 
 // Validate checks that all required environment variables and secrets are provided
 // and returns the processed environment variables to be set.
-func (*CLIEnvVarValidator) Validate(
+func (v *CLIEnvVarValidator) Validate(
 	ctx context.Context,
 	metadata *registry.ImageMetadata,
 	runConfig *RunConfig,
@@ -94,7 +103,7 @@ func (*CLIEnvVarValidator) Validate(
 		registryEnvVars := metadata.EnvVars
 
 		// Initialize secrets manager if needed
-		secretsManager := initializeSecretsManagerIfNeeded(registryEnvVars)
+		secretsManager := v.initializeSecretsManagerIfNeeded(registryEnvVars)
 
 		// Process each environment variable from the registry
 		for _, envVar := range registryEnvVars {
@@ -211,7 +220,7 @@ func addAsSecret(
 }
 
 // initializeSecretsManagerIfNeeded initializes the secrets manager if there are secret environment variables
-func initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secrets.Provider {
+func (v *CLIEnvVarValidator) initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secrets.Provider {
 	// Check if we have any secret environment variables
 	hasSecrets := false
 	for _, envVar := range registryEnvVars {
@@ -225,7 +234,7 @@ func initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secret
 		return nil
 	}
 
-	secretsManager, err := getSecretsManager()
+	secretsManager, err := v.getSecretsManager()
 	if err != nil {
 		logger.Warnf("Warning: Failed to initialize secrets manager: %v", err)
 		logger.Warnf("Secret environment variables will be stored as regular environment variables")
@@ -237,8 +246,8 @@ func initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secret
 
 // Duplicated from cmd/thv/app/app.go
 // It may be possible to de-duplicate this in future.
-func getSecretsManager() (secrets.Provider, error) {
-	cfg := config.GetConfig()
+func (v *CLIEnvVarValidator) getSecretsManager() (secrets.Provider, error) {
+	cfg := v.configProvider.GetConfig()
 
 	// Check if secrets setup has been completed
 	if !cfg.Secrets.SetupCompleted {

@@ -22,6 +22,16 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+// BuildContext defines the context in which the RunConfigBuilder is being used
+type BuildContext int
+
+const (
+	// BuildContextCLI indicates the builder is being used in CLI context with full validation
+	BuildContextCLI BuildContext = iota
+	// BuildContextOperator indicates the builder is being used in Kubernetes operator context
+	BuildContextOperator
+)
+
 // RunConfigBuilder provides a fluent interface for building RunConfig instances
 type RunConfigBuilder struct {
 	config *RunConfig
@@ -30,21 +40,38 @@ type RunConfigBuilder struct {
 	// Store ports separately for proper validation
 	port       int
 	targetPort int
+	// Build context determines which validation and features are enabled
+	buildContext BuildContext
 }
 
-// NewRunConfigBuilder creates a new RunConfigBuilder with default values
+// NewRunConfigBuilder creates a new RunConfigBuilder with default values for CLI use
 func NewRunConfigBuilder() *RunConfigBuilder {
 	return &RunConfigBuilder{
 		config: &RunConfig{
 			ContainerLabels: make(map[string]string),
 			EnvVars:         make(map[string]string),
 		},
+		buildContext: BuildContextCLI,
 	}
 }
 
-// WithRuntime sets the container runtime
+// NewOperatorRunConfigBuilder creates a new RunConfigBuilder configured for operator use
+func NewOperatorRunConfigBuilder() *RunConfigBuilder {
+	return &RunConfigBuilder{
+		config: &RunConfig{
+			ContainerLabels: make(map[string]string),
+			EnvVars:         make(map[string]string),
+		},
+		buildContext: BuildContextOperator,
+	}
+}
+
+// WithRuntime sets the container runtime (only used in CLI context)
 func (b *RunConfigBuilder) WithRuntime(deployer rt.Deployer) *RunConfigBuilder {
-	b.config.Deployer = deployer
+	// Only set deployer in CLI context
+	if b.buildContext == BuildContextCLI {
+		b.config.Deployer = deployer
+	}
 	return b
 }
 
@@ -743,6 +770,37 @@ func (b *RunConfigBuilder) processVolumeMounts() error {
 	}
 
 	return nil
+}
+
+// BuildForOperator creates a RunConfig for operator use, using the same validation as CLI
+func (b *RunConfigBuilder) BuildForOperator() (*RunConfig, error) {
+	if b.buildContext != BuildContextOperator {
+		return nil, fmt.Errorf("BuildForOperator can only be used with BuildContextOperator")
+	}
+
+	// Set build context on the config to control validation behavior
+	b.config.buildContext = BuildContextOperator
+
+	// Use the same validation logic as CLI, but without image metadata (pass nil)
+	if err := b.validateConfig(nil); err != nil {
+		return nil, fmt.Errorf("failed to validate run config: %w", err)
+	}
+
+	// Set schema version
+	b.config.SchemaVersion = CurrentSchemaVersion
+
+	return b.config, nil
+}
+
+// WithEnvVars sets environment variables from a map
+func (b *RunConfigBuilder) WithEnvVars(envVars map[string]string) *RunConfigBuilder {
+	if b.config.EnvVars == nil {
+		b.config.EnvVars = make(map[string]string)
+	}
+	for key, value := range envVars {
+		b.config.EnvVars[key] = value
+	}
+	return b
 }
 
 // WithEnvFile adds environment variables from a single file

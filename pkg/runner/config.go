@@ -123,6 +123,9 @@ type RunConfig struct {
 	// Deployer is the container runtime to use (not serialized)
 	Deployer rt.Deployer `json:"-" yaml:"-"`
 
+	// buildContext indicates whether this config is being built for CLI or operator use (not serialized)
+	buildContext BuildContext
+
 	// IsolateNetwork indicates whether to isolate the network for the container
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
 
@@ -240,6 +243,14 @@ func (c *RunConfig) WithTransport(t string) (*RunConfig, error) {
 
 // WithPorts configures the host and target ports
 func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
+	// Skip port validation for operator context - ports will be used in containers, not on operator host
+	if c.buildContext == BuildContextOperator {
+		c.Port = proxyPort
+		c.TargetPort = targetPort
+		return c, nil
+	}
+
+	// CLI context: perform port validation as before
 	var selectedPort int
 	var err error
 
@@ -383,6 +394,7 @@ func (c *RunConfig) WithContainerName() (*RunConfig, bool) {
 		} else if c.RemoteURL != "" && c.Name != "" {
 			// For remote servers, sanitize the provided name to ensure it's safe for file paths
 			c.BaseName, wasModified = workloadtypes.SanitizeWorkloadName(c.Name)
+			c.ContainerName = c.Name
 		}
 	}
 	return c, wasModified

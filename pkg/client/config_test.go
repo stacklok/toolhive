@@ -19,6 +19,7 @@ import (
 )
 
 const testValidJSON = `{"mcpServers": {}, "mcp": {"servers": {}}}`
+const testValidYAML = `extensions: {}`
 
 // createMockClientConfigs creates a set of mock client configurations for testing
 func createMockClientConfigs() []mcpClientConfig {
@@ -134,6 +135,14 @@ func createMockClientConfigs() []mcpClientConfig {
 			SettingsFile:         "mcp_config.json",
 			MCPServersPathPrefix: "/mcpServers",
 			Extension:            JSON,
+		},
+		{
+			ClientType:           Goose,
+			Description:          "Goose AI agent (Mock)",
+			RelPath:              []string{"mock_goose"},
+			SettingsFile:         "config.yaml",
+			MCPServersPathPrefix: "/extensions",
+			Extension:            YAML,
 		},
 	}
 }
@@ -297,6 +306,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				string(AmpVSCodeInsider),
 				string(AmpWindsurf),
 				string(LMStudio),
+				string(Goose),
 			},
 		},
 	}
@@ -322,7 +332,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			foundTypes[cf.ClientType] = true
 		}
 
-		for _, expectedClient := range supportedClientIntegrations {
+		for _, expectedClient := range mockClientConfigs {
 			assert.True(t, foundTypes[expectedClient.ClientType],
 				"Should find config for client type %s", expectedClient.ClientType)
 		}
@@ -387,6 +397,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case LMStudio:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"LMStudio config should contain mcpServers key")
+			case Goose:
+				assert.Contains(t, string(content), `extensions:`,
+					"Goose config should contain extensions key")
 			}
 		}
 	})
@@ -406,7 +419,8 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 		testURL := "http://localhost:9999/sse#test-server"
 
 		for _, cf := range configs {
-			err := Upsert(cf, testServer, testURL, types.TransportTypeSSE.String())
+			// Use the manager's Upsert method instead of the global function to avoid using the singleton config
+			err := manager.Upsert(cf, testServer, testURL, types.TransportTypeSSE.String())
 			require.NoError(t, err, "Should be able to add MCP server to %s config", cf.ClientType)
 
 			// Read the file and verify the server was added
@@ -419,7 +433,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -437,7 +451,16 @@ func createTestConfigFilesWithConfigs(t *testing.T, homeDir string, clientConfig
 		err := os.MkdirAll(configDir, 0755)
 		if err == nil {
 			configPath := filepath.Join(configDir, cfg.SettingsFile)
-			err = os.WriteFile(configPath, []byte(testValidJSON), 0644)
+
+			// Choose the appropriate content based on the file extension
+			var content []byte
+			if cfg.Extension == YAML {
+				content = []byte(testValidYAML)
+			} else {
+				content = []byte(testValidJSON)
+			}
+
+			err = os.WriteFile(configPath, content, 0644)
 			require.NoError(t, err)
 		}
 	}

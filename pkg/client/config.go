@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tailscale/hujson"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -52,6 +53,8 @@ const (
 	AmpWindsurf MCPClient = "amp-windsurf"
 	// LMStudio represents the LM Studio application.
 	LMStudio MCPClient = "lm-studio"
+	// Goose represents the Goose AI agent.
+	Goose MCPClient = "goose"
 )
 
 // Extension is extension of the client config file.
@@ -60,6 +63,8 @@ type Extension string
 const (
 	// JSON represents a JSON extension.
 	JSON Extension = "json"
+	// YAML represents a YAML extension.
+	YAML Extension = "yaml"
 )
 
 // mcpClientConfig represents a configuration path for a supported MCP client.
@@ -342,6 +347,26 @@ var supportedClientIntegrations = []mcpClientConfig{
 		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabel:            "url",
 	},
+	{
+		ClientType:           Goose,
+		Description:          "Goose AI agent",
+		SettingsFile:         "config.yaml",
+		MCPServersPathPrefix: "/extensions",
+		RelPath:              []string{"goose"},
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {".config"},
+			"windows": {"AppData", "Block"},
+		},
+		Extension: YAML,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "streamable_http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "uri",
+	},
 }
 
 // ConfigFile represents a client configuration file
@@ -530,10 +555,19 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType MCPClient) (*Conf
 		return nil, err
 	}
 
-	// Create a config updater for this file
-	configUpdater := &JSONConfigUpdater{
-		Path:                 path,
-		MCPServersPathPrefix: clientCfg.MCPServersPathPrefix,
+	// Create a config updater for this file based on the extension
+	var configUpdater ConfigUpdater
+	switch clientCfg.Extension {
+	case YAML:
+		configUpdater = &YAMLConfigUpdater{
+			Path:      path,
+			Converter: &GooseYAMLConverter{},
+		}
+	case JSON:
+		configUpdater = &JSONConfigUpdater{
+			Path:                 path,
+			MCPServersPathPrefix: clientCfg.MCPServersPathPrefix,
+		}
 	}
 
 	// Return the configuration file metadata
@@ -572,11 +606,18 @@ func validateConfigFileFormat(cf *ConfigFile) error {
 		data = []byte("{}") // Default to an empty JSON object if the file is empty
 	}
 
-	// Default to JSON
-	// we don't care about the contents of the file, we just want to validate that it's valid JSON
-	_, err = hujson.Parse(data)
-	if err != nil {
-		return fmt.Errorf("failed to parse JSON for file %s: %w", cf.Path, err)
+	switch cf.Extension {
+	case YAML:
+		var temp interface{}
+		err = yaml.Unmarshal(data, &temp)
+		if err != nil {
+			return fmt.Errorf("failed to parse YAML for file %s: %w", cf.Path, err)
+		}
+	case JSON:
+		_, err = hujson.Parse(data)
+		if err != nil {
+			return fmt.Errorf("failed to parse JSON for file %s: %w", cf.Path, err)
+		}
 	}
 	return nil
 }

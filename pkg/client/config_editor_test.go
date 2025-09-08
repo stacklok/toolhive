@@ -6,11 +6,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/tidwall/gjson"
-	"gotest.tools/assert"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -280,7 +282,303 @@ func TestEnsurePathExists(t *testing.T) {
 
 			result := ensurePathExists(tt.content, tt.path)
 
-			assert.DeepEqual(t, tt.expectedResult, result)
+			if !reflect.DeepEqual(result, tt.expectedResult) {
+				t.Errorf("JSON config content = %v, want %v", result, tt.expectedResult)
+			}
 		})
 	}
+}
+
+func TestYAMLConfigUpdaterUpsert(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+
+	t.Run("AddNewMCPServerToEmptyYAML", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir, configPath := setupEmptyTestYAMLConfig(t, uniqueId)
+
+		ycu := YAMLConfigUpdater{
+			Path:      configPath,
+			Converter: &GooseYAMLConverter{},
+		}
+
+		mcpServer := MCPServer{
+			Url:  fmt.Sprintf("test-url-%s", uniqueId),
+			Type: "mcp",
+		}
+
+		serverName := "testServer"
+		err := ycu.Upsert(serverName, mcpServer)
+		if err != nil {
+			t.Fatalf("Failed to update YAML config: %v", err)
+		}
+
+		// Verify the YAML content
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read YAML file: %v", err)
+		}
+
+		var config GooseConfig
+		err = yaml.Unmarshal(content, &config)
+		if err != nil {
+			t.Fatalf("Failed to unmarshal YAML: %v", err)
+		}
+
+		extension, exists := config.Extensions[serverName]
+		assert.True(t, exists, "Extension should exist")
+		assert.Equal(t, mcpServer.Url, extension.Uri, "URI should match")
+		assert.Equal(t, mcpServer.Type, extension.Type, "Type should match")
+		assert.Equal(t, serverName, extension.Name, "Name should match")
+		assert.Equal(t, true, extension.Enabled, "Should be enabled")
+		assert.Equal(t, GooseTimeout, extension.Timeout, "Timeout should match")
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("PreserveExistingFieldsWhenUpserting", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, fmt.Sprintf("test-config-%s.yaml", uniqueId))
+
+		// Create a YAML file with existing fields that should be preserved
+		initialConfig := `GOOSE_PROVIDER: anthropic
+ANTHROPIC_HOST: https://api.anthropic.com
+extensions:
+  existingServer:
+    name: existingServer
+    enabled: true
+    type: mcp
+    uri: existing-url
+    timeout: 60
+`
+
+		if err := os.WriteFile(configPath, []byte(initialConfig), 0600); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		ycu := YAMLConfigUpdater{
+			Path:      configPath,
+			Converter: &GooseYAMLConverter{},
+		}
+
+		// Add a new MCP server
+		newServer := MCPServer{
+			Url:  fmt.Sprintf("new-url-%s", uniqueId),
+			Type: "mcp",
+		}
+		err := ycu.Upsert("newServer", newServer)
+		if err != nil {
+			t.Fatalf("Failed to upsert new server: %v", err)
+		}
+
+		// Read the updated config as a generic map to check all fields
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read updated YAML file: %v", err)
+		}
+
+		var config map[string]interface{}
+		err = yaml.Unmarshal(content, &config)
+		if err != nil {
+			t.Fatalf("Failed to unmarshal YAML: %v", err)
+		}
+
+		// Verify original fields are preserved
+		assert.Equal(t, "anthropic", config["GOOSE_PROVIDER"], "GOOSE_PROVIDER should be preserved")
+		assert.Equal(t, "https://api.anthropic.com", config["ANTHROPIC_HOST"], "ANTHROPIC_HOST should be preserved")
+
+		// Verify extensions section contains both old and new servers
+		extensions, ok := config["extensions"].(map[string]interface{})
+		assert.True(t, ok, "Extensions should be a map")
+
+		// Check existing server is still there
+		existingServer, exists := extensions["existingServer"].(map[string]interface{})
+		assert.True(t, exists, "Existing server should still exist")
+		assert.Equal(t, "existing-url", existingServer["uri"], "Existing server URI should be preserved")
+
+		// Check new server was added
+		newServerData, exists := extensions["newServer"].(map[string]interface{})
+		assert.True(t, exists, "New server should exist")
+		assert.Equal(t, newServer.Url, newServerData["uri"], "New server URI should match")
+		assert.Equal(t, newServer.Type, newServerData["type"], "New server type should match")
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+}
+
+func TestYAMLConfigUpdaterRemove(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+
+	t.Run("RemoveExistingMCPServerFromYAML", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir, configPath := setupExistingTestYAMLConfig(t, uniqueId)
+
+		ycu := YAMLConfigUpdater{
+			Path:      configPath,
+			Converter: &GooseYAMLConverter{},
+		}
+
+		serverName := "existingServer"
+		err := ycu.Remove(serverName)
+		if err != nil {
+			t.Fatalf("Failed to remove server from YAML config: %v", err)
+		}
+
+		// Verify removal
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read YAML file: %v", err)
+		}
+
+		var config GooseConfig
+		err = yaml.Unmarshal(content, &config)
+		if err != nil {
+			t.Fatalf("Failed to unmarshal YAML: %v", err)
+		}
+
+		_, exists := config.Extensions[serverName]
+		assert.False(t, exists, "Extension should not exist after removal")
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("RemoveNonExistentMCPServerFromYAML", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir, configPath := setupExistingTestYAMLConfig(t, uniqueId)
+
+		ycu := YAMLConfigUpdater{
+			Path:      configPath,
+			Converter: &GooseYAMLConverter{},
+		}
+
+		// Try to remove non-existent server
+		err := ycu.Remove("nonExistentServer")
+		if err != nil {
+			t.Fatalf("Should not error when removing non-existent server: %v", err)
+		}
+
+		// Verify existing server is still there
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("Failed to read YAML file: %v", err)
+		}
+
+		var config GooseConfig
+		err = yaml.Unmarshal(content, &config)
+		if err != nil {
+			t.Fatalf("Failed to unmarshal YAML: %v", err)
+		}
+
+		_, exists := config.Extensions["existingServer"]
+		assert.True(t, exists, "Existing extension should still exist")
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+
+	t.Run("RemoveFromEmptyYAMLFile", func(t *testing.T) {
+		t.Parallel()
+
+		uniqueId := uuid.New().String()
+		tempDir, configPath := setupEmptyTestYAMLConfig(t, uniqueId)
+
+		ycu := YAMLConfigUpdater{
+			Path:      configPath,
+			Converter: &GooseYAMLConverter{},
+		}
+
+		// Try to remove from empty file
+		err := ycu.Remove("anyServer")
+		if err != nil {
+			t.Fatalf("Should not error when removing from empty file: %v", err)
+		}
+
+		t.Cleanup(func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				t.Logf("Failed to remove temp dir: %v", err)
+			}
+		})
+	})
+}
+
+// setupEmptyTestYAMLConfig creates a temporary directory and an empty YAML config file for testing
+func setupEmptyTestYAMLConfig(t *testing.T, testName string) (string, string) {
+	t.Helper()
+
+	tempDir, err := os.MkdirTemp("", "toolhive-yaml-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+
+	configPath := filepath.Join(tempDir, fmt.Sprintf("config-%s.yaml", testName))
+
+	// Create an empty YAML file
+	if err := os.WriteFile(configPath, []byte(""), 0600); err != nil {
+		t.Fatalf("Failed to write empty YAML file: %v", err)
+	}
+
+	return tempDir, configPath
+}
+
+// setupExistingTestYAMLConfig creates a temporary directory and a YAML config file with existing data
+func setupExistingTestYAMLConfig(t *testing.T, testName string) (string, string) {
+	t.Helper()
+
+	tempDir, err := os.MkdirTemp("", "toolhive-yaml-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+
+	configPath := filepath.Join(tempDir, fmt.Sprintf("config-%s.yaml", testName))
+
+	// Create a YAML config with existing extension
+	testConfig := GooseConfig{
+		Extensions: map[string]GooseExtension{
+			"existingServer": {
+				Name:    "existingServer",
+				Enabled: true,
+				Type:    "existing-type",
+				Timeout: GooseTimeout,
+				Uri:     fmt.Sprintf("existing-url-%s", testName),
+			},
+		},
+	}
+
+	yamlData, err := yaml.Marshal(&testConfig)
+	if err != nil {
+		t.Fatalf("Failed to marshal test YAML: %v", err)
+	}
+
+	if err := os.WriteFile(configPath, yamlData, 0600); err != nil {
+		t.Fatalf("Failed to write test YAML file: %v", err)
+	}
+
+	return tempDir, configPath
 }

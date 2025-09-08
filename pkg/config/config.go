@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -140,22 +140,36 @@ func applyBackwardCompatibility(config *Config) error {
 // LoadOrCreateConfig fetches the application configuration.
 // If it does not already exist - it will create a new config file with default values.
 func LoadOrCreateConfig() (*Config, error) {
-	return LoadOrCreateConfigWithPath("")
+	provider := NewProvider()
+	return provider.LoadOrCreateConfig()
+}
+
+// LoadOrCreateConfigWithDefaultPath is the internal implementation for loading config with the default path.
+// This avoids circular dependency issues.
+func LoadOrCreateConfigWithDefaultPath() (*Config, error) {
+	configPath, err := getConfigPath()
+	if err != nil {
+		return nil, fmt.Errorf("unable to fetch config path: %w", err)
+	}
+	return LoadOrCreateConfigFromPath(configPath)
 }
 
 // LoadOrCreateConfigWithPath fetches the application configuration from a specific path.
 // If configPath is empty, it uses the default path.
 // If it does not already exist - it will create a new config file with default values.
 func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
+	if configPath == "" {
+		// When no path is specified, use the provider pattern to handle runtime-specific behavior
+		return LoadOrCreateConfig()
+	}
+
+	return LoadOrCreateConfigFromPath(configPath)
+}
+
+// LoadOrCreateConfigFromPath is the core implementation for loading/creating config from a specific path
+func LoadOrCreateConfigFromPath(configPath string) (*Config, error) {
 	var config Config
 	var err error
-
-	if configPath == "" {
-		configPath, err = getConfigPath()
-		if err != nil {
-			return nil, fmt.Errorf("unable to fetch config path: %w", err)
-		}
-	}
 
 	// Check to see if the config file already exists.
 	configPath = path.Clean(configPath)
@@ -174,9 +188,9 @@ func LoadOrCreateConfigWithPath(configPath string) (*Config, error) {
 		// Create a new config with default values.
 		config = createNewConfigWithDefaults()
 
-		// Persist the new default to disk.
+		// Persist the new default to disk using the specific path
 		logger.Debugf("initializing configuration file at %s", configPath)
-		err = config.save()
+		err = config.saveToPath(configPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to write default config: %w", err)
 		}
@@ -233,7 +247,8 @@ func (c *Config) saveToPath(configPath string) error {
 // UpdateConfig locks a separate lock file, reads from disk, applies the changes
 // from the anonymous function, writes to disk and unlocks the file.
 func UpdateConfig(updateFn func(*Config)) error {
-	return UpdateConfigAtPath("", updateFn)
+	provider := NewProvider()
+	return provider.UpdateConfig(updateFn)
 }
 
 // UpdateConfigAtPath locks a separate lock file, reads from disk, applies the changes
@@ -250,7 +265,7 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 
 	// Use a separate lock file for cross-platform compatibility
 	lockPath := configPath + ".lock"
-	fileLock := flock.New(lockPath)
+	fileLock := lockfile.NewTrackedLock(lockPath)
 	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
 	defer cancel()
 
@@ -262,7 +277,7 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 	if !locked {
 		return fmt.Errorf("failed to acquire lock: timeout after %v", lockTimeout)
 	}
-	defer fileLock.Unlock()
+	defer lockfile.ReleaseTrackedLock(lockPath, fileLock)
 
 	// Load the config after acquiring the lock to avoid race conditions
 	c, err := LoadOrCreateConfigWithPath(configPath)

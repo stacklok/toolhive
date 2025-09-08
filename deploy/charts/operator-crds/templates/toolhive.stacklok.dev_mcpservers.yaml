@@ -8730,6 +8730,21 @@ spec:
                           type: string
                         description: Labels to add or override on the resource
                         type: object
+                      podTemplateMetadataOverrides:
+                        description: ResourceMetadataOverrides defines metadata overrides
+                          for a resource
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: Annotations to add or override on the resource
+                            type: object
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: Labels to add or override on the resource
+                            type: object
+                        type: object
                     type: object
                   proxyService:
                     description: ProxyService defines overrides for the Proxy Service

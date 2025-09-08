@@ -11,7 +11,9 @@ import (
 
 // TestSerialization tests the serialization and deserialization functions
 func TestSerialization(t *testing.T) {
+	t.Parallel()
 	t.Run("Serialize and Deserialize ProxySession", func(t *testing.T) {
+		t.Parallel()
 		// Create a session with metadata
 		original := NewProxySession("test-proxy-1")
 		original.SetMetadata("key1", "value1")
@@ -19,7 +21,7 @@ func TestSerialization(t *testing.T) {
 		original.SetData(map[string]interface{}{"custom": "data"})
 
 		// Serialize
-		data, err := serializeSession(original)
+		data, err := SerializeSession(original)
 		require.NoError(t, err)
 		assert.NotEmpty(t, data)
 
@@ -31,14 +33,14 @@ func TestSerialization(t *testing.T) {
 		assert.Equal(t, string(SessionTypeMCP), jsonData["type"])
 
 		// Deserialize
-		restored, err := deserializeSession(data)
+		restored, err := DeserializeSession(data)
 		require.NoError(t, err)
 		assert.NotNil(t, restored)
 
 		// Verify restored session
 		assert.Equal(t, original.ID(), restored.ID())
 		assert.Equal(t, original.Type(), restored.Type())
-		
+
 		// Check metadata
 		metadata := restored.GetMetadata()
 		assert.Equal(t, "value1", metadata["key1"])
@@ -46,18 +48,19 @@ func TestSerialization(t *testing.T) {
 	})
 
 	t.Run("Serialize and Deserialize SSESession", func(t *testing.T) {
+		t.Parallel()
 		// Create an SSE session
 		original := NewSSESession("test-sse-1")
 		original.SetMetadata("client", "browser")
 		original.SetMetadata("version", "1.0")
 
 		// Serialize
-		data, err := serializeSession(original)
+		data, err := SerializeSession(original)
 		require.NoError(t, err)
 		assert.NotEmpty(t, data)
 
 		// Deserialize
-		restored, err := deserializeSession(data)
+		restored, err := DeserializeSession(data)
 		require.NoError(t, err)
 		assert.NotNil(t, restored)
 
@@ -77,17 +80,18 @@ func TestSerialization(t *testing.T) {
 	})
 
 	t.Run("Serialize and Deserialize StreamableSession", func(t *testing.T) {
+		t.Parallel()
 		// Create a streamable session
 		original := NewStreamableSession("test-stream-1")
 		original.SetMetadata("protocol", "http")
 
 		// Serialize
-		data, err := serializeSession(original)
+		data, err := SerializeSession(original)
 		require.NoError(t, err)
 		assert.NotEmpty(t, data)
 
 		// Deserialize
-		restored, err := deserializeSession(data)
+		restored, err := DeserializeSession(data)
 		require.NoError(t, err)
 		assert.NotNil(t, restored)
 
@@ -101,42 +105,46 @@ func TestSerialization(t *testing.T) {
 	})
 
 	t.Run("Serialize nil session", func(t *testing.T) {
-		data, err := serializeSession(nil)
+		t.Parallel()
+		data, err := SerializeSession(nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "nil session")
 		assert.Nil(t, data)
 	})
 
 	t.Run("Deserialize empty data", func(t *testing.T) {
-		session, err := deserializeSession([]byte{})
+		t.Parallel()
+		session, err := DeserializeSession([]byte{})
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "empty data")
 		assert.Nil(t, session)
 	})
 
 	t.Run("Deserialize invalid JSON", func(t *testing.T) {
-		session, err := deserializeSession([]byte("not json"))
+		t.Parallel()
+		session, err := DeserializeSession([]byte("not json"))
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "unmarshal")
 		assert.Nil(t, session)
 	})
 
 	t.Run("Preserve timestamps", func(t *testing.T) {
+		t.Parallel()
 		// Create a session with specific timestamps
 		original := NewProxySession("test-time-1")
 		createdAt := original.CreatedAt()
-		
+
 		// Wait a bit and touch to update the timestamp
 		time.Sleep(10 * time.Millisecond)
 		original.Touch()
 		updatedAt := original.UpdatedAt()
 
 		// Serialize
-		data, err := serializeSession(original)
+		data, err := SerializeSession(original)
 		require.NoError(t, err)
 
 		// Deserialize
-		restored, err := deserializeSession(data)
+		restored, err := DeserializeSession(data)
 		require.NoError(t, err)
 
 		// Timestamps should be preserved
@@ -145,15 +153,16 @@ func TestSerialization(t *testing.T) {
 	})
 
 	t.Run("Handle session with no metadata", func(t *testing.T) {
+		t.Parallel()
 		// Create a session without metadata
 		original := NewProxySession("test-no-meta")
 
 		// Serialize
-		data, err := serializeSession(original)
+		data, err := SerializeSession(original)
 		require.NoError(t, err)
 
 		// Deserialize
-		restored, err := deserializeSession(data)
+		restored, err := DeserializeSession(data)
 		require.NoError(t, err)
 
 		// Metadata should be empty but not nil
@@ -163,6 +172,7 @@ func TestSerialization(t *testing.T) {
 	})
 
 	t.Run("Handle complex data in session", func(t *testing.T) {
+		t.Parallel()
 		// Create a session with complex data
 		original := NewProxySession("test-complex")
 		complexData := map[string]interface{}{
@@ -176,17 +186,17 @@ func TestSerialization(t *testing.T) {
 		original.SetData(complexData)
 
 		// Serialize
-		data, err := serializeSession(original)
+		data, err := SerializeSession(original)
 		require.NoError(t, err)
 
 		// Deserialize
-		restored, err := deserializeSession(data)
+		restored, err := DeserializeSession(data)
 		require.NoError(t, err)
 
 		// Data should be preserved as JSON
 		restoredData := restored.GetData()
 		assert.NotNil(t, restoredData)
-		
+
 		// The data will be stored as json.RawMessage
 		if rawData, ok := restoredData.(json.RawMessage); ok {
 			var parsed map[string]interface{}
@@ -199,6 +209,7 @@ func TestSerialization(t *testing.T) {
 	})
 
 	t.Run("Unknown session type defaults to ProxySession", func(t *testing.T) {
+		t.Parallel()
 		// Create JSON with unknown session type
 		jsonData := `{
 			"id": "unknown-1",
@@ -208,7 +219,7 @@ func TestSerialization(t *testing.T) {
 		}`
 
 		// Deserialize
-		restored, err := deserializeSession([]byte(jsonData))
+		restored, err := DeserializeSession([]byte(jsonData))
 		require.NoError(t, err)
 		assert.NotNil(t, restored)
 

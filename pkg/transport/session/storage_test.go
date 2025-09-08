@@ -11,7 +11,9 @@ import (
 
 // TestLocalStorage tests the LocalStorage implementation
 func TestLocalStorage(t *testing.T) {
+	t.Parallel()
 	t.Run("Store and Load", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -30,13 +32,14 @@ func TestLocalStorage(t *testing.T) {
 		assert.NotNil(t, loaded)
 		assert.Equal(t, "test-id-1", loaded.ID())
 		assert.Equal(t, SessionTypeMCP, loaded.Type())
-		
+
 		// Check metadata was preserved
 		metadata := loaded.GetMetadata()
 		assert.Equal(t, "value1", metadata["key1"])
 	})
 
 	t.Run("Store nil session", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -47,6 +50,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("Store session with empty ID", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -58,6 +62,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("Load non-existent session", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -69,6 +74,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("Load with empty ID", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -80,6 +86,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("Delete session", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -106,6 +113,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("Delete non-existent session", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -116,6 +124,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("Delete with empty ID", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -126,6 +135,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("DeleteExpired", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -164,6 +174,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("Auto-touch on Load", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -187,6 +198,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("Count helper method", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -214,6 +226,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("Range helper method", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -229,7 +242,7 @@ func TestLocalStorage(t *testing.T) {
 
 		// Use Range to collect all IDs
 		var collected []string
-		storage.Range(func(key, value interface{}) bool {
+		storage.Range(func(key, _ interface{}) bool {
 			if id, ok := key.(string); ok {
 				collected = append(collected, id)
 			}
@@ -244,6 +257,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("Close clears all sessions", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 
 		ctx := context.Background()
@@ -267,6 +281,7 @@ func TestLocalStorage(t *testing.T) {
 	})
 
 	t.Run("Context cancellation in DeleteExpired", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -283,12 +298,14 @@ func TestLocalStorage(t *testing.T) {
 
 // TestManagerWithStorage tests the Manager with the Storage interface
 func TestManagerWithStorage(t *testing.T) {
+	t.Parallel()
 	t.Run("Manager with LocalStorage", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		factory := func(id string) Session {
 			return NewProxySession(id)
 		}
-		
+
 		manager := NewManagerWithStorage(30*time.Minute, factory, storage)
 		defer manager.Stop()
 
@@ -312,12 +329,13 @@ func TestManagerWithStorage(t *testing.T) {
 	})
 
 	t.Run("Manager with custom factory", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		factory := func(id string) Session {
 			// Create SSE sessions by default
 			return NewSSESession(id)
 		}
-		
+
 		manager := NewManagerWithStorage(30*time.Minute, factory, storage)
 		defer manager.Stop()
 
@@ -333,11 +351,12 @@ func TestManagerWithStorage(t *testing.T) {
 	})
 
 	t.Run("Manager AddSession method", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		factory := func(id string) Session {
 			return NewProxySession(id)
 		}
-		
+
 		manager := NewManagerWithStorage(30*time.Minute, factory, storage)
 		defer manager.Stop()
 
@@ -354,17 +373,18 @@ func TestManagerWithStorage(t *testing.T) {
 		assert.True(t, found)
 		assert.NotNil(t, session)
 		assert.Equal(t, SessionTypeStreamable, session.Type())
-		
+
 		metadata := session.GetMetadata()
 		assert.Equal(t, "metadata", metadata["custom"])
 	})
 
 	t.Run("Manager Count with LocalStorage", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		factory := func(id string) Session {
 			return NewProxySession(id)
 		}
-		
+
 		manager := NewManagerWithStorage(30*time.Minute, factory, storage)
 		defer manager.Stop()
 
@@ -382,11 +402,12 @@ func TestManagerWithStorage(t *testing.T) {
 	})
 
 	t.Run("Manager Range with LocalStorage", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		factory := func(id string) Session {
 			return NewProxySession(id)
 		}
-		
+
 		manager := NewManagerWithStorage(30*time.Minute, factory, storage)
 		defer manager.Stop()
 
@@ -399,7 +420,7 @@ func TestManagerWithStorage(t *testing.T) {
 
 		// Use Range to collect all IDs
 		var collected []string
-		manager.Range(func(key, value interface{}) bool {
+		manager.Range(func(key, _ interface{}) bool {
 			if id, ok := key.(string); ok {
 				collected = append(collected, id)
 			}
@@ -416,7 +437,9 @@ func TestManagerWithStorage(t *testing.T) {
 
 // TestSessionTypes tests different session type implementations
 func TestSessionTypes(t *testing.T) {
+	t.Parallel()
 	t.Run("ProxySession with Storage", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -431,12 +454,13 @@ func TestSessionTypes(t *testing.T) {
 		loaded, err := storage.Load(ctx, "proxy-1")
 		require.NoError(t, err)
 		assert.Equal(t, SessionTypeMCP, loaded.Type())
-		
+
 		metadata := loaded.GetMetadata()
 		assert.Equal(t, "production", metadata["env"])
 	})
 
 	t.Run("SSESession with Storage", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -450,12 +474,13 @@ func TestSessionTypes(t *testing.T) {
 		loaded, err := storage.Load(ctx, "sse-1")
 		require.NoError(t, err)
 		assert.Equal(t, SessionTypeSSE, loaded.Type())
-		
+
 		metadata := loaded.GetMetadata()
 		assert.Equal(t, "browser", metadata["client"])
 	})
 
 	t.Run("StreamableSession with Storage", func(t *testing.T) {
+		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
 
@@ -469,7 +494,7 @@ func TestSessionTypes(t *testing.T) {
 		loaded, err := storage.Load(ctx, "stream-1")
 		require.NoError(t, err)
 		assert.Equal(t, SessionTypeStreamable, loaded.Type())
-		
+
 		metadata := loaded.GetMetadata()
 		assert.Equal(t, "http", metadata["protocol"])
 	})

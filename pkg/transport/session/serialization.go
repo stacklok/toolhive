@@ -21,9 +21,8 @@ type sessionData struct {
 	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
-// serializeSession converts a Session to its JSON representation.
-// nolint:unused // Will be used in Phase 4 for Redis/Valkey storage
-func serializeSession(s Session) ([]byte, error) {
+// SerializeSession converts a Session to its JSON representation.
+func SerializeSession(s Session) ([]byte, error) {
 	if s == nil {
 		return nil, fmt.Errorf("cannot serialize nil session")
 	}
@@ -48,10 +47,9 @@ func serializeSession(s Session) ([]byte, error) {
 	return json.Marshal(data)
 }
 
-// deserializeSession reconstructs a Session from its JSON representation.
+// DeserializeSession reconstructs a Session from its JSON representation.
 // It creates the appropriate session type based on the Type field.
-// nolint:unused // Will be used in Phase 4 for Redis/Valkey storage
-func deserializeSession(data []byte) (Session, error) {
+func DeserializeSession(data []byte) (Session, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("cannot deserialize empty data")
 	}

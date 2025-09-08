@@ -13,7 +13,7 @@ ToolHive MCP server registry and how to use it for validation and development.
 
 ## Overview
 
-The [`schema.json`](schema.json) file provides comprehensive validation for the
+The [`schema.json`](../../pkg/registry/data/schema.json) file provides comprehensive validation for the
 [`registry.json`](../../pkg/registry/data/registry.json) file structure. It
 ensures consistency, catches common errors, and serves as living documentation
 for contributors.

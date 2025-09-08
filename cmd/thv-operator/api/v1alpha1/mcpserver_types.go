@@ -101,6 +101,8 @@ type ProxyDeploymentOverrides struct {
 	// ResourceMetadataOverrides is embedded to inherit annotations and labels fields
 	ResourceMetadataOverrides `json:",inline"` // nolint:revive
 
+	PodTemplateMetadataOverrides *ResourceMetadataOverrides `json:"podTemplateMetadataOverrides,omitempty"`
+
 	// Env are environment variables to set in the proxy container (thv run process)
 	// These affect the toolhive proxy itself, not the MCP server it manages
 	// +optional

@@ -20,10 +20,12 @@ func TestUnifiedMeterProvider_BothProviders(t *testing.T) {
 		OTLPEndpoint:                "localhost:4318",
 		Insecure:                    true,
 		SamplingRate:                0.1,
+		TracingEnabled:              true,
+		MetricsEnabled:              true,
 		EnablePrometheusMetricsPath: true,
 	}
 
-	builder := NewBuilder(config)
+	builder := WithConfig(config)
 	provider, err := builder.Build(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, provider)
@@ -64,11 +66,15 @@ func TestUnifiedMeterProvider_PrometheusOnly(t *testing.T) {
 	config := Config{
 		ServiceName:                 "test-service",
 		ServiceVersion:              "1.0.0",
+		OTLPEndpoint:                "localhost:4318",
+		Insecure:                    true,
+		SamplingRate:                0.1,
+		TracingEnabled:              false,
+		MetricsEnabled:              false,
 		EnablePrometheusMetricsPath: true,
-		// No OTLP endpoint
 	}
 
-	builder := NewBuilder(config)
+	builder := WithConfig(config)
 	provider, err := builder.Build(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, provider)
@@ -98,15 +104,17 @@ func TestUnifiedMeterProvider_OTLPOnly(t *testing.T) {
 
 	ctx := context.Background()
 	config := Config{
-		ServiceName:    "test-service",
-		ServiceVersion: "1.0.0",
-		OTLPEndpoint:   "localhost:4318",
-		Insecure:       true,
-		SamplingRate:   0.1,
-		// No Prometheus
+		ServiceName:                 "test-service",
+		ServiceVersion:              "1.0.0",
+		OTLPEndpoint:                "localhost:4318",
+		Insecure:                    true,
+		SamplingRate:                0.1,
+		TracingEnabled:              true,
+		MetricsEnabled:              true,
+		EnablePrometheusMetricsPath: false,
 	}
 
-	builder := NewBuilder(config)
+	builder := WithConfig(config)
 	provider, err := builder.Build(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, provider)

@@ -217,7 +217,7 @@ The secret must exist in your configured secrets provider, otherwise the command
 				fmt.Fprintf(os.Stderr, "Failed to get secret %s: %v\n", name, err)
 				return
 			}
-			fmt.Printf("Secret %s: %s\n", name, value)
+			fmt.Printf("%s\n", value)
 		},
 	}
 }

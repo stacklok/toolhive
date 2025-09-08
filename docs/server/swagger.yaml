@@ -863,6 +863,7 @@ components:
           items:
             type: string
           type: array
+          uniqueItems: false
         headers:
           additionalProperties:
             type: string

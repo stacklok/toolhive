@@ -99,7 +99,7 @@ func NewTransparentProxy(
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
 		authInfoHandler:   authInfoHandler,
-		sessionManager:    session.NewManager(30*time.Minute, session.NewProxySession),
+		sessionManager:    session.NewManager(30*time.Minute, session.ProxySessionFactory()),
 		isRemote:          isRemote,
 		transportType:     transportType,
 	}

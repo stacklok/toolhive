@@ -81,7 +81,7 @@ func TestCreateManagerFromConfig(t *testing.T) {
 		// Test that manager works
 		err = manager.AddWithID("test-session")
 		assert.NoError(t, err)
-		
+
 		session, ok := manager.Get("test-session")
 		assert.True(t, ok)
 		assert.Equal(t, "test-session", session.ID())
@@ -115,7 +115,7 @@ func TestCreateTypedManagerFromConfig(t *testing.T) {
 		// Test that manager creates correct session type
 		err = manager.AddWithID("sse-session")
 		assert.NoError(t, err)
-		
+
 		session, ok := manager.Get("sse-session")
 		assert.True(t, ok)
 		assert.Equal(t, SessionTypeSSE, session.Type())
@@ -135,7 +135,7 @@ func TestCreateTypedManagerFromConfig(t *testing.T) {
 		// Test that manager creates correct session type
 		err = manager.AddWithID("mcp-session")
 		assert.NoError(t, err)
-		
+
 		session, ok := manager.Get("mcp-session")
 		assert.True(t, ok)
 		assert.Equal(t, SessionTypeMCP, session.Type())

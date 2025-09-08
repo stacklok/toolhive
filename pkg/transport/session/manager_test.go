@@ -32,7 +32,12 @@ func TestAddAndGetWithStubSession(t *testing.T) {
 	now := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	factory := &stubFactory{fixedTime: now}
 
-	m := NewManager(time.Hour, factory.New)
+	// Wrap the factory to return Session interface
+	sessionFactory := func(id string) Session {
+		return factory.New(id)
+	}
+
+	m := NewManager(time.Hour, sessionFactory)
 	defer m.Stop()
 
 	require.NoError(t, m.AddWithID("foo"))
@@ -47,7 +52,12 @@ func TestAddDuplicate(t *testing.T) {
 	t.Parallel()
 	factory := &stubFactory{fixedTime: time.Now()}
 
-	m := NewManager(time.Hour, factory.New)
+	// Wrap the factory to return Session interface
+	sessionFactory := func(id string) Session {
+		return factory.New(id)
+	}
+
+	m := NewManager(time.Hour, sessionFactory)
 	defer m.Stop()
 
 	require.NoError(t, m.AddWithID("dup"))
@@ -61,7 +71,12 @@ func TestDeleteSession(t *testing.T) {
 	t.Parallel()
 	factory := &stubFactory{fixedTime: time.Now()}
 
-	m := NewManager(time.Hour, factory.New)
+	// Wrap the factory to return Session interface
+	sessionFactory := func(id string) Session {
+		return factory.New(id)
+	}
+
+	m := NewManager(time.Hour, sessionFactory)
 	defer m.Stop()
 
 	require.NoError(t, m.AddWithID("del"))
@@ -76,7 +91,12 @@ func TestGetUpdatesTimestamp(t *testing.T) {
 	oldTime := time.Now().Add(-1 * time.Minute)
 	factory := &stubFactory{fixedTime: oldTime}
 
-	m := NewManager(time.Hour, factory.New)
+	// Wrap the factory to return Session interface
+	sessionFactory := func(id string) Session {
+		return factory.New(id)
+	}
+
+	m := NewManager(time.Hour, sessionFactory)
 	defer m.Stop()
 
 	require.NoError(t, m.AddWithID("touchme"))
@@ -99,7 +119,12 @@ func TestCleanupExpired_ManualTrigger(t *testing.T) {
 	factory := &stubFactory{fixedTime: now}
 	ttl := 50 * time.Millisecond
 
-	m := NewManager(ttl, factory.New)
+	// Wrap the factory to return Session interface
+	sessionFactory := func(id string) Session {
+		return factory.New(id)
+	}
+
+	m := NewManager(ttl, sessionFactory)
 	defer m.Stop()
 
 	require.NoError(t, m.AddWithID("old"))
@@ -129,7 +154,12 @@ func TestStopDisablesCleanup(t *testing.T) {
 	ttl := 50 * time.Millisecond
 	factory := &stubFactory{fixedTime: time.Now()}
 
-	m := NewManager(ttl, factory.New)
+	// Wrap the factory to return Session interface
+	sessionFactory := func(id string) Session {
+		return factory.New(id)
+	}
+
+	m := NewManager(ttl, sessionFactory)
 	m.Stop() // disable cleanup before any session expires
 
 	require.NoError(t, m.AddWithID("stay"))

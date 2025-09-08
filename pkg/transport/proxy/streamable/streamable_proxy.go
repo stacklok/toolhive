@@ -64,8 +64,6 @@ func NewHTTPProxy(
 	middlewares ...types.MiddlewareFunction,
 ) *HTTPProxy {
 	// Use typed Streamable sessions
-	sFactory := func(id string) session.Session { return session.NewStreamableSession(id) }
-
 	return &HTTPProxy{
 		host:              host,
 		port:              port,
@@ -75,7 +73,7 @@ func NewHTTPProxy(
 		middlewares:       middlewares,
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		responseCh:        make(chan jsonrpc2.Message, 100),
-		sessionManager:    session.NewManager(30*time.Minute, sFactory),
+		sessionManager:    session.NewManager(30*time.Minute, session.StreamableSessionFactory()),
 	}
 }
 

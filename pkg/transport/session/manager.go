@@ -31,34 +31,14 @@ type Manager struct {
 }
 
 // Factory defines a function type for creating new sessions.
-// It now returns the Session interface to support different session types.
 type Factory func(id string) Session
 
-// LegacyFactory is the old factory type for backward compatibility
-type LegacyFactory func(id string) *ProxySession
-
 // NewManager creates a session manager with TTL and starts cleanup worker.
-// It accepts either the new Factory or the legacy factory for backward compatibility.
 // If storage is nil, it defaults to LocalStorage for backward compatibility.
-func NewManager(ttl time.Duration, factory interface{}, storage ...Storage) *Manager {
-	var f Factory
-
-	switch factoryFunc := factory.(type) {
-	case Factory:
-		f = factoryFunc
-	case LegacyFactory:
-		// Wrap legacy factory to return Session interface
-		f = func(id string) Session {
-			return factoryFunc(id)
-		}
-	case func(id string) *ProxySession:
-		// Also support direct function for backward compatibility
-		f = func(id string) Session {
-			return factoryFunc(id)
-		}
-	default:
-		// Default to creating basic ProxySession
-		f = func(id string) Session {
+func NewManager(ttl time.Duration, factory Factory, storage ...Storage) *Manager {
+	// Use provided factory or default to creating ProxySession
+	if factory == nil {
+		factory = func(id string) Session {
 			return NewProxySession(id)
 		}
 	}
@@ -80,7 +60,7 @@ func NewManager(ttl time.Duration, factory interface{}, storage ...Storage) *Man
 		storage: s,
 		ttl:     ttl,
 		stopCh:  make(chan struct{}),
-		factory: f,
+		factory: factory,
 	}
 
 	// Only start cleanup routine for LocalStorage
@@ -94,7 +74,7 @@ func NewManager(ttl time.Duration, factory interface{}, storage ...Storage) *Man
 
 // NewTypedManager creates a session manager for a specific session type.
 func NewTypedManager(ttl time.Duration, sessionType SessionType, storage ...Storage) *Manager {
-	factory := Factory(func(id string) Session {
+	factory := func(id string) Session {
 		switch sessionType {
 		case SessionTypeSSE:
 			return NewSSESession(id)
@@ -105,7 +85,7 @@ func NewTypedManager(ttl time.Duration, sessionType SessionType, storage ...Stor
 		default:
 			return NewTypedProxySession(id, sessionType)
 		}
-	})
+	}
 
 	return NewManager(ttl, factory, storage...)
 }

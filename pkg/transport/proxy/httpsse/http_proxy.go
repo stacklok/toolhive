@@ -87,10 +87,6 @@ func NewHTTPSSEProxy(
 	host string, port int, containerName string, prometheusHandler http.Handler, middlewares ...types.MiddlewareFunction,
 ) *HTTPSSEProxy {
 	// Create a factory for SSE sessions
-	sseFactory := func(id string) session.Session {
-		return session.NewSSESession(id)
-	}
-
 	proxy := &HTTPSSEProxy{
 		middlewares:       middlewares,
 		host:              host,
@@ -98,7 +94,7 @@ func NewHTTPSSEProxy(
 		containerName:     containerName,
 		shutdownCh:        make(chan struct{}),
 		messageCh:         make(chan jsonrpc2.Message, 100),
-		sessionManager:    session.NewManager(30*time.Minute, sseFactory),
+		sessionManager:    session.NewManager(30*time.Minute, session.SSESessionFactory()),
 		pendingMessages:   []*ssecommon.PendingSSEMessage{},
 		prometheusHandler: prometheusHandler,
 		closedClients:     make(map[string]bool),

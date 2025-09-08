@@ -93,7 +93,7 @@ func (s *SSESession) GetConnectionStatus() bool {
 
 // Type returns the session type as SSE.
 // This overrides the embedded ProxySession's Type method.
-func (s *SSESession) Type() SessionType {
+func (*SSESession) Type() SessionType {
 	return SessionTypeSSE
 }
 

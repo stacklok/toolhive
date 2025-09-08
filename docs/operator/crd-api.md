@@ -262,7 +262,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `displayName` _string_ | DisplayName is a human-readable name for the registry |  |  |
 | `source` _[MCPRegistrySource](#mcpregistrysource)_ | Source defines the configuration for the registry data source |  | Required: \{\} <br /> |
-| `syncPolicy` _[SyncPolicy](#syncpolicy)_ | SyncPolicy defines the synchronization behavior for the registry |  |  |
+| `syncPolicy` _[SyncPolicy](#syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for the registry.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting. |  |  |
 | `filter` _[RegistryFilter](#registryfilter)_ | Filter defines include/exclude patterns for registry content |  |  |
 
 
@@ -289,7 +289,6 @@ _Appears in:_
 | `apiEndpoint` _string_ | APIEndpoint is the URL of the registry API service |  |  |
 | `storageRef` _[StorageReference](#storagereference)_ | StorageRef is a reference to the internal storage location |  |  |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  |  |
-| `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed by the controller |  |  |
 
 
 #### MCPServer
@@ -403,6 +402,23 @@ _Appears in:_
 | `url` _string_ | URL is the URL where the MCP server can be accessed |  |  |
 | `phase` _[MCPServerPhase](#mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Running Failed Terminating] <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  |  |
+
+
+#### NameFilter
+
+
+
+NameFilter defines name-based filtering
+
+
+
+_Appears in:_
+- [RegistryFilter](#registryfilter)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `include` _string array_ | Include is a list of glob patterns to include |  |  |
+| `exclude` _string array_ | Exclude is a list of glob patterns to exclude |  |  |
 
 
 #### NetworkPermissions
@@ -564,8 +580,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `include` _string array_ | Include is a list of glob patterns to include |  |  |
-| `exclude` _string array_ | Exclude is a list of glob patterns to exclude |  |  |
+| `names` _[NameFilter](#namefilter)_ | NameFilters is a list of glob patterns to exclude |  |  |
 | `tags` _[TagFilter](#tagfilter)_ | Tags defines tag-based filtering |  |  |
 
 
@@ -677,7 +692,10 @@ _Appears in:_
 
 
 
-SyncPolicy defines synchronization behavior
+SyncPolicy defines automatic synchronization behavior.
+When specified, enables automatic synchronization at the given interval.
+Manual synchronization via annotation-based triggers is always available
+regardless of this policy setting.
 
 
 
@@ -686,8 +704,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the sync policy type (manual, automatic) | manual | Enum: [manual automatic] <br /> |
-| `interval` _string_ | Interval is the sync interval for automatic sync (Go duration format)<br />Only used when Type is "automatic"<br />Examples: "1h", "30m", "24h" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br /> |
+| `interval` _string_ | Interval is the sync interval for automatic synchronization (Go duration format)<br />Examples: "1h", "30m", "24h" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Required: \{\} <br /> |
 
 
 #### TagFilter

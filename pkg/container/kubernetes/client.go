@@ -58,6 +58,14 @@ type Client struct {
 	waitForStatefulSetReadyFunc func(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error
 	// namespaceFunc is used for testing to override namespace detection
 	namespaceFunc func() string
+	// configMapChecksum stores the ConfigMap checksum for deployment annotations
+	configMapChecksum string
+}
+
+// SetConfigMapChecksum sets the ConfigMap checksum for deployment annotations.
+// This is used to trigger pod restarts when ConfigMap content changes.
+func (c *Client) SetConfigMapChecksum(checksum string) {
+	c.configMapChecksum = checksum
 }
 
 // getKubernetesConfig returns a Kubernetes REST config, trying in-cluster first,
@@ -288,17 +296,53 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	_ bool,
 ) (int, error) {
 	namespace := c.getCurrentNamespace()
-	containerLabels["app"] = containerName
-	containerLabels["toolhive"] = "true"
+	c.setupContainerLabels(containerLabels, containerName)
 
-	attachStdio := options == nil || options.AttachStdio
-
-	// Convert environment variables to Kubernetes format
-	var envVarList []*corev1apply.EnvVarApplyConfiguration
-	for k, v := range envVars {
-		envVarList = append(envVarList, corev1apply.EnvVar().WithName(k).WithValue(v))
+	podTemplateSpec, err := c.preparePodTemplate(options)
+	if err != nil {
+		return 0, err
 	}
 
+	platform, err := c.detectPlatform()
+	if err != nil {
+		return 0, err
+	}
+
+	err = c.configurePodForDeployment(podTemplateSpec, containerLabels, platform, image, command, options, transportType, envVars)
+	if err != nil {
+		return 0, err
+	}
+
+	createdStatefulSet, err := c.createStatefulSet(ctx, containerName, namespace, containerLabels, podTemplateSpec)
+	if err != nil {
+		return 0, err
+	}
+
+	logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
+
+	err = c.createServiceIfNeeded(ctx, transportType, containerName, namespace, containerLabels, options)
+	if err != nil {
+		return 0, err
+	}
+
+	err = c.waitForStatefulSetReady(ctx, namespace, createdStatefulSet.Name)
+	if err != nil {
+		return 0, err
+	}
+
+	return 0, nil
+}
+
+// setupContainerLabels sets required labels for the container
+func (*Client) setupContainerLabels(containerLabels map[string]string, containerName string) {
+	containerLabels["app"] = containerName
+	containerLabels["toolhive"] = "true"
+}
+
+// preparePodTemplate creates and configures the pod template
+func (*Client) preparePodTemplate(
+	options *runtime.DeployWorkloadOptions,
+) (*corev1apply.PodTemplateSpecApplyConfiguration, error) {
 	// Create a pod template spec
 	podTemplateSpec := ensureObjectMetaApplyConfigurationExists(corev1apply.PodTemplateSpec())
 
@@ -307,28 +351,50 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		var err error
 		podTemplateSpec, err = applyPodTemplatePatch(podTemplateSpec, options.K8sPodTemplatePatch)
 		if err != nil {
-			return 0, fmt.Errorf("failed to apply pod template patch: %w", err)
+			return nil, fmt.Errorf("failed to apply pod template patch: %w", err)
 		}
 	}
 
-	// Ensure the pod template has required configuration (labels, etc.)
-	// Get a config to talk to the apiserver
-	cfg := c.config
+	return podTemplateSpec, nil
+}
 
-	// Detect platform type
+// detectPlatform detects the Kubernetes platform type
+func (c *Client) detectPlatform() (Platform, error) {
+	cfg := c.config
 	platformDetector := c.platformDetector
 	if platformDetector == nil {
 		platformDetector = NewDefaultPlatformDetector()
 	}
 	platform, err := platformDetector.DetectPlatform(cfg)
 	if err != nil {
-		return 0, fmt.Errorf("can't determine api server type: %w", err)
+		return PlatformKubernetes, fmt.Errorf("can't determine api server type: %w", err)
+	}
+	return platform, nil
+}
+
+// configurePodForDeployment configures the pod template with all necessary settings
+func (*Client) configurePodForDeployment(
+	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
+	containerLabels map[string]string,
+	platform Platform,
+	image string,
+	command []string,
+	options *runtime.DeployWorkloadOptions,
+	transportType string,
+	envVars map[string]string,
+) error {
+	attachStdio := options == nil || options.AttachStdio
+
+	// Convert environment variables to Kubernetes format
+	var envVarList []*corev1apply.EnvVarApplyConfiguration
+	for k, v := range envVars {
+		envVarList = append(envVarList, corev1apply.EnvVar().WithName(k).WithValue(v))
 	}
 
 	podTemplateSpec = ensurePodTemplateConfig(podTemplateSpec, containerLabels, platform)
 
 	// Configure the MCP container
-	err = configureMCPContainer(
+	err := configureMCPContainer(
 		podTemplateSpec,
 		image,
 		command,
@@ -338,21 +404,36 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		options,
 		platform,
 	)
-	if err != nil {
-		return 0, err
-	}
+	return err
+}
 
+// createStatefulSet creates and applies the StatefulSet
+func (c *Client) createStatefulSet(
+	ctx context.Context,
+	containerName, namespace string,
+	containerLabels map[string]string,
+	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
+) (*appsv1.StatefulSet, error) {
 	// Create an apply configuration for the statefulset
 	statefulSetApply := appsv1apply.StatefulSet(containerName, namespace).
-		WithLabels(containerLabels).
-		WithSpec(appsv1apply.StatefulSetSpec().
-			WithReplicas(1).
-			WithSelector(metav1apply.LabelSelector().
-				WithMatchLabels(map[string]string{
-					"app": containerName,
-				})).
-			WithServiceName(containerName).
-			WithTemplate(podTemplateSpec))
+		WithLabels(containerLabels)
+
+	// Add ConfigMap checksum annotation if provided for automatic restart tracking
+	if c.configMapChecksum != "" {
+		annotations := map[string]string{
+			"toolhive.stacklok.dev/configmap-checksum": c.configMapChecksum,
+		}
+		statefulSetApply = statefulSetApply.WithAnnotations(annotations)
+	}
+
+	statefulSetApply = statefulSetApply.WithSpec(appsv1apply.StatefulSetSpec().
+		WithReplicas(1).
+		WithSelector(metav1apply.LabelSelector().
+			WithMatchLabels(map[string]string{
+				"app": containerName,
+			})).
+		WithServiceName(containerName).
+		WithTemplate(podTemplateSpec))
 
 	// Apply the statefulset using server-side apply
 	fieldManager := "toolhive-container-manager"
@@ -362,30 +443,40 @@ func (c *Client) DeployWorkload(ctx context.Context,
 			Force:        true,
 		})
 	if err != nil {
-		return 0, fmt.Errorf("failed to apply statefulset: %v", err)
+		return nil, fmt.Errorf("failed to apply statefulset: %v", err)
 	}
 
-	logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
+	return createdStatefulSet, nil
+}
 
+// createServiceIfNeeded creates a headless service if required for the transport type
+func (c *Client) createServiceIfNeeded(
+	ctx context.Context,
+	transportType, containerName, namespace string,
+	containerLabels map[string]string,
+	options *runtime.DeployWorkloadOptions,
+) error {
 	if transportTypeRequiresHeadlessService(transportType) && options != nil {
 		// Create a headless service for SSE transport
 		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
 		if err != nil {
-			return 0, fmt.Errorf("failed to create headless service: %v", err)
+			return fmt.Errorf("failed to create headless service: %v", err)
 		}
 	}
+	return nil
+}
 
-	// Wait for the statefulset to be ready
+// waitForStatefulSetReady waits for the StatefulSet to become ready
+func (c *Client) waitForStatefulSetReady(ctx context.Context, namespace, name string) error {
 	waitFunc := waitForStatefulSetReady
 	if c.waitForStatefulSetReadyFunc != nil {
 		waitFunc = c.waitForStatefulSetReadyFunc
 	}
-	err = waitFunc(ctx, c.client, namespace, createdStatefulSet.Name)
+	err := waitFunc(ctx, c.client, namespace, name)
 	if err != nil {
-		return 0, fmt.Errorf("statefulset applied but failed to become ready: %w", err)
+		return fmt.Errorf("statefulset applied but failed to become ready: %w", err)
 	}
-
-	return 0, nil
+	return nil
 }
 
 // GetWorkloadInfo implements runtime.Runtime.

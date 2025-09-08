@@ -153,6 +153,10 @@ type RunConfig struct {
 	// MiddlewareConfigs contains the list of middleware to apply to the transport
 	// and the configuration for each middleware.
 	MiddlewareConfigs []types.MiddlewareConfig `json:"middleware_configs,omitempty" yaml:"middleware_configs,omitempty"`
+
+	// ConfigMapChecksum is the checksum of the source ConfigMap (if loaded from ConfigMap)
+	// This is used to trigger pod restarts when ConfigMap content changes
+	ConfigMapChecksum string `json:"config_map_checksum,omitempty" yaml:"config_map_checksum,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer

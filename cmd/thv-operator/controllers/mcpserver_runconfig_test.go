@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/k8s"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -299,7 +300,7 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 		}
 
 		// Compute and add checksum
-		checksum := computeConfigMapChecksum(configMap)
+		checksum := k8s.ComputeConfigMapChecksum(configMap)
 		configMap.Annotations = map[string]string{
 			"toolhive.stacklok.dev/content-checksum": checksum,
 		}
@@ -455,7 +456,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				}
 
 				// Compute the actual checksum for this content
-				checksum := computeConfigMapChecksum(configMap)
+				checksum := k8s.ComputeConfigMapChecksum(configMap)
 				configMap.Annotations = map[string]string{
 					"toolhive.stacklok.dev/content-checksum": checksum,
 				}
@@ -833,8 +834,8 @@ func TestComputeConfigMapChecksum(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			checksum1 := computeConfigMapChecksum(tt.cm1)
-			checksum2 := computeConfigMapChecksum(tt.cm2)
+			checksum1 := k8s.ComputeConfigMapChecksum(tt.cm1)
+			checksum2 := k8s.ComputeConfigMapChecksum(tt.cm2)
 
 			assert.NotEmpty(t, checksum1)
 			assert.NotEmpty(t, checksum2)

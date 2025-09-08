@@ -2,12 +2,9 @@ package controllers
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -17,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/k8s"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -26,51 +24,6 @@ import (
 const defaultProxyHost = "0.0.0.0"
 
 // RunConfig management methods
-
-// computeConfigMapChecksum computes a SHA256 checksum of the ConfigMap content for change detection
-func computeConfigMapChecksum(cm *corev1.ConfigMap) string {
-	h := sha256.New()
-
-	// Include data content in checksum
-	var dataKeys []string
-	for key := range cm.Data {
-		dataKeys = append(dataKeys, key)
-	}
-	sort.Strings(dataKeys)
-
-	for _, key := range dataKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Data[key]))
-	}
-
-	// Include labels in checksum (excluding checksum annotation itself)
-	var labelKeys []string
-	for key := range cm.Labels {
-		labelKeys = append(labelKeys, key)
-	}
-	sort.Strings(labelKeys)
-
-	for _, key := range labelKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Labels[key]))
-	}
-
-	// Include relevant annotations in checksum (excluding checksum annotation itself)
-	var annotationKeys []string
-	for key := range cm.Annotations {
-		if key != "toolhive.stacklok.dev/content-checksum" {
-			annotationKeys = append(annotationKeys, key)
-		}
-	}
-	sort.Strings(annotationKeys)
-
-	for _, key := range annotationKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Annotations[key]))
-	}
-
-	return hex.EncodeToString(h.Sum(nil))
-}
 
 // ensureRunConfigConfigMap ensures the RunConfig ConfigMap exists and is up to date
 func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
@@ -102,7 +55,7 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 	}
 
 	// Compute and add content checksum annotation
-	checksum := computeConfigMapChecksum(configMap)
+	checksum := k8s.ComputeConfigMapChecksum(configMap)
 	configMap.Annotations = map[string]string{
 		"toolhive.stacklok.dev/content-checksum": checksum,
 	}
@@ -176,10 +129,10 @@ func (*MCPServerReconciler) runConfigContentEquals(current, desired *corev1.Conf
 
 	// Fallback to compute checksums if they don't exist (for backward compatibility)
 	if currentChecksum == "" {
-		currentChecksum = computeConfigMapChecksum(current)
+		currentChecksum = k8s.ComputeConfigMapChecksum(current)
 	}
 	if desiredChecksum == "" {
-		desiredChecksum = computeConfigMapChecksum(desired)
+		desiredChecksum = k8s.ComputeConfigMapChecksum(desired)
 	}
 
 	return currentChecksum == desiredChecksum

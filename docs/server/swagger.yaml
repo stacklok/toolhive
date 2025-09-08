@@ -690,6 +690,11 @@ components:
             type: string
           type: array
           uniqueItems: false
+        config_map_checksum:
+          description: |-
+            ConfigMapChecksum is the checksum of the source ConfigMap (if loaded from ConfigMap)
+            This is used to trigger pod restarts when ConfigMap content changes
+          type: string
         container_labels:
           additionalProperties:
             type: string

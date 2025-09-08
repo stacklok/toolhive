@@ -71,6 +71,11 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 		Resources: []string{"pods/attach"},
 		Verbs:     []string{"create", "get"},
 	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"configmaps"},
+		Verbs:     []string{"get"},
+	},
 }
 
 var ctxLogger = log.FromContext(context.Background())
@@ -461,12 +466,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	ls := labelsForMCPServer(m.Name)
 	replicas := int32(1)
 
-	// Prepare container args
+	// Use ConfigMap-based configuration instead of individual command line arguments
+	configMapName := fmt.Sprintf("%s-runconfig", m.Name)
+	configMapRef := fmt.Sprintf("%s/%s", m.Namespace, configMapName)
+
+	// Prepare container args - use --from-configmap approach
 	args := []string{"run", "--foreground=true"}
-	args = append(args, fmt.Sprintf("--proxy-port=%d", m.Spec.Port))
-	args = append(args, fmt.Sprintf("--name=%s", m.Name))
-	args = append(args, fmt.Sprintf("--transport=%s", m.Spec.Transport))
-	args = append(args, fmt.Sprintf("--host=%s", getProxyHost()))
+	args = append(args, fmt.Sprintf("--from-configmap=%s", configMapRef))
 
 	if m.Spec.TargetPort != 0 {
 		args = append(args, fmt.Sprintf("--target-port=%d", m.Spec.TargetPort))
@@ -553,7 +559,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	// Add the image
 	args = append(args, m.Spec.Image)
 
-	// Add additional args
+	// Add additional args if specified
 	if len(m.Spec.Args) > 0 {
 		args = append(args, "--")
 		args = append(args, m.Spec.Args...)
@@ -992,47 +998,20 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deploymen
 
 		// Check if the args contain the correct image
 		imageArg := mcpServer.Spec.Image
-		found := false
-		for _, arg := range container.Args {
-			if arg == imageArg {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(container.Args, imageArg) {
 			return true
 		}
 
-		// Check if the port has changed
-		portArg := fmt.Sprintf("--proxy-port=%d", mcpServer.Spec.Port)
-		found = false
-		for _, arg := range container.Args {
-			if arg == portArg {
-				found = true
-				break
-			}
-		}
-		if !found {
+		// Check if using ConfigMap-based configuration
+		configMapName := fmt.Sprintf("%s-runconfig", mcpServer.Name)
+		configMapRef := fmt.Sprintf("%s/%s", mcpServer.Namespace, configMapName)
+		expectedConfigMapArg := fmt.Sprintf("--from-configmap=%s", configMapRef)
+		if !slices.Contains(container.Args, expectedConfigMapArg) {
 			return true
 		}
 
-		// Check if the transport has changed
-		transportArg := fmt.Sprintf("--transport=%s", mcpServer.Spec.Transport)
-		found = false
-		for _, arg := range container.Args {
-			if arg == transportArg {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return true
-		}
-
-		// Check if the tools filter has changed (order-independent)
-		if !equalToolsFilter(mcpServer.Spec.ToolsFilter, container.Args) {
-			return true
-		}
+		// For ConfigMap-based deployments, configuration changes are handled by ConfigMap checksums
+		// rather than individual CLI argument checks, so we only need basic validation here
 
 		// Check if the pod template spec has changed
 
@@ -1043,14 +1022,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deploymen
 			podTemplatePatch, err := json.Marshal(mcpServer.Spec.PodTemplateSpec)
 			if err == nil {
 				podTemplatePatchArg := fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch))
-				found := false
-				for _, arg := range container.Args {
-					if arg == podTemplatePatchArg {
-						found = true
-						break
-					}
-				}
-				if !found {
+				if !slices.Contains(container.Args, podTemplatePatchArg) {
 					return true
 				}
 			}
@@ -1061,20 +1033,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deploymen
 			return true
 		}
 
-		// Check if the environment variables have changed (now passed as --env flags)
-		for _, envVar := range mcpServer.Spec.Env {
-			envArg := fmt.Sprintf("--env=%s=%s", envVar.Name, envVar.Value)
-			found := false
-			for _, arg := range container.Args {
-				if arg == envArg {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return true
-			}
-		}
+		// Environment variables are now handled via ConfigMap, no CLI argument checks needed
 
 		// Check if the proxy environment variables have changed
 		expectedProxyEnv := []corev1.EnvVar{}
@@ -1137,35 +1096,9 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deploymen
 			return true
 		}
 
-		// Check if the targetPort has changed
-		if mcpServer.Spec.TargetPort != 0 {
-			targetPortArg := fmt.Sprintf("--target-port=%d", mcpServer.Spec.TargetPort)
-			found := false
-			for _, arg := range container.Args {
-				if arg == targetPortArg {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return true
-			}
-		} else {
-			for _, arg := range container.Args {
-				if strings.HasPrefix(arg, "--target-port=") {
-					return true
-				}
-			}
-		}
+		// TargetPort is now handled via ConfigMap, no CLI argument checks needed
 
-		// Check if OpenTelemetry arguments have changed
-		var otelConfig *mcpv1alpha1.OpenTelemetryConfig
-		if mcpServer.Spec.Telemetry != nil {
-			otelConfig = mcpServer.Spec.Telemetry.OpenTelemetry
-		}
-		if !equalOpenTelemetryArgs(otelConfig, container.Args) {
-			return true
-		}
+		// OpenTelemetry configuration is now handled via ConfigMap, no CLI argument checks needed
 
 	}
 
@@ -1394,13 +1327,6 @@ func hasVaultAgentInjection(annotations map[string]string) bool {
 }
 
 // getProxyHost returns the host to bind the proxy to
-func getProxyHost() string {
-	host := os.Getenv("TOOLHIVE_PROXY_HOST")
-	if host == "" {
-		host = defaultProxyHost
-	}
-	return host
-}
 
 // getToolhiveRunnerImage returns the image to use for the toolhive runner container
 func getToolhiveRunnerImage() string {
@@ -1743,10 +1669,10 @@ func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1
 	configMapName := fmt.Sprintf("%s-authz-inline", m.Name)
 
 	// Create authorization configuration data
-	authzConfigData := map[string]interface{}{
+	authzConfigData := map[string]any{
 		"version": "1.0",
 		"type":    "cedarv1",
-		"cedar": map[string]interface{}{
+		"cedar": map[string]any{
 			"policies": m.Spec.AuthzConfig.Inline.Policies,
 			"entities_json": func() string {
 				if m.Spec.AuthzConfig.Inline.EntitiesJSON != "" {
@@ -1818,41 +1744,6 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Complete(r)
-}
-
-// equalToolsFilter returns true when the desired toolsFilter slice and the
-// currently-applied `--tools=` argument in the container args represent the
-// same unordered set of tools.
-func equalToolsFilter(spec []string, args []string) bool {
-	// Build canonical form for spec
-	specCanon := canonicalToolsList(spec)
-
-	// Extract current tools argument (if any) from args
-	var currentArg string
-	for _, a := range args {
-		if strings.HasPrefix(a, "--tools=") {
-			currentArg = strings.TrimPrefix(a, "--tools=")
-			break
-		}
-	}
-
-	if specCanon == "" && currentArg == "" {
-		return true // both unset/empty
-	}
-
-	// Canonicalise current list
-	currentCanon := canonicalToolsList(strings.Split(strings.TrimSpace(currentArg), ","))
-	return specCanon == currentCanon
-}
-
-// canonicalToolsList sorts a slice and joins it with commas; empty slice yields "".
-func canonicalToolsList(list []string) string {
-	if len(list) == 0 || (len(list) == 1 && list[0] == "") {
-		return ""
-	}
-	cp := slices.Clone(list)
-	slices.Sort(cp)
-	return strings.Join(cp, ",")
 }
 
 // equalOpenTelemetryArgs checks if OpenTelemetry command-line arguments have changed
@@ -1928,10 +1819,5 @@ func equalInsecureFlag(spec *mcpv1alpha1.OpenTelemetryConfig, args []string) boo
 }
 
 func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(slice, item)
 }

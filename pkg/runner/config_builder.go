@@ -600,6 +600,12 @@ func (b *RunConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 		return err
 	}
 
+	// Set default ProxyMode for stdio transport if not already set
+	if c.Transport == types.TransportTypeStdio && c.ProxyMode == "" {
+		logger.Debugf("Setting default ProxyMode to 'sse' for stdio transport")
+		c.ProxyMode = types.ProxyModeSSE
+	}
+
 	// Use registry target port if not overridden and if the mcpTransport is HTTP-based.
 	targetPort := b.targetPort
 	if imageMetadata != nil {
@@ -835,4 +841,18 @@ func (b *RunConfigBuilder) WithEnvFilesFromDirectory(dirPath string) (*RunConfig
 		return nil, err
 	}
 	return b, nil
+}
+
+// WithConfigMapChecksum sets the ConfigMap checksum and configures the deployer for automatic restarts
+func (b *RunConfigBuilder) WithConfigMapChecksum(checksum string) *RunConfigBuilder {
+	b.config.ConfigMapChecksum = checksum
+
+	// Configure the deployer with the checksum if it's a Kubernetes deployer
+	if checksum != "" && b.config.Deployer != nil {
+		if k8sDeployer, ok := b.config.Deployer.(interface{ SetConfigMapChecksum(string) }); ok {
+			k8sDeployer.SetConfigMapChecksum(checksum)
+		}
+	}
+
+	return b
 }

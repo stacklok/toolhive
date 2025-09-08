@@ -2,25 +2,32 @@
 package session
 
 import (
+	"context"
 	"fmt"
-	"sync"
 	"time"
 )
 
-// Session interface
+// Session interface defines the contract for all session types
 type Session interface {
 	ID() string
+	Type() SessionType
 	CreatedAt() time.Time
 	UpdatedAt() time.Time
 	Touch()
+
+	// Data and metadata methods
+	GetData() interface{}
+	SetData(data interface{})
+	GetMetadata() map[string]string
+	SetMetadata(key, value string)
 }
 
 // Manager holds sessions with TTL cleanup.
 type Manager struct {
-	sessions sync.Map
-	ttl      time.Duration
-	stopCh   chan struct{}
-	factory  Factory
+	storage Storage
+	ttl     time.Duration
+	stopCh  chan struct{}
+	factory Factory
 }
 
 // Factory defines a function type for creating new sessions.
@@ -56,10 +63,10 @@ func NewManager(ttl time.Duration, factory interface{}) *Manager {
 	}
 
 	m := &Manager{
-		sessions: sync.Map{},
-		ttl:      ttl,
-		stopCh:   make(chan struct{}),
-		factory:  f,
+		storage: NewLocalStorage(),
+		ttl:     ttl,
+		stopCh:  make(chan struct{}),
+		factory: f,
 	}
 	go m.cleanupRoutine()
 	return m
@@ -83,6 +90,18 @@ func NewTypedManager(ttl time.Duration, sessionType SessionType) *Manager {
 	return NewManager(ttl, factory)
 }
 
+// NewManagerWithStorage creates a session manager with a custom storage backend.
+func NewManagerWithStorage(ttl time.Duration, factory Factory, storage Storage) *Manager {
+	m := &Manager{
+		storage: storage,
+		ttl:     ttl,
+		stopCh:  make(chan struct{}),
+		factory: factory,
+	}
+	go m.cleanupRoutine()
+	return m
+}
+
 func (m *Manager) cleanupRoutine() {
 	ticker := time.NewTicker(m.ttl / 2)
 	defer ticker.Stop()
@@ -90,17 +109,9 @@ func (m *Manager) cleanupRoutine() {
 		select {
 		case <-ticker.C:
 			cutoff := time.Now().Add(-m.ttl)
-			m.sessions.Range(func(key, val any) bool {
-				sess, ok := val.(Session)
-				if !ok {
-					// Skip invalid value
-					return true
-				}
-				if sess.UpdatedAt().Before(cutoff) {
-					m.sessions.Delete(key)
-				}
-				return true
-			})
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_ = m.storage.DeleteExpired(ctx, cutoff)
+			cancel()
 		case <-m.stopCh:
 			return
 		}
@@ -113,13 +124,15 @@ func (m *Manager) AddWithID(id string) error {
 	if id == "" {
 		return fmt.Errorf("session ID cannot be empty")
 	}
-	// Use LoadOrStore: returns existing if already present
-	session := m.factory(id)
-	_, loaded := m.sessions.LoadOrStore(id, session)
-	if loaded {
+	// Check if session already exists
+	ctx := context.Background()
+	if _, err := m.storage.Load(ctx, id); err == nil {
 		return fmt.Errorf("session ID %q already exists", id)
 	}
-	return nil
+
+	// Create and store new session
+	session := m.factory(id)
+	return m.storage.Store(ctx, session)
 }
 
 // AddSession adds an existing session to the manager.
@@ -132,62 +145,60 @@ func (m *Manager) AddSession(session Session) error {
 		return fmt.Errorf("session ID cannot be empty")
 	}
 
-	_, loaded := m.sessions.LoadOrStore(session.ID(), session)
-	if loaded {
+	// Check if session already exists
+	ctx := context.Background()
+	if _, err := m.storage.Load(ctx, session.ID()); err == nil {
 		return fmt.Errorf("session ID %q already exists", session.ID())
 	}
-	return nil
+
+	return m.storage.Store(ctx, session)
 }
 
 // Get retrieves a session by ID. Returns (session, true) if found,
 // and also updates its UpdatedAt timestamp.
 func (m *Manager) Get(id string) (Session, bool) {
-	v, ok := m.sessions.Load(id)
-	if !ok {
+	ctx := context.Background()
+	sess, err := m.storage.Load(ctx, id)
+	if err != nil {
 		return nil, false
 	}
-	sess, ok := v.(Session)
-	if !ok {
-		return nil, false // Invalid session type
-	}
-
-	sess.Touch()
 	return sess, true
 }
 
 // Delete removes a session by ID.
 func (m *Manager) Delete(id string) {
-	m.sessions.Delete(id)
+	ctx := context.Background()
+	_ = m.storage.Delete(ctx, id)
 }
 
-// Stop stops the cleanup worker.
+// Stop stops the cleanup worker and closes the storage backend.
 func (m *Manager) Stop() {
 	close(m.stopCh)
+	if m.storage != nil {
+		_ = m.storage.Close()
+	}
 }
 
 // Range calls f sequentially for each key and value present in the map.
 // If f returns false, range stops the iteration.
+// Note: This only works with LocalStorage backend.
 func (m *Manager) Range(f func(key, value interface{}) bool) {
-	m.sessions.Range(f)
+	if localStorage, ok := m.storage.(*LocalStorage); ok {
+		localStorage.Range(f)
+	}
 }
 
 // Count returns the number of active sessions.
+// Note: This only works with LocalStorage backend.
 func (m *Manager) Count() int {
-	count := 0
-	m.sessions.Range(func(_, _ interface{}) bool {
-		count++
-		return true
-	})
-	return count
+	if localStorage, ok := m.storage.(*LocalStorage); ok {
+		return localStorage.Count()
+	}
+	return 0
 }
 
 func (m *Manager) cleanupExpiredOnce() {
 	cutoff := time.Now().Add(-m.ttl)
-	m.sessions.Range(func(key, val any) bool {
-		sess := val.(Session)
-		if sess.UpdatedAt().Before(cutoff) {
-			m.sessions.Delete(key)
-		}
-		return true
-	})
+	ctx := context.Background()
+	_ = m.storage.DeleteExpired(ctx, cutoff)
 }

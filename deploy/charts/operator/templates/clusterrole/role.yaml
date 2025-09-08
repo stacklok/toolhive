@@ -69,6 +69,7 @@ rules:
   - toolhive.stacklok.dev
   resources:
   - mcpservers
+  - mcpregistries
   verbs:
   - create
   - delete
@@ -77,17 +78,19 @@ rules:
   - patch
   - update
   - watch
-# Allow the operator to update the finalizers of MCP Servers.
+# Allow the operator to update the finalizers of MCP resources.
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
+  - mcpregistries/finalizers
   - mcpservers/finalizers
   verbs:
   - update
-# Allow the operator to update and get the status of MCP Servers.
+# Allow the operator to update and get the status of MCP resources.
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
+  - mcpregistries/status
   - mcpservers/status
   verbs:
   - get

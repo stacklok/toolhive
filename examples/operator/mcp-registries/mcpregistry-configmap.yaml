@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: example-registry-data
+  namespace: toolhive-system
+data:
+  registry.json: |
+    {
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "version": "1.0.0",
+      "last_updated": "2025-09-08T12:00:00Z",
+      "servers": {
+        "filesystem": {
+          "description": "Allows you to do filesystem operations. Mount paths under /projects using --volume.",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "read_file",
+            "write_file",
+            "list_directory",
+            "create_directory"
+          ],
+          "metadata": {
+            "stars": 1500,
+            "pulls": 500,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/modelcontextprotocol/servers",
+          "tags": [
+            "filesystem",
+            "files",
+            "storage"
+          ],
+          "image": "docker.io/mcp/filesystem:latest",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          },
+          "args": [
+            "/projects"
+          ]
+        },
+        "github": {
+          "description": "Provides integration with GitHub's APIs",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "create_issue",
+            "create_pull_request",
+            "search_repositories"
+          ],
+          "metadata": {
+            "stars": 2200,
+            "pulls": 800,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/github/github-mcp-server",
+          "tags": [
+            "github",
+            "api",
+            "repository"
+          ],
+          "image": "ghcr.io/github/github-mcp-server:latest",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "allow_host": [
+                  ".github.com",
+                  ".githubusercontent.com"
+                ],
+                "allow_port": [
+                  443
+                ]
+              }
+            }
+          },
+          "env_vars": [
+            {
+              "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
+              "description": "GitHub personal access token with appropriate permissions",
+              "required": true,
+              "secret": true
+            }
+          ]
+        }
+      }
+    }
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: example-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Example MCP Server Registry"
+  source:
+    type: configmap
+    format: toolhive
+    configmap:
+      name: example-registry-data
+      key: registry.json
+  syncPolicy:
+    interval: "1h"
+  filter:
+    names:
+      include:
+        - "filesystem"
+        - "github"
+    tags:
+      include:
+        - "filesystem"
+        - "api"
+        - "storage"

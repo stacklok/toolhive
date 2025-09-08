@@ -653,7 +653,7 @@ func (d *defaultManager) RestartWorkloads(_ context.Context, names []string, for
 }
 
 // UpdateWorkload updates a workload by stopping, deleting, and recreating it
-func (d *defaultManager) UpdateWorkload(_ context.Context, workloadName string, newConfig *runner.RunConfig,) (*errgroup.Group, error) { //nolint:gci
+func (d *defaultManager) UpdateWorkload(_ context.Context, workloadName string, newConfig *runner.RunConfig) (*errgroup.Group, error) { //nolint:lll
 	// Validate workload name
 	if err := types.ValidateWorkloadName(workloadName); err != nil {
 		return nil, fmt.Errorf("invalid workload name '%s': %w", workloadName, err)

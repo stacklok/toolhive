@@ -290,6 +290,39 @@ func TestRuntimeStatusManager_DeleteWorkloadStatus(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestRuntimeStatusManager_SetWorkloadPID(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
+	manager := &runtimeStatusManager{runtime: mockRuntime}
+
+	ctx := context.Background()
+	pid := 12345
+
+	// Should be a noop and not return error
+	err := manager.SetWorkloadPID(ctx, testWorkloadName, pid)
+	assert.NoError(t, err)
+}
+
+func TestRuntimeStatusManager_ResetWorkloadPID(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
+	manager := &runtimeStatusManager{runtime: mockRuntime}
+
+	ctx := context.Background()
+
+	// Should be a noop and not return error
+	err := manager.ResetWorkloadPID(ctx, testWorkloadName)
+	assert.NoError(t, err)
+}
+
 func TestParseLabelFilters(t *testing.T) {
 	t.Parallel()
 

@@ -55,6 +55,9 @@ type Manager interface {
 	// RestartWorkloads restarts the specified workloads by name.
 	// It is implemented as an asynchronous operation which returns an errgroup.Group
 	RestartWorkloads(ctx context.Context, names []string, foreground bool) (*errgroup.Group, error)
+	// UpdateWorkload updates a workload by stopping, deleting, and recreating it.
+	// It is implemented as an asynchronous operation which returns an errgroup.Group
+	UpdateWorkload(ctx context.Context, workloadName string, newConfig *runner.RunConfig) (*errgroup.Group, error)
 	// GetLogs retrieves the logs of a container.
 	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
 	// MoveToGroup moves the specified workloads from one group to another by updating their runconfig.
@@ -647,6 +650,51 @@ func (d *defaultManager) RestartWorkloads(_ context.Context, names []string, for
 	}
 
 	return group, nil
+}
+
+// UpdateWorkload updates a workload by stopping, deleting, and recreating it
+func (d *defaultManager) UpdateWorkload(_ context.Context, workloadName string, newConfig *runner.RunConfig,) (*errgroup.Group, error) { //nolint:gci
+	// Validate workload name
+	if err := types.ValidateWorkloadName(workloadName); err != nil {
+		return nil, fmt.Errorf("invalid workload name '%s': %w", workloadName, err)
+	}
+
+	group := &errgroup.Group{}
+	group.Go(func() error {
+		return d.updateSingleWorkload(workloadName, newConfig)
+	})
+	return group, nil
+}
+
+// updateSingleWorkload handles the update logic for a single workload
+func (d *defaultManager) updateSingleWorkload(workloadName string, newConfig *runner.RunConfig) error {
+	// Create a child context with a longer timeout
+	childCtx, cancel := context.WithTimeout(context.Background(), AsyncOperationTimeout)
+	defer cancel()
+
+	logger.Infof("Starting update for workload %s", workloadName)
+
+	// Stop the existing workload
+	if err := d.stopSingleWorkload(workloadName); err != nil {
+		return fmt.Errorf("failed to stop workload: %w", err)
+	}
+	logger.Infof("Successfully stopped workload %s", workloadName)
+
+	// Delete the existing workload
+	if err := d.deleteWorkload(workloadName); err != nil {
+		return fmt.Errorf("failed to delete workload: %w", err)
+	}
+	logger.Infof("Successfully deleted workload %s", workloadName)
+
+	// Step 3: Start the new workload
+	// TODO: This currently just handles detached processes and wouldn't work for
+	// foreground CLI executions. Should be refactored to support both modes.
+	if err := d.RunWorkloadDetached(childCtx, newConfig); err != nil {
+		return fmt.Errorf("failed to start new workload: %w", err)
+	}
+
+	logger.Infof("Successfully completed update for workload %s", workloadName)
+	return nil
 }
 
 // restartSingleWorkload handles the restart logic for a single workload

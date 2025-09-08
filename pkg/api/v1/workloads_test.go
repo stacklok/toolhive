@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/core"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
+	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -66,11 +67,14 @@ func TestGetWorkload(t *testing.T) {
 			mockRuntime := runtimemocks.NewMockRuntime(ctrl)
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
 			tt.setupMock(mockWorkloadManager, mockRuntime, mockGroupManager)
+			mockSecretsProvider := secretsmocks.NewMockProvider(ctrl)
+			workloadService := NewWorkloadService(mockWorkloadManager, mockGroupManager, mockSecretsProvider, mockRuntime, false)
 
 			routes := &WorkloadRoutes{
 				workloadManager:  mockWorkloadManager,
 				containerRuntime: mockRuntime,
 				groupManager:     mockGroupManager,
+				workloadService:  workloadService,
 				debugMode:        false,
 			}
 
@@ -123,7 +127,7 @@ func TestCreateWorkload(t *testing.T) {
 				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Invalid proxy_mode",
+			expectedBody:   "Invalid proxy_mode: invalid",
 		},
 	}
 
@@ -138,11 +142,14 @@ func TestCreateWorkload(t *testing.T) {
 			mockRuntime := runtimemocks.NewMockRuntime(ctrl)
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
 			tt.setupMock(mockWorkloadManager, mockRuntime, mockGroupManager)
+			mockSecretsProvider := secretsmocks.NewMockProvider(ctrl)
+			workloadService := NewWorkloadService(mockWorkloadManager, mockGroupManager, mockSecretsProvider, mockRuntime, false)
 
 			routes := &WorkloadRoutes{
 				workloadManager:  mockWorkloadManager,
 				containerRuntime: mockRuntime,
 				groupManager:     mockGroupManager,
+				workloadService:  workloadService,
 				debugMode:        false,
 			}
 
@@ -191,32 +198,17 @@ func TestUpdateWorkload(t *testing.T) {
 			expectedBody:   "Workload not found",
 		},
 		{
-			name:         "stop workload fails",
+			name:         "update workload fails - config build error",
 			workloadName: "test-workload",
 			requestBody:  `{"image": "test-image"}`,
-			setupMock: func(wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
+			setupMock: func(wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
 				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
 					Return(core.Workload{Name: "test-workload"}, nil)
-				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, fmt.Errorf("stop failed"))
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				// No UpdateWorkload call expected since config build fails first
 			},
 			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "Failed to stop workload",
-		},
-		{
-			name:         "delete workload fails",
-			workloadName: "test-workload",
-			requestBody:  `{"image": "test-image"}`,
-			setupMock: func(wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
-				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
-					Return(core.Workload{Name: "test-workload"}, nil)
-				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, nil)
-				wm.EXPECT().DeleteWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, fmt.Errorf("delete failed"))
-			},
-			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "Failed to delete workload",
+			expectedBody:   "Failed to update workload",
 		},
 	}
 
@@ -231,11 +223,14 @@ func TestUpdateWorkload(t *testing.T) {
 			mockRuntime := runtimemocks.NewMockRuntime(ctrl)
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
 			tt.setupMock(mockWorkloadManager, mockRuntime, mockGroupManager)
+			mockSecretsProvider := secretsmocks.NewMockProvider(ctrl)
+			workloadService := NewWorkloadService(mockWorkloadManager, mockGroupManager, mockSecretsProvider, mockRuntime, false)
 
 			routes := &WorkloadRoutes{
 				workloadManager:  mockWorkloadManager,
 				containerRuntime: mockRuntime,
 				groupManager:     mockGroupManager,
+				workloadService:  workloadService,
 				debugMode:        false,
 			}
 

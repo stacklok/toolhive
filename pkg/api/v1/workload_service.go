@@ -45,6 +45,60 @@ func NewWorkloadService(
 
 // CreateWorkloadFromRequest creates a workload from a request
 func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
+	// Build the full run config
+	runConfig, err := s.BuildFullRunConfig(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Save the workload state
+	if err := runConfig.SaveState(ctx); err != nil {
+		logger.Errorf("Failed to save workload config: %v", err)
+		return nil, fmt.Errorf("failed to save workload config: %w", err)
+	}
+
+	// Start workload
+	if err := s.workloadManager.RunWorkloadDetached(ctx, runConfig); err != nil {
+		logger.Errorf("Failed to start workload: %v", err)
+		return nil, fmt.Errorf("failed to start workload: %w", err)
+	}
+
+	return runConfig, nil
+}
+
+// UpdateWorkloadFromRequest updates a workload from a request
+func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name string, req *createRequest) (*runner.RunConfig, error) { //nolint:lll
+	// Build the full run config
+	runConfig, err := s.BuildFullRunConfig(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build workload config: %w", err)
+	}
+
+	// Save the workload state
+	if err := runConfig.SaveState(ctx); err != nil {
+		logger.Errorf("Failed to save workload config: %v", err)
+		return nil, fmt.Errorf("failed to save workload config: %w", err)
+	}
+
+	// Use the manager's UpdateWorkload method to handle the lifecycle
+	if _, err := s.workloadManager.UpdateWorkload(ctx, name, runConfig); err != nil {
+		return nil, fmt.Errorf("failed to update workload: %w", err)
+	}
+
+	return runConfig, nil
+}
+
+// BuildFullRunConfig builds a complete RunConfig
+func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
+	// Default proxy mode to SSE if not specified
+	if !types.IsValidProxyMode(req.ProxyMode) {
+		if req.ProxyMode == "" {
+			req.ProxyMode = types.ProxyModeSSE.String()
+		} else {
+			return nil, fmt.Errorf("%w: %s", retriever.ErrInvalidRunConfig, fmt.Sprintf("Invalid proxy_mode: %s", req.ProxyMode))
+		}
+	}
+
 	// Default group if not specified
 	groupName := req.Group
 	if groupName == "" {
@@ -143,17 +197,6 @@ func (s *WorkloadService) CreateWorkloadFromRequest(ctx context.Context, req *cr
 	if err != nil {
 		logger.Errorf("Failed to build run config: %v", err)
 		return nil, fmt.Errorf("%w: Failed to build run config: %v", retriever.ErrInvalidRunConfig, err)
-	}
-	// Save the workload state
-	if err := runConfig.SaveState(ctx); err != nil {
-		logger.Errorf("Failed to save workload config: %v", err)
-		return nil, fmt.Errorf("failed to save workload config: %w", err)
-	}
-
-	// Start workload
-	if err := s.workloadManager.RunWorkloadDetached(ctx, runConfig); err != nil {
-		logger.Errorf("Failed to start workload: %v", err)
-		return nil, fmt.Errorf("failed to start workload: %w", err)
 	}
 
 	return runConfig, nil

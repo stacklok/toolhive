@@ -11,6 +11,9 @@ jobs:
       packages: write
       id-token: write
 
+    outputs:
+      released_charts: ${{ steps.prepare-matrix.outputs.published_charts_matrix }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
@@ -52,3 +55,36 @@ jobs:
           done
         env:
           COSIGN_EXPERIMENTAL: 1
+
+      - name: Prepare Matrix Output
+        id: prepare-matrix
+        run: |
+          # Build JSON array from chart files
+          json_array="["
+          first=true
+          for chart in `find .cr-release-packages -name '*.tgz' -print`; do
+            file_name=${chart##*/}
+            release_name=${file_name%.tgz}
+            
+            if [ "$first" = true ]; then
+              first=false
+            else
+              json_array="${json_array},"
+            fi
+            json_array="${json_array}\"${release_name}\""
+          done
+          json_array="${json_array}]"
+          echo "published_charts_matrix=${json_array}" >> $GITHUB_OUTPUT
+
+  update-docs-website:
+    name: Trigger Docs Update
+    needs: [ release ]
+    permissions: {}
+    uses: ./.github/workflows/update-docs-website.yml
+    strategy:
+      matrix:
+        version: ${{ fromJSON(needs.release.outputs.released_charts) }}
+    with:
+      version: ${{ matrix.version }}
+    secrets:
+      DOCS_REPO_DISPATCH_TOKEN: ${{ secrets.DOCS_REPO_DISPATCH_TOKEN }}

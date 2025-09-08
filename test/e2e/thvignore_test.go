@@ -112,8 +112,8 @@ node_modules/
 				Expect(stdout).To(ContainSubstring(serverName), "Server should appear in the list")
 				Expect(stdout).To(ContainSubstring("running"), "Server should be in running state")
 
-				By("Inspecting the container to verify tmpfs overlays are applied")
-				// Get container details using docker inspect
+				By("Inspecting the container to verify bind mount overlays are applied")
+				// Get container details using docker/podman inspect
 				containerName := fmt.Sprintf("toolhive-%s", serverName)
 
 				// Use the existing StartDockerCommand helper to inspect the container
@@ -131,10 +131,14 @@ node_modules/
 				} else {
 					inspectOutput := dockerStdout.String()
 
-					// Verify that tmpfs mounts are present for ignored paths
-					// Look for tmpfs mount entries in the docker inspect output
-					Expect(inspectOutput).To(ContainSubstring("tmpfs"),
-						"Should have tmpfs mounts for ignored files")
+					// Verify that bind mounts are present for ignored paths (no longer using tmpfs)
+					// Look for bind mount entries in the docker inspect output
+					Expect(inspectOutput).To(ContainSubstring("bind"),
+						"Should have bind mounts for ignored files")
+
+					// Verify that tmpfs is NOT used for overlays anymore
+					Expect(inspectOutput).ToNot(ContainSubstring("\"Type\":\"tmpfs\""),
+						"Should NOT have tmpfs mounts for ignored files (using bind mounts instead)")
 
 					// Verify that the main directory bind mount is present
 					Expect(inspectOutput).To(ContainSubstring(tempDir),
@@ -142,7 +146,7 @@ node_modules/
 				}
 			})
 
-			It("should create tmpfs overlays for ignored files", func() {
+			It("should create bind mount overlays for ignored files", func() {
 				By("Creating test directory with files to ignore")
 
 				// Create test files
@@ -187,7 +191,7 @@ node_modules/
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
 
-				By("Inspecting the container to verify tmpfs overlays are applied")
+				By("Inspecting the container to verify bind mount overlays are applied")
 				containerName := fmt.Sprintf("toolhive-%s", serverName)
 
 				dockerCmd := e2e.StartDockerCommand("inspect", containerName)
@@ -202,9 +206,13 @@ node_modules/
 				} else {
 					inspectOutput := dockerStdout.String()
 
-					// Verify that tmpfs mounts are present for ignored paths
-					Expect(inspectOutput).To(ContainSubstring("tmpfs"),
-						"Should have tmpfs mounts for ignored files")
+					// Verify that bind mounts are present for ignored paths (no longer using tmpfs)
+					Expect(inspectOutput).To(ContainSubstring("bind"),
+						"Should have bind mounts for ignored files")
+
+					// Verify that tmpfs is NOT used for overlays anymore
+					Expect(inspectOutput).ToNot(ContainSubstring("\"Type\":\"tmpfs\""),
+						"Should NOT have tmpfs mounts for ignored files (using bind mounts instead)")
 
 					// Verify that the main directory bind mount is present
 					Expect(inspectOutput).To(ContainSubstring(tempDir),
@@ -360,7 +368,7 @@ node_modules/
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred())
 
-				By("Inspecting the container to verify tmpfs overlays are applied for both global and local patterns")
+				By("Inspecting the container to verify bind mount overlays are applied for both global and local patterns")
 				containerName := fmt.Sprintf("toolhive-%s", serverName)
 
 				dockerCmd := e2e.StartDockerCommand("inspect", containerName)
@@ -375,9 +383,13 @@ node_modules/
 				} else {
 					inspectOutput := dockerStdout.String()
 
-					// Verify that tmpfs mounts are present for ignored paths
-					Expect(inspectOutput).To(ContainSubstring("tmpfs"),
-						"Should have tmpfs mounts for ignored files from both global and local patterns")
+					// Verify that bind mounts are present for ignored paths (no longer using tmpfs)
+					Expect(inspectOutput).To(ContainSubstring("bind"),
+						"Should have bind mounts for ignored files from both global and local patterns")
+
+					// Verify that tmpfs is NOT used for overlays anymore
+					Expect(inspectOutput).ToNot(ContainSubstring("\"Type\":\"tmpfs\""),
+						"Should NOT have tmpfs mounts for ignored files (using bind mounts instead)")
 
 					// Verify that the main directory bind mount is present
 					Expect(inspectOutput).To(ContainSubstring(tempDir),

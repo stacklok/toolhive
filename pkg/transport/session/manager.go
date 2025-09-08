@@ -94,7 +94,7 @@ func NewManager(ttl time.Duration, factory interface{}, storage ...Storage) *Man
 
 // NewTypedManager creates a session manager for a specific session type.
 func NewTypedManager(ttl time.Duration, sessionType SessionType, storage ...Storage) *Manager {
-	factory := func(id string) Session {
+	factory := Factory(func(id string) Session {
 		switch sessionType {
 		case SessionTypeSSE:
 			return NewSSESession(id)
@@ -105,7 +105,7 @@ func NewTypedManager(ttl time.Duration, sessionType SessionType, storage ...Stor
 		default:
 			return NewTypedProxySession(id, sessionType)
 		}
-	}
+	})
 
 	return NewManager(ttl, factory, storage...)
 }

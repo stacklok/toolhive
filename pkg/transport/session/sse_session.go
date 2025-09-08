@@ -19,8 +19,9 @@ type SSESession struct {
 
 // NewSSESession creates a new SSE session with the given ID.
 func NewSSESession(id string) *SSESession {
+	proxySession := NewTypedProxySession(id, SessionTypeSSE)
 	return &SSESession{
-		ProxySession: NewTypedProxySession(id, SessionTypeSSE),
+		ProxySession: proxySession,
 		MessageCh:    make(chan string, 100),
 		IsConnected:  true,
 	}
@@ -88,6 +89,12 @@ func (s *SSESession) GetConnectionStatus() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.IsConnected
+}
+
+// Type returns the session type as SSE.
+// This overrides the embedded ProxySession's Type method.
+func (s *SSESession) Type() SessionType {
+	return SessionTypeSSE
 }
 
 // GetCreatedAt returns when the SSE session was created.

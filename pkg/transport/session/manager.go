@@ -39,7 +39,8 @@ type LegacyFactory func(id string) *ProxySession
 
 // NewManager creates a session manager with TTL and starts cleanup worker.
 // It accepts either the new Factory or the legacy factory for backward compatibility.
-func NewManager(ttl time.Duration, factory interface{}) *Manager {
+// If storage is nil, it defaults to LocalStorage for backward compatibility.
+func NewManager(ttl time.Duration, factory interface{}, storage ...Storage) *Manager {
 	var f Factory
 
 	switch factoryFunc := factory.(type) {
@@ -62,18 +63,37 @@ func NewManager(ttl time.Duration, factory interface{}) *Manager {
 		}
 	}
 
+	// Use provided storage or default to LocalStorage
+	var s Storage
+	if len(storage) > 0 && storage[0] != nil {
+		s = storage[0]
+	} else {
+		s = NewLocalStorage()
+	}
+
+	// Set default TTL if not provided
+	if ttl == 0 {
+		ttl = 30 * time.Minute
+	}
+
 	m := &Manager{
-		storage: NewLocalStorage(),
+		storage: s,
 		ttl:     ttl,
 		stopCh:  make(chan struct{}),
 		factory: f,
 	}
-	go m.cleanupRoutine()
+
+	// Only start cleanup routine for LocalStorage
+	// Redis/Valkey handle TTL natively
+	if _, isLocal := s.(*LocalStorage); isLocal {
+		go m.cleanupRoutine()
+	}
+
 	return m
 }
 
 // NewTypedManager creates a session manager for a specific session type.
-func NewTypedManager(ttl time.Duration, sessionType SessionType) *Manager {
+func NewTypedManager(ttl time.Duration, sessionType SessionType, storage ...Storage) *Manager {
 	factory := func(id string) Session {
 		switch sessionType {
 		case SessionTypeSSE:
@@ -87,18 +107,36 @@ func NewTypedManager(ttl time.Duration, sessionType SessionType) *Manager {
 		}
 	}
 
-	return NewManager(ttl, factory)
+	return NewManager(ttl, factory, storage...)
 }
 
 // NewManagerWithStorage creates a session manager with a custom storage backend.
 func NewManagerWithStorage(ttl time.Duration, factory Factory, storage Storage) *Manager {
+	if storage == nil {
+		storage = NewLocalStorage()
+	}
+	if factory == nil {
+		factory = func(id string) Session {
+			return NewProxySession(id)
+		}
+	}
+	if ttl == 0 {
+		ttl = 30 * time.Minute
+	}
+
 	m := &Manager{
 		storage: storage,
 		ttl:     ttl,
 		stopCh:  make(chan struct{}),
 		factory: factory,
 	}
-	go m.cleanupRoutine()
+
+	// Only start cleanup routine for LocalStorage
+	// Redis/Valkey handle TTL natively
+	if _, isLocal := storage.(*LocalStorage); isLocal {
+		go m.cleanupRoutine()
+	}
+
 	return m
 }
 

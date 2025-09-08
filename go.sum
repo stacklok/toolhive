@@ -1469,8 +1469,8 @@ github.com/sigstore/rekor-tiles v0.1.10 h1:10LVWV+isl43KpjmAID/DH/wT7LeYj3j0eW5p
 github.com/sigstore/rekor-tiles v0.1.10/go.mod h1:SDtO+1nGYo6hEPTyshgd4EFDP3gZyZuVCUukBCqaqz0=
 github.com/sigstore/sigstore v1.9.6-0.20250729224751-181c5d3339b3 h1:IEhSeWfhTd0kaBpHUXniWU2Tl5K5OUACN69mi1WGd+8=
 github.com/sigstore/sigstore v1.9.6-0.20250729224751-181c5d3339b3/go.mod h1:JuqyPRJYnkNl6OTnQiG503EUnKih4P5EV6FUw+1B0iA=
-github.com/sigstore/sigstore-go v1.1.2-0.20250828195352-b9e47831ad9f h1:c9S37W/aidko6Mx8gM2Fws6A7QeNZwLD60ktEnN6Gbo=
-github.com/sigstore/sigstore-go v1.1.2-0.20250828195352-b9e47831ad9f/go.mod h1:32P7sjztT2Ssa2oyh9d4plLmU5SZY187t5r3nzAMI2I=
+github.com/sigstore/sigstore-go v1.1.2-0.20250908171927-b479288177ce h1:fdBoFOBei+inqXhxppnIiHT3kqpU+L0/HFgt++PK1C4=
+github.com/sigstore/sigstore-go v1.1.2-0.20250908171927-b479288177ce/go.mod h1:32P7sjztT2Ssa2oyh9d4plLmU5SZY187t5r3nzAMI2I=
 github.com/sigstore/sigstore/pkg/signature/kms/aws v1.9.5 h1:qp2VFyKuFQvTGmZwk5Q7m5nE4NwnF9tHwkyz0gtWAck=
 github.com/sigstore/sigstore/pkg/signature/kms/aws v1.9.5/go.mod h1:DKlQjjr+GsWljEYPycI0Sf8URLCk4EbGA9qYjF47j4g=
 github.com/sigstore/sigstore/pkg/signature/kms/azure v1.9.5 h1:CRZcdYn5AOptStsLRAAACudAVmb1qUbhMlzrvm7ju3o=

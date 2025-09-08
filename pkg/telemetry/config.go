@@ -19,43 +19,43 @@ import (
 // Config holds the configuration for OpenTelemetry instrumentation.
 type Config struct {
 	// Endpoint is the OTLP endpoint URL
-	Endpoint string
+	Endpoint string `json:"endpoint"`
 
 	// ServiceName is the service name for telemetry
-	ServiceName string
+	ServiceName string `json:"serviceName"`
 
 	// ServiceVersion is the service version for telemetry
-	ServiceVersion string
+	ServiceVersion string `json:"serviceVersion"`
 
 	// TracingEnabled controls whether distributed tracing is enabled
 	// When false, no tracer provider is created even if an endpoint is configured
-	TracingEnabled bool
+	TracingEnabled bool `json:"tracingEnabled"`
 
 	// MetricsEnabled controls whether OTLP metrics are enabled
 	// When false, OTLP metrics are not sent even if an endpoint is configured
 	// This is independent of EnablePrometheusMetricsPath
-	MetricsEnabled bool
+	MetricsEnabled bool `json:"metricsEnabled"`
 
 	// SamplingRate is the trace sampling rate (0.0-1.0)
 	// Only used when TracingEnabled is true
-	SamplingRate float64
+	SamplingRate float64 `json:"samplingRate"`
 
 	// Headers contains authentication headers for the OTLP endpoint
-	Headers map[string]string
+	Headers map[string]string `json:"headers"`
 
 	// Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint
-	Insecure bool
+	Insecure bool `json:"insecure"`
 
 	// EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint
 	// The metrics are served on the main transport port at /metrics
 	// This is separate from OTLP metrics which are sent to the Endpoint
-	EnablePrometheusMetricsPath bool
+	EnablePrometheusMetricsPath bool `json:"enablePrometheusMetricsPath"`
 
 	// EnvironmentVariables is a list of environment variable names that should be
 	// included in telemetry spans as attributes. Only variables in this list will
 	// be read from the host machine and included in spans for observability.
 	// Example: []string{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"}
-	EnvironmentVariables []string
+	EnvironmentVariables []string `json:"environmentVariables"`
 }
 
 // DefaultConfig returns a default telemetry configuration.
@@ -90,21 +90,21 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 		return nil, err
 	}
 
-	telemetryConfig := providers.Config{
-		ServiceName:                 config.ServiceName,
-		ServiceVersion:              config.ServiceVersion,
-		OTLPEndpoint:                config.Endpoint,
-		Headers:                     config.Headers,
-		Insecure:                    config.Insecure,
-		TracingEnabled:              config.TracingEnabled,
-		MetricsEnabled:              config.MetricsEnabled,
-		SamplingRate:                config.SamplingRate,
-		EnablePrometheusMetricsPath: config.EnablePrometheusMetricsPath,
+	telemetryOptions := []providers.ProviderOption{
+		providers.WithServiceName(config.ServiceName),
+		providers.WithServiceVersion(config.ServiceVersion),
+		providers.WithOTLPEndpoint(config.Endpoint),
+		providers.WithHeaders(config.Headers),
+		providers.WithInsecure(config.Insecure),
+		providers.WithTracingEnabled(config.TracingEnabled),
+		providers.WithMetricsEnabled(config.MetricsEnabled),
+		providers.WithSamplingRate(config.SamplingRate),
+		providers.WithEnablePrometheusMetricsPath(config.EnablePrometheusMetricsPath),
 	}
 
-	telemetryProviders, err := providers.WithConfig(telemetryConfig).Assemble(ctx)
+	telemetryProviders, err := providers.NewCompositeProvider(ctx, telemetryOptions...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to assemble telemetry providers: %w", err)
+		return nil, fmt.Errorf("failed to build telemetry providers: %w", err)
 	}
 
 	return setGlobalProvidersAndReturn(telemetryProviders, config)

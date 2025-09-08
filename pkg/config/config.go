@@ -300,7 +300,11 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 
 // OpenTelemetryConfig contains the settings for OpenTelemetry configuration.
 type OpenTelemetryConfig struct {
-	Endpoint     string   `yaml:"endpoint,omitempty"`
-	SamplingRate float64  `yaml:"sampling-rate,omitempty"`
-	EnvVars      []string `yaml:"env-vars,omitempty"`
+	Endpoint                    string   `yaml:"endpoint,omitempty"`
+	SamplingRate                float64  `yaml:"sampling-rate,omitempty"`
+	EnvVars                     []string `yaml:"env-vars,omitempty"`
+	MetricsEnabled              bool     `yaml:"metrics-enabled,omitempty"`
+	TracingEnabled              bool     `yaml:"tracing-enabled,omitempty"`
+	Insecure                    bool     `yaml:"insecure,omitempty"`
+	EnablePrometheusMetricsPath bool     `yaml:"enable-prometheus-metrics-path,omitempty"`
 }

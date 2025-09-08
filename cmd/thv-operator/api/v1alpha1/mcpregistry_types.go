@@ -225,7 +225,8 @@ const (
 //+kubebuilder:printcolumn:name="Last Sync",type="date",JSONPath=".status.lastSyncTime"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:scope=Namespaced,categories=toolhive
-//+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configmap) : true",message="configMap field is required when source type is 'configmap'"
+//+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configmap) : true"
+//+kubebuilder:validation:XValidation:message="configMap field is required when source type is 'configmap'"
 
 // MCPRegistry is the Schema for the mcpregistries API
 type MCPRegistry struct {

@@ -1,0 +1,61 @@
+# Helm values for Jaeger All-in-One deployment
+# This configuration deploys Jaeger with all components in a single pod
+# Suitable for development and testing environments
+
+# Global Jaeger configuration
+provisionDataStore:
+  cassandra: false
+  elasticsearch: false
+
+# All-in-One configuration for development/testing
+# For production, use separate collector, query, and agent components
+allInOne:
+  enabled: true
+  image:
+    registry: ""
+    repository: jaegertracing/all-in-one
+    tag: "1.61.0"
+    digest: ""
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+  
+  # Resource configuration
+  resources:
+    requests:
+      memory: "200Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+  
+# Agent configuration (disabled for all-in-one)
+agent:
+  enabled: false
+
+# Collector configuration (disabled for all-in-one)
+collector:
+  enabled: false
+
+# Query configuration (disabled for all-in-one)
+query:
+  enabled: false
+
+# Storage configuration
+storage:
+  type: memory  # Use in-memory storage for simplicity
+
+# Hotrod example application (disabled)
+hotrod:
+  enabled: false
+
+# Spark dependencies job (disabled for in-memory storage)
+spark:
+  enabled: false
+
+# Cassandra (not used with in-memory storage)
+cassandra:
+  enabled: false
+
+# Elasticsearch (not used with in-memory storage)
+elasticsearch:
+  enabled: false

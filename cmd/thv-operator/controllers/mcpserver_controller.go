@@ -1664,6 +1664,25 @@ func (*MCPServerReconciler) generateOpenTelemetryArgs(m *mcpv1alpha1.MCPServer) 
 		args = append(args, "--otel-insecure")
 	}
 
+	// Handle tracing configuration
+	if otel.Tracing != nil {
+		if otel.Tracing.Enabled {
+			args = append(args, "--otel-tracing-enabled=true")
+			args = append(args, fmt.Sprintf("--otel-tracing-sampling-rate=%s", otel.Tracing.SamplingRate))
+		} else {
+			args = append(args, "--otel-tracing-enabled=false")
+		}
+	}
+
+	// Handle metrics configuration
+	if otel.Metrics != nil {
+		if otel.Metrics.Enabled {
+			args = append(args, "--otel-metrics-enabled=true")
+		} else {
+			args = append(args, "--otel-metrics-enabled=false")
+		}
+	}
+
 	return args
 }
 

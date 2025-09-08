@@ -107,8 +107,10 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --otel-env-vars stringArray               Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)
       --otel-headers stringArray                OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)
       --otel-insecure                           Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS
+      --otel-metrics-enabled                    Enable OTLP metrics export (when OTLP endpoint is configured)
       --otel-sampling-rate float                OpenTelemetry trace sampling rate (0.0-1.0) (default 0.1)
       --otel-service-name string                OpenTelemetry service name (defaults to toolhive-mcp-proxy)
+      --otel-tracing-enabled                    Enable distributed tracing (when OTLP endpoint is configured)
       --permission-profile string               Permission profile to use (none, network, or path to JSON file)
       --print-resolved-overlays                 Debug: show resolved container paths for tmpfs overlays
       --proxy-mode string                       Proxy mode for stdio transport (sse or streamable-http) (default "sse")

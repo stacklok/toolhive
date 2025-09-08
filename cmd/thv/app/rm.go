@@ -34,7 +34,7 @@ func init() {
 	rmCmd.PreRunE = validateGroupFlag()
 }
 
-// validateStopArgs validates the arguments for the remove command
+// validateRmArgs validates the arguments for the remove command
 func validateRmArgs(cmd *cobra.Command, args []string) error {
 	// Check if --all or --group flags are set
 	all, _ := cmd.Flags().GetBool("all")
@@ -67,7 +67,7 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 		return deleteAllWorkloadsInGroup(ctx, rmGroup)
 	}
 
-	// Stop single workload
+	// Delete single workload
 	workloadName := args[0]
 	// Create workload manager.
 	manager, err := workloads.NewManager(ctx)
@@ -96,7 +96,7 @@ func deleteAllWorkloads(ctx context.Context) error {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
-	// Get list of all running workloads first
+	// List all workloads
 	workloadList, err := workloadManager.ListWorkloads(ctx, true) // true = all workloads
 	if err != nil {
 		return fmt.Errorf("failed to list workloads: %v", err)
@@ -113,18 +113,18 @@ func deleteAllWorkloads(ctx context.Context) error {
 		return nil
 	}
 
-	// Stop all workloads using the bulk method
+	// Delete all workloads
 	group, err := workloadManager.DeleteWorkloads(ctx, workloadNames)
 	if err != nil {
 		return fmt.Errorf("failed to delete all workloads: %v", err)
 	}
 
-	// Since the stop operation is asynchronous, wait for the group to finish.
+	// Wait for the deletion to complete
 	if err := group.Wait(); err != nil {
 		return fmt.Errorf("failed to delete all workloads: %v", err)
 	}
 
-	fmt.Println("All workloads stopped successfully")
+	fmt.Println("All workloads delete successfully")
 	return nil
 }
 

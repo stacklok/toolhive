@@ -25,8 +25,8 @@ var (
 )
 
 func init() {
-	rmCmd.Flags().BoolVar(&rmAll, "all", false, "Delete all running MCP servers")
-	rmCmd.Flags().StringVarP(&rmGroup, "group", "g", "", "Delete all MCP servers in a specific group")
+	rmCmd.Flags().BoolVar(&rmAll, "all", false, "Delete all running workloads")
+	rmCmd.Flags().StringVarP(&rmGroup, "group", "g", "", "Delete all workloads in a specified group")
 
 	// Mark the flags as mutually exclusive
 	rmCmd.MarkFlagsMutuallyExclusive("all", "group")

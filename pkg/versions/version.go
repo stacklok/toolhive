@@ -39,10 +39,14 @@ type VersionInfo struct {
 
 // GetVersionInfo returns the version information
 func GetVersionInfo() VersionInfo {
-	// If version is still "dev", try to get it from build info
-	ver := Version
-	commit := Commit
-	buildDate := BuildDate
+	return getVersionInfoWithValues(Version, Commit, BuildDate)
+}
+
+// getVersionInfoWithValues returns version info with provided values (for testing)
+func getVersionInfoWithValues(version, commit, buildDate string) VersionInfo {
+	ver := version
+	commitVal := commit
+	buildDateVal := buildDate
 
 	if strings.HasPrefix(ver, "dev") {
 		if info, ok := debug.ReadBuildInfo(); ok {
@@ -50,12 +54,12 @@ func GetVersionInfo() VersionInfo {
 			for _, setting := range info.Settings {
 				switch setting.Key {
 				case "vcs.revision":
-					if commit == unknownStr {
-						commit = setting.Value
+					if commitVal == unknownStr {
+						commitVal = setting.Value
 					}
 				case "vcs.time":
-					if buildDate == unknownStr {
-						buildDate = setting.Value
+					if buildDateVal == unknownStr {
+						buildDateVal = setting.Value
 					}
 				}
 			}
@@ -63,9 +67,9 @@ func GetVersionInfo() VersionInfo {
 	}
 
 	// Format the build date if it's a timestamp
-	if buildDate != unknownStr {
-		if t, err := time.Parse(time.RFC3339, buildDate); err == nil {
-			buildDate = t.Format("2006-01-02 15:04:05 MST")
+	if buildDateVal != unknownStr {
+		if t, err := time.Parse(time.RFC3339, buildDateVal); err == nil {
+			buildDateVal = t.Format("2006-01-02 15:04:05 MST")
 		}
 	}
 
@@ -74,13 +78,13 @@ func GetVersionInfo() VersionInfo {
 	// overridden by the build flags.
 	if ver == "dev" {
 		// Truncate commit to 8 characters for brevity.
-		ver = fmt.Sprintf("build-%s", fmt.Sprintf("%.*s", 8, commit))
+		ver = fmt.Sprintf("build-%s", fmt.Sprintf("%.*s", 8, commitVal))
 	}
 
 	return VersionInfo{
 		Version:   ver,
-		Commit:    commit,
-		BuildDate: buildDate,
+		Commit:    commitVal,
+		BuildDate: buildDateVal,
 		GoVersion: runtime.Version(),
 		Platform:  fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH),
 	}

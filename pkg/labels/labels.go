@@ -165,6 +165,16 @@ func ParseLabel(label string) (string, string, error) {
 		return "", "", fmt.Errorf("label key cannot be empty")
 	}
 
+	// Validate key according to Kubernetes label naming conventions
+	if err := validateLabelKey(key); err != nil {
+		return "", "", fmt.Errorf("invalid label key: %v", err)
+	}
+
+	// Validate value according to Kubernetes label naming conventions
+	if err := validateLabelValue(value); err != nil {
+		return "", "", fmt.Errorf("invalid label value: %v", err)
+	}
+
 	return key, value, nil
 }
 
@@ -289,24 +299,4 @@ func isValidLabelName(s string) bool {
 // isAlphaNumeric checks if a character is alphanumeric
 func isAlphaNumeric(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-}
-
-// ParseLabelWithValidation parses and validates a label according to Kubernetes naming conventions
-func ParseLabelWithValidation(label string) (string, string, error) {
-	key, value, err := ParseLabel(label)
-	if err != nil {
-		return "", "", err
-	}
-
-	// Validate key according to Kubernetes label naming conventions
-	if err := validateLabelKey(key); err != nil {
-		return "", "", fmt.Errorf("invalid label key: %v", err)
-	}
-
-	// Validate value according to Kubernetes label naming conventions
-	if err := validateLabelValue(value); err != nil {
-		return "", "", fmt.Errorf("invalid label value: %v", err)
-	}
-
-	return key, value, nil
 }

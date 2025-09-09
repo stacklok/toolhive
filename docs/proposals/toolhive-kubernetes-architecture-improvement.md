@@ -19,7 +19,7 @@ The high-level resource creation flow is as follows:
      creates
         v
 +-----------------------------------+
-| ToolHive ProxyRunner Deploypment  |
+| ToolHive ProxyRunner Deployment  |
 +-----------------------------------+
         |
      creates
@@ -32,6 +32,62 @@ The high-level resource creation flow is as follows:
 There are additional resources that are created around the edges but those are primarily for networking and RBAC.
 
 At a medium-level, for each `MCPServer` CR, the Operator will create a ToolHive ProxyRunner Deployment and pass it a Kubernetes patch JSON that the `ProxyRunner` would use to create the underlying MCP Server `StatefulSet`.
+
+### Auxiliary Resources
+
+There are currently several supporting networkin resources that are created that enable the flow of traffic to occur within ToolHive and the underlying MCP server.
+
+These networking resources are dependent on the transport type for the underlying MCP server.
+
+#### Stdio MCP Servers
+
+For stdio MCP servers, the Operator will create a single Kubernetes service that aims to provide access to the ToolHive ProxyRunner which then further forwards traffic to the underlying MCP server container via stdin.
+
+The flow of traffic would be like so:
+
+```
++--------------------------+
+| ToolHive ProxyRunner SVC |            <--- created by the Operator
++--------------------------+
+        |
+        v
++-----------------------------------+
+| ToolHive ProxyRunner Deployment   |   <--- created by the Operator
++-----------------------------------+
+        |
+     attaches
+        v
++---------------------------+
+|   MCP Server Container    |           <--- created by the ProxyRunner
++---------------------------+
+```
+
+#### SSE & Streamable HTTP MCP Servers
+
+For SSE or Streamable HTTP MCP servers, the Operator will create a single Kubernetes service that aims to provide access to the ToolHive ProxyRunner, and the ToolHive ProxyRunner will create an additional headless service that provides access to the underlying MCP server via http. The reason why the ProxyRunner created the headless service to the underlying MCP container was because given it is the creator of the underlying MCP server StatefulSet, it's the only thing that knows about the port the server runs and proxies on so that the headless service can expose.
+
+The flow of traffic would be like so:
+
+```
++--------------------------+
+| ToolHive ProxyRunner SVC |           <--- created by the Operator
++--------------------------+
+        |
+        v
++-----------------------------------+
+| ToolHive ProxyRunner Deployment   |  <--- created by the Operator
++-----------------------------------+
+        |
+        v
++---------------------------+
+|   Headless Service        |           <--- created by the ProxyRunner
++---------------------------+
+        |
+        v
++---------------------------+
+|   MCP Server Container    |           <--- created by the ProxyRunner
++---------------------------+
+```
 
 ### Reasoning
 
@@ -56,13 +112,11 @@ Changes to certain resources, such as secrets management for an MCP Server, may 
 
 As described above, the current deployment architecture has it's pains. The aim with the new proposal is to make these pains less painful (hopefully entirely) by moving some of the responsibilities over to other components of ToolHive inside of a Kubernetes context.
 
-As described above, the current deployment architecture has several pain points. The goal of this proposal is to reduce (ideally eliminate) those issues by shifting certain responsibilities to more appropriate components within ToolHive’s Kubernetes deployment.
-
 The high-level idea is to repurpose the ProxyRunner so that it acts purely as a proxy. By removing the “runner” responsibilities from ProxyRunner, we can leverage the Operator to focus on what it does best: creating and managing Kubernetes resources. This restores clear ownership, idempotency, and drift correction via the reconciliation loop.
 
 ```
 +-------------------+                        +-----------------------------------+
-| ToolHive Operator | ------ creates ------> | ToolHive ProxyRunner Deploypment  |
+| ToolHive Operator | ------ creates ------> | ToolHive ProxyRunner Deployment  |
 +-------------------+                        +-----------------------------------+
         |                                                       |
      creates                                                    |
@@ -82,11 +136,65 @@ This new approach would enable us to:
 5) **Clear boundaries** - Keep clear boundaries on responsibilities of ToolHive components.
 6) **Minimize RBAC surface area** – With fewer responsibilities, ProxyRunner requires far fewer Kubernetes permissions.
 
+### Auxiliary Resources
 
+In the new architecture, the supporting resources still exist but they are - like everything else - created by the Operator. 
+
+#### Stdio MCP Servers
+
+For stdio MCP servers, the Operator will create a single Kubernetes service that aims to provide access to the ToolHive ProxyRunner which then further forwards traffic to the underlying MCP server container via stdin.
+
+The flow of traffic would be like so:
+
+```
++--------------------------+
+| ToolHive ProxyRunner SVC |            <--- created by the Operator
++--------------------------+
+        |
+        v
++-----------------------------------+
+| ToolHive ProxyRunner Deployment   |   <--- created by the Operator
++-----------------------------------+
+        |
+     attaches
+        v
++---------------------------+
+|   MCP Server Container    |           <--- created by the Operator
++---------------------------+
+```
+
+#### SSE & Streamable HTTP MCP Servers
+
+For SSE or Streamable HTTP MCP servers, the Operator will create a single Kubernetes service that aims to provide access to the ToolHive ProxyRunner, and the ToolHive ProxyRunner will create an additional headless service that provides access to the underlying MCP server via http. The reason why the ProxyRunner created the headless service to the underlying MCP container was because given it is the creator of the underlying MCP server StatefulSet, it's the only thing that knows about the port the server runs and proxies on so that the headless service can expose.
+
+The flow of traffic would be like so:
+
+```
++--------------------------+
+| ToolHive ProxyRunner SVC |           <--- created by the Operator
++--------------------------+
+        |
+        v
++-----------------------------------+
+| ToolHive ProxyRunner Deployment   |  <--- created by the Operator
++-----------------------------------+
+        |
+        v
++---------------------------+
+|   Headless Service        |           <--- created by the ProxyRunner
++---------------------------+
+        |
+        v
++---------------------------+
+|   MCP Server Container    |           <--- created by the Operator
++---------------------------+
+```
 
 ### Scaling Concerns
 
 The original architecture gave ProxyRunner responsibility for both creating and scaling the MCPServer, so it could adjust replicas as needed. Even if ProxyRunner is reduced to a pure proxy, we can still allow it to scale the MCPServer by granting the necessary RBAC permissions to modify replica counts on the StatefulSet—without also giving it the burden of creating and managing those resources.
+
+There are concerns that adopting this architecture too early could create challenges for future solutions around scaling certain MCP servers. However, since the architectural change _**only**_ affects what creates the resources and not how they function, I don’t believe future solutions will be impacted. Right now, the ProxyRunner is responsible for creating the underlying MCP server StatefulSets. I don’t anticipate any scenario where we would need to return creation privileges to the ProxyRunner - adjustments to replica counts may be necessary, but I don’t foresee a solution that would require it to create entirely new StatefulSets to address scalability.
 
 
 ### Technical Implementation

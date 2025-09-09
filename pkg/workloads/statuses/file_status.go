@@ -382,21 +382,8 @@ func (*fileStatusManager) migratePIDFromFile(workloadName string, containerInfo 
 		return 0, false
 	}
 
-	// First check if a PID file actually exists before trying to read it
-	// This avoids unnecessary file operations and log messages
-	pidFilePath, err := process.GetPIDFilePathWithFallback(baseName)
-	if err != nil {
-		logger.Debugf("failed to get PID file path for workload %s (base name: %s): %v", workloadName, baseName, err)
-		return 0, false
-	}
-
-	// Check if the PID file exists before attempting to read it
-	if _, err := os.Stat(pidFilePath); os.IsNotExist(err) {
-		// No PID file exists, no migration needed
-		return 0, false
-	}
-
 	// Try to read PID from PID file
+	// The ReadPIDFile function handles checking both old and new locations
 	pid, err := process.ReadPIDFile(baseName)
 	if err != nil {
 		logger.Debugf("failed to read PID file for workload %s (base name: %s): %v", workloadName, baseName, err)

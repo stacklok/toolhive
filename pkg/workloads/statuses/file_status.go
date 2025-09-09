@@ -399,11 +399,12 @@ func (f *fileStatusManager) migratePIDFromFile(ctx context.Context, workloadName
 		return
 	}
 
+	// TODO: reinstate this once we decide to completely get rid of PID files.
 	// Delete the PID file after successful migration
-	if err := process.RemovePIDFile(baseName); err != nil {
+	/*if err := process.RemovePIDFile(baseName); err != nil {
 		logger.Warnf("failed to remove PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
 		// Don't return here - the migration succeeded, cleanup just failed
-	}
+	}*/
 
 	logger.Debugf("migrated PID %d from PID file to status file for workload %s", pid, workloadName)
 }

@@ -61,6 +61,11 @@ tasks:
     cmds:
       - go test -v -race {{.DIR_LIST | catLines}}
 
+  test-silent:
+    desc: Run unit tests, and only show failures.
+    cmds:
+      - go test -ldflags=-extldflags=-Wl,-w -json -race -coverprofile=coverage/coverage.out $(go list ./... | grep -vE '/test/e2e|/mocks') | gotestfmt -hide "all"
+
   test:
     desc: Run unit tests (excluding e2e tests)
     deps: [gen]

@@ -199,4 +199,8 @@ There are concerns that adopting this architecture too early could create challe
 
 ### Technical Implementation
 
-@Chris to refine here
+There are multiple fronts which would need implementation changes.
+
+First the Operator will have to create the underlying workloads and services, this should be relatively easy given we already have the code for this in the ProxyRunner, and it also drastically simplifies the underlying run configurations and moves them up a layer, reducing the need to pass them through the components.
+
+The harder more trickier change would be in the ToolHive Proxy (which would have formelly been called ProxyRunner) where we would need to go straight into the proxying layer and skipping all of the run logic that happens before hand.

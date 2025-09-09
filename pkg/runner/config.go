@@ -144,13 +144,8 @@ type RunConfig struct {
 	// ToolsFilter is the list of tools to filter
 	ToolsFilter []string `json:"tools_filter,omitempty" yaml:"tools_filter,omitempty"`
 
-	// ToolOverride is the map of tool names to override. Tools to override are
-	// specified as ToolOverride structs.
-	ToolOverride map[string]ToolOverride `json:"tool_override,omitempty" yaml:"tool_override,omitempty"`
-
-	// ToolOverrideFile is the path to a file containing tool overrides.
-	// The file is a JSON struct mapping actual names to ToolOverride structs.
-	ToolOverrideFile string `json:"tool_override_file,omitempty" yaml:"tool_override_file,omitempty"`
+	// ToolsOverride is a map from an actual tool to its overridden name and/or description
+	ToolsOverride map[string]ToolOverride `json:"tools_override,omitempty" yaml:"tools_override,omitempty"`
 
 	// IgnoreConfig contains configuration for ignore processing
 	IgnoreConfig *ignore.Config `json:"ignore_config,omitempty" yaml:"ignore_config,omitempty"`

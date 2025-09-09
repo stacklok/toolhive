@@ -59,6 +59,8 @@ type updateRequest struct {
 	NetworkIsolation bool `json:"network_isolation"`
 	// Tools filter
 	ToolsFilter []string `json:"tools"`
+	// Tools override
+	ToolsOverride map[string]toolOverride `json:"tools_override"`
 	// Group name this workload belongs to
 	Group string `json:"group,omitempty"`
 
@@ -66,6 +68,16 @@ type updateRequest struct {
 	URL         string             `json:"url,omitempty"`
 	OAuthConfig remoteOAuthConfig  `json:"oauth_config,omitempty"`
 	Headers     []*registry.Header `json:"headers,omitempty"`
+}
+
+// toolOverride represents a tool override
+//
+//	@Description	Tool override
+type toolOverride struct {
+	// Name of the tool
+	Name string `json:"name,omitempty"`
+	// Description of the tool
+	Description string `json:"description,omitempty"`
 }
 
 // remoteOAuthConfig represents OAuth configuration for remote servers

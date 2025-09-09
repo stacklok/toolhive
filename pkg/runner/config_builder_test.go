@@ -459,147 +459,10 @@ func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
 			t.Parallel()
 
 			builder := NewRunConfigBuilder()
-			result := builder.WithToolOverride(tc.toolOverride)
+			result := builder.WithToolsOverride(tc.toolOverride)
 
 			assert.NotNil(t, result, "Builder should not be nil")
-			assert.Equal(t, tc.expectedResult, builder.config.ToolOverride, "Tool override should match expected")
-		})
-	}
-}
-
-func TestRunConfigBuilder_WithToolOverrideFile(t *testing.T) {
-	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
-
-	testCases := []struct {
-		name             string
-		toolOverrideFile string
-		expectedResult   string
-		expectError      bool
-	}{
-		{
-			name:             "Valid tool override file path",
-			toolOverrideFile: "/path/to/tool-override.json",
-			expectedResult:   "/path/to/tool-override.json",
-			expectError:      false,
-		},
-		{
-			name:             "Empty tool override file path",
-			toolOverrideFile: "",
-			expectedResult:   "",
-			expectError:      false,
-		},
-		{
-			name:             "Relative tool override file path",
-			toolOverrideFile: "./tool-override.json",
-			expectedResult:   "./tool-override.json",
-			expectError:      false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			builder := NewRunConfigBuilder()
-			result := builder.WithToolOverrideFile(tc.toolOverrideFile)
-
-			assert.NotNil(t, result, "Builder should not be nil")
-			assert.Equal(t, tc.expectedResult, builder.config.ToolOverrideFile, "Tool override file should match expected")
-		})
-	}
-}
-
-func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {
-	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
-
-	// Create a mock environment variable validator
-	mockValidator := &mockEnvVarValidator{}
-
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
-			Name:  "test-image",
-			Tools: []string{"tool1", "tool2", "tool3"},
-		},
-	}
-
-	testCases := []struct {
-		name          string
-		setupBuilder  func(*RunConfigBuilder) *RunConfigBuilder
-		expectError   bool
-		errorContains string
-	}{
-		{
-			name: "Both tool override map and file set - should error",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverride(map[string]ToolOverride{
-					"tool1": {Name: "renamed-tool1"},
-				}).WithToolOverrideFile("/path/to/override.json")
-			},
-			expectError:   true,
-			errorContains: "both tool override map and tool override file are set, they are mutually exclusive",
-		},
-		{
-			name: "Tool override map with invalid override - should error",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverride(map[string]ToolOverride{
-					"tool1": {}, // Empty override (no name or description)
-				})
-			},
-			expectError:   true,
-			errorContains: "tool override for tool1 must have either Name or Description set",
-		},
-		{
-			name: "Valid tool override map only",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverride(map[string]ToolOverride{
-					"tool1": {Name: "renamed-tool1"},
-					"tool2": {Description: "New description"},
-				})
-			},
-			expectError: false,
-		},
-		{
-			name: "Valid tool override file only",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverrideFile("/path/to/override.json")
-			},
-			expectError: false,
-		},
-		{
-			name: "Neither tool override map nor file set",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithName("test-server").WithImage("test-image")
-			},
-			expectError: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Create a new builder and apply the setup
-			builder := tc.setupBuilder(NewRunConfigBuilder())
-			require.NotNil(t, builder, "Builder should not be nil")
-
-			// Build the configuration
-			ctx := context.Background()
-			_, err := builder.Build(ctx, imageMetadata, nil, mockValidator)
-
-			if tc.expectError {
-				assert.Error(t, err, "Build should return an error")
-				if tc.errorContains != "" {
-					assert.Contains(t, err.Error(), tc.errorContains, "Error should contain expected message")
-				}
-			} else {
-				assert.NoError(t, err, "Build should not return an error")
-			}
+			assert.Equal(t, tc.expectedResult, builder.config.ToolsOverride, "Tool override should match expected")
 		})
 	}
 }
@@ -628,7 +491,7 @@ func TestRunConfigBuilder_ToolOverrideWithToolsFilter(t *testing.T) {
 		{
 			name: "Tool override with valid tools filter",
 			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverride(map[string]ToolOverride{
+				return b.WithToolsOverride(map[string]ToolOverride{
 					"tool1": {Name: "renamed-tool1"},
 				}).WithToolsFilter([]string{"tool1", "tool2"})
 			},
@@ -637,18 +500,11 @@ func TestRunConfigBuilder_ToolOverrideWithToolsFilter(t *testing.T) {
 		{
 			name: "Tool override with invalid tools filter",
 			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverride(map[string]ToolOverride{
+				return b.WithToolsOverride(map[string]ToolOverride{
 					"tool1": {Name: "renamed-tool1"},
 				}).WithToolsFilter([]string{"tool1", "nonexistent-tool"})
 			},
 			expectError: true,
-		},
-		{
-			name: "Tool override file with valid tools filter",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverrideFile("/path/to/override.json").WithToolsFilter([]string{"tool1", "tool2"})
-			},
-			expectError: false,
 		},
 	}
 

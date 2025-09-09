@@ -760,8 +760,8 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, name stri
 	}
 	logger.Infof("Loaded configuration from state for %s", baseName)
 
-	// Stop container if running but proxy is not
-	if err := d.stopContainerIfNeededFromStatus(ctx, workload, baseName); err != nil {
+	// Stop container if needed for restart
+	if err := d.stopContainerIfNeededFromStatus(ctx, workload); err != nil {
 		return err
 	}
 
@@ -774,44 +774,24 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, name stri
 // isWorkloadAlreadyRunningFromStatus checks if the workload is already fully running using status manager data
 func (*defaultManager) isWorkloadAlreadyRunningFromStatus(workload core.Workload) bool {
 	// Check if the workload status indicates it's running
-	if workload.Status != rt.WorkloadStatusRunning {
-		return false
+	// The status manager is responsible for tracking proxy status as part of overall workload health
+	if workload.Status == rt.WorkloadStatusRunning {
+		logger.Infof("Workload %s is already running", workload.Name)
+		return true
 	}
-
-	// For remote workloads, we also need to check if the proxy is running
-	// We can derive the base name from the workload name or labels
-	baseName := workload.Name
-	if len(workload.Labels) > 0 {
-		if bn := labels.GetContainerBaseName(workload.Labels); bn != "" {
-			baseName = bn
-		}
-	}
-
-	// Check if proxy is running
-	proxyRunning := proxy.IsRunning(baseName)
-
-	if !proxyRunning {
-		return false
-	}
-
-	logger.Infof("Workload %s and proxy are already running", workload.Name)
-	return true
+	return false
 }
 
-// stopContainerIfNeededFromStatus stops the container if it's running but proxy is not
-func (d *defaultManager) stopContainerIfNeededFromStatus(ctx context.Context, workload core.Workload, baseName string) error {
-	// Only stop if the workload status indicates it's running
+// stopContainerIfNeededFromStatus stops the container if it needs to be restarted
+func (d *defaultManager) stopContainerIfNeededFromStatus(ctx context.Context, workload core.Workload) error {
+	// If the workload is not running, no need to stop it
 	if workload.Status != rt.WorkloadStatusRunning {
 		return nil
 	}
 
-	// Check if proxy is running
-	proxyRunning := proxy.IsRunning(baseName)
-	if proxyRunning {
-		return nil
-	}
-
-	logger.Infof("Container %s is running but proxy is not. Stopping container...", workload.Name)
+	// Stop the container to prepare for restart
+	// The status manager will handle any proxy-related health checks
+	logger.Infof("Stopping container %s for restart...", workload.Name)
 	if err := d.runtime.StopWorkload(ctx, workload.Name); err != nil {
 		if statusErr := d.statuses.SetWorkloadStatus(ctx, workload.Name, rt.WorkloadStatusError, ""); statusErr != nil {
 			logger.Warnf("Failed to set workload %s status to error: %v", workload.Name, statusErr)

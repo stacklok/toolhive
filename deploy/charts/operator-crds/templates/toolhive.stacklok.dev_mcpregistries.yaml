@@ -114,11 +114,6 @@ spec:
                         description: Name is the name of the ConfigMap
                         minLength: 1
                         type: string
-                      namespace:
-                        description: |-
-                          Namespace is the namespace of the ConfigMap
-                          If not specified, uses the MCPRegistry's namespace
-                        type: string
                     required:
                     - name
                     type: object

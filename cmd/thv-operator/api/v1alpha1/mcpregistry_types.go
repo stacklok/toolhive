@@ -66,11 +66,6 @@ type ConfigMapSource struct {
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
-	// Namespace is the namespace of the ConfigMap
-	// If not specified, uses the MCPRegistry's namespace
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
-
 	// Key is the key in the ConfigMap that contains the registry data
 	// +kubebuilder:default=registry.json
 	// +kubebuilder:validation:MinLength=1

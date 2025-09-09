@@ -82,7 +82,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the ConfigMap |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `namespace` _string_ | Namespace is the namespace of the ConfigMap<br />If not specified, uses the MCPRegistry's namespace |  |  |
 | `key` _string_ | Key is the key in the ConfigMap that contains the registry data | registry.json | MinLength: 1 <br /> |
 
 

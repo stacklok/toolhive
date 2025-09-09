@@ -817,48 +817,29 @@ func TestDefaultManager_removeContainer(t *testing.T) {
 	}
 }
 
-func TestDefaultManager_isWorkloadAlreadyRunning(t *testing.T) {
+func TestDefaultManager_isWorkloadAlreadyRunningFromStatus(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		workloadName  string
-		workloadState *workloadState
-		expected      bool
+		name     string
+		workload core.Workload
+		expected bool
 	}{
 		{
-			name:         "both running",
-			workloadName: "test-workload",
-			workloadState: &workloadState{
-				Running:      true,
-				ProxyRunning: true,
-			},
-			expected: true,
-		},
-		{
-			name:         "workload running, proxy not",
-			workloadName: "test-workload",
-			workloadState: &workloadState{
-				Running:      true,
-				ProxyRunning: false,
+			name: "workload not running",
+			workload: core.Workload{
+				Name:   "test-workload",
+				Status: runtime.WorkloadStatusStopped,
+				Labels: map[string]string{"toolhive.base_name": "test-base"},
 			},
 			expected: false,
 		},
 		{
-			name:         "workload not running, proxy running",
-			workloadName: "test-workload",
-			workloadState: &workloadState{
-				Running:      false,
-				ProxyRunning: true,
-			},
-			expected: false,
-		},
-		{
-			name:         "neither running",
-			workloadName: "test-workload",
-			workloadState: &workloadState{
-				Running:      false,
-				ProxyRunning: false,
+			name: "workload in error state",
+			workload: core.Workload{
+				Name:   "test-workload",
+				Status: runtime.WorkloadStatusError,
+				Labels: map[string]string{"toolhive.base_name": "test-base"},
 			},
 			expected: false,
 		},
@@ -869,7 +850,7 @@ func TestDefaultManager_isWorkloadAlreadyRunning(t *testing.T) {
 			t.Parallel()
 
 			manager := &defaultManager{}
-			result := manager.isWorkloadAlreadyRunning(tt.workloadName, tt.workloadState)
+			result := manager.isWorkloadAlreadyRunningFromStatus(tt.workload)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

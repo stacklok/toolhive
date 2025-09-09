@@ -320,9 +320,21 @@ func TestConfigMapSourceHandler_FetchRegistry(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-						ConfigMapSourceDataKey: string(NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive).
-							WithServerName("server1").
-							BuildJSON()),
+						ConfigMapSourceDataKey: `{
+							"version": "1.0.0",
+							"last_updated": "2025-01-15T10:30:00Z",
+							"servers": {
+								"server1": {
+									"name": "server1",
+									"description": "A test server for validation - Server 1",
+									"image": "test/server1:latest",
+									"tier": "Community",
+									"status": "Active",
+									"transport": "stdio",
+									"tools": ["test_tool"]
+								}
+							}
+						}`,
 					},
 				},
 			},
@@ -354,9 +366,11 @@ func TestConfigMapSourceHandler_FetchRegistry(t *testing.T) {
 						Namespace: "registry-namespace",
 					},
 					Data: map[string]string{
-						ConfigMapSourceDataKey: string(NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive).
-							Empty().
-							BuildJSON()),
+						ConfigMapSourceDataKey: `{
+							"version": "1.0.0",
+							"last_updated": "2025-01-15T10:30:00Z",
+							"servers": {}
+						}`,
 					},
 				},
 			},

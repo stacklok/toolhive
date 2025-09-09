@@ -228,7 +228,7 @@ func (b *RunConfigBuilder) WithLabels(labelStrings []string) *RunConfigBuilder {
 
 	// Parse and add each label
 	for _, labelString := range labelStrings {
-		key, value, err := labels.ParseLabelWithValidation(labelString)
+		key, value, err := labels.ParseLabel(labelString)
 		if err != nil {
 			logger.Warnf("Skipping invalid label: %s (%v)", labelString, err)
 			continue

@@ -3,10 +3,12 @@ package providers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
@@ -394,6 +396,119 @@ func TestUnifiedMeterStrategy_Configurations(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUnifiedMeterStrategyConfiguration tests the unified meter strategy configuration
+func TestUnifiedMeterStrategyConfiguration(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		strategy    *UnifiedMeterStrategy
+		config      Config
+		expectError bool
+		description string
+	}{
+		{
+			name: "OTLP only",
+			strategy: &UnifiedMeterStrategy{
+				EnableOTLP:       true,
+				EnablePrometheus: false,
+			},
+			config: Config{
+				ServiceName:  "test",
+				OTLPEndpoint: "localhost:4318",
+				Insecure:     true,
+			},
+			expectError: false,
+			description: "Should create meter provider with OTLP reader only",
+		},
+		{
+			name: "Prometheus only",
+			strategy: &UnifiedMeterStrategy{
+				EnableOTLP:       false,
+				EnablePrometheus: true,
+			},
+			config: Config{
+				ServiceName: "test",
+			},
+			expectError: false,
+			description: "Should create meter provider with Prometheus reader only",
+		},
+		{
+			name: "Both OTLP and Prometheus",
+			strategy: &UnifiedMeterStrategy{
+				EnableOTLP:       true,
+				EnablePrometheus: true,
+			},
+			config: Config{
+				ServiceName:  "test",
+				OTLPEndpoint: "localhost:4318",
+				Insecure:     true,
+			},
+			expectError: false,
+			description: "Should create meter provider with both readers",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture range variable
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create resource for testing
+			res := createTestResource(t)
+
+			// Test meter provider creation
+			result, err := tt.strategy.CreateMeterProvider(ctx, tt.config, res)
+
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err, tt.description)
+			require.NotNil(t, result)
+			require.NotNil(t, result.MeterProvider)
+
+			// Validate provider type
+			if tt.strategy.EnableOTLP || tt.strategy.EnablePrometheus {
+				// Should be SDK meter provider when any reader is enabled
+				assert.IsType(t, &sdkmetric.MeterProvider{}, result.MeterProvider,
+					"Should create SDK meter provider when readers are configured")
+			} else {
+				// Should be no-op when nothing is enabled
+				assert.IsType(t, noop.MeterProvider{}, result.MeterProvider,
+					"Should create no-op meter provider when no readers are configured")
+			}
+
+			// Validate Prometheus handler
+			if tt.strategy.EnablePrometheus {
+				assert.NotNil(t, result.PrometheusHandler,
+					"Should have Prometheus handler when Prometheus is enabled")
+			} else {
+				assert.Nil(t, result.PrometheusHandler,
+					"Should not have Prometheus handler when Prometheus is disabled")
+			}
+
+			// Test shutdown if available - ignore connection errors during test shutdown
+			if result.ShutdownFunc != nil {
+				err := result.ShutdownFunc(ctx)
+				if err != nil && !isConnectionError(err) {
+					t.Errorf("Shutdown error (non-connection): %v", err)
+				}
+			}
+		})
+	}
+}
+
+// isConnectionError checks if the error is a connection-related error that can be ignored in tests
+func isConnectionError(err error) bool {
+	errorStr := err.Error()
+	return strings.Contains(errorStr, "connection refused") ||
+		strings.Contains(errorStr, "dial tcp") ||
+		strings.Contains(errorStr, "no such host")
 }
 
 // Helper functions

@@ -76,6 +76,10 @@ type MCPServerSpec struct {
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
 
+	// Audit defines audit logging configuration for the MCP server
+	// +optional
+	Audit *AuditConfig `json:"audit,omitempty"`
+
 	// ToolsFilter is the filter on tools applied to the MCP server
 	// +optional
 	ToolsFilter []string `json:"tools,omitempty"`
@@ -440,6 +444,15 @@ type InlineAuthzConfig struct {
 	// +kubebuilder:default="[]"
 	// +optional
 	EntitiesJSON string `json:"entitiesJson,omitempty"`
+}
+
+// AuditConfig defines audit logging configuration for the MCP server
+type AuditConfig struct {
+	// Enabled controls whether audit logging is enabled
+	// When true, enables audit logging with default configuration
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // TelemetryConfig defines observability configuration for the MCP server

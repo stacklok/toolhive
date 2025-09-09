@@ -1,4 +1,3 @@
-
 # ToolHive Operator CRDs Helm Chart
 
 ![Version: 0.0.20](https://img.shields.io/badge/Version-0.0.20-informational?style=flat-square)

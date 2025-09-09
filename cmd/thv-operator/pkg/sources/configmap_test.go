@@ -31,7 +31,7 @@ func TestNewConfigMapSourceHandler(t *testing.T) {
 	assert.IsType(t, &ConfigMapSourceHandler{}, handler)
 }
 
-func TestConfigMapSourceHandler_Validate(t *testing.T) {
+func TestNewConfigMapSourceHandler_Validate(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -80,7 +80,7 @@ func TestConfigMapSourceHandler_Validate(t *testing.T) {
 				},
 			},
 			expectError:   true,
-			errorContains: "invalid source type",
+			errorContains: "invalid source type: expected configmap",
 		},
 		{
 			name: "missing configmap configuration",
@@ -134,12 +134,12 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	tests := []struct {
-		name              string
-		registry          *mcpv1alpha1.MCPRegistry
-		configMaps        []corev1.ConfigMap
-		expectError       bool
-		errorContains     string
-		expectedServerCount int32
+		name                string
+		registry            *mcpv1alpha1.MCPRegistry
+		configMaps          []corev1.ConfigMap
+		expectError         bool
+		errorContains       string
+		expectedServerCount int
 	}{
 		{
 			name: "successful sync with toolhive format",
@@ -167,9 +167,27 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 					},
 					Data: map[string]string{
 						"registry.json": `{
+							"version": "1.0.0",
+							"last_updated": "2025-01-15T10:30:00Z",
 							"servers": {
-								"server1": {"name": "Test Server 1"},
-								"server2": {"name": "Test Server 2"}
+								"server1": {
+									"name": "Test Server 1",
+									"description": "A test server for validation - Server 1",
+									"image": "test/server1:latest",
+									"tier": "Community",
+									"status": "Active",
+									"transport": "stdio",
+									"tools": ["test_tool"]
+								},
+								"server2": {
+									"name": "Test Server 2", 
+									"description": "A test server for validation - Server 2",
+									"image": "test/server2:latest",
+									"tier": "Community",
+									"status": "Active",
+									"transport": "stdio",
+									"tools": ["test_tool"]
+								}
 							}
 						}`,
 					},
@@ -179,7 +197,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 			expectedServerCount: 2,
 		},
 		{
-			name: "upstream format not supported",
+			name: "failed sync with upstream format",
 			registry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-registry",
@@ -204,9 +222,72 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 					},
 					Data: map[string]string{
 						"registry.json": `[
-							{"name": "Server 1"},
-							{"name": "Server 2"},
-							{"name": "Server 3"}
+							{
+								"server": {
+									"name": "Server 1",
+									"description": "A test server for validation - Server 1",
+									"status": "Active",
+									"version_detail": {
+										"version": "1.0.0"
+									},
+									"packages": [{
+										"registry_name": "docker",
+										"name": "test/server1",
+										"version": "latest"
+									}]
+								},
+								"x-publisher": {
+									"x-dev.toolhive": {
+										"tier": "Community",
+										"transport": "stdio",
+										"tools": ["test_tool"]
+									}
+								}
+							},
+							{
+								"server": {
+									"name": "Server 2", 
+									"description": "A test server for validation - Server 2",
+									"status": "Active",
+									"version_detail": {
+										"version": "1.0.0"
+									},
+									"packages": [{
+										"registry_name": "docker",
+										"name": "test/server2",
+										"version": "latest"
+									}]
+								},
+								"x-publisher": {
+									"x-dev.toolhive": {
+										"tier": "Community",
+										"transport": "stdio",
+										"tools": ["test_tool"]
+									}
+								}
+							},
+							{
+								"server": {
+									"name": "Server 3",
+									"description": "A test server for validation - Server 3",
+									"status": "Active",
+									"version_detail": {
+										"version": "1.0.0"
+									},
+									"packages": [{
+										"registry_name": "docker",
+										"name": "test/server3",
+										"version": "latest"
+									}]
+								},
+								"x-publisher": {
+									"x-dev.toolhive": {
+										"tier": "Community",
+										"transport": "stdio",
+										"tools": ["test_tool"]
+									}
+								}
+							}
 						]`,
 					},
 				},
@@ -239,7 +320,21 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-						"registry.json": `{"servers": {"server1": {}}}`,
+						"registry.json": `{
+							"version": "1.0.0",
+							"last_updated": "2025-01-15T10:30:00Z",
+							"servers": {
+								"server1": {
+									"name": "server1",
+									"description": "A test server for validation - Server 1",
+									"image": "test/server1:latest",
+									"tier": "Community",
+									"status": "Active",
+									"transport": "stdio",
+									"tools": ["test_tool"]
+								}
+							}
+						}`,
 					},
 				},
 			},
@@ -271,7 +366,11 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "registry-namespace",
 					},
 					Data: map[string]string{
-						"registry.json": `{"servers": {}}`,
+						"registry.json": `{
+							"version": "1.0.0",
+							"last_updated": "2025-01-15T10:30:00Z",
+							"servers": {}
+						}`,
 					},
 				},
 			},
@@ -322,7 +421,11 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-						"registry.json": `{"servers": {}}`,
+						"registry.json": `{
+							"version": "1.0.0",
+							"last_updated": "2025-01-15T10:30:00Z",
+							"servers": {}
+						}`,
 					},
 				},
 			},
@@ -357,7 +460,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 				},
 			},
 			expectError:   true,
-			errorContains: "failed to parse registry data",
+			errorContains: "unsupported format:",
 		},
 		{
 			name: "invalid source configuration",
@@ -423,12 +526,12 @@ func TestConfigMapSourceHandler_countServers(t *testing.T) {
 	handler := &ConfigMapSourceHandler{}
 
 	tests := []struct {
-		name            string
-		data            []byte
-		format          string
-		expectedCount   int32
-		expectError     bool
-		errorContains   string
+		name          string
+		data          []byte
+		format        string
+		expectedCount int
+		expectError   bool
+		errorContains string
 	}{
 		{
 			name:          "toolhive format with servers",
@@ -446,9 +549,15 @@ func TestConfigMapSourceHandler_countServers(t *testing.T) {
 		},
 		{
 			name:          "upstream format not supported",
-			data:          []byte(`[{"name": "s1"}, {"name": "s2"}]`),
+			data:          []byte(`[{"server": {"name": "s1", "description": "A test server for validation - Server 1"}}, {"server": {"name": "s2", "description": "A test server for validation - Server 2"}}]`),
 			format:        mcpv1alpha1.RegistryFormatUpstream,
-			expectedCount: 0,
+			expectError:   true,
+			errorContains: "upstream registry format is not yet supported",
+		},
+		{
+			name:          "upstream format empty array",
+			data:          []byte(`[]`),
+			format:        mcpv1alpha1.RegistryFormatUpstream,
 			expectError:   true,
 			errorContains: "upstream registry format is not yet supported",
 		},
@@ -466,6 +575,14 @@ func TestConfigMapSourceHandler_countServers(t *testing.T) {
 			expectedCount: 0,
 			expectError:   true,
 			errorContains: "failed to parse ToolHive registry format",
+		},
+		{
+			name:          "invalid upstream json",
+			data:          []byte(`invalid json`),
+			format:        mcpv1alpha1.RegistryFormatUpstream,
+			expectedCount: 0,
+			expectError:   true,
+			errorContains: "upstream registry format is not yet supported",
 		},
 	}
 

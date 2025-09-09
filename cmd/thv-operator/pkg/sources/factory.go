@@ -14,9 +14,9 @@ type DefaultSourceHandlerFactory struct {
 }
 
 // NewSourceHandlerFactory creates a new source handler factory
-func NewSourceHandlerFactory(client client.Client) SourceHandlerFactory {
+func NewSourceHandlerFactory(k8sClient client.Client) SourceHandlerFactory {
 	return &DefaultSourceHandlerFactory{
-		client: client,
+		client: k8sClient,
 	}
 }
 

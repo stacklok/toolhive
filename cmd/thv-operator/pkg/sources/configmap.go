@@ -14,25 +14,29 @@ import (
 
 // ConfigMapSourceHandler handles registry data from Kubernetes ConfigMaps
 type ConfigMapSourceHandler struct {
-	client client.Client
+	client    client.Client
+	converter FormatConverter
+	validator SourceDataValidator
 }
 
 // NewConfigMapSourceHandler creates a new ConfigMap source handler
-func NewConfigMapSourceHandler(client client.Client) *ConfigMapSourceHandler {
+func NewConfigMapSourceHandler(k8sClient client.Client) *ConfigMapSourceHandler {
 	return &ConfigMapSourceHandler{
-		client: client,
+		client:    k8sClient,
+		converter: NewRegistryFormatConverter(),
+		validator: NewSourceDataValidator(),
 	}
 }
 
 // Validate validates the ConfigMap source configuration
-func (h *ConfigMapSourceHandler) Validate(source *mcpv1alpha1.MCPRegistrySource) error {
+func (*ConfigMapSourceHandler) Validate(source *mcpv1alpha1.MCPRegistrySource) error {
 	if source.Type != mcpv1alpha1.RegistrySourceTypeConfigMap {
-		return fmt.Errorf("invalid source type: expected %s, got %s", 
+		return fmt.Errorf("invalid source type: expected %s, got %s",
 			mcpv1alpha1.RegistrySourceTypeConfigMap, source.Type)
 	}
 
 	if source.ConfigMap == nil {
-		return fmt.Errorf("configMap configuration is required for source type %s", 
+		return fmt.Errorf("configMap configuration is required for source type %s",
 			mcpv1alpha1.RegistrySourceTypeConfigMap)
 	}
 
@@ -68,7 +72,7 @@ func (h *ConfigMapSourceHandler) Sync(ctx context.Context, registry *mcpv1alpha1
 	}
 
 	if err := h.client.Get(ctx, configMapKey, configMap); err != nil {
-		return nil, fmt.Errorf("failed to get ConfigMap %s/%s: %w", 
+		return nil, fmt.Errorf("failed to get ConfigMap %s/%s: %w",
 			configMapNamespace, source.ConfigMap.Name, err)
 	}
 
@@ -80,12 +84,21 @@ func (h *ConfigMapSourceHandler) Sync(ctx context.Context, registry *mcpv1alpha1
 
 	data, exists := configMap.Data[key]
 	if !exists {
-		return nil, fmt.Errorf("key %s not found in ConfigMap %s/%s", 
+		return nil, fmt.Errorf("key %s not found in ConfigMap %s/%s",
 			key, configMapNamespace, source.ConfigMap.Name)
+	}
+
+	if source.Format == mcpv1alpha1.RegistryFormatUpstream {
+		return nil, fmt.Errorf("upstream registry format is not yet supported")
 	}
 
 	// Convert string data to bytes
 	registryData := []byte(data)
+
+	// Validate registry data format
+	if err := h.validator.ValidateData(registryData, source.Format); err != nil {
+		return nil, fmt.Errorf("registry data validation failed: %w", err)
+	}
 
 	// Parse and count servers based on format
 	serverCount, err := h.countServers(registryData, source.Format)
@@ -98,7 +111,7 @@ func (h *ConfigMapSourceHandler) Sync(ctx context.Context, registry *mcpv1alpha1
 }
 
 // countServers counts the number of servers in the registry data
-func (h *ConfigMapSourceHandler) countServers(data []byte, format string) (int32, error) {
+func (h *ConfigMapSourceHandler) countServers(data []byte, format string) (int, error) {
 	switch format {
 	case mcpv1alpha1.RegistryFormatToolHive:
 		return h.countToolHiveServers(data)
@@ -110,7 +123,7 @@ func (h *ConfigMapSourceHandler) countServers(data []byte, format string) (int32
 }
 
 // countToolHiveServers counts servers in ToolHive format
-func (h *ConfigMapSourceHandler) countToolHiveServers(data []byte) (int32, error) {
+func (*ConfigMapSourceHandler) countToolHiveServers(data []byte) (int, error) {
 	var registry struct {
 		Servers map[string]any `json:"servers"`
 	}
@@ -119,5 +132,5 @@ func (h *ConfigMapSourceHandler) countToolHiveServers(data []byte) (int32, error
 		return 0, fmt.Errorf("failed to parse ToolHive registry format: %w", err)
 	}
 
-	return int32(len(registry.Servers)), nil
+	return len(registry.Servers), nil
 }

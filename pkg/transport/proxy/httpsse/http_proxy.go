@@ -98,7 +98,7 @@ func NewHTTPSSEProxy(
 		containerName:     containerName,
 		shutdownCh:        make(chan struct{}),
 		messageCh:         make(chan jsonrpc2.Message, 100),
-		sessionManager:    session.NewManager(30*time.Minute, sseFactory),
+		sessionManager:    session.NewManager(session.DefaultSessionTTL, sseFactory),
 		pendingMessages:   []*ssecommon.PendingSSEMessage{},
 		prometheusHandler: prometheusHandler,
 		closedClients:     make(map[string]bool),

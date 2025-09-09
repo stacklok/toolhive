@@ -34,6 +34,9 @@ var (
 	ErrInvalidRunConfig = errors.New("invalid run configuration provided")
 )
 
+// Retriever is a function that retrieves the MCP server definition from the registry.
+type Retriever func(context.Context, string, string, string) (string, registry.ServerMetadata, error)
+
 // GetMCPServer retrieves the MCP server definition from the registry.
 func GetMCPServer(
 	ctx context.Context,

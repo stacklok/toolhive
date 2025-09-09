@@ -384,7 +384,14 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 	// Create the new workload using shared logic
 	runConfig, err := s.workloadService.CreateWorkloadFromRequest(ctx, &createReq)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// Error messages already logged in createWorkloadFromRequest
+		if errors.Is(err, retriever.ErrImageNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		} else if errors.Is(err, retriever.ErrInvalidRunConfig) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -642,5 +649,3 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
-
-// Response type definitions.

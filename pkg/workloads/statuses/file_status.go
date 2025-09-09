@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport/proxy"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
@@ -134,6 +135,23 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		result.StatusContext = statusFile.StatusContext
 		result.CreatedAt = statusFile.CreatedAt
 		fileFound = true
+
+		// Check if PID migration is needed
+		if statusFile.Status == rt.WorkloadStatusRunning && statusFile.ProcessID == 0 {
+			// Try PID migration - the migration function will handle cases
+			// where container info is not available gracefully
+			if migratedPID, wasMigrated := f.migratePIDFromFile(workloadName, nil); wasMigrated {
+				// Update the status file with the migrated PID
+				statusFile.ProcessID = migratedPID
+				statusFile.UpdatedAt = time.Now()
+				if err := f.writeStatusFile(statusFilePath, *statusFile); err != nil {
+					logger.Warnf("failed to write migrated PID for workload %s: %v", workloadName, err)
+				} else {
+					logger.Debugf("successfully migrated PID %d to status file for workload %s", migratedPID, workloadName)
+				}
+			}
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -346,6 +364,44 @@ func (f *fileStatusManager) ResetWorkloadPID(ctx context.Context, workloadName s
 	return f.SetWorkloadPID(ctx, workloadName, 0)
 }
 
+// migratePIDFromFile migrates PID from legacy PID file to status file if needed.
+// This is called when the status is running and ProcessID is 0.
+// Returns (migratedPID, wasUpdated) where wasUpdated indicates if the PID was successfully migrated
+func (*fileStatusManager) migratePIDFromFile(workloadName string, containerInfo *rt.ContainerInfo) (int, bool) {
+	// Get the base name from container labels
+	var baseName string
+	if containerInfo != nil {
+		baseName = labels.GetContainerBaseName(containerInfo.Labels)
+	} else {
+		// If we don't have container info, try using workload name as base name
+		baseName = workloadName
+	}
+
+	if baseName == "" {
+		logger.Debugf("no base name available for workload %s, skipping PID migration", workloadName)
+		return 0, false
+	}
+
+	// Try to read PID from PID file
+	// The ReadPIDFile function handles checking both old and new locations
+	pid, err := process.ReadPIDFile(baseName)
+	if err != nil {
+		logger.Debugf("failed to read PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
+		return 0, false
+	}
+
+	logger.Debugf("found PID %d in PID file for workload %s, will update status file", pid, workloadName)
+
+	// TODO: reinstate this once we decide to completely get rid of PID files.
+	// Delete the PID file after successful migration
+	/*if err := process.RemovePIDFile(baseName); err != nil {
+		logger.Warnf("failed to remove PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
+		// Don't return false here - the migration succeeded, cleanup just failed
+	}*/
+
+	return pid, true
+}
+
 // getStatusFilePath returns the file path for a given workload's status file.
 func (f *fileStatusManager) getStatusFilePath(workloadName string) string {
 	return filepath.Join(f.baseDir, fmt.Sprintf("%s.json", workloadName))
@@ -555,6 +611,22 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 			}
 			if remote {
 				workload.Remote = true
+			}
+
+			// Check if PID migration is needed
+			if statusFile.Status == rt.WorkloadStatusRunning && statusFile.ProcessID == 0 {
+				// Try PID migration - the migration function will handle cases
+				// where container info is not available gracefully
+				if migratedPID, wasMigrated := f.migratePIDFromFile(workloadName, nil); wasMigrated {
+					// Update the status file with the migrated PID
+					statusFile.ProcessID = migratedPID
+					statusFile.UpdatedAt = time.Now()
+					if err := f.writeStatusFile(statusFilePath, *statusFile); err != nil {
+						logger.Warnf("failed to write migrated PID for workload %s: %v", workloadName, err)
+					} else {
+						logger.Debugf("successfully migrated PID %d to status file for workload %s", migratedPID, workloadName)
+					}
+				}
 			}
 
 			workloads[workloadName] = workload

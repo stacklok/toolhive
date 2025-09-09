@@ -19,7 +19,7 @@ operator:
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.2.9
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.2.17
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0

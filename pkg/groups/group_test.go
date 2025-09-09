@@ -83,25 +83,19 @@ func TestManager_Create(t *testing.T) {
 			errorMsg:    "failed to get writer for group",
 		},
 		{
-			name:      "invalid name - uppercase",
-			groupName: "MyGroup",
-			setupMock: func(mock *mocks.MockStore) {
-				// validation should fail before touching the store,
-				// so no expectations needed
-			},
+			name:        "invalid name - uppercase",
+			groupName:   "MyGroup",
+			setupMock:   func(_ *mocks.MockStore) {}, // validation fails before store access
 			expectError: true,
 			errorMsg:    "invalid group name",
 		},
 		{
-			name:      "invalid name - mixed case",
-			groupName: "DefAult",
-			setupMock: func(mock *mocks.MockStore) {
-				// same as above: no store calls
-			},
+			name:        "invalid name - mixed case",
+			groupName:   "DefAult",
+			setupMock:   func(_ *mocks.MockStore) {}, // validation fails before store access
 			expectError: true,
 			errorMsg:    "invalid group name",
 		},
-
 	}
 
 	for _, tt := range tests {
@@ -655,5 +649,3 @@ func (m *mockWriteCloser) Write(p []byte) (n int, err error) {
 func (*mockWriteCloser) Close() error {
 	return nil
 }
-
-

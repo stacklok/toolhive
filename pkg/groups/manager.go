@@ -25,8 +25,6 @@ func ValidateGroupName(name string) error {
 	return nil
 }
 
-
-
 // manager implements the Manager interface
 type manager struct {
 	groupStore state.Store

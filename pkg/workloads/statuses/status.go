@@ -33,6 +33,9 @@ type StatusManager interface {
 	// ResetWorkloadPID resets the PID of a workload to 0.
 	// This method will do nothing if the workload does not exist.
 	ResetWorkloadPID(ctx context.Context, workloadName string) error
+	// GetWorkloadPID retrieves the PID of a workload by its name.
+	// Returns 0 if the workload does not exist or if PID is not available.
+	GetWorkloadPID(ctx context.Context, workloadName string) (int, error)
 }
 
 // NewStatusManagerFromRuntime creates a new instance of StatusManager from an existing runtime.
@@ -138,4 +141,10 @@ func (*runtimeStatusManager) ResetWorkloadPID(_ context.Context, workloadName st
 	// Noop for runtime status manager
 	logger.Debugf("workload %s PID reset (noop for runtime status manager)", workloadName)
 	return nil
+}
+
+func (*runtimeStatusManager) GetWorkloadPID(_ context.Context, workloadName string) (int, error) {
+	// Noop for runtime status manager - always return 0
+	logger.Debugf("workload %s PID requested (noop for runtime status manager, returning 0)", workloadName)
+	return 0, nil
 }

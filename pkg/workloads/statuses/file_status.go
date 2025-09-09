@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport/proxy"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
@@ -134,6 +135,14 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		result.StatusContext = statusFile.StatusContext
 		result.CreatedAt = statusFile.CreatedAt
 		fileFound = true
+
+		// Check if PID migration is needed
+		if statusFile.Status == rt.WorkloadStatusRunning && statusFile.ProcessID == 0 {
+			// Try PID migration - the migration function will handle cases
+			// where container info is not available gracefully
+			f.migratePIDFromFile(ctx, workloadName, nil)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -346,6 +355,59 @@ func (f *fileStatusManager) ResetWorkloadPID(ctx context.Context, workloadName s
 	return f.SetWorkloadPID(ctx, workloadName, 0)
 }
 
+// migratePIDFromFile migrates PID from legacy PID file to status file if needed.
+// This is called when the status is running and ProcessID is 0.
+func (f *fileStatusManager) migratePIDFromFile(ctx context.Context, workloadName string, containerInfo *rt.ContainerInfo) {
+	// Get the base name from container labels
+	var baseName string
+	if containerInfo != nil {
+		baseName = labels.GetContainerBaseName(containerInfo.Labels)
+	} else {
+		// If we don't have container info, try using workload name as base name
+		baseName = workloadName
+	}
+
+	if baseName == "" {
+		logger.Debugf("no base name available for workload %s, skipping PID migration", workloadName)
+		return
+	}
+
+	// First check if a PID file actually exists before trying to read it
+	// This avoids unnecessary file operations and log messages
+	pidFilePath, err := process.GetPIDFilePathWithFallback(baseName)
+	if err != nil {
+		logger.Debugf("failed to get PID file path for workload %s (base name: %s): %v", workloadName, baseName, err)
+		return
+	}
+
+	// Check if the PID file exists before attempting to read it
+	if _, err := os.Stat(pidFilePath); os.IsNotExist(err) {
+		// No PID file exists, no migration needed
+		return
+	}
+
+	// Try to read PID from PID file
+	pid, err := process.ReadPIDFile(baseName)
+	if err != nil {
+		logger.Debugf("failed to read PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
+		return
+	}
+
+	// Update the status file with the PID
+	if err := f.SetWorkloadPID(ctx, workloadName, pid); err != nil {
+		logger.Warnf("failed to update PID for workload %s: %v", workloadName, err)
+		return
+	}
+
+	// Delete the PID file after successful migration
+	if err := process.RemovePIDFile(baseName); err != nil {
+		logger.Warnf("failed to remove PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
+		// Don't return here - the migration succeeded, cleanup just failed
+	}
+
+	logger.Debugf("migrated PID %d from PID file to status file for workload %s", pid, workloadName)
+}
+
 // getStatusFilePath returns the file path for a given workload's status file.
 func (f *fileStatusManager) getStatusFilePath(workloadName string) string {
 	return filepath.Join(f.baseDir, fmt.Sprintf("%s.json", workloadName))
@@ -555,6 +617,13 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 			}
 			if remote {
 				workload.Remote = true
+			}
+
+			// Check if PID migration is needed
+			if statusFile.Status == rt.WorkloadStatusRunning && statusFile.ProcessID == 0 {
+				// Try PID migration - the migration function will handle cases
+				// where container info is not available gracefully
+				f.migratePIDFromFile(ctx, workloadName, nil)
 			}
 
 			workloads[workloadName] = workload

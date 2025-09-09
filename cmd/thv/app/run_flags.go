@@ -176,9 +176,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)")
 	cmd.Flags().StringVar(&config.OtelServiceName, "otel-service-name", "",
 		"OpenTelemetry service name (defaults to toolhive-mcp-proxy)")
-	cmd.Flags().BoolVar(&config.OtelTracingEnabled, "otel-tracing-enabled", false,
+	cmd.Flags().BoolVar(&config.OtelTracingEnabled, "otel-tracing-enabled", true,
 		"Enable distributed tracing (when OTLP endpoint is configured)")
-	cmd.Flags().BoolVar(&config.OtelMetricsEnabled, "otel-metrics-enabled", false,
+	cmd.Flags().BoolVar(&config.OtelMetricsEnabled, "otel-metrics-enabled", true,
 		"Enable OTLP metrics export (when OTLP endpoint is configured)")
 	cmd.Flags().Float64Var(&config.OtelSamplingRate, "otel-sampling-rate", 0.1, "OpenTelemetry trace sampling rate (0.0-1.0)")
 	cmd.Flags().StringArrayVar(&config.OtelHeaders, "otel-headers", nil,

@@ -8,10 +8,6 @@ on:
   pull_request:
     paths:
       - deploy/charts/**
-    paths-ignore:
-      - deploy/charts/**/CONTRIBUTING.md
-      - deploy/charts/**/ci/**
-      - deploy/charts/**/CLAUDE.md
 
 jobs:
   spellcheck:

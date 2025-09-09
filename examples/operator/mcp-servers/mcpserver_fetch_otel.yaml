@@ -29,5 +29,8 @@ spec:
       insecure: true  # Using HTTP collector endpoint
       metrics:
         enabled: true
+      tracing:
+        enabled: true
+        samplingRate: "1.0"
     prometheus:
       enabled: true

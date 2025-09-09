@@ -38,18 +38,20 @@ grafana:
     datasources:
       enabled: true
       defaultDatasourceEnabled: true
+  
+  # Additional data sources configuration
+  additionalDataSources:
+    - name: Jaeger
+      type: jaeger
+      access: proxy
+      url: http://jaeger-all-in-one-jaeger.monitoring:16686
+      isDefault: false
+      version: 1
+      editable: true
 
 # AlertManager configuration (optional)
 alertmanager:
-  enabled: true
-  alertmanagerSpec:
-    resources:
-      requests:
-        memory: "200Mi"
-        cpu: "100m"
-      limits:
-        memory: "500Mi"
-        cpu: "500m"
+  enabled: false
 
 # Node Exporter configuration (optional)
 nodeExporter:

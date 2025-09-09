@@ -403,6 +403,54 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 	assert.False(t, *proxyRunnerContainerSecurityContext.AllowPrivilegeEscalation, "ProxyRunner container AllowPrivilegeEscalation should be false")
 }
 
+func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
+	t.Parallel()
+
+	// Create a test MCPServer
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-mcp-server-logs",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "stdio",
+			Port:      8080,
+		},
+	}
+
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+
+	// Create a reconciler with the scheme
+	r := &MCPServerReconciler{
+		Scheme: s,
+	}
+
+	// Create the deployment
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
+	require.NotNil(t, deployment, "Deployment should not be nil")
+
+	// Check that the proxy runner container has the UNSTRUCTURED_LOGS environment variable set to false
+	container := deployment.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, "toolhive", container.Name, "Container should be named 'toolhive'")
+
+	// Find the UNSTRUCTURED_LOGS environment variable
+	unstructuredLogsFound := false
+	for _, env := range container.Env {
+		if env.Name == "UNSTRUCTURED_LOGS" {
+			unstructuredLogsFound = true
+			assert.Equal(t, "false", env.Value, "UNSTRUCTURED_LOGS should be set to false for structured JSON logging")
+			break
+		}
+	}
+	assert.True(t, unstructuredLogsFound, "UNSTRUCTURED_LOGS environment variable should be set")
+}
+
 // Helper functions
 func boolPtr(b bool) *bool {
 	return &b

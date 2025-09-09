@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -105,6 +107,9 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		}
 
 		// Normal HTTP request handling
+		// Extract trace context from incoming request headers
+		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
+
 		// Increment active connections
 		m.activeConnections.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("server", m.serverName),
@@ -295,18 +300,13 @@ func (m *HTTPMiddleware) extractServerName(r *http.Request) string {
 
 // extractBackendTransport determines the backend transport type.
 // ToolHive always serves SSE to clients, but backends can be stdio or sse.
-func (*HTTPMiddleware) extractBackendTransport(r *http.Request) string {
+func (m *HTTPMiddleware) extractBackendTransport(r *http.Request) string {
 	// Try to get transport info from custom headers (if set by proxy)
 	if transport := r.Header.Get("X-MCP-Transport"); transport != "" {
 		return transport
 	}
 
-	// This is a heuristic based on the current architecture:
-	// - HTTPSSEProxy (stdio backend) handles /messages endpoints
-	// - TransparentProxy (sse backend) forwards directly
-
-	// Most ToolHive deployments use stdio transport as default
-	return "stdio"
+	return m.transport
 }
 
 // sanitizeArguments converts arguments to a safe string representation.

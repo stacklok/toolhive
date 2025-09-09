@@ -46,6 +46,8 @@ spec:
           # Always use structured JSON logs in Kubernetes (not configurable)
           - name: UNSTRUCTURED_LOGS
             value: "false"
+          - name: ENABLE_EXPERIMENTAL_FEATURES
+            value: {{ .Values.operator.features.experimental | quote }}
           {{- if eq .Values.operator.rbac.scope "namespace" }}
           - name: WATCH_NAMESPACE
             value: "{{ .Values.operator.rbac.allowedNamespaces | join "," }}"

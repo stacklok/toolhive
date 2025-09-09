@@ -35,7 +35,9 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: MCPRegistry is the Schema for the mcpregistries API
+        description: |-
+          MCPRegistry is the Schema for the mcpregistries API
+          ⚠️ Experimental API (v1alpha1) — subject to change.
         properties:
           apiVersion:
             description: |-
@@ -65,7 +67,7 @@ spec:
                   content
                 properties:
                   names:
-                    description: NameFilters is a list of glob patterns to exclude
+                    description: NameFilters defines name-based filtering
                     properties:
                       exclude:
                         description: Exclude is a list of glob patterns to exclude
@@ -249,6 +251,7 @@ spec:
                 - Ready
                 - Failed
                 - Syncing
+                - Terminating
                 type: string
               serverCount:
                 description: ServerCount is the total number of servers in the registry

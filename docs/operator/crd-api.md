@@ -172,6 +172,7 @@ _Appears in:_
 
 
 MCPRegistry is the Schema for the mcpregistries API
+⚠️ Experimental API (v1alpha1) — subject to change.
 
 
 
@@ -216,7 +217,7 @@ _Underlying type:_ _string_
 MCPRegistryPhase represents the phase of the MCPRegistry
 
 _Validation:_
-- Enum: [Pending Ready Failed Syncing]
+- Enum: [Pending Ready Failed Syncing Terminating]
 
 _Appears in:_
 - [MCPRegistryStatus](#mcpregistrystatus)
@@ -227,6 +228,7 @@ _Appears in:_
 | `Ready` | MCPRegistryPhaseReady means the MCPRegistry is ready and operational<br /> |
 | `Failed` | MCPRegistryPhaseFailed means the MCPRegistry has failed<br /> |
 | `Syncing` | MCPRegistryPhaseSyncing means the MCPRegistry is currently syncing data<br /> |
+| `Terminating` | MCPRegistryPhaseTerminating means the MCPRegistry is being deleted<br /> |
 
 
 #### MCPRegistrySource
@@ -279,7 +281,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `phase` _[MCPRegistryPhase](#mcpregistryphase)_ | Phase represents the current phase of the MCPRegistry |  | Enum: [Pending Ready Failed Syncing] <br /> |
+| `phase` _[MCPRegistryPhase](#mcpregistryphase)_ | Phase represents the current phase of the MCPRegistry |  | Enum: [Pending Ready Failed Syncing Terminating] <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  |  |
 | `lastSyncTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastSyncTime is the timestamp of the last successful sync |  |  |
 | `lastSyncHash` _string_ | LastSyncHash is the hash of the last successfully synced data<br />Used to detect changes in source data |  |  |
@@ -598,7 +600,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `names` _[NameFilter](#namefilter)_ | NameFilters is a list of glob patterns to exclude |  |  |
+| `names` _[NameFilter](#namefilter)_ | NameFilters defines name-based filtering |  |  |
 | `tags` _[TagFilter](#tagfilter)_ | Tags defines tag-based filtering |  |  |
 
 

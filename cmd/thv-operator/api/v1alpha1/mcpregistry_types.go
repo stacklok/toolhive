@@ -92,7 +92,7 @@ type SyncPolicy struct {
 
 // RegistryFilter defines include/exclude patterns for registry content
 type RegistryFilter struct {
-	// NameFilters is a list of glob patterns to exclude
+	// NameFilters defines name-based filtering
 	// +optional
 	NameFilters *NameFilter `json:"names,omitempty"`
 
@@ -185,7 +185,7 @@ type StorageReference struct {
 }
 
 // MCPRegistryPhase represents the phase of the MCPRegistry
-// +kubebuilder:validation:Enum=Pending;Ready;Failed;Syncing
+// +kubebuilder:validation:Enum=Pending;Ready;Failed;Syncing;Terminating
 type MCPRegistryPhase string
 
 const (
@@ -200,6 +200,9 @@ const (
 
 	// MCPRegistryPhaseSyncing means the MCPRegistry is currently syncing data
 	MCPRegistryPhaseSyncing MCPRegistryPhase = "Syncing"
+
+	// MCPRegistryPhaseTerminating means the MCPRegistry is being deleted
+	MCPRegistryPhaseTerminating MCPRegistryPhase = "Terminating"
 )
 
 // Condition types for MCPRegistry
@@ -229,6 +232,7 @@ const (
 //+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configmap) : true",message="configMap field is required when source type is 'configmap'"
 
 // MCPRegistry is the Schema for the mcpregistries API
+// ⚠️ Experimental API (v1alpha1) — subject to change.
 type MCPRegistry struct {
 	metav1.TypeMeta   `json:",inline"` // nolint:revive
 	metav1.ObjectMeta `json:"metadata,omitempty"`

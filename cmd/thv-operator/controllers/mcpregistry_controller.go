@@ -91,7 +91,7 @@ func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registr
 	ctxLogger := log.FromContext(ctx)
 
 	// Update the MCPRegistry status to indicate termination
-	registry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed // Using Failed as termination phase
+	registry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseTerminating
 	registry.Status.Message = "MCPRegistry is being terminated"
 	if err := r.Status().Update(ctx, registry); err != nil {
 		ctxLogger.Error(err, "Failed to update MCPRegistry status during finalization")

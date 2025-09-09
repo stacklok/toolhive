@@ -14,6 +14,22 @@ Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API g
 
 
 
+#### AuditConfig
+
+
+
+AuditConfig defines audit logging configuration for the MCP server
+
+
+
+_Appears in:_
+- [MCPServerSpec](#mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether audit logging is enabled<br />When true, enables audit logging with default configuration | false |  |
+
+
 #### AuthzConfigRef
 
 
@@ -237,6 +253,7 @@ _Appears in:_
 | `resourceOverrides` _[ResourceOverrides](#resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
 | `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the MCP server |  |  |
 | `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  |  |
+| `audit` _[AuditConfig](#auditconfig)_ | Audit defines audit logging configuration for the MCP server |  |  |
 | `tools` _string array_ | ToolsFilter is the filter on tools applied to the MCP server |  |  |
 | `telemetry` _[TelemetryConfig](#telemetryconfig)_ | Telemetry defines observability configuration for the MCP server |  |  |
 
@@ -315,6 +332,7 @@ _Appears in:_
 | `headers` _string array_ | Headers contains authentication headers for the OTLP endpoint<br />Specified as key=value pairs |  |  |
 | `insecure` _boolean_ | Insecure indicates whether to use HTTP instead of HTTPS for the OTLP endpoint | false |  |
 | `metrics` _[OpenTelemetryMetricsConfig](#opentelemetrymetricsconfig)_ | Metrics defines OpenTelemetry metrics-specific configuration |  |  |
+| `tracing` _[OpenTelemetryTracingConfig](#opentelemetrytracingconfig)_ | Tracing defines OpenTelemetry tracing configuration |  |  |
 
 
 #### OpenTelemetryMetricsConfig
@@ -330,7 +348,24 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `enabled` _boolean_ | Enabled controls whether OTLP metrics are sent | true |  |
+| `enabled` _boolean_ | Enabled controls whether OTLP metrics are sent | false |  |
+
+
+#### OpenTelemetryTracingConfig
+
+
+
+OpenTelemetryTracingConfig defines OpenTelemetry tracing configuration
+
+
+
+_Appears in:_
+- [OpenTelemetryConfig](#opentelemetryconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `enabled` _boolean_ | Enabled controls whether OTLP tracing is sent | false |  |
+| `samplingRate` _string_ | SamplingRate is the trace sampling rate (0.0-1.0) | 0.05 |  |
 
 
 #### OutboundNetworkPermissions

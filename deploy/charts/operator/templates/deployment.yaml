@@ -43,6 +43,9 @@ spec:
           ports:
             {{- toYaml .Values.operator.ports | nindent 12 }}
           env:
+          # Always use structured JSON logs in Kubernetes (not configurable)
+          - name: UNSTRUCTURED_LOGS
+            value: "false"
           {{- if eq .Values.operator.rbac.scope "namespace" }}
           - name: WATCH_NAMESPACE
             value: "{{ .Values.operator.rbac.allowedNamespaces | join "," }}"

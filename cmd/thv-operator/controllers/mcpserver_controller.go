@@ -505,6 +505,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		args = append(args, authzArgs...)
 	}
 
+	// Add audit configuration args
+	if m.Spec.Audit != nil && m.Spec.Audit.Enabled {
+		args = append(args, "--enable-audit")
+	}
+
 	// Add environment variables as --env flags for the MCP server
 	for _, e := range m.Spec.Env {
 		args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))
@@ -745,11 +750,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 }
 
 func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
-	// Check for the existence of the XDG_CONFIG_HOME, HOME, and TOOLHIVE_RUNTIME environment variables
+	// Check for the existence of the XDG_CONFIG_HOME, HOME, TOOLHIVE_RUNTIME, and UNSTRUCTURED_LOGS environment variables
 	// and set them to defaults if they don't exist
 	xdgConfigHomeFound := false
 	homeFound := false
 	toolhiveRuntimeFound := false
+	unstructuredLogsFound := false
 	for _, envVar := range env {
 		if envVar.Name == "XDG_CONFIG_HOME" {
 			xdgConfigHomeFound = true
@@ -759,6 +765,9 @@ func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
 		}
 		if envVar.Name == "TOOLHIVE_RUNTIME" {
 			toolhiveRuntimeFound = true
+		}
+		if envVar.Name == "UNSTRUCTURED_LOGS" {
+			unstructuredLogsFound = true
 		}
 	}
 	if !xdgConfigHomeFound {
@@ -780,6 +789,14 @@ func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{
 			Name:  "TOOLHIVE_RUNTIME",
 			Value: "kubernetes",
+		})
+	}
+	// Always use structured JSON logs in Kubernetes (not configurable)
+	if !unstructuredLogsFound {
+		logger.Debugf("UNSTRUCTURED_LOGS not found, setting to false for structured JSON logging")
+		env = append(env, corev1.EnvVar{
+			Name:  "UNSTRUCTURED_LOGS",
+			Value: "false",
 		})
 	}
 	return env
@@ -1650,6 +1667,25 @@ func (*MCPServerReconciler) generateOpenTelemetryArgs(m *mcpv1alpha1.MCPServer) 
 	// Add insecure flag
 	if otel.Insecure {
 		args = append(args, "--otel-insecure")
+	}
+
+	// Handle tracing configuration
+	if otel.Tracing != nil {
+		if otel.Tracing.Enabled {
+			args = append(args, "--otel-tracing-enabled=true")
+			args = append(args, fmt.Sprintf("--otel-tracing-sampling-rate=%s", otel.Tracing.SamplingRate))
+		} else {
+			args = append(args, "--otel-tracing-enabled=false")
+		}
+	}
+
+	// Handle metrics configuration
+	if otel.Metrics != nil {
+		if otel.Metrics.Enabled {
+			args = append(args, "--otel-metrics-enabled=true")
+		} else {
+			args = append(args, "--otel-metrics-enabled=false")
+		}
 	}
 
 	return args

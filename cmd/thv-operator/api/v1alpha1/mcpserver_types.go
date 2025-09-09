@@ -76,6 +76,10 @@ type MCPServerSpec struct {
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
 
+	// Audit defines audit logging configuration for the MCP server
+	// +optional
+	Audit *AuditConfig `json:"audit,omitempty"`
+
 	// ToolsFilter is the filter on tools applied to the MCP server
 	// +optional
 	ToolsFilter []string `json:"tools,omitempty"`
@@ -442,6 +446,15 @@ type InlineAuthzConfig struct {
 	EntitiesJSON string `json:"entitiesJson,omitempty"`
 }
 
+// AuditConfig defines audit logging configuration for the MCP server
+type AuditConfig struct {
+	// Enabled controls whether audit logging is enabled
+	// When true, enables audit logging with default configuration
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+}
+
 // TelemetryConfig defines observability configuration for the MCP server
 type TelemetryConfig struct {
 	// OpenTelemetry defines OpenTelemetry configuration
@@ -482,6 +495,10 @@ type OpenTelemetryConfig struct {
 	// Metrics defines OpenTelemetry metrics-specific configuration
 	// +optional
 	Metrics *OpenTelemetryMetricsConfig `json:"metrics,omitempty"`
+
+	// Tracing defines OpenTelemetry tracing configuration
+	// +optional
+	Tracing *OpenTelemetryTracingConfig `json:"tracing,omitempty"`
 }
 
 // PrometheusConfig defines Prometheus-specific configuration
@@ -492,10 +509,23 @@ type PrometheusConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 }
 
+// OpenTelemetryTracingConfig defines OpenTelemetry tracing configuration
+type OpenTelemetryTracingConfig struct {
+	// Enabled controls whether OTLP tracing is sent
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// SamplingRate is the trace sampling rate (0.0-1.0)
+	// +kubebuilder:default="0.05"
+	// +optional
+	SamplingRate string `json:"samplingRate,omitempty"`
+}
+
 // OpenTelemetryMetricsConfig defines OpenTelemetry metrics configuration
 type OpenTelemetryMetricsConfig struct {
 	// Enabled controls whether OTLP metrics are sent
-	// +kubebuilder:default=true
+	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 }

@@ -24,7 +24,7 @@ thv rm [workload-name] [flags]
 ### Options
 
 ```
-      --all            Delete all MCP servers
+      --all            Delete all workloads
       --group string   Delete all workloads in the specified group
   -h, --help           help for rm
 ```

@@ -10,70 +10,60 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
-var rmCmd = &cobra.Command{
-	Use:               "rm [workload-name]",
-	Short:             "Remove an MCP server",
-	Long:              `Remove an MCP server managed by ToolHive.`,
-	Args:              validateRmArgs,
-	RunE:              rmCmdFunc,
-	ValidArgsFunction: completeMCPServerNames,
-}
-
 var (
 	rmAll   bool
 	rmGroup string
 )
 
-func init() {
-	rmCmd.Flags().BoolVar(&rmAll, "all", false, "Delete all MCP servers")
-	rmCmd.Flags().StringVarP(&rmGroup, "group", "", "", "Delete all workloads in the specified group")
-
-	// Mark the flags as mutually exclusive
-	rmCmd.MarkFlagsMutuallyExclusive("all", "group")
-
-	rmCmd.PreRunE = validateGroupFlag()
+var rmCmd = &cobra.Command{
+	Use:               "rm [workload-name]",
+	Short:             "Remove an MCP server",
+	Long:              `Remove an MCP server managed by ToolHive.`,
+	Args:              cobra.MaximumNArgs(1),
+	RunE:              rmCmdFunc,
+	ValidArgsFunction: completeMCPServerNames,
 }
 
-// validateRmArgs validates the arguments for the remove command
-func validateRmArgs(cmd *cobra.Command, args []string) error {
-	// Check if --all or --group flags are set
-	all, _ := cmd.Flags().GetBool("all")
-	group, _ := cmd.Flags().GetString("group")
+func init() {
+	rmCmd.Flags().BoolVar(&rmAll, "all", false, "Delete all worloads")
+	rmCmd.Flags().StringVarP(&rmGroup, "group", "", "", "Delete all workloads in the specified group")
 
-	if all || group != "" {
-		// If --all or --group is set, no arguments should be provided
-		if len(args) > 0 {
-			return fmt.Errorf("no arguments should be provided when --all or --group flag is set")
-		}
-	} else {
-		// If neither --all nor --group is set, exactly one argument should be provided
-		if len(args) != 1 {
-			return fmt.Errorf("workload name is required when not using --group flag")
-		}
-	}
-
-	return nil
+	rmCmd.PreRunE = validateGroupFlag()
 }
 
 //nolint:gocyclo // This function is complex but manageable
 func rmCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
+	workloadName := ""
+	if len(args) > 0 {
+		workloadName = args[0]
+	}
+
+	if workloadName != "" && ( rmGroup != "" || rmAll ) {
+		return fmt.Errorf("workload name and group name cannot be used together")
+	}
+
 	if rmAll {
 		return deleteAllWorkloads(ctx)
 	}
 
 	if rmGroup != "" {
+		// Delete all workloads in the specified group
 		return deleteAllWorkloadsInGroup(ctx, rmGroup)
 	}
 
-	// Delete single workload
-	workloadName := args[0]
+	// Delete specific workload
+	if workloadName == "" {
+		return fmt.Errorf("workload name is required when not using --group flag")
+	}
+
 	// Create workload manager.
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
+
 	// Delete workload.
 	group, err := manager.DeleteWorkloads(ctx, []string{workloadName})
 	if err != nil {
@@ -109,7 +99,7 @@ func deleteAllWorkloads(ctx context.Context) error {
 	}
 
 	if len(workloadNames) == 0 {
-		fmt.Println("No running workloads to delete")
+		fmt.Println("No workloads to delete")
 		return nil
 	}
 

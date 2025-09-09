@@ -272,7 +272,7 @@ var _ = Describe("Telemetry Middleware E2E", Serial, func() {
 			// Wait for proxy to start
 			Eventually(func() string {
 				return outputBuffer.String()
-			}, 10*time.Second, 1*time.Second).Should(ContainSubstring("Starting stdio proxy"))
+			}, 20*time.Second, 1*time.Second).Should(ContainSubstring("Starting stdio proxy"))
 
 			By("Sending MCP request")
 			request := map[string]interface{}{

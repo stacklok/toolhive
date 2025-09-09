@@ -925,11 +925,11 @@ func TestDefaultManager_RunWorkloadDetached(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		runConfig      *runner.RunConfig
-		setupMocks     func(*statusMocks.MockStatusManager, *configMocks.MockProvider)
-		expectError    bool
-		errorMsg       string
+		name        string
+		runConfig   *runner.RunConfig
+		setupMocks  func(*statusMocks.MockStatusManager, *configMocks.MockProvider)
+		expectError bool
+		errorMsg    string
 	}{
 		{
 			name: "validation failure should not reach PID management",
@@ -937,7 +937,7 @@ func TestDefaultManager_RunWorkloadDetached(t *testing.T) {
 				BaseName: "test-workload",
 				Secrets:  []string{"invalid-secret"},
 			},
-			setupMocks: func(sm *statusMocks.MockStatusManager, cp *configMocks.MockProvider) {
+			setupMocks: func(_ *statusMocks.MockStatusManager, cp *configMocks.MockProvider) {
 				// Mock config provider to cause validation failure
 				mockConfig := &config.Config{}
 				cp.EXPECT().GetConfig().Return(mockConfig)
@@ -993,15 +993,14 @@ func TestDefaultManager_RunWorkloadDetached_PIDManagement(t *testing.T) {
 	// Since RunWorkloadDetached involves spawning actual processes and complex setup,
 	// we verify the PID management integration exists by checking the method signature
 	// and code structure rather than running the full integration.
-	
+
 	manager := &defaultManager{}
 	assert.NotNil(t, manager, "defaultManager should be instantiable")
-	
+
 	// Verify the method exists with the correct signature
 	var runWorkloadDetachedFunc interface{} = manager.RunWorkloadDetached
 	assert.NotNil(t, runWorkloadDetachedFunc, "RunWorkloadDetached method should exist")
 }
-
 
 func TestAsyncOperationTimeout(t *testing.T) {
 	t.Parallel()

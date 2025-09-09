@@ -505,6 +505,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		args = append(args, authzArgs...)
 	}
 
+	// Add audit configuration args
+	if m.Spec.Audit != nil && m.Spec.Audit.Enabled {
+		args = append(args, "--enable-audit")
+	}
+
 	// Add environment variables as --env flags for the MCP server
 	for _, e := range m.Spec.Env {
 		args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))

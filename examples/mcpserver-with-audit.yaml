@@ -1,0 +1,17 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: example-server-with-audit
+  namespace: default
+spec:
+  image: ghcr.io/stacklok/toolhive/servers/example:latest
+  transport: stdio
+  
+  # Enable audit logging to stdout
+  audit:
+    enabled: true
+  
+  # Optional: Add environment variables
+  env:
+    - name: DEBUG
+      value: "true"

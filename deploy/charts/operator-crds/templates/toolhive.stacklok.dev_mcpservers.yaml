@@ -54,6 +54,17 @@ spec:
                 items:
                   type: string
                 type: array
+              audit:
+                description: Audit defines audit logging configuration for the MCP
+                  server
+                properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled controls whether audit logging is enabled
+                      When true, enables audit logging with default configuration
+                    type: boolean
+                type: object
               authzConfig:
                 description: AuthzConfig defines authorization policy configuration
                   for the MCP server

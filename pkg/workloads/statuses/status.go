@@ -27,9 +27,12 @@ type StatusManager interface {
 	SetWorkloadStatus(ctx context.Context, workloadName string, status rt.WorkloadStatus, contextMsg string) error
 	// DeleteWorkloadStatus removes the status of a workload by its name.
 	DeleteWorkloadStatus(ctx context.Context, workloadName string) error
-	// SetWorkloadStatusAndPID sets the status and PID of a workload by its name.
-	// It otherwise behaves like SetWorkloadStatus.
-	SetWorkloadStatusAndPID(ctx context.Context, workloadName string, status rt.WorkloadStatus, contextMsg string, pid int) error
+	// SetWorkloadPID sets the PID of a workload by its name.
+	// This method will do nothing if the workload does not exist.
+	SetWorkloadPID(ctx context.Context, workloadName string, pid int) error
+	// ResetWorkloadPID resets the PID of a workload to 0.
+	// This method will do nothing if the workload does not exist.
+	ResetWorkloadPID(ctx context.Context, workloadName string) error
 }
 
 // NewStatusManagerFromRuntime creates a new instance of StatusManager from an existing runtime.
@@ -125,14 +128,14 @@ func (*runtimeStatusManager) DeleteWorkloadStatus(_ context.Context, _ string) e
 	return nil
 }
 
-func (*runtimeStatusManager) SetWorkloadStatusAndPID(
-	_ context.Context,
-	workloadName string,
-	status rt.WorkloadStatus,
-	contextMsg string,
-	pid int,
-) error {
-	// TODO: This will need to handle concurrent updates.
-	logger.Debugf("workload %s set to status %s with PID %d (context: %s)", workloadName, status, pid, contextMsg)
+func (*runtimeStatusManager) SetWorkloadPID(_ context.Context, workloadName string, pid int) error {
+	// Noop for runtime status manager
+	logger.Debugf("workload %s PID set to %d (noop for runtime status manager)", workloadName, pid)
+	return nil
+}
+
+func (*runtimeStatusManager) ResetWorkloadPID(_ context.Context, workloadName string) error {
+	// Noop for runtime status manager
+	logger.Debugf("workload %s PID reset (noop for runtime status manager)", workloadName)
 	return nil
 }

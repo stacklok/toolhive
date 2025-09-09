@@ -303,16 +303,47 @@ func (f *fileStatusManager) DeleteWorkloadStatus(ctx context.Context, workloadNa
 	})
 }
 
-// SetWorkloadStatusAndPID sets the status and PID of a workload by its name.
-// It otherwise behaves like SetWorkloadStatus.
-func (f *fileStatusManager) SetWorkloadStatusAndPID(
-	ctx context.Context,
-	workloadName string,
-	status rt.WorkloadStatus,
-	contextMsg string,
-	pid int,
-) error {
-	return f.setWorkloadStatusInternal(ctx, workloadName, status, contextMsg, &pid)
+// SetWorkloadPID sets the PID of a workload by its name.
+// This method will do nothing if the workload does not exist.
+func (f *fileStatusManager) SetWorkloadPID(ctx context.Context, workloadName string, pid int) error {
+	err := f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
+		// Check if file exists
+		if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
+			// File doesn't exist, nothing to do
+			logger.Debugf("workload %s does not exist, skipping PID update", workloadName)
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("failed to check status file for workload %s: %w", workloadName, err)
+		}
+
+		// Read existing file
+		statusFile, err := f.readStatusFile(statusFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to read existing status for workload %s: %w", workloadName, err)
+		}
+
+		// Update only the PID and UpdatedAt timestamp
+		statusFile.ProcessID = pid
+		statusFile.UpdatedAt = time.Now()
+
+		if err = f.writeStatusFile(statusFilePath, *statusFile); err != nil {
+			return fmt.Errorf("failed to write updated PID for workload %s: %w", workloadName, err)
+		}
+
+		logger.Debugf("workload %s PID set to %d", workloadName, pid)
+		return nil
+	})
+
+	if err != nil {
+		logger.Errorf("error updating workload %s PID: %v", workloadName, err)
+	}
+	return err
+}
+
+// ResetWorkloadPID resets the PID of a workload to 0.
+// This method will do nothing if the workload does not exist.
+func (f *fileStatusManager) ResetWorkloadPID(ctx context.Context, workloadName string) error {
+	return f.SetWorkloadPID(ctx, workloadName, 0)
 }
 
 // getStatusFilePath returns the file path for a given workload's status file.

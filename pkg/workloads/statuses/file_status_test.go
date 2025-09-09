@@ -371,8 +371,12 @@ func TestFileStatusManager_SetWorkloadStatus_PreservesPID(t *testing.T) {
 	manager := &fileStatusManager{baseDir: tempDir}
 	ctx := context.Background()
 
-	// First, create a workload with status and PID using SetWorkloadStatusAndPID
-	err := manager.SetWorkloadStatusAndPID(ctx, "test-workload", rt.WorkloadStatusStarting, "initializing", 12345)
+	// First, create a workload with status
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "initializing")
+	require.NoError(t, err)
+
+	// Then set the PID
+	err = manager.SetWorkloadPID(ctx, "test-workload", 12345)
 	require.NoError(t, err)
 
 	// Read the file to verify initial state
@@ -1371,36 +1375,22 @@ func TestFileStatusManager_ReadStatusFile_Validation(t *testing.T) {
 	}
 }
 
-func TestFileStatusManager_SetWorkloadStatusAndPID_Create(t *testing.T) {
+func TestFileStatusManager_SetWorkloadPID_NonExistentWorkload(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
 	manager := &fileStatusManager{baseDir: tempDir}
 	ctx := context.Background()
 
-	// Test setting status and PID for new workload (no status file exists)
-	err := manager.SetWorkloadStatusAndPID(ctx, "test-workload", rt.WorkloadStatusRunning, "container started", 12345)
+	// Test setting PID for non-existent workload (should be a noop)
+	err := manager.SetWorkloadPID(ctx, "test-workload", 12345)
 	require.NoError(t, err)
 
-	// Verify file was created
+	// Verify no file was created (since it's a noop)
 	statusFile := filepath.Join(tempDir, "test-workload.json")
-	require.FileExists(t, statusFile)
-
-	// Verify file contents
-	data, err := os.ReadFile(statusFile)
-	require.NoError(t, err)
-
-	var statusFileData workloadStatusFile
-	err = json.Unmarshal(data, &statusFileData)
-	require.NoError(t, err)
-
-	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
-	assert.Equal(t, "container started", statusFileData.StatusContext)
-	assert.Equal(t, 12345, statusFileData.ProcessID)
-	assert.False(t, statusFileData.CreatedAt.IsZero())
-	assert.False(t, statusFileData.UpdatedAt.IsZero())
+	require.NoFileExists(t, statusFile)
 }
 
-func TestFileStatusManager_SetWorkloadStatusAndPID_Update(t *testing.T) {
+func TestFileStatusManager_SetWorkloadPID_Update(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
 	manager := &fileStatusManager{baseDir: tempDir}
@@ -1419,8 +1409,8 @@ func TestFileStatusManager_SetWorkloadStatusAndPID_Update(t *testing.T) {
 	err = json.Unmarshal(originalData, &originalStatusFile)
 	require.NoError(t, err)
 
-	// Set the status and PID on existing workload
-	err = manager.SetWorkloadStatusAndPID(ctx, "test-workload", rt.WorkloadStatusRunning, "container ready", 67890)
+	// Set the PID on existing workload
+	err = manager.SetWorkloadPID(ctx, "test-workload", 67890)
 	require.NoError(t, err)
 
 	// Verify file was updated
@@ -1431,16 +1421,16 @@ func TestFileStatusManager_SetWorkloadStatusAndPID_Update(t *testing.T) {
 	err = json.Unmarshal(data, &statusFileData)
 	require.NoError(t, err)
 
-	// Verify status, context, and PID were updated while preserving other fields
-	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)        // Status updated
-	assert.Equal(t, "container ready", statusFileData.StatusContext)        // Context updated
+	// Verify only PID was updated while preserving other fields
+	assert.Equal(t, rt.WorkloadStatusStarting, statusFileData.Status)       // Status preserved
+	assert.Equal(t, "initializing", statusFileData.StatusContext)           // Context preserved
 	assert.Equal(t, 67890, statusFileData.ProcessID)                        // PID updated
 	assert.Equal(t, originalStatusFile.CreatedAt, statusFileData.CreatedAt) // CreatedAt preserved
 	assert.True(t, statusFileData.UpdatedAt.After(originalStatusFile.UpdatedAt) ||
 		statusFileData.UpdatedAt.Equal(originalStatusFile.UpdatedAt)) // UpdatedAt updated
 }
 
-func TestFileStatusManager_SetWorkloadStatusAndPID_WithSlashes(t *testing.T) {
+func TestFileStatusManager_SetWorkloadPID_WithSlashes(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
 	manager := &fileStatusManager{baseDir: tempDir}
@@ -1448,8 +1438,12 @@ func TestFileStatusManager_SetWorkloadStatusAndPID_WithSlashes(t *testing.T) {
 
 	workloadName := testWorkloadWithSlash
 
-	// Test setting status and PID for workload name with slashes
-	err := manager.SetWorkloadStatusAndPID(ctx, workloadName, rt.WorkloadStatusRunning, "started", 11111)
+	// First create the workload
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusRunning, "started")
+	require.NoError(t, err)
+
+	// Then set the PID for workload name with slashes
+	err = manager.SetWorkloadPID(ctx, workloadName, 11111)
 	require.NoError(t, err)
 
 	// Verify file was created with slashes replaced by dashes
@@ -1469,14 +1463,18 @@ func TestFileStatusManager_SetWorkloadStatusAndPID_WithSlashes(t *testing.T) {
 	assert.Equal(t, 11111, statusFileData.ProcessID)
 }
 
-func TestFileStatusManager_SetWorkloadStatusAndPID_ZeroPID(t *testing.T) {
+func TestFileStatusManager_SetWorkloadPID_ZeroPID(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
 	manager := &fileStatusManager{baseDir: tempDir}
 	ctx := context.Background()
 
-	// Test setting status with PID 0 (which is valid - means no process)
-	err := manager.SetWorkloadStatusAndPID(ctx, "test-workload", rt.WorkloadStatusStopped, "container stopped", 0)
+	// First create the workload
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStopped, "container stopped")
+	require.NoError(t, err)
+
+	// Test setting PID 0 (which is valid - means no process)
+	err = manager.SetWorkloadPID(ctx, "test-workload", 0)
 	require.NoError(t, err)
 
 	// Verify file was created with PID 0
@@ -1493,7 +1491,7 @@ func TestFileStatusManager_SetWorkloadStatusAndPID_ZeroPID(t *testing.T) {
 	assert.Equal(t, 0, statusFileData.ProcessID)
 }
 
-func TestFileStatusManager_SetWorkloadStatusAndPID_PreservesCreatedAt(t *testing.T) {
+func TestFileStatusManager_SetWorkloadPID_PreservesCreatedAt(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
 	manager := &fileStatusManager{baseDir: tempDir}
@@ -1516,8 +1514,8 @@ func TestFileStatusManager_SetWorkloadStatusAndPID_PreservesCreatedAt(t *testing
 	// Wait a bit to ensure timestamps would be different
 	time.Sleep(10 * time.Millisecond)
 
-	// Update using SetWorkloadStatusAndPID
-	err = manager.SetWorkloadStatusAndPID(ctx, "test-workload", rt.WorkloadStatusRunning, "now running", 54321)
+	// Update using SetWorkloadPID
+	err = manager.SetWorkloadPID(ctx, "test-workload", 54321)
 	require.NoError(t, err)
 
 	// Verify CreatedAt is preserved
@@ -1530,39 +1528,39 @@ func TestFileStatusManager_SetWorkloadStatusAndPID_PreservesCreatedAt(t *testing
 
 	assert.Equal(t, originalCreatedAt, statusFileData.CreatedAt)
 	assert.True(t, statusFileData.UpdatedAt.After(originalCreatedAt))
-	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
-	assert.Equal(t, "now running", statusFileData.StatusContext)
-	assert.Equal(t, 54321, statusFileData.ProcessID)
+	assert.Equal(t, rt.WorkloadStatusStarting, statusFileData.Status) // Status should be preserved
+	assert.Equal(t, "initializing", statusFileData.StatusContext)     // Context should be preserved
+	assert.Equal(t, 54321, statusFileData.ProcessID)                  // PID should be updated
 }
 
-func TestFileStatusManager_SetWorkloadStatusAndPID_ConcurrentAccess(t *testing.T) {
+func TestFileStatusManager_SetWorkloadPID_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
 	manager := &fileStatusManager{baseDir: tempDir}
 	ctx := context.Background()
 
 	// Create initial workload
-	err := manager.SetWorkloadStatus(ctx, "concurrent-test", rt.WorkloadStatusStarting, "")
+	err := manager.SetWorkloadStatus(ctx, "concurrent-test", rt.WorkloadStatusStarting, "initializing")
 	require.NoError(t, err)
 
 	// Wait a tiny bit to ensure the initial status file is fully written
 	time.Sleep(10 * time.Millisecond)
 
-	// Test concurrent status and PID updates with fewer goroutines to reduce contention
+	// Test concurrent PID updates with fewer goroutines to reduce contention
 	done := make(chan error, 3)
 
 	go func() {
-		err := manager.SetWorkloadStatusAndPID(ctx, "concurrent-test", rt.WorkloadStatusRunning, "running with PID", 1001)
+		err := manager.SetWorkloadPID(ctx, "concurrent-test", 1001)
 		done <- err
 	}()
 
 	go func() {
-		err := manager.SetWorkloadStatusAndPID(ctx, "concurrent-test", rt.WorkloadStatusStopping, "stopping", 1002)
+		err := manager.SetWorkloadPID(ctx, "concurrent-test", 1002)
 		done <- err
 	}()
 
 	go func() {
-		err := manager.SetWorkloadStatusAndPID(ctx, "concurrent-test", rt.WorkloadStatusStopped, "stopped", 0)
+		err := manager.SetWorkloadPID(ctx, "concurrent-test", 1003)
 		done <- err
 	}()
 
@@ -1570,9 +1568,9 @@ func TestFileStatusManager_SetWorkloadStatusAndPID_ConcurrentAccess(t *testing.T
 	for i := 0; i < 3; i++ {
 		select {
 		case err := <-done:
-			assert.NoError(t, err, "SetWorkloadStatusAndPID should not fail")
+			assert.NoError(t, err, "SetWorkloadPID should not fail")
 		case <-time.After(5 * time.Second):
-			t.Fatal("timeout waiting for concurrent status and PID updates")
+			t.Fatal("timeout waiting for concurrent PID updates")
 		}
 	}
 
@@ -1587,14 +1585,100 @@ func TestFileStatusManager_SetWorkloadStatusAndPID_ConcurrentAccess(t *testing.T
 	err = json.Unmarshal(data, &statusFileData)
 	require.NoError(t, err)
 
-	// The final state should be one of the expected combinations
-	validStates := map[rt.WorkloadStatus]int{
-		rt.WorkloadStatusRunning:  1001,
-		rt.WorkloadStatusStopping: 1002,
-		rt.WorkloadStatusStopped:  0,
-	}
+	// The status should remain unchanged (starting) since we only updated PIDs
+	assert.Equal(t, rt.WorkloadStatusStarting, statusFileData.Status)
+	assert.Equal(t, "initializing", statusFileData.StatusContext)
 
-	expectedPID, validStatus := validStates[statusFileData.Status]
-	assert.True(t, validStatus, "Final status %s should be one of the expected values", statusFileData.Status)
-	assert.Equal(t, expectedPID, statusFileData.ProcessID, "PID should match the expected value for status %s", statusFileData.Status)
+	// The final PID should be one of the three values we set concurrently
+	validPIDs := []int{1001, 1002, 1003}
+	assert.Contains(t, validPIDs, statusFileData.ProcessID, "PID should be one of the concurrently set values")
+}
+
+func TestFileStatusManager_ResetWorkloadPID_NonExistentWorkload(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Test resetting PID for non-existent workload (should be a noop)
+	err := manager.ResetWorkloadPID(ctx, "test-workload")
+	require.NoError(t, err)
+
+	// Verify no file was created (since it's a noop)
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	require.NoFileExists(t, statusFile)
+}
+
+func TestFileStatusManager_ResetWorkloadPID_ExistingWorkload(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// First create a workload with a non-zero PID
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadPID(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	// Verify the PID is set to 12345
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+	assert.Equal(t, 12345, statusFileData.ProcessID)
+
+	// Now reset the PID
+	err = manager.ResetWorkloadPID(ctx, "test-workload")
+	require.NoError(t, err)
+
+	// Verify the PID is now 0 and other fields are preserved
+	data, err = os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, statusFileData.ProcessID)                       // PID should be reset to 0
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)   // Status should be preserved
+	assert.Equal(t, "container started", statusFileData.StatusContext) // Context should be preserved
+}
+
+func TestFileStatusManager_ResetWorkloadPID_WithSlashes(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	workloadName := testWorkloadWithSlash
+
+	// First create the workload and set a PID
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusRunning, "started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadPID(ctx, workloadName, 9999)
+	require.NoError(t, err)
+
+	// Reset the PID for workload name with slashes
+	err = manager.ResetWorkloadPID(ctx, workloadName)
+	require.NoError(t, err)
+
+	// Verify file exists with slashes replaced by dashes and PID is 0
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	require.FileExists(t, statusFile)
+
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, "started", statusFileData.StatusContext)
+	assert.Equal(t, 0, statusFileData.ProcessID) // PID should be reset to 0
 }

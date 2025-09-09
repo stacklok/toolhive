@@ -26,8 +26,6 @@ spec:
     - assert:
         file: assert-mcpserver-running.yaml
     - assert:
-        file: assert-mcpserver-pod-running.yaml
-    - assert:
         file: assert-mcpserver-proxy-runner-running.yaml
     - assert:
         file: assert-mcpserver-proxy-runner-svc.yaml

@@ -216,8 +216,7 @@ func (*MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServe
 		}
 	}
 
-	// Use the RunConfigBuilder for operator context with full builder pattern
-	config, err := runner.NewOperatorRunConfigBuilder().
+	builder := runner.NewOperatorRunConfigBuilder().
 		WithName(m.Name).
 		WithImage(m.Spec.Image).
 		WithCmdArgs(m.Spec.Args).
@@ -227,8 +226,21 @@ func (*MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServe
 		WithEnvVars(envVars).
 		WithVolumes(volumes).
 		WithSecrets(secrets).
-		WithK8sPodPatch(k8sPodPatch).
-		BuildForOperator()
+		WithK8sPodPatch(k8sPodPatch)
+
+	// Add permission profile if specified
+	if m.Spec.PermissionProfile != nil {
+		switch m.Spec.PermissionProfile.Type {
+		case mcpv1alpha1.PermissionProfileTypeBuiltin:
+			builder = builder.WithPermissionProfileNameOrPath(m.Spec.PermissionProfile.Name)
+		case mcpv1alpha1.PermissionProfileTypeConfigMap:
+			// For ConfigMap-based permission profiles, we store the path
+			builder = builder.WithPermissionProfileNameOrPath(fmt.Sprintf("/etc/toolhive/profiles/%s", m.Spec.PermissionProfile.Key))
+		}
+	}
+
+	// Use the RunConfigBuilder for operator context with full builder pattern
+	config, err := builder.BuildForOperator()
 
 	if err != nil {
 		return nil, err

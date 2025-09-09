@@ -19,6 +19,11 @@ const (
 	SessionTypeStreamable SessionType = "streamable"
 )
 
+const (
+	// DefaultSessionTTL is the default time-to-live for sessions (2 hours)
+	DefaultSessionTTL = 2 * time.Hour
+)
+
 // ProxySession implements the Session interface for proxy sessions.
 // It now includes support for session types, metadata, and custom data.
 type ProxySession struct {

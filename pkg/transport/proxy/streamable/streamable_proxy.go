@@ -75,7 +75,7 @@ func NewHTTPProxy(
 		middlewares:       middlewares,
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		responseCh:        make(chan jsonrpc2.Message, 100),
-		sessionManager:    session.NewManager(30*time.Minute, sFactory),
+		sessionManager:    session.NewManager(session.DefaultSessionTTL, sFactory),
 	}
 }
 

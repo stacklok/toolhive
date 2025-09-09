@@ -7,6 +7,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -14,6 +15,7 @@ import (
 type DefaultGroupMigrator struct {
 	groupManager     groups.Manager
 	workloadsManager workloads.Manager
+	configProvider   config.Provider
 }
 
 // Migrate performs the complete default group migration
@@ -95,6 +97,21 @@ func (m *DefaultGroupMigrator) migrateWorkloadsToDefaultGroup(ctx context.Contex
 
 	migratedCount := 0
 	for _, workloadName := range workloadsWithoutGroup {
+		// Check the runconfig to validate if the workload is not in a group already
+		// ListWorkloadsInGroup doesn't check the runconfig, so we need an additional check here
+		runConfig, err := runner.LoadState(ctx, workloadName)
+		if err != nil {
+			logger.Warnf("Failed to migrate workload %s to default group due to missing or corrupt"+
+				" run configuration: %v. The workload may be unhealthy and need to be deleted.", workloadName, err)
+			continue
+		}
+
+		// Check if the workload is actually in the specified group
+		if runConfig.Group != "" {
+			logger.Debugf("Workload %s is already in group %s, skipping migration", workloadName, runConfig.Group)
+			continue
+		}
+
 		// Move workload to default group
 		if err := m.workloadsManager.MoveToGroup(ctx, []string{workloadName}, "", groups.DefaultGroup); err != nil {
 			logger.Warnf("Failed to migrate workload %s to default group: %v", workloadName, err)
@@ -108,7 +125,7 @@ func (m *DefaultGroupMigrator) migrateWorkloadsToDefaultGroup(ctx context.Contex
 
 // migrateClientConfigs migrates client configurations from global config to default group
 func (m *DefaultGroupMigrator) migrateClientConfigs(ctx context.Context) error {
-	appConfig := config.GetConfig()
+	appConfig := m.configProvider.GetConfig()
 
 	// If there are no registered clients, nothing to migrate
 	if len(appConfig.Clients.RegisteredClients) == 0 {

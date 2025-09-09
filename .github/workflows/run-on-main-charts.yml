@@ -7,6 +7,10 @@ on:
     branches: [ main ]
     paths:
       - deploy/charts/**
+    paths-ignore:
+      - deploy/charts/**/CONTRIBUTING.md
+      - deploy/charts/**/ci/**
+      - deploy/charts/**/CLAUDE.md
 
 jobs:
   publish-charts:
@@ -16,3 +20,4 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/releaser-helm-charts.yml
+    secrets: inherit # So the releaser workflow can pass a token down to the docs update workflow

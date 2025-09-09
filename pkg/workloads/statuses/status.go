@@ -7,6 +7,7 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -22,9 +23,16 @@ type StatusManager interface {
 	// SetWorkloadStatus sets the status of a workload by its name.
 	// Note that this does not return errors, but logs them instead.
 	// This method will do nothing if the workload does not exist.
+	// This method will preserve the PID of the workload if it was previously set.
 	SetWorkloadStatus(ctx context.Context, workloadName string, status rt.WorkloadStatus, contextMsg string) error
 	// DeleteWorkloadStatus removes the status of a workload by its name.
 	DeleteWorkloadStatus(ctx context.Context, workloadName string) error
+	// SetWorkloadPID sets the PID of a workload by its name.
+	// This method will do nothing if the workload does not exist.
+	SetWorkloadPID(ctx context.Context, workloadName string, pid int) error
+	// ResetWorkloadPID resets the PID of a workload to 0.
+	// This method will do nothing if the workload does not exist.
+	ResetWorkloadPID(ctx context.Context, workloadName string) error
 }
 
 // NewStatusManagerFromRuntime creates a new instance of StatusManager from an existing runtime.
@@ -38,7 +46,13 @@ func NewStatusManagerFromRuntime(runtime rt.Runtime) StatusManager {
 // based on the runtime environment. If running in Kubernetes, it returns the runtime-based
 // implementation. Otherwise, it returns the file-based implementation.
 func NewStatusManager(runtime rt.Runtime) (StatusManager, error) {
-	if rt.IsKubernetesRuntime() {
+	return NewStatusManagerWithEnv(runtime, &env.OSReader{})
+}
+
+// NewStatusManagerWithEnv creates a new status manager instance using the provided environment reader.
+// This allows for dependency injection of environment variable access for testing.
+func NewStatusManagerWithEnv(runtime rt.Runtime, envReader env.Reader) (StatusManager, error) {
+	if rt.IsKubernetesRuntimeWithEnv(envReader) {
 		return NewStatusManagerFromRuntime(runtime), nil
 	}
 	return NewFileStatusManager(runtime)
@@ -111,5 +125,17 @@ func (*runtimeStatusManager) SetWorkloadStatus(
 func (*runtimeStatusManager) DeleteWorkloadStatus(_ context.Context, _ string) error {
 	// TODO: This will need to handle concurrent updates.
 	// Noop
+	return nil
+}
+
+func (*runtimeStatusManager) SetWorkloadPID(_ context.Context, workloadName string, pid int) error {
+	// Noop for runtime status manager
+	logger.Debugf("workload %s PID set to %d (noop for runtime status manager)", workloadName, pid)
+	return nil
+}
+
+func (*runtimeStatusManager) ResetWorkloadPID(_ context.Context, workloadName string) error {
+	// Noop for runtime status manager
+	logger.Debugf("workload %s PID reset (noop for runtime status manager)", workloadName)
 	return nil
 }

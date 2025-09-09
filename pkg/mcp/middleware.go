@@ -19,9 +19,16 @@ type ParserMiddlewareParams struct {
 	// No parameters needed for MCP parser
 }
 
+// ToolOverride represents a tool override entry.
+type ToolOverride struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 // ToolFilterMiddlewareParams represents the parameters for tool filter middleware
 type ToolFilterMiddlewareParams struct {
-	FilterTools []string `json:"filter_tools"`
+	FilterTools   []string                `json:"filter_tools"`
+	ToolsOverride map[string]ToolOverride `json:"tools_override"`
 }
 
 // ParserMiddleware wraps MCP parser middleware functionality
@@ -70,7 +77,13 @@ func CreateToolFilterMiddleware(config *types.MiddlewareConfig, runner types.Mid
 		return fmt.Errorf("failed to unmarshal tool filter middleware parameters: %w", err)
 	}
 
-	middleware, err := NewToolFilterMiddleware(params.FilterTools)
+	opts := []ToolMiddlewareOption{}
+	opts = append(opts, WithToolsFilter(params.FilterTools...))
+	for actualName, tool := range params.ToolsOverride {
+		opts = append(opts, WithToolsOverride(actualName, tool.Name, tool.Description))
+	}
+
+	middleware, err := NewListToolsMappingMiddleware(opts...)
 	if err != nil {
 		return fmt.Errorf("failed to create tool filter middleware: %w", err)
 	}
@@ -88,7 +101,13 @@ func CreateToolCallFilterMiddleware(config *types.MiddlewareConfig, runner types
 		return fmt.Errorf("failed to unmarshal tool call filter middleware parameters: %w", err)
 	}
 
-	middleware, err := NewToolCallFilterMiddleware(params.FilterTools)
+	opts := []ToolMiddlewareOption{}
+	opts = append(opts, WithToolsFilter(params.FilterTools...))
+	for actualName, tool := range params.ToolsOverride {
+		opts = append(opts, WithToolsOverride(actualName, tool.Name, tool.Description))
+	}
+
+	middleware, err := NewToolCallMappingMiddleware(opts...)
 	if err != nil {
 		return fmt.Errorf("failed to create tool call filter middleware: %w", err)
 	}

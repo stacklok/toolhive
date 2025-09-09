@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/adrg/xdg"
 
@@ -16,10 +17,14 @@ import (
 
 // Processor handles loading and processing ignore patterns
 type Processor struct {
-	GlobalPatterns  []string
-	LocalPatterns   []string
-	Config          *Config
-	sharedEmptyFile string // Cached path to a single shared empty file
+	GlobalPatterns     []string
+	LocalPatterns      []string
+	Config             *Config
+	sharedEmptyFile    string     // Cached path to a single shared empty file
+	overlayArtifacts   []string   // Paths to created overlay artifacts (files and directories)
+	overlayArtifactsMu sync.Mutex // Mutex to protect overlayArtifacts
+	workloadID         string     // Unique identifier for this workload
+	artifactDir        string     // Directory to store overlay artifacts
 }
 
 // Config holds configuration for ignore processing
@@ -38,11 +43,31 @@ func NewProcessor(config *Config) *Processor {
 			PrintOverlays: false,
 		}
 	}
+
+	// Generate a unique workload ID for this processor instance
+	workloadID := fmt.Sprintf("thvignore-%d", os.Getpid())
+
+	// Create artifact directory for this workload
+	artifactDir := getArtifactDir(workloadID)
+
 	return &Processor{
-		GlobalPatterns: make([]string, 0),
-		LocalPatterns:  make([]string, 0),
-		Config:         config,
+		GlobalPatterns:   make([]string, 0),
+		LocalPatterns:    make([]string, 0),
+		Config:           config,
+		overlayArtifacts: make([]string, 0),
+		workloadID:       workloadID,
+		artifactDir:      artifactDir,
 	}
+}
+
+// getArtifactDir returns the directory path for storing overlay artifacts
+func getArtifactDir(workloadID string) string {
+	// Use XDG runtime directory if available, otherwise fall back to temp
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		runtimeDir = os.TempDir()
+	}
+	return filepath.Join(runtimeDir, "toolhive", "overlays", workloadID)
 }
 
 // LoadGlobal loads global ignore patterns from ~/.config/toolhive/thvignore
@@ -186,12 +211,19 @@ func (p *Processor) createOverlayMount(
 	}
 
 	if info.IsDir() {
-		// For directories, use tmpfs mount
-		logger.Debugf("Adding tmpfs overlay for directory pattern '%s' at container path: %s", pattern, containerOverlayPath)
+		// For directories, create an empty directory and bind mount it
+		emptyDirPath, err := p.createEmptyDirectory()
+		if err != nil {
+			logger.Debugf("Failed to create empty directory for pattern '%s': %v", pattern, err)
+			return nil
+		}
+
+		logger.Debugf("Adding bind overlay for directory pattern '%s' at container path: %s (host: %s)",
+			pattern, containerOverlayPath, emptyDirPath)
 		return &OverlayMount{
 			ContainerPath: containerOverlayPath,
-			HostPath:      "", // tmpfs doesn't need host path
-			Type:          "tmpfs",
+			HostPath:      emptyDirPath,
+			Type:          "bind",
 		}
 	}
 
@@ -216,11 +248,7 @@ func (p *Processor) printOverlays(overlayMounts []OverlayMount, bindMount, conta
 	if p.Config.PrintOverlays && len(overlayMounts) > 0 {
 		logger.Infof("Resolved overlays for mount %s -> %s:", bindMount, containerPath)
 		for _, overlay := range overlayMounts {
-			if overlay.Type == "tmpfs" {
-				logger.Infof("  - %s (tmpfs)", overlay.ContainerPath)
-			} else {
-				logger.Infof("  - %s (bind: %s)", overlay.ContainerPath, overlay.HostPath)
-			}
+			logger.Infof("  - %s (bind: %s)", overlay.ContainerPath, overlay.HostPath)
 		}
 	}
 }
@@ -253,17 +281,67 @@ func (p *Processor) createEmptyFile() (string, error) {
 	return p.sharedEmptyFile, nil
 }
 
-// Cleanup removes the shared empty file if it exists
+// createEmptyDirectory creates an empty directory for bind mounting
+func (p *Processor) createEmptyDirectory() (string, error) {
+	p.overlayArtifactsMu.Lock()
+	defer p.overlayArtifactsMu.Unlock()
+
+	// Ensure artifact directory exists
+	if err := os.MkdirAll(p.artifactDir, 0750); err != nil {
+		return "", fmt.Errorf("failed to create artifact directory: %w", err)
+	}
+
+	// Create a unique empty directory
+	emptyDir, err := os.MkdirTemp(p.artifactDir, "dir-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create empty directory: %w", err)
+	}
+
+	// Track this artifact for cleanup
+	p.overlayArtifacts = append(p.overlayArtifacts, emptyDir)
+	logger.Debugf("Created empty directory for bind mounting: %s", emptyDir)
+
+	return emptyDir, nil
+}
+
+// Cleanup removes all overlay artifacts (shared empty file and directories)
 func (p *Processor) Cleanup() error {
+	p.overlayArtifactsMu.Lock()
+	defer p.overlayArtifactsMu.Unlock()
+
+	var lastErr error
+
+	// Remove shared empty file
 	if p.sharedEmptyFile != "" {
 		if err := os.Remove(p.sharedEmptyFile); err != nil && !os.IsNotExist(err) {
 			logger.Debugf("Failed to remove shared empty file %s: %v", p.sharedEmptyFile, err)
-			return fmt.Errorf("failed to remove shared empty file: %w", err)
+			lastErr = fmt.Errorf("failed to remove shared empty file: %w", err)
+		} else {
+			logger.Debugf("Cleaned up shared empty file: %s", p.sharedEmptyFile)
 		}
-		logger.Debugf("Cleaned up shared empty file: %s", p.sharedEmptyFile)
 		p.sharedEmptyFile = ""
 	}
-	return nil
+
+	// Remove all overlay artifacts (empty directories)
+	for _, artifact := range p.overlayArtifacts {
+		if err := os.RemoveAll(artifact); err != nil && !os.IsNotExist(err) {
+			logger.Debugf("Failed to remove overlay artifact %s: %v", artifact, err)
+			lastErr = fmt.Errorf("failed to remove overlay artifact: %w", err)
+		} else {
+			logger.Debugf("Cleaned up overlay artifact: %s", artifact)
+		}
+	}
+	p.overlayArtifacts = nil
+
+	// Remove the artifact directory if it's empty
+	if p.artifactDir != "" {
+		if err := os.Remove(p.artifactDir); err != nil && !os.IsNotExist(err) {
+			// It's okay if the directory is not empty or doesn't exist
+			logger.Debugf("Could not remove artifact directory %s: %v", p.artifactDir, err)
+		}
+	}
+
+	return lastErr
 }
 
 // GetOverlayPaths returns container paths that should be overlaid

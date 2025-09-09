@@ -159,12 +159,18 @@ func printTextServers(servers []registry.ServerMetadata) {
 	}
 }
 
+// ServerType constants
+const (
+	ServerTypeRemote    = "remote"
+	ServerTypeContainer = "container"
+)
+
 // getServerType returns the type of server (container or remote)
 func getServerType(server registry.ServerMetadata) string {
 	if server.IsRemote() {
-		return "remote"
+		return ServerTypeRemote
 	}
-	return "container"
+	return ServerTypeContainer
 }
 
 // printTextServerInfo prints detailed information about a server in text format

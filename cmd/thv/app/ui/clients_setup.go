@@ -56,6 +56,10 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			if m.CurrentStep == stepGroupSelection {
+				// Require at least one group to be selected before proceeding
+				if len(m.SelectedGroups) == 0 {
+					return m, nil // Stay on group selection step
+				}
 				// Move to client selection step
 				m.CurrentStep = stepClientSelection
 				m.Cursor = 0
@@ -100,7 +104,7 @@ func (m *setupModel) View() string {
 	var b strings.Builder
 
 	if m.CurrentStep == stepGroupSelection {
-		b.WriteString("Select groups to register clients with:\n\n")
+		b.WriteString("Select groups to register clients with (at least one group needs to be selected):\n\n")
 		for i, group := range m.Groups {
 			b.WriteString(renderGroupRow(m, i, group))
 		}

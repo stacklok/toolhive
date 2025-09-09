@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -61,9 +64,8 @@ type HTTPSSEProxy struct {
 	// Optional Prometheus metrics handler
 	prometheusHandler http.Handler
 
-	// SSE clients
-	sseClients      map[string]*ssecommon.SSEClient
-	sseClientsMutex sync.Mutex
+	// Session manager for SSE clients
+	sessionManager *session.Manager
 
 	// Pending messages for SSE clients
 	pendingMessages []*ssecommon.PendingSSEMessage
@@ -74,12 +76,21 @@ type HTTPSSEProxy struct {
 
 	// Health checker
 	healthChecker *healthcheck.HealthChecker
+
+	// Track closed clients to prevent double-close
+	closedClients      map[string]bool
+	closedClientsMutex sync.Mutex
 }
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
 func NewHTTPSSEProxy(
 	host string, port int, containerName string, prometheusHandler http.Handler, middlewares ...types.MiddlewareFunction,
 ) *HTTPSSEProxy {
+	// Create a factory for SSE sessions
+	sseFactory := func(id string) session.Session {
+		return session.NewSSESession(id)
+	}
+
 	proxy := &HTTPSSEProxy{
 		middlewares:       middlewares,
 		host:              host,
@@ -87,9 +98,10 @@ func NewHTTPSSEProxy(
 		containerName:     containerName,
 		shutdownCh:        make(chan struct{}),
 		messageCh:         make(chan jsonrpc2.Message, 100),
-		sseClients:        make(map[string]*ssecommon.SSEClient),
+		sessionManager:    session.NewManager(session.DefaultSessionTTL, sseFactory),
 		pendingMessages:   []*ssecommon.PendingSSEMessage{},
 		prometheusHandler: prometheusHandler,
+		closedClients:     make(map[string]bool),
 	}
 
 	// Create MCP pinger and health checker
@@ -138,23 +150,42 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 		logger.Info("Prometheus metrics endpoint enabled at /metrics")
 	}
 
+	// Create a listener to get the actual port when using port 0
+	addr := fmt.Sprintf("%s:%d", p.host, p.port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to create listener: %w", err)
+	}
+
+	// Update the server address with the actual address
+	actualAddr := listener.Addr().String()
+
 	// Create the server
 	p.server = &http.Server{
-		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 
+	// Store the actual address
+	p.server.Addr = actualAddr
+
 	// Start the server in a goroutine
 	go func() {
-		logger.Infof("HTTP proxy started for container %s on port %d", p.containerName, p.port)
-		logger.Infof("SSE endpoint: http://%s:%d%s", p.host, p.port, ssecommon.HTTPSSEEndpoint)
-		logger.Infof("JSON-RPC endpoint: http://%s:%d%s", p.host, p.port, ssecommon.HTTPMessagesEndpoint)
+		// Parse the actual port for logging
+		_, portStr, _ := net.SplitHostPort(actualAddr)
+		actualPort, _ := strconv.Atoi(portStr)
 
-		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Infof("HTTP proxy started for container %s on port %d", p.containerName, actualPort)
+		logger.Infof("SSE endpoint: http://%s%s", actualAddr, ssecommon.HTTPSSEEndpoint)
+		logger.Infof("JSON-RPC endpoint: http://%s%s", actualAddr, ssecommon.HTTPMessagesEndpoint)
+
+		if err := p.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			logger.Errorf("HTTP server error: %v", err)
 		}
 	}()
+
+	// Give the server a moment to start
+	time.Sleep(10 * time.Millisecond)
 
 	return nil
 }
@@ -163,6 +194,19 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 func (p *HTTPSSEProxy) Stop(ctx context.Context) error {
 	// Signal shutdown
 	close(p.shutdownCh)
+
+	// Stop the session manager cleanup routine
+	if p.sessionManager != nil {
+		p.sessionManager.Stop()
+	}
+
+	// Disconnect all active sessions
+	p.sessionManager.Range(func(_, value interface{}) bool {
+		if sess, ok := value.(*session.SSESession); ok {
+			sess.Disconnect()
+		}
+		return true
+	})
 
 	// Stop the HTTP server
 	if p.server != nil {
@@ -200,10 +244,12 @@ func (p *HTTPSSEProxy) ForwardResponseToClients(_ context.Context, msg jsonrpc2.
 	// Create an SSE message
 	sseMsg := ssecommon.NewSSEMessage("message", string(data))
 
-	// Check if there are any connected clients
-	p.sseClientsMutex.Lock()
-	hasClients := len(p.sseClients) > 0
-	p.sseClientsMutex.Unlock()
+	// Check if there are any connected clients by checking session count
+	hasClients := false
+	p.sessionManager.Range(func(_, _ interface{}) bool {
+		hasClients = true
+		return false // Stop iteration after finding first session
+	})
 
 	if hasClients {
 		// Send the message to all connected clients
@@ -232,13 +278,19 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	// Create a channel for sending messages to this client
 	messageCh := make(chan string, 100)
 
-	// Register the client
-	p.sseClientsMutex.Lock()
-	p.sseClients[clientID] = &ssecommon.SSEClient{
+	// Create SSE client info
+	clientInfo := &ssecommon.SSEClient{
 		MessageCh: messageCh,
 		CreatedAt: time.Now(),
 	}
-	p.sseClientsMutex.Unlock()
+
+	// Create and register the SSE session
+	sseSession := session.NewSSESessionWithClient(clientID, clientInfo)
+	if err := p.sessionManager.AddSession(sseSession); err != nil {
+		logger.Errorf("Failed to add SSE session: %v", err)
+		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		return
+	}
 
 	// Process any pending messages for this client
 	p.processPendingMessages(clientID, messageCh)
@@ -281,10 +333,7 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	// Create a goroutine to monitor for client disconnection
 	go func() {
 		<-ctx.Done()
-		p.sseClientsMutex.Lock()
-		delete(p.sseClients, clientID)
-		p.sseClientsMutex.Unlock()
-		close(messageCh)
+		p.removeClient(clientID)
 		logger.Infof("Client %s disconnected", clientID)
 	}()
 
@@ -324,10 +373,7 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Check if the session exists
-	p.sseClientsMutex.Lock()
-	_, exists := p.sseClients[sessionID]
-	p.sseClientsMutex.Unlock()
-
+	_, exists := p.sessionManager.Get(sessionID)
 	if !exists {
 		http.Error(w, "Could not find session", http.StatusNotFound)
 		return
@@ -368,23 +414,70 @@ func (p *HTTPSSEProxy) sendSSEEvent(msg *ssecommon.SSEMessage) error {
 	// Convert the message to an SSE-formatted string
 	sseString := msg.ToSSEString()
 
-	// Send to all clients
-	p.sseClientsMutex.Lock()
-	defer p.sseClientsMutex.Unlock()
-
-	for clientID, client := range p.sseClients {
-		select {
-		case client.MessageCh <- sseString:
-			// Message sent successfully
-		default:
-			// Channel is full or closed, remove the client
-			delete(p.sseClients, clientID)
-			close(client.MessageCh)
-			logger.Infof("Client %s removed (channel full or closed)", clientID)
+	// Iterate through all sessions and send to SSE sessions
+	p.sessionManager.Range(func(key, value interface{}) bool {
+		clientID, ok := key.(string)
+		if !ok {
+			return true // Continue iteration
 		}
-	}
+
+		sess, ok := value.(session.Session)
+		if !ok {
+			return true // Continue iteration
+		}
+
+		// Check if this is an SSE session
+		if sseSession, ok := sess.(*session.SSESession); ok {
+			// Try to send the message
+			if err := sseSession.SendMessage(sseString); err != nil {
+				// Log the error but continue sending to other clients
+				switch err {
+				case session.ErrSessionDisconnected:
+					logger.Debugf("Client %s is disconnected, skipping message", clientID)
+				case session.ErrMessageChannelFull:
+					logger.Debugf("Client %s channel full, skipping message", clientID)
+				}
+			}
+		}
+
+		return true // Continue iteration
+	})
 
 	return nil
+}
+
+// removeClient safely removes a client and closes its channel
+func (p *HTTPSSEProxy) removeClient(clientID string) {
+	// Check if already closed
+	p.closedClientsMutex.Lock()
+	if p.closedClients[clientID] {
+		p.closedClientsMutex.Unlock()
+		return
+	}
+	p.closedClients[clientID] = true
+	p.closedClientsMutex.Unlock()
+
+	// Get the session from the manager
+	sess, exists := p.sessionManager.Get(clientID)
+	if !exists {
+		return
+	}
+
+	// If it's an SSE session, disconnect it
+	if sseSession, ok := sess.(*session.SSESession); ok {
+		sseSession.Disconnect()
+	}
+
+	// Remove the session from the manager
+	p.sessionManager.Delete(clientID)
+
+	// Clean up closed clients map periodically (prevent memory leak)
+	p.closedClientsMutex.Lock()
+	if len(p.closedClients) > 1000 {
+		// Reset the map when it gets too large
+		p.closedClients = make(map[string]bool)
+	}
+	p.closedClientsMutex.Unlock()
 }
 
 // processPendingMessages processes any pending messages for a new client.

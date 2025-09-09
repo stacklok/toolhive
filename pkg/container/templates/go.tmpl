@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine
+FROM golang:1.25-alpine AS builder
 
 {{if .CACertContent}}
 # Add custom CA certificate BEFORE any network operations
@@ -8,19 +8,8 @@ RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
     rm /tmp/custom-ca.crt
 {{end}}
 
-# Install CA certificates
-RUN apk add --no-cache ca-certificates
-
-# Set working directory
-WORKDIR /app
-
-# Create a non-root user to run the application and set proper permissions
-RUN addgroup -S appgroup && \
-    adduser -S appuser -G appgroup && \
-    mkdir -p /app && \
-    chown -R appuser:appgroup /app && \
-    mkdir -p /home/appuser/.cache && \
-    chown -R appuser:appgroup /home/appuser
+# Install CA certificates and git (needed for go modules)
+RUN apk add --no-cache ca-certificates git
 
 {{if .CACertContent}}
 # Properly install the custom CA certificate using standard tools
@@ -37,18 +26,78 @@ ENV CGO_ENABLED=0 \
     GOARCH=amd64 \
     GO111MODULE=on
 
+# Set working directory
+WORKDIR /build
+
 {{if .IsLocalPath}}
 # Copy the local source code
-COPY . /app/
+COPY . /build/
 
-# Change ownership of copied files to appuser
-USER root
-RUN chown -R appuser:appgroup /app
+# Build the application
+RUN go build -o /app/mcp-server {{.MCPPackage}}
+{{else}}
+# Pre-install the Go package at build time
+# This downloads all dependencies and builds the binary
+# Check if the package already has a version specifier
+RUN package="{{.MCPPackage}}"; \
+    # If package doesn't have @ version specifier, add @latest
+    if ! echo "$package" | grep -q '@'; then \
+        package="${package}@latest"; \
+    fi; \
+    # Create the app directory first
+    mkdir -p /app && \
+    # Install the package
+    go install "$package" && \
+    # Move the installed binary to a known location
+    mv $GOPATH/bin/* /app/mcp-server 2>/dev/null || \
+    # If the package name differs from binary name, try to find it
+    find $GOPATH/bin -type f -executable -exec mv {} /app/mcp-server \; 2>/dev/null || \
+    # As a fallback, build it directly (strip version for go build)
+    (base_package=$(echo "$package" | sed 's/@.*//'); \
+     go get "$package" && go build -o /app/mcp-server "$base_package")
+{{end}}
+
+# Final stage - minimal runtime image
+FROM alpine:3.22
+
+{{if .CACertContent}}
+# Add custom CA certificate for runtime
+COPY ca-cert.crt /tmp/custom-ca.crt
+RUN cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt && \
+    rm /tmp/custom-ca.crt
+{{end}}
+
+# Install only runtime dependencies
+RUN apk add --no-cache ca-certificates
+
+# Set working directory
+WORKDIR /app
+
+# Create a non-root user to run the application
+RUN addgroup -S appgroup && \
+    adduser -S appuser -G appgroup && \
+    mkdir -p /app && \
+    chown -R appuser:appgroup /app
+
+{{if .CACertContent}}
+# Install CA certificate for runtime
+RUN mkdir -p /usr/local/share/ca-certificates && \
+    cp /tmp/custom-ca.crt /usr/local/share/ca-certificates/custom-ca.crt 2>/dev/null || \
+    echo "CA cert already added to bundle" && \
+    chmod 644 /usr/local/share/ca-certificates/custom-ca.crt 2>/dev/null || true && \
+    update-ca-certificates
+{{end}}
+
+# Copy the pre-built binary from builder stage
+COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server
+
+{{if .IsLocalPath}}
+# Copy any additional files that might be needed at runtime
+COPY --from=builder --chown=appuser:appgroup /build/ /app/
 {{end}}
 
 # Switch to non-root user
 USER appuser
 
-# Run the MCP server using go
-# The entrypoint will be constructed dynamically based on the package and arguments
-ENTRYPOINT ["go", "run", "{{.MCPPackage}}"{{range .MCPArgs}}, "{{.}}"{{end}}]
+# Run the pre-built MCP server binary
+ENTRYPOINT ["/app/mcp-server"{{range .MCPArgs}}, "{{.}}"{{end}}]

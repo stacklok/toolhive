@@ -63,7 +63,13 @@ func AddressReferencesPrivateIp(address string) error {
 
 // ValidateEndpointURL validates that an endpoint URL is secure
 func ValidateEndpointURL(endpoint string) error {
-	if strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true") {
+	skipValidation := strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
+	return validateEndpointURLWithSkip(endpoint, skipValidation)
+}
+
+// validateEndpointURLWithSkip validates that an endpoint URL is secure, with an option to skip validation
+func validateEndpointURLWithSkip(endpoint string, skipValidation bool) error {
+	if skipValidation {
 		return nil // Skip validation
 	}
 	u, err := url.Parse(endpoint)
@@ -72,7 +78,7 @@ func ValidateEndpointURL(endpoint string) error {
 	}
 
 	// Ensure HTTPS for security (except localhost for development)
-	if u.Scheme != "https" && !IsLocalhost(u.Host) {
+	if u.Scheme != HttpsScheme && !IsLocalhost(u.Host) {
 		return fmt.Errorf("endpoint must use HTTPS: %s", endpoint)
 	}
 
@@ -87,4 +93,16 @@ func IsLocalhost(host string) bool {
 		host == "localhost" ||
 		host == "127.0.0.1" ||
 		host == "[::1]"
+}
+
+// IsURL checks if the input is a valid HTTP or HTTPS URL
+func IsURL(input string) bool {
+	parsedURL, err := url.Parse(input)
+	if err != nil {
+		return false
+	}
+	// Must have HTTP or HTTPS scheme and a valid host
+	return (parsedURL.Scheme == HttpScheme || parsedURL.Scheme == HttpsScheme) &&
+		parsedURL.Host != "" &&
+		parsedURL.Host != "//"
 }

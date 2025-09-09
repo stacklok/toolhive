@@ -32,13 +32,25 @@ Configure OpenTelemetry settings for observability and monitoring of MCP servers
 ### SEE ALSO
 
 * [thv config](thv_config.md)	 - Manage application configuration
+* [thv config otel get-enable-prometheus-metrics-path](thv_config_otel_get-enable-prometheus-metrics-path.md)	 - Get the currently configured OpenTelemetry Prometheus metrics path flag
 * [thv config otel get-endpoint](thv_config_otel_get-endpoint.md)	 - Get the currently configured OpenTelemetry endpoint
 * [thv config otel get-env-vars](thv_config_otel_get-env-vars.md)	 - Get the currently configured OpenTelemetry environment variables
+* [thv config otel get-insecure](thv_config_otel_get-insecure.md)	 - Get the currently configured OpenTelemetry insecure transport flag
+* [thv config otel get-metrics-enabled](thv_config_otel_get-metrics-enabled.md)	 - Get the currently configured OpenTelemetry metrics export flag
 * [thv config otel get-sampling-rate](thv_config_otel_get-sampling-rate.md)	 - Get the currently configured OpenTelemetry sampling rate
+* [thv config otel get-tracing-enabled](thv_config_otel_get-tracing-enabled.md)	 - Get the currently configured OpenTelemetry tracing export flag
+* [thv config otel set-enable-prometheus-metrics-path](thv_config_otel_set-enable-prometheus-metrics-path.md)	 - Set the OpenTelemetry Prometheus metrics path flag
 * [thv config otel set-endpoint](thv_config_otel_set-endpoint.md)	 - Set the OpenTelemetry endpoint URL
 * [thv config otel set-env-vars](thv_config_otel_set-env-vars.md)	 - Set the OpenTelemetry environment variables
+* [thv config otel set-insecure](thv_config_otel_set-insecure.md)	 - Set the OpenTelemetry insecure transport flag
+* [thv config otel set-metrics-enabled](thv_config_otel_set-metrics-enabled.md)	 - Set the OpenTelemetry metrics export to enabled
 * [thv config otel set-sampling-rate](thv_config_otel_set-sampling-rate.md)	 - Set the OpenTelemetry sampling rate
+* [thv config otel set-tracing-enabled](thv_config_otel_set-tracing-enabled.md)	 - Set the OpenTelemetry tracing export to enabled
+* [thv config otel unset-enable-prometheus-metrics-path](thv_config_otel_unset-enable-prometheus-metrics-path.md)	 - Remove the configured OpenTelemetry Prometheus metrics path flag
 * [thv config otel unset-endpoint](thv_config_otel_unset-endpoint.md)	 - Remove the configured OpenTelemetry endpoint
 * [thv config otel unset-env-vars](thv_config_otel_unset-env-vars.md)	 - Remove the configured OpenTelemetry environment variables
+* [thv config otel unset-insecure](thv_config_otel_unset-insecure.md)	 - Remove the configured OpenTelemetry insecure transport flag
+* [thv config otel unset-metrics-enabled](thv_config_otel_unset-metrics-enabled.md)	 - Remove the configured OpenTelemetry metrics export flag
 * [thv config otel unset-sampling-rate](thv_config_otel_unset-sampling-rate.md)	 - Remove the configured OpenTelemetry sampling rate
+* [thv config otel unset-tracing-enabled](thv_config_otel_unset-tracing-enabled.md)	 - Remove the configured OpenTelemetry tracing export flag
 

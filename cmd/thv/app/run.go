@@ -5,17 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -26,7 +30,7 @@ var runCmd = &cobra.Command{
 	Short: "Run an MCP server",
 	Long: `Run an MCP server with the specified name, image, or protocol scheme.
 
-ToolHive supports four ways to run an MCP server:
+ToolHive supports five ways to run an MCP server:
 
 1. From the registry:
 
@@ -59,6 +63,23 @@ ToolHive supports four ways to run an MCP server:
 
    Runs an MCP server using a previously exported configuration file.
 
+5. Remote MCP server:
+
+	   $ thv run <URL> [--name <name>]
+
+   Runs a remote MCP server as a workload, proxying requests to the specified URL.
+   This allows remote MCP servers to be managed like local workloads with full
+   support for client configuration, tool filtering, import/export, etc.
+
+#### Dynamic client registration
+
+When no client credentials are provided, ToolHive automatically registers an OAuth client
+with the authorization server using RFC 7591 dynamic client registration:
+
+- No need to pre-configure client ID and secret
+- Automatically discovers registration endpoint via OIDC
+- Supports PKCE flow for enhanced security
+
 The container will be started with the specified transport mode and
 permission profile. Additional configuration can be provided via flags.`,
 	Args: func(cmd *cobra.Command, args []string) error {
@@ -82,7 +103,7 @@ func init() {
 	// Add run flags
 	AddRunFlags(runCmd, &runFlags)
 
-	runCmd.PreRunE = validateGroupFlag()
+	runCmd.PreRunE = validateRunFlags
 
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
 	if err := runCmd.Flags().MarkHidden("k8s-pod-patch"); err != nil {
@@ -114,6 +135,7 @@ func cleanupAndWait(workloadManager workloads.Manager, name string, cancel conte
 	}
 }
 
+// nolint:gocyclo // This function is complex by design
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
@@ -123,11 +145,23 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get the name of the MCP server to run.
-	// This may be a server name from the registry, a container image, or a protocol scheme.
-	// When using --from-config, no args are required
+	// This may be a server name from the registry, a container image, a protocol scheme, or a remote URL.
 	var serverOrImage string
 	if len(args) > 0 {
 		serverOrImage = args[0]
+	}
+
+	// Check if the server name is actually a URL (remote server)
+	if serverOrImage != "" && networking.IsURL(serverOrImage) {
+		runFlags.RemoteURL = serverOrImage
+		// If no name is given, generate a name from the URL
+		if runFlags.Name == "" {
+			name, err := deriveRemoteName(serverOrImage)
+			if err != nil {
+				return err
+			}
+			runFlags.Name = name
+		}
 	}
 
 	// Process command arguments using os.Args to find everything after --
@@ -180,6 +214,28 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	return workloadManager.RunWorkloadDetached(ctx, runnerConfig)
+}
+
+// deriveRemoteName extracts a name from a remote URL
+func deriveRemoteName(remoteURL string) (string, error) {
+	parsedURL, err := url.Parse(remoteURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid remote URL: %w", err)
+	}
+
+	// Use the hostname as the base name
+	hostname := parsedURL.Hostname()
+	if hostname == "" {
+		return "", fmt.Errorf("could not extract hostname from URL: %s", remoteURL)
+	}
+
+	// Remove common TLDs and use the main domain name
+	parts := strings.Split(hostname, ".")
+	if len(parts) >= 2 {
+		return parts[len(parts)-2], nil
+	}
+
+	return hostname, nil
 }
 
 func runForeground(ctx context.Context, workloadManager workloads.Manager, runnerConfig *runner.RunConfig) error {
@@ -325,6 +381,12 @@ func runFromConfigFile(ctx context.Context) error {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
+	// Save the run config to disk in the usual directory (before running)
+	// This ensures that imported configs are persisted like normal runs
+	if err := runConfig.SaveState(ctx); err != nil {
+		return fmt.Errorf("failed to save run configuration: %v", err)
+	}
+
 	// Run the workload based on foreground flag
 	if runFlags.Foreground {
 		err = workloadManager.RunWorkload(ctx, runConfig)
@@ -333,6 +395,33 @@ func runFromConfigFile(ctx context.Context) error {
 	}
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// validateRunFlags validates run command flags
+func validateRunFlags(cmd *cobra.Command, args []string) error {
+	// Validate group flag
+	if err := validateGroupFlag()(cmd, args); err != nil {
+		return err
+	}
+
+	// Validate --from-config flag usage
+	fromConfigFlag := cmd.Flags().Lookup("from-config")
+	if fromConfigFlag != nil && fromConfigFlag.Value.String() != "" {
+		// When --from-config is used, no other flags should be changed
+		var conflictingFlags []string
+		cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+			// Skip the from-config flag itself and only check flags that were changed
+			if flag.Name != "from-config" && flag.Changed {
+				conflictingFlags = append(conflictingFlags, "--"+flag.Name)
+			}
+		})
+
+		if len(conflictingFlags) > 0 {
+			return fmt.Errorf("--from-config cannot be used with other configuration flags: %v", conflictingFlags)
+		}
 	}
 
 	return nil

@@ -277,17 +277,21 @@ func TestGroupsRouter_Integration(t *testing.T) {
 	logger.Initialize()
 
 	// Test with real managers (integration test)
+	// Use a test config provider to avoid modifying the real config file
+	configProvider, cleanup := CreateTestConfigProvider(t, nil)
+	t.Cleanup(cleanup)
+
 	groupManager, err := groups.NewManager()
 	if err != nil {
 		t.Skip("Skipping integration test: failed to create group manager")
 	}
 
-	workloadManager, err := workloads.NewManager(context.Background())
+	workloadManager, err := workloads.NewManagerWithProvider(context.Background(), configProvider)
 	if err != nil {
 		t.Skip("Skipping integration test: failed to create workload manager")
 	}
 
-	clientManager, err := client.NewManager(context.Background())
+	clientManager, err := client.NewManagerWithProvider(context.Background(), configProvider)
 	if err != nil {
 		t.Skip("Skipping integration test: failed to create client manager")
 	}

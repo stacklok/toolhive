@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -74,8 +76,9 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 		},
 	}
 
-	// Register the scheme
-	s := scheme.Scheme
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
@@ -85,7 +88,8 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 	}
 
 	// Call deploymentForMCPServer
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check if the pod template patch is included in the args
@@ -162,8 +166,9 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 		},
 	}
 
-	// Register the scheme
-	s := scheme.Scheme
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
@@ -173,7 +178,8 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 	}
 
 	// Call deploymentForMCPServer
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 }
 
@@ -204,8 +210,9 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 		},
 	}
 
-	// Register the scheme
-	s := scheme.Scheme
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
@@ -215,7 +222,8 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 	}
 
 	// Call deploymentForMCPServer
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that secrets are injected via pod template patch
@@ -306,8 +314,9 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 		},
 	}
 
-	// Register the scheme
-	s := scheme.Scheme
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
@@ -317,7 +326,8 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 	}
 
 	// Generate the deployment
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that environment variables are passed as --env flags in the container args
@@ -360,8 +370,9 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 		},
 	}
 
-	// Register the scheme
-	s := scheme.Scheme
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
@@ -371,7 +382,8 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 	}
 
 	// Generate the deployment
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
 	// Check that the ProxyRunner's pod and container security context are set
@@ -389,6 +401,54 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 	assert.Equal(t, int64(1000), *proxyRunnerContainerSecurityContext.RunAsUser, "ProxyRunner container RunAsUser should be 1000")
 	assert.Equal(t, int64(1000), *proxyRunnerContainerSecurityContext.RunAsGroup, "ProxyRunner container RunAsGroup should be 1000")
 	assert.False(t, *proxyRunnerContainerSecurityContext.AllowPrivilegeEscalation, "ProxyRunner container AllowPrivilegeEscalation should be false")
+}
+
+func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
+	t.Parallel()
+
+	// Create a test MCPServer
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-mcp-server-logs",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "stdio",
+			Port:      8080,
+		},
+	}
+
+	// Create a new scheme for this test to avoid race conditions
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+
+	// Create a reconciler with the scheme
+	r := &MCPServerReconciler{
+		Scheme: s,
+	}
+
+	// Create the deployment
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
+	require.NotNil(t, deployment, "Deployment should not be nil")
+
+	// Check that the proxy runner container has the UNSTRUCTURED_LOGS environment variable set to false
+	container := deployment.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, "toolhive", container.Name, "Container should be named 'toolhive'")
+
+	// Find the UNSTRUCTURED_LOGS environment variable
+	unstructuredLogsFound := false
+	for _, env := range container.Env {
+		if env.Name == "UNSTRUCTURED_LOGS" {
+			unstructuredLogsFound = true
+			assert.Equal(t, "false", env.Value, "UNSTRUCTURED_LOGS should be set to false for structured JSON logging")
+			break
+		}
+	}
+	assert.True(t, unstructuredLogsFound, "UNSTRUCTURED_LOGS environment variable should be set")
 }
 
 // Helper functions

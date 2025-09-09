@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
+
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -36,6 +39,12 @@ type HTTPTransport struct {
 	middlewares       []types.MiddlewareFunction
 	prometheusHandler http.Handler
 	authInfoHandler   http.Handler
+
+	// Remote MCP server support
+	remoteURL string
+
+	// tokenSource is the OAuth token source for remote authentication
+	tokenSource *oauth2.TokenSource
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -88,6 +97,37 @@ func NewHTTPTransport(
 	}
 }
 
+// SetRemoteURL sets the remote URL for the MCP server
+func (t *HTTPTransport) SetRemoteURL(remoteURL string) {
+	t.remoteURL = remoteURL
+}
+
+// SetTokenSource sets the OAuth token source for remote authentication
+func (t *HTTPTransport) SetTokenSource(tokenSource *oauth2.TokenSource) {
+	t.tokenSource = tokenSource
+}
+
+// createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
+func (t *HTTPTransport) createTokenInjectionMiddleware() types.MiddlewareFunction {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if t.tokenSource != nil {
+				token, err := (*t.tokenSource).Token()
+				if err != nil {
+					logger.Warnf("Unable to retrieve OAuth token: %v", err)
+					// Continue without token rather than failing
+				} else {
+					logger.Debugf("Injecting Bearer token into request to %s", r.URL.Path)
+					r.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken))
+				}
+			} else {
+				logger.Debugf("No token source available for request to %s", r.URL.Path)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // Mode returns the transport mode.
 func (t *HTTPTransport) Mode() types.TransportType {
 	return t.transportType
@@ -104,11 +144,28 @@ var transportEnvMap = map[types.TransportType]string{
 }
 
 // Setup prepares the transport for use.
-func (t *HTTPTransport) Setup(ctx context.Context, runtime rt.Deployer, containerName string, image string, cmdArgs []string,
-	envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
-	isolateNetwork bool, ignoreConfig *ignore.Config) error {
+func (t *HTTPTransport) Setup(
+	ctx context.Context,
+	runtime rt.Deployer,
+	containerName string,
+	image string,
+	cmdArgs []string,
+	envVars map[string]string,
+	labels map[string]string,
+	permissionProfile *permissions.Profile,
+	k8sPodTemplatePatch string,
+	isolateNetwork bool,
+	ignoreConfig *ignore.Config,
+) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+
+	// For remote MCP servers, we don't need a deployer
+	if t.remoteURL != "" {
+		t.containerName = containerName
+		logger.Infof("Remote transport setup complete for %s -> %s", containerName, t.remoteURL)
+		return nil
+	}
 
 	t.deployer = runtime
 	t.containerName = containerName
@@ -207,38 +264,76 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return errors.ErrContainerNameNotSet
 	}
 
-	if t.deployer == nil {
+	if t.deployer == nil && t.remoteURL == "" {
 		return fmt.Errorf("container deployer not set")
 	}
 
 	// Create and start the transparent proxy
-	// The SSE transport forwards requests from the host port to the container's target port
-	// In a Docker bridge network, we need to use the specified target host
-	// We ignore containerIP even if it's set, as it's not directly accessible from the host
-	targetHost := t.targetHost
+	var targetURI string
 
-	// Check if target port is set
-	if t.targetPort <= 0 {
-		return fmt.Errorf("target port not set for HTTP transport")
+	if t.remoteURL != "" {
+		remoteURL, err := url.Parse(t.remoteURL)
+		if err != nil {
+			return fmt.Errorf("failed to parse remote URL: %w", err)
+		}
+		// If the remote URL is a full URL, we need to extract the scheme and host
+		// and use them to construct the target URI
+		targetURI = (&url.URL{
+			Scheme: remoteURL.Scheme,
+			Host:   remoteURL.Host,
+		}).String()
+
+		logger.Infof("Setting up transparent proxy to forward from host port %d to remote URL %s",
+			t.proxyPort, targetURI)
+	} else {
+		// For local containers, forward to the container's target port
+		// The SSE transport forwards requests from the host port to the container's target port
+		// In a Docker bridge network, we need to use the specified target host
+		// We ignore containerIP even if it's set, as it's not directly accessible from the host
+		targetHost := t.targetHost
+
+		// Check if target port is set
+		if t.targetPort <= 0 {
+			return fmt.Errorf("target port not set for HTTP transport")
+		}
+
+		// Use the target port for the container
+		containerPort := t.targetPort
+		targetURI = fmt.Sprintf("http://%s:%d", targetHost, containerPort)
+		logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
+			t.proxyPort, targetURI)
 	}
 
-	// Use the target port for the container
-	containerPort := t.targetPort
-	targetURI := fmt.Sprintf("http://%s:%d", targetHost, containerPort)
-	logger.Infof("Setting up transparent proxy to forward from host port %d to %s",
-		t.proxyPort, targetURI)
+	// Create middlewares slice
+	var middlewares []types.MiddlewareFunction
 
-	// Create the transparent proxy with middlewares
+	// Add the transport's existing middlewares
+	middlewares = append(middlewares, t.middlewares...)
+
+	// Add OAuth token injection middleware for remote authentication if we have a token source
+	if t.remoteURL != "" && t.tokenSource != nil {
+		tokenMiddleware := t.createTokenInjectionMiddleware()
+		middlewares = append(middlewares, tokenMiddleware)
+	}
+
+	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxy(
 		t.host, t.proxyPort, t.containerName, targetURI,
 		t.prometheusHandler, t.authInfoHandler,
-		true,
-		t.middlewares...)
+		t.remoteURL == "",
+		t.remoteURL != "",
+		string(t.transportType),
+		middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}
 
-	logger.Infof("HTTP transport started for container %s on port %d", t.containerName, t.proxyPort)
+	logger.Infof("HTTP transport started for %s on port %d", t.containerName, t.proxyPort)
+
+	// For remote MCP servers, we don't need container monitoring
+	if t.remoteURL != "" {
+		return nil
+	}
 
 	// Create a container monitor
 	monitorRuntime, err := container.NewFactory().Create(ctx)
@@ -267,23 +362,26 @@ func (t *HTTPTransport) Stop(ctx context.Context) error {
 	// Signal shutdown
 	close(t.shutdownCh)
 
-	// Stop the monitor if it's running
-	if t.monitor != nil {
-		t.monitor.StopMonitoring()
-		t.monitor = nil
+	// For remote MCP servers, we don't need container monitoring
+	if t.remoteURL == "" {
+		// Stop the monitor if it's running
+		if t.monitor != nil {
+			t.monitor.StopMonitoring()
+			t.monitor = nil
+		}
+
+		// Stop the container if deployer is available
+		if t.deployer != nil && t.containerName != "" {
+			if err := t.deployer.StopWorkload(ctx, t.containerName); err != nil {
+				return fmt.Errorf("failed to stop workload: %w", err)
+			}
+		}
 	}
 
 	// Stop the transparent proxy
 	if t.proxy != nil {
 		if err := t.proxy.Stop(ctx); err != nil {
 			logger.Warnf("Warning: Failed to stop proxy: %v", err)
-		}
-	}
-
-	// Stop the container if deployer is available
-	if t.deployer != nil && t.containerName != "" {
-		if err := t.deployer.StopWorkload(ctx, t.containerName); err != nil {
-			return fmt.Errorf("failed to stop workload: %w", err)
 		}
 	}
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -24,6 +25,8 @@ func CheckAndPerformDefaultGroupMigration() {
 
 // performDefaultGroupMigration migrates all existing workloads to the default group
 func performDefaultGroupMigration() error {
-	migrator := &DefaultGroupMigrator{}
+	migrator := &DefaultGroupMigrator{
+		configProvider: config.NewDefaultProvider(),
+	}
 	return migrator.Migrate(context.Background())
 }

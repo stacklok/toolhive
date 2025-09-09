@@ -15,6 +15,7 @@
 package controllers
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -253,6 +254,45 @@ func TestResourceOverrides(t *testing.T) {
 				"service.beta.kubernetes.io/aws-load-balancer-type": "nlb",
 			},
 		},
+		{
+			name: "with Vault Agent Injection pod template annotations",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "test-image",
+					Port:  8080,
+					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
+						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+								Annotations: map[string]string{
+									"vault.hashicorp.com/agent-inject": "true",
+									"vault.hashicorp.com/role":         "toolhive-mcp-workloads",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedDeploymentLabels: map[string]string{
+				"app":                        "mcpserver",
+				"app.kubernetes.io/name":     "mcpserver",
+				"app.kubernetes.io/instance": "test-server",
+				"toolhive":                   "true",
+				"toolhive-name":              "test-server",
+			},
+			expectedDeploymentAnns: map[string]string{},
+			expectedServiceLabels: map[string]string{
+				"app":                        "mcpserver",
+				"app.kubernetes.io/name":     "mcpserver",
+				"app.kubernetes.io/instance": "test-server",
+				"toolhive":                   "true",
+				"toolhive-name":              "test-server",
+			},
+			expectedServiceAnns: map[string]string{},
+		},
 	}
 
 	for _, tt := range tests {
@@ -266,7 +306,8 @@ func TestResourceOverrides(t *testing.T) {
 			}
 
 			// Test deployment creation
-			deployment := r.deploymentForMCPServer(tt.mcpServer)
+			ctx := context.Background()
+			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer)
 			require.NotNil(t, deployment)
 
 			assert.Equal(t, tt.expectedDeploymentLabels, deployment.Labels)
@@ -279,6 +320,29 @@ func TestResourceOverrides(t *testing.T) {
 			assert.Equal(t, tt.expectedServiceLabels, service.Labels)
 			assert.Equal(t, tt.expectedServiceAnns, service.Annotations)
 
+			// For test case with Vault Agent Injection, verify --env-file-dir argument is present
+			if tt.name == "with Vault Agent Injection pod template annotations" {
+				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+				container := deployment.Spec.Template.Spec.Containers[0]
+
+				// Check that --env-file-dir=/vault/secrets argument is present
+				found := false
+				for _, arg := range container.Args {
+					if arg == "--env-file-dir=/vault/secrets" {
+						found = true
+						break
+					}
+				}
+				assert.True(t, found, "Expected --env-file-dir=/vault/secrets argument when vault.hashicorp.com/agent-inject=true")
+
+				// Verify pod template has the expected Vault annotations
+				expectedTemplateAnnotations := map[string]string{
+					"vault.hashicorp.com/agent-inject": "true",
+					"vault.hashicorp.com/role":         "toolhive-mcp-workloads",
+				}
+				assert.Equal(t, expectedTemplateAnnotations, deployment.Spec.Template.Annotations)
+			}
+
 			// For test cases with environment variables, verify they are set correctly
 			if tt.name == "with proxy environment variables" || tt.name == "with both metadata overrides and proxy environment variables" {
 				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
@@ -288,18 +352,22 @@ func TestResourceOverrides(t *testing.T) {
 				var expectedEnvVars map[string]string
 				if tt.name == "with proxy environment variables" {
 					expectedEnvVars = map[string]string{
-						"HTTP_PROXY":      "http://proxy.example.com:8080",
-						"NO_PROXY":        "localhost,127.0.0.1",
-						"CUSTOM_ENV":      "custom-value",
-						"XDG_CONFIG_HOME": "/tmp",
-						"HOME":            "/tmp",
+						"HTTP_PROXY":        "http://proxy.example.com:8080",
+						"NO_PROXY":          "localhost,127.0.0.1",
+						"CUSTOM_ENV":        "custom-value",
+						"XDG_CONFIG_HOME":   "/tmp",
+						"HOME":              "/tmp",
+						"TOOLHIVE_RUNTIME":  "kubernetes",
+						"UNSTRUCTURED_LOGS": "false",
 					}
 				} else {
 					expectedEnvVars = map[string]string{
-						"LOG_LEVEL":       "debug",
-						"METRICS_ENABLED": "true",
-						"XDG_CONFIG_HOME": "/tmp",
-						"HOME":            "/tmp",
+						"LOG_LEVEL":         "debug",
+						"METRICS_ENABLED":   "true",
+						"XDG_CONFIG_HOME":   "/tmp",
+						"HOME":              "/tmp",
+						"TOOLHIVE_RUNTIME":  "kubernetes",
+						"UNSTRUCTURED_LOGS": "false",
 					}
 				}
 
@@ -384,11 +452,12 @@ func TestDeploymentNeedsUpdateServiceAccount(t *testing.T) {
 	}
 
 	// Create a deployment using the current implementation
-	deployment := r.deploymentForMCPServer(mcpServer)
+	ctx := context.Background()
+	deployment := r.deploymentForMCPServer(ctx, mcpServer)
 	require.NotNil(t, deployment)
 
 	// Test with the current deployment - this should NOT need update
-	needsUpdate := deploymentNeedsUpdate(deployment, mcpServer)
+	needsUpdate := r.deploymentNeedsUpdate(deployment, mcpServer)
 
 	// With the service account bug fixed, this should now return false
 	assert.False(t, needsUpdate, "deploymentNeedsUpdate should return false when deployment matches MCPServer spec")
@@ -556,7 +625,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 			t.Parallel()
 
 			// Create a deployment and manually set up its state to isolate proxy env testing
-			deployment := r.deploymentForMCPServer(tt.mcpServer)
+			ctx := context.Background()
+			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer)
 			require.NotNil(t, deployment)
 			require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 
@@ -567,7 +637,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 			deployment.Spec.Template.Spec.Containers[0].Image = getToolhiveRunnerImage()
 
 			// Test if deployment needs update - should correlate with env change expectation
-			needsUpdate := deploymentNeedsUpdate(deployment, tt.mcpServer)
+			needsUpdate := r.deploymentNeedsUpdate(deployment, tt.mcpServer)
 
 			if tt.expectEnvChange {
 				assert.True(t, needsUpdate, "Expected deployment update due to proxy env change")
@@ -642,12 +712,13 @@ func TestDeploymentNeedsUpdateToolsFilter(t *testing.T) {
 				},
 			}
 
-			deployment := r.deploymentForMCPServer(mcpServer)
+			ctx := context.Background()
+			deployment := r.deploymentForMCPServer(ctx, mcpServer)
 			require.NotNil(t, deployment)
 
 			mcpServer.Spec.ToolsFilter = tt.newToolsFilter
 
-			needsUpdate := deploymentNeedsUpdate(deployment, mcpServer)
+			needsUpdate := r.deploymentNeedsUpdate(deployment, mcpServer)
 			assert.Equal(t, tt.expectEnvChange, needsUpdate)
 		})
 	}

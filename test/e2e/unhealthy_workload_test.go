@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/adrg/xdg"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -117,7 +119,10 @@ var _ = Describe("Unhealthy Workload Detection", func() {
 func findProxyProcess(serverName string) (int, error) {
 	// The proxy process PID should be stored in a file in the temp directory
 	// following the pattern: toolhive-{serverName}.pid
-	pidFile := fmt.Sprintf("/tmp/toolhive-%s.pid", serverName)
+	pidFile, err := xdg.DataFile(filepath.Join("toolhive", "pids", "toolhive-"+serverName+".pid"))
+	if err != nil {
+		return 0, fmt.Errorf("failed to get PID file path: %w", err)
+	}
 
 	// Read the PID file
 	pidBytes, err := os.ReadFile(pidFile)

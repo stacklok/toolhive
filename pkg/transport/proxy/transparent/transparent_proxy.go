@@ -69,6 +69,12 @@ type TransparentProxy struct {
 
 	// Listener for the HTTP server
 	listener net.Listener
+
+	// Whether the target URI is remote
+	isRemote bool
+
+	// Transport type (sse, streamable-http)
+	transportType string
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -80,6 +86,8 @@ func NewTransparentProxy(
 	prometheusHandler http.Handler,
 	authInfoHandler http.Handler,
 	enableHealthCheck bool,
+	isRemote bool,
+	transportType string,
 	middlewares ...types.MiddlewareFunction,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
@@ -91,7 +99,9 @@ func NewTransparentProxy(
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
 		authInfoHandler:   authInfoHandler,
-		sessionManager:    session.NewManager(30*time.Minute, session.NewProxySession),
+		sessionManager:    session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
+		isRemote:          isRemote,
+		transportType:     transportType,
 	}
 
 	// Create MCP pinger and health checker only if enabled
@@ -125,15 +135,27 @@ func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
 	return tr.RoundTrip(req)
 }
 
+// nolint:gocyclo // This function handles multiple request types and is complex by design
 func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.p.isRemote {
+		// In case of remote servers, req.Host is set to the proxy host (localhost) which may cause 403 error,
+		// so we need to set it to the target URI host
+		if req.URL.Host != req.Host {
+			req.Host = req.URL.Host
+		}
+	}
+
 	reqBody := readRequestBody(req)
 
+	// thv proxy does not provide the transport type, so we need to detect it from the request
 	path := req.URL.Path
 	isMCP := strings.HasPrefix(path, "/mcp")
 	isJSON := strings.Contains(req.Header.Get("Content-Type"), "application/json")
 	sawInitialize := false
 
-	if isMCP && isJSON && len(reqBody) > 0 {
+	if len(reqBody) > 0 &&
+		((isMCP && isJSON) ||
+			t.p.transportType == types.TransportTypeStreamableHTTP.String()) {
 		sawInitialize = t.detectInitialize(reqBody)
 	}
 
@@ -210,9 +232,16 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 	originalBody := resp.Body
 	resp.Body = pr
 
+	// NOTE: it would be better to have a proper function instead of a goroutine, as this
+	// makes it harder to debug and test.
 	go func() {
 		defer pw.Close()
 		scanner := bufio.NewScanner(originalBody)
+		// NOTE: The following line mitigates the issue of the response body being too large.
+		// By default, the maximum token size of the scanner is 64KB, which is too small in
+		// the case of e.g. images. This raises the limit to 1MB. This is a workaround, and
+		// not a proper fix.
+		scanner.Buffer(make([]byte, 0, 1024), 1024*1024*1)
 		found := false
 
 		for scanner.Scan() {
@@ -235,6 +264,13 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 				return
 			}
 		}
+
+		// NOTE: this line is always necessary since scanner.Scan() will return false
+		// in case of an error.
+		if err := scanner.Err(); err != nil {
+			logger.Errorf("Failed to scan response body: %v", err)
+		}
+
 		_, err := io.Copy(pw, originalBody)
 		if err != nil && err != io.EOF {
 			logger.Errorf("Failed to copy response body: %v", err)
@@ -245,6 +281,7 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 }
 
 // Start starts the transparent proxy.
+// nolint:gocyclo // This function handles multiple startup scenarios and is complex by design
 func (p *TransparentProxy) Start(ctx context.Context) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
@@ -263,9 +300,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		return p.modifyForSessionID(resp)
 	}
 
-	// Create a handler that logs requests
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger.Infof("Transparent proxy: %s %s -> %s", r.Method, r.URL.Path, targetURL)
 		proxy.ServeHTTP(w, r)
 	})
 
@@ -276,7 +311,8 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	var finalHandler http.Handler = handler
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
 		finalHandler = p.middlewares[i](finalHandler)
-		logger.Infof("Applied middleware %d\n", i+1)
+		// TODO: we should really log the middleware name here
+		logger.Infof("Applied middleware %d", i+1)
 	}
 
 	// Add the proxy handler for all paths except /health

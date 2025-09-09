@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,8 +19,11 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
+	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/mcp"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
 
 func TestNewHTTPMiddleware(t *testing.T) {
@@ -93,7 +97,7 @@ func TestHTTPMiddleware_Handler_WithMCPData(t *testing.T) {
 	wrappedHandler := middleware(testHandler)
 
 	// Create MCP request data
-	mcpRequest := &mcp.ParsedMCPRequest{
+	mcpRequest := &mcpparser.ParsedMCPRequest{
 		Method:     "tools/call",
 		ID:         "test-123",
 		ResourceID: "github_search",
@@ -107,7 +111,7 @@ func TestHTTPMiddleware_Handler_WithMCPData(t *testing.T) {
 
 	// Create request with MCP data in context
 	req := httptest.NewRequest("POST", "/messages", nil)
-	ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, mcpRequest)
+	ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
 	req = req.WithContext(ctx)
 
 	rec := httptest.NewRecorder()
@@ -163,10 +167,10 @@ func TestHTTPMiddleware_CreateSpanName(t *testing.T) {
 			ctx := req.Context()
 
 			if tt.mcpMethod != "" {
-				mcpRequest := &mcp.ParsedMCPRequest{
+				mcpRequest := &mcpparser.ParsedMCPRequest{
 					Method: tt.mcpMethod,
 				}
-				ctx = context.WithValue(ctx, mcp.MCPRequestContextKey, mcpRequest)
+				ctx = context.WithValue(ctx, mcpparser.MCPRequestContextKey, mcpRequest)
 			}
 
 			spanName := middleware.createSpanName(ctx, req)
@@ -210,12 +214,12 @@ func TestHTTPMiddleware_MCP_AttributeLogic(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		mcpRequest *mcp.ParsedMCPRequest
-		checkFunc  func(t *testing.T, req *mcp.ParsedMCPRequest)
+		mcpRequest *mcpparser.ParsedMCPRequest
+		checkFunc  func(t *testing.T, req *mcpparser.ParsedMCPRequest)
 	}{
 		{
 			name: "tools/call request",
-			mcpRequest: &mcp.ParsedMCPRequest{
+			mcpRequest: &mcpparser.ParsedMCPRequest{
 				Method:     "tools/call",
 				ID:         "123",
 				ResourceID: "github_search",
@@ -225,7 +229,7 @@ func TestHTTPMiddleware_MCP_AttributeLogic(t *testing.T) {
 				},
 				IsRequest: true,
 			},
-			checkFunc: func(t *testing.T, req *mcp.ParsedMCPRequest) {
+			checkFunc: func(t *testing.T, req *mcpparser.ParsedMCPRequest) {
 				t.Helper()
 				assert.Equal(t, "tools/call", req.Method)
 				assert.Equal(t, "123", req.ID)
@@ -235,13 +239,13 @@ func TestHTTPMiddleware_MCP_AttributeLogic(t *testing.T) {
 		},
 		{
 			name: "resources/read request",
-			mcpRequest: &mcp.ParsedMCPRequest{
+			mcpRequest: &mcpparser.ParsedMCPRequest{
 				Method:     "resources/read",
 				ID:         456,
 				ResourceID: "file://test.txt",
 				IsRequest:  true,
 			},
-			checkFunc: func(t *testing.T, req *mcp.ParsedMCPRequest) {
+			checkFunc: func(t *testing.T, req *mcpparser.ParsedMCPRequest) {
 				t.Helper()
 				assert.Equal(t, "resources/read", req.Method)
 				assert.Equal(t, 456, req.ID)
@@ -250,13 +254,13 @@ func TestHTTPMiddleware_MCP_AttributeLogic(t *testing.T) {
 		},
 		{
 			name: "batch request",
-			mcpRequest: &mcp.ParsedMCPRequest{
+			mcpRequest: &mcpparser.ParsedMCPRequest{
 				Method:    "tools/list",
 				ID:        "batch-1",
 				IsRequest: true,
 				IsBatch:   true,
 			},
-			checkFunc: func(t *testing.T, req *mcp.ParsedMCPRequest) {
+			checkFunc: func(t *testing.T, req *mcpparser.ParsedMCPRequest) {
 				t.Helper()
 				assert.Equal(t, "tools/list", req.Method)
 				assert.Equal(t, "batch-1", req.ID)
@@ -270,10 +274,10 @@ func TestHTTPMiddleware_MCP_AttributeLogic(t *testing.T) {
 			t.Parallel()
 
 			req := httptest.NewRequest("POST", "/messages", nil)
-			ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, tt.mcpRequest)
+			ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, tt.mcpRequest)
 
 			// Verify the MCP request can be retrieved from context
-			retrievedMCP := mcp.GetParsedMCPRequest(ctx)
+			retrievedMCP := mcpparser.GetParsedMCPRequest(ctx)
 			assert.NotNil(t, retrievedMCP)
 
 			// Run the specific checks for this test case
@@ -490,7 +494,9 @@ func TestHTTPMiddleware_ExtractServerName(t *testing.T) {
 func TestHTTPMiddleware_ExtractBackendTransport(t *testing.T) {
 	t.Parallel()
 
-	middleware := &HTTPMiddleware{}
+	middleware := &HTTPMiddleware{
+		transport: "stdio",
+	}
 
 	tests := []struct {
 		name     string
@@ -802,4 +808,684 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// Factory Middleware Tests
+
+func TestCreateMiddleware_ValidConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		params        FactoryMiddlewareParams
+		expectError   bool
+		expectedCalls func(runner *mocks.MockMiddlewareRunner, config *mocks.MockRunnerConfig)
+	}{
+		{
+			name: "valid config with no-op provider (avoiding network dependency)",
+			params: FactoryMiddlewareParams{
+				Config: &Config{
+					Endpoint:                    "", // No endpoint to avoid network dependency
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					SamplingRate:                0.1,
+					Headers:                     map[string]string{"Authorization": "Bearer token"},
+					EnablePrometheusMetricsPath: false,
+					EnvironmentVariables:        []string{"NODE_ENV"},
+				},
+				ServerName: "github",
+				Transport:  "stdio",
+			},
+			expectError: false,
+			expectedCalls: func(runner *mocks.MockMiddlewareRunner, _ *mocks.MockRunnerConfig) {
+				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+			},
+		},
+		{
+			name: "valid config with Prometheus metrics enabled",
+			params: FactoryMiddlewareParams{
+				Config: &Config{
+					Endpoint:                    "", // No endpoint - using Prometheus only
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					SamplingRate:                0.5,
+					Headers:                     map[string]string{},
+					EnablePrometheusMetricsPath: true,
+					EnvironmentVariables:        []string{},
+				},
+				ServerName: "weather",
+				Transport:  "sse",
+			},
+			expectError: false,
+			expectedCalls: func(runner *mocks.MockMiddlewareRunner, config *mocks.MockRunnerConfig) {
+				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+				runner.EXPECT().SetPrometheusHandler(gomock.Any()).Times(1)
+				config.EXPECT().GetPort().Return(8080).Times(1)
+			},
+		},
+		{
+			name: "valid config with no endpoint but Prometheus enabled",
+			params: FactoryMiddlewareParams{
+				Config: &Config{
+					Endpoint:                    "", // No OTLP endpoint
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					SamplingRate:                0.0,
+					Headers:                     map[string]string{},
+					Insecure:                    false,
+					EnablePrometheusMetricsPath: true,
+					EnvironmentVariables:        []string{"TEST_ENV"},
+				},
+				ServerName: "fetch",
+				Transport:  "stdio",
+			},
+			expectError: false,
+			expectedCalls: func(runner *mocks.MockMiddlewareRunner, config *mocks.MockRunnerConfig) {
+				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+				runner.EXPECT().SetPrometheusHandler(gomock.Any()).Times(1)
+				config.EXPECT().GetPort().Return(8080).Times(1)
+			},
+		},
+		{
+			name: "valid minimal config (no-op provider)",
+			params: FactoryMiddlewareParams{
+				Config: &Config{
+					Endpoint:                    "", // No OTLP endpoint
+					ServiceName:                 "minimal-service",
+					ServiceVersion:              "0.1.0",
+					SamplingRate:                0.0,
+					Headers:                     map[string]string{},
+					Insecure:                    false,
+					EnablePrometheusMetricsPath: false, // No Prometheus either
+					EnvironmentVariables:        []string{},
+				},
+				ServerName: "minimal",
+				Transport:  "stdio",
+			},
+			expectError: false,
+			expectedCalls: func(runner *mocks.MockMiddlewareRunner, _ *mocks.MockRunnerConfig) {
+				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+				// No SetPrometheusHandler call expected for no-op provider
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create mock controller and runner
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+			mockConfig := mocks.NewMockRunnerConfig(ctrl)
+			mockRunner.EXPECT().GetConfig().Return(mockConfig).AnyTimes()
+
+			// Set up expected calls
+			if tt.expectedCalls != nil {
+				tt.expectedCalls(mockRunner, mockConfig)
+			}
+
+			// Create middleware config
+			paramsJSON, err := json.Marshal(tt.params)
+			require.NoError(t, err)
+
+			config := &types.MiddlewareConfig{
+				Type:       MiddlewareType,
+				Parameters: paramsJSON,
+			}
+
+			// Execute CreateMiddleware
+			err = CreateMiddleware(config, mockRunner)
+
+			// Verify result
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestCreateMiddleware_InvalidConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		config        *types.MiddlewareConfig
+		params        interface{}
+		expectedError string
+		expectedCalls func(runner *mocks.MockMiddlewareRunner)
+	}{
+		{
+			name: "invalid JSON parameters",
+			config: &types.MiddlewareConfig{
+				Type:       MiddlewareType,
+				Parameters: json.RawMessage(`{invalid json`),
+			},
+			expectedError: "failed to unmarshal telemetry middleware parameters",
+			expectedCalls: func(_ *mocks.MockMiddlewareRunner) {
+				// No calls expected when JSON parsing fails
+			},
+		},
+		{
+			name: "nil telemetry config",
+			params: FactoryMiddlewareParams{
+				Config:     nil, // This should cause an error
+				ServerName: "github",
+				Transport:  "stdio",
+			},
+			expectedError: "telemetry config is required",
+			expectedCalls: func(_ *mocks.MockMiddlewareRunner) {
+				// No calls expected when config validation fails
+			},
+		},
+		{
+			name: "empty server name",
+			params: FactoryMiddlewareParams{
+				Config: &Config{
+					Endpoint:                    "", // No endpoint to avoid network dependency
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					SamplingRate:                0.1,
+					EnablePrometheusMetricsPath: false,
+				},
+				ServerName: "", // Empty server name should still work
+				Transport:  "stdio",
+			},
+			expectedError: "", // This should not error - empty server name is allowed
+			expectedCalls: func(runner *mocks.MockMiddlewareRunner) {
+				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+			},
+		},
+		{
+			name: "empty transport",
+			params: FactoryMiddlewareParams{
+				Config: &Config{
+					Endpoint:                    "", // No endpoint to avoid network dependency
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					SamplingRate:                0.1,
+					EnablePrometheusMetricsPath: false,
+				},
+				ServerName: "github",
+				Transport:  "", // Empty transport should still work
+			},
+			expectedError: "", // This should not error - empty transport is allowed
+			expectedCalls: func(runner *mocks.MockMiddlewareRunner) {
+				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create mock controller and runner
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+
+			// Set up expected calls
+			if tt.expectedCalls != nil {
+				tt.expectedCalls(mockRunner)
+			}
+
+			// Create config
+			var config *types.MiddlewareConfig
+			if tt.config != nil {
+				config = tt.config
+			} else {
+				// Marshal params to JSON
+				paramsJSON, err := json.Marshal(tt.params)
+				require.NoError(t, err)
+
+				config = &types.MiddlewareConfig{
+					Type:       MiddlewareType,
+					Parameters: paramsJSON,
+				}
+			}
+
+			// Execute CreateMiddleware
+			err := CreateMiddleware(config, mockRunner)
+
+			// Verify result
+			if tt.expectedError != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectedError)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestFactoryMiddleware_Handler(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		setupMock  func() (*Provider, error)
+		serverName string
+		transport  string
+		expectNil  bool
+	}{
+		{
+			name: "valid provider with OTLP endpoint",
+			setupMock: func() (*Provider, error) {
+				// For testing, use no-op provider to avoid network calls
+				config := Config{
+					Endpoint:                    "", // No endpoint to avoid network dependency
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					SamplingRate:                0.1,
+					EnablePrometheusMetricsPath: false,
+				}
+				return NewProvider(context.Background(), config)
+			},
+			serverName: "github",
+			transport:  "stdio",
+			expectNil:  false,
+		},
+		{
+			name: "no-op provider",
+			setupMock: func() (*Provider, error) {
+				config := Config{
+					Endpoint:                    "", // No endpoint
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					EnablePrometheusMetricsPath: false, // No Prometheus
+				}
+				return NewProvider(context.Background(), config)
+			},
+			serverName: "weather",
+			transport:  "sse",
+			expectNil:  false,
+		},
+		{
+			name: "provider with Prometheus enabled",
+			setupMock: func() (*Provider, error) {
+				config := Config{
+					Endpoint:                    "", // No OTLP endpoint
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					EnablePrometheusMetricsPath: true, // Prometheus enabled
+				}
+				return NewProvider(context.Background(), config)
+			},
+			serverName: "fetch",
+			transport:  "stdio",
+			expectNil:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Setup provider
+			provider, err := tt.setupMock()
+			require.NoError(t, err)
+			defer func() {
+				if provider != nil {
+					provider.Shutdown(context.Background())
+				}
+			}()
+
+			// Create middleware
+			middleware := provider.Middleware(tt.serverName, tt.transport)
+			factoryMw := &FactoryMiddleware{
+				provider:   provider,
+				middleware: middleware,
+			}
+
+			// Test Handler method
+			handlerFunc := factoryMw.Handler()
+
+			if tt.expectNil {
+				assert.Nil(t, handlerFunc)
+			} else {
+				assert.NotNil(t, handlerFunc)
+
+				// Test that the handler function works
+				testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+					w.Write([]byte("test response"))
+				})
+
+				wrappedHandler := handlerFunc(testHandler)
+				assert.NotNil(t, wrappedHandler)
+
+				// Execute a test request
+				req := httptest.NewRequest("GET", "/test", nil)
+				rec := httptest.NewRecorder()
+				wrappedHandler.ServeHTTP(rec, req)
+
+				// Verify response
+				assert.Equal(t, http.StatusOK, rec.Code)
+				assert.Equal(t, "test response", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestFactoryMiddleware_Close(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		setupMock   func() (*Provider, error)
+		expectError bool
+	}{
+		{
+			name: "provider with successful shutdown",
+			setupMock: func() (*Provider, error) {
+				// Use no-op provider for testing to avoid network dependencies
+				config := Config{
+					Endpoint:                    "", // No endpoint
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					EnablePrometheusMetricsPath: false,
+				}
+				return NewProvider(context.Background(), config)
+			},
+			expectError: false,
+		},
+		{
+			name: "no-op provider",
+			setupMock: func() (*Provider, error) {
+				config := Config{
+					Endpoint:                    "", // No endpoint
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					EnablePrometheusMetricsPath: false, // No Prometheus
+				}
+				return NewProvider(context.Background(), config)
+			},
+			expectError: false,
+		},
+		{
+			name: "nil provider",
+			setupMock: func() (*Provider, error) {
+				return nil, nil
+			},
+			expectError: false, // Should not error with nil provider
+		},
+		{
+			name: "provider with Prometheus metrics",
+			setupMock: func() (*Provider, error) {
+				config := Config{
+					Endpoint:                    "",
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					EnablePrometheusMetricsPath: true,
+				}
+				return NewProvider(context.Background(), config)
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Setup provider
+			provider, err := tt.setupMock()
+			if !tt.expectError {
+				require.NoError(t, err)
+			}
+
+			// Create factory middleware
+			factoryMw := &FactoryMiddleware{
+				provider: provider,
+			}
+
+			// Test Close method
+			closeErr := factoryMw.Close()
+
+			// Verify result
+			if tt.expectError {
+				assert.Error(t, closeErr)
+			} else {
+				assert.NoError(t, closeErr)
+			}
+		})
+	}
+}
+
+func TestFactoryMiddleware_PrometheusHandler(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		setupMock         func() (*Provider, http.Handler, error)
+		expectNil         bool
+		expectHandlerTest bool
+	}{
+		{
+			name: "provider with Prometheus enabled",
+			setupMock: func() (*Provider, http.Handler, error) {
+				config := Config{
+					Endpoint:                    "",
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					EnablePrometheusMetricsPath: true,
+				}
+				provider, err := NewProvider(context.Background(), config)
+				if err != nil {
+					return nil, nil, err
+				}
+				return provider, provider.PrometheusHandler(), nil
+			},
+			expectNil:         false,
+			expectHandlerTest: true,
+		},
+		{
+			name: "provider with Prometheus disabled - no-op provider",
+			setupMock: func() (*Provider, http.Handler, error) {
+				// Use no-op provider to avoid network dependencies
+				config := Config{
+					Endpoint:                    "", // No endpoint
+					ServiceName:                 "test-service",
+					ServiceVersion:              "1.0.0",
+					EnablePrometheusMetricsPath: false, // Disabled
+				}
+				provider, err := NewProvider(context.Background(), config)
+				if err != nil {
+					return nil, nil, err
+				}
+				return provider, provider.PrometheusHandler(), nil
+			},
+			expectNil:         true,
+			expectHandlerTest: false,
+		},
+		{
+			name: "nil prometheus handler explicitly set",
+			setupMock: func() (*Provider, http.Handler, error) {
+				config := Config{
+					ServiceName:    "test-service",
+					ServiceVersion: "1.0.0",
+				}
+				// Create a no-op provider using NewProvider with no endpoints
+				ctx := context.Background()
+				provider, err := NewProvider(ctx, config)
+				if err != nil {
+					return nil, nil, err
+				}
+				return provider, nil, nil // Explicitly set nil handler
+			},
+			expectNil:         true,
+			expectHandlerTest: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Setup provider and expected handler
+			provider, expectedHandler, err := tt.setupMock()
+			require.NoError(t, err)
+			defer func() {
+				if provider != nil {
+					provider.Shutdown(context.Background())
+				}
+			}()
+
+			// Create factory middleware
+			factoryMw := &FactoryMiddleware{
+				provider:          provider,
+				prometheusHandler: expectedHandler,
+			}
+
+			// Test PrometheusHandler method
+			handler := factoryMw.PrometheusHandler()
+
+			if tt.expectNil {
+				assert.Nil(t, handler)
+			} else {
+				assert.NotNil(t, handler)
+
+				// If we expect handler tests, verify it works
+				if tt.expectHandlerTest {
+					req := httptest.NewRequest("GET", "/metrics", nil)
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, req)
+
+					// For Prometheus handler, we expect either OK or some metrics output
+					// The exact content depends on whether metrics have been recorded
+					assert.True(t, rec.Code >= 200 && rec.Code < 300, "Expected 2xx status code, got %d", rec.Code)
+					assert.NotEmpty(t, rec.Body.String(), "Expected non-empty response body from Prometheus handler")
+				}
+			}
+		})
+	}
+}
+
+func TestFactoryMiddleware_Integration(t *testing.T) {
+	t.Parallel()
+
+	// Integration test that verifies the complete factory middleware flow
+	t.Run("complete workflow with Prometheus", func(t *testing.T) {
+		t.Parallel()
+
+		// Setup mock runner
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+		mockConfig := mocks.NewMockRunnerConfig(ctrl)
+		mockRunner.EXPECT().GetConfig().Return(mockConfig).AnyTimes()
+		mockConfig.EXPECT().GetPort().Return(8080).Times(1)
+
+		// Expect middleware to be added and Prometheus handler to be set
+		var capturedMiddleware types.Middleware
+		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1).Do(func(mw types.Middleware) {
+			capturedMiddleware = mw
+		})
+		mockRunner.EXPECT().SetPrometheusHandler(gomock.Any()).Times(1)
+
+		// Create middleware config
+		params := FactoryMiddlewareParams{
+			Config: &Config{
+				Endpoint:                    "", // No OTLP
+				ServiceName:                 "integration-test",
+				ServiceVersion:              "1.0.0",
+				EnablePrometheusMetricsPath: true,
+				EnvironmentVariables:        []string{"TEST_VAR"},
+			},
+			ServerName: "integration",
+			Transport:  "stdio",
+		}
+
+		paramsJSON, err := json.Marshal(params)
+		require.NoError(t, err)
+
+		config := &types.MiddlewareConfig{
+			Type:       MiddlewareType,
+			Parameters: paramsJSON,
+		}
+
+		// Execute CreateMiddleware
+		err = CreateMiddleware(config, mockRunner)
+		assert.NoError(t, err)
+
+		// Verify the captured middleware works
+		assert.NotNil(t, capturedMiddleware)
+
+		// Test the handler
+		handlerFunc := capturedMiddleware.Handler()
+		assert.NotNil(t, handlerFunc)
+
+		// Test the Prometheus handler
+		prometheusHandler := capturedMiddleware.(*FactoryMiddleware).PrometheusHandler()
+		assert.NotNil(t, prometheusHandler)
+
+		// Test cleanup
+		err = capturedMiddleware.Close()
+		assert.NoError(t, err)
+	})
+
+	t.Run("complete workflow with OTLP", func(t *testing.T) {
+		t.Parallel()
+
+		// Setup mock runner
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+
+		// Expect only middleware to be added (no Prometheus)
+		var capturedMiddleware types.Middleware
+		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1).Do(func(mw types.Middleware) {
+			capturedMiddleware = mw
+		})
+
+		// Create middleware config without OTLP endpoint to avoid network dependencies
+		params := FactoryMiddlewareParams{
+			Config: &Config{
+				Endpoint:                    "", // No endpoint to avoid network dependencies
+				ServiceName:                 "otlp-integration-test",
+				ServiceVersion:              "1.0.0",
+				SamplingRate:                0.1,
+				Headers:                     map[string]string{"Authorization": "Bearer test"},
+				EnablePrometheusMetricsPath: false,
+				EnvironmentVariables:        []string{"NODE_ENV", "SERVICE_ENV"},
+			},
+			ServerName: "otlp-test",
+			Transport:  "sse",
+		}
+
+		paramsJSON, err := json.Marshal(params)
+		require.NoError(t, err)
+
+		config := &types.MiddlewareConfig{
+			Type:       MiddlewareType,
+			Parameters: paramsJSON,
+		}
+
+		// Execute CreateMiddleware
+		err = CreateMiddleware(config, mockRunner)
+		assert.NoError(t, err)
+
+		// Verify the captured middleware
+		assert.NotNil(t, capturedMiddleware)
+
+		// Test the handler
+		handlerFunc := capturedMiddleware.Handler()
+		assert.NotNil(t, handlerFunc)
+
+		// Prometheus handler should be nil since it's disabled
+		prometheusHandler := capturedMiddleware.(*FactoryMiddleware).PrometheusHandler()
+		assert.Nil(t, prometheusHandler)
+
+		// Test cleanup
+		err = capturedMiddleware.Close()
+		assert.NoError(t, err)
+	})
 }

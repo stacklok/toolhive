@@ -16,6 +16,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/discovery"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -36,6 +37,7 @@ This command starts a standalone proxy without creating a workload, providing:
 - Automatic authentication detection via WWW-Authenticate headers
 - OIDC-based access control for incoming proxy requests
 - Secure credential handling via files or environment variables
+- Dynamic client registration (RFC 7591) for automatic OAuth client setup
 
 #### Authentication modes
 
@@ -53,6 +55,15 @@ OAuth client secrets can be provided via (in order of precedence):
 1. --remote-auth-client-secret flag (not recommended for production)
 2. --remote-auth-client-secret-file flag (secure file-based approach)
 3. ` + envOAuthClientSecret + ` environment variable
+
+#### Dynamic client registration
+
+When no client credentials are provided, the proxy automatically registers an OAuth client
+with the authorization server using RFC 7591 dynamic client registration:
+
+- No need to pre-configure client ID and secret
+- Automatically discovers registration endpoint via OIDC
+- Supports PKCE flow for enhanced security
 
 #### Examples
 
@@ -85,7 +96,12 @@ Proxy with OIDC protection for incoming requests:
 Auto-detect authentication requirements:
 
 	thv proxy my-server --target-uri https://protected-api.com \
-	  --remote-auth-client-id my-client-id`,
+	  --remote-auth-client-id my-client-id
+
+Dynamic client registration (automatic OAuth client setup):
+
+	thv proxy my-server --target-uri https://protected-api.com \
+	  --remote-auth --remote-auth-issuer https://auth.example.com`,
 	Args: cobra.ExactArgs(1),
 	RunE: proxyCmdFunc,
 }
@@ -98,28 +114,7 @@ var (
 	resourceURL string // Explicit resource URL for OAuth discovery endpoint (RFC 9728)
 
 	// Remote server authentication flags
-	remoteAuthIssuer           string
-	remoteAuthClientID         string
-	remoteAuthClientSecret     string
-	remoteAuthClientSecretFile string
-	remoteAuthScopes           []string
-	remoteAuthSkipBrowser      bool
-	remoteAuthTimeout          time.Duration
-	remoteAuthCallbackPort     int
-	enableRemoteAuth           bool
-
-	// Manual OAuth endpoint configuration
-	remoteAuthAuthorizeURL string
-	remoteAuthTokenURL     string
-)
-
-// Default timeout constants
-const (
-	defaultOAuthTimeout      = 5 * time.Minute
-	defaultHTTPTimeout       = 30 * time.Second
-	defaultAuthDetectTimeout = 10 * time.Second
-	maxRetryAttempts         = 3
-	retryBaseDelay           = 2 * time.Second
+	remoteAuthFlags RemoteAuthFlags
 )
 
 // Environment variable names
@@ -145,27 +140,7 @@ func init() {
 		"Explicit resource URL for OAuth discovery endpoint (RFC 9728)")
 
 	// Add remote server authentication flags
-	proxyCmd.Flags().BoolVar(&enableRemoteAuth, "remote-auth", false, "Enable OAuth authentication to remote MCP server")
-	proxyCmd.Flags().StringVar(&remoteAuthIssuer, "remote-auth-issuer", "",
-		"OAuth/OIDC issuer URL for remote server authentication (e.g., https://accounts.google.com)")
-	proxyCmd.Flags().StringVar(&remoteAuthClientID, "remote-auth-client-id", "",
-		"OAuth client ID for remote server authentication")
-	proxyCmd.Flags().StringVar(&remoteAuthClientSecret, "remote-auth-client-secret", "",
-		"OAuth client secret for remote server authentication (optional for PKCE)")
-	proxyCmd.Flags().StringVar(&remoteAuthClientSecretFile, "remote-auth-client-secret-file", "",
-		"Path to file containing OAuth client secret (alternative to --remote-auth-client-secret)")
-	proxyCmd.Flags().StringSliceVar(&remoteAuthScopes, "remote-auth-scopes", []string{},
-		"OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')")
-	proxyCmd.Flags().BoolVar(&remoteAuthSkipBrowser, "remote-auth-skip-browser", false,
-		"Skip opening browser for remote server OAuth flow")
-	proxyCmd.Flags().DurationVar(&remoteAuthTimeout, "remote-auth-timeout", 30*time.Second,
-		"Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s)")
-	proxyCmd.Flags().IntVar(&remoteAuthCallbackPort, "remote-auth-callback-port", 8666,
-		"Port for OAuth callback server during remote authentication (default: 8666)")
-	proxyCmd.Flags().StringVar(&remoteAuthAuthorizeURL, "remote-auth-authorize-url", "",
-		"OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)")
-	proxyCmd.Flags().StringVar(&remoteAuthTokenURL, "remote-auth-token-url", "",
-		"OAuth token endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)")
+	AddRemoteAuthFlags(proxyCmd, &remoteAuthFlags)
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
@@ -207,7 +182,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	var oauthConfig *oauth.Config
 	var introspectionURL string
 
-	if enableRemoteAuth || shouldDetectAuth() {
+	if remoteAuthFlags.EnableRemoteAuth || shouldDetectAuth() {
 		tokenSource, oauthConfig, err = handleOutgoingAuthentication(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to authenticate to remote server: %w", err)
@@ -267,6 +242,8 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		proxyHost, port, serverName, proxyTargetURI,
 		nil, authInfoHandler,
 		false,
+		false, // isRemote
+		"",
 		middlewares...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %v", err)
@@ -287,201 +264,11 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	return proxy.Stop(shutdownCtx)
 }
 
-// AuthInfo contains authentication information extracted from WWW-Authenticate header
-type AuthInfo struct {
-	Realm string
-	Type  string
-}
-
-// detectAuthenticationFromServer attempts to detect authentication requirements from the target server
-func detectAuthenticationFromServer(ctx context.Context, targetURI string) (*AuthInfo, error) {
-	// Create a context with timeout for auth detection
-	detectCtx, cancel := context.WithTimeout(ctx, defaultAuthDetectTimeout)
-	defer cancel()
-
-	// Make a test request to the target server to see if it returns WWW-Authenticate
-	client := &http.Client{
-		Timeout: defaultAuthDetectTimeout,
-		Transport: &http.Transport{
-			TLSHandshakeTimeout:   defaultHTTPTimeout / 3,
-			ResponseHeaderTimeout: defaultHTTPTimeout / 3,
-		},
-	}
-
-	req, err := http.NewRequestWithContext(detectCtx, http.MethodGet, targetURI, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check if we got a 401 Unauthorized with WWW-Authenticate header
-	if resp.StatusCode == http.StatusUnauthorized {
-		wwwAuth := resp.Header.Get("WWW-Authenticate")
-		if wwwAuth != "" {
-			return parseWWWAuthenticate(wwwAuth)
-		}
-	}
-
-	return nil, nil
-}
-
-// parseWWWAuthenticate parses the WWW-Authenticate header to extract realm and type
-// Supports multiple authentication schemes and complex header formats
-func parseWWWAuthenticate(header string) (*AuthInfo, error) {
-	// Trim whitespace and handle empty headers
-	header = strings.TrimSpace(header)
-	if header == "" {
-		return nil, fmt.Errorf("empty WWW-Authenticate header")
-	}
-
-	// Split by comma to handle multiple authentication schemes
-	schemes := strings.Split(header, ",")
-
-	for _, scheme := range schemes {
-		scheme = strings.TrimSpace(scheme)
-
-		// Check for Bearer authentication
-		if strings.HasPrefix(scheme, "Bearer") {
-			authInfo := &AuthInfo{Type: "Bearer"}
-
-			// Extract parameters after "Bearer"
-			params := strings.TrimSpace(strings.TrimPrefix(scheme, "Bearer"))
-			if params == "" {
-				// Simple "Bearer" without parameters
-				return authInfo, nil
-			}
-
-			// Parse parameters (realm, scope, etc.)
-			realm := extractParameter(params, "realm")
-			if realm != "" {
-				authInfo.Realm = realm
-			}
-
-			return authInfo, nil
-		}
-
-		// Check for other authentication types (Basic, Digest, etc.)
-		if strings.HasPrefix(scheme, "Basic") {
-			return &AuthInfo{Type: "Basic"}, nil
-		}
-
-		if strings.HasPrefix(scheme, "Digest") {
-			authInfo := &AuthInfo{Type: "Digest"}
-			realm := extractParameter(scheme, "realm")
-			if realm != "" {
-				authInfo.Realm = realm
-			}
-			return authInfo, nil
-		}
-	}
-
-	return nil, fmt.Errorf("no supported authentication type found in header: %s", header)
-}
-
-// extractParameter extracts a parameter value from an authentication header
-func extractParameter(params, paramName string) string {
-	// Look for paramName=value or paramName="value"
-	parts := strings.Split(params, ",")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, paramName+"=") {
-			value := strings.TrimPrefix(part, paramName+"=")
-			// Remove quotes if present
-			value = strings.Trim(value, `"`)
-			return value
-		}
-	}
-	return ""
-}
-
-// performOAuthFlow performs the OAuth authentication flow
-func performOAuthFlow(ctx context.Context, issuer, clientID, clientSecret string,
-	scopes []string) (*oauth2.TokenSource, *oauth.Config, error) {
-	logger.Info("Starting OAuth authentication flow...")
-
-	var oauthConfig *oauth.Config
-	var err error
-
-	// Check if we have manual OAuth endpoints configured
-	if remoteAuthAuthorizeURL != "" && remoteAuthTokenURL != "" {
-		logger.Info("Using manual OAuth configuration")
-		oauthConfig, err = oauth.CreateOAuthConfigManual(
-			clientID,
-			clientSecret,
-			remoteAuthAuthorizeURL,
-			remoteAuthTokenURL,
-			scopes,
-			true, // Enable PKCE by default for security
-			remoteAuthCallbackPort,
-		)
-	} else {
-		// Fall back to OIDC discovery
-		logger.Info("Using OIDC discovery")
-		oauthConfig, err = oauth.CreateOAuthConfigFromOIDC(
-			ctx,
-			issuer,
-			clientID,
-			clientSecret,
-			scopes,
-			true, // Enable PKCE by default for security
-			remoteAuthCallbackPort,
-		)
-	}
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create OAuth config: %w", err)
-	}
-
-	// Create OAuth flow
-	flow, err := oauth.NewFlow(oauthConfig)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create OAuth flow: %w", err)
-	}
-
-	// Create a context with timeout for the OAuth flow
-	// Use the configured timeout, defaulting to the constant if not set
-	oauthTimeout := remoteAuthTimeout
-	if oauthTimeout <= 0 {
-		oauthTimeout = defaultOAuthTimeout
-	}
-
-	oauthCtx, cancel := context.WithTimeout(ctx, oauthTimeout)
-	defer cancel()
-
-	// Start OAuth flow
-	tokenResult, err := flow.Start(oauthCtx, remoteAuthSkipBrowser)
-	if err != nil {
-		if oauthCtx.Err() == context.DeadlineExceeded {
-			return nil, nil, fmt.Errorf("OAuth flow timed out after %v - user did not complete authentication", oauthTimeout)
-		}
-		return nil, nil, fmt.Errorf("OAuth flow failed: %w", err)
-	}
-
-	logger.Info("OAuth authentication successful")
-
-	// Log token info (without exposing the actual token)
-	if tokenResult.Claims != nil {
-		if sub, ok := tokenResult.Claims["sub"].(string); ok {
-			logger.Infof("Authenticated as subject: %s", sub)
-		}
-		if email, ok := tokenResult.Claims["email"].(string); ok {
-			logger.Infof("Authenticated email: %s", email)
-		}
-	}
-
-	source := flow.TokenSource()
-	return &source, oauthConfig, nil
-}
-
 // shouldDetectAuth determines if we should try to detect authentication requirements
 func shouldDetectAuth() bool {
 	// Only try to detect auth if OAuth client ID is provided
 	// This prevents unnecessary requests when no OAuth config is available
-	return remoteAuthClientID != ""
+	return remoteAuthFlags.RemoteAuthClientID != ""
 }
 
 // handleOutgoingAuthentication handles authentication to the remote MCP server
@@ -492,15 +279,11 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 		return nil, nil, fmt.Errorf("failed to resolve client secret: %w", err)
 	}
 
-	if enableRemoteAuth {
-		// If OAuth is explicitly enabled, validate configuration
-		if remoteAuthClientID == "" {
-			return nil, nil, fmt.Errorf("remote-auth-client-id is required when remote authentication is enabled")
-		}
+	if remoteAuthFlags.EnableRemoteAuth {
 
 		// Check if we have either OIDC issuer or manual OAuth endpoints
-		hasOIDCConfig := remoteAuthIssuer != ""
-		hasManualConfig := remoteAuthAuthorizeURL != "" && remoteAuthTokenURL != ""
+		hasOIDCConfig := remoteAuthFlags.RemoteAuthIssuer != ""
+		hasManualConfig := remoteAuthFlags.RemoteAuthAuthorizeURL != "" && remoteAuthFlags.RemoteAuthTokenURL != ""
 
 		if !hasOIDCConfig && !hasManualConfig {
 			return nil, nil, fmt.Errorf("either --remote-auth-issuer (for OIDC) or both --remote-auth-authorize-url " +
@@ -511,11 +294,27 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 			return nil, nil, fmt.Errorf("cannot specify both OIDC issuer and manual OAuth endpoints - choose one approach")
 		}
 
-		return performOAuthFlow(ctx, remoteAuthIssuer, remoteAuthClientID, clientSecret, remoteAuthScopes)
+		flowConfig := &discovery.OAuthFlowConfig{
+			ClientID:     remoteAuthFlags.RemoteAuthClientID,
+			ClientSecret: clientSecret,
+			AuthorizeURL: remoteAuthFlags.RemoteAuthAuthorizeURL,
+			TokenURL:     remoteAuthFlags.RemoteAuthTokenURL,
+			Scopes:       remoteAuthFlags.RemoteAuthScopes,
+			CallbackPort: remoteAuthFlags.RemoteAuthCallbackPort,
+			Timeout:      remoteAuthFlags.RemoteAuthTimeout,
+			SkipBrowser:  remoteAuthFlags.RemoteAuthSkipBrowser,
+		}
+
+		result, err := discovery.PerformOAuthFlow(ctx, remoteAuthFlags.RemoteAuthIssuer, flowConfig)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return result.TokenSource, result.Config, nil
 	}
 
 	// Try to detect authentication requirements from WWW-Authenticate header
-	authInfo, err := detectAuthenticationFromServer(ctx, proxyTargetURI)
+	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, proxyTargetURI, nil)
 	if err != nil {
 		logger.Debugf("Could not detect authentication from server: %v", err)
 		return nil, nil, nil // Not an error, just no auth detected
@@ -524,12 +323,24 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 	if authInfo != nil {
 		logger.Infof("Detected authentication requirement from server: %s", authInfo.Realm)
 
-		if remoteAuthClientID == "" {
-			return nil, nil, fmt.Errorf("detected OAuth requirement but no remote-auth-client-id provided")
+		// Perform OAuth flow with discovered configuration
+		flowConfig := &discovery.OAuthFlowConfig{
+			ClientID:     remoteAuthFlags.RemoteAuthClientID,
+			ClientSecret: clientSecret,
+			AuthorizeURL: remoteAuthFlags.RemoteAuthAuthorizeURL,
+			TokenURL:     remoteAuthFlags.RemoteAuthTokenURL,
+			Scopes:       remoteAuthFlags.RemoteAuthScopes,
+			CallbackPort: remoteAuthFlags.RemoteAuthCallbackPort,
+			Timeout:      remoteAuthFlags.RemoteAuthTimeout,
+			SkipBrowser:  remoteAuthFlags.RemoteAuthSkipBrowser,
 		}
 
-		// Perform OAuth flow with discovered configuration
-		return performOAuthFlow(ctx, authInfo.Realm, remoteAuthClientID, clientSecret, remoteAuthScopes)
+		result, err := discovery.PerformOAuthFlow(ctx, authInfo.Realm, flowConfig)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return result.TokenSource, result.Config, nil
 	}
 
 	return nil, nil, nil // No authentication required
@@ -539,15 +350,15 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 // Priority: 1. Flag value, 2. File, 3. Environment variable
 func resolveClientSecret() (string, error) {
 	// 1. Check if provided directly via flag
-	if remoteAuthClientSecret != "" {
+	if remoteAuthFlags.RemoteAuthClientSecret != "" {
 		logger.Debug("Using client secret from command-line flag")
-		return remoteAuthClientSecret, nil
+		return remoteAuthFlags.RemoteAuthClientSecret, nil
 	}
 
 	// 2. Check if provided via file
-	if remoteAuthClientSecretFile != "" {
+	if remoteAuthFlags.RemoteAuthClientSecretFile != "" {
 		// Clean the file path to prevent path traversal
-		cleanPath := filepath.Clean(remoteAuthClientSecretFile)
+		cleanPath := filepath.Clean(remoteAuthFlags.RemoteAuthClientSecretFile)
 		logger.Debugf("Reading client secret from file: %s", cleanPath)
 		// #nosec G304 - file path is cleaned above
 		secretBytes, err := os.ReadFile(cleanPath)

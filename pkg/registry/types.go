@@ -147,6 +147,12 @@ type OAuthConfig struct {
 	// UsePKCE indicates whether to use PKCE for the OAuth flow
 	// Defaults to true for enhanced security
 	UsePKCE bool `json:"use_pkce,omitempty" yaml:"use_pkce,omitempty"`
+	// OAuthParams contains additional OAuth parameters to include in the authorization request
+	// These are server-specific parameters like "prompt", "response_mode", etc.
+	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
+	// CallbackPort is the specific port to use for the OAuth callback server
+	// If not specified, a random available port will be used
+	CallbackPort int `json:"callback_port,omitempty" yaml:"callback_port,omitempty"`
 }
 
 // RemoteServerMetadata represents the metadata for a remote MCP server accessed via HTTP/HTTPS.
@@ -213,51 +219,81 @@ type ServerMetadata interface {
 
 // GetName returns the server name
 func (i *ImageMetadata) GetName() string {
+	if i == nil {
+		return ""
+	}
 	return i.Name
 }
 
 // GetDescription returns the server description
 func (i *ImageMetadata) GetDescription() string {
+	if i == nil {
+		return ""
+	}
 	return i.Description
 }
 
 // GetTier returns the server tier
 func (i *ImageMetadata) GetTier() string {
+	if i == nil {
+		return ""
+	}
 	return i.Tier
 }
 
 // GetStatus returns the server status
 func (i *ImageMetadata) GetStatus() string {
+	if i == nil {
+		return ""
+	}
 	return i.Status
 }
 
 // GetTransport returns the server transport
 func (i *ImageMetadata) GetTransport() string {
+	if i == nil {
+		return ""
+	}
 	return i.Transport
 }
 
 // GetTools returns the list of tools provided by the server
 func (i *ImageMetadata) GetTools() []string {
+	if i == nil {
+		return nil
+	}
 	return i.Tools
 }
 
 // GetMetadata returns the server metadata
 func (i *ImageMetadata) GetMetadata() *Metadata {
+	if i == nil {
+		return nil
+	}
 	return i.Metadata
 }
 
 // GetRepositoryURL returns the repository URL
 func (i *ImageMetadata) GetRepositoryURL() string {
+	if i == nil {
+		return ""
+	}
 	return i.RepositoryURL
 }
 
 // GetTags returns the server tags
 func (i *ImageMetadata) GetTags() []string {
+	if i == nil {
+		return nil
+	}
 	return i.Tags
 }
 
 // GetCustomMetadata returns custom metadata
 func (i *ImageMetadata) GetCustomMetadata() map[string]any {
+	if i == nil {
+		return nil
+	}
 	return i.CustomMetadata
 }
 
@@ -268,6 +304,9 @@ func (*ImageMetadata) IsRemote() bool {
 
 // GetEnvVars returns environment variables
 func (i *ImageMetadata) GetEnvVars() []*EnvVar {
+	if i == nil {
+		return nil
+	}
 	return i.EnvVars
 }
 
@@ -275,51 +314,81 @@ func (i *ImageMetadata) GetEnvVars() []*EnvVar {
 
 // GetName returns the server name
 func (r *RemoteServerMetadata) GetName() string {
+	if r == nil {
+		return ""
+	}
 	return r.Name
 }
 
 // GetDescription returns the server description
 func (r *RemoteServerMetadata) GetDescription() string {
+	if r == nil {
+		return ""
+	}
 	return r.Description
 }
 
 // GetTier returns the server tier
 func (r *RemoteServerMetadata) GetTier() string {
+	if r == nil {
+		return ""
+	}
 	return r.Tier
 }
 
 // GetStatus returns the server status
 func (r *RemoteServerMetadata) GetStatus() string {
+	if r == nil {
+		return ""
+	}
 	return r.Status
 }
 
 // GetTransport returns the server transport
 func (r *RemoteServerMetadata) GetTransport() string {
+	if r == nil {
+		return ""
+	}
 	return r.Transport
 }
 
 // GetTools returns the list of tools provided by the server
 func (r *RemoteServerMetadata) GetTools() []string {
+	if r == nil {
+		return nil
+	}
 	return r.Tools
 }
 
 // GetMetadata returns the server metadata
 func (r *RemoteServerMetadata) GetMetadata() *Metadata {
+	if r == nil {
+		return nil
+	}
 	return r.Metadata
 }
 
 // GetRepositoryURL returns the repository URL
 func (r *RemoteServerMetadata) GetRepositoryURL() string {
+	if r == nil {
+		return ""
+	}
 	return r.RepositoryURL
 }
 
 // GetTags returns the server tags
 func (r *RemoteServerMetadata) GetTags() []string {
+	if r == nil {
+		return nil
+	}
 	return r.Tags
 }
 
 // GetCustomMetadata returns custom metadata
 func (r *RemoteServerMetadata) GetCustomMetadata() map[string]any {
+	if r == nil {
+		return nil
+	}
 	return r.CustomMetadata
 }
 
@@ -330,11 +399,17 @@ func (*RemoteServerMetadata) IsRemote() bool {
 
 // GetEnvVars returns environment variables
 func (r *RemoteServerMetadata) GetEnvVars() []*EnvVar {
+	if r == nil {
+		return nil
+	}
 	return r.EnvVars
 }
 
 // GetRawImplementation returns the underlying RemoteServerMetadata pointer
 func (r *RemoteServerMetadata) GetRawImplementation() any {
+	if r == nil {
+		return nil
+	}
 	return r
 }
 

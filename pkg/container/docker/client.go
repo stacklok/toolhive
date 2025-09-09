@@ -37,6 +37,18 @@ import (
 // DnsImage is the default DNS image used for network permissions
 const DnsImage = "dockurr/dnsmasq:latest"
 
+// RuntimeName is the name identifier for the Docker runtime
+const RuntimeName = "docker"
+
+// IsAvailable checks if Docker is available by attempting to connect to the Docker daemon
+func IsAvailable() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := NewClient(ctx)
+	return err == nil
+}
+
 // Workloads
 const (
 	ToolhiveAuxiliaryWorkloadLabel = "toolhive-auxiliary-workload"
@@ -617,29 +629,19 @@ func addIgnoreOverlays(config *runtime.PermissionConfig, sourceDir, containerPat
 		// Continue without local patterns
 	}
 
-	// Get overlay mounts (both tmpfs for directories and bind for files)
+	// Get overlay mounts (all using bind mounts now)
 	overlayMounts := ignoreProcessor.GetOverlayMounts(sourceDir, containerPath)
 
 	// Add overlay mounts to the configuration
 	for _, overlayMount := range overlayMounts {
-		var mountType runtime.MountType
-		var source string
-
-		if overlayMount.Type == "tmpfs" {
-			mountType = runtime.MountTypeTmpfs
-			source = "" // No source for tmpfs
-		} else {
-			mountType = runtime.MountTypeBind
-			source = overlayMount.HostPath
-		}
-
+		// All overlays now use bind mounts (no more tmpfs)
 		config.Mounts = append(config.Mounts, runtime.Mount{
-			Source:   source,
+			Source:   overlayMount.HostPath,
 			Target:   overlayMount.ContainerPath,
 			ReadOnly: false,
-			Type:     mountType,
+			Type:     runtime.MountTypeBind,
 		})
-		logger.Debugf("Added %s overlay for ignored path: %s -> %s", overlayMount.Type, source, overlayMount.ContainerPath)
+		logger.Debugf("Added bind overlay for ignored path: %s -> %s", overlayMount.HostPath, overlayMount.ContainerPath)
 	}
 }
 
@@ -1103,21 +1105,13 @@ func convertEnvVars(envVars map[string]string) []string {
 func convertMounts(mounts []runtime.Mount) []mount.Mount {
 	result := make([]mount.Mount, 0, len(mounts))
 	for _, m := range mounts {
-		if m.Type == runtime.MountTypeTmpfs {
-			// Create tmpfs mount to mask/hide sensitive directories
-			result = append(result, mount.Mount{
-				Type:   mount.TypeTmpfs,
-				Target: m.Target,
-				// No TmpfsOptions needed - default size is sufficient for masking
-			})
-		} else {
-			result = append(result, mount.Mount{
-				Type:     mount.TypeBind,
-				Source:   m.Source,
-				Target:   m.Target,
-				ReadOnly: m.ReadOnly,
-			})
-		}
+		// All mounts are now bind mounts (removed tmpfs support for overlays)
+		result = append(result, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   m.Source,
+			Target:   m.Target,
+			ReadOnly: m.ReadOnly,
+		})
 	}
 	return result
 }

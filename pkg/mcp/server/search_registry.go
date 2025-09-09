@@ -25,6 +25,11 @@ type Info struct {
 	Tags        []string `json:"tags,omitempty"`
 }
 
+// SearchRegistryResponse represents the response from searching the registry
+type SearchRegistryResponse struct {
+	Servers []Info `json:"servers"`
+}
+
 // SearchRegistry searches the ToolHive registry
 func (h *Handler) SearchRegistry(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Parse arguments using BindArguments
@@ -59,6 +64,10 @@ func (h *Handler) SearchRegistry(_ context.Context, request mcp.CallToolRequest)
 		results = append(results, info)
 	}
 
-	// Use StructuredOnly to get JSON serialization automatically
-	return mcp.NewToolResultStructuredOnly(results), nil
+	// Create structured response
+	response := SearchRegistryResponse{
+		Servers: results,
+	}
+
+	return mcp.NewToolResultStructuredOnly(response), nil
 }

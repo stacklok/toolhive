@@ -167,7 +167,9 @@ Note that some providers (like 1Password) are read-only and do not support setti
 
 			// Check if the provider supports writing secrets
 			if !manager.Capabilities().CanWrite {
-				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				configProvider := config.NewDefaultProvider()
+				cfg := configProvider.GetConfig()
+				providerType, _ := cfg.Secrets.GetProviderType()
 				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support setting secrets (read-only)\n", providerType)
 				return
 			}
@@ -215,7 +217,7 @@ The secret must exist in your configured secrets provider, otherwise the command
 				fmt.Fprintf(os.Stderr, "Failed to get secret %s: %v\n", name, err)
 				return
 			}
-			fmt.Printf("Secret %s: %s\n", name, value)
+			fmt.Printf("%s\n", value)
 		},
 	}
 }
@@ -250,7 +252,9 @@ If your provider is read-only or doesn't support deletion, this command returns 
 
 			// Check if the provider supports deleting secrets
 			if !manager.Capabilities().CanDelete {
-				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				configProvider := config.NewDefaultProvider()
+				cfg := configProvider.GetConfig()
+				providerType, _ := cfg.Secrets.GetProviderType()
 				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support deleting secrets\n", providerType)
 				return
 			}
@@ -284,7 +288,9 @@ If descriptions exist for the secrets, the command displays them alongside the n
 
 			// Check if the provider supports listing secrets
 			if !manager.Capabilities().CanList {
-				providerType, _ := config.GetConfig().Secrets.GetProviderType()
+				configProvider := config.NewDefaultProvider()
+				cfg := configProvider.GetConfig()
+				providerType, _ := cfg.Secrets.GetProviderType()
 				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support listing secrets\n", providerType)
 				return
 			}
@@ -344,7 +350,8 @@ This command only works with the 'encrypted' secrets provider.`,
 }
 
 func getSecretsManager() (secrets.Provider, error) {
-	cfg := config.GetConfig()
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
 
 	// Check if secrets setup has been completed
 	if !cfg.Secrets.SetupCompleted {
@@ -423,6 +430,10 @@ For more information, visit: https://developer.1password.com/docs/service-accoun
 		fmt.Println(`Setting up none secrets provider...
 Secrets functionality will be disabled.
 No secrets will be stored or retrieved.`)
+	case secrets.EnvironmentType:
+		fmt.Println(`Setting up environment variable secrets provider...
+Secrets will be read from environment variables with the TOOLHIVE_SECRET_ prefix.
+This provider is read-only and suitable for CI/CD and containerized environments.`)
 	}
 
 	// SetSecretsProvider will handle validation and configuration

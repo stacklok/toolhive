@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tailscale/hujson"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -50,6 +51,10 @@ const (
 	AmpVSCodeInsider MCPClient = "amp-vscode-insider"
 	// AmpWindsurf represents the Sourcegraph Amp extension for Windsurf.
 	AmpWindsurf MCPClient = "amp-windsurf"
+	// LMStudio represents the LM Studio application.
+	LMStudio MCPClient = "lm-studio"
+	// Goose represents the Goose AI agent.
+	Goose MCPClient = "goose"
 )
 
 // Extension is extension of the client config file.
@@ -58,6 +63,8 @@ type Extension string
 const (
 	// JSON represents a JSON extension.
 	JSON Extension = "json"
+	// YAML represents a YAML extension.
+	YAML Extension = "yaml"
 )
 
 // mcpClientConfig represents a configuration path for a supported MCP client.
@@ -117,10 +124,11 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersPathPrefix: "/mcpServers",
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeSSE:   "sse",
-			types.TransportTypeStdio: "sse",
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "streamableHttp",
 		},
-		IsTransportTypeFieldSupported: false,
+		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabel:            "url",
 	},
 	{
@@ -324,6 +332,41 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		IsTransportTypeFieldSupported: true,
 	},
+	{
+		ClientType:           LMStudio,
+		Description:          "LM Studio application",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".lmstudio"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
+	},
+	{
+		ClientType:           Goose,
+		Description:          "Goose AI agent",
+		SettingsFile:         "config.yaml",
+		MCPServersPathPrefix: "/extensions",
+		RelPath:              []string{"goose"},
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {".config"},
+			"windows": {"AppData", "Block"},
+		},
+		Extension: YAML,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "streamable_http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "uri",
+	},
 }
 
 // ConfigFile represents a client configuration file
@@ -341,8 +384,17 @@ type MCPServerConfig struct {
 
 // FindClientConfig returns the client configuration file for a given client type.
 func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
+	manager, err := NewClientManager()
+	if err != nil {
+		return nil, err
+	}
+	return manager.FindClientConfig(clientType)
+}
+
+// FindClientConfig returns the client configuration file for a given client type using this manager's dependencies.
+func (cm *ClientManager) FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	// retrieve the metadata of the config files
-	configFile, err := retrieveConfigFileMetadata(clientType)
+	configFile, err := cm.retrieveConfigFileMetadata(clientType)
 	if err != nil {
 		if errors.Is(err, ErrConfigFileNotFound) {
 			// Propagate the error if the file is not found
@@ -361,7 +413,16 @@ func FindClientConfig(clientType MCPClient) (*ConfigFile, error) {
 
 // FindRegisteredClientConfigs finds all registered client configs and creates them if they don't exist.
 func FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
-	clientStatuses, err := GetClientStatus(ctx)
+	manager, err := NewClientManager()
+	if err != nil {
+		return nil, err
+	}
+	return manager.FindRegisteredClientConfigs(ctx)
+}
+
+// FindRegisteredClientConfigs finds all registered client configs using this manager's dependencies
+func (cm *ClientManager) FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
+	clientStatuses, err := cm.GetClientStatus(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client status: %w", err)
 	}
@@ -371,11 +432,11 @@ func FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
 		if !clientStatus.Installed || !clientStatus.Registered {
 			continue
 		}
-		cf, err := FindClientConfig(clientStatus.ClientType)
+		cf, err := cm.FindClientConfig(clientStatus.ClientType)
 		if err != nil {
 			if errors.Is(err, ErrConfigFileNotFound) {
 				logger.Infof("Client config file not found for %s, creating it...", clientStatus.ClientType)
-				cf, err = CreateClientConfig(clientStatus.ClientType)
+				cf, err = cm.CreateClientConfig(clientStatus.ClientType)
 				if err != nil {
 					logger.Warnf("Unable to create client config for %s: %v", clientStatus.ClientType, err)
 					continue
@@ -394,15 +455,18 @@ func FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
 
 // CreateClientConfig creates a new client configuration file for a given client type.
 func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
-	// Get home directory
-	home, err := os.UserHomeDir()
+	manager, err := NewClientManager()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
+		return nil, err
 	}
+	return manager.CreateClientConfig(clientType)
+}
 
+// CreateClientConfig creates a new client configuration file for a given client type using this manager's dependencies.
+func (cm *ClientManager) CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
 	var clientCfg *mcpClientConfig
-	for _, cfg := range supportedClientIntegrations {
+	for _, cfg := range cm.clientIntegrations {
 		if cfg.ClientType == clientType {
 			clientCfg = &cfg
 			break
@@ -414,7 +478,7 @@ func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
 	}
 
 	// Build the path to the configuration file
-	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{home})
+	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{cm.homeDir})
 
 	// Validate that the file does not already exist
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -423,12 +487,12 @@ func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
 
 	// Create the file if it does not exist
 	logger.Infof("Creating new client config file at %s", path)
-	err = os.WriteFile(path, []byte("{}"), 0600)
+	err := os.WriteFile(path, []byte("{}"), 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client config file: %w", err)
 	}
 
-	return FindClientConfig(clientType)
+	return cm.FindClientConfig(clientType)
 }
 
 // Upsert updates/inserts an MCP server in a client configuration file
@@ -439,13 +503,22 @@ func CreateClientConfig(clientType MCPClient) (*ConfigFile, error) {
 // build up more complex MCP server configurations for different clients
 // without leaking them into the CMD layer.
 func Upsert(cf ConfigFile, name string, url string, transportType string) error {
-	for i := range supportedClientIntegrations {
-		if cf.ClientType != supportedClientIntegrations[i].ClientType {
+	manager, err := NewClientManager()
+	if err != nil {
+		return err
+	}
+	return manager.Upsert(cf, name, url, transportType)
+}
+
+// Upsert updates/inserts an MCP server in a client configuration file using this manager's dependencies.
+func (cm *ClientManager) Upsert(cf ConfigFile, name string, url string, transportType string) error {
+	for i := range cm.clientIntegrations {
+		if cf.ClientType != cm.clientIntegrations[i].ClientType {
 			continue
 		}
-		isServerUrl := supportedClientIntegrations[i].MCPServersUrlLabel == "serverUrl"
-		mappedTransportType, ok := supportedClientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
-		if supportedClientIntegrations[i].IsTransportTypeFieldSupported && ok {
+		isServerUrl := cm.clientIntegrations[i].MCPServersUrlLabel == "serverUrl"
+		mappedTransportType, ok := cm.clientIntegrations[i].SupportedTransportTypesMap[types.TransportType(transportType)]
+		if cm.clientIntegrations[i].IsTransportTypeFieldSupported && ok {
 			if isServerUrl {
 				return cf.ConfigUpdater.Upsert(name, MCPServer{ServerUrl: url, Type: mappedTransportType})
 			}
@@ -459,17 +532,11 @@ func Upsert(cf ConfigFile, name string, url string, transportType string) error 
 	return nil
 }
 
-// retrieveConfigFileMetadata retrieves the metadata for client configuration files for a given client type.
-func retrieveConfigFileMetadata(clientType MCPClient) (*ConfigFile, error) {
-	// Get home directory
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
-	}
-
+// retrieveConfigFileMetadata retrieves the metadata for client configuration files using this manager's dependencies.
+func (cm *ClientManager) retrieveConfigFileMetadata(clientType MCPClient) (*ConfigFile, error) {
 	// Find the configuration for the requested client type
 	var clientCfg *mcpClientConfig
-	for _, cfg := range supportedClientIntegrations {
+	for _, cfg := range cm.clientIntegrations {
 		if cfg.ClientType == clientType {
 			clientCfg = &cfg
 			break
@@ -481,17 +548,26 @@ func retrieveConfigFileMetadata(clientType MCPClient) (*ConfigFile, error) {
 	}
 
 	// Build the path to the configuration file
-	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{home})
+	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{cm.homeDir})
 
 	// Validate that the file exists
 	if err := validateConfigFileExists(path); err != nil {
 		return nil, err
 	}
 
-	// Create a config updater for this file
-	configUpdater := &JSONConfigUpdater{
-		Path:                 path,
-		MCPServersPathPrefix: clientCfg.MCPServersPathPrefix,
+	// Create a config updater for this file based on the extension
+	var configUpdater ConfigUpdater
+	switch clientCfg.Extension {
+	case YAML:
+		configUpdater = &YAMLConfigUpdater{
+			Path:      path,
+			Converter: &GooseYAMLConverter{},
+		}
+	case JSON:
+		configUpdater = &JSONConfigUpdater{
+			Path:                 path,
+			MCPServersPathPrefix: clientCfg.MCPServersPathPrefix,
+		}
 	}
 
 	// Return the configuration file metadata
@@ -530,11 +606,18 @@ func validateConfigFileFormat(cf *ConfigFile) error {
 		data = []byte("{}") // Default to an empty JSON object if the file is empty
 	}
 
-	// Default to JSON
-	// we don't care about the contents of the file, we just want to validate that it's valid JSON
-	_, err = hujson.Parse(data)
-	if err != nil {
-		return fmt.Errorf("failed to parse JSON for file %s: %w", cf.Path, err)
+	switch cf.Extension {
+	case YAML:
+		var temp interface{}
+		err = yaml.Unmarshal(data, &temp)
+		if err != nil {
+			return fmt.Errorf("failed to parse YAML for file %s: %w", cf.Path, err)
+		}
+	case JSON:
+		_, err = hujson.Parse(data)
+		if err != nil {
+			return fmt.Errorf("failed to parse JSON for file %s: %w", cf.Path, err)
+		}
 	}
 	return nil
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,14 +17,37 @@ import (
 	"go.uber.org/mock/gomock"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/process"
+	stateMocks "github.com/stacklok/toolhive/pkg/state/mocks"
+)
+
+const (
+	// testWorkloadWithSlash is a test workload name containing slashes
+	testWorkloadWithSlash = "test/workload"
 )
 
 func init() {
 	// Initialize logger for all tests
 	logger.Initialize()
+}
+
+// newTestFileStatusManager creates a fileStatusManager for testing with proper initialization
+func newTestFileStatusManager(t *testing.T, ctrl *gomock.Controller) (*fileStatusManager, *rtmocks.MockRuntime, *stateMocks.MockStore) {
+	t.Helper()
+	tempDir := t.TempDir()
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
+	mockRunConfigStore := stateMocks.NewMockStore(ctrl)
+
+	manager := &fileStatusManager{
+		baseDir:        tempDir,
+		runtime:        mockRuntime,
+		runConfigStore: mockRunConfigStore,
+	}
+
+	return manager, mockRuntime, mockRunConfigStore
 }
 
 func TestFileStatusManager_SetWorkloadStatus_Create(t *testing.T) {
@@ -75,22 +100,60 @@ func TestFileStatusManager_GetWorkload(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
+
+	// Create a mock reader that returns non-remote configuration data
+	mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil).AnyTimes()
 
 	// Create a workload status
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
+	// Mock runtime to return error for fallback case (in case file is not found)
+	mockRuntime.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").Return(rt.ContainerInfo{}, errors.New("workload not found")).AnyTimes()
+
 	// Get the workload (no runtime call expected for starting workload)
 	workload, err := manager.GetWorkload(ctx, "test-workload")
 	require.NoError(t, err)
 	assert.Equal(t, "test-workload", workload.Name)
+	assert.Equal(t, rt.WorkloadStatusStarting, workload.Status)
+	assert.Empty(t, workload.StatusContext)
+}
+
+func TestFileStatusManager_GetWorkloadSlashes(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	workloadName := testWorkloadWithSlash
+
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadName).Return(true, nil).AnyTimes()
+
+	// Create a mock reader that returns non-remote configuration data
+	mockReader := io.NopCloser(strings.NewReader(`{"name": "` + testWorkloadWithSlash + `", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).Return(mockReader, nil).AnyTimes()
+
+	// Create a workload status
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, "")
+	require.NoError(t, err)
+
+	// Mock runtime to return error for fallback case (in case file is not found)
+	mockRuntime.EXPECT().GetWorkloadInfo(gomock.Any(), workloadName).Return(rt.ContainerInfo{}, errors.New("workload not found")).AnyTimes()
+
+	// Get the workload (no runtime call expected for starting workload)
+	workload, err := manager.GetWorkload(ctx, workloadName)
+	require.NoError(t, err)
+	assert.Equal(t, workloadName, workload.Name)
 	assert.Equal(t, rt.WorkloadStatusStarting, workload.Status)
 	assert.Empty(t, workload.StatusContext)
 }
@@ -101,13 +164,11 @@ func TestFileStatusManager_GetWorkload_NotFound(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
+
+	// Mock the run config store to return false for exists (not a remote workload)
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "non-existent").Return(false, nil).AnyTimes()
 
 	// Mock runtime to return error for non-existent workload
 	mockRuntime.EXPECT().GetWorkloadInfo(gomock.Any(), "non-existent").Return(rt.ContainerInfo{}, errors.New("workload not found in runtime"))
@@ -124,13 +185,11 @@ func TestFileStatusManager_GetWorkload_RuntimeFallback(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
+
+	// Mock the run config store to return false for exists (not a remote workload)
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "runtime-only-workload").Return(false, nil).AnyTimes()
 
 	// Mock runtime to return a workload when file doesn't exist
 	info := rt.ContainerInfo{
@@ -163,13 +222,15 @@ func TestFileStatusManager_GetWorkload_FileAndRuntimeCombination(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "running-workload").Return(true, nil).AnyTimes()
+
+	// Create a mock reader that returns non-remote configuration data
+	mockReader := io.NopCloser(strings.NewReader(`{"name": "running-workload", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "running-workload").Return(mockReader, nil).AnyTimes()
 
 	// Create a workload status file and set it to running
 	err := manager.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusStarting, "")
@@ -241,6 +302,42 @@ func TestFileStatusManager_SetWorkloadStatus(t *testing.T) {
 		statusFileData.UpdatedAt.Equal(statusFileData.CreatedAt))
 }
 
+func TestFileStatusManager_SetWorkloadStatusSlashes(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	workloadName := testWorkloadWithSlash
+
+	// Create a workload status
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, "")
+	require.NoError(t, err)
+
+	// Update the status
+	manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusRunning, "container started")
+
+	// Note: Cannot verify status was updated via GetWorkload since current implementation returns empty Workload
+	// Instead verify by reading the file directly
+
+	// Verify the file on disk
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, "container started", statusFileData.StatusContext)
+	// CreatedAt should be preserved, UpdatedAt should be newer
+	assert.False(t, statusFileData.CreatedAt.IsZero())
+	assert.False(t, statusFileData.UpdatedAt.IsZero())
+	assert.True(t, statusFileData.UpdatedAt.After(statusFileData.CreatedAt) ||
+		statusFileData.UpdatedAt.Equal(statusFileData.CreatedAt))
+}
+
 func TestFileStatusManager_SetWorkloadStatus_NotFound(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
@@ -267,6 +364,58 @@ func TestFileStatusManager_SetWorkloadStatus_NotFound(t *testing.T) {
 	assert.Equal(t, "test", statusFileData.StatusContext)
 	assert.False(t, statusFileData.CreatedAt.IsZero())
 	assert.False(t, statusFileData.UpdatedAt.IsZero())
+}
+
+func TestFileStatusManager_SetWorkloadStatus_PreservesPID(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// First, create a workload with status
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "initializing")
+	require.NoError(t, err)
+
+	// Then set the PID
+	err = manager.SetWorkloadPID(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	// Read the file to verify initial state
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	originalData, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var originalStatusFile workloadStatusFile
+	err = json.Unmarshal(originalData, &originalStatusFile)
+	require.NoError(t, err)
+
+	// Verify initial state
+	assert.Equal(t, rt.WorkloadStatusStarting, originalStatusFile.Status)
+	assert.Equal(t, "initializing", originalStatusFile.StatusContext)
+	assert.Equal(t, 12345, originalStatusFile.ProcessID)
+
+	// Wait a bit to ensure timestamps are different
+	time.Sleep(10 * time.Millisecond)
+
+	// Now update ONLY the status using SetWorkloadStatus (should preserve PID)
+	err = manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "container ready")
+	require.NoError(t, err)
+
+	// Read the file again to verify PID was preserved
+	updatedData, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var updatedStatusFile workloadStatusFile
+	err = json.Unmarshal(updatedData, &updatedStatusFile)
+	require.NoError(t, err)
+
+	// Verify that status and context were updated but PID was preserved
+	assert.Equal(t, rt.WorkloadStatusRunning, updatedStatusFile.Status)        // Status updated
+	assert.Equal(t, "container ready", updatedStatusFile.StatusContext)        // Context updated
+	assert.Equal(t, 12345, updatedStatusFile.ProcessID)                        // PID preserved
+	assert.Equal(t, originalStatusFile.CreatedAt, updatedStatusFile.CreatedAt) // CreatedAt preserved
+	assert.True(t, updatedStatusFile.UpdatedAt.After(originalStatusFile.UpdatedAt) ||
+		updatedStatusFile.UpdatedAt.Equal(originalStatusFile.UpdatedAt)) // UpdatedAt updated
 }
 
 func TestFileStatusManager_DeleteWorkloadStatus(t *testing.T) {
@@ -308,12 +457,22 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 	defer ctrl.Finish()
 
 	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
+	mockRunConfigStore := stateMocks.NewMockStore(ctrl)
 	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
+		baseDir:        tempDir,
+		runtime:        mockRuntime,
+		runConfigStore: mockRunConfigStore,
 	}
 	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
+
+	// Create a new mock reader for each call to avoid race conditions
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").DoAndReturn(func(context.Context, string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`)), nil
+	}).AnyTimes()
 
 	// Create a workload status
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
@@ -341,6 +500,43 @@ func TestFileStatusManager_ConcurrentAccess(t *testing.T) {
 	}
 }
 
+func TestFileStatusManager_ValidateRunningWorkload_Remote(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tempDir := t.TempDir()
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
+	manager := &fileStatusManager{
+		baseDir: tempDir,
+		runtime: mockRuntime,
+	}
+	ctx := context.Background()
+
+	// Create a remote workload with running status
+	remoteWorkload := core.Workload{
+		Name:          "remote-test",
+		Status:        rt.WorkloadStatusRunning,
+		Remote:        true,
+		StatusContext: "remote server",
+		CreatedAt:     time.Now(),
+	}
+
+	// Mock runtime should NOT be called for remote workloads
+	// (no expectations set, so any call would fail the test)
+
+	// Validate the remote workload
+	result, err := manager.validateRunningWorkload(ctx, "remote-test", remoteWorkload)
+	require.NoError(t, err)
+
+	// Should return the workload unchanged without calling runtime
+	assert.Equal(t, remoteWorkload.Name, result.Name)
+	assert.Equal(t, remoteWorkload.Status, result.Status)
+	assert.Equal(t, remoteWorkload.Remote, result.Remote)
+	assert.Equal(t, remoteWorkload.StatusContext, result.StatusContext)
+}
+
 func TestFileStatusManager_FullLifecycle(t *testing.T) {
 	t.Parallel()
 
@@ -348,7 +544,7 @@ func TestFileStatusManager_FullLifecycle(t *testing.T) {
 	defer ctrl.Finish()
 
 	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
@@ -391,7 +587,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 		setup            func(*fileStatusManager) error
 		listAll          bool
 		labelFilters     []string
-		setupRuntimeMock func(*mocks.MockRuntime)
+		setupRuntimeMock func(*rtmocks.MockRuntime)
 		expectedCount    int
 		expectedError    string
 		checkWorkloads   func([]core.Workload)
@@ -400,7 +596,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			name:    "empty directory",
 			setup:   func(_ *fileStatusManager) error { return nil },
 			listAll: true,
-			setupRuntimeMock: func(m *mocks.MockRuntime) {
+			setupRuntimeMock: func(m *rtmocks.MockRuntime) {
 				// Runtime is always called, even for empty directory
 				m.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
 			},
@@ -413,7 +609,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 				return f.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
 			},
 			listAll: true,
-			setupRuntimeMock: func(m *mocks.MockRuntime) {
+			setupRuntimeMock: func(m *rtmocks.MockRuntime) {
 				// Runtime is always called - return empty for file-only workload
 				m.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
 			},
@@ -439,7 +635,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 				return nil
 			},
 			listAll: false, // Only running workloads
-			setupRuntimeMock: func(m *mocks.MockRuntime) {
+			setupRuntimeMock: func(m *rtmocks.MockRuntime) {
 				// Mock runtime call for running workload
 				info := rt.ContainerInfo{
 					Name:   "running-workload",
@@ -478,7 +674,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 				return nil
 			},
 			listAll: true, // All workloads
-			setupRuntimeMock: func(m *mocks.MockRuntime) {
+			setupRuntimeMock: func(m *rtmocks.MockRuntime) {
 				// Mock runtime call for running workload
 				info := rt.ContainerInfo{
 					Name:   "running-workload",
@@ -505,7 +701,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			},
 			listAll:      true,
 			labelFilters: []string{"invalid-filter"},
-			setupRuntimeMock: func(_ *mocks.MockRuntime) {
+			setupRuntimeMock: func(_ *rtmocks.MockRuntime) {
 				// Runtime is not called due to early filter parsing error
 			},
 			expectedError: "failed to parse label filters",
@@ -522,7 +718,7 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 				return nil
 			},
 			listAll: true,
-			setupRuntimeMock: func(m *mocks.MockRuntime) {
+			setupRuntimeMock: func(m *rtmocks.MockRuntime) {
 				containers := []rt.ContainerInfo{
 					{
 						Name:   "merge-workload",
@@ -593,14 +789,18 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			tempDir := t.TempDir()
-			mockRuntime := mocks.NewMockRuntime(ctrl)
+			manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 			tt.setupRuntimeMock(mockRuntime)
 
-			manager := &fileStatusManager{
-				baseDir: tempDir,
-				runtime: mockRuntime,
-			}
+			// Mock the run config store to return true for exists and provide readers with non-remote data
+			// This is a flexible mock that will handle any workload name
+			mockRunConfigStore.EXPECT().Exists(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
+
+			// Create a flexible mock reader that returns non-remote configuration data for any workload
+			mockRunConfigStore.EXPECT().GetReader(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, name string) (io.ReadCloser, error) {
+					return io.NopCloser(strings.NewReader(fmt.Sprintf(`{"name": "%s", "transport": "sse"}`, name))), nil
+				}).AnyTimes()
 
 			// Setup test data
 			err := tt.setup(manager)
@@ -630,13 +830,15 @@ func TestFileStatusManager_GetWorkload_UnhealthyDetection(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
+
+	// Create a mock reader that returns non-remote configuration data
+	mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil).AnyTimes()
 
 	// First, set the workload status to running in the file
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "container started")
@@ -681,7 +883,7 @@ func TestFileStatusManager_GetWorkload_UnhealthyDetection(t *testing.T) {
 
 	// Verify the file was updated to unhealthy status
 	// Get the workload again (this time without runtime mismatch since status is now unhealthy)
-	statusFilePath := filepath.Join(tempDir, "test-workload.json")
+	statusFilePath := filepath.Join(manager.baseDir, "test-workload.json")
 	data, err := os.ReadFile(statusFilePath)
 	require.NoError(t, err)
 
@@ -699,13 +901,15 @@ func TestFileStatusManager_GetWorkload_HealthyRunningWorkload(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "healthy-workload").Return(true, nil).AnyTimes()
+
+	// Create a mock reader that returns non-remote configuration data
+	mockReader := io.NopCloser(strings.NewReader(`{"name": "healthy-workload", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-workload").Return(mockReader, nil).AnyTimes()
 
 	// Set the workload status to running in the file
 	err := manager.SetWorkloadStatus(ctx, "healthy-workload", rt.WorkloadStatusRunning, "container started")
@@ -745,15 +949,15 @@ func TestFileStatusManager_GetWorkload_ProxyNotRunning(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-
-	// Create file status manager directly instead of using NewFileStatusManager
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "proxy-down-workload").Return(true, nil).AnyTimes()
+
+	// Create a mock reader that returns non-remote configuration data
+	mockReader := io.NopCloser(strings.NewReader(`{"name": "proxy-down-workload", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "proxy-down-workload").Return(mockReader, nil).AnyTimes()
 
 	// First, create a status file manually to ensure file is found
 	statusFile := workloadStatusFile{
@@ -762,7 +966,7 @@ func TestFileStatusManager_GetWorkload_ProxyNotRunning(t *testing.T) {
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	}
-	statusFilePath := filepath.Join(tempDir, "proxy-down-workload.json")
+	statusFilePath := filepath.Join(manager.baseDir, "proxy-down-workload.json")
 	statusData, err := json.Marshal(statusFile)
 	require.NoError(t, err)
 	err = os.WriteFile(statusFilePath, statusData, 0644)
@@ -821,13 +1025,15 @@ func TestFileStatusManager_GetWorkload_HealthyWithProxy(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "healthy-with-proxy").Return(true, nil).AnyTimes()
+
+	// Create a mock reader that returns non-remote configuration data
+	mockReader := io.NopCloser(strings.NewReader(`{"name": "healthy-with-proxy", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-with-proxy").Return(mockReader, nil).AnyTimes()
 
 	// Set the workload status to running in the file
 	err := manager.SetWorkloadStatus(ctx, "healthy-with-proxy", rt.WorkloadStatusRunning, "container started")
@@ -868,13 +1074,21 @@ func TestFileStatusManager_ListWorkloads_WithValidation(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide readers with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "healthy-workload").Return(true, nil).AnyTimes()
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "runtime-mismatch").Return(true, nil).AnyTimes()
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "proxy-down").Return(true, nil).AnyTimes()
+
+	// Create mock readers that return non-remote configuration data
+	mockReader1 := io.NopCloser(strings.NewReader(`{"name": "healthy-workload", "transport": "sse"}`))
+	mockReader2 := io.NopCloser(strings.NewReader(`{"name": "runtime-mismatch", "transport": "sse"}`))
+	mockReader3 := io.NopCloser(strings.NewReader(`{"name": "proxy-down", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "healthy-workload").Return(mockReader1, nil).AnyTimes()
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "runtime-mismatch").Return(mockReader2, nil).AnyTimes()
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "proxy-down").Return(mockReader3, nil).AnyTimes()
 
 	// Create file workloads - one healthy running, one with runtime mismatch, one with proxy down
 	err := manager.SetWorkloadStatus(ctx, "healthy-workload", rt.WorkloadStatusRunning, "container started")
@@ -965,13 +1179,15 @@ func TestFileStatusManager_GetWorkload_vs_ListWorkloads_Consistency(t *testing.T
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "test-workload").Return(true, nil).AnyTimes()
+
+	// Create a mock reader that returns non-remote configuration data
+	mockReader := io.NopCloser(strings.NewReader(`{"name": "test-workload", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "test-workload").Return(mockReader, nil).AnyTimes()
 
 	// Create a workload status file
 	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "")
@@ -1007,25 +1223,27 @@ func TestFileStatusManager_ListWorkloads_CorruptedFile(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
-	manager := &fileStatusManager{
-		baseDir: tempDir,
-		runtime: mockRuntime,
-	}
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
 	ctx := context.Background()
+
+	// Mock the run config store to return true for exists and provide a reader with non-remote data
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), "good-workload").Return(true, nil).AnyTimes()
+
+	// Create a mock reader that returns non-remote configuration data
+	mockReader := io.NopCloser(strings.NewReader(`{"name": "good-workload", "transport": "sse"}`))
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), "good-workload").Return(mockReader, nil).AnyTimes()
 
 	// Create a valid workload first
 	err := manager.SetWorkloadStatus(ctx, "good-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
 
 	// Create a corrupted status file manually
-	corruptedFile := filepath.Join(tempDir, "corrupted-workload.json")
+	corruptedFile := filepath.Join(manager.baseDir, "corrupted-workload.json")
 	err = os.WriteFile(corruptedFile, []byte(`{"invalid": json content`), 0644)
 	require.NoError(t, err)
 
 	// Create an empty status file
-	emptyFile := filepath.Join(tempDir, "empty-workload.json")
+	emptyFile := filepath.Join(manager.baseDir, "empty-workload.json")
 	err = os.WriteFile(emptyFile, []byte(``), 0644)
 	require.NoError(t, err)
 
@@ -1048,7 +1266,7 @@ func TestFileStatusManager_ListWorkloads_MissingRequiredFields(t *testing.T) {
 	defer ctrl.Finish()
 
 	tempDir := t.TempDir()
-	mockRuntime := mocks.NewMockRuntime(ctrl)
+	mockRuntime := rtmocks.NewMockRuntime(ctrl)
 	manager := &fileStatusManager{
 		baseDir: tempDir,
 		runtime: mockRuntime,
@@ -1156,4 +1374,541 @@ func TestFileStatusManager_ReadStatusFile_Validation(t *testing.T) {
 			os.Remove(testFile)
 		})
 	}
+}
+
+func TestFileStatusManager_SetWorkloadPID_NonExistentWorkload(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Test setting PID for non-existent workload (should be a noop)
+	err := manager.SetWorkloadPID(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	// Verify no file was created (since it's a noop)
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	require.NoFileExists(t, statusFile)
+}
+
+func TestFileStatusManager_SetWorkloadPID_Update(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Create workload with initial status first
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "initializing")
+	require.NoError(t, err)
+
+	// Read the file to get the original timestamps
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	originalData, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var originalStatusFile workloadStatusFile
+	err = json.Unmarshal(originalData, &originalStatusFile)
+	require.NoError(t, err)
+
+	// Set the PID on existing workload
+	err = manager.SetWorkloadPID(ctx, "test-workload", 67890)
+	require.NoError(t, err)
+
+	// Verify file was updated
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	// Verify only PID was updated while preserving other fields
+	assert.Equal(t, rt.WorkloadStatusStarting, statusFileData.Status)       // Status preserved
+	assert.Equal(t, "initializing", statusFileData.StatusContext)           // Context preserved
+	assert.Equal(t, 67890, statusFileData.ProcessID)                        // PID updated
+	assert.Equal(t, originalStatusFile.CreatedAt, statusFileData.CreatedAt) // CreatedAt preserved
+	assert.True(t, statusFileData.UpdatedAt.After(originalStatusFile.UpdatedAt) ||
+		statusFileData.UpdatedAt.Equal(originalStatusFile.UpdatedAt)) // UpdatedAt updated
+}
+
+func TestFileStatusManager_SetWorkloadPID_WithSlashes(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	workloadName := testWorkloadWithSlash
+
+	// First create the workload
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusRunning, "started")
+	require.NoError(t, err)
+
+	// Then set the PID for workload name with slashes
+	err = manager.SetWorkloadPID(ctx, workloadName, 11111)
+	require.NoError(t, err)
+
+	// Verify file was created with slashes replaced by dashes
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	require.FileExists(t, statusFile)
+
+	// Verify file contents
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, "started", statusFileData.StatusContext)
+	assert.Equal(t, 11111, statusFileData.ProcessID)
+}
+
+func TestFileStatusManager_SetWorkloadPID_ZeroPID(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// First create the workload
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStopped, "container stopped")
+	require.NoError(t, err)
+
+	// Test setting PID 0 (which is valid - means no process)
+	err = manager.SetWorkloadPID(ctx, "test-workload", 0)
+	require.NoError(t, err)
+
+	// Verify file was created with PID 0
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusStopped, statusFileData.Status)
+	assert.Equal(t, "container stopped", statusFileData.StatusContext)
+	assert.Equal(t, 0, statusFileData.ProcessID)
+}
+
+func TestFileStatusManager_SetWorkloadPID_PreservesCreatedAt(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Create workload first
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusStarting, "initializing")
+	require.NoError(t, err)
+
+	// Get the original created time
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	originalData, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var originalStatusFile workloadStatusFile
+	err = json.Unmarshal(originalData, &originalStatusFile)
+	require.NoError(t, err)
+	originalCreatedAt := originalStatusFile.CreatedAt
+
+	// Wait a bit to ensure timestamps would be different
+	time.Sleep(10 * time.Millisecond)
+
+	// Update using SetWorkloadPID
+	err = manager.SetWorkloadPID(ctx, "test-workload", 54321)
+	require.NoError(t, err)
+
+	// Verify CreatedAt is preserved
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, originalCreatedAt, statusFileData.CreatedAt)
+	assert.True(t, statusFileData.UpdatedAt.After(originalCreatedAt))
+	assert.Equal(t, rt.WorkloadStatusStarting, statusFileData.Status) // Status should be preserved
+	assert.Equal(t, "initializing", statusFileData.StatusContext)     // Context should be preserved
+	assert.Equal(t, 54321, statusFileData.ProcessID)                  // PID should be updated
+}
+
+func TestFileStatusManager_SetWorkloadPID_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Create initial workload
+	err := manager.SetWorkloadStatus(ctx, "concurrent-test", rt.WorkloadStatusStarting, "initializing")
+	require.NoError(t, err)
+
+	// Wait a tiny bit to ensure the initial status file is fully written
+	time.Sleep(10 * time.Millisecond)
+
+	// Test concurrent PID updates with fewer goroutines to reduce contention
+	done := make(chan error, 3)
+
+	go func() {
+		err := manager.SetWorkloadPID(ctx, "concurrent-test", 1001)
+		done <- err
+	}()
+
+	go func() {
+		err := manager.SetWorkloadPID(ctx, "concurrent-test", 1002)
+		done <- err
+	}()
+
+	go func() {
+		err := manager.SetWorkloadPID(ctx, "concurrent-test", 1003)
+		done <- err
+	}()
+
+	// Wait for all updates to complete and check for errors
+	for i := 0; i < 3; i++ {
+		select {
+		case err := <-done:
+			assert.NoError(t, err, "SetWorkloadPID should not fail")
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for concurrent PID updates")
+		}
+	}
+
+	// Verify file exists and is valid
+	statusFile := filepath.Join(tempDir, "concurrent-test.json")
+	require.FileExists(t, statusFile)
+
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	// The status should remain unchanged (starting) since we only updated PIDs
+	assert.Equal(t, rt.WorkloadStatusStarting, statusFileData.Status)
+	assert.Equal(t, "initializing", statusFileData.StatusContext)
+
+	// The final PID should be one of the three values we set concurrently
+	validPIDs := []int{1001, 1002, 1003}
+	assert.Contains(t, validPIDs, statusFileData.ProcessID, "PID should be one of the concurrently set values")
+}
+
+func TestFileStatusManager_ResetWorkloadPID_NonExistentWorkload(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// Test resetting PID for non-existent workload (should be a noop)
+	err := manager.ResetWorkloadPID(ctx, "test-workload")
+	require.NoError(t, err)
+
+	// Verify no file was created (since it's a noop)
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	require.NoFileExists(t, statusFile)
+}
+
+func TestFileStatusManager_ResetWorkloadPID_ExistingWorkload(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	// First create a workload with a non-zero PID
+	err := manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadPID(ctx, "test-workload", 12345)
+	require.NoError(t, err)
+
+	// Verify the PID is set to 12345
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+	assert.Equal(t, 12345, statusFileData.ProcessID)
+
+	// Now reset the PID
+	err = manager.ResetWorkloadPID(ctx, "test-workload")
+	require.NoError(t, err)
+
+	// Verify the PID is now 0 and other fields are preserved
+	data, err = os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, statusFileData.ProcessID)                       // PID should be reset to 0
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)   // Status should be preserved
+	assert.Equal(t, "container started", statusFileData.StatusContext) // Context should be preserved
+}
+
+func TestFileStatusManager_ResetWorkloadPID_WithSlashes(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	manager := &fileStatusManager{baseDir: tempDir}
+	ctx := context.Background()
+
+	workloadName := testWorkloadWithSlash
+
+	// First create the workload and set a PID
+	err := manager.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusRunning, "started")
+	require.NoError(t, err)
+
+	err = manager.SetWorkloadPID(ctx, workloadName, 9999)
+	require.NoError(t, err)
+
+	// Reset the PID for workload name with slashes
+	err = manager.ResetWorkloadPID(ctx, workloadName)
+	require.NoError(t, err)
+
+	// Verify file exists with slashes replaced by dashes and PID is 0
+	statusFile := filepath.Join(tempDir, "test-workload.json")
+	require.FileExists(t, statusFile)
+
+	data, err := os.ReadFile(statusFile)
+	require.NoError(t, err)
+
+	var statusFileData workloadStatusFile
+	err = json.Unmarshal(data, &statusFileData)
+	require.NoError(t, err)
+
+	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
+	assert.Equal(t, "started", statusFileData.StatusContext)
+	assert.Equal(t, 0, statusFileData.ProcessID) // PID should be reset to 0
+}
+
+// TestFileStatusManager_GetWorkload_PIDMigration tests PID migration from legacy PID files to status files
+func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		setupPIDFile    bool
+		pidValue        int
+		workloadStatus  rt.WorkloadStatus
+		processID       int
+		expectMigration bool
+		expectPIDFile   bool // whether PID file should exist after operation
+	}{
+		{
+			name:            "migrates PID when status is running and ProcessID is 0",
+			setupPIDFile:    true,
+			pidValue:        12345,
+			workloadStatus:  rt.WorkloadStatusRunning,
+			processID:       0,
+			expectMigration: true,
+			expectPIDFile:   true, // PID file is NOT deleted (see TODO comment in migration code)
+		},
+		{
+			name:            "no migration when status is not running",
+			setupPIDFile:    true,
+			pidValue:        12345,
+			workloadStatus:  rt.WorkloadStatusStopped,
+			processID:       0,
+			expectMigration: false,
+			expectPIDFile:   true,
+		},
+		{
+			name:            "no migration when ProcessID is not 0",
+			setupPIDFile:    true,
+			pidValue:        12345,
+			workloadStatus:  rt.WorkloadStatusRunning,
+			processID:       98765,
+			expectMigration: false,
+			expectPIDFile:   true,
+		},
+		{
+			name:            "no migration when no PID file exists",
+			setupPIDFile:    false,
+			pidValue:        0,
+			workloadStatus:  rt.WorkloadStatusRunning,
+			processID:       0,
+			expectMigration: false,
+			expectPIDFile:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+			ctx := context.Background()
+			workloadName := fmt.Sprintf("test-workload-migration-%d", time.Now().UnixNano()) // unique name to avoid locking conflicts
+
+			// Mock the run config store to return false for exists (not a remote workload)
+			mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadName).Return(false, nil).AnyTimes()
+			mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).Return(nil, errors.New("not found")).AnyTimes()
+
+			// Mock GetWorkloadInfo for runtime validation (when status is running after migration)
+			if tt.workloadStatus == rt.WorkloadStatusRunning {
+				// Mock the container info that would be returned during validation
+				containerInfo := rt.ContainerInfo{
+					Name:   workloadName,
+					Image:  "test-image:latest",
+					Status: "running",
+					State:  rt.WorkloadStatusRunning,
+					Labels: make(map[string]string),
+				}
+				mockRuntime.EXPECT().GetWorkloadInfo(gomock.Any(), workloadName).Return(containerInfo, nil).AnyTimes()
+			}
+
+			// Create status file with specified status and ProcessID
+			err := manager.setWorkloadStatusInternal(ctx, workloadName, tt.workloadStatus, "test context", &tt.processID)
+			require.NoError(t, err)
+
+			// Setup PID file if needed
+			var pidFilePath string
+			if tt.setupPIDFile {
+				// Create PID file using the process package
+				err = process.WritePIDFile(workloadName, tt.pidValue)
+				require.NoError(t, err)
+
+				// Get the path for cleanup verification
+				pidFilePath, err = process.GetPIDFilePathWithFallback(workloadName)
+				require.NoError(t, err)
+			}
+
+			// Call GetWorkload which should trigger migration if conditions are met
+			workload, err := manager.GetWorkload(ctx, workloadName)
+			require.NoError(t, err)
+
+			// Verify workload properties
+			assert.Equal(t, workloadName, workload.Name)
+			assert.Equal(t, tt.workloadStatus, workload.Status)
+
+			if tt.expectMigration {
+				// Read the status file to verify PID was migrated
+				statusFilePath := manager.getStatusFilePath(workloadName)
+				data, err := os.ReadFile(statusFilePath)
+				require.NoError(t, err)
+
+				var statusFile workloadStatusFile
+				err = json.Unmarshal(data, &statusFile)
+				require.NoError(t, err)
+
+				assert.Equal(t, tt.pidValue, statusFile.ProcessID, "PID should be migrated to status file")
+			} else {
+				// Read the status file to verify PID was NOT changed
+				statusFilePath := manager.getStatusFilePath(workloadName)
+				data, err := os.ReadFile(statusFilePath)
+				require.NoError(t, err)
+
+				var statusFile workloadStatusFile
+				err = json.Unmarshal(data, &statusFile)
+				require.NoError(t, err)
+
+				assert.Equal(t, tt.processID, statusFile.ProcessID, "PID should remain unchanged")
+			}
+
+			// Verify PID file existence
+			if tt.setupPIDFile {
+				_, err := os.Stat(pidFilePath)
+				if tt.expectPIDFile {
+					assert.NoError(t, err, "PID file should still exist")
+				} else {
+					assert.True(t, os.IsNotExist(err), "PID file should be deleted")
+				}
+			}
+
+			// Cleanup
+			if tt.setupPIDFile {
+				_ = process.RemovePIDFile(workloadName)
+			}
+		})
+	}
+}
+
+// TestFileStatusManager_ListWorkloads_PIDMigration tests PID migration during list operations
+func TestFileStatusManager_ListWorkloads_PIDMigration(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+	ctx := context.Background()
+
+	// Mock runtime to return empty list (no running containers)
+	mockRuntime.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
+
+	// Create two workloads: one that should migrate, one that shouldn't
+	workloadMigrate := fmt.Sprintf("workload-migrate-%d", time.Now().UnixNano())
+	workloadNoMigrate := fmt.Sprintf("workload-no-migrate-%d", time.Now().UnixNano())
+
+	// Mock the run config store for both workloads
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadMigrate).Return(false, nil).AnyTimes()
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadMigrate).Return(nil, errors.New("not found")).AnyTimes()
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadNoMigrate).Return(false, nil).AnyTimes()
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadNoMigrate).Return(nil, errors.New("not found")).AnyTimes()
+
+	// Setup workload that should trigger migration (running + ProcessID = 0)
+	err := manager.setWorkloadStatusInternal(ctx, workloadMigrate, rt.WorkloadStatusRunning, "running", &[]int{0}[0])
+	require.NoError(t, err)
+
+	// Setup workload that shouldn't trigger migration (running + ProcessID != 0)
+	existingPID := 54321
+	err = manager.setWorkloadStatusInternal(ctx, workloadNoMigrate, rt.WorkloadStatusRunning, "running", &existingPID)
+	require.NoError(t, err)
+
+	// Create PID files for both workloads
+	migrationPID := 12345
+	err = process.WritePIDFile(workloadMigrate, migrationPID)
+	require.NoError(t, err)
+	defer process.RemovePIDFile(workloadMigrate)
+
+	err = process.WritePIDFile(workloadNoMigrate, 99999)
+	require.NoError(t, err)
+	defer process.RemovePIDFile(workloadNoMigrate)
+
+	// Call ListWorkloads
+	workloads, err := manager.ListWorkloads(ctx, true, nil)
+	require.NoError(t, err)
+
+	// Should have 2 workloads
+	require.Len(t, workloads, 2)
+
+	// Find the workloads in results
+	var migrateWorkload, noMigrateWorkload *core.Workload
+	for i := range workloads {
+		switch workloads[i].Name {
+		case workloadMigrate:
+			migrateWorkload = &workloads[i]
+		case workloadNoMigrate:
+			noMigrateWorkload = &workloads[i]
+		}
+	}
+
+	require.NotNil(t, migrateWorkload, "should find workload that should migrate")
+	require.NotNil(t, noMigrateWorkload, "should find workload that should not migrate")
+
+	// Verify migration occurred for first workload
+	statusFilePath1 := manager.getStatusFilePath(workloadMigrate)
+	data1, err := os.ReadFile(statusFilePath1)
+	require.NoError(t, err)
+
+	var statusFile1 workloadStatusFile
+	err = json.Unmarshal(data1, &statusFile1)
+	require.NoError(t, err)
+	assert.Equal(t, migrationPID, statusFile1.ProcessID, "PID should be migrated for first workload")
+
+	// Verify no migration for second workload
+	statusFilePath2 := manager.getStatusFilePath(workloadNoMigrate)
+	data2, err := os.ReadFile(statusFilePath2)
+	require.NoError(t, err)
+
+	var statusFile2 workloadStatusFile
+	err = json.Unmarshal(data2, &statusFile2)
+	require.NoError(t, err)
+	assert.Equal(t, existingPID, statusFile2.ProcessID, "PID should remain unchanged for second workload")
 }

@@ -1,0 +1,36 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  port: 8080
+  targetPort: 8080
+  permissionProfile:
+    type: builtin
+    name: network
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+  telemetry:
+    openTelemetry:
+      # Point to our OpenTelemetry Collector
+      enabled: true
+      endpoint: otel-collector-opentelemetry-collector.monitoring.svc.cluster.local:4318
+      serviceName: mcp-fetch-server
+      headers:
+        - "x-test-header=toolhive-demo"
+      insecure: true  # Using HTTP collector endpoint
+      metrics:
+        enabled: true
+      tracing:
+        enabled: true
+        samplingRate: "1.0"
+    prometheus:
+      enabled: true

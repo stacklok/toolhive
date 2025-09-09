@@ -123,6 +123,8 @@ components:
       - AmpCursor
       - AmpVSCodeInsider
       - AmpWindsurf
+      - LMStudio
+      - Goose
     client.MCPClientStatus:
       properties:
         client_type:
@@ -142,6 +144,8 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - LMStudio
+          - Goose
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -190,6 +194,10 @@ components:
             Port is the port on which the workload is exposed.
             This is embedded in the URL.
           type: integer
+        remote:
+          description: Remote indicates whether this is a remote workload (true) or
+            a container workload (false).
+          type: boolean
         status:
           $ref: '#/components/schemas/runtime.WorkloadStatus'
         status_context:
@@ -459,6 +467,11 @@ components:
             AuthorizeURL is the OAuth authorization endpoint URL
             Used for non-OIDC OAuth flows when issuer is not provided
           type: string
+        callback_port:
+          description: |-
+            CallbackPort is the specific port to use for the OAuth callback server
+            If not specified, a random available port will be used
+          type: integer
         client_id:
           description: ClientID is the OAuth client ID for authentication
           type: string
@@ -467,6 +480,13 @@ components:
             Issuer is the OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
             Used for OIDC discovery to find authorization and token endpoints
           type: string
+        oauth_params:
+          additionalProperties:
+            type: string
+          description: |-
+            OAuthParams contains additional OAuth parameters to include in the authorization request
+            These are server-specific parameters like "prompt", "response_mode", etc.
+          type: object
         scopes:
           description: |-
             Scopes are the OAuth scopes to request
@@ -605,6 +625,49 @@ components:
         predicate_type:
           type: string
       type: object
+    runner.RemoteAuthConfig:
+      description: RemoteAuthConfig contains OAuth configuration for remote MCP servers
+      properties:
+        authorizeURL:
+          type: string
+        callbackPort:
+          type: integer
+        clientID:
+          type: string
+        clientSecret:
+          type: string
+        clientSecretFile:
+          type: string
+        envVars:
+          description: Environment variables for the client
+          items:
+            $ref: '#/components/schemas/registry.EnvVar'
+          type: array
+        headers:
+          description: Headers for HTTP requests
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+        issuer:
+          description: OAuth endpoint configuration (from registry)
+          type: string
+        oauthParams:
+          additionalProperties:
+            type: string
+          description: OAuth parameters for server-specific customization
+          type: object
+        scopes:
+          items:
+            type: string
+          type: array
+        skipBrowser:
+          type: boolean
+        timeout:
+          example: 5m
+          type: string
+        tokenURL:
+          type: string
+      type: object
     runner.RunConfig:
       properties:
         audit_config:
@@ -692,6 +755,11 @@ components:
           type: integer
         proxy_mode:
           $ref: '#/components/schemas/types.ProxyMode'
+        remote_auth_config:
+          $ref: '#/components/schemas/runner.RemoteAuthConfig'
+        remote_url:
+          description: RemoteURL is the URL of the remote MCP server (if running remotely)
+          type: string
         schema_version:
           description: SchemaVersion is the version of the RunConfig schema
           type: string
@@ -723,6 +791,12 @@ components:
             type: string
           type: array
           uniqueItems: false
+        tools_override:
+          additionalProperties:
+            $ref: '#/components/schemas/runner.ToolOverride'
+          description: ToolsOverride is a map from an actual tool to its overridden
+            name and/or description
+          type: object
         transport:
           description: Transport is the transport mode (stdio, sse, or streamable-http)
           type: string
@@ -739,6 +813,15 @@ components:
             type: string
           type: array
           uniqueItems: false
+      type: object
+    runner.ToolOverride:
+      properties:
+        description:
+          description: Description is the redefined description of the tool
+          type: string
+        name:
+          description: Name is the redefined name of the tool
+          type: string
       type: object
     runtime.WorkloadStatus:
       description: Status is the current status of the workload.
@@ -780,6 +863,7 @@ components:
           items:
             type: string
           type: array
+          uniqueItems: false
         headers:
           additionalProperties:
             type: string
@@ -789,8 +873,16 @@ components:
           description: Insecure indicates whether to use HTTP instead of HTTPS for
             the OTLP endpoint
           type: boolean
+        metricsEnabled:
+          description: |-
+            MetricsEnabled controls whether OTLP metrics are enabled
+            When false, OTLP metrics are not sent even if an endpoint is configured
+            This is independent of EnablePrometheusMetricsPath
+          type: boolean
         samplingRate:
-          description: SamplingRate is the trace sampling rate (0.0-1.0)
+          description: |-
+            SamplingRate is the trace sampling rate (0.0-1.0)
+            Only used when TracingEnabled is true
           type: number
         serviceName:
           description: ServiceName is the service name for telemetry
@@ -798,6 +890,11 @@ components:
         serviceVersion:
           description: ServiceVersion is the service version for telemetry
           type: string
+        tracingEnabled:
+          description: |-
+            TracingEnabled controls whether distributed tracing is enabled
+            When false, no tracer provider is created even if an endpoint is configured
+          type: boolean
       type: object
     types.MiddlewareConfig:
       properties:
@@ -880,6 +977,8 @@ components:
             - AmpCursor
             - AmpVSCodeInsider
             - AmpWindsurf
+            - LMStudio
+            - Goose
           type: array
           uniqueItems: false
       type: object
@@ -928,6 +1027,8 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - LMStudio
+          - Goose
       type: object
     v1.createClientResponse:
       properties:
@@ -954,6 +1055,8 @@ components:
           - AmpCursor
           - AmpVSCodeInsider
           - AmpWindsurf
+          - LMStudio
+          - Goose
       type: object
     v1.createGroupRequest:
       properties:
@@ -984,6 +1087,14 @@ components:
             type: string
           description: Environment variables to set in the container
           type: object
+        group:
+          description: Group name this workload belongs to
+          type: string
+        headers:
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+          uniqueItems: false
         host:
           description: Host to bind to
           type: string
@@ -997,6 +1108,8 @@ components:
           description: Whether network isolation is turned on. This applies the rules
             in the permission profile.
           type: boolean
+        oauth_config:
+          $ref: '#/components/schemas/v1.remoteOAuthConfig'
         oidc:
           $ref: '#/components/schemas/v1.oidcOptions'
         permission_profile:
@@ -1019,8 +1132,16 @@ components:
             type: string
           type: array
           uniqueItems: false
+        tools_override:
+          additionalProperties:
+            $ref: '#/components/schemas/v1.toolOverride'
+          description: Tools override
+          type: object
         transport:
           description: Transport configuration
+          type: string
+        url:
+          description: Remote server specific fields
           type: string
         volumes:
           description: Volume mounts
@@ -1219,6 +1340,47 @@ components:
           type: array
           uniqueItems: false
       type: object
+    v1.remoteOAuthConfig:
+      description: OAuth configuration for remote server authentication
+      properties:
+        authorize_url:
+          description: OAuth authorization endpoint URL (alternative to issuer for
+            non-OIDC OAuth)
+          type: string
+        callback_port:
+          description: Specific port for OAuth callback server
+          type: integer
+        client_id:
+          description: OAuth client ID for authentication
+          type: string
+        client_secret:
+          $ref: '#/components/schemas/secrets.SecretParameter'
+        issuer:
+          description: OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
+          type: string
+        oauth_params:
+          additionalProperties:
+            type: string
+          description: Additional OAuth parameters for server-specific customization
+          type: object
+        scopes:
+          description: OAuth scopes to request
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        skip_browser:
+          description: Whether to skip opening browser for OAuth flow (defaults to
+            false)
+          type: boolean
+        token_url:
+          description: OAuth token endpoint URL (alternative to issuer for non-OIDC
+            OAuth)
+          type: string
+        use_pkce:
+          description: Whether to use PKCE for the OAuth flow
+          type: boolean
+      type: object
     v1.secretKeyResponse:
       description: Secret key information
       properties:
@@ -1251,6 +1413,16 @@ components:
           description: Type of the secrets provider that was setup
           type: string
       type: object
+    v1.toolOverride:
+      description: Tool override
+      properties:
+        description:
+          description: Description of the tool
+          type: string
+        name:
+          description: Name of the tool
+          type: string
+      type: object
     v1.updateRequest:
       description: Request to update an existing workload (name cannot be changed)
       properties:
@@ -1268,6 +1440,14 @@ components:
             type: string
           description: Environment variables to set in the container
           type: object
+        group:
+          description: Group name this workload belongs to
+          type: string
+        headers:
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+          uniqueItems: false
         host:
           description: Host to bind to
           type: string
@@ -1278,6 +1458,8 @@ components:
           description: Whether network isolation is turned on. This applies the rules
             in the permission profile.
           type: boolean
+        oauth_config:
+          $ref: '#/components/schemas/v1.remoteOAuthConfig'
         oidc:
           $ref: '#/components/schemas/v1.oidcOptions'
         permission_profile:
@@ -1300,8 +1482,16 @@ components:
             type: string
           type: array
           uniqueItems: false
+        tools_override:
+          additionalProperties:
+            $ref: '#/components/schemas/v1.toolOverride'
+          description: Tools override
+          type: object
         transport:
           description: Transport configuration
+          type: string
+        url:
+          description: Remote server specific fields
           type: string
         volumes:
           description: Volume mounts
@@ -1341,6 +1531,22 @@ components:
             $ref: '#/components/schemas/core.Workload'
           type: array
           uniqueItems: false
+      type: object
+    v1.workloadStatusResponse:
+      description: Response containing workload status information
+      properties:
+        status:
+          description: Current status of the workload
+          type: string
+          x-enum-varnames:
+          - WorkloadStatusRunning
+          - WorkloadStatusStopped
+          - WorkloadStatusError
+          - WorkloadStatusStarting
+          - WorkloadStatusStopping
+          - WorkloadStatusUnhealthy
+          - WorkloadStatusRemoving
+          - WorkloadStatusUnknown
       type: object
 externalDocs:
   description: ""
@@ -2307,6 +2513,32 @@ paths:
                 type: string
           description: Not Found
       summary: Restart a workload
+      tags:
+      - workloads
+  /api/v1beta/workloads/{name}/status:
+    get:
+      description: Get the current status of a specific workload
+      parameters:
+      - description: Workload name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.workloadStatusResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+      summary: Get workload status
       tags:
       - workloads
   /api/v1beta/workloads/{name}/stop:

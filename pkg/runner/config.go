@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -18,10 +19,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	workloadtypes "github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
 // CurrentSchemaVersion is the current version of the RunConfig schema
@@ -39,6 +42,12 @@ type RunConfig struct {
 	// Image is the Docker image to run
 	Image string `json:"image" yaml:"image"`
 
+	// RemoteURL is the URL of the remote MCP server (if running remotely)
+	RemoteURL string `json:"remote_url,omitempty" yaml:"remote_url,omitempty"`
+
+	// RemoteAuthConfig contains OAuth configuration for remote MCP servers
+	RemoteAuthConfig *RemoteAuthConfig `json:"remote_auth_config,omitempty" yaml:"remote_auth_config,omitempty"`
+
 	// CmdArgs are the arguments to pass to the container
 	CmdArgs []string `json:"cmd_args,omitempty" yaml:"cmd_args,omitempty"`
 
@@ -46,10 +55,10 @@ type RunConfig struct {
 	Name string `json:"name" yaml:"name"`
 
 	// ContainerName is the name of the container
-	ContainerName string `json:"container_name" yaml:"container_name"`
+	ContainerName string `json:"container_name,omitempty" yaml:"container_name,omitempty"`
 
 	// BaseName is the base name used for the container (without prefixes)
-	BaseName string `json:"base_name" yaml:"base_name"`
+	BaseName string `json:"base_name,omitempty" yaml:"base_name,omitempty"`
 
 	// Transport is the transport mode (stdio, sse, or streamable-http)
 	Transport types.TransportType `json:"transport" yaml:"transport"`
@@ -114,6 +123,9 @@ type RunConfig struct {
 	// Deployer is the container runtime to use (not serialized)
 	Deployer rt.Deployer `json:"-" yaml:"-"`
 
+	// buildContext indicates whether this config is being built for CLI or operator use (not serialized)
+	buildContext BuildContext
+
 	// IsolateNetwork indicates whether to isolate the network for the container
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
 
@@ -131,6 +143,9 @@ type RunConfig struct {
 
 	// ToolsFilter is the list of tools to filter
 	ToolsFilter []string `json:"tools_filter,omitempty" yaml:"tools_filter,omitempty"`
+
+	// ToolsOverride is a map from an actual tool to its overridden name and/or description
+	ToolsOverride map[string]ToolOverride `json:"tools_override,omitempty" yaml:"tools_override,omitempty"`
 
 	// IgnoreConfig contains configuration for ignore processing
 	IgnoreConfig *ignore.Config `json:"ignore_config,omitempty" yaml:"ignore_config,omitempty"`
@@ -223,6 +238,14 @@ func (c *RunConfig) WithTransport(t string) (*RunConfig, error) {
 
 // WithPorts configures the host and target ports
 func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
+	// Skip port validation for operator context - ports will be used in containers, not on operator host
+	if c.buildContext == BuildContextOperator {
+		c.Port = proxyPort
+		c.TargetPort = targetPort
+		return c, nil
+	}
+
+	// CLI context: perform port validation as before
 	var selectedPort int
 	var err error
 
@@ -312,14 +335,64 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 	return c, nil
 }
 
-// WithContainerName generates container name if not already set
-func (c *RunConfig) WithContainerName() *RunConfig {
-	if c.ContainerName == "" && c.Image != "" {
-		containerName, baseName := container.GetOrGenerateContainerName(c.Name, c.Image)
-		c.ContainerName = containerName
-		c.BaseName = baseName
+// mergeEnvVars is a helper method to merge environment variables into RunConfig
+func (c *RunConfig) mergeEnvVars(envVars map[string]string) *RunConfig {
+	// Initialize EnvVars if it's nil
+	if c.EnvVars == nil {
+		c.EnvVars = make(map[string]string)
 	}
+
+	// Add env vars to environment variables
+	for key, value := range envVars {
+		c.EnvVars[key] = value
+	}
+
 	return c
+}
+
+// WithEnvFilesFromDirectory processes environment files from a directory and adds them to environment variables
+func (c *RunConfig) WithEnvFilesFromDirectory(dirPath string) (*RunConfig, error) {
+	envVars, err := processEnvFilesDirectory(dirPath)
+	if err != nil {
+		return c, fmt.Errorf("failed to process env files from %s: %w", dirPath, err)
+	}
+
+	return c.mergeEnvVars(envVars), nil
+}
+
+// WithEnvFile processes a single environment file and adds it to environment variables
+func (c *RunConfig) WithEnvFile(filePath string) (*RunConfig, error) {
+	envVars, err := processEnvFile(filePath)
+	if err != nil {
+		return c, fmt.Errorf("failed to process env file %s: %w", filePath, err)
+	}
+
+	return c.mergeEnvVars(envVars), nil
+}
+
+// WithContainerName generates container name if not already set
+// Returns the config and a boolean indicating if the name was sanitized
+func (c *RunConfig) WithContainerName() (*RunConfig, bool) {
+	var wasModified bool
+
+	if c.ContainerName == "" {
+		if c.Image != "" {
+			// For container-based servers
+			// Sanitize the name if provided to ensure it's safe for file paths
+			safeName := ""
+			if c.Name != "" {
+				safeName, wasModified = workloadtypes.SanitizeWorkloadName(c.Name)
+			}
+			containerName, baseName := container.GetOrGenerateContainerName(safeName, c.Image)
+			c.ContainerName = containerName
+			c.BaseName = baseName
+		} else if c.RemoteURL != "" && c.Name != "" {
+			// For remote servers, sanitize the provided name to ensure it's safe for file paths
+			c.BaseName, wasModified = workloadtypes.SanitizeWorkloadName(c.Name)
+			c.ContainerName = c.Name
+		}
+	}
+	return c, wasModified
 }
 
 // WithStandardLabels adds standard labels to the container
@@ -355,4 +428,39 @@ func (c *RunConfig) SaveState(ctx context.Context) error {
 // LoadState loads a run configuration from the state store
 func LoadState(ctx context.Context, name string) (*RunConfig, error) {
 	return state.LoadRunConfig(ctx, name, ReadJSON)
+}
+
+// RemoteAuthConfig holds configuration for remote authentication
+type RemoteAuthConfig struct {
+	ClientID         string
+	ClientSecret     string
+	ClientSecretFile string
+	Scopes           []string
+	SkipBrowser      bool
+	Timeout          time.Duration `swaggertype:"string" example:"5m"`
+	CallbackPort     int
+
+	// OAuth endpoint configuration (from registry)
+	Issuer       string
+	AuthorizeURL string
+	TokenURL     string
+
+	// Headers for HTTP requests
+	Headers []*registry.Header
+
+	// Environment variables for the client
+	EnvVars []*registry.EnvVar
+
+	// OAuth parameters for server-specific customization
+	OAuthParams map[string]string
+}
+
+// ToolOverride represents a tool override.
+// Both Name and Description can be overridden independently, but
+// they can't be both empty.
+type ToolOverride struct {
+	// Name is the redefined name of the tool
+	Name string `json:"name,omitempty"`
+	// Description is the redefined description of the tool
+	Description string `json:"description,omitempty"`
 }

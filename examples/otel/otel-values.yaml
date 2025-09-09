@@ -1,0 +1,119 @@
+mode: daemonset
+
+service:
+  enabled: true
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+    kubeletstats:
+      collection_interval: 10s
+      auth_type: 'serviceAccount'
+      endpoint: '${env:K8S_NODE_NAME}:10250'
+      insecure_skip_verify: true
+      metric_groups:
+        - node
+        - pod
+        - container
+
+  processors:
+    batch:
+      send_batch_size: 1024
+      timeout: 1s
+      send_batch_max_size: 2048
+
+  exporters:
+    # Jaeger exporter for distributed tracing
+    otlp/jaeger:
+      endpoint: http://jaeger-all-in-one-collector.monitoring:4317
+      tls:
+        insecure: true
+      timeout: 30s
+      retry_on_failure:
+        enabled: true
+        initial_interval: 1s
+        max_interval: 30s
+        max_elapsed_time: 120s
+        multiplier: 2
+    prometheus:
+      endpoint: "0.0.0.0:8889"
+      enable_open_metrics: false
+      add_metric_suffixes: true
+      # Convert OTEL runtime metrics to Prometheus-compatible names
+      resource_to_telemetry_conversion:
+        enabled: true
+      # Ensure standard metric naming
+      # Note: prometheus exporter doesn't support metric_relabeling
+      # Metric name mapping would need to be done in Prometheus scrape config
+    prometheusremotewrite:
+      endpoint: http://kube-prometheus-stack-prometheus.monitoring:9090/api/v1/write
+      tls:
+        insecure: true
+      headers:
+        X-Prometheus-Remote-Write-Version: "0.1.0"
+        X-Scope-OrgID: "toolhive"
+      timeout: 60s
+      retry_on_failure:
+        enabled: true
+        initial_interval: 1s
+        max_interval: 30s
+        max_elapsed_time: 120s
+        multiplier: 2
+      resource_to_telemetry_conversion:
+        enabled: true
+    debug:
+      verbosity: detailed
+
+  service:
+    telemetry:
+      logs:
+        level: info
+        development: true
+        encoding: json
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [otlp/jaeger]
+      metrics:
+        receivers: [otlp, kubeletstats]
+        processors: [batch]
+        # Prioritize prometheus exporter for scraping, keep remote write as backup
+        exporters: [prometheusremotewrite, prometheus,]
+      logs:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [debug]
+
+ports:
+  otlp:
+    enabled: true
+    containerPort: 4317
+    servicePort: 4317
+    hostPort: 4317
+    protocol: TCP
+  otlp-http:
+    enabled: true
+    containerPort: 4318
+    servicePort: 4318
+    protocol: TCP
+  prometheus:
+    enabled: true
+    containerPort: 8889
+    servicePort: 8889
+    protocol: TCP
+
+
+presets:
+  kubernetesAttributes:
+    enabled: true
+  kubeletMetrics:
+    enabled: true

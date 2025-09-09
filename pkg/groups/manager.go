@@ -17,6 +17,14 @@ const (
 	DefaultGroupName = "default"
 )
 
+// ValidateGroupName enforces lowercase-only group names.
+func ValidateGroupName(name string) error {
+	if name != strings.ToLower(name) {
+		return fmt.Errorf("invalid group name: %q (must be lowercase)", name)
+	}
+	return nil
+}
+
 // manager implements the Manager interface
 type manager struct {
 	groupStore state.Store
@@ -34,6 +42,10 @@ func NewManager() (Manager, error) {
 
 // Create creates a new group with the given name
 func (m *manager) Create(ctx context.Context, name string) error {
+	// Enforce lowercase group names
+	if err := ValidateGroupName(name); err != nil {
+		return err
+	}
 	// Check if group already exists
 	exists, err := m.groupStore.Exists(ctx, name)
 	if err != nil {
@@ -52,6 +64,9 @@ func (m *manager) Create(ctx context.Context, name string) error {
 
 // Get retrieves a group by name
 func (m *manager) Get(ctx context.Context, name string) (*Group, error) {
+	if err := ValidateGroupName(name); err != nil {
+		return nil, err
+	}
 	reader, err := m.groupStore.GetReader(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get reader for group: %w", err)
@@ -92,11 +107,17 @@ func (m *manager) List(ctx context.Context) ([]*Group, error) {
 
 // Delete removes a group by name
 func (m *manager) Delete(ctx context.Context, name string) error {
+	if err := ValidateGroupName(name); err != nil {
+		return err
+	}
 	return m.groupStore.Delete(ctx, name)
 }
 
 // Exists checks if a group exists
 func (m *manager) Exists(ctx context.Context, name string) (bool, error) {
+	if err := ValidateGroupName(name); err != nil {
+		return false, err
+	}
 	return m.groupStore.Exists(ctx, name)
 }
 

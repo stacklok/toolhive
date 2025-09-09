@@ -99,16 +99,38 @@ func TestCreateOAuthConfigManual(t *testing.T) {
 			name:         "127.0.0.1 URLs allowed for development",
 			clientID:     "test-client",
 			clientSecret: "test-secret",
-			authURL:      "http://127.0.0.1:3000/auth",
-			tokenURL:     "http://127.0.0.1:3000/token",
+			authURL:      "http://127.0.0.1:8080/oauth/authorize",
+			tokenURL:     "http://127.0.0.1:8080/oauth/token",
 			scopes:       []string{"read"},
-			usePKCE:      false,
+			usePKCE:      true,
 			callbackPort: 8080,
 			expectError:  false,
 			validate: func(t *testing.T, config *Config) {
 				t.Helper()
-				assert.Equal(t, "http://127.0.0.1:3000/auth", config.AuthURL)
-				assert.Equal(t, "http://127.0.0.1:3000/token", config.TokenURL)
+				assert.Equal(t, "http://127.0.0.1:8080/oauth/authorize", config.AuthURL)
+				assert.Equal(t, "http://127.0.0.1:8080/oauth/token", config.TokenURL)
+			},
+		},
+		{
+			name:         "valid config with OAuth parameters",
+			clientID:     "test-client",
+			clientSecret: "test-secret",
+			authURL:      "https://example.com/oauth/authorize",
+			tokenURL:     "https://example.com/oauth/token",
+			scopes:       []string{"read", "write"},
+			usePKCE:      true,
+			callbackPort: 8080,
+			expectError:  false,
+			validate: func(t *testing.T, config *Config) {
+				t.Helper()
+				assert.Equal(t, "test-client", config.ClientID)
+				assert.Equal(t, "test-secret", config.ClientSecret)
+				assert.Equal(t, "https://example.com/oauth/authorize", config.AuthURL)
+				assert.Equal(t, "https://example.com/oauth/token", config.TokenURL)
+				assert.Equal(t, []string{"read", "write"}, config.Scopes)
+				assert.True(t, config.UsePKCE)
+				assert.Equal(t, 8080, config.CallbackPort)
+				assert.Equal(t, map[string]string{"prompt": "select_account", "response_mode": "query"}, config.OAuthParams)
 			},
 		},
 		{
@@ -222,6 +244,15 @@ func TestCreateOAuthConfigManual(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Prepare OAuth parameters for the specific test case
+			var oauthParams map[string]string
+			if tt.name == "valid config with OAuth parameters" {
+				oauthParams = map[string]string{
+					"prompt":        "select_account",
+					"response_mode": "query",
+				}
+			}
+
 			config, err := CreateOAuthConfigManual(
 				tt.clientID,
 				tt.clientSecret,
@@ -230,6 +261,7 @@ func TestCreateOAuthConfigManual(t *testing.T) {
 				tt.scopes,
 				tt.usePKCE,
 				tt.callbackPort,
+				oauthParams,
 			)
 
 			if tt.expectError {
@@ -294,6 +326,7 @@ func TestCreateOAuthConfigManual_ScopeDefaultBehavior(t *testing.T) {
 				tt.scopes,
 				true,
 				8080,
+				nil, // No OAuth params for basic tests
 			)
 
 			require.NoError(t, err)
@@ -335,6 +368,7 @@ func TestCreateOAuthConfigManual_PKCEBehavior(t *testing.T) {
 				[]string{"read"},
 				tt.usePKCE,
 				8080,
+				nil, // No OAuth params for basic tests
 			)
 
 			require.NoError(t, err)
@@ -381,11 +415,76 @@ func TestCreateOAuthConfigManual_CallbackPortBehavior(t *testing.T) {
 				[]string{"read"},
 				true,
 				tt.port,
+				nil, // No OAuth params for basic tests
 			)
 
 			require.NoError(t, err)
 			require.NotNil(t, config)
 			assert.Equal(t, tt.expected, config.CallbackPort)
+		})
+	}
+}
+
+func TestCreateOAuthConfigManual_OAuthParamsBehavior(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		oauthParams map[string]string
+		expected    map[string]string
+	}{
+		{
+			name:        "nil OAuth params",
+			oauthParams: nil,
+			expected:    nil,
+		},
+		{
+			name:        "empty OAuth params",
+			oauthParams: map[string]string{},
+			expected:    map[string]string{},
+		},
+		{
+			name: "GitHub-style OAuth params",
+			oauthParams: map[string]string{
+				"prompt": "select_account",
+			},
+			expected: map[string]string{
+				"prompt": "select_account",
+			},
+		},
+		{
+			name: "multiple OAuth params",
+			oauthParams: map[string]string{
+				"prompt":        "select_account",
+				"response_mode": "query",
+				"access_type":   "offline",
+			},
+			expected: map[string]string{
+				"prompt":        "select_account",
+				"response_mode": "query",
+				"access_type":   "offline",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			config, err := CreateOAuthConfigManual(
+				"test-client",
+				"test-secret",
+				"https://example.com/oauth/authorize",
+				"https://example.com/oauth/token",
+				[]string{"read"},
+				true,
+				8080,
+				tt.oauthParams,
+			)
+
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.Equal(t, tt.expected, config.OAuthParams)
 		})
 	}
 }

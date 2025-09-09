@@ -6,9 +6,10 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
+	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
@@ -186,6 +187,8 @@ const (
 	TypeDocker Type = "docker"
 	// TypeKubernetes represents the Kubernetes runtime
 	TypeKubernetes Type = "kubernetes"
+	// TypeColima represents the Colima runtime
+	TypeColima Type = "colima"
 )
 
 // MountType represents the type of mount
@@ -282,10 +285,23 @@ type Mount struct {
 	Type MountType
 }
 
-// IsKubernetesRuntime returns true if the runtime is Kubernetes
-// isn't the best way to do this, but for now it's good enough
+// IsKubernetesRuntime checks if the current runtime is Kubernetes
+// This checks the TOOLHIVE_RUNTIME environment variable first, then falls back to
+// checking if we're in a Kubernetes environment
 func IsKubernetesRuntime() bool {
-	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
+	return IsKubernetesRuntimeWithEnv(&env.OSReader{})
+}
+
+// IsKubernetesRuntimeWithEnv checks if the current runtime is Kubernetes using the provided environment reader.
+// This allows for dependency injection of environment variable access for testing.
+func IsKubernetesRuntimeWithEnv(envReader env.Reader) bool {
+	// Check if TOOLHIVE_RUNTIME is explicitly set to kubernetes
+	if runtimeEnv := strings.TrimSpace(envReader.Getenv("TOOLHIVE_RUNTIME")); runtimeEnv == "kubernetes" {
+		return true
+	}
+
+	// Fall back to checking if we're in a Kubernetes environment
+	return envReader.Getenv("KUBERNETES_SERVICE_HOST") != ""
 }
 
 // Common errors

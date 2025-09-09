@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"net/url"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -126,11 +126,16 @@ func resolveTarget(ctx context.Context, target string) (string, error) {
 }
 
 func looksLikeURL(s string) bool {
+	// Parse the URL once
+	u, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+
 	// Fast-path for common schemes
-	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+	if u.Scheme == networking.HttpScheme || u.Scheme == networking.HttpsScheme {
 		return true
 	}
-	// Fallback parse check
-	u, err := url.Parse(s)
-	return err == nil && u.Scheme != "" && u.Host != ""
+	// Fallback check for other schemes
+	return u.Scheme != "" && u.Host != ""
 }

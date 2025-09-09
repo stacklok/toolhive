@@ -418,7 +418,7 @@ func TestRunConfig_WithContainerName(t *testing.T) {
 			t.Parallel()
 			originalContainerName := tc.config.ContainerName
 
-			result := tc.config.WithContainerName()
+			result, _ := tc.config.WithContainerName()
 
 			assert.Equal(t, tc.config, result, "WithContainerName should return the same config instance")
 
@@ -571,7 +571,7 @@ func TestRunConfigBuilder(t *testing.T) {
 		WithLabels(nil).
 		WithGroup("").
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, "", oidcClientID, "", "", "", "", false).
-		WithTelemetryConfig("", false, "", 0.1, nil, false, nil).
+		WithTelemetryConfig("", false, false, false, "", 0.1, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    false,
@@ -819,7 +819,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 				WithLabels(nil).
 				WithGroup("").
 				WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
-				WithTelemetryConfig("", false, "", 0, nil, false, nil).
+				WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil).
 				WithToolsFilter(nil).
 				WithIgnoreConfig(&ignore.Config{
 					LoadGlobal:    false,
@@ -866,7 +866,7 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 		WithLabels(nil).
 		WithGroup("").
 		WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
-		WithTelemetryConfig("", false, "", 0, nil, false, nil).
+		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    false,
@@ -918,7 +918,7 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 		WithLabels(nil).
 		WithGroup("").
 		WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
-		WithTelemetryConfig("", false, "", 0, nil, false, nil).
+		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    false,
@@ -973,7 +973,7 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 		WithLabels(nil).
 		WithGroup("").
 		WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
-		WithTelemetryConfig("", false, "", 0, nil, false, nil).
+		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    false,
@@ -1024,7 +1024,7 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 		WithLabels(nil).
 		WithGroup("").
 		WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
-		WithTelemetryConfig("", false, "", 0, nil, false, nil).
+		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    false,
@@ -1097,7 +1097,7 @@ func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 		WithLabels(nil).
 		WithGroup("").
 		WithOIDCConfig("", "", "", "", "", "", "", "", "", false).
-		WithTelemetryConfig("", false, "", 0, nil, false, nil).
+		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil).
 		WithToolsFilter(nil).
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    false,

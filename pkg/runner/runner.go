@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -138,7 +140,8 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Process secrets if provided
 	if len(r.Config.Secrets) > 0 {
-		cfg := config.GetConfig()
+		cfgprovider := config.NewDefaultProvider()
+		cfg := cfgprovider.GetConfig()
 
 		providerType, err := cfg.Secrets.GetProviderType()
 		if err != nil {
@@ -158,6 +161,28 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)
+
+	// For remote MCP servers, set the remote URL on HTTP transports before setup
+	if r.Config.RemoteURL != "" {
+		if httpTransport, ok := transportHandler.(interface{ SetRemoteURL(string) }); ok {
+			httpTransport.SetRemoteURL(r.Config.RemoteURL)
+		}
+
+		// Handle remote authentication if configured
+		tokenSource, err := r.handleRemoteAuthentication(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to authenticate to remote server: %w", err)
+		}
+
+		// Set the token source on the HTTP transport
+		if httpTransport, ok := transportHandler.(interface{ SetTokenSource(*oauth2.TokenSource) }); ok {
+			httpTransport.SetTokenSource(tokenSource)
+		}
+
+		// For remote workloads, we don't need a deployer
+		r.Config.Deployer = nil
+	}
+
 	if err := transportHandler.Setup(
 		ctx, r.Config.Deployer, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
 		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile, r.Config.K8sPodTemplatePatch,
@@ -182,7 +207,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		logger.Warnf("Warning: Failed to create client manager: %v", err)
 	} else {
 		transportType := labels.GetTransportType(r.Config.ContainerLabels)
-		serverURL := transport.GenerateMCPServerURL(transportType, "localhost", r.Config.Port, r.Config.ContainerName)
+		serverURL := transport.GenerateMCPServerURL(
+			transportType,
+			"localhost",
+			r.Config.Port,
+			r.Config.ContainerName,
+			r.Config.RemoteURL)
 
 		if err := clientManager.AddServerToClients(ctx, r.Config.ContainerName, serverURL, transportType, r.Config.Group); err != nil {
 			logger.Warnf("Warning: Failed to add server to client configurations: %v", err)
@@ -205,20 +235,28 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Remove the PID file if it exists
+		// TODO: Stop writing to PID file once we migrate over to statuses.
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to remove PID file: %v", err)
+		}
+		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.ContainerName); err != nil {
+			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
 		}
 
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
+	// TODO: Stop writing to PID file once we migrate over to statuses.
+	if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {
+		logger.Warnf("Warning: Failed to write PID file: %v", err)
+	}
+	if err := r.statusManager.SetWorkloadPID(ctx, r.Config.ContainerName, os.Getpid()); err != nil {
+		logger.Warnf("Warning: Failed to set workload PID: %v", err)
+	}
+
 	if process.IsDetached() {
 		// We're a detached process running in foreground mode
 		// Write the PID to a file so the stop command can kill the process
-		if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to write PID file: %v", err)
-		}
-
 		logger.Infof("Running as detached process (PID: %d)", os.Getpid())
 	} else {
 		logger.Info("Press Ctrl+C to stop or wait for container to exit")
@@ -274,14 +312,36 @@ func (r *Runner) Run(ctx context.Context) error {
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container monitor)
 		// Clean up the PID file and state
+		// TODO: Stop writing to PID file once we migrate over to statuses.
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to remove PID file: %v", err)
+		}
+		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.ContainerName); err != nil {
+			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
 		}
 
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
 	return nil
+}
+
+// handleRemoteAuthentication handles authentication for remote MCP servers
+func (r *Runner) handleRemoteAuthentication(ctx context.Context) (*oauth2.TokenSource, error) {
+	if r.Config.RemoteAuthConfig == nil {
+		return nil, nil
+	}
+
+	// Create remote authentication handler
+	authHandler := NewRemoteAuthHandler(r.Config.RemoteAuthConfig)
+
+	// Perform authentication
+	tokenSource, err := authHandler.Authenticate(ctx, r.Config.RemoteURL)
+	if err != nil {
+		return nil, fmt.Errorf("remote authentication failed: %w", err)
+	}
+
+	return tokenSource, nil
 }
 
 // Cleanup performs cleanup operations for the runner, including shutting down all middleware.

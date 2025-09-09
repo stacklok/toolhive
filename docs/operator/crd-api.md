@@ -9,6 +9,8 @@
 Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API group
 
 ### Resource Types
+- [MCPRegistry](#mcpregistry)
+- [MCPRegistryList](#mcpregistrylist)
 - [MCPServer](#mcpserver)
 - [MCPServerList](#mcpserverlist)
 
@@ -80,6 +82,23 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the ConfigMap |  | Required: \{\} <br /> |
 | `key` _string_ | Key is the key in the ConfigMap that contains the OIDC configuration | oidc.json |  |
+
+
+#### ConfigMapSource
+
+
+
+ConfigMapSource defines ConfigMap source configuration
+
+
+
+_Appears in:_
+- [MCPRegistrySource](#mcpregistrysource)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the ConfigMap |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `key` _string_ | Key is the key in the ConfigMap that contains the registry data | registry.json | MinLength: 1 <br /> |
 
 
 #### EnvVar
@@ -161,6 +180,132 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL |  |  |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint<br />If empty, OIDC discovery will be used to automatically determine the introspection URL |  |  |
 | `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication<br />Defaults to true if not specified |  |  |
+
+
+#### MCPRegistry
+
+
+
+MCPRegistry is the Schema for the mcpregistries API
+⚠️ Experimental API (v1alpha1) — subject to change.
+
+
+
+_Appears in:_
+- [MCPRegistryList](#mcpregistrylist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPRegistry` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[MCPRegistrySpec](#mcpregistryspec)_ |  |  |  |
+| `status` _[MCPRegistryStatus](#mcpregistrystatus)_ |  |  |  |
+
+
+#### MCPRegistryList
+
+
+
+MCPRegistryList contains a list of MCPRegistry
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPRegistryList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[MCPRegistry](#mcpregistry) array_ |  |  |  |
+
+
+#### MCPRegistryPhase
+
+_Underlying type:_ _string_
+
+MCPRegistryPhase represents the phase of the MCPRegistry
+
+_Validation:_
+- Enum: [Pending Ready Failed Syncing Terminating]
+
+_Appears in:_
+- [MCPRegistryStatus](#mcpregistrystatus)
+
+| Field | Description |
+| --- | --- |
+| `Pending` | MCPRegistryPhasePending means the MCPRegistry is being initialized<br /> |
+| `Ready` | MCPRegistryPhaseReady means the MCPRegistry is ready and operational<br /> |
+| `Failed` | MCPRegistryPhaseFailed means the MCPRegistry has failed<br /> |
+| `Syncing` | MCPRegistryPhaseSyncing means the MCPRegistry is currently syncing data<br /> |
+| `Terminating` | MCPRegistryPhaseTerminating means the MCPRegistry is being deleted<br /> |
+
+
+#### MCPRegistrySource
+
+
+
+MCPRegistrySource defines the source configuration for registry data
+
+
+
+_Appears in:_
+- [MCPRegistrySpec](#mcpregistryspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is the type of source (configmap) | configmap | Enum: [configmap] <br /> |
+| `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
+| `configmap` _[ConfigMapSource](#configmapsource)_ | ConfigMap defines the ConfigMap source configuration<br />Only used when Type is "configmap" |  |  |
+
+
+#### MCPRegistrySpec
+
+
+
+MCPRegistrySpec defines the desired state of MCPRegistry
+
+
+
+_Appears in:_
+- [MCPRegistry](#mcpregistry)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `displayName` _string_ | DisplayName is a human-readable name for the registry |  |  |
+| `source` _[MCPRegistrySource](#mcpregistrysource)_ | Source defines the configuration for the registry data source |  | Required: \{\} <br /> |
+| `syncPolicy` _[SyncPolicy](#syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for the registry.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting. |  |  |
+| `filter` _[RegistryFilter](#registryfilter)_ | Filter defines include/exclude patterns for registry content |  |  |
+
+
+#### MCPRegistryStatus
+
+
+
+MCPRegistryStatus defines the observed state of MCPRegistry
+
+
+
+_Appears in:_
+- [MCPRegistry](#mcpregistry)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `phase` _[MCPRegistryPhase](#mcpregistryphase)_ | Phase represents the current phase of the MCPRegistry |  | Enum: [Pending Ready Failed Syncing Terminating] <br /> |
+| `message` _string_ | Message provides additional information about the current phase |  |  |
+| `lastSyncTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastSyncTime is the timestamp of the last successful sync |  |  |
+| `lastSyncHash` _string_ | LastSyncHash is the hash of the last successfully synced data<br />Used to detect changes in source data |  |  |
+| `serverCount` _integer_ | ServerCount is the total number of servers in the registry |  | Minimum: 0 <br /> |
+| `deployedServerCount` _integer_ | DeployedServerCount is the number of deployed servers with matching labels |  | Minimum: 0 <br /> |
+| `syncAttempts` _integer_ | SyncAttempts is the number of sync attempts since last success |  | Minimum: 0 <br /> |
+| `apiEndpoint` _string_ | APIEndpoint is the URL of the registry API service |  |  |
+| `storageRef` _[StorageReference](#storagereference)_ | StorageRef is a reference to the internal storage location |  |  |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  |  |
 
 
 #### MCPServer
@@ -275,6 +420,23 @@ _Appears in:_
 | `url` _string_ | URL is the URL where the MCP server can be accessed |  |  |
 | `phase` _[MCPServerPhase](#mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Running Failed Terminating] <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  |  |
+
+
+#### NameFilter
+
+
+
+NameFilter defines name-based filtering
+
+
+
+_Appears in:_
+- [RegistryFilter](#registryfilter)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `include` _string array_ | Include is a list of glob patterns to include |  |  |
+| `exclude` _string array_ | Exclude is a list of glob patterns to exclude |  |  |
 
 
 #### NetworkPermissions
@@ -441,6 +603,23 @@ _Appears in:_
 | `env` _[EnvVar](#envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages |  |  |
 
 
+#### RegistryFilter
+
+
+
+RegistryFilter defines include/exclude patterns for registry content
+
+
+
+_Appears in:_
+- [MCPRegistrySpec](#mcpregistryspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `names` _[NameFilter](#namefilter)_ | NameFilters defines name-based filtering |  |  |
+| `tags` _[TagFilter](#tagfilter)_ | Tags defines tag-based filtering |  |  |
+
+
 #### ResourceList
 
 
@@ -526,6 +705,59 @@ _Appears in:_
 | `name` _string_ | Name is the name of the secret |  | Required: \{\} <br /> |
 | `key` _string_ | Key is the key in the secret itself |  | Required: \{\} <br /> |
 | `targetEnvName` _string_ | TargetEnvName is the environment variable to be used when setting up the secret in the MCP server<br />If left unspecified, it defaults to the key |  |  |
+
+
+#### StorageReference
+
+
+
+StorageReference defines a reference to internal storage
+
+
+
+_Appears in:_
+- [MCPRegistryStatus](#mcpregistrystatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is the storage type (configmap) |  | Enum: [configmap] <br /> |
+| `configMapRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core)_ | ConfigMapRef is a reference to a ConfigMap storage<br />Only used when Type is "configmap" |  |  |
+
+
+#### SyncPolicy
+
+
+
+SyncPolicy defines automatic synchronization behavior.
+When specified, enables automatic synchronization at the given interval.
+Manual synchronization via annotation-based triggers is always available
+regardless of this policy setting.
+
+
+
+_Appears in:_
+- [MCPRegistrySpec](#mcpregistryspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `interval` _string_ | Interval is the sync interval for automatic synchronization (Go duration format)<br />Examples: "1h", "30m", "24h" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Required: \{\} <br /> |
+
+
+#### TagFilter
+
+
+
+TagFilter defines tag-based filtering
+
+
+
+_Appears in:_
+- [RegistryFilter](#registryfilter)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `include` _string array_ | Include is a list of tags to include |  |  |
+| `exclude` _string array_ | Exclude is a list of tags to exclude |  |  |
 
 
 #### TelemetryConfig

@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 // ConfigMapSourceHandler handles registry data from Kubernetes ConfigMaps
@@ -53,8 +54,8 @@ func (*ConfigMapSourceHandler) Validate(source *mcpv1alpha1.MCPRegistrySource) e
 }
 
 // Sync retrieves registry data from the ConfigMap source
-func (h *ConfigMapSourceHandler) Sync(ctx context.Context, registry *mcpv1alpha1.MCPRegistry) (*SyncResult, error) {
-	source := &registry.Spec.Source
+func (h *ConfigMapSourceHandler) Sync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*SyncResult, error) {
+	source := &mcpRegistry.Spec.Source
 
 	// Validate source configuration
 	if err := h.Validate(source); err != nil {
@@ -62,7 +63,7 @@ func (h *ConfigMapSourceHandler) Sync(ctx context.Context, registry *mcpv1alpha1
 	}
 
 	// Determine ConfigMap namespace (use registry namespace since ConfigMapSource doesn't have namespace field)
-	configMapNamespace := registry.Namespace
+	configMapNamespace := mcpRegistry.Namespace
 
 	// Retrieve ConfigMap
 	configMap := &corev1.ConfigMap{}
@@ -124,13 +125,12 @@ func (h *ConfigMapSourceHandler) countServers(data []byte, format string) (int, 
 
 // countToolHiveServers counts servers in ToolHive format
 func (*ConfigMapSourceHandler) countToolHiveServers(data []byte) (int, error) {
-	var registry struct {
-		Servers map[string]any `json:"servers"`
-	}
+	var mcpRegistry registry.Registry
 
-	if err := json.Unmarshal(data, &registry); err != nil {
+	if err := json.Unmarshal(data, &mcpRegistry); err != nil {
 		return 0, fmt.Errorf("failed to parse ToolHive registry format: %w", err)
 	}
 
-	return len(registry.Servers), nil
+	// Count both container servers and remote servers
+	return len(mcpRegistry.Servers) + len(mcpRegistry.RemoteServers), nil
 }

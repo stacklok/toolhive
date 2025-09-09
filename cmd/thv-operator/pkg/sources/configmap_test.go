@@ -541,10 +541,44 @@ func TestConfigMapSourceHandler_countServers(t *testing.T) {
 			expectError:   false,
 		},
 		{
+			name: "toolhive format with servers and remote servers",
+			data: []byte(`{
+				"version": "1.0.0",
+				"last_updated": "2025-01-15T10:30:00Z",
+				"servers": {
+					"container-server1": {},
+					"container-server2": {}
+				},
+				"remote_servers": {
+					"remote-server1": {},
+					"remote-server2": {},
+					"remote-server3": {}
+				}
+			}`),
+			format:        mcpv1alpha1.RegistryFormatToolHive,
+			expectedCount: 5, // 2 container servers + 3 remote servers
+			expectError:   false,
+		},
+		{
 			name:          "toolhive format empty servers",
 			data:          []byte(`{"servers": {}}`),
 			format:        mcpv1alpha1.RegistryFormatToolHive,
 			expectedCount: 0,
+			expectError:   false,
+		},
+		{
+			name: "toolhive format with only remote servers",
+			data: []byte(`{
+				"version": "1.0.0",
+				"last_updated": "2025-01-15T10:30:00Z",
+				"servers": {},
+				"remote_servers": {
+					"remote-only-1": {},
+					"remote-only-2": {}
+				}
+			}`),
+			format:        mcpv1alpha1.RegistryFormatToolHive,
+			expectedCount: 2, // 0 container servers + 2 remote servers
 			expectError:   false,
 		},
 		{

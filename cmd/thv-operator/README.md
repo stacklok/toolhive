@@ -6,12 +6,7 @@ This operator is built using [Kubebuilder](https://book.kubebuilder.io/), a fram
 
 ## Overview
 
-The operator introduces Custom Resource Definitions (CRDs) for managing MCP infrastructure in Kubernetes:
-
-- **MCPServer**: Represents an individual MCP server deployment
-- **MCPRegistry**: Manages collections of MCP server definitions and their lifecycle
-
-When you create these resources, the operator automatically:
+The operator introduces a new Custom Resource Definition (CRD) called `MCPServer` that represents an MCP server in Kubernetes. When you create an `MCPServer` resource, the operator automatically:
 
 1. Creates a Deployment to run the MCP server
 2. Sets up a Service to expose the MCP server
@@ -78,38 +73,6 @@ helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator
 ```
 
 ## Usage
-
-### Creating an MCP Registry
-
-To manage collections of MCP servers, you can define an `MCPRegistry` resource that references server definitions stored in ConfigMaps.
-
-First we can create the `ConfigMap` from the project's registry daya:
-```bash
-kubectl create cm --from-file pkg/registry/data/registry.json thv-registry
-``
-
-Then reference it in the created `MCPRegistry`:
-
-```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPRegistry
-metadata:
-  name: database-registry
-  namespace: toolhive-system
-spec:
-  displayName: "Database MCP Server Registry"
-  source:
-    type: configmap
-    configmap:
-      name: thv-registry
-      key: registry.json
-  syncPolicy:
-    interval: "1h"  # Enable automatic sync every hour
-  filter:
-    names:
-      include:
-        - "database"  # Only servers tagged with "database'
-```
 
 ### Creating an MCP Server
 
@@ -178,23 +141,7 @@ The `secrets` field has the following parameters:
 - `key`: The key in the secret itself (required)
 - `targetEnvName`: The environment variable to be used when setting up the secret in the MCP server (optional). If left unspecified, it defaults to the key.
 
-### Manual Registry Synchronization
-
-You can trigger manual synchronization of an MCPRegistry by adding an annotation:
-
-```bash
-kubectl annotate mcpregistry my-registry toolhive.stacklok.dev/sync-trigger="$(date +%s)"
-```
-
-Every time the annotation value changes, a new synchronization is triggered.
-
-### Checking Resource Status
-
-To check the status of your MCP registries:
-
-```bash
-kubectl get mcpregistries
-```
+### Checking MCP Server Status
 
 To check the status of your MCP servers:
 
@@ -202,12 +149,11 @@ To check the status of your MCP servers:
 kubectl get mcpservers
 ```
 
-This will show the status, URL, and age of each resource.
+This will show the status, URL, and age of each MCP server.
 
-For more details about a specific resource:
+For more details about a specific MCP server:
 
 ```bash
-kubectl describe mcpregistry <name>
 kubectl describe mcpserver <name>
 ```
 
@@ -228,60 +174,6 @@ kubectl describe mcpserver <name>
 | `secrets`           | References to secrets to mount in the container  | No       | -       |
 | `permissionProfile` | Permission profile configuration                 | No       | -       |
 | `tools`             | Allow-list filter on the list of tools           | No       | -       |
-
-### MCPRegistry Spec
-
-| Field         | Description                                        | Required | Default      |
-|---------------|----------------------------------------------------|----------|--------------|
-| `displayName` | Human-readable name for the registry               | No       | -            |
-| `source`      | Configuration for the registry data source        | Yes      | -            |
-| `syncPolicy`  | Automatic synchronization configuration           | No       | Manual only  |
-| `filter`      | Include/exclude patterns for registry content     | No       | -            |
-
-#### Source Configuration
-
-| Field        | Description                                      | Required | Default       |
-|--------------|--------------------------------------------------|----------|---------------|
-| `type`       | Type of source (currently only "configmap")      | Yes      | `configmap`     |
-| `format`     | Data format (only "toolhive" is supported)       | No       | `toolhive`      |
-| `configmap`  | ConfigMap source configuration                   | Yes      | -             |
-
-#### ConfigMap Source
-
-| Field       | Description                                        | Required | Default       |
-|-------------|-----------------------------------------------------|----------|---------------|
-| `name`      | Name of the ConfigMap containing registry data    | Yes      | -             |
-| `namespace` | Namespace of the ConfigMap (defaults to registry namespace) | No | Same as registry |
-| `key`       | Key in the ConfigMap containing the registry data | No       | `registry.json` |
-
-#### Sync Policy
-
-| Field      | Description                                      | Required | Default |
-|------------|--------------------------------------------------|----------|---------|
-| `interval` | Automatic sync interval (Go duration format)    | Yes      | -       |
-
-Examples: "1h", "30m", "24h"
-
-#### Filter Configuration
-
-| Field   | Description                    | Required | Default |
-|---------|--------------------------------|----------|---------|
-| `names` | Name-based filtering patterns  | No       | -       |
-| `tags`  | Tag-based filtering patterns   | No       | -       |
-
-##### Name Filter
-
-| Field     | Description                              | Required | Default |
-|-----------|------------------------------------------|----------|---------|
-| `include` | List of glob patterns to include         | No       | -       |
-| `exclude` | List of glob patterns to exclude         | No       | -       |
-
-##### Tag Filter
-
-| Field     | Description                        | Required | Default |
-|-----------|------------------------------------|----------|---------|
-| `include` | List of tags to include            | No       | -       |
-| `exclude` | List of tags to exclude            | No       | -       |
 
 ### Permission Profiles
 

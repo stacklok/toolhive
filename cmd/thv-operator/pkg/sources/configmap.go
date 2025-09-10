@@ -22,6 +22,11 @@ const (
 	ConfigMapSourceDataKey = "registry.json"
 )
 
+const (
+	// ConfigMapSourceDataKey is the default key used for registry data in ConfigMap sources
+	ConfigMapSourceDataKey = "registry.json"
+)
+
 // ConfigMapSourceHandler handles registry data from Kubernetes ConfigMaps
 type ConfigMapSourceHandler struct {
 	client    client.Client

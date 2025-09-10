@@ -5,7 +5,7 @@ metadata:
 spec:
   image: ghcr.io/stackloklabs/mcp-fetch:latest
   transport: sse
-  port: 8080
+  proxyPort: 8080
   # Example of using the PodTemplateSpec to customize the pod
   podTemplateSpec:
     spec:

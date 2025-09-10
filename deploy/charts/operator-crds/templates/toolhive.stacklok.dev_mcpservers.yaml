@@ -8697,9 +8697,9 @@ spec:
                     - containers
                     type: object
                 type: object
-              port:
+              proxyPort:
                 default: 8080
-                description: Port is the port to expose the MCP server on
+                description: ProxyPort is the port to expose the proxy runner on
                 format: int32
                 maximum: 65535
                 minimum: 1
@@ -8831,8 +8831,8 @@ spec:
                   ServiceAccount is the name of an already existing service account to use by the MCP server.
                   If not specified, a ServiceAccount will be created automatically and used by the MCP server.
                 type: string
-              targetPort:
-                description: TargetPort is the port that MCP server listens to
+              mcpPort:
+                description: McpPort is the port that MCP server listens to
                 format: int32
                 maximum: 65535
                 minimum: 1

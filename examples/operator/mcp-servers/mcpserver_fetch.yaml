@@ -6,8 +6,8 @@ metadata:
 spec:
   image: ghcr.io/stackloklabs/gofetch/server
   transport: streamable-http
-  port: 8080
-  targetPort: 8080
+  proxyPort: 8080
+  mcpPort: 8080
   permissionProfile:
     type: builtin
     name: network

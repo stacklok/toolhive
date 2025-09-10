@@ -16,17 +16,17 @@ type MCPServerSpec struct {
 	// +kubebuilder:default=stdio
 	Transport string `json:"transport,omitempty"`
 
-	// Port is the port to expose the MCP server on
+	// ProxyPort is the port to expose the proxy runner on
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +kubebuilder:default=8080
-	Port int32 `json:"port,omitempty"`
+	ProxyPort int32 `json:"proxyPort,omitempty"`
 
-	// TargetPort is the port that MCP server listens to
+	// McpPort is the port that MCP server listens to
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
-	TargetPort int32 `json:"targetPort,omitempty"`
+	McpPort int32 `json:"mcpPort,omitempty"`
 
 	// Args are additional arguments to pass to the MCP server
 	// +optional

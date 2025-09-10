@@ -38,3 +38,4 @@ thv rm [workload-name] [flags]
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
+

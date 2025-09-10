@@ -14,6 +14,11 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
+const (
+	// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
+	ConfigMapStorageDataKey = "registry.json"
+)
+
 // StorageManager defines the interface for registry data persistence
 type StorageManager interface {
 	// Store saves registry data to persistent storage
@@ -63,7 +68,7 @@ func (s *ConfigMapStorageManager) Store(ctx context.Context, registry *mcpv1alph
 			},
 		},
 		Data: map[string]string{
-			"registry.json": string(data),
+			ConfigMapStorageDataKey: string(data),
 		},
 	}
 
@@ -117,7 +122,7 @@ func (s *ConfigMapStorageManager) Get(ctx context.Context, registry *mcpv1alpha1
 		return nil, NewStorageError("get", registry.Name, "failed to get storage ConfigMap", err)
 	}
 
-	data, exists := configMap.Data["registry.json"]
+	data, exists := configMap.Data[ConfigMapStorageDataKey]
 	if !exists {
 		return nil, NewStorageError("get", registry.Name, "registry data not found in ConfigMap", nil)
 	}

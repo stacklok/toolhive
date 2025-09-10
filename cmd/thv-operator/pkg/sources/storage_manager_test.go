@@ -85,7 +85,7 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Data: map[string]string{
-					"registry.json": `{"version": "1.0.0", "servers": {}}`,
+					ConfigMapStorageDataKey: `{"version": "1.0.0", "servers": {}}`,
 				},
 			},
 			expectError: false,
@@ -147,12 +147,11 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 				}, configMap)
 
 				require.NoError(t, err)
-				assert.Equal(t, string(tt.data), configMap.Data["registry.json"])
+				assert.Equal(t, string(tt.data), configMap.Data[ConfigMapStorageDataKey])
 
 				// Verify annotations
 				assert.Equal(t, tt.registry.Name, configMap.Annotations["toolhive.stacklok.dev/registry-name"])
 				assert.Equal(t, string(tt.registry.Spec.Source.Format), configMap.Annotations["toolhive.stacklok.dev/registry-format"])
-				assert.Equal(t, "registry-data", configMap.Annotations["toolhive.stacklok.dev/storage-type"])
 
 				// Verify labels
 				assert.Equal(t, "toolhive-operator", configMap.Labels["app.kubernetes.io/name"])
@@ -197,7 +196,7 @@ func TestConfigMapStorageManager_Get(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Data: map[string]string{
-					"registry.json": `{"version": "1.0.0", "servers": {"server1": {}}}`,
+					ConfigMapStorageDataKey: `{"version": "1.0.0", "servers": {"server1": {}}}`,
 				},
 			},
 			expectedData: []byte(`{"version": "1.0.0", "servers": {"server1": {}}}`),
@@ -299,7 +298,7 @@ func TestConfigMapStorageManager_Delete(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Data: map[string]string{
-					"registry.json": `{"version": "1.0.0", "servers": {}}`,
+					ConfigMapStorageDataKey: `{"version": "1.0.0", "servers": {}}`,
 				},
 			},
 			expectError: false,

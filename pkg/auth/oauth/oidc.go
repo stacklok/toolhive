@@ -43,7 +43,12 @@ func DiscoverOIDCEndpoints(ctx context.Context, issuer string, validateIssuerMat
 }
 
 // discoverOIDCEndpointsWithClient discovers OAuth endpoints from an OIDC issuer with a custom HTTP client (private for testing)
-func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client httpClient, validateIssuerMatch bool) (*OIDCDiscoveryDocument, error) {
+func discoverOIDCEndpointsWithClient(
+	ctx context.Context,
+	issuer string,
+	client httpClient,
+	validateIssuerMatch bool,
+) (*OIDCDiscoveryDocument, error) {
 	// Validate issuer URL
 	issuerURL, err := url.Parse(issuer)
 	if err != nil {

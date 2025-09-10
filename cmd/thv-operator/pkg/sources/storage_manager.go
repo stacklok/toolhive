@@ -24,6 +24,11 @@ const (
 	RegistryStorageComponent = "registry-storage"
 )
 
+const (
+	// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
+	ConfigMapStorageDataKey = "registry.json"
+)
+
 // StorageManager defines the interface for registry data persistence
 type StorageManager interface {
 	// Store saves a Registry instance to persistent storage

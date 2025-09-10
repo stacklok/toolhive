@@ -41,9 +41,15 @@ func TestNewSyncResult(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := NewSyncResult(tt.data, tt.serverCount)
+			result := NewSyncResultFromBytes(tt.data, tt.serverCount)
 
-			assert.Equal(t, tt.data, result.Data)
+			rawData, err := result.GetRawData()
+			if result.Registry == nil {
+				assert.Error(t, err) // Should error when trying to marshal nil Registry
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, rawData)
+			}
 			assert.Equal(t, tt.serverCount, result.ServerCount)
 			assert.Len(t, result.Hash, tt.expectedLen)
 			assert.NotEmpty(t, result.Hash)
@@ -57,12 +63,11 @@ func TestSyncResultHashConsistency(t *testing.T) {
 	data := []byte(`{"test": "data"}`)
 	serverCount := 5
 
-	result1 := NewSyncResult(data, serverCount)
-	result2 := NewSyncResult(data, serverCount)
+	result1 := NewSyncResultFromBytes(data, serverCount)
+	result2 := NewSyncResultFromBytes(data, serverCount)
 
 	// Same data should produce same hash
 	assert.Equal(t, result1.Hash, result2.Hash)
-	assert.Equal(t, result1.Data, result2.Data)
 	assert.Equal(t, result1.ServerCount, result2.ServerCount)
 }
 
@@ -73,12 +78,11 @@ func TestSyncResultHashDifference(t *testing.T) {
 	data2 := []byte(`{"test": "data2"}`)
 	serverCount := 1
 
-	result1 := NewSyncResult(data1, serverCount)
-	result2 := NewSyncResult(data2, serverCount)
+	result1 := NewSyncResultFromBytes(data1, serverCount)
+	result2 := NewSyncResultFromBytes(data2, serverCount)
 
 	// Different data should produce different hashes
 	assert.NotEqual(t, result1.Hash, result2.Hash)
-	assert.NotEqual(t, result1.Data, result2.Data)
 	assert.Equal(t, result1.ServerCount, result2.ServerCount)
 }
 
@@ -216,7 +220,7 @@ func TestDefaultSourceDataValidator_ValidateData(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := validator.ValidateData(tt.data, tt.format)
+			_, err := validator.ValidateData(tt.data, tt.format)
 
 			if tt.expectError {
 				assert.Error(t, err)

@@ -2,7 +2,6 @@ package sources
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -10,7 +9,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 const (
@@ -101,41 +99,12 @@ func (h *ConfigMapSourceHandler) Sync(ctx context.Context, mcpRegistry *mcpv1alp
 	// Convert string data to bytes
 	registryData := []byte(data)
 
-	// Validate registry data format
-	if err := h.validator.ValidateData(registryData, source.Format); err != nil {
+	// Validate and parse registry data
+	reg, err := h.validator.ValidateData(registryData, source.Format)
+	if err != nil {
 		return nil, fmt.Errorf("registry data validation failed: %w", err)
 	}
 
-	// Parse and count servers based on format
-	serverCount, err := h.countServers(registryData, source.Format)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse registry data: %w", err)
-	}
-
 	// Create and return sync result
-	return NewSyncResult(registryData, serverCount), nil
-}
-
-// countServers counts the number of servers in the registry data
-func (h *ConfigMapSourceHandler) countServers(data []byte, format string) (int, error) {
-	switch format {
-	case mcpv1alpha1.RegistryFormatToolHive:
-		return h.countToolHiveServers(data)
-	case mcpv1alpha1.RegistryFormatUpstream:
-		return 0, fmt.Errorf("upstream registry format is not yet supported")
-	default:
-		return h.countToolHiveServers(data) // Default to ToolHive format
-	}
-}
-
-// countToolHiveServers counts servers in ToolHive format
-func (*ConfigMapSourceHandler) countToolHiveServers(data []byte) (int, error) {
-	var mcpRegistry registry.Registry
-
-	if err := json.Unmarshal(data, &mcpRegistry); err != nil {
-		return 0, fmt.Errorf("failed to parse ToolHive registry format: %w", err)
-	}
-
-	// Count both container servers and remote servers
-	return len(mcpRegistry.Servers) + len(mcpRegistry.RemoteServers), nil
+	return NewSyncResult(reg, source.Format)
 }

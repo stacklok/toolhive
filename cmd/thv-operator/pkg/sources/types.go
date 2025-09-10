@@ -12,8 +12,8 @@ import (
 
 // SourceDataValidator is an interface for validating registry source configurations
 type SourceDataValidator interface {
-	// ValidateData ensures the provided data is valid for the specified format
-	ValidateData(data []byte, format string) error
+	// ValidateData validates raw data and returns a parsed Registry
+	ValidateData(data []byte, format string) (*registry.Registry, error)
 }
 
 // SourceHandler is an interface with methods to sync from external data sources
@@ -27,23 +27,53 @@ type SourceHandler interface {
 
 // SyncResult contains the result of a sync operation
 type SyncResult struct {
-	// Data is the raw registry data retrieved from the source
-	Data []byte
+	// Registry is the parsed registry data (replaces raw Data field)
+	Registry *registry.Registry
 
-	// Hash is the SHA256 hash of the data for change detection
+	// Hash is the SHA256 hash of the serialized data for change detection
 	Hash string
 
 	// ServerCount is the number of servers found in the registry data
 	ServerCount int
+
+	// Format indicates the original format of the source data
+	Format string
 }
 
-// NewSyncResult creates a new SyncResult with computed hash
-func NewSyncResult(data []byte, serverCount int) *SyncResult {
+// NewSyncResult creates a new SyncResult from a Registry instance
+func NewSyncResult(reg *registry.Registry, format string) (*SyncResult, error) {
+	data, err := json.Marshal(reg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal registry: %w", err)
+	}
+
 	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+	serverCount := len(reg.Servers) + len(reg.RemoteServers)
+
 	return &SyncResult{
-		Data:        data,
+		Registry:    reg,
 		Hash:        hash,
 		ServerCount: serverCount,
+		Format:      format,
+	}, nil
+}
+
+// GetRawData serializes the registry back to []byte when needed
+func (sr *SyncResult) GetRawData() ([]byte, error) {
+	if sr.Registry == nil {
+		return nil, fmt.Errorf("registry is nil - cannot serialize")
+	}
+	return json.Marshal(sr.Registry)
+}
+
+// NewSyncResultFromBytes creates a new SyncResult from raw data (legacy method)
+func NewSyncResultFromBytes(data []byte, serverCount int) *SyncResult {
+	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+	return &SyncResult{
+		Registry:    nil, // Will need to be parsed separately
+		Hash:        hash,
+		ServerCount: serverCount,
+		Format:      "", // Unknown format
 	}
 }
 
@@ -61,50 +91,84 @@ func NewSourceDataValidator() SourceDataValidator {
 	return &DefaultSourceDataValidator{}
 }
 
-// ValidateData ensures the provided data is valid for the specified format
-func (*DefaultSourceDataValidator) ValidateData(data []byte, format string) error {
+// ValidateData validates raw data and returns a parsed Registry
+func (*DefaultSourceDataValidator) ValidateData(data []byte, format string) (*registry.Registry, error) {
 	if len(data) == 0 {
-		return fmt.Errorf("data cannot be empty")
+		return nil, fmt.Errorf("data cannot be empty")
 	}
 
 	switch format {
 	case mcpv1alpha1.RegistryFormatToolHive:
-		return validateToolhiveFormat(data)
+		return validateToolhiveFormatAndParse(data)
 	case mcpv1alpha1.RegistryFormatUpstream:
-		return validateUpstreamFormat(data)
+		return validateUpstreamFormatAndParse(data)
 	default:
-		return fmt.Errorf("unsupported format: %s", format)
+		return nil, fmt.Errorf("unsupported format: %s", format)
 	}
 }
 
-// validateToolhiveFormat validates data against ToolHive registry format
-func validateToolhiveFormat(data []byte) error {
+// validateToolhiveFormatAndParse validates data against ToolHive registry format and returns parsed Registry
+func validateToolhiveFormatAndParse(data []byte) (*registry.Registry, error) {
 	// Use the existing schema validation from pkg/registry
-	return registry.ValidateRegistrySchema(data)
+	if err := registry.ValidateRegistrySchema(data); err != nil {
+		return nil, err
+	}
+
+	// Parse the validated data
+	var reg registry.Registry
+	if err := json.Unmarshal(data, &reg); err != nil {
+		return nil, fmt.Errorf("failed to parse ToolHive registry format: %w", err)
+	}
+
+	return &reg, nil
 }
 
-// validateUpstreamFormat validates data against upstream registry format
-func validateUpstreamFormat(data []byte) error {
+// validateUpstreamFormatAndParse validates data against upstream registry format and returns converted Registry
+func validateUpstreamFormatAndParse(data []byte) (*registry.Registry, error) {
 	// Parse as upstream format to validate structure
 	var upstreamServers []registry.UpstreamServerDetail
 	if err := json.Unmarshal(data, &upstreamServers); err != nil {
-		return fmt.Errorf("invalid upstream format: %w", err)
+		return nil, fmt.Errorf("invalid upstream format: %w", err)
 	}
 
 	// Basic validation - ensure we have at least one server and required fields
 	if len(upstreamServers) == 0 {
-		return fmt.Errorf("upstream registry must contain at least one server")
+		return nil, fmt.Errorf("upstream registry must contain at least one server")
 	}
 
 	for i, server := range upstreamServers {
 		if server.Server.Name == "" {
-			return fmt.Errorf("server at index %d: name is required", i)
+			return nil, fmt.Errorf("server at index %d: name is required", i)
 		}
 		if server.Server.Description == "" {
-			return fmt.Errorf("server at index %d (%s): description is required", i, server.Server.Name)
+			return nil, fmt.Errorf("server at index %d (%s): description is required", i, server.Server.Name)
 		}
-		// Additional validation could be added here
 	}
 
-	return nil
+	// Convert upstream format to ToolHive Registry format
+	toolhiveRegistry := &registry.Registry{
+		Version:       "1.0",
+		LastUpdated:   "", // Will be set during sync
+		Servers:       make(map[string]*registry.ImageMetadata),
+		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+	}
+
+	for _, upstreamServer := range upstreamServers {
+		serverMetadata, err := registry.ConvertUpstreamToToolhive(&upstreamServer)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert server %s: %w", upstreamServer.Server.Name, err)
+		}
+
+		// Add to appropriate map based on server type
+		switch server := serverMetadata.(type) {
+		case *registry.ImageMetadata:
+			toolhiveRegistry.Servers[upstreamServer.Server.Name] = server
+		case *registry.RemoteServerMetadata:
+			toolhiveRegistry.RemoteServers[upstreamServer.Server.Name] = server
+		default:
+			return nil, fmt.Errorf("unknown server type for %s", upstreamServer.Server.Name)
+		}
+	}
+
+	return toolhiveRegistry, nil
 }

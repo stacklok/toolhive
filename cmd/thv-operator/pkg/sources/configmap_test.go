@@ -320,21 +320,9 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-						ConfigMapSourceDataKey: `{
-							"version": "1.0.0",
-							"last_updated": "2025-01-15T10:30:00Z",
-							"servers": {
-								"server1": {
-									"name": "server1",
-									"description": "A test server for validation - Server 1",
-									"image": "test/server1:latest",
-									"tier": "Community",
-									"status": "Active",
-									"transport": "stdio",
-									"tools": ["test_tool"]
-								}
-							}
-						}`,
+						ConfigMapSourceDataKey: string(NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive).
+							WithServerName("server1").
+							BuildJSON()),
 					},
 				},
 			},
@@ -366,11 +354,9 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "registry-namespace",
 					},
 					Data: map[string]string{
-						ConfigMapSourceDataKey: `{
-							"version": "1.0.0",
-							"last_updated": "2025-01-15T10:30:00Z",
-							"servers": {}
-						}`,
+						ConfigMapSourceDataKey: string(NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive).
+							Empty().
+							BuildJSON()),
 					},
 				},
 			},
@@ -455,7 +441,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-						ConfigMapSourceDataKey: `invalid json`,
+						ConfigMapSourceDataKey: string(InvalidJSON()),
 					},
 				},
 			},
@@ -514,109 +500,128 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 				assert.NotNil(t, result)
 				assert.Equal(t, tt.expectedServerCount, result.ServerCount)
 				assert.NotEmpty(t, result.Hash)
-				assert.NotEmpty(t, result.Data)
+				assert.NotEmpty(t, result.Registry)
 			}
 		})
 	}
 }
 
-func TestConfigMapSourceHandler_countServers(t *testing.T) {
+func TestConfigMapSourceHandler_ValidationWithBuilder(t *testing.T) {
 	t.Parallel()
 
-	handler := &ConfigMapSourceHandler{}
+	handler := &ConfigMapSourceHandler{
+		validator: NewSourceDataValidator(),
+	}
 
 	tests := []struct {
 		name          string
-		data          []byte
+		builder       func() []byte
 		format        string
 		expectedCount int
 		expectError   bool
 		errorContains string
 	}{
 		{
-			name:          "toolhive format with servers",
-			data:          []byte(`{"servers": {"s1": {}, "s2": {}, "s3": {}}}`),
+			name: "toolhive format with container servers",
+			builder: func() []byte {
+				return NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive).
+					WithServer("container-server1").
+					WithServer("container-server2").
+					BuildJSON()
+			},
 			format:        mcpv1alpha1.RegistryFormatToolHive,
-			expectedCount: 3,
+			expectedCount: 2,
 			expectError:   false,
 		},
 		{
 			name: "toolhive format with servers and remote servers",
-			data: []byte(`{
-				"version": "1.0.0",
-				"last_updated": "2025-01-15T10:30:00Z",
-				"servers": {
-					"container-server1": {},
-					"container-server2": {}
-				},
-				"remote_servers": {
-					"remote-server1": {},
-					"remote-server2": {},
-					"remote-server3": {}
-				}
-			}`),
+			builder: func() []byte {
+				return NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive).
+					WithServer("container-server1").
+					WithServer("container-server2").
+					WithRemoteServerName("remote-server1", "https://remote-1.com").
+					WithRemoteServerName("remote-server2", "https://remote-2.com").
+					WithRemoteServerName("remote-server3", "https://remote-3.com").
+					BuildJSON()
+			},
 			format:        mcpv1alpha1.RegistryFormatToolHive,
 			expectedCount: 5, // 2 container servers + 3 remote servers
 			expectError:   false,
 		},
 		{
-			name:          "toolhive format empty servers",
-			data:          []byte(`{"servers": {}}`),
-			format:        mcpv1alpha1.RegistryFormatToolHive,
-			expectedCount: 0,
-			expectError:   false,
+			name: "toolhive format empty servers",
+			builder: func() []byte {
+				return NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive).
+					Empty().
+					BuildJSON()
+			},
+			format:      mcpv1alpha1.RegistryFormatToolHive,
+			expectError: false, // Empty is now valid for ToolHive format
 		},
 		{
 			name: "toolhive format with only remote servers",
-			data: []byte(`{
-				"version": "1.0.0",
-				"last_updated": "2025-01-15T10:30:00Z",
-				"servers": {},
-				"remote_servers": {
-					"remote-only-1": {},
-					"remote-only-2": {}
-				}
-			}`),
+			builder: func() []byte {
+				return NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive).
+					Empty().
+					WithRemoteServerName("remote-only-1", "https://remote-only-1.com").
+					WithRemoteServerName("remote-only-2", "https://remote-only-2.com").
+					BuildJSON()
+			},
 			format:        mcpv1alpha1.RegistryFormatToolHive,
 			expectedCount: 2, // 0 container servers + 2 remote servers
 			expectError:   false,
 		},
 		{
-			name:          "upstream format not supported",
-			data:          []byte(`[{"server": {"name": "s1", "description": "A test server for validation - Server 1"}}, {"server": {"name": "s2", "description": "A test server for validation - Server 2"}}]`),
+			name: "upstream format with servers",
+			builder: func() []byte {
+				return NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatUpstream).
+					WithServerName("s1").
+					WithServerName("s2").
+					BuildJSON()
+			},
 			format:        mcpv1alpha1.RegistryFormatUpstream,
-			expectError:   true,
-			errorContains: "upstream registry format is not yet supported",
-		},
-		{
-			name:          "upstream format empty array",
-			data:          []byte(`[]`),
-			format:        mcpv1alpha1.RegistryFormatUpstream,
-			expectError:   true,
-			errorContains: "upstream registry format is not yet supported",
-		},
-		{
-			name:          "default to toolhive format",
-			data:          []byte(`{"servers": {"s1": {}}}`),
-			format:        "",
-			expectedCount: 1,
+			expectedCount: 2,
 			expectError:   false,
 		},
 		{
-			name:          "invalid toolhive json",
-			data:          []byte(`invalid json`),
-			format:        mcpv1alpha1.RegistryFormatToolHive,
-			expectedCount: 0,
+			name: "upstream format empty array",
+			builder: func() []byte {
+				return NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatUpstream).
+					Empty().
+					BuildJSON()
+			},
+			format:        mcpv1alpha1.RegistryFormatUpstream,
 			expectError:   true,
-			errorContains: "failed to parse ToolHive registry format",
+			errorContains: "upstream registry must contain at least one server",
 		},
 		{
-			name:          "invalid upstream json",
-			data:          []byte(`invalid json`),
-			format:        mcpv1alpha1.RegistryFormatUpstream,
-			expectedCount: 0,
+			name: "unsupported format",
+			builder: func() []byte {
+				return NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive).
+					WithServer("s1").
+					BuildJSON()
+			},
+			format:        "unsupported",
 			expectError:   true,
-			errorContains: "upstream registry format is not yet supported",
+			errorContains: "unsupported format: unsupported",
+		},
+		{
+			name: "invalid toolhive json",
+			builder: func() []byte {
+				return InvalidJSON()
+			},
+			format:        mcpv1alpha1.RegistryFormatToolHive,
+			expectError:   true,
+			errorContains: "failed to parse registry data",
+		},
+		{
+			name: "invalid upstream json",
+			builder: func() []byte {
+				return InvalidJSON()
+			},
+			format:        mcpv1alpha1.RegistryFormatUpstream,
+			expectError:   true,
+			errorContains: "invalid upstream format",
 		},
 	}
 
@@ -624,7 +629,8 @@ func TestConfigMapSourceHandler_countServers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			count, err := handler.countServers(tt.data, tt.format)
+			data := tt.builder()
+			registry, err := handler.validator.ValidateData(data, tt.format)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -633,7 +639,11 @@ func TestConfigMapSourceHandler_countServers(t *testing.T) {
 				}
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.expectedCount, count)
+				assert.NotNil(t, registry)
+				if tt.expectedCount > 0 {
+					actualCount := len(registry.Servers) + len(registry.RemoteServers)
+					assert.Equal(t, tt.expectedCount, actualCount)
+				}
 			}
 		})
 	}

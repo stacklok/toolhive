@@ -128,7 +128,7 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			err := manager.Store(ctx, tt.registry, tt.data)
+			err := manager.StoreRaw(ctx, tt.registry, tt.data)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -254,7 +254,7 @@ func TestConfigMapStorageManager_Get(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			data, err := manager.Get(ctx, tt.registry)
+			data, err := manager.GetRaw(ctx, tt.registry)
 
 			if tt.expectError {
 				assert.Error(t, err)

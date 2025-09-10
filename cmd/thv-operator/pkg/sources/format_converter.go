@@ -11,8 +11,10 @@ import (
 
 // FormatConverter defines the interface for converting between registry formats
 type FormatConverter interface {
-	// Convert transforms registry data from one format to another
-	Convert(data []byte, fromFormat, toFormat string) ([]byte, error)
+	// Convert transforms a Registry from one logical format to another
+	Convert(reg *registry.Registry, fromFormat, toFormat string) (*registry.Registry, error)
+	// ConvertRaw transforms raw data between formats (legacy method)
+	ConvertRaw(data []byte, fromFormat, toFormat string) ([]byte, error)
 }
 
 // RegistryFormatConverter implements the FormatConverter interface
@@ -27,21 +29,16 @@ func NewRegistryFormatConverter() FormatConverter {
 	}
 }
 
-// Convert transforms registry data from one format to another
-func (c *RegistryFormatConverter) Convert(data []byte, fromFormat, toFormat string) ([]byte, error) {
+// Convert transforms a Registry from one logical format to another
+func (*RegistryFormatConverter) Convert(reg *registry.Registry, fromFormat, toFormat string) (*registry.Registry, error) {
 	// Validate input parameters
-	if len(data) == 0 {
-		return nil, fmt.Errorf("input data cannot be empty")
+	if reg == nil {
+		return nil, fmt.Errorf("input registry cannot be nil")
 	}
 
 	// Check if conversion is needed
 	if fromFormat == toFormat {
-		return data, nil
-	}
-
-	// Validate source format
-	if err := c.validator.ValidateData(data, fromFormat); err != nil {
-		return nil, fmt.Errorf("source data validation failed: %w", err)
+		return reg, nil
 	}
 
 	// Check supported formats
@@ -53,14 +50,50 @@ func (c *RegistryFormatConverter) Convert(data []byte, fromFormat, toFormat stri
 		return nil, fmt.Errorf("unsupported target format: %s", toFormat)
 	}
 
+	// For now, both ToolHive and Upstream formats use the same Registry structure internally
+	// The main difference is in serialization/deserialization and validation
+	// So we can return the same registry for most conversions
 	switch {
 	case fromFormat == mcpv1alpha1.RegistryFormatUpstream && toFormat == mcpv1alpha1.RegistryFormatToolHive:
-		return convertUpstreamToToolhive(data)
+		return reg, nil // Already converted during parsing
 	case fromFormat == mcpv1alpha1.RegistryFormatToolHive && toFormat == mcpv1alpha1.RegistryFormatUpstream:
-		return convertToolhiveToUpstream(data)
+		return reg, nil // Registry structure is compatible
 	default:
 		return nil, fmt.Errorf("conversion from %s to %s is not supported", fromFormat, toFormat)
 	}
+}
+
+// ConvertRaw transforms raw data between formats (legacy method)
+func (c *RegistryFormatConverter) ConvertRaw(data []byte, fromFormat, toFormat string) ([]byte, error) {
+	// Validate input parameters
+	if len(data) == 0 {
+		return nil, fmt.Errorf("input data cannot be empty")
+	}
+
+	// Check if conversion is needed
+	if fromFormat == toFormat {
+		return data, nil
+	}
+
+	// Parse the source data first
+	reg, err := c.validator.ValidateData(data, fromFormat)
+	if err != nil {
+		return nil, fmt.Errorf("source data validation failed: %w", err)
+	}
+
+	// Convert the registry
+	convertedReg, err := c.Convert(reg, fromFormat, toFormat)
+	if err != nil {
+		return nil, err
+	}
+
+	// Serialize back to bytes
+	result, err := json.Marshal(convertedReg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal converted registry: %w", err)
+	}
+
+	return result, nil
 }
 
 // supportedFormats returns the list of supported registry formats
@@ -80,93 +113,14 @@ func detectFormat(data []byte) (string, error) {
 	validator := NewSourceDataValidator()
 
 	// Try to parse as ToolHive format first
-	if err := validator.ValidateData(data, mcpv1alpha1.RegistryFormatToolHive); err == nil {
+	if _, err := validator.ValidateData(data, mcpv1alpha1.RegistryFormatToolHive); err == nil {
 		return mcpv1alpha1.RegistryFormatToolHive, nil
 	}
 
 	// Try to parse as Upstream format
-	if err := validator.ValidateData(data, mcpv1alpha1.RegistryFormatUpstream); err == nil {
+	if _, err := validator.ValidateData(data, mcpv1alpha1.RegistryFormatUpstream); err == nil {
 		return mcpv1alpha1.RegistryFormatUpstream, nil
 	}
 
 	return "", fmt.Errorf("unable to detect registry format: data does not match any known format")
-}
-
-// convertUpstreamToToolhive converts upstream format to ToolHive format
-func convertUpstreamToToolhive(data []byte) ([]byte, error) {
-	// Parse upstream format
-	var upstreamServers []registry.UpstreamServerDetail
-	if err := json.Unmarshal(data, &upstreamServers); err != nil {
-		return nil, fmt.Errorf("failed to parse upstream format: %w", err)
-	}
-
-	// Convert to ToolHive format
-	toolhiveRegistry := &registry.Registry{
-		Version:       "1.0",
-		LastUpdated:   "", // Will be set during sync
-		Servers:       make(map[string]*registry.ImageMetadata),
-		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
-	}
-
-	for _, upstreamServer := range upstreamServers {
-		serverMetadata, err := registry.ConvertUpstreamToToolhive(&upstreamServer)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert server %s: %w", upstreamServer.Server.Name, err)
-		}
-
-		// Add to appropriate map based on server type
-		switch server := serverMetadata.(type) {
-		case *registry.ImageMetadata:
-			toolhiveRegistry.Servers[upstreamServer.Server.Name] = server
-		case *registry.RemoteServerMetadata:
-			toolhiveRegistry.RemoteServers[upstreamServer.Server.Name] = server
-		default:
-			return nil, fmt.Errorf("unknown server type for %s", upstreamServer.Server.Name)
-		}
-	}
-
-	// Marshal to JSON
-	result, err := json.Marshal(toolhiveRegistry)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal ToolHive format: %w", err)
-	}
-
-	return result, nil
-}
-
-// convertToolhiveToUpstream converts ToolHive format to upstream format
-func convertToolhiveToUpstream(data []byte) ([]byte, error) {
-	// Parse ToolHive format
-	var toolhiveRegistry registry.Registry
-	if err := json.Unmarshal(data, &toolhiveRegistry); err != nil {
-		return nil, fmt.Errorf("failed to parse ToolHive format: %w", err)
-	}
-
-	var upstreamServers []registry.UpstreamServerDetail
-
-	// Convert container servers
-	for _, server := range toolhiveRegistry.Servers {
-		upstreamServer, err := registry.ConvertToolhiveToUpstream(server)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert container server %s: %w", server.GetName(), err)
-		}
-		upstreamServers = append(upstreamServers, *upstreamServer)
-	}
-
-	// Convert remote servers
-	for _, server := range toolhiveRegistry.RemoteServers {
-		upstreamServer, err := registry.ConvertToolhiveToUpstream(server)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert remote server %s: %w", server.GetName(), err)
-		}
-		upstreamServers = append(upstreamServers, *upstreamServer)
-	}
-
-	// Marshal to JSON
-	result, err := json.Marshal(upstreamServers)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal upstream format: %w", err)
-	}
-
-	return result, nil
 }

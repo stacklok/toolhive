@@ -48,8 +48,8 @@ require (
 	golang.org/x/sync v0.17.0
 	golang.org/x/term v0.35.0
 	gopkg.in/yaml.v3 v3.0.1
-	k8s.io/api v0.34.0
-	k8s.io/apimachinery v0.34.0
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
 	k8s.io/utils v0.0.0-20250820121507-0af2bda4dd1d
 	sigs.k8s.io/controller-runtime v0.22.0
 	sigs.k8s.io/yaml v1.6.0
@@ -306,5 +306,5 @@ require (
 	golang.org/x/crypto v0.41.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
 	golang.org/x/sys v0.36.0
-	k8s.io/client-go v0.34.0
+	k8s.io/client-go v0.34.1
 )

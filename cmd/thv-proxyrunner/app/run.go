@@ -294,15 +294,18 @@ func isSafeFlagWithConfigMap(flagName string) bool {
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	// Handle ConfigMap identification if specified
+	// Handle ConfigMap configuration if specified
+	var configMapRunConfig *runner.RunConfig
 	if runFromConfigMap != "" {
 		// Validate that conflicting flags are not used with --from-configmap first
 		if err := validateConfigMapOnlyMode(cmd); err != nil {
 			return err
 		}
 
-		if err := identifyAndReadConfigMap(ctx, runFromConfigMap); err != nil {
-			return fmt.Errorf("failed to identify ConfigMap: %w", err)
+		var err error
+		configMapRunConfig, err = identifyAndReadConfigMap(ctx, runFromConfigMap)
+		if err != nil {
+			return fmt.Errorf("failed to load ConfigMap configuration: %w", err)
 		}
 	}
 
@@ -353,31 +356,39 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to parse environment variables: %v", err)
 	}
 
-	// Initialize a new RunConfig with values from command-line flags
-	builder := runner.NewRunConfigBuilder().
-		WithRuntime(rt).
-		WithCmdArgs(cmdArgs).
-		WithName(runName).
-		WithImage(mcpServerImage).
-		WithHost(runHost).
-		WithTargetHost(transport.LocalhostIPv4).
-		WithDebug(debugMode).
-		WithVolumes(runVolumes).
-		WithSecrets(runSecrets).
-		WithAuthzConfigPath(runAuthzConfig).
-		WithAuditConfigPath(runAuditConfig).
-		WithPermissionProfileNameOrPath(runPermissionProfile).
-		WithNetworkIsolation(runIsolateNetwork).
-		WithK8sPodPatch(runK8sPodPatch).
-		WithProxyMode(types.ProxyMode(runProxyMode)).
-		WithTransportAndPorts(runTransport, runProxyPort, runTargetPort).
-		WithAuditEnabled(runEnableAudit, runAuditConfig).
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-			runThvCABundle, runJWKSAuthTokenFile, runResourceURL, runJWKSAllowPrivateIP).
-		WithTelemetryConfig(runOtelEndpoint, enablePrometheusMetricsPath, runOtelTracingEnabled,
-			runOtelMetricsEnabled, runOtelServiceName, runOtelTracingSamplingRate,
-			runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
-		WithToolsFilter(runToolsFilter)
+	// Initialize a new RunConfig builder with values from ConfigMap or command-line flags
+	var builder *runner.RunConfigBuilder
+	if configMapRunConfig != nil {
+		// Use ConfigMap configuration
+		builder = runner.NewRunConfigBuilder().WithRuntime(rt).WithDebug(debugMode)
+		applyRunConfigToBuilder(builder, configMapRunConfig)
+	} else {
+		// Initialize with values from command-line flags (original behavior)
+		builder = runner.NewRunConfigBuilder().
+			WithRuntime(rt).
+			WithCmdArgs(cmdArgs).
+			WithName(runName).
+			WithImage(mcpServerImage).
+			WithHost(runHost).
+			WithTargetHost(transport.LocalhostIPv4).
+			WithDebug(debugMode).
+			WithVolumes(runVolumes).
+			WithSecrets(runSecrets).
+			WithAuthzConfigPath(runAuthzConfig).
+			WithAuditConfigPath(runAuditConfig).
+			WithPermissionProfileNameOrPath(runPermissionProfile).
+			WithNetworkIsolation(runIsolateNetwork).
+			WithK8sPodPatch(runK8sPodPatch).
+			WithProxyMode(types.ProxyMode(runProxyMode)).
+			WithTransportAndPorts(runTransport, runProxyPort, runTargetPort).
+			WithAuditEnabled(runEnableAudit, runAuditConfig).
+			WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
+				runThvCABundle, runJWKSAuthTokenFile, runResourceURL, runJWKSAllowPrivateIP).
+			WithTelemetryConfig(runOtelEndpoint, enablePrometheusMetricsPath, runOtelTracingEnabled,
+				runOtelMetricsEnabled, runOtelServiceName, runOtelTracingSamplingRate,
+				runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
+			WithToolsFilter(runToolsFilter)
+	}
 
 	// Process environment files
 	if runEnvFileDir != "" {
@@ -461,48 +472,101 @@ func parseConfigMapRef(ref string) (namespace, name string, err error) {
 	return namespace, name, nil
 }
 
-// identifyAndReadConfigMap identifies and reads a ConfigMap to validate its existence and contents
-// This function only validates the ConfigMap but does not use it for configuration
-func identifyAndReadConfigMap(ctx context.Context, configMapRef string) error {
+// identifyAndReadConfigMap identifies and reads a ConfigMap, returning its RunConfig contents
+func identifyAndReadConfigMap(ctx context.Context, configMapRef string) (*runner.RunConfig, error) {
 	// Parse namespace and ConfigMap name
 	namespace, configMapName, err := parseConfigMapRef(configMapRef)
 	if err != nil {
-		return fmt.Errorf("invalid --from-configmap format: %w", err)
+		return nil, fmt.Errorf("invalid --from-configmap format: %w", err)
 	}
 
-	logger.Infof("Identifying ConfigMap '%s/%s'", namespace, configMapName)
+	logger.Infof("Loading configuration from ConfigMap '%s/%s'", namespace, configMapName)
 
 	// Create in-cluster Kubernetes client
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		return fmt.Errorf("failed to create in-cluster config: %w", err)
+		return nil, fmt.Errorf("failed to create in-cluster config: %w", err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return fmt.Errorf("failed to create Kubernetes client: %w", err)
+		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
 	// Get the ConfigMap
 	configMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, configMapName, metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to get ConfigMap '%s/%s': %w", namespace, configMapName, err)
+		return nil, fmt.Errorf("failed to get ConfigMap '%s/%s': %w", namespace, configMapName, err)
 	}
 
 	// Validate that runconfig.json exists in the ConfigMap
 	runConfigJSON, ok := configMap.Data["runconfig.json"]
 	if !ok {
-		return fmt.Errorf("ConfigMap '%s/%s' does not contain 'runconfig.json' key", namespace, configMapName)
+		return nil, fmt.Errorf("ConfigMap '%s/%s' does not contain 'runconfig.json' key", namespace, configMapName)
 	}
 
-	// Validate that the JSON is parseable (but don't use it)
+	// Parse and return the RunConfig
 	var runConfig runner.RunConfig
 	if err := json.Unmarshal([]byte(runConfigJSON), &runConfig); err != nil {
-		return fmt.Errorf("ConfigMap '%s/%s' contains invalid runconfig.json: %w", namespace, configMapName, err)
+		return nil, fmt.Errorf("ConfigMap '%s/%s' contains invalid runconfig.json: %w", namespace, configMapName, err)
 	}
 
-	logger.Infof("Successfully identified and validated ConfigMap '%s/%s' (contains %d bytes of runconfig.json)",
+	logger.Infof("Successfully loaded configuration from ConfigMap '%s/%s' (contains %d bytes of runconfig.json)",
 		namespace, configMapName, len(runConfigJSON))
 
-	return nil
+	return &runConfig, nil
+}
+
+// applyRunConfigToBuilder applies a RunConfig to the builder (works for both ConfigMap and flags)
+func applyRunConfigToBuilder(builder *runner.RunConfigBuilder, config *runner.RunConfig) {
+	builder.WithImage(config.Image).
+		WithName(config.Name).
+		WithCmdArgs(config.CmdArgs).
+		WithHost(config.Host).
+		WithTargetHost(config.TargetHost).
+		WithVolumes(config.Volumes).
+		WithSecrets(config.Secrets).
+		WithAuthzConfigPath(config.AuthzConfigPath).
+		WithAuditConfigPath(config.AuditConfigPath).
+		WithAuditEnabled(config.AuditConfig != nil, config.AuditConfigPath).
+		WithPermissionProfileNameOrPath(config.PermissionProfileNameOrPath).
+		WithNetworkIsolation(config.IsolateNetwork).
+		WithK8sPodPatch(config.K8sPodTemplatePatch).
+		WithProxyMode(config.ProxyMode).
+		WithGroup(config.Group).
+		WithToolsFilter(config.ToolsFilter).
+		WithEnvVars(config.EnvVars).
+		WithTransportAndPorts(string(config.Transport), config.Port, config.TargetPort)
+
+	// Apply complex configs if they exist
+	if config.AuthzConfig != nil {
+		builder.WithAuthzConfig(config.AuthzConfig)
+	}
+	// Note: AuditConfig is handled via WithAuditEnabled in builder based on the flag and path
+	if config.PermissionProfile != nil {
+		builder.WithPermissionProfile(config.PermissionProfile)
+	}
+	if config.ToolsOverride != nil {
+		builder.WithToolsOverride(config.ToolsOverride)
+	}
+	if config.OIDCConfig != nil {
+		builder.WithOIDCConfig(config.OIDCConfig.Issuer, config.OIDCConfig.Audience,
+			config.OIDCConfig.JWKSURL, "", // IntrospectionURL not available in TokenValidatorConfig
+			config.OIDCConfig.ClientID, config.OIDCConfig.ClientSecret,
+			config.OIDCConfig.CACertPath, config.OIDCConfig.AuthTokenFile,
+			"", config.OIDCConfig.AllowPrivateIP) // ResourceURL not available
+	}
+	if config.TelemetryConfig != nil {
+		// Convert headers from map[string]string to []string
+		var headersSlice []string
+		for k, v := range config.TelemetryConfig.Headers {
+			headersSlice = append(headersSlice, k+"="+v)
+		}
+
+		builder.WithTelemetryConfig(config.TelemetryConfig.Endpoint, config.TelemetryConfig.EnablePrometheusMetricsPath,
+			config.TelemetryConfig.TracingEnabled, config.TelemetryConfig.MetricsEnabled,
+			config.TelemetryConfig.ServiceName, config.TelemetryConfig.SamplingRate,
+			headersSlice, config.TelemetryConfig.Insecure,
+			config.TelemetryConfig.EnvironmentVariables)
+	}
 }

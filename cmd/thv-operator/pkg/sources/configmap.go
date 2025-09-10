@@ -13,6 +13,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry"
 )
 
+const (
+	// ConfigMapSourceDataKey is the default key used for registry data in ConfigMap sources
+	ConfigMapSourceDataKey = "registry.json"
+)
+
 // ConfigMapSourceHandler handles registry data from Kubernetes ConfigMaps
 type ConfigMapSourceHandler struct {
 	client    client.Client
@@ -45,9 +50,9 @@ func (*ConfigMapSourceHandler) Validate(source *mcpv1alpha1.MCPRegistrySource) e
 		return fmt.Errorf("configMap name cannot be empty")
 	}
 
-	// Key defaults to "registry.json" if not specified (handled by kubebuilder defaults)
+	// Key defaults to ConfigMapSourceDataKey if not specified (handled by kubebuilder defaults)
 	if source.ConfigMap.Key == "" {
-		source.ConfigMap.Key = "registry.json"
+		source.ConfigMap.Key = ConfigMapSourceDataKey
 	}
 
 	return nil
@@ -80,7 +85,7 @@ func (h *ConfigMapSourceHandler) Sync(ctx context.Context, mcpRegistry *mcpv1alp
 	// Get registry data from ConfigMap
 	key := source.ConfigMap.Key
 	if key == "" {
-		key = "registry.json"
+		key = ConfigMapSourceDataKey
 	}
 
 	data, exists := configMap.Data[key]

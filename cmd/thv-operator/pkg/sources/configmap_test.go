@@ -55,7 +55,7 @@ func TestNewConfigMapSourceHandler_Validate(t *testing.T) {
 				Type: mcpv1alpha1.RegistrySourceTypeConfigMap,
 				ConfigMap: &mcpv1alpha1.ConfigMapSource{
 					Name: "test-config",
-					Key:  "registry.json",
+					Key:  ConfigMapSourceDataKey,
 				},
 			},
 			expectError: false,
@@ -119,7 +119,7 @@ func TestNewConfigMapSourceHandler_Validate(t *testing.T) {
 				assert.NoError(t, err)
 				// Check that default key is set
 				if tt.source.ConfigMap.Key == "" {
-					assert.Equal(t, "registry.json", tt.source.ConfigMap.Key)
+					assert.Equal(t, ConfigMapSourceDataKey, tt.source.ConfigMap.Key)
 				}
 			}
 		})
@@ -154,7 +154,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMap: &mcpv1alpha1.ConfigMapSource{
 							Name: "test-config",
-							Key:  "registry.json",
+							Key:  ConfigMapSourceDataKey,
 						},
 					},
 				},
@@ -166,7 +166,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-						"registry.json": `{
+						ConfigMapSourceDataKey: `{
 							"version": "1.0.0",
 							"last_updated": "2025-01-15T10:30:00Z",
 							"servers": {
@@ -209,7 +209,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Format: mcpv1alpha1.RegistryFormatUpstream,
 						ConfigMap: &mcpv1alpha1.ConfigMapSource{
 							Name: "test-config",
-							Key:  "registry.json",
+							Key:  ConfigMapSourceDataKey,
 						},
 					},
 				},
@@ -221,7 +221,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-						"registry.json": `[
+						ConfigMapSourceDataKey: `[
 							{
 								"server": {
 									"name": "Server 1",
@@ -320,7 +320,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-						"registry.json": `{
+						ConfigMapSourceDataKey: `{
 							"version": "1.0.0",
 							"last_updated": "2025-01-15T10:30:00Z",
 							"servers": {
@@ -354,7 +354,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMap: &mcpv1alpha1.ConfigMapSource{
 							Name: "test-config",
-							Key:  "registry.json",
+							Key:  ConfigMapSourceDataKey,
 						},
 					},
 				},
@@ -366,7 +366,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "registry-namespace",
 					},
 					Data: map[string]string{
-						"registry.json": `{
+						ConfigMapSourceDataKey: `{
 							"version": "1.0.0",
 							"last_updated": "2025-01-15T10:30:00Z",
 							"servers": {}
@@ -421,7 +421,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-						"registry.json": `{
+						ConfigMapSourceDataKey: `{
 							"version": "1.0.0",
 							"last_updated": "2025-01-15T10:30:00Z",
 							"servers": {}
@@ -455,7 +455,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-						"registry.json": `invalid json`,
+						ConfigMapSourceDataKey: `invalid json`,
 					},
 				},
 			},

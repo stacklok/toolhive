@@ -105,34 +105,34 @@ func buildServerConfig(
 		return nil, fmt.Errorf("failed to create container runtime: %w", err)
 	}
 
-	// Build configuration using the builder pattern
-	builder := runner.NewRunConfigBuilder().
-		WithRuntime(rt).
-		WithImage(imageURL).
-		WithName(args.Name).
-		WithHost(args.Host)
+	opts := []runner.RunConfigBuilderOption{
+		runner.WithRuntime(rt),
+		runner.WithImage(imageURL),
+		runner.WithName(args.Name),
+		runner.WithHost(args.Host),
+	}
 
 	// Configure transport and metadata
-	transport := configureTransport(builder, imageMetadata)
-	builder = builder.WithTransportAndPorts(transport, 0, 0)
+	transport := configureTransport(&opts, imageMetadata)
+	opts = append(opts, runner.WithTransportAndPorts(transport, 0, 0))
 
 	// Prepare environment variables
 	envVars := prepareEnvironmentVariables(imageMetadata, args.Env)
 
 	// Build the configuration
 	envVarValidator := &runner.DetachedEnvVarValidator{}
-	return builder.Build(ctx, imageMetadata, envVars, envVarValidator)
+	return runner.NewRunConfigBuilder(ctx, imageMetadata, envVars, envVarValidator, opts...)
 }
 
 // configureTransport sets up transport configuration from metadata
-func configureTransport(builder *runner.RunConfigBuilder, imageMetadata *registry.ImageMetadata) string {
+func configureTransport(opts *[]runner.RunConfigBuilderOption, imageMetadata *registry.ImageMetadata) string {
 	transport := transporttypes.TransportTypeSSE.String()
 
 	if imageMetadata != nil {
 		if imageMetadata.Transport != "" {
 			transport = imageMetadata.Transport
 		}
-		builder.WithCmdArgs(imageMetadata.Args)
+		*opts = append(*opts, runner.WithCmdArgs(imageMetadata.Args))
 	}
 
 	return transport

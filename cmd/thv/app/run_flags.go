@@ -391,35 +391,37 @@ func buildRunnerConfig(
 	} else if serverMetadata != nil {
 		transportType = serverMetadata.GetTransport()
 	}
-	// Create a builder for the RunConfig
-	builder := runner.NewRunConfigBuilder().
-		WithRuntime(rt).
-		WithCmdArgs(cmdArgs).
-		WithName(runFlags.Name).
-		WithImage(imageURL).
-		WithRemoteURL(runFlags.RemoteURL).
-		WithHost(validatedHost).
-		WithTargetHost(runFlags.TargetHost).
-		WithDebug(debugMode).
-		WithVolumes(runFlags.Volumes).
-		WithSecrets(runFlags.Secrets).
-		WithAuthzConfigPath(runFlags.AuthzConfig).
-		WithAuditConfigPath(runFlags.AuditConfig).
-		WithPermissionProfileNameOrPath(runFlags.PermissionProfile).
-		WithNetworkIsolation(runFlags.IsolateNetwork).
-		WithK8sPodPatch(runFlags.K8sPodPatch).
-		WithProxyMode(types.ProxyMode(runFlags.ProxyMode)).
-		WithTransportAndPorts(transportType, runFlags.ProxyPort, runFlags.TargetPort).
-		WithAuditEnabled(runFlags.EnableAudit, runFlags.AuditConfig).
-		WithLabels(runFlags.Labels).
-		WithGroup(runFlags.Group).
-		WithIgnoreConfig(&ignore.Config{
+
+	// set default options
+	opts := []runner.RunConfigBuilderOption{
+		runner.WithRuntime(rt),
+		runner.WithCmdArgs(cmdArgs),
+		runner.WithName(runFlags.Name),
+		runner.WithImage(imageURL),
+		runner.WithRemoteURL(runFlags.RemoteURL),
+		runner.WithHost(validatedHost),
+		runner.WithTargetHost(runFlags.TargetHost),
+		runner.WithDebug(debugMode),
+		runner.WithVolumes(runFlags.Volumes),
+		runner.WithSecrets(runFlags.Secrets),
+		runner.WithAuthzConfigPath(runFlags.AuthzConfig),
+		runner.WithAuditConfigPath(runFlags.AuditConfig),
+		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
+		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
+		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
+		runner.WithProxyMode(types.ProxyMode(runFlags.ProxyMode)),
+		runner.WithTransportAndPorts(transportType, runFlags.ProxyPort, runFlags.TargetPort),
+		runner.WithAuditEnabled(runFlags.EnableAudit, runFlags.AuditConfig),
+		runner.WithLabels(runFlags.Labels),
+		runner.WithGroup(runFlags.Group),
+		runner.WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    runFlags.IgnoreGlobally,
 			PrintOverlays: runFlags.PrintOverlays,
-		})
+		}),
+	}
 
 	// Configure middleware from flags
-	builder = builder.WithMiddlewareFromFlags(
+	opts = append(opts, runner.WithMiddlewareFromFlags(
 		oidcConfig,
 		runFlags.ToolsFilter,
 		nil,
@@ -429,23 +431,23 @@ func buildRunnerConfig(
 		runFlags.AuditConfig,
 		runFlags.Name,
 		runFlags.Transport,
-	)
+	))
 
 	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 		if remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata); remoteAuthConfig != nil {
-			builder = builder.WithRemoteAuth(remoteAuthConfig)
+			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
 		}
 	}
 	if runFlags.RemoteURL != "" {
 		if remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags); remoteAuthConfig != nil {
-			builder = builder.WithRemoteAuth(remoteAuthConfig)
+			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
 		}
 	}
 
 	// Load authz config if path is provided
 	if runFlags.AuthzConfig != "" {
 		if authzConfigData, err := authz.LoadConfig(runFlags.AuthzConfig); err == nil {
-			builder = builder.WithAuthzConfig(authzConfigData)
+			opts = append(opts, runner.WithAuthzConfig(authzConfigData))
 		}
 		// Note: Path is already set via WithAuthzConfigPath above
 	}
@@ -455,30 +457,33 @@ func buildRunnerConfig(
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := extractTelemetryValues(telemetryConfig)
 
 	// Set additional configurations that are still needed in old format for other parts of the system
-	builder = builder.WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-		runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP).
-		WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
+	opts = append(opts,
+		runner.WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
+			runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP,
+		),
+		runner.WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
 			runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, runFlags.OtelServiceName,
-			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables).
-		WithToolsFilter(runFlags.ToolsFilter)
+			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables,
+		),
+		runner.WithToolsFilter(runFlags.ToolsFilter))
 
 	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
 	// Process environment files
 	var err error
 	if runFlags.EnvFile != "" {
-		builder, err = builder.WithEnvFile(runFlags.EnvFile)
+		opts = append(opts, runner.WithEnvFile(runFlags.EnvFile))
 		if err != nil {
 			return nil, fmt.Errorf("failed to process env file %s: %v", runFlags.EnvFile, err)
 		}
 	}
 	if runFlags.EnvFileDir != "" {
-		builder, err = builder.WithEnvFilesFromDirectory(runFlags.EnvFileDir)
+		opts = append(opts, runner.WithEnvFilesFromDirectory(runFlags.EnvFileDir))
 		if err != nil {
 			return nil, fmt.Errorf("failed to process env files from directory %s: %v", runFlags.EnvFileDir, err)
 		}
 	}
 
-	return builder.Build(ctx, imageMetadata, envVars, envVarValidator)
+	return runner.NewRunConfigBuilder(ctx, imageMetadata, envVars, envVarValidator, opts...)
 }
 
 // extractOIDCValues extracts OIDC values from the OIDC config for legacy configuration

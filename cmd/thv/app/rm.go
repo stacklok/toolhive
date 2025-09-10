@@ -25,7 +25,7 @@ var (
 )
 
 func init() {
-	rmCmd.Flags().BoolVar(&rmAll, "all", false, "Delete all worloads")
+	rmCmd.Flags().BoolVar(&rmAll, "all", false, "Delete all workloads")
 	rmCmd.Flags().StringVarP(&rmGroup, "group", "", "", "Delete all workloads in the specified group")
 
 	// Mark the flags as mutually exclusive

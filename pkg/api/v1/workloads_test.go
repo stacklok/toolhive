@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
@@ -273,29 +274,29 @@ func TestUpdateWorkload(t *testing.T) {
 			name:         "stop workload fails",
 			workloadName: "test-workload",
 			requestBody:  `{"image": "test-image"}`,
-			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
 				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
 					Return(core.Workload{Name: "test-workload"}, nil)
-				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
 					Return(nil, fmt.Errorf("stop failed"))
 			},
 			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "Failed to stop workload",
+			expectedBody:   "failed to update workload: stop failed",
 		},
 		{
 			name:         "delete workload fails",
 			workloadName: "test-workload",
 			requestBody:  `{"image": "test-image"}`,
-			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
 				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
 					Return(core.Workload{Name: "test-workload"}, nil)
-				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, nil)
-				wm.EXPECT().DeleteWorkloads(gomock.Any(), []string{"test-workload"}).
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
 					Return(nil, fmt.Errorf("delete failed"))
 			},
 			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "Failed to delete workload",
+			expectedBody:   "failed to update workload: delete failed",
 		},
 		{
 			name:         "with tool filters",
@@ -307,16 +308,12 @@ func TestUpdateWorkload(t *testing.T) {
 
 				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
 					Return(core.Workload{Name: "test-workload"}, nil)
-				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, nil)
-				wm.EXPECT().DeleteWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
-				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
-					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
 						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
 						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
-						return nil
+						return &errgroup.Group{}, nil
 					})
 			},
 			expectedStatus: http.StatusOK,
@@ -337,16 +334,12 @@ func TestUpdateWorkload(t *testing.T) {
 
 				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
 					Return(core.Workload{Name: "test-workload"}, nil)
-				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, nil)
-				wm.EXPECT().DeleteWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
-				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
-					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
 						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
 						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
-						return nil
+						return &errgroup.Group{}, nil
 					})
 			},
 			expectedStatus: http.StatusOK,
@@ -367,16 +360,12 @@ func TestUpdateWorkload(t *testing.T) {
 
 				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
 					Return(core.Workload{Name: "test-workload"}, nil)
-				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, nil)
-				wm.EXPECT().DeleteWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
-				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
-					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
 						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
 						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
-						return nil
+						return &errgroup.Group{}, nil
 					})
 			},
 			expectedStatus: http.StatusOK,
@@ -389,11 +378,8 @@ func TestUpdateWorkload(t *testing.T) {
 			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
 				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
 					Return(core.Workload{Name: "test-workload"}, nil)
-				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, nil)
-				wm.EXPECT().DeleteWorkloads(gomock.Any(), []string{"test-workload"}).
-					Return(nil, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				// The validation error should occur before UpdateWorkload is called
 			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "tool override for actual-tool must have either Name or Description set",

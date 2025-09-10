@@ -31,6 +31,13 @@
       },
       "additionalProperties": false
     },
+    "groups": {
+      "type": "array",
+      "description": "Collection of group definitions containing related MCP servers",
+      "items": {
+        "$ref": "#/definitions/group"
+      }
+    },
     "version": {
       "type": "string",
       "description": "Registry schema version",
@@ -543,6 +550,47 @@
           "type": "object",
           "description": "Custom user-defined metadata for the remote MCP server",
           "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "group": {
+      "type": "object",
+      "description": "Group definition containing related MCP servers that can be deployed together",
+      "required": ["name", "description"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Identifier for the group, used when referencing the group in commands",
+          "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the group's purpose and functionality",
+          "minLength": 10,
+          "maxLength": 500
+        },
+        "servers": {
+          "type": "object",
+          "description": "Collection of MCP server entries within this group indexed by server name",
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9-]+[a-z0-9]$": {
+              "$ref": "#/definitions/server"
+            }
+          },
+          "additionalProperties": false
+        },
+        "remote_servers": {
+          "type": "object",
+          "description": "Collection of remote MCP server entries within this group indexed by server name",
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9-]+[a-z0-9]$": {
+              "$ref": "#/definitions/remote_server"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

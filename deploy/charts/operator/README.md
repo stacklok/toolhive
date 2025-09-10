@@ -1,4 +1,5 @@
 
+
 # ToolHive Operator Helm Chart
 
 ![Version: 0.2.13](https://img.shields.io/badge/Version-0.2.13-informational?style=flat-square)

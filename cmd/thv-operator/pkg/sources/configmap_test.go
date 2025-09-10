@@ -320,21 +320,9 @@ func TestConfigMapSourceHandler_FetchRegistry(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-						ConfigMapSourceDataKey: `{
-							"version": "1.0.0",
-							"last_updated": "2025-01-15T10:30:00Z",
-							"servers": {
-								"server1": {
-									"name": "server1",
-									"description": "A test server for validation - Server 1",
-									"image": "test/server1:latest",
-									"tier": "Community",
-									"status": "Active",
-									"transport": "stdio",
-									"tools": ["test_tool"]
-								}
-							}
-						}`,
+						ConfigMapSourceDataKey: string(NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive).
+							WithServerName("server1").
+							BuildJSON()),
 					},
 				},
 			},
@@ -366,11 +354,9 @@ func TestConfigMapSourceHandler_FetchRegistry(t *testing.T) {
 						Namespace: "registry-namespace",
 					},
 					Data: map[string]string{
-						ConfigMapSourceDataKey: `{
-							"version": "1.0.0",
-							"last_updated": "2025-01-15T10:30:00Z",
-							"servers": {}
-						}`,
+						ConfigMapSourceDataKey: string(NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive).
+							Empty().
+							BuildJSON()),
 					},
 				},
 			},
@@ -455,11 +441,7 @@ func TestConfigMapSourceHandler_FetchRegistry(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Data: map[string]string{
-<<<<<<< HEAD
 						ConfigMapSourceDataKey: string(InvalidJSON()),
-=======
-						ConfigMapSourceDataKey: `invalid json`,
->>>>>>> eca8e428 (Refactor ConfigMap handling to use a constant key for registry data)
 					},
 				},
 			},

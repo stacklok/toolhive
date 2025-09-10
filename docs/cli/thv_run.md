@@ -145,3 +145,4 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
+

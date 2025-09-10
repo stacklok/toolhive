@@ -15,7 +15,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
-	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
@@ -292,16 +291,6 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Default proxy mode to SSE if not specified
-	if !types.IsValidProxyMode(req.ProxyMode) {
-		if req.ProxyMode == "" {
-			req.ProxyMode = types.ProxyModeSSE.String()
-		} else {
-			http.Error(w, "Invalid proxy_mode", http.StatusBadRequest)
-			return
-		}
-	}
-
 	// Create the workload using shared logic
 	runConfig, err := s.workloadService.CreateWorkloadFromRequest(ctx, &req)
 	if err != nil {
@@ -367,24 +356,9 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		Name:          name, // Use the name from URL path, not from request body
 	}
 
-	// Stop the existing workload
-	if _, err = s.workloadManager.StopWorkloads(ctx, []string{name}); err != nil {
-		logger.Errorf("Failed to stop workload %s: %v", name, err)
-		http.Error(w, "Failed to stop workload", http.StatusInternalServerError)
-		return
-	}
-
-	// Delete the existing workload
-	if _, err = s.workloadManager.DeleteWorkloads(ctx, []string{name}); err != nil {
-		logger.Errorf("Failed to delete workload %s: %v", name, err)
-		http.Error(w, "Failed to delete workload", http.StatusInternalServerError)
-		return
-	}
-
-	// Create the new workload using shared logic
-	runConfig, err := s.workloadService.CreateWorkloadFromRequest(ctx, &createReq)
+	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq)
 	if err != nil {
-		// Error messages already logged in createWorkloadFromRequest
+		// Error messages already logged in UpdateWorkloadFromRequest
 		if errors.Is(err, retriever.ErrImageNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 		} else if errors.Is(err, retriever.ErrInvalidRunConfig) {

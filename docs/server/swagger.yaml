@@ -326,6 +326,29 @@ components:
             If true, the value will be stored as a secret rather than as a plain environment variable
           type: boolean
       type: object
+    registry.Group:
+      properties:
+        description:
+          description: Description is a human-readable description of the group's
+            purpose and functionality
+          type: string
+        name:
+          description: Name is the identifier for the group, used when referencing
+            the group in commands
+          type: string
+        remote_servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
+          description: RemoteServers is a map of server names to their corresponding
+            remote server definitions within this group
+          type: object
+        servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.ImageMetadata'
+          description: Servers is a map of server names to their corresponding server
+            definitions within this group
+          type: object
+      type: object
     registry.Header:
       properties:
         choices:
@@ -527,6 +550,13 @@ components:
     registry.Registry:
       description: Full registry data
       properties:
+        groups:
+          description: Groups is a slice of group definitions containing related MCP
+            servers
+          items:
+            $ref: '#/components/schemas/registry.Group'
+          type: array
+          uniqueItems: false
         last_updated:
           description: LastUpdated is the timestamp when the registry was last updated,
             in RFC3339 format
@@ -863,6 +893,7 @@ components:
           items:
             type: string
           type: array
+          uniqueItems: false
         headers:
           additionalProperties:
             type: string

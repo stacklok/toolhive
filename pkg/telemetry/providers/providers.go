@@ -1,4 +1,4 @@
-// Package providers contains telemetry provider implementations and factory logic
+// Package providers contains telemetry provider implementations and builder logic
 package providers
 
 import (
@@ -36,11 +36,85 @@ type Config struct {
 	EnablePrometheusMetricsPath bool // EnablePrometheusMetricsPath enables Prometheus /metrics endpoint
 }
 
-// Builder builds telemetry providers based on configuration.
-// It validates configuration, creates resources, and assembles composite providers.
-type Builder struct {
-	config   Config             // config holds the telemetry configuration
-	resource *resource.Resource // resource holds the OpenTelemetry resource information
+// ProviderOption is an option type used to configure the telemetry providers
+type ProviderOption func(*Config) error
+
+// WithServiceName sets the service name
+func WithServiceName(serviceName string) ProviderOption {
+	return func(config *Config) error {
+		if serviceName == "" {
+			return fmt.Errorf("service cannot be empty")
+		}
+		config.ServiceName = serviceName
+		return nil
+	}
+}
+
+// WithServiceVersion sets the service version
+func WithServiceVersion(serviceVersion string) ProviderOption {
+	return func(config *Config) error {
+		if serviceVersion == "" {
+			return fmt.Errorf("service cannot be empty")
+		}
+		config.ServiceVersion = serviceVersion
+		return nil
+	}
+}
+
+// WithOTLPEndpoint sets the OTLP endpoint
+func WithOTLPEndpoint(endpoint string) ProviderOption {
+	return func(config *Config) error {
+		config.OTLPEndpoint = endpoint
+		return nil
+	}
+}
+
+// WithHeaders sets the headers
+func WithHeaders(headers map[string]string) ProviderOption {
+	return func(config *Config) error {
+		config.Headers = headers
+		return nil
+	}
+}
+
+// WithInsecure sets the insecure flag
+func WithInsecure(insecure bool) ProviderOption {
+	return func(config *Config) error {
+		config.Insecure = insecure
+		return nil
+	}
+}
+
+// WithTracingEnabled sets the tracing enabled flag
+func WithTracingEnabled(tracingEnabled bool) ProviderOption {
+	return func(config *Config) error {
+		config.TracingEnabled = tracingEnabled
+		return nil
+	}
+}
+
+// WithMetricsEnabled sets the metrics enabled flag
+func WithMetricsEnabled(metricsEnabled bool) ProviderOption {
+	return func(config *Config) error {
+		config.MetricsEnabled = metricsEnabled
+		return nil
+	}
+}
+
+// WithSamplingRate sets the sampling rate
+func WithSamplingRate(samplingRate float64) ProviderOption {
+	return func(config *Config) error {
+		config.SamplingRate = samplingRate
+		return nil
+	}
+}
+
+// WithEnablePrometheusMetricsPath sets the enable prometheus metrics path flag
+func WithEnablePrometheusMetricsPath(enablePrometheusMetricsPath bool) ProviderOption {
+	return func(config *Config) error {
+		config.EnablePrometheusMetricsPath = enablePrometheusMetricsPath
+		return nil
+	}
 }
 
 // CompositeProvider combines telemetry providers into a single interface.
@@ -52,54 +126,44 @@ type CompositeProvider struct {
 	shutdownFuncs     []func(context.Context) error // shutdownFuncs clean up resources on shutdown
 }
 
-// WithConfig creates a new provider builder with the given configuration
-func WithConfig(config Config) *Builder {
-	return &Builder{
-		config: config,
+// NewCompositeProvider creates the appropriate providers based on provided options
+func NewCompositeProvider(
+	ctx context.Context,
+	options ...ProviderOption,
+) (*CompositeProvider, error) {
+	config := Config{}
+	for _, option := range options {
+		if err := option(&config); err != nil {
+			return nil, err
+		}
 	}
-}
-
-// Build creates the appropriate providers based on configuration
-func (b *Builder) Build(ctx context.Context) (*CompositeProvider, error) {
 
 	// Create resource for all providers
-	err := b.createResource(ctx)
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceName(config.ServiceName),
+			semconv.ServiceVersion(config.ServiceVersion),
+		),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create resource: %w", err)
+		return nil, fmt.Errorf("failed to create resource with service name '%s' and version '%s': %w",
+			config.ServiceName, config.ServiceVersion, err)
 	}
 
 	// Use strategy selector to determine provider strategies
-	selector := &StrategySelector{config: b.config}
+	selector := &StrategySelector{config: config}
 
 	// Early return for no-op case
 	if selector.IsFullyNoOp() {
 		logger.Infof("No telemetry configured, using no-op providers")
-		return b.createNoOpProvider(), nil
+		return createNoOpProvider(), nil
 	}
 
 	// Build composite provider using strategies
-	return b.buildProviders(ctx, selector, b.resource)
+	return buildProviders(ctx, config, selector, res)
 }
 
-// createResource creates an OpenTelemetry resource with service information
-func (b *Builder) createResource(ctx context.Context) error {
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName(b.config.ServiceName),
-			semconv.ServiceVersion(b.config.ServiceVersion),
-		),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create resource with service name '%s' and version '%s': %w",
-			b.config.ServiceName, b.config.ServiceVersion, err)
-	}
-
-	b.resource = res
-	return nil
-}
-
-// createNoOpProvider returns a composite provider with all no-op implementations
-func (*Builder) createNoOpProvider() *CompositeProvider {
+func createNoOpProvider() *CompositeProvider {
 	return &CompositeProvider{
 		tracerProvider:    tracenoop.NewTracerProvider(),
 		meterProvider:     noop.NewMeterProvider(),
@@ -109,8 +173,9 @@ func (*Builder) createNoOpProvider() *CompositeProvider {
 }
 
 // buildProviders creates a composite provider using the selected strategies
-func (b *Builder) buildProviders(
+func buildProviders(
 	ctx context.Context,
+	config Config,
 	selector *StrategySelector,
 	res *resource.Resource,
 ) (*CompositeProvider, error) {
@@ -118,11 +183,11 @@ func (b *Builder) buildProviders(
 		shutdownFuncs: []func(context.Context) error{},
 	}
 
-	if err := b.createMetricsProvider(ctx, composite, selector, res); err != nil {
+	if err := createMetricsProvider(ctx, config, composite, selector, res); err != nil {
 		return nil, err
 	}
 
-	if err := b.createTracingProvider(ctx, composite, selector, res); err != nil {
+	if err := createTracingProvider(ctx, config, composite, selector, res); err != nil {
 		return nil, err
 	}
 
@@ -131,21 +196,22 @@ func (b *Builder) buildProviders(
 }
 
 // createMetricsProvider creates the metrics provider for the composite provider
-func (b *Builder) createMetricsProvider(
+func createMetricsProvider(
 	ctx context.Context,
+	config Config,
 	composite *CompositeProvider,
 	selector *StrategySelector,
 	res *resource.Resource,
 ) error {
 	// Create meter provider using selected strategy
 	meterStrategy := selector.SelectMeterStrategy()
-	meterResult, err := meterStrategy.CreateMeterProvider(ctx, b.config, res)
+	meterResult, err := meterStrategy.CreateMeterProvider(ctx, config, res)
 	if err != nil {
 		return fmt.Errorf(
 			"failed to create meter provider with config (endpoint: %s, metrics enabled: %t, prometheus enabled: %t): %w",
-			b.config.OTLPEndpoint,
-			b.config.MetricsEnabled,
-			b.config.EnablePrometheusMetricsPath,
+			config.OTLPEndpoint,
+			config.MetricsEnabled,
+			config.EnablePrometheusMetricsPath,
 			err)
 	}
 
@@ -160,19 +226,20 @@ func (b *Builder) createMetricsProvider(
 }
 
 // createTracingProvider creates the tracing provider for the composite provider
-func (b *Builder) createTracingProvider(
+func createTracingProvider(
 	ctx context.Context,
+	config Config,
 	composite *CompositeProvider,
 	selector *StrategySelector,
 	res *resource.Resource,
 ) error {
 	// Create tracer provider using selected strategy
 	tracerStrategy := selector.SelectTracerStrategy()
-	tracerProvider, tracerShutdown, err := tracerStrategy.CreateTracerProvider(ctx, b.config, res)
+	tracerProvider, tracerShutdown, err := tracerStrategy.CreateTracerProvider(ctx, config, res)
 	if err != nil {
 		return fmt.Errorf("failed to create tracer provider with config (endpoint: %s, tracing enabled: %t): %w",
-			b.config.OTLPEndpoint,
-			b.config.TracingEnabled,
+			config.OTLPEndpoint,
+			config.TracingEnabled,
 			err)
 	}
 

@@ -20,6 +20,7 @@ import (
 	rtmocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/process"
 	stateMocks "github.com/stacklok/toolhive/pkg/state/mocks"
 )
 
@@ -1681,4 +1682,233 @@ func TestFileStatusManager_ResetWorkloadPID_WithSlashes(t *testing.T) {
 	assert.Equal(t, rt.WorkloadStatusRunning, statusFileData.Status)
 	assert.Equal(t, "started", statusFileData.StatusContext)
 	assert.Equal(t, 0, statusFileData.ProcessID) // PID should be reset to 0
+}
+
+// TestFileStatusManager_GetWorkload_PIDMigration tests PID migration from legacy PID files to status files
+func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		setupPIDFile    bool
+		pidValue        int
+		workloadStatus  rt.WorkloadStatus
+		processID       int
+		expectMigration bool
+		expectPIDFile   bool // whether PID file should exist after operation
+	}{
+		{
+			name:            "migrates PID when status is running and ProcessID is 0",
+			setupPIDFile:    true,
+			pidValue:        12345,
+			workloadStatus:  rt.WorkloadStatusRunning,
+			processID:       0,
+			expectMigration: true,
+			expectPIDFile:   true, // PID file is NOT deleted (see TODO comment in migration code)
+		},
+		{
+			name:            "no migration when status is not running",
+			setupPIDFile:    true,
+			pidValue:        12345,
+			workloadStatus:  rt.WorkloadStatusStopped,
+			processID:       0,
+			expectMigration: false,
+			expectPIDFile:   true,
+		},
+		{
+			name:            "no migration when ProcessID is not 0",
+			setupPIDFile:    true,
+			pidValue:        12345,
+			workloadStatus:  rt.WorkloadStatusRunning,
+			processID:       98765,
+			expectMigration: false,
+			expectPIDFile:   true,
+		},
+		{
+			name:            "no migration when no PID file exists",
+			setupPIDFile:    false,
+			pidValue:        0,
+			workloadStatus:  rt.WorkloadStatusRunning,
+			processID:       0,
+			expectMigration: false,
+			expectPIDFile:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+			ctx := context.Background()
+			workloadName := fmt.Sprintf("test-workload-migration-%d", time.Now().UnixNano()) // unique name to avoid locking conflicts
+
+			// Mock the run config store to return false for exists (not a remote workload)
+			mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadName).Return(false, nil).AnyTimes()
+			mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).Return(nil, errors.New("not found")).AnyTimes()
+
+			// Mock GetWorkloadInfo for runtime validation (when status is running after migration)
+			if tt.workloadStatus == rt.WorkloadStatusRunning {
+				// Mock the container info that would be returned during validation
+				containerInfo := rt.ContainerInfo{
+					Name:   workloadName,
+					Image:  "test-image:latest",
+					Status: "running",
+					State:  rt.WorkloadStatusRunning,
+					Labels: make(map[string]string),
+				}
+				mockRuntime.EXPECT().GetWorkloadInfo(gomock.Any(), workloadName).Return(containerInfo, nil).AnyTimes()
+			}
+
+			// Create status file with specified status and ProcessID
+			err := manager.setWorkloadStatusInternal(ctx, workloadName, tt.workloadStatus, "test context", &tt.processID)
+			require.NoError(t, err)
+
+			// Setup PID file if needed
+			var pidFilePath string
+			if tt.setupPIDFile {
+				// Create PID file using the process package
+				err = process.WritePIDFile(workloadName, tt.pidValue)
+				require.NoError(t, err)
+
+				// Get the path for cleanup verification
+				pidFilePath, err = process.GetPIDFilePathWithFallback(workloadName)
+				require.NoError(t, err)
+			}
+
+			// Call GetWorkload which should trigger migration if conditions are met
+			workload, err := manager.GetWorkload(ctx, workloadName)
+			require.NoError(t, err)
+
+			// Verify workload properties
+			assert.Equal(t, workloadName, workload.Name)
+			assert.Equal(t, tt.workloadStatus, workload.Status)
+
+			if tt.expectMigration {
+				// Read the status file to verify PID was migrated
+				statusFilePath := manager.getStatusFilePath(workloadName)
+				data, err := os.ReadFile(statusFilePath)
+				require.NoError(t, err)
+
+				var statusFile workloadStatusFile
+				err = json.Unmarshal(data, &statusFile)
+				require.NoError(t, err)
+
+				assert.Equal(t, tt.pidValue, statusFile.ProcessID, "PID should be migrated to status file")
+			} else {
+				// Read the status file to verify PID was NOT changed
+				statusFilePath := manager.getStatusFilePath(workloadName)
+				data, err := os.ReadFile(statusFilePath)
+				require.NoError(t, err)
+
+				var statusFile workloadStatusFile
+				err = json.Unmarshal(data, &statusFile)
+				require.NoError(t, err)
+
+				assert.Equal(t, tt.processID, statusFile.ProcessID, "PID should remain unchanged")
+			}
+
+			// Verify PID file existence
+			if tt.setupPIDFile {
+				_, err := os.Stat(pidFilePath)
+				if tt.expectPIDFile {
+					assert.NoError(t, err, "PID file should still exist")
+				} else {
+					assert.True(t, os.IsNotExist(err), "PID file should be deleted")
+				}
+			}
+
+			// Cleanup
+			if tt.setupPIDFile {
+				_ = process.RemovePIDFile(workloadName)
+			}
+		})
+	}
+}
+
+// TestFileStatusManager_ListWorkloads_PIDMigration tests PID migration during list operations
+func TestFileStatusManager_ListWorkloads_PIDMigration(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+	ctx := context.Background()
+
+	// Mock runtime to return empty list (no running containers)
+	mockRuntime.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
+
+	// Create two workloads: one that should migrate, one that shouldn't
+	workloadMigrate := fmt.Sprintf("workload-migrate-%d", time.Now().UnixNano())
+	workloadNoMigrate := fmt.Sprintf("workload-no-migrate-%d", time.Now().UnixNano())
+
+	// Mock the run config store for both workloads
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadMigrate).Return(false, nil).AnyTimes()
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadMigrate).Return(nil, errors.New("not found")).AnyTimes()
+	mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadNoMigrate).Return(false, nil).AnyTimes()
+	mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadNoMigrate).Return(nil, errors.New("not found")).AnyTimes()
+
+	// Setup workload that should trigger migration (running + ProcessID = 0)
+	err := manager.setWorkloadStatusInternal(ctx, workloadMigrate, rt.WorkloadStatusRunning, "running", &[]int{0}[0])
+	require.NoError(t, err)
+
+	// Setup workload that shouldn't trigger migration (running + ProcessID != 0)
+	existingPID := 54321
+	err = manager.setWorkloadStatusInternal(ctx, workloadNoMigrate, rt.WorkloadStatusRunning, "running", &existingPID)
+	require.NoError(t, err)
+
+	// Create PID files for both workloads
+	migrationPID := 12345
+	err = process.WritePIDFile(workloadMigrate, migrationPID)
+	require.NoError(t, err)
+	defer process.RemovePIDFile(workloadMigrate)
+
+	err = process.WritePIDFile(workloadNoMigrate, 99999)
+	require.NoError(t, err)
+	defer process.RemovePIDFile(workloadNoMigrate)
+
+	// Call ListWorkloads
+	workloads, err := manager.ListWorkloads(ctx, true, nil)
+	require.NoError(t, err)
+
+	// Should have 2 workloads
+	require.Len(t, workloads, 2)
+
+	// Find the workloads in results
+	var migrateWorkload, noMigrateWorkload *core.Workload
+	for i := range workloads {
+		switch workloads[i].Name {
+		case workloadMigrate:
+			migrateWorkload = &workloads[i]
+		case workloadNoMigrate:
+			noMigrateWorkload = &workloads[i]
+		}
+	}
+
+	require.NotNil(t, migrateWorkload, "should find workload that should migrate")
+	require.NotNil(t, noMigrateWorkload, "should find workload that should not migrate")
+
+	// Verify migration occurred for first workload
+	statusFilePath1 := manager.getStatusFilePath(workloadMigrate)
+	data1, err := os.ReadFile(statusFilePath1)
+	require.NoError(t, err)
+
+	var statusFile1 workloadStatusFile
+	err = json.Unmarshal(data1, &statusFile1)
+	require.NoError(t, err)
+	assert.Equal(t, migrationPID, statusFile1.ProcessID, "PID should be migrated for first workload")
+
+	// Verify no migration for second workload
+	statusFilePath2 := manager.getStatusFilePath(workloadNoMigrate)
+	data2, err := os.ReadFile(statusFilePath2)
+	require.NoError(t, err)
+
+	var statusFile2 workloadStatusFile
+	err = json.Unmarshal(data2, &statusFile2)
+	require.NoError(t, err)
+	assert.Equal(t, existingPID, statusFile2.ProcessID, "PID should remain unchanged for second workload")
 }

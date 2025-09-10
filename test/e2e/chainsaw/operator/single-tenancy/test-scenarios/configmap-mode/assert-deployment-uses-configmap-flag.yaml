@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yardstick
+  namespace: toolhive-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: toolhive
+        # Verify that the container args contain the --from-configmap flag
+        (args | contains(@, '--from-configmap=toolhive-system/yardstick-runconfig')): true
+        # Verify that individual config flags are NOT present when using ConfigMap
+        (args | contains(@, '--transport=stdio')): false
+        (args | contains(@, '--name=yardstick')): false
+        # The image should still be present as a positional argument (required by proxy runner)
+        (args | contains(@, 'ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2')): true

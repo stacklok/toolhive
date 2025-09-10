@@ -169,6 +169,7 @@ func convertMounts(mounts []runtime.Mount) []mount.Mount {
 | ----- | ----- | ----- |
 | Docker | ✅ `mount.TypeBind` | ✅ `mount.TypeTmpfs` |
 | Podman | ✅ `--mount type=bind` | ✅ `--mount type=tmpfs` |
+| Colima | ✅ `mount.TypeBind` | ✅ `mount.TypeTmpfs` |
 
 ---
 
@@ -341,6 +342,6 @@ docker run \
 | Real-time file access | ✅ via full bind mount |
 | Hidden files (e.g. `.ssh`, `.env`) | ✅ overlaid with tmpfs |
 | Config flexibility | ✅ per-folder \+ global `.thvignore` |
-| Runtime compatibility | ✅ Docker, Podman |
+| Runtime compatibility | ✅ Docker, Podman, Colima |
 | Integration | ✅ Works with existing permission profiles |
 

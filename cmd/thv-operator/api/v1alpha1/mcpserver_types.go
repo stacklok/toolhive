@@ -16,6 +16,13 @@ type MCPServerSpec struct {
 	// +kubebuilder:default=stdio
 	Transport string `json:"transport,omitempty"`
 
+	// ProxyMode is the proxy mode for stdio transport (sse or streamable-http)
+	// This setting is only used when Transport is "stdio"
+	// +kubebuilder:validation:Enum=sse;streamable-http
+	// +kubebuilder:default=sse
+	// +optional
+	ProxyMode string `json:"proxyMode,omitempty"`
+
 	// Port is the port to expose the MCP server on
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535

@@ -216,11 +216,18 @@ func (*MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServe
 		}
 	}
 
+	// Set proxy mode, defaulting to "sse" if not specified
+	proxyMode := m.Spec.ProxyMode
+	if proxyMode == "" {
+		proxyMode = "sse" // Default to SSE for backward compatibility
+	}
+
 	builder := runner.NewOperatorRunConfigBuilder().
 		WithName(m.Name).
 		WithImage(m.Spec.Image).
 		WithCmdArgs(m.Spec.Args).
 		WithTransportAndPorts(m.Spec.Transport, port, int(m.Spec.TargetPort)).
+		WithProxyMode(transporttypes.ProxyMode(proxyMode)).
 		WithHost(proxyHost).
 		WithToolsFilter(m.Spec.ToolsFilter).
 		WithEnvVars(envVars).

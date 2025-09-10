@@ -10,7 +10,7 @@ ToolHive is a lightweight, secure manager for MCP (Model Context Protocol: https
 - **Kubernetes Operator (`thv-operator`)**: Manages MCP servers in Kubernetes clusters
 - **Proxy Runner (`thv-proxyrunner`)**: Handles proxy functionality for MCP server communication
 
-The application acts as a thin client for Docker/Podman Unix socket API, providing container-based isolation for running MCP servers securely. It also builds on top of the MCP Specification: https://modelcontextprotocol.io/specification.
+The application acts as a thin client for Docker/Podman/Colima Unix socket API, providing container-based isolation for running MCP servers securely. It also builds on top of the MCP Specification: https://modelcontextprotocol.io/specification.
 
 ## Build and Development Commands
 
@@ -90,7 +90,7 @@ The test framework uses Ginkgo and Gomega for BDD-style testing.
 
 ### Key Design Patterns
 
-- **Factory Pattern**: Used extensively for creating runtime-specific implementations (Docker vs Kubernetes)
+- **Factory Pattern**: Used extensively for creating runtime-specific implementations (Docker/Colima/Podman vs Kubernetes)
 - **Interface Segregation**: Clean abstractions for container runtimes, transports, and storage
 - **Middleware Pattern**: HTTP middleware for auth, authz, telemetry
 - **Observer Pattern**: Event system for audit logging
@@ -130,6 +130,16 @@ The project uses `go.uber.org/mock` for generating mocks. Mock files are located
 - Configuration files and state stored in platform-appropriate directories
 - Supports environment variable overrides
 - Client configuration stored in `~/.toolhive/` or equivalent
+
+### Container Runtime Configuration
+
+ToolHive automatically detects available container runtimes in the following order: Podman, Colima, Docker. You can override the default socket paths using environment variables:
+
+- `TOOLHIVE_PODMAN_SOCKET`: Custom Podman socket path
+- `TOOLHIVE_COLIMA_SOCKET`: Custom Colima socket path (default: `~/.colima/default/docker.sock`)
+- `TOOLHIVE_DOCKER_SOCKET`: Custom Docker socket path
+
+**Colima Support**: Colima is fully supported as a Docker-compatible runtime. ToolHive will automatically detect Colima installations on macOS and Linux systems.
 
 ## Development Guidelines
 
@@ -176,7 +186,7 @@ When working on the Kubernetes operator:
 
 ### Working with Containers
 
-The container abstraction supports both Docker and Kubernetes runtimes. When adding container functionality:
+The container abstraction supports Docker, Colima, Podman, and Kubernetes runtimes. When adding container functionality:
 - Implement the interface in `pkg/container/runtime/types.go`
 - Add runtime-specific implementations in appropriate subdirectories
 - Use factory pattern for runtime selection

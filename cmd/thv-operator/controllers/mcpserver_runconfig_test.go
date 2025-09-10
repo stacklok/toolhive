@@ -98,9 +98,11 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "env-server", config.Name)
-				assert.Len(t, config.EnvVars, 5) // NOTE: we should probably drop this
+				// Check that user-provided env vars are present
 				assert.Equal(t, "value1", config.EnvVars["VAR1"])
 				assert.Equal(t, "value2", config.EnvVars["VAR2"])
+				// Check that transport env var is set
+				assert.Equal(t, "sse", config.EnvVars["MCP_TRANSPORT"])
 			},
 		},
 		{

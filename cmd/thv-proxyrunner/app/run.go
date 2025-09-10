@@ -114,7 +114,12 @@ func addRunFlags(runCmd *cobra.Command, runFlags *proxyRunFlags) {
 	runCmd.Flags().StringVar(&runFlags.runProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	runCmd.Flags().StringVar(&runFlags.runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	runCmd.Flags().IntVar(&runFlags.runProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
-	runCmd.Flags().StringVar(&runFlags.runHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
+	runCmd.Flags().StringVar(
+		&runFlags.runHost,
+		"host",
+		transport.LocalhostIPv4,
+		"Host for the HTTP proxy to listen on (IP or hostname)",
+	)
 	runCmd.Flags().IntVar(&runFlags.runTargetPort, "target-port", 0,
 		"Port for the container to expose (only applicable to SSE or Streamable HTTP transport)")
 	runCmd.Flags().StringVar(
@@ -162,7 +167,12 @@ func addRunFlags(runCmd *cobra.Command, runFlags *proxyRunFlags) {
 	runCmd.Flags().StringVar(&runFlags.oidcAudience, "oidc-audience", "", "Expected audience for the token")
 	runCmd.Flags().StringVar(&runFlags.oidcJwksURL, "oidc-jwks-url", "", "URL to fetch the JWKS from")
 	runCmd.Flags().StringVar(&runFlags.oidcClientID, "oidc-client-id", "", "OIDC client ID")
-	runCmd.Flags().StringVar(&runFlags.oidcClientSecret, "oidc-client-secret", "", "OIDC client secret (optional, for introspection)")
+	runCmd.Flags().StringVar(
+		&runFlags.oidcClientSecret,
+		"oidc-client-secret",
+		"",
+		"OIDC client secret (optional, for introspection)",
+	)
 	runCmd.Flags().StringVar(&runFlags.oidcIntrospectionURL, "oidc-introspection-url", "", "OIDC token introspection URL")
 
 	// the below aren't used or set via the operator, so we need to see if lower level packages use their defaults

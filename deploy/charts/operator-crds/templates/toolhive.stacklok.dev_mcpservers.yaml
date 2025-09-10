@@ -8704,6 +8704,15 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              proxyMode:
+                default: sse
+                description: |-
+                  ProxyMode is the proxy mode for stdio transport (sse or streamable-http)
+                  This setting is only used when Transport is "stdio"
+                enum:
+                - sse
+                - streamable-http
+                type: string
               resourceOverrides:
                 description: ResourceOverrides allows overriding annotations and labels
                   for resources created by the operator

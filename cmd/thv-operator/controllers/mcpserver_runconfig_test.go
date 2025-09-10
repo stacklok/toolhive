@@ -20,6 +20,13 @@ import (
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+const (
+	testImage               = "test-image:latest"
+	stdioTransport          = "stdio"
+	sseProxyMode            = "sse"
+	streamableHTTPProxyMode = "streamable-http"
+)
+
 func createRunConfigTestScheme() *runtime.Scheme {
 	testScheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(testScheme)
@@ -35,7 +42,7 @@ func createTestMCPServerWithConfig(name, namespace, image string, envVars []mcpv
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     image,
-			Transport: "stdio",
+			Transport: stdioTransport,
 			Port:      8080,
 			Env:       envVars,
 		},
@@ -58,8 +65,8 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Namespace: "test-ns",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "test-image:latest",
-					Transport: "stdio",
+					Image:     testImage,
+					Transport: stdioTransport,
 					Port:      8080,
 				},
 			},
@@ -143,6 +150,50 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			},
 		},
 		{
+			name: "proxy mode specified",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "proxy-mode-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					ProxyMode: streamableHTTPProxyMode,
+				},
+			},
+			expected: func(config *runner.RunConfig) bool {
+				return config.Name == "proxy-mode-server" &&
+					config.Image == testImage &&
+					config.Transport == stdioTransport &&
+					config.Port == 8080 &&
+					config.ProxyMode == streamableHTTPProxyMode
+			},
+		},
+		{
+			name: "proxy mode defaults to sse when not specified",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default-proxy-mode-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					// ProxyMode not specified
+				},
+			},
+			expected: func(config *runner.RunConfig) bool {
+				return config.Name == "default-proxy-mode-server" &&
+					config.Image == testImage &&
+					config.Transport == stdioTransport &&
+					config.Port == 8080 &&
+					config.ProxyMode == sseProxyMode // Should default to sse
+			},
+		},
+		{
 			name: "comprehensive test with all fields",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -154,6 +205,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					Transport:   "streamable-http",
 					Port:        9090,
 					TargetPort:  8080,
+					ProxyMode:   "streamable-http",
 					Args:        []string{"--comprehensive", "--test"},
 					ToolsFilter: []string{"tool1", "tool2"},
 					Env: []mcpv1alpha1.EnvVar{
@@ -177,6 +229,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					config.Transport == "streamable-http" &&
 					config.Port == 9090 &&
 					config.TargetPort == 8080 &&
+					config.ProxyMode == streamableHTTPProxyMode &&
 					len(config.CmdArgs) == 2 &&
 					config.CmdArgs[0] == "--comprehensive" &&
 					len(config.ToolsFilter) == 2 &&
@@ -1022,6 +1075,20 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			},
 			expectedChanges: map[string]interface{}{
 				"Secrets": []string{"secret1,target=CUSTOM_ENV1", "secret2,target=key2"},
+			},
+		},
+		{
+			name: "Proxy mode change",
+			initialServer: func() *mcpv1alpha1.MCPServer {
+				server := createTestMCPServerWithConfig("proxy-test", "default", "test:v1", nil)
+				server.Spec.ProxyMode = sseProxyMode
+				return server
+			},
+			modifyServer: func(server *mcpv1alpha1.MCPServer) {
+				server.Spec.ProxyMode = streamableHTTPProxyMode
+			},
+			expectedChanges: map[string]interface{}{
+				"ProxyMode": transporttypes.ProxyModeStreamableHTTP,
 			},
 		},
 	}

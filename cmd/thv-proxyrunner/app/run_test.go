@@ -23,6 +23,7 @@ func createTestCommand() *cobra.Command {
 	cmd.Flags().String("from-configmap", "", "ConfigMap reference")
 	cmd.Flags().String("transport", "", "Transport mode") // Test conflicting flag
 	cmd.Flags().String("name", "", "Server name")         // Test conflicting flag
+	cmd.Flags().String("proxy-mode", "sse", "Proxy mode") // Test proxy mode flag
 	cmd.Flags().Bool("debug", false, "Debug mode")        // Test safe flag
 
 	return cmd
@@ -330,4 +331,95 @@ func TestValidateConfigMapOnlyModeWithSafeFlags(t *testing.T) {
 	// Test the validation function - should not error with safe flags
 	err = validateConfigMapOnlyMode(cmd)
 	assert.NoError(t, err, "Expected no error for safe flags like --debug")
+}
+
+func TestProxyModeFlagExists(t *testing.T) {
+	t.Parallel()
+
+	// Test that the --proxy-mode flag exists and has correct default
+	cmd := NewRunCmd()
+	require.NotNil(t, cmd, "Run command should not be nil")
+
+	flag := cmd.Flag("proxy-mode")
+	require.NotNil(t, flag, "proxy-mode flag should exist")
+	assert.Equal(t, "string", flag.Value.Type(), "proxy-mode flag should be string type")
+	assert.Equal(t, "sse", flag.DefValue, "proxy-mode flag should have 'sse' as default value")
+
+	// Test help text contains key information
+	assert.Contains(t, flag.Usage, "Proxy mode for stdio transport", "Help text should mention stdio transport")
+	assert.Contains(t, flag.Usage, "sse", "Help text should mention sse option")
+	assert.Contains(t, flag.Usage, "streamable-http", "Help text should mention streamable-http option")
+}
+
+func TestProxyModeFlagParsing(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		proxyMode   string
+		expectValid bool
+	}{
+		{
+			name:        "valid sse mode",
+			proxyMode:   "sse",
+			expectValid: true,
+		},
+		{
+			name:        "valid streamable-http mode",
+			proxyMode:   "streamable-http",
+			expectValid: true,
+		},
+		{
+			name:        "invalid proxy mode",
+			proxyMode:   "invalid-mode",
+			expectValid: false,
+		},
+		{
+			name:        "empty proxy mode",
+			proxyMode:   "",
+			expectValid: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := NewRunCmd()
+			err := cmd.ParseFlags([]string{"--proxy-mode", tc.proxyMode})
+			assert.NoError(t, err, "Flag parsing should not fail")
+
+			// Get the parsed value
+			flagValue, err := cmd.Flags().GetString("proxy-mode")
+			assert.NoError(t, err, "Getting flag value should not fail")
+			assert.Equal(t, tc.proxyMode, flagValue, "Flag value should match what was set")
+		})
+	}
+}
+
+func TestProxyModeWithOtherFlags(t *testing.T) {
+	t.Parallel()
+
+	// Test that proxy-mode flag works with other flags
+	cmd := NewRunCmd()
+	err := cmd.ParseFlags([]string{
+		"--proxy-mode", "streamable-http",
+		"--transport", "stdio",
+		"--name", "test-server",
+		"--proxy-port", "8080",
+	})
+	assert.NoError(t, err, "Parsing multiple flags including proxy-mode should work")
+
+	// Verify all flags were parsed correctly
+	proxyModeValue, _ := cmd.Flags().GetString("proxy-mode")
+	assert.Equal(t, "streamable-http", proxyModeValue)
+
+	transportValue, _ := cmd.Flags().GetString("transport")
+	assert.Equal(t, "stdio", transportValue)
+
+	nameValue, _ := cmd.Flags().GetString("name")
+	assert.Equal(t, "test-server", nameValue)
+
+	portValue, _ := cmd.Flags().GetInt("proxy-port")
+	assert.Equal(t, 8080, portValue)
 }

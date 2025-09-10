@@ -62,6 +62,7 @@ var (
 	runProxyPort          int
 	runTargetPort         int
 	runPermissionProfile  string
+	runProxyMode          string
 	runEnv                []string
 	runVolumes            []string
 	runSecrets            []string
@@ -109,6 +110,7 @@ var (
 
 func init() {
 	runCmd.Flags().StringVar(&runTransport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
+	runCmd.Flags().StringVar(&runProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
 	runCmd.Flags().StringVar(&runName, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	runCmd.Flags().IntVar(&runProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
 	runCmd.Flags().StringVar(&runHost, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
@@ -311,6 +313,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	runHost = validatedHost
 
+	// Validate and setup proxy mode
+	if !types.IsValidProxyMode(runProxyMode) {
+		return fmt.Errorf("invalid value for --proxy-mode: %s (valid values: sse, streamable-http)", runProxyMode)
+	}
+
 	// Get the name of the MCP server to run.
 	// This may be a server name from the registry, a container image, or a protocol scheme.
 	mcpServerImage := args[0]
@@ -362,7 +369,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		WithPermissionProfileNameOrPath(runPermissionProfile).
 		WithNetworkIsolation(runIsolateNetwork).
 		WithK8sPodPatch(runK8sPodPatch).
-		WithProxyMode(types.ProxyMode("sse")).
+		WithProxyMode(types.ProxyMode(runProxyMode)).
 		WithTransportAndPorts(runTransport, runProxyPort, runTargetPort).
 		WithAuditEnabled(runEnableAudit, runAuditConfig).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,

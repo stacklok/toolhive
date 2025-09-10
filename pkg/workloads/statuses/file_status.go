@@ -813,7 +813,12 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 ) map[string]core.Workload {
 	runtimeWorkloadMap := make(map[string]rt.ContainerInfo)
 	for _, container := range runtimeContainers {
-		runtimeWorkloadMap[container.Name] = container
+		// Use base name from labels for matching, fall back to container name if not available
+		baseName := labels.GetContainerBaseName(container.Labels)
+		if baseName == "" {
+			baseName = container.Name // fallback for containers without base name label
+		}
+		runtimeWorkloadMap[baseName] = container
 	}
 
 	// Create result map to avoid duplicates and merge data
@@ -826,13 +831,19 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 			logger.Warnf("failed to convert container info for workload %s: %v", container.Name, err)
 			continue
 		}
-		workloadMap[container.Name] = workload
+		// Use base name for consistency with file workloads
+		baseName := labels.GetContainerBaseName(container.Labels)
+		if baseName == "" {
+			baseName = container.Name // fallback for containers without base name label
+		}
+		workloadMap[baseName] = workload
 	}
 
 	// Then, merge with file workloads, validating running workloads
 	for name, fileWorkload := range fileWorkloads {
 
 		if fileWorkload.Remote { // Remote workloads are not managed by the container runtime
+			workloadMap[name] = fileWorkload
 			continue
 		}
 		if runtimeContainer, exists := runtimeWorkloadMap[name]; exists {
@@ -841,11 +852,15 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 			if err != nil {
 				logger.Warnf("failed to validate workload %s in list: %v", name, err)
 				// Fall back to basic merge without validation
-				runtimeWorkload := workloadMap[name]
-				runtimeWorkload.Status = fileWorkload.Status
-				runtimeWorkload.StatusContext = fileWorkload.StatusContext
-				runtimeWorkload.CreatedAt = fileWorkload.CreatedAt
-				workloadMap[name] = runtimeWorkload
+				if runtimeWorkload, exists := workloadMap[name]; exists {
+					runtimeWorkload.Status = fileWorkload.Status
+					runtimeWorkload.StatusContext = fileWorkload.StatusContext
+					runtimeWorkload.CreatedAt = fileWorkload.CreatedAt
+					workloadMap[name] = runtimeWorkload
+				} else {
+					// Runtime workload not found, just use the file workload
+					workloadMap[name] = fileWorkload
+				}
 			} else {
 				workloadMap[name] = validatedWorkload
 			}

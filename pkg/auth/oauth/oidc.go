@@ -37,12 +37,13 @@ type httpClient interface {
 }
 
 // DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer
-func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClient(ctx, issuer, nil)
+// Uses flexible issuer validation to support cases where issuer is derived from URL
+func DiscoverOIDCEndpoints(ctx context.Context, issuer string, validateIssuerMatch bool) (*OIDCDiscoveryDocument, error) {
+	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, validateIssuerMatch)
 }
 
 // discoverOIDCEndpointsWithClient discovers OAuth endpoints from an OIDC issuer with a custom HTTP client (private for testing)
-func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client httpClient) (*OIDCDiscoveryDocument, error) {
+func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client httpClient, validateIssuerMatch bool) (*OIDCDiscoveryDocument, error) {
 	// Validate issuer URL
 	issuerURL, err := url.Parse(issuer)
 	if err != nil {
@@ -98,7 +99,7 @@ func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client 
 		if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&doc); err != nil {
 			return nil, fmt.Errorf("%s: unexpected response: %w", urlStr, err)
 		}
-		if err := validateOIDCDocument(&doc, issuer, oidc); err != nil {
+		if err := validateOIDCDocument(&doc, issuer, validateIssuerMatch, oidc); err != nil {
 			return nil, fmt.Errorf("%s: invalid metadata: %w", urlStr, err)
 		}
 		return &doc, nil
@@ -120,12 +121,14 @@ func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client 
 }
 
 // validateOIDCDocument validates the OIDC discovery document
-func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string, oidc bool) error {
+func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string, validateIssuerMatch bool, oidc bool) error {
 	if doc.Issuer == "" {
 		return fmt.Errorf("missing issuer")
 	}
 
-	if doc.Issuer != expectedIssuer {
+	// Only validate issuer match if explicitly requested
+	// This allows for cases where issuer is derived from URL and might not match exactly
+	if validateIssuerMatch && doc.Issuer != expectedIssuer {
 		return fmt.Errorf("issuer mismatch: expected %s, got %s", expectedIssuer, doc.Issuer)
 	}
 
@@ -184,7 +187,7 @@ func createOAuthConfigFromOIDCWithClient(
 	client httpClient,
 ) (*Config, error) {
 	// Discover OIDC endpoints
-	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client)
+	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC endpoints: %w", err)
 	}

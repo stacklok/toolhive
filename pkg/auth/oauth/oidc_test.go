@@ -96,7 +96,7 @@ func testDiscoverOIDCEndpoints(
 	}
 
 	// Validate that we got the required fields
-	if err := validateOIDCDocument(&doc, issuer, true); err != nil {
+	if err := validateOIDCDocument(&doc, issuer, true, true); err != nil {
 		return nil, fmt.Errorf("invalid OIDC configuration: %w", err)
 	}
 
@@ -319,11 +319,12 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 func TestValidateOIDCDocument(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name           string
-		doc            *OIDCDiscoveryDocument
-		expectedIssuer string
-		expectError    bool
-		errorMsg       string
+		name                string
+		doc                 *OIDCDiscoveryDocument
+		expectedIssuer      string
+		validateIssuerMatch bool
+		expectError         bool
+		errorMsg            string
 	}{
 		{
 			name: "missing issuer",
@@ -332,21 +333,23 @@ func TestValidateOIDCDocument(t *testing.T) {
 				TokenEndpoint:         "https://example.com/token",
 				JWKSURI:               "https://example.com/jwks",
 			},
-			expectedIssuer: "https://example.com",
-			expectError:    true,
-			errorMsg:       "missing issuer",
+			expectedIssuer:      "https://example.com",
+			validateIssuerMatch: true,
+			expectError:         true,
+			errorMsg:            "missing issuer",
 		},
 		{
-			name: "issuer mismatch",
+			name: "issuer mismatch (strict validation)",
 			doc: &OIDCDiscoveryDocument{
 				Issuer:                "https://malicious.com",
 				AuthorizationEndpoint: "https://example.com/auth",
 				TokenEndpoint:         "https://example.com/token",
 				JWKSURI:               "https://example.com/jwks",
 			},
-			expectedIssuer: "https://example.com",
-			expectError:    true,
-			errorMsg:       "issuer mismatch",
+			expectedIssuer:      "https://example.com",
+			validateIssuerMatch: true,
+			expectError:         true,
+			errorMsg:            "issuer mismatch",
 		},
 		{
 			name: "missing authorization endpoint",
@@ -355,9 +358,10 @@ func TestValidateOIDCDocument(t *testing.T) {
 				TokenEndpoint: "https://example.com/token",
 				JWKSURI:       "https://example.com/jwks",
 			},
-			expectedIssuer: "https://example.com",
-			expectError:    true,
-			errorMsg:       "missing authorization_endpoint",
+			expectedIssuer:      "https://example.com",
+			validateIssuerMatch: true,
+			expectError:         true,
+			errorMsg:            "missing authorization_endpoint",
 		},
 		{
 			name: "missing token endpoint",
@@ -366,9 +370,10 @@ func TestValidateOIDCDocument(t *testing.T) {
 				AuthorizationEndpoint: "https://example.com/auth",
 				JWKSURI:               "https://example.com/jwks",
 			},
-			expectedIssuer: "https://example.com",
-			expectError:    true,
-			errorMsg:       "missing token_endpoint",
+			expectedIssuer:      "https://example.com",
+			validateIssuerMatch: true,
+			expectError:         true,
+			errorMsg:            "missing token_endpoint",
 		},
 		{
 			name: "missing JWKS URI",
@@ -377,9 +382,10 @@ func TestValidateOIDCDocument(t *testing.T) {
 				AuthorizationEndpoint: "https://example.com/auth",
 				TokenEndpoint:         "https://example.com/token",
 			},
-			expectedIssuer: "https://example.com",
-			expectError:    true,
-			errorMsg:       "missing jwks_uri",
+			expectedIssuer:      "https://example.com",
+			validateIssuerMatch: true,
+			expectError:         true,
+			errorMsg:            "missing jwks_uri",
 		},
 		{
 			name: "invalid authorization endpoint URL",
@@ -389,9 +395,10 @@ func TestValidateOIDCDocument(t *testing.T) {
 				TokenEndpoint:         "https://example.com/token",
 				JWKSURI:               "https://example.com/jwks",
 			},
-			expectedIssuer: "https://example.com",
-			expectError:    true,
-			errorMsg:       "invalid authorization_endpoint",
+			expectedIssuer:      "https://example.com",
+			validateIssuerMatch: true,
+			expectError:         true,
+			errorMsg:            "invalid authorization_endpoint",
 		},
 		{
 			name: "non-HTTPS endpoint (security check)",
@@ -401,9 +408,10 @@ func TestValidateOIDCDocument(t *testing.T) {
 				TokenEndpoint:         "https://example.com/token",
 				JWKSURI:               "https://example.com/jwks",
 			},
-			expectedIssuer: "https://example.com",
-			expectError:    true,
-			errorMsg:       "invalid authorization_endpoint",
+			expectedIssuer:      "https://example.com",
+			validateIssuerMatch: true,
+			expectError:         true,
+			errorMsg:            "invalid authorization_endpoint",
 		},
 		{
 			name: "valid document",
@@ -414,8 +422,9 @@ func TestValidateOIDCDocument(t *testing.T) {
 				JWKSURI:               "https://example.com/jwks",
 				UserinfoEndpoint:      "https://example.com/userinfo",
 			},
-			expectedIssuer: "https://example.com",
-			expectError:    false,
+			expectedIssuer:      "https://example.com",
+			validateIssuerMatch: true,
+			expectError:         false,
 		},
 		{
 			name: "localhost endpoints allowed",
@@ -425,15 +434,54 @@ func TestValidateOIDCDocument(t *testing.T) {
 				TokenEndpoint:         "http://localhost:8080/token",
 				JWKSURI:               "http://localhost:8080/jwks",
 			},
-			expectedIssuer: "http://localhost:8080",
-			expectError:    false,
+			expectedIssuer:      "http://localhost:8080",
+			validateIssuerMatch: true,
+			expectError:         false,
+		},
+		// Flexible validation test cases
+		{
+			name: "flexible validation allows issuer mismatch",
+			doc: &OIDCDiscoveryDocument{
+				Issuer:                "https://auth.example.com", // Different from expected
+				AuthorizationEndpoint: "https://auth.example.com/auth",
+				TokenEndpoint:         "https://auth.example.com/token",
+				JWKSURI:               "https://auth.example.com/jwks",
+			},
+			expectedIssuer:      "https://example.com", // Expected issuer
+			validateIssuerMatch: false,                 // Flexible validation
+			expectError:         false,                 // Should NOT error with flexible validation
+		},
+		{
+			name: "flexible validation allows derived issuer mismatch (Neon scenario)",
+			doc: &OIDCDiscoveryDocument{
+				Issuer:                "https://auth.neon.com", // Different from derived issuer
+				AuthorizationEndpoint: "https://auth.neon.com/oauth/authorize",
+				TokenEndpoint:         "https://auth.neon.com/oauth/token",
+				JWKSURI:               "https://auth.neon.com/.well-known/jwks.json",
+			},
+			expectedIssuer:      "https://api.neon.com", // Derived from URL
+			validateIssuerMatch: false,                  // Flexible validation
+			expectError:         false,                  // Should NOT error with flexible validation
+		},
+		{
+			name: "flexible validation still requires issuer field",
+			doc: &OIDCDiscoveryDocument{
+				// Missing issuer field
+				AuthorizationEndpoint: "https://example.com/auth",
+				TokenEndpoint:         "https://example.com/token",
+				JWKSURI:               "https://example.com/jwks",
+			},
+			expectedIssuer:      "https://example.com",
+			validateIssuerMatch: false, // Flexible validation
+			expectError:         true,
+			errorMsg:            "missing issuer",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateOIDCDocument(tt.doc, tt.expectedIssuer, true)
+			err := validateOIDCDocument(tt.doc, tt.expectedIssuer, tt.validateIssuerMatch, true)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -1054,7 +1102,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 					},
 				}
 			}
-			doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client)
+			doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, true)
 
 			if tt.expectError {
 				require.Error(t, err)

@@ -358,7 +358,14 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 
 	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq)
 	if err != nil {
-		http.Error(w, "Failed to update workload", http.StatusInternalServerError)
+		// Error messages already logged in UpdateWorkloadFromRequest
+		if errors.Is(err, retriever.ErrImageNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		} else if errors.Is(err, retriever.ErrInvalidRunConfig) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 

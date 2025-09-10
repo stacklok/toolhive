@@ -1,0 +1,108 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: configmap-mode-mcp-server
+spec:
+  description: Deploys MCP server with readFromConfigMap flag and verifies correct configuration
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+
+  - name: enable-configmap-mode
+    description: Enable ConfigMap mode by setting environment variable on operator
+    try:
+    - script:
+        content: |
+          echo "Setting TOOLHIVE_USE_CONFIGMAP=true on operator deployment..."
+          kubectl patch deployment toolhive-operator -n toolhive-system -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"true"}]}]}}}}'
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          echo "✓ Operator restarted with ConfigMap mode enabled"
+      
+  - name: deploy-mcpserver-configmap-mode
+    description: Deploy MCPServer instance (will use ConfigMap mode due to env var)
+    try:
+    - apply:
+        file: mcpserver.yaml
+    - assert:
+        file: mcpserver.yaml
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+    - assert:
+        file: assert-configmap-created.yaml
+    - assert:
+        file: assert-deployment-uses-configmap-flag.yaml
+
+  - name: verify-pod-args-and-logs
+    description: Verify the pod uses --from-configmap flag and logs show ConfigMap access
+    try:
+    - script:
+        content: |
+          echo "Verifying pod arguments and logs..."
+          
+          # Get the pod name
+          POD_NAME=$(kubectl get pods -n toolhive-system -l "app=mcpserver,app.kubernetes.io/instance=yardstick" -o jsonpath='{.items[0].metadata.name}')
+          echo "Found pod: $POD_NAME"
+          
+          # Get the deployment and check the container args
+          ARGS=$(kubectl get deployment yardstick -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].args}')
+          echo "Container args: $ARGS"
+          
+          # Check that --from-configmap flag is present
+          if ! echo "$ARGS" | grep -q -- "--from-configmap=toolhive-system/yardstick-runconfig"; then
+            echo "Error: Deployment does not contain --from-configmap flag"
+            exit 1
+          fi
+          
+          echo "✓ Found --from-configmap flag in deployment"
+          
+          # Give the pod a moment to start logging, but don't wait for full readiness
+          sleep 3
+          
+          # Get the logs from the toolhive container
+          echo "Getting logs from proxy runner..."
+          LOGS=$(kubectl logs -n toolhive-system $POD_NAME -c toolhive --tail=50 || echo "Could not get logs yet")
+          echo "Proxy runner logs:"
+          echo "$LOGS"
+          
+          # Check for ConfigMap identification message
+          if echo "$LOGS" | grep -q "Identifying ConfigMap 'toolhive-system/yardstick-runconfig'"; then
+            echo "✓ Found ConfigMap identification in logs"
+          else
+            echo "⚠ ConfigMap identification not found in logs yet, waiting a bit more..."
+            sleep 5
+            LOGS=$(kubectl logs -n toolhive-system $POD_NAME -c toolhive --tail=50 || echo "Could not get logs yet")
+            if echo "$LOGS" | grep -q "Identifying ConfigMap 'toolhive-system/yardstick-runconfig'"; then
+              echo "✓ Found ConfigMap identification in logs (after wait)"
+            else
+              echo "✗ ConfigMap identification still not found"
+              exit 1
+            fi
+          fi
+          
+          # Check for successful validation message
+          if echo "$LOGS" | grep -q "Successfully identified and validated ConfigMap"; then
+            echo "✓ Found successful ConfigMap validation in logs"
+          else
+            echo "⚠ ConfigMap validation message not found yet (server might still be starting)"
+          fi
+          
+          echo "✅ SUCCESS: Pod arguments and logs verified - ConfigMap mode working correctly!"
+          echo "Test completed successfully, exiting without waiting for full server startup."
+
+  - name: cleanup-configmap-mode
+    description: Disable ConfigMap mode to avoid affecting subsequent tests
+    try:
+    - script:
+        content: |
+          echo "Disabling ConfigMap mode by setting environment variable to false..."
+          kubectl patch deployment toolhive-operator -n toolhive-system -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"false"}]}]}}}}'
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          echo "✓ Operator restarted with ConfigMap mode disabled"

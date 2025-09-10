@@ -18,7 +18,8 @@ import (
 
 const (
 	// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
-	ConfigMapStorageDataKey = "registry.json"
+	ConfigMapStorageDataKey  = "registry.json"
+	RegistryStorageComponent = "registry-storage"
 )
 
 // StorageManager defines the interface for registry data persistence
@@ -79,7 +80,7 @@ func (s *ConfigMapStorageManager) StoreRaw(ctx context.Context, mcpRegistry *mcp
 			},
 			Labels: map[string]string{
 				"app.kubernetes.io/name":         "toolhive-operator",
-				"app.kubernetes.io/component":    "registry-storage",
+				"app.kubernetes.io/component":    RegistryStorageComponent,
 				"app.kubernetes.io/managed-by":   "toolhive-operator",
 				"toolhive.stacklok.dev/registry": mcpRegistry.Name,
 			},

@@ -155,7 +155,7 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 
 				// Verify labels
 				assert.Equal(t, "toolhive-operator", configMap.Labels["app.kubernetes.io/name"])
-				assert.Equal(t, "registry-storage", configMap.Labels["app.kubernetes.io/component"])
+				assert.Equal(t, RegistryStorageComponent, configMap.Labels["app.kubernetes.io/component"])
 				assert.Equal(t, tt.registry.Name, configMap.Labels["toolhive.stacklok.dev/registry"])
 
 				// Verify owner reference

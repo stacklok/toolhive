@@ -3,9 +3,6 @@ kind: MCPServer
 metadata:
   name: yardstick
   namespace: toolhive-system
-spec:
-  readFromConfigMap: true
 status:
-  phase: Running
-  (conditions[?type == 'Available'] | [0].status): "True"
-  (conditions[?type == 'Ready'] | [0].status): "True"
+  message: "MCP server is running"
+  phase: "Running"

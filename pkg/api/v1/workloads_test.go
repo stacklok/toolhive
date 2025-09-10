@@ -310,7 +310,7 @@ func TestUpdateWorkload(t *testing.T) {
 					Return(core.Workload{Name: "test-workload"}, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, workloadName string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
 						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
 						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
 						return &errgroup.Group{}, nil
@@ -336,7 +336,7 @@ func TestUpdateWorkload(t *testing.T) {
 					Return(core.Workload{Name: "test-workload"}, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, workloadName string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
 						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
 						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
 						return &errgroup.Group{}, nil
@@ -362,7 +362,7 @@ func TestUpdateWorkload(t *testing.T) {
 					Return(core.Workload{Name: "test-workload"}, nil)
 				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 				wm.EXPECT().UpdateWorkload(gomock.Any(), "test-workload", gomock.Any()).
-					DoAndReturn(func(_ context.Context, workloadName string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
+					DoAndReturn(func(_ context.Context, _ string, runConfig *runner.RunConfig) (*errgroup.Group, error) {
 						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
 						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
 						return &errgroup.Group{}, nil

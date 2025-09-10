@@ -24,8 +24,16 @@ const (
 )
 
 const (
+// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
+// ConfigMapStorageDataKey = "registry.json"
+// RegistryStorageComponent is the component label for the registry storage
+// RegistryStorageComponent = "registry-storage"
+)
+
+const (
 	// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
-	ConfigMapStorageDataKey = "registry.json"
+	ConfigMapStorageDataKey  = "registry.json"
+	RegistryStorageComponent = "registry-storage"
 )
 
 // StorageManager defines the interface for registry data persistence

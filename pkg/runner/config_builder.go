@@ -647,6 +647,9 @@ func internalRunConfigBuilder(
 	envVarValidator EnvVarValidator,
 	runConfigOptions ...RunConfigBuilderOption,
 ) (*RunConfig, error) {
+	// Set the build context on the config to control validation behavior
+	b.config.buildContext = b.buildContext
+
 	// Apply all the options
 	for _, option := range runConfigOptions {
 		if err := option(b); err != nil {

@@ -13,6 +13,8 @@ Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API g
 - [MCPRegistryList](#mcpregistrylist)
 - [MCPServer](#mcpserver)
 - [MCPServerList](#mcpserverlist)
+- [MCPToolConfig](#mcptoolconfig)
+- [MCPToolConfigList](#mcptoolconfiglist)
 
 
 
@@ -400,7 +402,8 @@ _Appears in:_
 | `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the MCP server |  |  |
 | `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  |  |
 | `audit` _[AuditConfig](#auditconfig)_ | Audit defines audit logging configuration for the MCP server |  |  |
-| `tools` _string array_ | ToolsFilter is the filter on tools applied to the MCP server |  |  |
+| `tools` _string array_ | ToolsFilter is the filter on tools applied to the MCP server<br />Deprecated: Use ToolConfigRef instead |  |  |
+| `toolConfigRef` _[ToolConfigRef](#toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this takes precedence over the inline ToolsFilter field. |  |  |
 | `telemetry` _[TelemetryConfig](#telemetryconfig)_ | Telemetry defines observability configuration for the MCP server |  |  |
 
 
@@ -418,9 +421,92 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPServer's state |  |  |
+| `toolConfigHash` _string_ | ToolConfigHash stores the hash of the referenced ToolConfig for change detection |  |  |
 | `url` _string_ | URL is the URL where the MCP server can be accessed |  |  |
 | `phase` _[MCPServerPhase](#mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Running Failed Terminating] <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  |  |
+
+
+#### MCPToolConfig
+
+
+
+MCPToolConfig is the Schema for the mcptoolconfigs API.
+MCPToolConfig resources are namespace-scoped and can only be referenced by
+MCPServer resources within the same namespace. Cross-namespace references
+are not supported for security and isolation reasons.
+
+
+
+_Appears in:_
+- [MCPToolConfigList](#mcptoolconfiglist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPToolConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[MCPToolConfigSpec](#mcptoolconfigspec)_ |  |  |  |
+| `status` _[MCPToolConfigStatus](#mcptoolconfigstatus)_ |  |  |  |
+
+
+#### MCPToolConfigList
+
+
+
+MCPToolConfigList contains a list of MCPToolConfig
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPToolConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[MCPToolConfig](#mcptoolconfig) array_ |  |  |  |
+
+
+#### MCPToolConfigSpec
+
+
+
+MCPToolConfigSpec defines the desired state of MCPToolConfig.
+MCPToolConfig resources are namespace-scoped and can only be referenced by
+MCPServer resources in the same namespace.
+
+
+
+_Appears in:_
+- [MCPToolConfig](#mcptoolconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `toolsFilter` _string array_ | ToolsFilter is a list of tool names to filter (allow list).<br />Only tools in this list will be exposed by the MCP server.<br />If empty, all tools are exposed. |  |  |
+| `toolsOverride` _object (keys:string, values:[ToolOverride](#tooloverride))_ | ToolsOverride is a map from actual tool names to their overridden configuration.<br />This allows renaming tools and/or changing their descriptions. |  |  |
+
+
+#### MCPToolConfigStatus
+
+
+
+MCPToolConfigStatus defines the observed state of MCPToolConfig
+
+
+
+_Appears in:_
+- [MCPToolConfig](#mcptoolconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPToolConfig.<br />It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server. |  |  |
+| `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  |  |
+| `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPToolConfig<br />This helps track which servers need to be reconciled when this config changes |  |  |
 
 
 #### NameFilter
@@ -776,6 +862,42 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `openTelemetry` _[OpenTelemetryConfig](#opentelemetryconfig)_ | OpenTelemetry defines OpenTelemetry configuration |  |  |
 | `prometheus` _[PrometheusConfig](#prometheusconfig)_ | Prometheus defines Prometheus-specific configuration |  |  |
+
+
+#### ToolConfigRef
+
+
+
+ToolConfigRef defines a reference to a MCPToolConfig resource.
+The referenced MCPToolConfig must be in the same namespace as the MCPServer.
+
+
+
+_Appears in:_
+- [MCPServerSpec](#mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the MCPToolConfig resource in the same namespace |  | Required: \{\} <br /> |
+
+
+#### ToolOverride
+
+
+
+ToolOverride represents a tool override configuration.
+Both Name and Description can be overridden independently, but
+they can't be both empty.
+
+
+
+_Appears in:_
+- [MCPToolConfigSpec](#mcptoolconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the redefined name of the tool |  |  |
+| `description` _string_ | Description is the redefined description of the tool |  |  |
 
 
 #### Volume

@@ -1,0 +1,39 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPToolConfig
+metadata:
+  name: github-tools-config
+  namespace: default
+spec:
+  # Filter to only expose GitHub-related tools
+  toolsFilter:
+    - create_pull_request
+    - get_pull_request
+    - list_pull_requests
+    - merge_pull_request
+    - create_issue
+    - get_issue
+    - list_issues
+  
+  # Rename tools for better clarity
+  toolsOverride:
+    create_pull_request:
+      name: github_create_pr
+      description: "Create a new GitHub pull request with enhanced validation"
+    get_pull_request:
+      name: github_get_pr
+      description: "Retrieve details of a specific GitHub pull request"
+    list_pull_requests:
+      name: github_list_prs
+      description: "List all pull requests in a GitHub repository"
+    merge_pull_request:
+      name: github_merge_pr
+      description: "Merge a GitHub pull request with safety checks"
+    create_issue:
+      name: github_create_issue
+      description: "Create a new GitHub issue with templates support"
+    get_issue:
+      name: github_get_issue
+      description: "Retrieve details of a specific GitHub issue"
+    list_issues:
+      name: github_list_issues
+      description: "List all issues in a GitHub repository with filtering"

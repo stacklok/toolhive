@@ -187,7 +187,9 @@ func (*MCPServerReconciler) runConfigContentEquals(current, desired *corev1.Conf
 
 // createRunConfigFromMCPServer converts MCPServer spec to RunConfig using the builder pattern
 // This creates a RunConfig for serialization to ConfigMap, not for direct execution
-func (*MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServer) (*runner.RunConfig, error) {
+//
+//nolint:gocyclo
+func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServer) (*runner.RunConfig, error) {
 	proxyHost := defaultProxyHost
 	if envHost := os.Getenv("TOOLHIVE_PROXY_HOST"); envHost != "" {
 		proxyHost = envHost
@@ -202,6 +204,34 @@ func (*MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServe
 	envVars := convertEnvVarsFromMCPServer(m.Spec.Env)
 	volumes := convertVolumesFromMCPServer(m.Spec.Volumes)
 	secrets := convertSecretsFromMCPServer(m.Spec.Secrets)
+
+	// Get tool configuration from MCPToolConfig if referenced
+	toolsFilter := m.Spec.ToolsFilter
+	var toolsOverride map[string]runner.ToolOverride
+
+	if m.Spec.ToolConfigRef != nil {
+		// ToolConfigRef takes precedence over inline ToolsFilter
+		toolConfig, err := GetToolConfigForMCPServer(context.Background(), r.Client, m)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
+		}
+
+		if toolConfig != nil {
+			// Use configuration from MCPToolConfig
+			toolsFilter = toolConfig.Spec.ToolsFilter
+
+			// Convert ToolOverride from CRD format to runner format
+			if len(toolConfig.Spec.ToolsOverride) > 0 {
+				toolsOverride = make(map[string]runner.ToolOverride)
+				for toolName, override := range toolConfig.Spec.ToolsOverride {
+					toolsOverride[toolName] = runner.ToolOverride{
+						Name:        override.Name,
+						Description: override.Description,
+					}
+				}
+			}
+		}
+	}
 
 	// Create K8s pod template patch if needed
 	var k8sPodPatch string
@@ -228,11 +258,16 @@ func (*MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServe
 		runner.WithTransportAndPorts(m.Spec.Transport, port, int(m.Spec.TargetPort)),
 		runner.WithProxyMode(transporttypes.ProxyMode(proxyMode)),
 		runner.WithHost(proxyHost),
-		runner.WithToolsFilter(m.Spec.ToolsFilter),
+		runner.WithToolsFilter(toolsFilter),
 		runner.WithEnvVars(envVars),
 		runner.WithVolumes(volumes),
 		runner.WithSecrets(secrets),
 		runner.WithK8sPodPatch(k8sPodPatch),
+	}
+
+	// Add tools override if present
+	if toolsOverride != nil {
+		options = append(options, runner.WithToolsOverride(toolsOverride))
 	}
 
 	// Add permission profile if specified

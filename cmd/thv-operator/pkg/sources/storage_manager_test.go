@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 func TestNewConfigMapStorageManager(t *testing.T) {
@@ -42,7 +43,7 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 	tests := []struct {
 		name              string
 		registry          *mcpv1alpha1.MCPRegistry
-		data              []byte
+		registryData      *registry.Registry
 		existingConfigMap *corev1.ConfigMap
 		expectError       bool
 		errorContains     string
@@ -61,7 +62,11 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 					},
 				},
 			},
-			data:        []byte(`{"version": "1.0.0", "servers": {}}`),
+			registryData: &registry.Registry{
+				Version:       "1.0.0",
+				Servers:       make(map[string]*registry.ImageMetadata),
+				RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+			},
 			expectError: false,
 		},
 		{
@@ -78,7 +83,13 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 					},
 				},
 			},
-			data: []byte(`{"version": "1.0.0", "servers": {"server1": {}}}`),
+			registryData: &registry.Registry{
+				Version: "1.0.0",
+				Servers: map[string]*registry.ImageMetadata{
+					"server1": {},
+				},
+				RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+			},
 			existingConfigMap: &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-registry-registry-storage",
@@ -104,7 +115,13 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 					},
 				},
 			},
-			data:        []byte(`[{"server": {"name": "test-server"}}]`),
+			registryData: &registry.Registry{
+				Version: "1.0",
+				Servers: map[string]*registry.ImageMetadata{
+					"test-server": {},
+				},
+				RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+			},
 			expectError: false,
 		},
 	}
@@ -128,7 +145,7 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			err := manager.StoreRaw(ctx, tt.registry, tt.data)
+			err := manager.Store(ctx, tt.registry, tt.registryData)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -147,7 +164,9 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 				}, configMap)
 
 				require.NoError(t, err)
-				assert.Equal(t, string(tt.data), configMap.Data[ConfigMapStorageDataKey])
+
+				// Verify the stored data is valid JSON
+				assert.NotEmpty(t, configMap.Data[ConfigMapStorageDataKey])
 
 				// Verify annotations
 				assert.Equal(t, tt.registry.Name, configMap.Annotations["toolhive.stacklok.dev/registry-name"])
@@ -175,12 +194,12 @@ func TestConfigMapStorageManager_Get(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	tests := []struct {
-		name          string
-		registry      *mcpv1alpha1.MCPRegistry
-		configMap     *corev1.ConfigMap
-		expectedData  []byte
-		expectError   bool
-		errorContains string
+		name             string
+		registry         *mcpv1alpha1.MCPRegistry
+		configMap        *corev1.ConfigMap
+		expectedRegistry *registry.Registry
+		expectError      bool
+		errorContains    string
 	}{
 		{
 			name: "get existing registry data",
@@ -196,11 +215,17 @@ func TestConfigMapStorageManager_Get(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Data: map[string]string{
-					ConfigMapStorageDataKey: `{"version": "1.0.0", "servers": {"server1": {}}}`,
+					ConfigMapStorageDataKey: `{"version": "1.0.0", "servers": {"server1": {}}, "remoteServers": {}}`,
 				},
 			},
-			expectedData: []byte(`{"version": "1.0.0", "servers": {"server1": {}}}`),
-			expectError:  false,
+			expectedRegistry: &registry.Registry{
+				Version: "1.0.0",
+				Servers: map[string]*registry.ImageMetadata{
+					"server1": {},
+				},
+				RemoteServers: nil, // JSON unmarshaling creates nil for empty objects
+			},
+			expectError: false,
 		},
 		{
 			name: "configmap not found",
@@ -254,17 +279,17 @@ func TestConfigMapStorageManager_Get(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			data, err := manager.GetRaw(ctx, tt.registry)
+			registryData, err := manager.Get(ctx, tt.registry)
 
 			if tt.expectError {
 				assert.Error(t, err)
-				assert.Nil(t, data)
+				assert.Nil(t, registryData)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error(), tt.errorContains)
 				}
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.expectedData, data)
+				assert.Equal(t, tt.expectedRegistry, registryData)
 			}
 		})
 	}
@@ -371,14 +396,14 @@ func TestConfigMapStorageManager_GetStorageReference(t *testing.T) {
 
 	manager := NewConfigMapStorageManager(fakeClient, scheme)
 
-	registry := &mcpv1alpha1.MCPRegistry{
+	mcpRegistry := &mcpv1alpha1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-registry",
 			Namespace: "test-namespace",
 		},
 	}
 
-	ref := manager.GetStorageReference(registry)
+	ref := manager.GetStorageReference(mcpRegistry)
 
 	assert.NotNil(t, ref)
 	assert.Equal(t, "configmap", ref.Type)

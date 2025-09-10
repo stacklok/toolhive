@@ -2,6 +2,7 @@ package sources
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -56,8 +57,8 @@ func (*ConfigMapSourceHandler) Validate(source *mcpv1alpha1.MCPRegistrySource) e
 	return nil
 }
 
-// Sync retrieves registry data from the ConfigMap source
-func (h *ConfigMapSourceHandler) Sync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*SyncResult, error) {
+// fetchConfigMapData retrieves and validates ConfigMap data for the given MCPRegistry
+func (h *ConfigMapSourceHandler) fetchConfigMapData(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*string, error) {
 	source := &mcpRegistry.Spec.Source
 
 	// Validate source configuration
@@ -92,19 +93,49 @@ func (h *ConfigMapSourceHandler) Sync(ctx context.Context, mcpRegistry *mcpv1alp
 			key, configMapNamespace, source.ConfigMap.Name)
 	}
 
-	if source.Format == mcpv1alpha1.RegistryFormatUpstream {
+	return &data, nil
+}
+
+// FetchRegistry retrieves registry data from the ConfigMap source
+func (h *ConfigMapSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*FetchResult, error) {
+	if mcpRegistry.Spec.Source.Format == mcpv1alpha1.RegistryFormatUpstream {
 		return nil, fmt.Errorf("upstream registry format is not yet supported")
 	}
 
+	// Fetch ConfigMap data using reusable function
+	configMapData, err := h.fetchConfigMapData(ctx, mcpRegistry)
+	if err != nil {
+		return nil, err
+	}
+
 	// Convert string data to bytes
-	registryData := []byte(data)
+	registryData := []byte(*configMapData)
 
 	// Validate and parse registry data
-	reg, err := h.validator.ValidateData(registryData, source.Format)
+	reg, err := h.validator.ValidateData(registryData, mcpRegistry.Spec.Source.Format)
 	if err != nil {
 		return nil, fmt.Errorf("registry data validation failed: %w", err)
 	}
 
-	// Create and return sync result
-	return NewSyncResult(reg, source.Format)
+	// Calculate hash using the same method as CurrentHash for consistency
+	hash, err := h.CurrentHash(ctx, mcpRegistry)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate hash: %w", err)
+	}
+
+	// Create and return fetch result with pre-calculated hash
+	return NewFetchResult(reg, hash, mcpRegistry.Spec.Source.Format), nil
+}
+
+// CurrentHash returns the current hash of the source data without performing a full fetch
+func (h *ConfigMapSourceHandler) CurrentHash(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (string, error) {
+	// Fetch ConfigMap data using reusable function
+	configMapData, err := h.fetchConfigMapData(ctx, mcpRegistry)
+	if err != nil {
+		return "", err
+	}
+
+	// Compute and return hash of the data
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(*configMapData)))
+	return hash, nil
 }

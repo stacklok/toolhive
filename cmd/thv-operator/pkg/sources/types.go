@@ -16,17 +16,20 @@ type SourceDataValidator interface {
 	ValidateData(data []byte, format string) (*registry.Registry, error)
 }
 
-// SourceHandler is an interface with methods to sync from external data sources
+// SourceHandler is an interface with methods to fetch data from external data sources
 type SourceHandler interface {
-	// Sync retrieves data from the source and returns the result
-	Sync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*SyncResult, error)
+	// FetchRegistry retrieves data from the source and returns the result
+	FetchRegistry(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*FetchResult, error)
 
 	// Validate validates the source configuration
 	Validate(source *mcpv1alpha1.MCPRegistrySource) error
+
+	// CurrentHash returns the current hash of the source data without performing a full fetch
+	CurrentHash(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (string, error)
 }
 
-// SyncResult contains the result of a sync operation
-type SyncResult struct {
+// FetchResult contains the result of a fetch operation
+type FetchResult struct {
 	// Registry is the parsed registry data (replaces raw Data field)
 	Registry *registry.Registry
 
@@ -40,36 +43,31 @@ type SyncResult struct {
 	Format string
 }
 
-// NewSyncResult creates a new SyncResult from a Registry instance
-func NewSyncResult(reg *registry.Registry, format string) (*SyncResult, error) {
-	data, err := json.Marshal(reg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal registry: %w", err)
-	}
-
-	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+// NewFetchResult creates a new FetchResult from a Registry instance and pre-calculated hash
+// The hash should be calculated by the source handler to ensure consistency with CurrentHash
+func NewFetchResult(reg *registry.Registry, hash string, format string) *FetchResult {
 	serverCount := len(reg.Servers) + len(reg.RemoteServers)
 
-	return &SyncResult{
+	return &FetchResult{
 		Registry:    reg,
 		Hash:        hash,
 		ServerCount: serverCount,
 		Format:      format,
-	}, nil
+	}
 }
 
 // GetRawData serializes the registry back to []byte when needed
-func (sr *SyncResult) GetRawData() ([]byte, error) {
-	if sr.Registry == nil {
+func (fr *FetchResult) GetRawData() ([]byte, error) {
+	if fr.Registry == nil {
 		return nil, fmt.Errorf("registry is nil - cannot serialize")
 	}
-	return json.Marshal(sr.Registry)
+	return json.Marshal(fr.Registry)
 }
 
-// NewSyncResultFromBytes creates a new SyncResult from raw data (legacy method)
-func NewSyncResultFromBytes(data []byte, serverCount int) *SyncResult {
+// NewFetchResultFromBytes creates a new FetchResult from raw data (legacy method)
+func NewFetchResultFromBytes(data []byte, serverCount int) *FetchResult {
 	hash := fmt.Sprintf("%x", sha256.Sum256(data))
-	return &SyncResult{
+	return &FetchResult{
 		Registry:    nil, // Will need to be parsed separately
 		Hash:        hash,
 		ServerCount: serverCount,

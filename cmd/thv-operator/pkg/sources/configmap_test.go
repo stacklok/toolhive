@@ -126,7 +126,7 @@ func TestNewConfigMapSourceHandler_Validate(t *testing.T) {
 	}
 }
 
-func TestConfigMapSourceHandler_Sync(t *testing.T) {
+func TestConfigMapSourceHandler_FetchRegistry(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -487,7 +487,7 @@ func TestConfigMapSourceHandler_Sync(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			result, err := handler.Sync(ctx, tt.registry)
+			result, err := handler.FetchRegistry(ctx, tt.registry)
 
 			if tt.expectError {
 				assert.Error(t, err)

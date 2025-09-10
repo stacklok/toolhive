@@ -8,7 +8,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
-func TestNewSyncResult(t *testing.T) {
+func TestNewFetchResult(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -41,7 +41,7 @@ func TestNewSyncResult(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := NewSyncResultFromBytes(tt.data, tt.serverCount)
+			result := NewFetchResultFromBytes(tt.data, tt.serverCount)
 
 			rawData, err := result.GetRawData()
 			if result.Registry == nil {
@@ -57,29 +57,29 @@ func TestNewSyncResult(t *testing.T) {
 	}
 }
 
-func TestSyncResultHashConsistency(t *testing.T) {
+func TestFetchResultHashConsistency(t *testing.T) {
 	t.Parallel()
 
 	data := []byte(`{"test": "data"}`)
 	serverCount := 5
 
-	result1 := NewSyncResultFromBytes(data, serverCount)
-	result2 := NewSyncResultFromBytes(data, serverCount)
+	result1 := NewFetchResultFromBytes(data, serverCount)
+	result2 := NewFetchResultFromBytes(data, serverCount)
 
 	// Same data should produce same hash
 	assert.Equal(t, result1.Hash, result2.Hash)
 	assert.Equal(t, result1.ServerCount, result2.ServerCount)
 }
 
-func TestSyncResultHashDifference(t *testing.T) {
+func TestFetchResultHashDifference(t *testing.T) {
 	t.Parallel()
 
 	data1 := []byte(`{"test": "data1"}`)
 	data2 := []byte(`{"test": "data2"}`)
 	serverCount := 1
 
-	result1 := NewSyncResultFromBytes(data1, serverCount)
-	result2 := NewSyncResultFromBytes(data2, serverCount)
+	result1 := NewFetchResultFromBytes(data1, serverCount)
+	result2 := NewFetchResultFromBytes(data2, serverCount)
 
 	// Different data should produce different hashes
 	assert.NotEqual(t, result1.Hash, result2.Hash)

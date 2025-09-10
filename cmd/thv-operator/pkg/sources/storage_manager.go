@@ -18,7 +18,8 @@ import (
 
 const (
 	// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
-	ConfigMapStorageDataKey  = "registry.json"
+	ConfigMapStorageDataKey = "registry.json"
+	// RegistryStorageComponent is the component label for the registry storage
 	RegistryStorageComponent = "registry-storage"
 )
 
@@ -35,10 +36,6 @@ type StorageManager interface {
 
 	// GetStorageReference returns a reference to where the data is stored
 	GetStorageReference(mcpRegistry *mcpv1alpha1.MCPRegistry) *mcpv1alpha1.StorageReference
-
-	// Legacy methods for backward compatibility (can be deprecated later)
-	StoreRaw(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, data []byte) error
-	GetRaw(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) ([]byte, error)
 }
 
 // ConfigMapStorageManager implements StorageManager using Kubernetes ConfigMaps
@@ -63,11 +60,6 @@ func (s *ConfigMapStorageManager) Store(ctx context.Context, mcpRegistry *mcpv1a
 		return NewStorageError("serialize", mcpRegistry.Name, "failed to marshal registry", err)
 	}
 
-	return s.StoreRaw(ctx, mcpRegistry, data)
-}
-
-// StoreRaw saves raw registry data to a ConfigMap (legacy method)
-func (s *ConfigMapStorageManager) StoreRaw(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, data []byte) error {
 	configMapName := s.getConfigMapName(mcpRegistry)
 
 	configMap := &corev1.ConfigMap{
@@ -97,7 +89,7 @@ func (s *ConfigMapStorageManager) StoreRaw(ctx context.Context, mcpRegistry *mcp
 
 	// Create or update the ConfigMap
 	existing := &corev1.ConfigMap{}
-	err := s.client.Get(ctx, types.NamespacedName{
+	err = s.client.Get(ctx, types.NamespacedName{
 		Name:      configMapName,
 		Namespace: mcpRegistry.Namespace,
 	}, existing)
@@ -129,22 +121,6 @@ func (s *ConfigMapStorageManager) StoreRaw(ctx context.Context, mcpRegistry *mcp
 
 // Get retrieves and parses registry data from a ConfigMap
 func (s *ConfigMapStorageManager) Get(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*registry.Registry, error) {
-	data, err := s.GetRaw(ctx, mcpRegistry)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse the JSON data into a Registry
-	var reg registry.Registry
-	if err := json.Unmarshal(data, &reg); err != nil {
-		return nil, NewStorageError("parse", mcpRegistry.Name, "failed to parse registry data", err)
-	}
-
-	return &reg, nil
-}
-
-// GetRaw retrieves raw registry data from a ConfigMap (legacy method)
-func (s *ConfigMapStorageManager) GetRaw(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) ([]byte, error) {
 	configMapName := s.getConfigMapName(mcpRegistry)
 
 	configMap := &corev1.ConfigMap{}
@@ -162,7 +138,13 @@ func (s *ConfigMapStorageManager) GetRaw(ctx context.Context, mcpRegistry *mcpv1
 		return nil, NewStorageError("get", mcpRegistry.Name, "registry data not found in ConfigMap", nil)
 	}
 
-	return []byte(data), nil
+	// Parse the JSON data into a Registry
+	var reg registry.Registry
+	if err := json.Unmarshal([]byte(data), &reg); err != nil {
+		return nil, NewStorageError("parse", mcpRegistry.Name, "failed to parse registry data", err)
+	}
+
+	return &reg, nil
 }
 
 // Delete removes the storage ConfigMap

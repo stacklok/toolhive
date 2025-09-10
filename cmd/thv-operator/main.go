@@ -84,10 +84,7 @@ func main() {
 
 	// Only register MCPRegistry controller if feature flag is enabled
 	if os.Getenv("ENABLE_EXPERIMENTAL_FEATURES") == "true" {
-		if err = (&controllers.MCPRegistryReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
+		if err = (controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme())).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "MCPRegistry")
 			os.Exit(1)
 		}

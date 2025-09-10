@@ -714,22 +714,34 @@ func (d *defaultManager) restartRemoteWorkload(
 
 // restartContainerWorkload handles restarting a container-based workload
 func (d *defaultManager) restartContainerWorkload(ctx context.Context, name string, foreground bool) error {
-	// Get the actual container info to resolve partial names
-	actualName := name
+	// Get container info to resolve partial names and extract proper workload name
+	var containerName string
+	var workloadName string
+
 	container, err := d.runtime.GetWorkloadInfo(ctx, name)
 	if err == nil {
-		// If we found the container, use its actual name instead of the partial name
-		actualName = container.Name
+		// If we found the container, use its actual container name for runtime operations
+		containerName = container.Name
+		// Extract the workload name (base name) from container labels for status operations
+		workloadName = labels.GetContainerBaseName(container.Labels)
+		if workloadName == "" {
+			// Fallback to the provided name if base name is not available
+			workloadName = name
+		}
+	} else {
+		// If container not found, use the provided name as both container and workload name
+		containerName = name
+		workloadName = name
 	}
 
-	// Get workload state information
+	// Get workload state information using the original name
 	workloadState, err := d.getWorkloadState(ctx, name)
 	if err != nil {
 		return err
 	}
 
-	// Check if already running
-	if d.isWorkloadAlreadyRunning(actualName, workloadState) {
+	// Check if already running - use container name for this check
+	if d.isWorkloadAlreadyRunning(containerName, workloadState) {
 		return nil
 	}
 
@@ -739,21 +751,22 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, name stri
 		return fmt.Errorf("failed to load state for %s: %v", workloadState.BaseName, err)
 	}
 
-	// Set workload status to starting - use the actual container name
-	if err := d.statuses.SetWorkloadStatus(ctx, actualName, rt.WorkloadStatusStarting, ""); err != nil {
-		logger.Warnf("Failed to set workload %s status to starting: %v", actualName, err)
+	// Set workload status to starting - use the workload name for status operations
+	if err := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStarting, ""); err != nil {
+		logger.Warnf("Failed to set workload %s status to starting: %v", workloadName, err)
 	}
 	logger.Infof("Loaded configuration from state for %s", workloadState.BaseName)
 
-	// Stop container if running but proxy is not - use the actual container name
-	if err := d.stopContainerIfNeeded(ctx, actualName, workloadState); err != nil {
+	// Stop container if running but proxy is not - use the container name for runtime operations
+	if err := d.stopContainerIfNeeded(ctx, containerName, workloadName, workloadState); err != nil {
 		return err
 	}
 
 	// Start the workload with background context to avoid timeout cancellation
 	// The ctx with AsyncOperationTimeout is only for the restart setup operations,
 	// but the actual workload should run indefinitely with its own lifecycle management
-	return d.startWorkload(context.Background(), actualName, mcpRunner, foreground)
+	// Use workload name for user-facing operations
+	return d.startWorkload(context.Background(), workloadName, mcpRunner, foreground)
 }
 
 // workloadState holds the current state of a workload for restart operations
@@ -812,7 +825,7 @@ func (d *defaultManager) getRemoteWorkloadState(ctx context.Context, name, baseN
 		logger.Debugf("Failed to get status for remote workload %s: %v", name, err)
 		workloadSt.Running = false
 	} else {
-		workloadSt.Running = (workload.Status == rt.WorkloadStatusRunning)
+		workloadSt.Running = workload.Status == rt.WorkloadStatusRunning
 	}
 
 	// Check if the detached process is actually running
@@ -831,19 +844,21 @@ func (*defaultManager) isWorkloadAlreadyRunning(name string, workloadSt *workloa
 }
 
 // stopContainerIfNeeded stops the container if it's running but proxy is not
-func (d *defaultManager) stopContainerIfNeeded(ctx context.Context, name string, workloadSt *workloadState) error {
+func (d *defaultManager) stopContainerIfNeeded(
+	ctx context.Context, containerName, workloadName string, workloadSt *workloadState,
+) error {
 	if !workloadSt.Running {
 		return nil
 	}
 
-	logger.Infof("Container %s is running but proxy is not. Stopping container...", name)
-	if err := d.runtime.StopWorkload(ctx, name); err != nil {
-		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, ""); statusErr != nil {
-			logger.Warnf("Failed to set workload %s status to error: %v", name, statusErr)
+	logger.Infof("Container %s is running but proxy is not. Stopping container...", containerName)
+	if err := d.runtime.StopWorkload(ctx, containerName); err != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusError, ""); statusErr != nil {
+			logger.Warnf("Failed to set workload %s status to error: %v", workloadName, statusErr)
 		}
-		return fmt.Errorf("failed to stop container %s: %v", name, err)
+		return fmt.Errorf("failed to stop container %s: %v", containerName, err)
 	}
-	logger.Infof("Container %s stopped", name)
+	logger.Infof("Container %s stopped", containerName)
 	return nil
 }
 

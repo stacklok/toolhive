@@ -44,10 +44,16 @@ func loadGroupFromRunConfig(ctx context.Context, name string) (string, error) {
 
 // WorkloadFromContainerInfo creates a Workload struct from the runtime container info.
 func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload, error) {
-	// Get container name from labels
-	name := labels.GetContainerName(container.Labels)
+	// Get workload name (base name) from labels for user-facing display
+	name := labels.GetContainerBaseName(container.Labels)
 	if name == "" {
-		name = container.Name // Fallback to container name
+		// Fallback to full container name if base name is not available
+		containerName := labels.GetContainerName(container.Labels)
+		if containerName == "" {
+			name = container.Name // Final fallback to container name
+		} else {
+			name = containerName
+		}
 	}
 
 	// Get tool type from labels
@@ -90,7 +96,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 
 	// Translate to the domain model.
 	return core.Workload{
-		Name:          container.Name,
+		Name:          name, // Use the calculated workload name (base name), not container name
 		Package:       container.Image,
 		URL:           url,
 		ToolType:      toolType,

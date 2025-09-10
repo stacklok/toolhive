@@ -239,7 +239,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to remove PID file: %v", err)
 		}
-		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.ContainerName); err != nil {
+		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
 		}
 
@@ -250,7 +250,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {
 		logger.Warnf("Warning: Failed to write PID file: %v", err)
 	}
-	if err := r.statusManager.SetWorkloadPID(ctx, r.Config.ContainerName, os.Getpid()); err != nil {
+	if err := r.statusManager.SetWorkloadPID(ctx, r.Config.BaseName, os.Getpid()); err != nil {
 		logger.Warnf("Warning: Failed to set workload PID: %v", err)
 	}
 
@@ -300,7 +300,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}()
 
 	// At this point, we can consider the workload started successfully.
-	if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.ContainerName, rt.WorkloadStatusRunning, ""); err != nil {
+	if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
 		// If we can't set the status to `running` - treat it as a fatal error.
 		return fmt.Errorf("failed to set workload status: %v", err)
 	}
@@ -316,8 +316,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to remove PID file: %v", err)
 		}
-		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.ContainerName); err != nil {
-			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
+		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
+			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.BaseName, err)
 		}
 
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)

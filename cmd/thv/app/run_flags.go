@@ -478,9 +478,6 @@ func buildRunnerConfig(
 	}
 	if runFlags.EnvFileDir != "" {
 		opts = append(opts, runner.WithEnvFilesFromDirectory(runFlags.EnvFileDir))
-		if err != nil {
-			return nil, fmt.Errorf("failed to process env files from directory %s: %v", runFlags.EnvFileDir, err)
-		}
 	}
 
 	return runner.NewRunConfigBuilder(ctx, imageMetadata, envVars, envVarValidator, opts...)

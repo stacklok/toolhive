@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-09T13:24:30Z",
+  "last_updated": "2025-09-10T00:16:54Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -2189,7 +2189,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.4",
+      "image": "iwakitakuma/gitlab-mcp:2.0.5",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -4771,7 +4771,7 @@
         "ast",
         "code-analysis"
       ],
-      "image": "ghcr.io/semgrep/mcp:0.7.2",
+      "image": "ghcr.io/semgrep/mcp:0.8.1",
       "permissions": {
         "network": {
           "outbound": {

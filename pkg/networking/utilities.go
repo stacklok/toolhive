@@ -63,7 +63,13 @@ func AddressReferencesPrivateIp(address string) error {
 
 // ValidateEndpointURL validates that an endpoint URL is secure
 func ValidateEndpointURL(endpoint string) error {
-	if strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true") {
+	skipValidation := strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
+	return validateEndpointURLWithSkip(endpoint, skipValidation)
+}
+
+// validateEndpointURLWithSkip validates that an endpoint URL is secure, with an option to skip validation
+func validateEndpointURLWithSkip(endpoint string, skipValidation bool) error {
+	if skipValidation {
 		return nil // Skip validation
 	}
 	u, err := url.Parse(endpoint)

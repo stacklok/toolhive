@@ -460,11 +460,12 @@ func TestParseLabel(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "Label with equals in value",
+			name:        "Label with equals in value - should fail validation",
 			label:       "key=value=with=equals",
-			expectedKey: "key",
-			expectedVal: "value=with=equals",
-			expectError: false,
+			expectedKey: "",
+			expectedVal: "",
+			expectError: true,
+			errorMsg:    "invalid label value: value must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character",
 		},
 		{
 			name:        "Complex key with prefix",
@@ -528,7 +529,7 @@ func TestParseLabel(t *testing.T) {
 	}
 }
 
-func TestParseLabelWithValidation(t *testing.T) {
+func TestParseLabelValidation(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name        string
@@ -667,7 +668,7 @@ func TestParseLabelWithValidation(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			key, value, err := ParseLabelWithValidation(tc.label)
+			key, value, err := ParseLabel(tc.label)
 
 			// Check error
 			if tc.expectError {

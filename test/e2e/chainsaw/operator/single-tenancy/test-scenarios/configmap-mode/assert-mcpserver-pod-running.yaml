@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: toolhive-system
+  (labels.app): mcpserver
+status:
+  phase: Running

@@ -14,19 +14,18 @@ func TestUnifiedMeterProvider_BothProviders(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	config := Config{
-		ServiceName:                 "test-service",
-		ServiceVersion:              "1.0.0",
-		OTLPEndpoint:                "localhost:4318",
-		Insecure:                    true,
-		SamplingRate:                0.1,
-		TracingEnabled:              true,
-		MetricsEnabled:              true,
-		EnablePrometheusMetricsPath: true,
+	options := []ProviderOption{
+		WithServiceName("test-service"),
+		WithServiceVersion("1.0.0"),
+		WithOTLPEndpoint("localhost:4318"),
+		WithInsecure(true),
+		WithSamplingRate(0.1),
+		WithTracingEnabled(true),
+		WithMetricsEnabled(true),
+		WithEnablePrometheusMetricsPath(true),
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	provider, err := NewCompositeProvider(ctx, options...)
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 	defer provider.Shutdown(ctx)
@@ -63,19 +62,18 @@ func TestUnifiedMeterProvider_PrometheusOnly(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	config := Config{
-		ServiceName:                 "test-service",
-		ServiceVersion:              "1.0.0",
-		OTLPEndpoint:                "localhost:4318",
-		Insecure:                    true,
-		SamplingRate:                0.1,
-		TracingEnabled:              false,
-		MetricsEnabled:              false,
-		EnablePrometheusMetricsPath: true,
+	options := []ProviderOption{
+		WithServiceName("test-service"),
+		WithServiceVersion("1.0.0"),
+		WithOTLPEndpoint("localhost:4318"),
+		WithInsecure(true),
+		WithSamplingRate(0.1),
+		WithTracingEnabled(false),
+		WithMetricsEnabled(false),
+		WithEnablePrometheusMetricsPath(true),
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	provider, err := NewCompositeProvider(ctx, options...)
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 	defer provider.Shutdown(ctx)
@@ -103,19 +101,18 @@ func TestUnifiedMeterProvider_OTLPOnly(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	config := Config{
-		ServiceName:                 "test-service",
-		ServiceVersion:              "1.0.0",
-		OTLPEndpoint:                "localhost:4318",
-		Insecure:                    true,
-		SamplingRate:                0.1,
-		TracingEnabled:              true,
-		MetricsEnabled:              true,
-		EnablePrometheusMetricsPath: false,
+	options := []ProviderOption{
+		WithServiceName("test-service"),
+		WithServiceVersion("1.0.0"),
+		WithOTLPEndpoint("localhost:4318"),
+		WithInsecure(true),
+		WithSamplingRate(0.1),
+		WithTracingEnabled(true),
+		WithMetricsEnabled(true),
+		WithEnablePrometheusMetricsPath(false),
 	}
 
-	builder := WithConfig(config)
-	provider, err := builder.Build(ctx)
+	provider, err := NewCompositeProvider(ctx, options...)
 	require.NoError(t, err)
 	require.NotNil(t, provider)
 	defer provider.Shutdown(ctx)

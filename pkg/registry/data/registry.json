@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-08T00:18:07Z",
+  "last_updated": "2025-09-10T00:16:54Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -121,8 +121,55 @@
         "cert_issuer": "https://token.actions.githubusercontent.com"
       }
     },
+    "apollo-mcp-server": {
+      "description": "Exposes GraphQL operations as MCP tools for AI-driven API orchestration with Apollo",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "example_GetAstronautsCurrentlyInSpace"
+      ],
+      "metadata": {
+        "stars": 188,
+        "pulls": 0,
+        "last_updated": "2025-09-09T02:30:39Z"
+      },
+      "repository_url": "https://github.com/apollographql/apollo-mcp-server",
+      "tags": [
+        "graphql",
+        "api",
+        "orchestration",
+        "apollo",
+        "mcp"
+      ],
+      "image": "ghcr.io/apollographql/apollo-mcp-server:v0.7.5",
+      "target_port": 5000,
+      "permissions": {
+        "network": {
+          "outbound": {
+            "insecure_allow_all": true,
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "env_vars": [
+        {
+          "name": "APOLLO_GRAPH_REF",
+          "description": "Graph ref (graph ID and variant) used to fetch persisted queries or schema (required if no config file)",
+          "required": false
+        },
+        {
+          "name": "APOLLO_KEY",
+          "description": "Apollo Studio API key for the graph (required if no config file)",
+          "required": false,
+          "secret": true
+        }
+      ]
+    },
     "arxiv-mcp-server": {
-      "description": "Enables AI assistants to search and access arXiv research papers through MCP protocol. Mount a volume to /arxiv-papers for persistent paper storage.",
+      "description": "AI assistants search and access arXiv papers through MCP with persistent paper storage",
       "tier": "Community",
       "status": "Active",
       "transport": "stdio",
@@ -476,9 +523,9 @@
         "recommend"
       ],
       "metadata": {
-        "stars": 6051,
+        "stars": 6243,
         "pulls": 0,
-        "last_updated": "2025-08-26T02:32:12Z"
+        "last_updated": "2025-09-08T02:31:33Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -948,9 +995,9 @@
         "getUrl"
       ],
       "metadata": {
-        "stars": 2496,
+        "stars": 2563,
         "pulls": 0,
-        "last_updated": "2025-08-26T02:32:12Z"
+        "last_updated": "2025-09-09T02:30:40Z"
       },
       "repository_url": "https://github.com/browserbase/mcp-server-browserbase",
       "tags": [
@@ -1135,7 +1182,7 @@
       }
     },
     "cloud-run": {
-      "description": "Deploy apps to Google Cloud Run directly from AI assistants. Enables deployment of containerized applications, local files, and folders to Cloud Run with integrated logging and service management.",
+      "description": "Deploy apps to Google Cloud Run with integrated logging and service management",
       "tier": "Official",
       "status": "Active",
       "transport": "stdio",
@@ -1212,7 +1259,7 @@
       ]
     },
     "context7": {
-      "description": "Context7 MCP pulls up-to-date, version-specific documentation and code examples straight from the source — and places them directly into your prompt",
+      "description": "Context7 MCP pulls version-specific docs and code examples directly into your prompt",
       "tier": "Community",
       "status": "Active",
       "transport": "stdio",
@@ -1250,7 +1297,7 @@
       }
     },
     "crowdstrike-falcon": {
-      "description": "Connects AI agents with the CrowdStrike Falcon platform for intelligent security analysis, providing programmatic access to detections, incidents, behaviors, threat intelligence, hosts, vulnerabilities, and identity protection capabilities.",
+      "description": "CrowdStrike Falcon integration for security analysis, detections, incidents, and threat intel",
       "tier": "Official",
       "status": "Active",
       "transport": "streamable-http",
@@ -1353,7 +1400,7 @@
       ]
     },
     "dolt": {
-      "description": "Provides Git-like version control for SQL databases using Dolt, enabling branching, merging, and versioning of database schemas and data",
+      "description": "Git-like version control for SQL databases with branching, merging, and data versioning",
       "tier": "Official",
       "status": "Active",
       "transport": "streamable-http",
@@ -1401,9 +1448,9 @@
         "unstage_table"
       ],
       "metadata": {
-        "stars": 2,
+        "stars": 3,
         "pulls": 0,
-        "last_updated": "2025-08-24T02:35:25Z"
+        "last_updated": "2025-09-08T02:31:32Z"
       },
       "repository_url": "https://github.com/dolthub/dolt-mcp",
       "tags": [
@@ -1698,7 +1745,7 @@
       ]
     },
     "firecrawl": {
-      "description": "A powerful web scraping and content extraction MCP server that provides advanced crawling, search, and structured data extraction capabilities with LLM integration.",
+      "description": "Web scraping and content extraction MCP server with advanced crawling and LLM integration",
       "tier": "Official",
       "status": "Active",
       "transport": "stdio",
@@ -1790,7 +1837,7 @@
       ]
     },
     "genai-toolbox": {
-      "description": "A comprehensive MCP server for database operations that provides tools for connecting to and interacting with various database systems with advanced features like connection pooling, authentication, and observability. Mount and configured via tools.yaml",
+      "description": "Database operations MCP server with connection pooling, authentication, and observability",
       "tier": "Official",
       "status": "Active",
       "transport": "sse",
@@ -2127,9 +2174,9 @@
         "download_attachment"
       ],
       "metadata": {
-        "stars": 509,
-        "pulls": 9715,
-        "last_updated": "2025-08-26T17:28:57Z"
+        "stars": 545,
+        "pulls": 12971,
+        "last_updated": "2025-09-09T02:30:41Z"
       },
       "repository_url": "https://github.com/zereight/gitlab-mcp",
       "tags": [
@@ -2142,7 +2189,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.4",
+      "image": "iwakitakuma/gitlab-mcp:2.0.5",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -2221,7 +2268,7 @@
       ]
     },
     "grafana": {
-      "description": "Provides access to your Grafana instance and the surrounding ecosystem, enabling dashboard search, datasource queries, alerting management, incident response, and Sift investigations.",
+      "description": "Grafana integration for dashboard search, datasource queries, alerting, and incident response",
       "tier": "Official",
       "status": "Active",
       "transport": "sse",
@@ -2538,9 +2585,9 @@
         "list_microsoft_calendars"
       ],
       "metadata": {
-        "stars": 349,
+        "stars": 356,
         "pulls": 0,
-        "last_updated": "2025-08-26T02:32:14Z"
+        "last_updated": "2025-09-09T02:30:41Z"
       },
       "repository_url": "https://github.com/graphlit/graphlit-mcp-server",
       "tags": [
@@ -2652,7 +2699,7 @@
       }
     },
     "hass-mcp": {
-      "description": "Integrates Home Assistant with LLM applications, enabling direct interaction with smart home devices, sensors, and automations.",
+      "description": "Home Assistant integration enabling direct interaction with smart home devices and automations",
       "tier": "Community",
       "status": "Active",
       "transport": "stdio",
@@ -2985,7 +3032,7 @@
         "get",
         "list"
       ],
-      "image": "ghcr.io/stackloklabs/mkp/server:0.2.1",
+      "image": "ghcr.io/stackloklabs/mkp/server:0.2.2",
       "permissions": {
         "network": {
           "outbound": {
@@ -3095,7 +3142,7 @@
       ]
     },
     "kyverno": {
-      "description": "Provides Kyverno policy management capabilities enabling AI assistants to interact with Kyverno policies in Kubernetes clusters for comprehensive policy management, security assessment, and compliance monitoring.",
+      "description": "Kyverno policy management for Kubernetes security assessment and compliance monitoring",
       "tier": "Official",
       "status": "Active",
       "transport": "stdio",
@@ -3207,7 +3254,7 @@
       }
     },
     "mcp-clickhouse": {
-      "description": "MCP server for ClickHouse that provides tools to execute SQL queries, list databases and tables, and optionally use chDB's embedded OLAP engine",
+      "description": "MCP server for ClickHouse with SQL queries, database/table listing, and optional chDB OLAP engine",
       "tier": "Official",
       "status": "Active",
       "transport": "stdio",
@@ -3573,7 +3620,7 @@
       }
     },
     "mcp-server-box": {
-      "description": "MCP server that integrates with the Box API to perform file operations, AI-based querying, metadata management, and document generation",
+      "description": "Box API integration for file operations, AI querying, metadata management, and document generation",
       "tier": "Official",
       "status": "Active",
       "transport": "stdio",
@@ -3657,7 +3704,7 @@
       }
     },
     "mcp-server-circleci": {
-      "description": "Official CircleCI MCP server for CI/CD operations, enabling AI models to manage pipelines, analyze test results, debug build failures, and optimize resource usage",
+      "description": "CircleCI MCP server for CI/CD operations, pipeline management, and build analysis",
       "tier": "Official",
       "status": "Active",
       "transport": "stdio",
@@ -3679,9 +3726,9 @@
         "find_underused_resource_classes"
       ],
       "metadata": {
-        "stars": 59,
+        "stars": 63,
         "pulls": 0,
-        "last_updated": "2025-08-24T02:35:26Z"
+        "last_updated": "2025-09-08T02:31:32Z"
       },
       "repository_url": "https://github.com/CircleCI-Public/mcp-server-circleci",
       "tags": [
@@ -3813,7 +3860,7 @@
       }
     },
     "memory": {
-      "description": "Provides persistent memory to an LLMs application for storing information about the user across chats. Implemented using a local knowledge graph.",
+      "description": "Persistent memory for LLM applications using local knowledge graph to store user information",
       "tier": "Community",
       "status": "Active",
       "transport": "stdio",
@@ -4066,9 +4113,9 @@
         "API-create-a-comment"
       ],
       "metadata": {
-        "stars": 3036,
-        "pulls": 25300,
-        "last_updated": "2025-08-26T02:32:13Z"
+        "stars": 3145,
+        "pulls": 29402,
+        "last_updated": "2025-09-09T02:30:40Z"
       },
       "repository_url": "https://github.com/makenotion/notion-mcp-server",
       "tags": [
@@ -4098,7 +4145,7 @@
       ]
     },
     "oci-registry": {
-      "description": "Enables secure and seamless querying of OCI container registries, providing tools for image introspection, tag discovery, and manifest/config retrieval.",
+      "description": "Secure OCI container registry querying with image introspection and manifest retrieval",
       "tier": "Community",
       "status": "Active",
       "transport": "sse",
@@ -4181,9 +4228,9 @@
         "get_block_info"
       ],
       "metadata": {
-        "stars": 62,
+        "stars": 64,
         "pulls": 0,
-        "last_updated": "2025-08-24T02:35:26Z"
+        "last_updated": "2025-09-08T02:31:33Z"
       },
       "repository_url": "https://github.com/Bankless/onchain-mcp",
       "tags": [
@@ -4224,7 +4271,7 @@
       }
     },
     "osv": {
-      "description": "Provides access to the OSV (Open Source Vulnerabilities) database. Allows LLM-powered applications to query the OSV database for vulnerability information about packages and commits.",
+      "description": "OSV (Open Source Vulnerabilities) database access for querying package and commit vulnerabilities",
       "tier": "Community",
       "status": "Active",
       "transport": "sse",
@@ -4339,9 +4386,9 @@
         "share-traces"
       ],
       "metadata": {
-        "stars": 6771,
+        "stars": 6888,
         "pulls": 0,
-        "last_updated": "2025-08-26T02:32:11Z"
+        "last_updated": "2025-09-08T02:31:33Z"
       },
       "repository_url": "https://github.com/Arize-ai/phoenix",
       "tags": [
@@ -4692,7 +4739,7 @@
       ]
     },
     "semgrep": {
-      "description": "Allows you to scan code for security vulnerabilities using Semgrep, a fast, deterministic static analysis tool that semantically understands many languages and comes with over 5,000 rules.",
+      "description": "Scan code for security vulnerabilities using Semgrep with 5,000+ semantic analysis rules",
       "tier": "Official",
       "status": "Active",
       "transport": "sse",
@@ -4724,7 +4771,7 @@
         "ast",
         "code-analysis"
       ],
-      "image": "ghcr.io/semgrep/mcp:0.7.2",
+      "image": "ghcr.io/semgrep/mcp:0.8.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -4751,7 +4798,7 @@
       ]
     },
     "sentry": {
-      "description": "Sentry's MCP service for human-in-the-loop coding agents, optimized for developer workflows and debugging use cases",
+      "description": "Sentry MCP service for human-in-the-loop coding agents and developer workflow debugging",
       "tier": "Official",
       "status": "Active",
       "transport": "stdio",
@@ -4831,7 +4878,7 @@
       }
     },
     "sequentialthinking": {
-      "description": "Enables dynamic problem-solving with a structured, reflective approach that can adapt and evolve as understanding deepens.",
+      "description": "Dynamic problem-solving with structured, reflective approach that adapts as understanding deepens",
       "tier": "Community",
       "status": "Active",
       "transport": "stdio",
@@ -4960,42 +5007,39 @@
       ]
     },
     "supabase": {
-      "description": "Connect your Supabase projects to AI assistants for managing tables, fetching config, and querying data",
+      "description": "Connect Supabase projects to AI assistants for table management, config, and data querying",
       "tier": "Official",
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "list_projects",
-        "get_project",
-        "create_project",
-        "pause_project",
-        "restore_project",
-        "list_organizations",
-        "get_organization",
-        "get_cost",
+        "apply_migration",
         "confirm_cost",
-        "search_docs",
-        "list_tables",
+        "create_branch",
+        "create_project",
+        "delete_branch",
+        "deploy_edge_function",
+        "execute_sql",
+        "generate_typescript_types",
+        "get_advisors",
+        "get_anon_key",
+        "get_cost",
+        "get_logs",
+        "get_organization",
+        "get_project",
+        "get_project_url",
+        "list_branches",
+        "list_edge_functions",
         "list_extensions",
         "list_migrations",
-        "apply_migration",
-        "execute_sql",
-        "get_logs",
-        "get_advisors",
-        "get_project_url",
-        "get_anon_key",
-        "generate_typescript_types",
-        "list_edge_functions",
-        "deploy_edge_function",
-        "create_branch",
-        "list_branches",
-        "delete_branch",
+        "list_organizations",
+        "list_projects",
+        "list_tables",
         "merge_branch",
-        "reset_branch",
+        "pause_project",
         "rebase_branch",
-        "list_storage_buckets",
-        "get_storage_config",
-        "update_storage_config"
+        "reset_branch",
+        "restore_project",
+        "search_docs"
       ],
       "metadata": {
         "stars": 2019,
@@ -5098,15 +5142,19 @@
       }
     },
     "terraform": {
-      "description": "Provides integration with the Terraform ecosystem and interaction capabilities for Infrastructure as Code (IaC) development.",
+      "description": "Terraform ecosystem integration with IaC development capabilities and provider documentation",
       "tier": "Official",
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "resolveProviderDocID",
-        "getProviderDocs",
-        "searchModules",
-        "moduleDetails"
+        "get_latest_module_version",
+        "get_latest_provider_version",
+        "get_module_details",
+        "get_policy_details",
+        "get_provider_details",
+        "search_modules",
+        "search_policies",
+        "search_providers"
       ],
       "metadata": {
         "stars": 901,
@@ -5176,6 +5224,685 @@
           "outbound": {}
         }
       }
+    }
+  },
+  "remote_servers": {
+    "atlassian-remote": {
+      "description": "Atlassian's official remote MCP server for Jira, Confluence, and Compass with OAuth 2.1",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "sse",
+      "tools": [
+        "atlassianUserInfo",
+        "getAccessibleAtlassianResources",
+        "getConfluenceSpaces",
+        "getConfluencePage",
+        "getPagesInConfluenceSpace",
+        "getConfluencePageFooterComments",
+        "getConfluencePageInlineComments",
+        "getConfluencePageDescendants",
+        "createConfluencePage",
+        "updateConfluencePage",
+        "createConfluenceFooterComment",
+        "createConfluenceInlineComment",
+        "searchConfluenceUsingCql",
+        "getJiraIssue",
+        "editJiraIssue",
+        "createJiraIssue",
+        "getTransitionsForJiraIssue",
+        "transitionJiraIssue",
+        "lookupJiraAccountId",
+        "searchJiraIssuesUsingJql",
+        "addCommentToJiraIssue",
+        "getJiraIssueRemoteIssueLinks",
+        "getVisibleJiraProjects",
+        "getJiraProjectIssueTypesMetadata"
+      ],
+      "tags": [
+        "remote",
+        "atlassian",
+        "jira",
+        "confluence",
+        "compass",
+        "oauth",
+        "project-management",
+        "collaboration",
+        "documentation",
+        "beta"
+      ],
+      "url": "https://mcp.atlassian.com/v1/sse"
+    },
+    "canva": {
+      "description": "Canva's official remote MCP server for design creation and template management",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "upload-asset-from-url",
+        "get-asset-upload-from-url-status",
+        "search-designs",
+        "get-design",
+        "get-design-pages",
+        "get-design-content",
+        "import-design-from-url",
+        "get-design-import-from-url-status",
+        "export-design",
+        "get-export-formats",
+        "get-design-export-status",
+        "create-folder",
+        "move-item-to-folder",
+        "list-folder-items",
+        "comment-on-design",
+        "list-comments",
+        "list-replies",
+        "reply-to-comment"
+      ],
+      "tags": [
+        "remote",
+        "canva",
+        "design",
+        "graphics",
+        "templates",
+        "oauth",
+        "creative",
+        "visual-content",
+        "export",
+        "collaboration"
+      ],
+      "url": "https://mcp.canva.com/mcp"
+    },
+    "github-remote": {
+      "description": "GitHub's official MCP server for repositories, issues, PRs, actions, and security with OAuth",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "add_comment_to_pending_review",
+        "add_issue_comment",
+        "add_sub_issue",
+        "assign_copilot_to_issue",
+        "cancel_workflow_run",
+        "create_and_submit_pull_request_review",
+        "create_branch",
+        "create_gist",
+        "create_issue",
+        "create_or_update_file",
+        "create_pending_pull_request_review",
+        "create_pull_request",
+        "create_pull_request_with_copilot",
+        "create_repository",
+        "delete_file",
+        "delete_pending_pull_request_review",
+        "delete_workflow_run_logs",
+        "dismiss_notification",
+        "download_workflow_run_artifact",
+        "fork_repository",
+        "get_code_scanning_alert",
+        "get_commit",
+        "get_dependabot_alert",
+        "get_discussion",
+        "get_discussion_comments",
+        "get_file_contents",
+        "get_global_security_advisory",
+        "get_issue",
+        "get_issue_comments",
+        "get_job_logs",
+        "get_latest_release",
+        "get_me",
+        "get_notification_details",
+        "get_pull_request",
+        "get_pull_request_comments",
+        "get_pull_request_diff",
+        "get_pull_request_files",
+        "get_pull_request_reviews",
+        "get_pull_request_status",
+        "get_release_by_tag",
+        "get_secret_scanning_alert",
+        "get_tag",
+        "get_team_members",
+        "get_teams",
+        "get_workflow_run",
+        "get_workflow_run_logs",
+        "get_workflow_run_usage",
+        "list_branches",
+        "list_code_scanning_alerts",
+        "list_commits",
+        "list_dependabot_alerts",
+        "list_discussion_categories",
+        "list_discussions",
+        "list_gists",
+        "list_global_security_advisories",
+        "list_issue_types",
+        "list_issues",
+        "list_notifications",
+        "list_org_repository_security_advisories",
+        "list_pull_requests",
+        "list_releases",
+        "list_repository_security_advisories",
+        "list_secret_scanning_alerts",
+        "list_sub_issues",
+        "list_tags",
+        "list_workflow_jobs",
+        "list_workflow_run_artifacts",
+        "list_workflow_runs",
+        "list_workflows",
+        "manage_notification_subscription",
+        "manage_repository_notification_subscription",
+        "mark_all_notifications_read",
+        "merge_pull_request",
+        "push_files",
+        "remove_sub_issue",
+        "reprioritize_sub_issue",
+        "request_copilot_review",
+        "rerun_failed_jobs",
+        "rerun_workflow_run",
+        "run_workflow",
+        "search_code",
+        "search_issues",
+        "search_orgs",
+        "search_pull_requests",
+        "search_repositories",
+        "search_users",
+        "submit_pending_pull_request_review",
+        "update_gist",
+        "update_issue",
+        "update_pull_request",
+        "update_pull_request_branch"
+      ],
+      "repository_url": "https://github.com/github/github-mcp-server",
+      "tags": [
+        "remote",
+        "github",
+        "git",
+        "version-control",
+        "repositories",
+        "issues",
+        "pull-requests",
+        "actions",
+        "copilot"
+      ],
+      "url": "https://api.githubcopilot.com/mcp"
+    },
+    "huggingface": {
+      "description": "Official Hugging Face MCP server for models, datasets, and research papers",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "hf_whoami",
+        "space_search",
+        "model_search",
+        "model_details",
+        "paper_search",
+        "dataset_search",
+        "dataset_details",
+        "hf_doc_search",
+        "hf_doc_fetch",
+        "gr1_flux1_schnell_infer"
+      ],
+      "tags": [
+        "remote",
+        "ai",
+        "huggingface",
+        "models",
+        "datasets",
+        "research-papers",
+        "documentation",
+        "image-generation",
+        "authentication"
+      ],
+      "url": "https://huggingface.co/mcp"
+    },
+    "jam": {
+      "description": "Jam's official remote MCP server for debugging with video recordings and logs",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "getDetails",
+        "getConsoleLogs",
+        "getNetworkRequests",
+        "getScreenshot",
+        "getUserEvents",
+        "analyzeVideo"
+      ],
+      "tags": [
+        "remote",
+        "jam",
+        "debugging",
+        "screen-recording",
+        "video-analysis",
+        "oauth",
+        "console-logs",
+        "network-requests",
+        "screenshots",
+        "user-events"
+      ],
+      "url": "https://mcp.jam.dev/mcp"
+    },
+    "mcp-spec": {
+      "description": "Official MCP server for the Model Context Protocol specification",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "SearchModelContextProtocol"
+      ],
+      "tags": [
+        "remote",
+        "mcp",
+        "specification",
+        "protocol",
+        "documentation",
+        "official"
+      ],
+      "url": "https://modelcontextprotocol.io/mcp"
+    },
+    "monday": {
+      "description": "Monday.com's official remote MCP server for project and workflow management",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "sse",
+      "tools": [
+        "get_board_items_by_name",
+        "create_item",
+        "create_update",
+        "get_board_activity",
+        "get_board_info",
+        "create_board",
+        "create_column",
+        "list_users_and_teams",
+        "all_monday_api",
+        "get_graphql_schema",
+        "get_column_type_info",
+        "get_type_details",
+        "read_docs",
+        "workspace_info",
+        "list_workspaces",
+        "create_doc",
+        "create_dashboard",
+        "all_widgets_schema"
+      ],
+      "repository_url": "https://github.com/mondaycom/mcp",
+      "tags": [
+        "remote",
+        "monday",
+        "project-management",
+        "workflow",
+        "collaboration",
+        "boards",
+        "items",
+        "api-token",
+        "work-os",
+        "automation"
+      ],
+      "url": "https://mcp.monday.com/sse"
+    },
+    "neon": {
+      "description": "Neon's official remote MCP server for serverless Postgres with branching and migrations",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "sse",
+      "tools": [
+        "list_projects",
+        "list_organizations",
+        "list_shared_projects",
+        "create_project",
+        "delete_project",
+        "describe_project",
+        "run_sql",
+        "run_sql_transaction",
+        "describe_table_schema",
+        "get_database_tables",
+        "explain_sql_statement",
+        "create_branch",
+        "describe_branch",
+        "delete_branch",
+        "reset_from_parent",
+        "prepare_database_migration",
+        "complete_database_migration",
+        "list_branch_computes",
+        "get_connection_string",
+        "provision_neon_auth",
+        "prepare_query_tuning",
+        "complete_query_tuning",
+        "list_slow_queries"
+      ],
+      "tags": [
+        "remote",
+        "neon",
+        "postgres",
+        "serverless",
+        "database",
+        "oauth",
+        "project-management",
+        "branching",
+        "sql",
+        "query-tuning"
+      ],
+      "url": "https://mcp.neon.tech/sse"
+    },
+    "notion-remote": {
+      "description": "Notion's official remote MCP server for workspaces, pages, databases, and comments",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "search",
+        "fetch",
+        "create-pages",
+        "update-page",
+        "move-pages",
+        "duplicate-page",
+        "create-database",
+        "update-database",
+        "create-comment",
+        "get-comments",
+        "get-users",
+        "get-user",
+        "get-self"
+      ],
+      "tags": [
+        "remote",
+        "notion",
+        "workspace",
+        "pages",
+        "databases",
+        "comments",
+        "oauth",
+        "productivity",
+        "collaboration"
+      ],
+      "url": "https://mcp.notion.com/mcp"
+    },
+    "paypal": {
+      "description": "PayPal's MCP server for payment processing, invoices, and business operations",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "create_product",
+        "list_product",
+        "show_product_details",
+        "list_disputes",
+        "get_dispute",
+        "accept_dispute_claim",
+        "create_invoice",
+        "list_invoices",
+        "get_invoice",
+        "send_invoice",
+        "send_invoice_reminder",
+        "cancel_sent_invoice",
+        "generate_invoice_qr_code",
+        "create_order",
+        "create_refund",
+        "get_order",
+        "get_refund",
+        "pay_order",
+        "list_transaction",
+        "create_shipment_tracking",
+        "get_shipment_tracking",
+        "cancel_subscription",
+        "create_subscription",
+        "create_subscription_plan",
+        "list_subscription_plans",
+        "show_subscription_details",
+        "show_subscription_plan_details",
+        "update_subscription",
+        "search_product",
+        "create_cart",
+        "checkout_cart"
+      ],
+      "tags": [
+        "remote",
+        "payments",
+        "ecommerce",
+        "financial",
+        "paypal",
+        "transactions",
+        "invoices"
+      ],
+      "url": "https://mcp.paypal.com/mcp"
+    },
+    "replicate": {
+      "description": "Replicate's official MCP server for AI models and ML workflows",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "sse",
+      "tools": [
+        "list_collections",
+        "get_collections",
+        "create_deployments",
+        "update_deployments",
+        "list_deployments",
+        "get_deployments",
+        "create_deployments_predictions",
+        "list_hardware",
+        "get_account",
+        "create_models",
+        "list_models",
+        "get_models",
+        "search_models",
+        "list_models_examples",
+        "create_models_predictions",
+        "get_models_readme",
+        "list_models_versions",
+        "get_models_versions",
+        "create_predictions",
+        "list_predictions",
+        "cancel_predictions",
+        "get_predictions",
+        "create_trainings",
+        "list_trainings",
+        "cancel_trainings",
+        "get_trainings",
+        "get_default_webhooks_secret"
+      ],
+      "tags": [
+        "remote",
+        "ai",
+        "replicate",
+        "model-hosting",
+        "ml-workflows",
+        "inference",
+        "predictions"
+      ],
+      "url": "https://mcp.replicate.com/sse"
+    },
+    "semgrep-remote": {
+      "description": "Official Semgrep MCP server for code security scanning and vulnerability detection",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "semgrep_rule_schema",
+        "get_supported_languages",
+        "semgrep_findings",
+        "semgrep_scan_with_custom_rule",
+        "semgrep_scan",
+        "semgrep_scan_rpc",
+        "semgrep_scan_local",
+        "security_check",
+        "get_abstract_syntax_tree"
+      ],
+      "repository_url": "https://github.com/semgrep/mcp",
+      "tags": [
+        "remote",
+        "security",
+        "semgrep",
+        "static-analysis",
+        "vulnerability-detection",
+        "code-scanning",
+        "security-audit"
+      ],
+      "url": "https://mcp.semgrep.ai"
+    },
+    "sentry-remote": {
+      "description": "Sentry's official remote MCP server for error monitoring and performance tracking",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "sse",
+      "tools": [
+        "whoami",
+        "find_organizations",
+        "find_teams",
+        "find_projects",
+        "find_releases",
+        "get_issue_details",
+        "get_trace_details",
+        "get_event_attachment",
+        "search_events",
+        "find_dsns",
+        "analyze_issue_with_seer",
+        "search_docs",
+        "get_doc",
+        "search_issues"
+      ],
+      "tags": [
+        "remote",
+        "sentry",
+        "error-monitoring",
+        "performance-tracking",
+        "debugging",
+        "oauth",
+        "issues",
+        "traces",
+        "projects",
+        "releases"
+      ],
+      "url": "https://mcp.sentry.dev/sse"
+    },
+    "square": {
+      "description": "Square's official remote MCP server for payment processing and commerce",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "sse",
+      "tools": [
+        "make_api_request",
+        "get_type_info",
+        "get_service_info"
+      ],
+      "repository_url": "https://github.com/square/square-mcp-server",
+      "tags": [
+        "remote",
+        "square",
+        "payments",
+        "ecommerce",
+        "oauth",
+        "commerce",
+        "customers",
+        "orders",
+        "items",
+        "beta"
+      ],
+      "url": "https://mcp.squareup.com/sse"
+    },
+    "stripe-remote": {
+      "description": "Stripe's official remote MCP server for payment processing and subscriptions",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "get_stripe_account_info",
+        "retrieve_balance",
+        "create_coupon",
+        "list_coupons",
+        "create_customer",
+        "list_customers",
+        "list_disputes",
+        "update_dispute",
+        "create_invoice",
+        "create_invoice_item",
+        "finalise_invoice",
+        "list_invoices",
+        "create_payment_link",
+        "list_payment_intents",
+        "create_price",
+        "list_prices",
+        "create_product",
+        "list_products",
+        "create_refund",
+        "cancel_subscription",
+        "list_subscriptions",
+        "update_subscription",
+        "search_stripe_resources",
+        "fetch_stripe_resources",
+        "search_stripe_documentation"
+      ],
+      "tags": [
+        "remote",
+        "payments",
+        "ecommerce",
+        "financial",
+        "stripe",
+        "subscriptions",
+        "invoices",
+        "customers"
+      ],
+      "url": "https://mcp.stripe.com"
+    },
+    "vercel": {
+      "description": "Vercel's official remote MCP server for deployment platform and project management",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "search_vercel_documentation",
+        "list_teams",
+        "list_projects",
+        "get_project",
+        "list_deployments",
+        "get_deployment",
+        "get_deployment_events",
+        "get_access_to_vercel_url",
+        "web_fetch_vercel_url"
+      ],
+      "tags": [
+        "remote",
+        "vercel",
+        "deployment",
+        "hosting",
+        "oauth",
+        "web-development",
+        "serverless",
+        "domains",
+        "environment-variables",
+        "projects"
+      ],
+      "url": "https://mcp.vercel.com"
+    },
+    "wix": {
+      "description": "Wix's official remote MCP server for development platform and site management",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "sse",
+      "tools": [
+        "WixREADME",
+        "SearchWixWDSDocumentation",
+        "SearchWixRESTDocumentation",
+        "SearchWixSDKDocumentation",
+        "SearchBuildAppsDocumentation",
+        "SearchWixHeadlessDocumentation",
+        "ReadFullDocsArticle",
+        "ReadFullDocsMethodSchema",
+        "CallWixSiteAPI",
+        "ListWixSites",
+        "ManageWixSite",
+        "SupportAndFeedback"
+      ],
+      "tags": [
+        "remote",
+        "wix",
+        "website-builder",
+        "documentation",
+        "sdk",
+        "headless",
+        "site-management",
+        "api",
+        "development",
+        "build-apps"
+      ],
+      "url": "https://mcp.wix.com/sse"
     }
   }
 }

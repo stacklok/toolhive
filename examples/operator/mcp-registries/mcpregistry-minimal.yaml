@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minimal-registry-data
+  namespace: toolhive-system
+data:
+  registry.json: |
+    {
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "version": "1.0.0",
+      "last_updated": "2025-09-08T12:00:00Z",
+      "servers": {
+        "everything": {
+          "description": "This MCP server attempts to exercise all the features of the MCP protocol",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "echo",
+            "add",
+            "longRunningOperation"
+          ],
+          "metadata": {
+            "stars": 66732,
+            "pulls": 17019,
+            "last_updated": "2025-09-04T02:27:25Z"
+          },
+          "repository_url": "https://github.com/modelcontextprotocol/servers",
+          "tags": [
+            "example",
+            "features",
+            "tools"
+          ],
+          "image": "docker.io/mcp/everything:latest",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        }
+      }
+    }
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: minimal-registry
+  namespace: toolhive-system
+spec:
+  source:
+    type: configmap
+    configmap:
+      name: minimal-registry-data

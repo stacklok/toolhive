@@ -99,8 +99,9 @@ func TestLocalRegistryProvider(t *testing.T) {
 		t.Fatalf("ListServers() error = %v", err)
 	}
 
-	if len(servers) != len(registry.Servers) {
-		t.Errorf("ListServers() returned %d servers, want %d", len(servers), len(registry.Servers))
+	totalServers := len(registry.Servers) + len(registry.RemoteServers)
+	if len(servers) != totalServers {
+		t.Errorf("ListServers() returned %d servers, want %d", len(servers), totalServers)
 	}
 
 	// Test GetServer with existing server
@@ -391,7 +392,8 @@ func TestListServers(t *testing.T) {
 		t.Fatalf("Failed to get registry: %v", err)
 	}
 
-	if len(servers) != len(reg.Servers) {
-		t.Errorf("Expected %d servers, got %d", len(reg.Servers), len(servers))
+	totalServers := len(reg.Servers) + len(reg.RemoteServers)
+	if len(servers) != totalServers {
+		t.Errorf("ListServers() returned %d servers, want %d", len(servers), totalServers)
 	}
 }

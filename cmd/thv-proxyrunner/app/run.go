@@ -1,11 +1,18 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/environment"
@@ -16,6 +23,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
+
+// NewRunCmd creates a new run command for testing
+func NewRunCmd() *cobra.Command {
+	return runCmd
+}
 
 var runCmd = &cobra.Command{
 	Use:   "run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]",
@@ -73,7 +85,10 @@ var (
 	runOtelEndpoint             string
 	runOtelServiceName          string
 	runOtelHeaders              []string
+	runOtelTracingEnabled       bool
+	runOtelMetricsEnabled       bool
 	runOtelInsecure             bool
+	runOtelTracingSamplingRate  float64
 	enablePrometheusMetricsPath bool
 
 	// Network isolation flag
@@ -87,6 +102,9 @@ var (
 
 	// Environment file processing
 	runEnvFileDir string
+
+	// ConfigMap reference flag (for identification only)
+	runFromConfigMap string
 )
 
 func init() {
@@ -188,9 +206,14 @@ func init() {
 		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
 	runCmd.Flags().BoolVar(&runOtelInsecure, "otel-insecure", false,
 		"Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS")
+	runCmd.Flags().BoolVar(&runOtelTracingEnabled, "otel-tracing-enabled", false,
+		"Enable distributed tracing (when OTLP endpoint is configured)")
+	runCmd.Flags().BoolVar(&runOtelMetricsEnabled, "otel-metrics-enabled", false,
+		"Enable OTLP metrics export (when OTLP endpoint is configured)")
+	runCmd.Flags().Float64Var(&runOtelTracingSamplingRate, "otel-tracing-sampling-rate", 0.0,
+		"OpenTelemetry trace sampling rate (0.0-1.0)")
 	runCmd.Flags().BoolVar(&enablePrometheusMetricsPath, "enable-prometheus-metrics-path", false,
 		"Enable Prometheus-style /metrics endpoint on the main transport port")
-
 	runCmd.Flags().BoolVar(&runIsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
 	runCmd.Flags().StringArrayVar(
@@ -211,10 +234,75 @@ func init() {
 		"",
 		"Load environment variables from all files in a directory",
 	)
+	runCmd.Flags().StringVar(
+		&runFromConfigMap,
+		"from-configmap",
+		"",
+		"[Experimental] Load configuration from a Kubernetes ConfigMap (format: namespace/configmap-name). "+
+			"This flag is mutually exclusive with other configuration flags.",
+	)
+}
+
+// validateConfigMapOnlyMode validates that no conflicting flags are used with --from-configmap
+// It dynamically finds all flags that could conflict by checking which ones are changed
+func validateConfigMapOnlyMode(cmd *cobra.Command) error {
+	// If --from-configmap is not set, no validation needed
+	fromConfigMapFlag := cmd.Flag("from-configmap")
+	if fromConfigMapFlag == nil || !fromConfigMapFlag.Changed {
+		return nil
+	}
+
+	var conflictingFlags []string
+
+	// Check all flags that are explicitly set by the user
+	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		// Skip the from-configmap flag itself and flags that weren't changed
+		if flag.Name == "from-configmap" || !flag.Changed {
+			return
+		}
+
+		// Skip flags that are safe to use with ConfigMap (like help, debug, etc.)
+		if isSafeFlagWithConfigMap(flag.Name) {
+			return
+		}
+
+		// All other changed flags are considered conflicting
+		conflictingFlags = append(conflictingFlags, "--"+flag.Name)
+	})
+
+	if len(conflictingFlags) > 0 {
+		return fmt.Errorf("cannot use --from-configmap with the following flags (configuration should be provided by ConfigMap): %s",
+			strings.Join(conflictingFlags, ", "))
+	}
+
+	return nil
+}
+
+// isSafeFlagWithConfigMap returns true for flags that are safe to use with --from-configmap
+// These are typically operational flags that don't affect the RunConfig
+func isSafeFlagWithConfigMap(flagName string) bool {
+	safeFlagsWithConfigMap := map[string]bool{
+		"help":  true,
+		"debug": true,
+		// Add other safe flags here if needed
+	}
+	return safeFlagsWithConfigMap[flagName]
 }
 
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
+
+	// Handle ConfigMap identification if specified
+	if runFromConfigMap != "" {
+		// Validate that conflicting flags are not used with --from-configmap first
+		if err := validateConfigMapOnlyMode(cmd); err != nil {
+			return err
+		}
+
+		if err := identifyAndReadConfigMap(ctx, runFromConfigMap); err != nil {
+			return fmt.Errorf("failed to identify ConfigMap: %w", err)
+		}
+	}
 
 	// Validate the host flag and default resolving to IP in case hostname is provided
 	validatedHost, err := ValidateAndNormaliseHostFlag(runHost)
@@ -236,7 +324,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
-	finalOtelSamplingRate, finalOtelEnvironmentVariables := 0.0, []string{}
+	finalOtelEnvironmentVariables := []string{}
 
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
@@ -279,8 +367,9 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		WithAuditEnabled(runEnableAudit, runAuditConfig).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
 			runThvCABundle, runJWKSAuthTokenFile, runResourceURL, runJWKSAllowPrivateIP).
-		WithTelemetryConfig(runOtelEndpoint, enablePrometheusMetricsPath, runOtelServiceName,
-			finalOtelSamplingRate, runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
+		WithTelemetryConfig(runOtelEndpoint, enablePrometheusMetricsPath, runOtelTracingEnabled,
+			runOtelMetricsEnabled, runOtelServiceName, runOtelTracingSamplingRate,
+			runOtelHeaders, runOtelInsecure, finalOtelEnvironmentVariables).
 		WithToolsFilter(runToolsFilter)
 
 	// Process environment files
@@ -343,4 +432,70 @@ func ValidateAndNormaliseHostFlag(host string) (string, error) {
 	}
 
 	return "", fmt.Errorf("could not resolve host: %s", host)
+}
+
+// parseConfigMapRef parses a ConfigMap reference in the format "namespace/configmap-name"
+func parseConfigMapRef(ref string) (namespace, name string, err error) {
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("expected format 'namespace/configmap-name', got '%s'", ref)
+	}
+
+	namespace = strings.TrimSpace(parts[0])
+	name = strings.TrimSpace(parts[1])
+
+	if namespace == "" {
+		return "", "", fmt.Errorf("namespace cannot be empty")
+	}
+	if name == "" {
+		return "", "", fmt.Errorf("configmap name cannot be empty")
+	}
+
+	return namespace, name, nil
+}
+
+// identifyAndReadConfigMap identifies and reads a ConfigMap to validate its existence and contents
+// This function only validates the ConfigMap but does not use it for configuration
+func identifyAndReadConfigMap(ctx context.Context, configMapRef string) error {
+	// Parse namespace and ConfigMap name
+	namespace, configMapName, err := parseConfigMapRef(configMapRef)
+	if err != nil {
+		return fmt.Errorf("invalid --from-configmap format: %w", err)
+	}
+
+	logger.Infof("Identifying ConfigMap '%s/%s'", namespace, configMapName)
+
+	// Create in-cluster Kubernetes client
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("failed to create in-cluster config: %w", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("failed to create Kubernetes client: %w", err)
+	}
+
+	// Get the ConfigMap
+	configMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, configMapName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get ConfigMap '%s/%s': %w", namespace, configMapName, err)
+	}
+
+	// Validate that runconfig.json exists in the ConfigMap
+	runConfigJSON, ok := configMap.Data["runconfig.json"]
+	if !ok {
+		return fmt.Errorf("ConfigMap '%s/%s' does not contain 'runconfig.json' key", namespace, configMapName)
+	}
+
+	// Validate that the JSON is parseable (but don't use it)
+	var runConfig runner.RunConfig
+	if err := json.Unmarshal([]byte(runConfigJSON), &runConfig); err != nil {
+		return fmt.Errorf("ConfigMap '%s/%s' contains invalid runconfig.json: %w", namespace, configMapName, err)
+	}
+
+	logger.Infof("Successfully identified and validated ConfigMap '%s/%s' (contains %d bytes of runconfig.json)",
+		namespace, configMapName, len(runConfigJSON))
+
+	return nil
 }

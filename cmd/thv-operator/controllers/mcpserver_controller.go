@@ -71,12 +71,20 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 		Resources: []string{"pods/attach"},
 		Verbs:     []string{"create", "get"},
 	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"configmaps"},
+		Verbs:     []string{"get", "list", "watch"},
+	},
 }
 
 var ctxLogger = log.FromContext(context.Background())
 
 // mcpContainerName is the name of the mcp container used in pod templates
 const mcpContainerName = "mcp"
+
+// trueValue is the string value "true" used for environment variable comparisons
+const trueValue = "true"
 
 // Authorization ConfigMap label constants
 const (
@@ -115,6 +123,22 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 
 	return r.detectedPlatform, err
 }
+
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch;apply
+// +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete;apply
+// +kubebuilder:rbac:groups="",resources=pods/attach,verbs=create;get
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -447,38 +471,51 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 
 	// Prepare container args
 	args := []string{"run", "--foreground=true"}
-	args = append(args, fmt.Sprintf("--proxy-port=%d", m.Spec.Port))
-	args = append(args, fmt.Sprintf("--name=%s", m.Name))
-	args = append(args, fmt.Sprintf("--transport=%s", m.Spec.Transport))
-	args = append(args, fmt.Sprintf("--host=%s", getProxyHost()))
 
-	if m.Spec.TargetPort != 0 {
-		args = append(args, fmt.Sprintf("--target-port=%d", m.Spec.TargetPort))
-	}
-
-	// Generate pod template patch for secrets and merge with user-provided patch
-
-	finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
-		WithServiceAccount(m.Spec.ServiceAccount).
-		WithSecrets(m.Spec.Secrets).
-		Build()
-	// Add pod template patch if we have one
-	if finalPodTemplateSpec != nil {
-		podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
-		if err != nil {
-			logger.Errorf("Failed to marshal pod template spec: %v", err)
-		} else {
-			args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
+	// Check if global ConfigMap mode is enabled via environment variable
+	useConfigMap := os.Getenv("TOOLHIVE_USE_CONFIGMAP") == trueValue
+	if useConfigMap {
+		// Use the operator-created ConfigMap (format: {name}-runconfig)
+		configMapName := fmt.Sprintf("%s-runconfig", m.Name)
+		configMapRef := fmt.Sprintf("%s/%s", m.Namespace, configMapName)
+		args = append(args, fmt.Sprintf("--from-configmap=%s", configMapRef))
+	} else {
+		// Use individual configuration flags (existing behavior)
+		args = append(args, fmt.Sprintf("--proxy-port=%d", m.Spec.Port))
+		args = append(args, fmt.Sprintf("--name=%s", m.Name))
+		args = append(args, fmt.Sprintf("--transport=%s", m.Spec.Transport))
+		args = append(args, fmt.Sprintf("--host=%s", getProxyHost()))
+		if m.Spec.TargetPort != 0 {
+			args = append(args, fmt.Sprintf("--target-port=%d", m.Spec.TargetPort))
 		}
 	}
 
-	// Add permission profile args
-	if m.Spec.PermissionProfile != nil {
-		switch m.Spec.PermissionProfile.Type {
-		case mcpv1alpha1.PermissionProfileTypeBuiltin:
-			args = append(args, fmt.Sprintf("--permission-profile=%s", m.Spec.PermissionProfile.Name))
-		case mcpv1alpha1.PermissionProfileTypeConfigMap:
-			args = append(args, fmt.Sprintf("--permission-profile-path=/etc/toolhive/profiles/%s", m.Spec.PermissionProfile.Key))
+	// Add pod template patch and permission profile only if not using ConfigMap
+	// When using ConfigMap, these are included in the runconfig.json
+	if !useConfigMap {
+		// Generate pod template patch for secrets and merge with user-provided patch
+		finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
+			WithServiceAccount(m.Spec.ServiceAccount).
+			WithSecrets(m.Spec.Secrets).
+			Build()
+		// Add pod template patch if we have one
+		if finalPodTemplateSpec != nil {
+			podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
+			if err != nil {
+				logger.Errorf("Failed to marshal pod template spec: %v", err)
+			} else {
+				args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
+			}
+		}
+
+		// Add permission profile args
+		if m.Spec.PermissionProfile != nil {
+			switch m.Spec.PermissionProfile.Type {
+			case mcpv1alpha1.PermissionProfileTypeBuiltin:
+				args = append(args, fmt.Sprintf("--permission-profile=%s", m.Spec.PermissionProfile.Name))
+			case mcpv1alpha1.PermissionProfileTypeConfigMap:
+				args = append(args, fmt.Sprintf("--permission-profile-path=/etc/toolhive/profiles/%s", m.Spec.PermissionProfile.Key))
+			}
 		}
 	}
 
@@ -505,15 +542,23 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		args = append(args, authzArgs...)
 	}
 
-	// Add environment variables as --env flags for the MCP server
-	for _, e := range m.Spec.Env {
-		args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))
+	// Add audit configuration args
+	if m.Spec.Audit != nil && m.Spec.Audit.Enabled {
+		args = append(args, "--enable-audit")
 	}
 
-	// Add tools filter args
-	if len(m.Spec.ToolsFilter) > 0 {
-		slices.Sort(m.Spec.ToolsFilter)
-		args = append(args, fmt.Sprintf("--tools=%s", strings.Join(m.Spec.ToolsFilter, ",")))
+	// Add environment variables and tools filter only if not using ConfigMap
+	if !useConfigMap {
+		// Add environment variables as --env flags for the MCP server
+		for _, e := range m.Spec.Env {
+			args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))
+		}
+
+		// Add tools filter args
+		if len(m.Spec.ToolsFilter) > 0 {
+			slices.Sort(m.Spec.ToolsFilter)
+			args = append(args, fmt.Sprintf("--tools=%s", strings.Join(m.Spec.ToolsFilter, ",")))
+		}
 	}
 
 	// Add OpenTelemetry configuration args
@@ -529,11 +574,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		}
 	}
 
-	// Add the image
+	// Always add the image as it's required by proxy runner command signature
+	// When using ConfigMap, the image from ConfigMap takes precedence, but we still need
+	// to provide this as a positional argument to satisfy the command requirements
 	args = append(args, m.Spec.Image)
 
-	// Add additional args
-	if len(m.Spec.Args) > 0 {
+	// Add additional args only if not using ConfigMap
+	if !useConfigMap && len(m.Spec.Args) > 0 {
 		args = append(args, "--")
 		args = append(args, m.Spec.Args...)
 	}
@@ -745,11 +792,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 }
 
 func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
-	// Check for the existence of the XDG_CONFIG_HOME, HOME, and TOOLHIVE_RUNTIME environment variables
+	// Check for the existence of the XDG_CONFIG_HOME, HOME, TOOLHIVE_RUNTIME, and UNSTRUCTURED_LOGS environment variables
 	// and set them to defaults if they don't exist
 	xdgConfigHomeFound := false
 	homeFound := false
 	toolhiveRuntimeFound := false
+	unstructuredLogsFound := false
 	for _, envVar := range env {
 		if envVar.Name == "XDG_CONFIG_HOME" {
 			xdgConfigHomeFound = true
@@ -759,6 +807,9 @@ func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
 		}
 		if envVar.Name == "TOOLHIVE_RUNTIME" {
 			toolhiveRuntimeFound = true
+		}
+		if envVar.Name == "UNSTRUCTURED_LOGS" {
+			unstructuredLogsFound = true
 		}
 	}
 	if !xdgConfigHomeFound {
@@ -780,6 +831,14 @@ func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{
 			Name:  "TOOLHIVE_RUNTIME",
 			Value: "kubernetes",
+		})
+	}
+	// Always use structured JSON logs in Kubernetes (not configurable)
+	if !unstructuredLogsFound {
+		logger.Debugf("UNSTRUCTURED_LOGS not found, setting to false for structured JSON logging")
+		env = append(env, corev1.EnvVar{
+			Name:  "UNSTRUCTURED_LOGS",
+			Value: "false",
 		})
 	}
 	return env
@@ -1650,6 +1709,25 @@ func (*MCPServerReconciler) generateOpenTelemetryArgs(m *mcpv1alpha1.MCPServer) 
 	// Add insecure flag
 	if otel.Insecure {
 		args = append(args, "--otel-insecure")
+	}
+
+	// Handle tracing configuration
+	if otel.Tracing != nil {
+		if otel.Tracing.Enabled {
+			args = append(args, "--otel-tracing-enabled=true")
+			args = append(args, fmt.Sprintf("--otel-tracing-sampling-rate=%s", otel.Tracing.SamplingRate))
+		} else {
+			args = append(args, "--otel-tracing-enabled=false")
+		}
+	}
+
+	// Handle metrics configuration
+	if otel.Metrics != nil {
+		if otel.Metrics.Enabled {
+			args = append(args, "--otel-metrics-enabled=true")
+		} else {
+			args = append(args, "--otel-metrics-enabled=false")
+		}
 	}
 
 	return args

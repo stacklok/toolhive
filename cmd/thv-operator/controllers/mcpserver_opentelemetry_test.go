@@ -76,7 +76,7 @@ func TestTelemetryArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "OpenTelemetry with Prometheus enabled",
+			name: "OpenTelemetry metrics with Prometheus enabled",
 			telemetryConfig: &mcpv1alpha1.TelemetryConfig{
 				OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
 					Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
@@ -89,6 +89,7 @@ func TestTelemetryArgs(t *testing.T) {
 			},
 			prometheusEnabled: true,
 			expectedArgs: []string{
+				"--otel-metrics-enabled=true",
 				"--enable-prometheus-metrics-path",
 			},
 		},
@@ -105,7 +106,7 @@ func TestTelemetryArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "complete OpenTelemetry config",
+			name: "complete OpenTelemetry config and prometheus enabled",
 			telemetryConfig: &mcpv1alpha1.TelemetryConfig{
 				OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
 					ServiceName: "complete-service",
@@ -113,6 +114,10 @@ func TestTelemetryArgs(t *testing.T) {
 					Insecure:    false,
 					Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
 						Enabled: true,
+					},
+					Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
+						Enabled:      true,
+						SamplingRate: "0.1",
 					},
 				},
 				Prometheus: &mcpv1alpha1.PrometheusConfig{
@@ -123,6 +128,9 @@ func TestTelemetryArgs(t *testing.T) {
 			expectedArgs: []string{
 				"--otel-service-name=complete-service",
 				"--otel-headers=authorization=bearer token123",
+				"--otel-tracing-enabled=true",
+				"--otel-tracing-sampling-rate=0.1",
+				"--otel-metrics-enabled=true",
 				"--enable-prometheus-metrics-path",
 			},
 		},
@@ -164,7 +172,9 @@ func TestTelemetryArgs(t *testing.T) {
 
 			args := r.generateOpenTelemetryArgs(mcpServer)
 			args = append(args, r.generatePrometheusArgs(mcpServer)...)
-			assert.Equal(t, tt.expectedArgs, args)
+
+			// Check that all expected arguments are present, regardless of order
+			assert.ElementsMatch(t, tt.expectedArgs, args)
 		})
 	}
 }

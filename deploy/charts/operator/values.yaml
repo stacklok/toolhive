@@ -5,19 +5,21 @@ fullnameOverride: "toolhive-operator"
 
 # -- All values for the operator deployment and associated resources
 operator:
-
+  # Whether to enable experimental features
+  features:
+    experimental: false
   # -- Number of replicas for the operator deployment
   replicaCount: 1
 
   # -- List of image pull secrets to use
   imagePullSecrets: []
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.2.9
+  image: ghcr.io/stacklok/toolhive/operator:v0.2.17
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.2.9
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.2.17
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0

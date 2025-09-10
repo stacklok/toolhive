@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auto-sync-registry-data
+  namespace: toolhive-system
+data:
+  registry.json: |
+    {
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "version": "1.0.0",
+      "last_updated": "2025-09-08T12:00:00Z",
+      "servers": {
+        "postgres-mcp-pro": {
+          "description": "Provides configurable read/write access and performance analysis for PostgreSQL databases.",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "sse",
+          "tools": [
+            "list_schemas",
+            "execute_sql",
+            "explain_query"
+          ],
+          "metadata": {
+            "stars": 1043,
+            "pulls": 22175,
+            "last_updated": "2025-09-01T02:37:23Z"
+          },
+          "repository_url": "https://github.com/crystaldba/postgres-mcp",
+          "tags": [
+            "database",
+            "postgresql",
+            "sql",
+            "analytics",
+            "performance"
+          ],
+          "image": "crystaldba/postgres-mcp:0.3.0",
+          "target_port": 8000,
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true
+              }
+            }
+          },
+          "env_vars": [
+            {
+              "name": "DATABASE_URI",
+              "description": "PostgreSQL connection string, like 'postgresql://username:password@host.docker.internal:5432/dbname'",
+              "required": true,
+              "secret": true
+            }
+          ],
+          "args": [
+            "--transport=sse",
+            "--sse-host=0.0.0.0",
+            "--sse-port=8000"
+          ]
+        },
+        "fetch": {
+          "description": "Allows you to fetch content from the web",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "streamable-http",
+          "tools": [
+            "fetch"
+          ],
+          "metadata": {
+            "stars": 17,
+            "pulls": 12390,
+            "last_updated": "2025-09-05T02:29:06Z"
+          },
+          "repository_url": "https://github.com/stackloklabs/gofetch",
+          "tags": [
+            "web",
+            "scraping",
+            "fetch",
+            "http"
+          ],
+          "image": "ghcr.io/stackloklabs/gofetch/server:0.0.6",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true,
+                "allow_port": [
+                  443
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: auto-sync-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Auto-Sync MCP Server Registry"
+  source:
+    type: configmap
+    format: toolhive
+    configmap:
+      name: auto-sync-registry-data
+      key: registry.json
+  syncPolicy:
+    interval: "30m"  # Automatically sync every 30 minutes
+  filter:
+    names:
+      include:
+        - "postgres-mcp-pro"
+        - "fetch"
+    tags:
+      exclude:
+        - "experimental"  # Exclude any experimental servers
+        - "deprecated"

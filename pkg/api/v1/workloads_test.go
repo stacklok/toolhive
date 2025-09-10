@@ -17,7 +17,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/core"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
-	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
+	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
 )
@@ -67,14 +69,11 @@ func TestGetWorkload(t *testing.T) {
 			mockRuntime := runtimemocks.NewMockRuntime(ctrl)
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
 			tt.setupMock(mockWorkloadManager, mockRuntime, mockGroupManager)
-			mockSecretsProvider := secretsmocks.NewMockProvider(ctrl)
-			workloadService := NewWorkloadService(mockWorkloadManager, mockGroupManager, mockSecretsProvider, mockRuntime, false)
 
 			routes := &WorkloadRoutes{
 				workloadManager:  mockWorkloadManager,
 				containerRuntime: mockRuntime,
 				groupManager:     mockGroupManager,
-				workloadService:  workloadService,
 				debugMode:        false,
 			}
 
@@ -100,21 +99,22 @@ func TestCreateWorkload(t *testing.T) {
 	tests := []struct {
 		name           string
 		requestBody    string
-		setupMock      func(*workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
+		setupMock      func(*testing.T, *workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
 		expectedStatus int
 		expectedBody   string
 	}{
 		{
-			name:           "invalid JSON",
-			requestBody:    `{"name":`,
-			setupMock:      func(_ *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {},
+			name:        "invalid JSON",
+			requestBody: `{"name":`,
+			setupMock: func(_ *testing.T, _ *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
+			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "Failed to decode request",
 		},
 		{
 			name:        "workload already exists",
 			requestBody: `{"name": "existing-workload", "image": "test-image"}`,
-			setupMock: func(wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
 				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "existing-workload").Return(true, nil)
 			},
 			expectedStatus: http.StatusConflict,
@@ -123,11 +123,72 @@ func TestCreateWorkload(t *testing.T) {
 		{
 			name:        "invalid proxy mode",
 			requestBody: `{"name": "test-workload", "image": "test-image", "proxy_mode": "invalid"}`,
-			setupMock: func(wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
 				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
 			},
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   "Invalid proxy_mode: invalid",
+			expectedBody:   "Invalid proxy_mode",
+		},
+		{
+			name:        "with tool filters",
+			requestBody: `{"name": "test-workload", "image": "test-image", "tools": ["filter1", "filter2"]}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				toolsFilter := []string{"filter1", "filter2"}
+
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
+						return nil
+					})
+			},
+			expectedStatus: http.StatusCreated,
+			expectedBody:   "test-workload",
+		},
+		{
+			name:        "with tool override",
+			requestBody: `{"name": "test-workload", "image": "test-image", "tools_override": {"actual-tool": {"name": "override-tool", "description": "Overridden tool"}}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				toolsFilter := []string(nil)
+
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
+						return nil
+					})
+			},
+			expectedStatus: http.StatusCreated,
+			expectedBody:   "test-workload",
+		},
+		{
+			name:        "with both tool filters and tool override",
+			requestBody: `{"name": "test-workload", "image": "test-image", "tools": ["filter1"], "tools_override": {"actual-tool": {"name": "override-tool", "description": "Overridden tool"}}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				toolsFilter := []string{"filter1"}
+
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
+						return nil
+					})
+			},
+			expectedStatus: http.StatusCreated,
+			expectedBody:   "test-workload",
+		},
+		{
+			name:        "with bogus tool override",
+			requestBody: `{"name": "test-workload", "image": "test-image", "tools_override": {"actual-tool": {"name": "", "description": ""}}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().DoesWorkloadExist(gomock.Any(), "test-workload").Return(false, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "tool override for actual-tool must have either Name or Description set",
 		},
 	}
 
@@ -141,16 +202,26 @@ func TestCreateWorkload(t *testing.T) {
 			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
 			mockRuntime := runtimemocks.NewMockRuntime(ctrl)
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
-			tt.setupMock(mockWorkloadManager, mockRuntime, mockGroupManager)
-			mockSecretsProvider := secretsmocks.NewMockProvider(ctrl)
-			workloadService := NewWorkloadService(mockWorkloadManager, mockGroupManager, mockSecretsProvider, mockRuntime, false)
+
+			tt.setupMock(t, mockWorkloadManager, mockRuntime, mockGroupManager)
+
+			mockRetriever := makeMockRetriever(t,
+				"test-image",
+				"test-image",
+				&registry.ImageMetadata{Image: "test-image"},
+				nil,
+			)
 
 			routes := &WorkloadRoutes{
 				workloadManager:  mockWorkloadManager,
 				containerRuntime: mockRuntime,
 				groupManager:     mockGroupManager,
-				workloadService:  workloadService,
 				debugMode:        false,
+				workloadService: &WorkloadService{
+					groupManager:    mockGroupManager,
+					workloadManager: mockWorkloadManager,
+					imageRetriever:  mockRetriever,
+				},
 			}
 
 			req := httptest.NewRequest("POST", "/", strings.NewReader(tt.requestBody))
@@ -174,15 +245,16 @@ func TestUpdateWorkload(t *testing.T) {
 		name           string
 		workloadName   string
 		requestBody    string
-		setupMock      func(*workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
+		setupMock      func(*testing.T, *workloadsmocks.MockManager, *runtimemocks.MockRuntime, *groupsmocks.MockManager)
 		expectedStatus int
 		expectedBody   string
 	}{
 		{
-			name:           "invalid JSON",
-			workloadName:   "test-workload",
-			requestBody:    `{"image":`,
-			setupMock:      func(_ *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {},
+			name:         "invalid JSON",
+			workloadName: "test-workload",
+			requestBody:  `{"image":`,
+			setupMock: func(_ *testing.T, _ *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
+			},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "Invalid JSON",
 		},
@@ -190,7 +262,7 @@ func TestUpdateWorkload(t *testing.T) {
 			name:         "workload not found",
 			workloadName: "nonexistent",
 			requestBody:  `{"image": "test-image"}`,
-			setupMock: func(wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
 				wm.EXPECT().GetWorkload(gomock.Any(), "nonexistent").
 					Return(core.Workload{}, fmt.Errorf("workload not found"))
 			},
@@ -198,17 +270,133 @@ func TestUpdateWorkload(t *testing.T) {
 			expectedBody:   "Workload not found",
 		},
 		{
-			name:         "update workload fails - config build error",
+			name:         "stop workload fails",
 			workloadName: "test-workload",
 			requestBody:  `{"image": "test-image"}`,
-			setupMock: func(wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
 				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
 					Return(core.Workload{Name: "test-workload"}, nil)
-				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
-				// No UpdateWorkload call expected since config build fails first
+				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
+					Return(nil, fmt.Errorf("stop failed"))
 			},
 			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "Failed to update workload",
+			expectedBody:   "Failed to stop workload",
+		},
+		{
+			name:         "delete workload fails",
+			workloadName: "test-workload",
+			requestBody:  `{"image": "test-image"}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, _ *groupsmocks.MockManager) {
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
+					Return(nil, nil)
+				wm.EXPECT().DeleteWorkloads(gomock.Any(), []string{"test-workload"}).
+					Return(nil, fmt.Errorf("delete failed"))
+			},
+			expectedStatus: http.StatusInternalServerError,
+			expectedBody:   "Failed to delete workload",
+		},
+		{
+			name:         "with tool filters",
+			workloadName: "test-workload",
+			requestBody:  `{"name": "test-workload", "image": "test-image", "tools": ["filter1", "filter2"]}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				toolsFilter := []string{"filter1", "filter2"}
+				toolsOverride := map[string]runner.ToolOverride{}
+
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
+					Return(nil, nil)
+				wm.EXPECT().DeleteWorkloads(gomock.Any(), []string{"test-workload"}).
+					Return(nil, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
+						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
+						return nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+		},
+		{
+			name:         "with tool override",
+			workloadName: "test-workload",
+			requestBody:  `{"name": "test-workload", "image": "test-image", "tools_override": {"actual-tool": {"name": "override-tool", "description": "Overridden tool"}}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				toolsFilter := []string(nil)
+				toolsOverride := map[string]runner.ToolOverride{
+					"actual-tool": {
+						Name:        "override-tool",
+						Description: "Overridden tool",
+					},
+				}
+
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
+					Return(nil, nil)
+				wm.EXPECT().DeleteWorkloads(gomock.Any(), []string{"test-workload"}).
+					Return(nil, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
+						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
+						return nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+		},
+		{
+			name:         "with both tool filters and tool override",
+			workloadName: "test-workload",
+			requestBody:  `{"name": "test-workload", "image": "test-image", "tools": ["filter1"], "tools_override": {"actual-tool": {"name": "override-tool", "description": "Overridden tool"}}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				toolsFilter := []string{"filter1"}
+				toolsOverride := map[string]runner.ToolOverride{
+					"actual-tool": {
+						Name:        "override-tool",
+						Description: "Overridden tool",
+					},
+				}
+
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
+					Return(nil, nil)
+				wm.EXPECT().DeleteWorkloads(gomock.Any(), []string{"test-workload"}).
+					Return(nil, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+				wm.EXPECT().RunWorkloadDetached(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, runConfig *runner.RunConfig) error {
+						assert.Equal(t, toolsFilter, runConfig.ToolsFilter, "Tools filter should be equal")
+						assert.Equal(t, toolsOverride, runConfig.ToolsOverride, "Tools override should be equal")
+						return nil
+					})
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   "test-workload",
+		},
+		{
+			name:         "with bogus tool override",
+			workloadName: "test-workload",
+			requestBody:  `{"name": "test-workload", "image": "test-image", "tools_override": {"actual-tool": {"name": "", "description": ""}}}`,
+			setupMock: func(_ *testing.T, wm *workloadsmocks.MockManager, _ *runtimemocks.MockRuntime, gm *groupsmocks.MockManager) {
+				wm.EXPECT().GetWorkload(gomock.Any(), "test-workload").
+					Return(core.Workload{Name: "test-workload"}, nil)
+				wm.EXPECT().StopWorkloads(gomock.Any(), []string{"test-workload"}).
+					Return(nil, nil)
+				wm.EXPECT().DeleteWorkloads(gomock.Any(), []string{"test-workload"}).
+					Return(nil, nil)
+				gm.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "tool override for actual-tool must have either Name or Description set",
 		},
 	}
 
@@ -222,16 +410,25 @@ func TestUpdateWorkload(t *testing.T) {
 			mockWorkloadManager := workloadsmocks.NewMockManager(ctrl)
 			mockRuntime := runtimemocks.NewMockRuntime(ctrl)
 			mockGroupManager := groupsmocks.NewMockManager(ctrl)
-			tt.setupMock(mockWorkloadManager, mockRuntime, mockGroupManager)
-			mockSecretsProvider := secretsmocks.NewMockProvider(ctrl)
-			workloadService := NewWorkloadService(mockWorkloadManager, mockGroupManager, mockSecretsProvider, mockRuntime, false)
+			tt.setupMock(t, mockWorkloadManager, mockRuntime, mockGroupManager)
+
+			mockRetriever := makeMockRetriever(t,
+				"test-image",
+				"test-image",
+				&registry.ImageMetadata{Image: "test-image"},
+				nil,
+			)
 
 			routes := &WorkloadRoutes{
 				workloadManager:  mockWorkloadManager,
 				containerRuntime: mockRuntime,
 				groupManager:     mockGroupManager,
-				workloadService:  workloadService,
 				debugMode:        false,
+				workloadService: &WorkloadService{
+					groupManager:    mockGroupManager,
+					workloadManager: mockWorkloadManager,
+					imageRetriever:  mockRetriever,
+				},
 			}
 
 			req := httptest.NewRequest("POST", "/"+tt.workloadName+"/edit", strings.NewReader(tt.requestBody))
@@ -246,5 +443,21 @@ func TestUpdateWorkload(t *testing.T) {
 			assert.Equal(t, tt.expectedStatus, w.Code)
 			assert.Contains(t, w.Body.String(), tt.expectedBody)
 		})
+	}
+}
+
+func makeMockRetriever(
+	t *testing.T,
+	expectedServerOrImage string,
+	returnedImage string,
+	returnedServerMetadata registry.ServerMetadata,
+	returnedError error,
+) retriever.Retriever {
+	t.Helper()
+
+	return func(_ context.Context, serverOrImage string, _ string, verificationType string) (string, registry.ServerMetadata, error) {
+		assert.Equal(t, expectedServerOrImage, serverOrImage)
+		assert.Equal(t, retriever.VerifyImageWarn, verificationType)
+		return returnedImage, returnedServerMetadata, returnedError
 	}
 }

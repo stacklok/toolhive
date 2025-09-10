@@ -54,6 +54,17 @@ spec:
                 items:
                   type: string
                 type: array
+              audit:
+                description: Audit defines audit logging configuration for the MCP
+                  server
+                properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled controls whether audit logging is enabled
+                      When true, enables audit logging with default configuration
+                    type: boolean
+                type: object
               authzConfig:
                 description: AuthzConfig defines authorization policy configuration
                   for the MCP server
@@ -8858,7 +8869,7 @@ spec:
                           configuration
                         properties:
                           enabled:
-                            default: true
+                            default: false
                             description: Enabled controls whether OTLP metrics are
                               sent
                             type: boolean
@@ -8868,6 +8879,19 @@ spec:
                           ServiceName is the service name for telemetry
                           If not specified, defaults to the MCPServer name
                         type: string
+                      tracing:
+                        description: Tracing defines OpenTelemetry tracing configuration
+                        properties:
+                          enabled:
+                            default: false
+                            description: Enabled controls whether OTLP tracing is
+                              sent
+                            type: boolean
+                          samplingRate:
+                            default: "0.05"
+                            description: SamplingRate is the trace sampling rate (0.0-1.0)
+                            type: string
+                        type: object
                     type: object
                   prometheus:
                     description: Prometheus defines Prometheus-specific configuration

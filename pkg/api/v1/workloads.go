@@ -616,5 +616,3 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
-
-// Response type definitions.

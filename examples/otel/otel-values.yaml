@@ -31,6 +31,18 @@ config:
       send_batch_max_size: 2048
 
   exporters:
+    # Jaeger exporter for distributed tracing
+    otlp/jaeger:
+      endpoint: http://jaeger-all-in-one-collector.monitoring:4317
+      tls:
+        insecure: true
+      timeout: 30s
+      retry_on_failure:
+        enabled: true
+        initial_interval: 1s
+        max_interval: 30s
+        max_elapsed_time: 120s
+        multiplier: 2
     prometheus:
       endpoint: "0.0.0.0:8889"
       enable_open_metrics: false
@@ -63,19 +75,19 @@ config:
   service:
     telemetry:
       logs:
-        level: debug
+        level: info
         development: true
         encoding: json
     pipelines:
       traces:
         receivers: [otlp]
         processors: [batch]
-        exporters: [debug]
+        exporters: [otlp/jaeger]
       metrics:
         receivers: [otlp, kubeletstats]
         processors: [batch]
         # Prioritize prometheus exporter for scraping, keep remote write as backup
-        exporters: [debug, prometheusremotewrite, prometheus,]
+        exporters: [prometheusremotewrite, prometheus,]
       logs:
         receivers: [otlp]
         processors: [batch]

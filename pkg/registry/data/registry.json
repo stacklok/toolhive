@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-11T00:17:04Z",
+  "last_updated": "2025-09-11T17:29:50Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.12",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.13",
       "permissions": {
         "network": {
           "outbound": {
@@ -3032,7 +3032,7 @@
         "get",
         "list"
       ],
-      "image": "ghcr.io/stackloklabs/mkp/server:0.2.2",
+      "image": "ghcr.io/stackloklabs/mkp/server:0.2.3",
       "permissions": {
         "network": {
           "outbound": {
@@ -5275,6 +5275,10 @@
         "documentation",
         "beta"
       ],
+      "custom_metadata": {
+        "author": "Atlassian",
+        "homepage": "https://www.atlassian.com/platform/remote-mcp-server"
+      },
       "url": "https://mcp.atlassian.com/v1/sse"
     },
     "canva": {
@@ -5319,6 +5323,10 @@
         "export",
         "collaboration"
       ],
+      "custom_metadata": {
+        "author": "Canva",
+        "homepage": "https://www.canva.dev/docs/connect/canva-mcp-server-setup/"
+      },
       "url": "https://mcp.canva.com/mcp"
     },
     "github-remote": {
@@ -5436,7 +5444,21 @@
         "actions",
         "copilot"
       ],
-      "url": "https://api.githubcopilot.com/mcp"
+      "custom_metadata": {
+        "author": "GitHub",
+        "homepage": "https://github.com",
+        "license": "MIT"
+      },
+      "url": "https://api.githubcopilot.com/mcp",
+      "oauth_config": {
+        "authorize_url": "https://github.com/login/oauth/authorize",
+        "token_url": "https://github.com/login/oauth/access_token",
+        "scopes": [
+          "repo",
+          "user:email"
+        ],
+        "use_pkce": true
+      }
     },
     "huggingface": {
       "description": "Official Hugging Face MCP server for models, datasets, and research papers",
@@ -5471,6 +5493,10 @@
         "image-generation",
         "authentication"
       ],
+      "custom_metadata": {
+        "author": "Hugging Face",
+        "homepage": "https://huggingface.co/mcp"
+      },
       "url": "https://huggingface.co/mcp"
     },
     "jam": {
@@ -5503,6 +5529,10 @@
         "screenshots",
         "user-events"
       ],
+      "custom_metadata": {
+        "author": "Jam",
+        "homepage": "https://jam.dev/docs/debug-a-jam/mcp"
+      },
       "url": "https://mcp.jam.dev/mcp"
     },
     "mcp-spec": {
@@ -5513,6 +5543,11 @@
       "tools": [
         "SearchModelContextProtocol"
       ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-09-11T02:29:32Z"
+      },
       "tags": [
         "remote",
         "mcp",
@@ -5521,6 +5556,10 @@
         "documentation",
         "official"
       ],
+      "custom_metadata": {
+        "author": "Model Context Protocol",
+        "homepage": "https://modelcontextprotocol.io"
+      },
       "url": "https://modelcontextprotocol.io/mcp"
     },
     "monday": {
@@ -5548,6 +5587,11 @@
         "create_dashboard",
         "all_widgets_schema"
       ],
+      "metadata": {
+        "stars": 304,
+        "pulls": 0,
+        "last_updated": "2025-09-11T02:29:32Z"
+      },
       "repository_url": "https://github.com/mondaycom/mcp",
       "tags": [
         "remote",
@@ -5561,6 +5605,10 @@
         "work-os",
         "automation"
       ],
+      "custom_metadata": {
+        "author": "Monday.com",
+        "license": "MIT"
+      },
       "url": "https://mcp.monday.com/sse"
     },
     "neon": {
@@ -5593,6 +5641,11 @@
         "complete_query_tuning",
         "list_slow_queries"
       ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-09-11T02:29:32Z"
+      },
       "tags": [
         "remote",
         "neon",
@@ -5605,6 +5658,9 @@
         "sql",
         "query-tuning"
       ],
+      "custom_metadata": {
+        "author": "Neon"
+      },
       "url": "https://mcp.neon.tech/sse"
     },
     "notion-remote": {
@@ -5627,6 +5683,11 @@
         "get-user",
         "get-self"
       ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-09-11T02:29:32Z"
+      },
       "tags": [
         "remote",
         "notion",
@@ -5638,6 +5699,10 @@
         "productivity",
         "collaboration"
       ],
+      "custom_metadata": {
+        "author": "Notion",
+        "homepage": "https://developers.notion.com/docs/get-started-with-mcp"
+      },
       "url": "https://mcp.notion.com/mcp"
     },
     "paypal": {
@@ -5678,6 +5743,11 @@
         "create_cart",
         "checkout_cart"
       ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-09-11T02:29:32Z"
+      },
       "tags": [
         "remote",
         "payments",
@@ -5687,6 +5757,10 @@
         "transactions",
         "invoices"
       ],
+      "custom_metadata": {
+        "author": "PayPal",
+        "homepage": "https://www.paypal.ai/docs/tools/mcp-quickstart"
+      },
       "url": "https://mcp.paypal.com/mcp"
     },
     "replicate": {
@@ -5732,6 +5806,10 @@
         "inference",
         "predictions"
       ],
+      "custom_metadata": {
+        "author": "Replicate",
+        "homepage": "https://replicate.com/docs/reference/mcp"
+      },
       "url": "https://mcp.replicate.com/sse"
     },
     "semgrep-remote": {
@@ -5760,6 +5838,11 @@
         "code-scanning",
         "security-audit"
       ],
+      "custom_metadata": {
+        "author": "Semgrep",
+        "homepage": "https://mcp.semgrep.ai",
+        "license": "MIT"
+      },
       "url": "https://mcp.semgrep.ai"
     },
     "sentry-remote": {
@@ -5795,6 +5878,10 @@
         "projects",
         "releases"
       ],
+      "custom_metadata": {
+        "author": "Sentry",
+        "homepage": "https://sentry.io"
+      },
       "url": "https://mcp.sentry.dev/sse"
     },
     "square": {
@@ -5820,6 +5907,10 @@
         "items",
         "beta"
       ],
+      "custom_metadata": {
+        "author": "Square",
+        "homepage": "https://developer.squareup.com/docs/mcp"
+      },
       "url": "https://mcp.squareup.com/sse"
     },
     "stripe-remote": {
@@ -5864,6 +5955,10 @@
         "invoices",
         "customers"
       ],
+      "custom_metadata": {
+        "author": "Stripe",
+        "homepage": "https://docs.stripe.com/mcp"
+      },
       "url": "https://mcp.stripe.com"
     },
     "vercel": {
@@ -5894,6 +5989,10 @@
         "environment-variables",
         "projects"
       ],
+      "custom_metadata": {
+        "author": "Vercel",
+        "homepage": "https://vercel.com/docs/mcp/vercel-mcp"
+      },
       "url": "https://mcp.vercel.com"
     },
     "wix": {
@@ -5927,6 +6026,10 @@
         "development",
         "build-apps"
       ],
+      "custom_metadata": {
+        "author": "Wix",
+        "homepage": "https://dev.wix.com"
+      },
       "url": "https://mcp.wix.com/sse"
     }
   }

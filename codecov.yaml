@@ -11,3 +11,5 @@ coverage:
     - "test/e2e"
     - "deploy"
     - "*/mocks/*"
+  status:
+    patch: false

@@ -29,88 +29,6 @@ func createTestCommand() *cobra.Command {
 	return cmd
 }
 
-func TestParseConfigMapRef(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name              string
-		ref               string
-		expectedNamespace string
-		expectedName      string
-		expectError       bool
-	}{
-		{
-			name:              "valid reference",
-			ref:               "default/my-configmap",
-			expectedNamespace: "default",
-			expectedName:      "my-configmap",
-			expectError:       false,
-		},
-		{
-			name:              "valid reference with hyphens",
-			ref:               "my-namespace/my-config-map",
-			expectedNamespace: "my-namespace",
-			expectedName:      "my-config-map",
-			expectError:       false,
-		},
-		{
-			name:              "config name with slash (allowed)",
-			ref:               "default/config/with/slashes",
-			expectedNamespace: "default",
-			expectedName:      "config/with/slashes",
-			expectError:       false,
-		},
-		{
-			name:        "missing slash",
-			ref:         "defaultmy-configmap",
-			expectError: true,
-		},
-		{
-			name:        "empty namespace",
-			ref:         "/my-configmap",
-			expectError: true,
-		},
-		{
-			name:        "empty name",
-			ref:         "default/",
-			expectError: true,
-		},
-		{
-			name:        "empty reference",
-			ref:         "",
-			expectError: true,
-		},
-		{
-			name:        "whitespace only namespace",
-			ref:         "   /my-configmap",
-			expectError: true,
-		},
-		{
-			name:        "whitespace only name",
-			ref:         "default/   ",
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			namespace, name, err := parseConfigMapRef(tt.ref)
-
-			if tt.expectError {
-				assert.Error(t, err, "Expected error for ref: %s", tt.ref)
-				assert.Empty(t, namespace, "Namespace should be empty on error")
-				assert.Empty(t, name, "Name should be empty on error")
-			} else {
-				assert.NoError(t, err, "Unexpected error for ref: %s", tt.ref)
-				assert.Equal(t, tt.expectedNamespace, namespace, "Namespace mismatch")
-				assert.Equal(t, tt.expectedName, name, "Name mismatch")
-			}
-		})
-	}
-}
-
 func TestRunCmdFlagParsing(t *testing.T) {
 	t.Parallel()
 
@@ -195,36 +113,6 @@ func TestRunCmdOtherFlagsStillWork(t *testing.T) {
 
 	portValue, _ := cmd.Flags().GetInt("proxy-port")
 	assert.Equal(t, 8080, portValue)
-}
-
-func TestRunCmdConfigMapFlagIntegrationWithRealCmd(t *testing.T) {
-	t.Parallel()
-
-	// Integration test to ensure the validation function is properly integrated
-	// into the command execution flow
-	cmd := createTestCommand()
-	require.NotNil(t, cmd, "Run command should not be nil")
-
-	// Test with conflicting flags to ensure validation works
-	cmd.SetArgs([]string{"--from-configmap", "test-ns/test-cm", "--transport", "stdio", "test-image"})
-	err := cmd.ParseFlags([]string{"--from-configmap", "test-ns/test-cm", "--transport", "stdio"})
-	require.NoError(t, err, "Flag parsing should not fail")
-
-	// Test the validation function integration
-	err = validateConfigMapOnlyMode(cmd)
-	assert.Error(t, err, "Expected error for conflicting flags")
-	assert.Contains(t, err.Error(), "cannot use --from-configmap with the following flags",
-		"Error should indicate flag conflict validation")
-
-	// Test with no conflicting flags
-	cmd2 := createTestCommand()
-	cmd2.SetArgs([]string{"--from-configmap", "test-ns/test-cm", "test-image"})
-	err = cmd2.ParseFlags([]string{"--from-configmap", "test-ns/test-cm"})
-	require.NoError(t, err, "Flag parsing should not fail")
-
-	// This should pass validation
-	err = validateConfigMapOnlyMode(cmd2)
-	assert.NoError(t, err, "Expected no error without conflicting flags")
 }
 
 func TestValidateAndNormaliseHostFlagStillWorks(t *testing.T) {

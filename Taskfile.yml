@@ -4,6 +4,9 @@ includes:
   operator:
     taskfile: ./cmd/thv-operator/Taskfile.yml
     flatten: true
+  registry:
+    taskfile: ./cmd/thv-registry-api/Taskfile.yml
+    flatten: true
 
 tasks:
   docs:
@@ -12,7 +15,7 @@ tasks:
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
-      - swag init -g pkg/api/server.go --v3.1 -o docs/server
+      - swag init -g pkg/api/server.go --v3.1 -o docs/server --exclude ./cmd/thv-registry-api
 
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
@@ -185,6 +188,7 @@ tasks:
       KO_DOCKER_REPO: ghcr.io/stacklok/toolhive
     cmds:
       - ko build --local --bare ./cmd/thv
+
 
   build-egress-proxy:
     desc: Build the egress proxy container image

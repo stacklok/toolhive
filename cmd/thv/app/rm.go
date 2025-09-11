@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -11,9 +12,9 @@ import (
 )
 
 var rmCmd = &cobra.Command{
-	Use:               "rm [workload-name]",
-	Short:             "Remove an MCP server",
-	Long:              `Remove an MCP server managed by ToolHive.`,
+	Use:               "rm [workload-name...]",
+	Short:             "Remove one or more MCP servers",
+	Long:              `Remove one or more MCP servers managed by ToolHive.`,
 	Args:              validateRmArgs,
 	RunE:              rmCmdFunc,
 	ValidArgsFunction: completeMCPServerNames,
@@ -46,9 +47,9 @@ func validateRmArgs(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("no arguments should be provided when --all or --group flag is set")
 		}
 	} else {
-		// If neither --all nor --group is set, exactly one argument should be provided
-		if len(args) != 1 {
-			return fmt.Errorf("workload name is required when not using --group flag")
+		// If neither --all nor --group is set, at least one argument should be provided
+		if len(args) < 1 {
+			return fmt.Errorf("at least one workload name must be provided")
 		}
 	}
 
@@ -67,25 +68,30 @@ func rmCmdFunc(cmd *cobra.Command, args []string) error {
 		return deleteAllWorkloadsInGroup(ctx, rmGroup)
 	}
 
-	// Delete single workload
-	workloadName := args[0]
+	// Delete specified workloads
+	workloadNames := args
 	// Create workload manager.
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
-	// Delete workload.
-	group, err := manager.DeleteWorkloads(ctx, []string{workloadName})
+	// Delete workloads.
+	group, err := manager.DeleteWorkloads(ctx, workloadNames)
 	if err != nil {
-		return fmt.Errorf("failed to delete workload: %v", err)
+		return fmt.Errorf("failed to delete workloads: %v", err)
 	}
 
 	// Wait for the deletion to complete.
 	if err := group.Wait(); err != nil {
-		return fmt.Errorf("failed to delete workload: %v", err)
+		return fmt.Errorf("failed to delete workloads: %v", err)
 	}
 
-	fmt.Printf("Container %s removed successfully\n", workloadName)
+	if len(workloadNames) == 1 {
+		fmt.Printf("Container %s removed successfully\n", workloadNames[0])
+	} else {
+		formattedNames := strings.Join(workloadNames, ", ")
+		fmt.Printf("Containers %s removed successfully\n", formattedNames)
+	}
 	return nil
 }
 

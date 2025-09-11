@@ -47,7 +47,7 @@ thv [flags]
 * [thv proxy](thv_proxy.md)	 - Create a transparent proxy for an MCP server with authentication support
 * [thv registry](thv_registry.md)	 - Manage MCP server registry
 * [thv restart](thv_restart.md)	 - Restart a tooling server
-* [thv rm](thv_rm.md)	 - Remove an MCP server
+* [thv rm](thv_rm.md)	 - Remove one or more MCP servers
 * [thv run](thv_run.md)	 - Run an MCP server
 * [thv runtime](thv_runtime.md)	 - Commands related to the container runtime
 * [thv search](thv_search.md)	 - Search for MCP servers

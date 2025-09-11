@@ -30,7 +30,6 @@ const (
 // ConfigMapSourceHandler handles registry data from Kubernetes ConfigMaps
 type ConfigMapSourceHandler struct {
 	client    client.Client
-	converter FormatConverter
 	validator SourceDataValidator
 }
 
@@ -38,7 +37,6 @@ type ConfigMapSourceHandler struct {
 func NewConfigMapSourceHandler(k8sClient client.Client) *ConfigMapSourceHandler {
 	return &ConfigMapSourceHandler{
 		client:    k8sClient,
-		converter: NewRegistryFormatConverter(),
 		validator: NewSourceDataValidator(),
 	}
 }

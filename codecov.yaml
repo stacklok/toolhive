@@ -7,4 +7,4 @@ coverage:
     - "hack"
     - "test/e2e"
     - "deploy"
-    - "**/mocks/"
+    - "**/mocks/**"

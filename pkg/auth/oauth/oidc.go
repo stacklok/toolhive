@@ -41,8 +41,25 @@ func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*OIDCDiscoveryDo
 	return discoverOIDCEndpointsWithClient(ctx, issuer, nil)
 }
 
+// DiscoverActualIssuer discovers the actual issuer from a URL that might be different from the issuer itself
+// This is useful when the resource metadata points to a URL that hosts the authorization server metadata
+// but the actual issuer identifier is different (e.g., Stripe's case)
+func DiscoverActualIssuer(ctx context.Context, metadataURL string) (*OIDCDiscoveryDocument, error) {
+	return discoverOIDCEndpointsWithClientAndValidation(ctx, metadataURL, nil, false)
+}
+
 // discoverOIDCEndpointsWithClient discovers OAuth endpoints from an OIDC issuer with a custom HTTP client (private for testing)
 func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client httpClient) (*OIDCDiscoveryDocument, error) {
+	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true)
+}
+
+// discoverOIDCEndpointsWithClientAndValidation discovers OAuth endpoints with optional issuer validation
+func discoverOIDCEndpointsWithClientAndValidation(
+	ctx context.Context,
+	issuer string,
+	client httpClient,
+	validateIssuer bool,
+) (*OIDCDiscoveryDocument, error) {
 	// Validate issuer URL
 	issuerURL, err := url.Parse(issuer)
 	if err != nil {
@@ -98,7 +115,12 @@ func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client 
 		if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&doc); err != nil {
 			return nil, fmt.Errorf("%s: unexpected response: %w", urlStr, err)
 		}
-		if err := validateOIDCDocument(&doc, issuer, oidc); err != nil {
+		expectedIssuer := issuer
+		if !validateIssuer && doc.Issuer != "" {
+			// When not validating, use the discovered issuer as the expected one
+			expectedIssuer = doc.Issuer
+		}
+		if err := validateOIDCDocument(&doc, expectedIssuer, oidc); err != nil {
 			return nil, fmt.Errorf("%s: invalid metadata: %w", urlStr, err)
 		}
 		return &doc, nil

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
@@ -133,11 +134,11 @@ func TestHeaderBasedSessionInitialization(t *testing.T) {
 
 func TestTracePropagationHeaders(t *testing.T) {
 	t.Parallel()
-	
+
 	// Initialize OTel for testing
 	otel.SetTracerProvider(tracenoop.NewTracerProvider())
 	otel.SetTextMapPropagator(propagation.TraceContext{})
-	
+
 	// Mock downstream server that captures headers
 	var capturedHeaders http.Header
 	downstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -146,56 +147,56 @@ func TestTracePropagationHeaders(t *testing.T) {
 		w.Write([]byte(`{"result": "success"}`))
 	}))
 	defer downstream.Close()
-	
+
 	// Create transparent proxy pointing to mock server
 	proxy := NewTransparentProxy("localhost", 0, "test-server", downstream.URL, nil, nil, false, false, "", nil)
-	
+
 	// Parse downstream URL
 	targetURL, err := url.Parse(downstream.URL)
 	assert.NoError(t, err)
-	
+
 	// Create reverse proxy with the same director logic as the main code
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
 	reverseProxy.FlushInterval = -1
-	
+
 	// Store the original director
 	originalDirector := reverseProxy.Director
-	
+
 	// Override director to inject trace propagation headers (same as main code)
 	reverseProxy.Director = func(req *http.Request) {
 		// Apply original director logic first
 		originalDirector(req)
-		
+
 		// Inject OpenTelemetry trace propagation headers for downstream tracing
 		if req.Context() != nil {
 			otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
 		}
 	}
-	
+
 	reverseProxy.Transport = &tracingTransport{base: http.DefaultTransport, p: proxy}
-	
+
 	// Create request with trace context
 	ctx, span := otel.Tracer("test").Start(context.Background(), "test-operation")
 	defer span.End()
-	
+
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(`{"method": "test"}`))
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	// Get expected propagation headers
 	expectedHeaders := make(http.Header)
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(expectedHeaders))
-	
+
 	// Send request through proxy
 	recorder := httptest.NewRecorder()
 	reverseProxy.ServeHTTP(recorder, req)
-	
+
 	// Verify propagation headers were injected
 	for headerName := range expectedHeaders {
-		assert.NotEmpty(t, capturedHeaders.Get(headerName), 
+		assert.NotEmpty(t, capturedHeaders.Get(headerName),
 			"Expected trace propagation header %s to be present", headerName)
 	}
-	
+
 	// Verify the request still works normally
 	assert.Equal(t, http.StatusOK, recorder.Code)
 }

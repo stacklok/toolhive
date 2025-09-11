@@ -159,8 +159,8 @@ func TestConfigureTransport(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			builder := runner.NewRunConfigBuilder()
-			transport := configureTransport(builder, tt.imageMetadata)
+			opts := []runner.RunConfigBuilderOption{}
+			transport := configureTransport(&opts, tt.imageMetadata)
 
 			assert.Equal(t, tt.expectedTransport, transport)
 		})

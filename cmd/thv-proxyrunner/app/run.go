@@ -10,11 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	kubernetes "github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -106,6 +104,10 @@ var (
 
 	// ConfigMap reference flag (for identification only)
 	runFromConfigMap string
+
+	// configMapReader is used for dependency injection in tests
+	// If nil, the default implementation will be used
+	configMapReader kubernetes.RunConfigMapReader
 )
 
 func init() {
@@ -452,67 +454,23 @@ func ValidateAndNormaliseHostFlag(host string) (string, error) {
 	return "", fmt.Errorf("could not resolve host: %s", host)
 }
 
-// parseConfigMapRef parses a ConfigMap reference in the format "namespace/configmap-name"
-func parseConfigMapRef(ref string) (namespace, name string, err error) {
-	parts := strings.SplitN(ref, "/", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("expected format 'namespace/configmap-name', got '%s'", ref)
-	}
-
-	namespace = strings.TrimSpace(parts[0])
-	name = strings.TrimSpace(parts[1])
-
-	if namespace == "" {
-		return "", "", fmt.Errorf("namespace cannot be empty")
-	}
-	if name == "" {
-		return "", "", fmt.Errorf("configmap name cannot be empty")
-	}
-
-	return namespace, name, nil
-}
-
 // identifyAndReadConfigMap identifies and reads a ConfigMap, returning its RunConfig contents
 func identifyAndReadConfigMap(ctx context.Context, configMapRef string) (*runner.RunConfig, error) {
-	// Parse namespace and ConfigMap name
-	namespace, configMapName, err := parseConfigMapRef(configMapRef)
+	reader, err := kubernetes.NewConfigMapReader()
 	if err != nil {
-		return nil, fmt.Errorf("invalid --from-configmap format: %w", err)
+		return nil, err
 	}
-
-	logger.Infof("Loading configuration from ConfigMap '%s/%s'", namespace, configMapName)
-
-	// Create in-cluster Kubernetes client
-	config, err := rest.InClusterConfig()
+	// Get the runconfig.json data from the ConfigMap
+	runConfigJSON, err := reader.GetRunConfigMap(ctx, configMapRef)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create in-cluster config: %w", err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
-	}
-
-	// Get the ConfigMap
-	configMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, configMapName, metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get ConfigMap '%s/%s': %w", namespace, configMapName, err)
-	}
-
-	// Validate that runconfig.json exists in the ConfigMap
-	runConfigJSON, ok := configMap.Data["runconfig.json"]
-	if !ok {
-		return nil, fmt.Errorf("ConfigMap '%s/%s' does not contain 'runconfig.json' key", namespace, configMapName)
+		return nil, err
 	}
 
 	// Parse and return the RunConfig
 	var runConfig runner.RunConfig
 	if err := json.Unmarshal([]byte(runConfigJSON), &runConfig); err != nil {
-		return nil, fmt.Errorf("ConfigMap '%s/%s' contains invalid runconfig.json: %w", namespace, configMapName, err)
+		return nil, fmt.Errorf("ConfigMap '%s' contains invalid runconfig.json: %w", configMapRef, err)
 	}
-
-	logger.Infof("Successfully loaded configuration from ConfigMap '%s/%s' (contains %d bytes of runconfig.json)",
-		namespace, configMapName, len(runConfigJSON))
 
 	return &runConfig, nil
 }

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"

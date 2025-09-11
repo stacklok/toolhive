@@ -20,10 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/exp/jsonrpc2"
-
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"

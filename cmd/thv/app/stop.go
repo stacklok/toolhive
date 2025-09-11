@@ -88,7 +88,7 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		if errors.Is(err, rt.ErrWorkloadNotFound) ||
 			errors.Is(err, workloads.ErrWorkloadNotRunning) ||
 			errors.Is(err, types.ErrInvalidWorkloadName) {
-			fmt.Printf("one or more workloads are not running: %v\n", workloadNames)
+			fmt.Println("one or more workloads are not running")
 			return nil
 		}
 		return fmt.Errorf("unexpected error stopping workloads: %v", err)

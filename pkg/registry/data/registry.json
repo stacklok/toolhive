@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-10T00:16:54Z",
+  "last_updated": "2025-09-11T00:17:04Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1277,7 +1277,7 @@
         "documentation",
         "modelcontextprotocol"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.14",
+      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.17",
       "permissions": {
         "network": {
           "outbound": {
@@ -5258,6 +5258,11 @@
         "getVisibleJiraProjects",
         "getJiraProjectIssueTypesMetadata"
       ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-09-10T02:27:19Z"
+      },
       "tags": [
         "remote",
         "atlassian",
@@ -5297,6 +5302,11 @@
         "list-replies",
         "reply-to-comment"
       ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-09-10T02:27:19Z"
+      },
       "tags": [
         "remote",
         "canva",
@@ -5409,6 +5419,11 @@
         "update_pull_request",
         "update_pull_request_branch"
       ],
+      "metadata": {
+        "stars": 22439,
+        "pulls": 0,
+        "last_updated": "2025-09-10T02:27:19Z"
+      },
       "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
         "remote",
@@ -5440,6 +5455,11 @@
         "hf_doc_fetch",
         "gr1_flux1_schnell_infer"
       ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-09-10T02:27:19Z"
+      },
       "tags": [
         "remote",
         "ai",
@@ -5466,6 +5486,11 @@
         "getUserEvents",
         "analyzeVideo"
       ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-09-10T02:27:19Z"
+      },
       "tags": [
         "remote",
         "jam",

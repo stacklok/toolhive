@@ -124,7 +124,7 @@ func deleteAllWorkloads(ctx context.Context) error {
 		return fmt.Errorf("failed to delete all workloads: %v", err)
 	}
 
-	fmt.Println("All workloads delete successfully")
+	fmt.Println("All workloads deleted successfully")
 	return nil
 }
 

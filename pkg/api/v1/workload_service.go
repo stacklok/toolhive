@@ -177,47 +177,50 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		}
 	}
 
-	builder := runner.NewRunConfigBuilder().
-		WithRuntime(s.containerRuntime).
-		WithCmdArgs(req.CmdArguments).
-		WithName(req.Name).
-		WithGroup(groupName).
-		WithImage(imageURL).
-		WithRemoteURL(req.URL).
-		WithRemoteAuth(remoteAuthConfig).
-		WithHost(req.Host).
-		WithTargetHost(transport.LocalhostIPv4).
-		WithDebug(s.debugMode).
-		WithVolumes(req.Volumes).
-		WithSecrets(runSecrets).
-		WithAuthzConfigPath(req.AuthzConfig).
-		WithAuditConfigPath("").
-		WithPermissionProfile(req.PermissionProfile).
-		WithNetworkIsolation(req.NetworkIsolation).
-		WithK8sPodPatch("").
-		WithProxyMode(types.ProxyMode(req.ProxyMode)).
-		WithTransportAndPorts(req.Transport, 0, req.TargetPort).
-		WithAuditEnabled(false, "").
-		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
-			"", "", "", "", "", false).
-		WithTelemetryConfig("", false, false, false, "", 0.0, nil, false, nil).
-		WithToolsFilter(req.ToolsFilter).
-		WithToolsOverride(toolsOverride)
+	options := []runner.RunConfigBuilderOption{
+		runner.WithRuntime(s.containerRuntime),
+		runner.WithCmdArgs(req.CmdArguments),
+		runner.WithName(req.Name),
+		runner.WithGroup(groupName),
+		runner.WithImage(imageURL),
+		runner.WithRemoteURL(req.URL),
+		runner.WithRemoteAuth(remoteAuthConfig),
+		runner.WithHost(req.Host),
+		runner.WithTargetHost(transport.LocalhostIPv4),
+		runner.WithDebug(s.debugMode),
+		runner.WithVolumes(req.Volumes),
+		runner.WithSecrets(runSecrets),
+		runner.WithAuthzConfigPath(req.AuthzConfig),
+		runner.WithAuditConfigPath(""),
+		runner.WithPermissionProfile(req.PermissionProfile),
+		runner.WithNetworkIsolation(req.NetworkIsolation),
+		runner.WithK8sPodPatch(""),
+		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),
+		runner.WithTransportAndPorts(req.Transport, 0, req.TargetPort),
+		runner.WithAuditEnabled(false, ""),
+		runner.WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
+			"", "", "", "", "", false),
+		runner.WithToolsFilter(req.ToolsFilter),
+		runner.WithToolsOverride(toolsOverride),
+		runner.WithTelemetryConfig("", false, false, false, "", 0.0, nil, false, nil),
+	}
 
 	// Configure middleware from flags
-	builder = builder.WithMiddlewareFromFlags(
-		nil,
-		req.ToolsFilter,
-		toolsOverride,
-		nil,
-		req.AuthzConfig,
-		false,
-		"",
-		req.Name,
-		req.Transport,
+	options = append(options,
+		runner.WithMiddlewareFromFlags(
+			nil,
+			req.ToolsFilter,
+			toolsOverride,
+			nil,
+			req.AuthzConfig,
+			false,
+			"",
+			req.Name,
+			req.Transport,
+		),
 	)
 
-	runConfig, err := builder.Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
+	runConfig, err := runner.NewRunConfigBuilder(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{}, options...)
 	if err != nil {
 		logger.Errorf("Failed to build run config: %v", err)
 		return nil, fmt.Errorf("%w: Failed to build run config: %v", retriever.ErrInvalidRunConfig, err)

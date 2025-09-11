@@ -104,10 +104,6 @@ var (
 
 	// ConfigMap reference flag (for identification only)
 	runFromConfigMap string
-
-	// configMapReader is used for dependency injection in tests
-	// If nil, the default implementation will be used
-	configMapReader kubernetes.RunConfigMapReader
 )
 
 func init() {

@@ -17,8 +17,11 @@ Extend the current registry format to include a top-level `groups` array alongsi
 ```json
 {
   "servers": [
-    /* existing MCP server entries packaged as (server.json + extensions) */
+    /* existing MCP server entries */
   ],
+  "remote_servers": {
+    /* existing remote server entries */
+  },
   "groups": [
     {
       "name": "Mobile App Team Toolkit",
@@ -175,4 +178,21 @@ thv group run mobile-app-team-toolkit --secret k8s_token,target=k8s.TOKEN --secr
 SMEs at companies will create specific groups for teams working on particular products or projects.
 
 ## Out of Scope / Future Considerations
-- Referencing servers within groups by name. In this proposal, all servers must be fully defined within the group. This avoids the complexity around referencing servers across registries, handling invalid references and override logic.
+
+- Referencing servers within groups by name. In this proposal, all servers must be fully defined within the group. This
+  avoids the complexity around referencing servers across registries, handling invalid references and override logic.
+
+## Alternatives Considered
+
+### Reusing `thv run`
+
+We considered reusing the existing `thv run` command with a group flag to specify a group from the registry. This would
+align with the current `--group` flag that exists on `thv stop` and `thv restart`.
+
+However, there is already a `--group` flag on `thv run` that specifies which group to assign to the created server.
+Furthermore, flags such as `--secret` and `--env` would need to support a different structure when the group is used,
+since they would need to specify which target server within the group they apply to.
+For example:
+`thv run --from-group dev --secret fetch_token,target=fetch.TOKEN`
+compared to
+`thv run fetch --secret fetch_token,target=TOKEN`

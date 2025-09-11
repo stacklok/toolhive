@@ -389,7 +389,6 @@ func (*fileStatusManager) migratePIDFromFile(workloadName string, containerInfo 
 		logger.Debugf("failed to read PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
 		return 0, false
 	}
-
 	logger.Debugf("found PID %d in PID file for workload %s, will update status file", pid, workloadName)
 
 	// TODO: reinstate this once we decide to completely get rid of PID files.
@@ -573,8 +572,8 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 		// Extract workload name from filename (remove .json extension)
 		workloadName := strings.TrimSuffix(filepath.Base(file), ".json")
 
-		// Use proper file locking like GetWorkload does
-		err := f.withFileReadLock(ctx, workloadName, func(statusFilePath string) error {
+		// Use write lock since we may need to update the file for PID migration
+		err := f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
 			// Check if file exists first
 			if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
 				logger.Debugf("status file for workload %s no longer exists, skipping", workloadName)

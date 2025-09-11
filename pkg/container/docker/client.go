@@ -1513,11 +1513,44 @@ func dockerToDomainStatus(status string) runtime.WorkloadStatus {
 	return runtime.WorkloadStatusUnknown
 }
 
-// inspectContainerByName finds a container by the workload name and inspects it.
-func (c *Client) inspectContainerByName(ctx context.Context, workloadName string) (container.InspectResponse, error) {
-	empty := container.InspectResponse{}
+// findContainerByLabel finds a container by the base name label.
+// Returns the container ID if found, empty string otherwise.
+func (c *Client) findContainerByLabel(ctx context.Context, workloadName string) (string, error) {
+	filterArgs := filters.NewArgs()
+	filterArgs.Add("label", "toolhive=true")
+	filterArgs.Add("label", fmt.Sprintf("toolhive-basename=%s", workloadName))
 
-	// Since the Docker API expects a lookup by ID, do a search by name and label instead.
+	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filterArgs,
+	})
+	if err != nil {
+		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
+	}
+
+	if len(containers) == 0 {
+		return "", nil
+	}
+
+	// If multiple containers have the same base name, prefer the running one
+	var containerID string
+	for _, cont := range containers {
+		if cont.State == "running" {
+			containerID = cont.ID
+			break
+		}
+	}
+	// If no running container found, use the first one
+	if containerID == "" {
+		containerID = containers[0].ID
+	}
+
+	return containerID, nil
+}
+
+// findContainerByExactName finds a container by exact name matching.
+// Returns the container ID if found, empty string otherwise.
+func (c *Client) findContainerByExactName(ctx context.Context, workloadName string) (string, error) {
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("label", "toolhive=true")
 	filterArgs.Add("name", workloadName)
@@ -1527,12 +1560,13 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 		Filters: filterArgs,
 	})
 	if err != nil {
-		return empty, NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
+		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
 	}
 
 	if len(containers) == 0 {
-		return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found")
+		return "", nil
 	}
+
 	// Docker does a prefix match on the name. If we find multiple containers,
 	// we need to filter down to the exact name requested.
 	var containerID string
@@ -1547,11 +1581,37 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 			return slices.Contains(c.Names, prefixedName)
 		})
 		if idx == -1 {
-			return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found with the exact name")
+			return "", nil
 		}
 		containerID = containers[idx].ID
 	} else {
 		containerID = containers[0].ID
+	}
+
+	return containerID, nil
+}
+
+// inspectContainerByName finds a container by the workload name and inspects it.
+// It first tries to find by base name label, then falls back to exact name matching.
+func (c *Client) inspectContainerByName(ctx context.Context, workloadName string) (container.InspectResponse, error) {
+	empty := container.InspectResponse{}
+
+	// First try to find container by base name label
+	containerID, err := c.findContainerByLabel(ctx, workloadName)
+	if err != nil {
+		return empty, err
+	}
+	if containerID != "" {
+		return c.client.ContainerInspect(ctx, containerID)
+	}
+
+	// Fall back to exact name matching for backward compatibility
+	containerID, err = c.findContainerByExactName(ctx, workloadName)
+	if err != nil {
+		return empty, err
+	}
+	if containerID == "" {
+		return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found")
 	}
 
 	return c.client.ContainerInspect(ctx, containerID)

@@ -1514,15 +1514,46 @@ func dockerToDomainStatus(status string) runtime.WorkloadStatus {
 }
 
 // inspectContainerByName finds a container by the workload name and inspects it.
+// It first tries to find by base name label, then falls back to exact name matching.
 func (c *Client) inspectContainerByName(ctx context.Context, workloadName string) (container.InspectResponse, error) {
 	empty := container.InspectResponse{}
 
-	// Since the Docker API expects a lookup by ID, do a search by name and label instead.
+	// First try to find container by base name label
 	filterArgs := filters.NewArgs()
+	filterArgs.Add("label", "toolhive=true")
+	filterArgs.Add("label", fmt.Sprintf("toolhive-basename=%s", workloadName))
+
+	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filterArgs,
+	})
+	if err != nil {
+		return empty, NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
+	}
+
+	// If found by base name label, use it
+	if len(containers) > 0 {
+		// If multiple containers have the same base name, prefer the running one
+		var containerID string
+		for _, cont := range containers {
+			if cont.State == "running" {
+				containerID = cont.ID
+				break
+			}
+		}
+		// If no running container found, use the first one
+		if containerID == "" {
+			containerID = containers[0].ID
+		}
+		return c.client.ContainerInspect(ctx, containerID)
+	}
+
+	// Fall back to exact name matching for backward compatibility
+	filterArgs = filters.NewArgs()
 	filterArgs.Add("label", "toolhive=true")
 	filterArgs.Add("name", workloadName)
 
-	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+	containers, err = c.client.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: filterArgs,
 	})

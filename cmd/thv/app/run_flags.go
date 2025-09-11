@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -89,6 +90,8 @@ type RunFlags struct {
 
 	// Tools filter
 	ToolsFilter []string
+	// Tools override file
+	ToolsOverride string
 
 	// Configuration import
 	FromConfig string
@@ -199,6 +202,12 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"tools",
 		nil,
 		"Filter MCP server tools (comma-separated list of tool names)",
+	)
+	cmd.Flags().StringVar(
+		&config.ToolsOverride,
+		"tools-override",
+		"",
+		"Path to a JSON file containing overrides for MCP server tools names and descriptions",
 	)
 	cmd.Flags().StringVar(&config.FromConfig, "from-config", "", "Load configuration from exported file")
 
@@ -420,18 +429,31 @@ func buildRunnerConfig(
 		}),
 	}
 
+	var toolsOverride map[string]runner.ToolOverride
+	if runFlags.ToolsOverride != "" {
+		loadedToolsOverride, err := cli.LoadToolsOverride(runFlags.ToolsOverride)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load tools override: %v", err)
+		}
+		toolsOverride = *loadedToolsOverride
+	}
+
+	opts = append(opts, runner.WithToolsOverride(toolsOverride))
 	// Configure middleware from flags
-	opts = append(opts, runner.WithMiddlewareFromFlags(
-		oidcConfig,
-		runFlags.ToolsFilter,
-		nil,
-		telemetryConfig,
-		runFlags.AuthzConfig,
-		runFlags.EnableAudit,
-		runFlags.AuditConfig,
-		runFlags.Name,
-		runFlags.Transport,
-	))
+	opts = append(
+		opts,
+		runner.WithMiddlewareFromFlags(
+			oidcConfig,
+			runFlags.ToolsFilter,
+			toolsOverride,
+			telemetryConfig,
+			runFlags.AuthzConfig,
+			runFlags.EnableAudit,
+			runFlags.AuditConfig,
+			runFlags.Name,
+			runFlags.Transport,
+		),
+	)
 
 	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 		if remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata); remoteAuthConfig != nil {

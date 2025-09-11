@@ -5,11 +5,14 @@
 // - OAuth 2.0 with PKCE (Proof Key for Code Exchange)
 // - OIDC (OpenID Connect) discovery
 // - Manual OAuth endpoint configuration
+// - RFC 9728 Protected Resource Metadata
 package discovery
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,6 +20,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -37,6 +41,14 @@ type AuthInfo struct {
 	ResourceMetadata string
 	Error            string
 	ErrorDescription string
+}
+
+// AuthServerInfo contains information about a validated authorization server
+type AuthServerInfo struct {
+	Issuer               string
+	AuthorizationURL     string
+	TokenURL             string
+	RegistrationEndpoint string
 }
 
 // Config holds configuration for authentication discovery
@@ -151,104 +163,170 @@ func ParseWWWAuthenticate(header string) (*AuthInfo, error) {
 		return nil, fmt.Errorf("empty WWW-Authenticate header")
 	}
 
-	// Split by comma to handle multiple authentication schemes
-	schemes := strings.Split(header, ",")
+	// Check for OAuth/Bearer authentication
+	// Note: We don't split by comma because Bearer parameters can contain commas in quoted values
+	if strings.HasPrefix(header, "Bearer") {
+		authInfo := &AuthInfo{Type: "OAuth"}
 
-	for _, scheme := range schemes {
-		scheme = strings.TrimSpace(scheme)
-
-		// Check for OAuth/Bearer authentication
-		if strings.HasPrefix(scheme, "Bearer") {
-			authInfo := &AuthInfo{Type: "OAuth"}
-
-			// Extract parameters after "Bearer"
-			params := strings.TrimSpace(strings.TrimPrefix(scheme, "Bearer"))
-			if params != "" {
-				// Parse parameters (realm, scope, etc.)
-				realm := ExtractParameter(params, "realm")
-				if realm != "" {
-					authInfo.Realm = realm
-				}
+		// Extract parameters after "Bearer"
+		params := strings.TrimSpace(strings.TrimPrefix(header, "Bearer"))
+		if params != "" {
+			// Parse parameters (realm, scope, resource_metadata, etc.)
+			realm := ExtractParameter(params, "realm")
+			if realm != "" {
+				authInfo.Realm = realm
 			}
 
-			return authInfo, nil
-		}
-
-		// Check for OAuth-specific schemes
-		if strings.HasPrefix(scheme, "OAuth") {
-			authInfo := &AuthInfo{Type: "OAuth"}
-
-			// Extract parameters after "OAuth"
-			params := strings.TrimSpace(strings.TrimPrefix(scheme, "OAuth"))
-			if params != "" {
-				// Parse parameters (realm, scope, etc.)
-				realm := ExtractParameter(params, "realm")
-				if realm != "" {
-					authInfo.Realm = realm
-				}
+			// RFC 9728: Check for resource_metadata parameter
+			resourceMetadata := ExtractParameter(params, "resource_metadata")
+			if resourceMetadata != "" {
+				authInfo.ResourceMetadata = resourceMetadata
 			}
 
-			return authInfo, nil
+			// Extract error information if present
+			errorParam := ExtractParameter(params, "error")
+			if errorParam != "" {
+				authInfo.Error = errorParam
+			}
+
+			errorDesc := ExtractParameter(params, "error_description")
+			if errorDesc != "" {
+				authInfo.ErrorDescription = errorDesc
+			}
 		}
 
-		// Currently only OAuth-based authentication is supported
-		// Basic and Digest authentication are not implemented
-		logger.Debugf("Unsupported authentication scheme: %s", scheme)
+		return authInfo, nil
+	}
+
+	// Check for OAuth-specific schemes
+	if strings.HasPrefix(header, "OAuth") {
+		authInfo := &AuthInfo{Type: "OAuth"}
+
+		// Extract parameters after "OAuth"
+		params := strings.TrimSpace(strings.TrimPrefix(header, "OAuth"))
+		if params != "" {
+			// Parse parameters (realm, scope, etc.)
+			realm := ExtractParameter(params, "realm")
+			if realm != "" {
+				authInfo.Realm = realm
+			}
+
+			// RFC 9728: Check for resource_metadata parameter
+			resourceMetadata := ExtractParameter(params, "resource_metadata")
+			if resourceMetadata != "" {
+				authInfo.ResourceMetadata = resourceMetadata
+			}
+		}
+
+		return authInfo, nil
+	}
+
+	// Currently only OAuth-based authentication is supported
+	// Basic and Digest authentication are not implemented
+	if strings.HasPrefix(header, "Basic") || strings.HasPrefix(header, "Digest") {
+		logger.Debugf("Unsupported authentication scheme: %s", header)
+		return nil, fmt.Errorf("unsupported authentication scheme: %s", strings.Split(header, " ")[0])
 	}
 
 	return nil, fmt.Errorf("no supported authentication type found in header: %s", header)
 }
 
 // ExtractParameter extracts a parameter value from an authentication header
+// Handles both quoted and unquoted values according to RFC 2617 and RFC 6750
 func ExtractParameter(params, paramName string) string {
-	// Look for paramName=value or paramName="value"
-	// Split by comma first, then by space to handle multiple parameters
-	parts := strings.Split(params, ",")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, paramName+"=") {
-			value := strings.TrimPrefix(part, paramName+"=")
-			// Remove quotes if present
-			value = strings.Trim(value, `"`)
-			return value
-		}
+	// Parameters can be separated by comma or space
+	// Handle both paramName=value and paramName="value" formats
+
+	// First try to find the parameter with equals sign
+	searchStr := paramName + "="
+	idx := strings.Index(params, searchStr)
+	if idx == -1 {
+		return ""
 	}
-	return ""
+
+	// Extract the value after the equals sign
+	valueStart := idx + len(searchStr)
+	if valueStart >= len(params) {
+		return ""
+	}
+
+	remainder := params[valueStart:]
+
+	// Check if the value is quoted
+	if strings.HasPrefix(remainder, `"`) {
+		// Find the closing quote
+		endIdx := 1
+		for endIdx < len(remainder) {
+			if remainder[endIdx] == '"' && (endIdx == 1 || remainder[endIdx-1] != '\\') {
+				// Found unescaped closing quote
+				value := remainder[1:endIdx]
+				// Unescape any escaped quotes
+				value = strings.ReplaceAll(value, `\"`, `"`)
+				return value
+			}
+			endIdx++
+		}
+		// No closing quote found, return empty
+		return ""
+	}
+
+	// Unquoted value - find the end (comma, space, or end of string)
+	endIdx := 0
+	for endIdx < len(remainder) {
+		if remainder[endIdx] == ',' || remainder[endIdx] == ' ' {
+			break
+		}
+		endIdx++
+	}
+
+	return strings.TrimSpace(remainder[:endIdx])
 }
 
-// DeriveIssuerFromURL attempts to derive the OAuth issuer from the remote URL using general patterns
-func DeriveIssuerFromURL(remoteURL string) string {
-	// Parse the URL to extract the domain
-	parsedURL, err := url.Parse(remoteURL)
+// DeriveIssuerFromRealm attempts to derive the OAuth issuer from the realm parameter
+// According to RFC 8414, the issuer MUST be a URL using the "https" scheme with no query or fragment
+func DeriveIssuerFromRealm(realm string) string {
+	if realm == "" {
+		return ""
+	}
+
+	// Check if realm is already a valid HTTPS URL
+	parsedURL, err := url.Parse(realm)
 	if err != nil {
-		logger.Debugf("Failed to parse remote URL: %v", err)
+		logger.Debugf("Realm is not a valid URL: %v", err)
 		return ""
 	}
 
-	host := parsedURL.Hostname()
-	if host == "" {
+	// RFC 8414: The issuer identifier MUST be a URL using the "https" scheme
+	// with no query or fragment components
+	if parsedURL.Scheme != "https" {
+		logger.Debugf("Realm is not using HTTPS scheme: %s", realm)
 		return ""
 	}
 
-	// General pattern: use the domain as the issuer
-	// This works for most OAuth providers that use their domain as the issuer
-	issuer := fmt.Sprintf("https://%s", host)
+	if parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
+		logger.Debugf("Realm contains query or fragment components: %s", realm)
+		// Remove query and fragment to make it a valid issuer
+		parsedURL.RawQuery = ""
+		parsedURL.Fragment = ""
+	}
 
-	logger.Debugf("Derived issuer from URL - remoteURL: %s, issuer: %s", remoteURL, issuer)
+	issuer := parsedURL.String()
+	logger.Debugf("Derived issuer from realm - realm: %s, issuer: %s", realm, issuer)
 	return issuer
 }
 
 // OAuthFlowConfig contains configuration for performing OAuth flows
 type OAuthFlowConfig struct {
-	ClientID     string
-	ClientSecret string
-	AuthorizeURL string // Manual OAuth endpoint (optional)
-	TokenURL     string // Manual OAuth endpoint (optional)
-	Scopes       []string
-	CallbackPort int
-	Timeout      time.Duration
-	SkipBrowser  bool
-	OAuthParams  map[string]string
+	ClientID             string
+	ClientSecret         string
+	AuthorizeURL         string // Manual OAuth endpoint (optional)
+	TokenURL             string // Manual OAuth endpoint (optional)
+	RegistrationEndpoint string // Manual registration endpoint (optional)
+	Scopes               []string
+	CallbackPort         int
+	Timeout              time.Duration
+	SkipBrowser          bool
+	OAuthParams          map[string]string
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -269,34 +347,72 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		return nil, fmt.Errorf("OAuth flow config cannot be nil")
 	}
 
-	var oauthConfig *oauth.Config
-	var err error
+	// Handle dynamic client registration if needed
 	if shouldDynamicallyRegisterClient(config) {
-		discoveredDoc, err := oauth.DiscoverOIDCEndpoints(ctx, issuer)
-		if err != nil {
-			return nil, fmt.Errorf("failed to discover registration endpoint: %w", err)
-		}
-		registrationResponse, err := registerDynamicClient(ctx, config, discoveredDoc)
-		if err != nil {
+		if err := handleDynamicRegistration(ctx, issuer, config); err != nil {
 			return nil, err
-		}
-
-		// Use the dynamically registered client credentials
-		config.ClientID = registrationResponse.ClientID
-		config.ClientSecret = registrationResponse.ClientSecret
-
-		if discoveredDoc.RegistrationEndpoint != "" {
-			config.AuthorizeURL = discoveredDoc.AuthorizationEndpoint
-			config.TokenURL = discoveredDoc.TokenEndpoint
 		}
 	}
 
+	// Create OAuth configuration
+	oauthConfig, err := createOAuthConfig(ctx, issuer, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create OAuth config: %w", err)
+	}
+
+	// Create and execute OAuth flow
+	return newOAuthFlow(ctx, oauthConfig, config)
+}
+
+// handleDynamicRegistration handles the dynamic client registration process
+func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuthFlowConfig) error {
+	discoveredDoc, err := getDiscoveryDocument(ctx, issuer, config)
+	if err != nil {
+		return fmt.Errorf("failed to discover registration endpoint: %w", err)
+	}
+
+	registrationResponse, err := registerDynamicClient(ctx, config, discoveredDoc)
+	if err != nil {
+		return err
+	}
+
+	// Update config with registered client credentials
+	config.ClientID = registrationResponse.ClientID
+	config.ClientSecret = registrationResponse.ClientSecret
+
+	if discoveredDoc.RegistrationEndpoint != "" {
+		config.AuthorizeURL = discoveredDoc.AuthorizationEndpoint
+		config.TokenURL = discoveredDoc.TokenEndpoint
+	}
+
+	return nil
+}
+
+// getDiscoveryDocument retrieves the OIDC discovery document
+func getDiscoveryDocument(ctx context.Context, issuer string, config *OAuthFlowConfig) (*oauth.OIDCDiscoveryDocument, error) {
+	// If we already have the registration endpoint from earlier discovery, use it
+	if config.RegistrationEndpoint != "" && config.AuthorizeURL != "" && config.TokenURL != "" {
+		logger.Debugf("Using pre-discovered OAuth endpoints for dynamic registration")
+		return &oauth.OIDCDiscoveryDocument{
+			Issuer:                issuer,
+			AuthorizationEndpoint: config.AuthorizeURL,
+			TokenEndpoint:         config.TokenURL,
+			RegistrationEndpoint:  config.RegistrationEndpoint,
+		}, nil
+	}
+
+	// Fall back to discovering endpoints
+	return oauth.DiscoverOIDCEndpoints(ctx, issuer)
+}
+
+// createOAuthConfig creates the OAuth configuration based on available endpoints
+func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConfig) (*oauth.Config, error) {
 	// Check if we have OAuth endpoints configured
 	if config.AuthorizeURL != "" && config.TokenURL != "" {
 		logger.Infof("Using OAuth endpoints - authorize_url: %s, token_url: %s",
 			config.AuthorizeURL, config.TokenURL)
 
-		oauthConfig, err = oauth.CreateOAuthConfigManual(
+		return oauth.CreateOAuthConfigManual(
 			config.ClientID,
 			config.ClientSecret,
 			config.AuthorizeURL,
@@ -306,26 +422,19 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 			config.CallbackPort,
 			config.OAuthParams,
 		)
-	} else {
-		// Fall back to OIDC discovery
-		logger.Info("Using OIDC discovery")
-		oauthConfig, err = oauth.CreateOAuthConfigFromOIDC(
-			ctx,
-			issuer,
-			config.ClientID,
-			config.ClientSecret,
-			config.Scopes,
-			true, // Enable PKCE by default for security
-			config.CallbackPort,
-		)
 	}
 
-	if err != nil {
-		return nil, fmt.Errorf("failed to create OAuth config: %w", err)
-	}
-
-	// Create OAuth flow
-	return newOAuthFlow(ctx, oauthConfig, config)
+	// Fall back to OIDC discovery
+	logger.Info("Using OIDC discovery")
+	return oauth.CreateOAuthConfigFromOIDC(
+		ctx,
+		issuer,
+		config.ClientID,
+		config.ClientSecret,
+		config.Scopes,
+		true, // Enable PKCE by default for security
+		config.CallbackPort,
+	)
 }
 
 func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthFlowConfig) (*OAuthFlowResult, error) {
@@ -387,4 +496,97 @@ func registerDynamicClient(
 	}
 
 	return registrationResponse, nil
+}
+
+// FetchResourceMetadata as specified in RFC 9728
+func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC9728AuthInfo, error) {
+	if metadataURL == "" {
+		return nil, fmt.Errorf("metadata URL is empty")
+	}
+
+	// Validate URL
+	parsedURL, err := url.Parse(metadataURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid metadata URL: %w", err)
+	}
+
+	// RFC 9728: Must use HTTPS (except for localhost in development)
+	if parsedURL.Scheme != "https" && parsedURL.Hostname() != "localhost" && parsedURL.Hostname() != "127.0.0.1" {
+		return nil, fmt.Errorf("metadata URL must use HTTPS: %s", metadataURL)
+	}
+
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: DefaultHTTPTimeout,
+		Transport: &http.Transport{
+			TLSHandshakeTimeout:   5 * time.Second,
+			ResponseHeaderTimeout: 5 * time.Second,
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metadataURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("metadata request failed with status %d", resp.StatusCode)
+	}
+
+	// Check content type
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "application/json") {
+		return nil, fmt.Errorf("unexpected content type: %s", contentType)
+	}
+
+	// Parse the metadata
+	const maxResponseSize = 1024 * 1024 // 1MB limit
+	var metadata auth.RFC9728AuthInfo
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&metadata); err != nil {
+		return nil, fmt.Errorf("failed to parse metadata: %w", err)
+	}
+
+	// RFC 9728 Section 3.3: Validate that the resource value matches
+	// For now we just check it's not empty
+	if metadata.Resource == "" {
+		return nil, fmt.Errorf("metadata missing required 'resource' field")
+	}
+
+	return &metadata, nil
+}
+
+// ValidateAndDiscoverAuthServer attempts to validate if a URL is an authorization server
+// and discover its actual issuer by fetching its metadata.
+// This handles the case where the URL used to fetch metadata differs from the actual issuer
+// (e.g., Stripe's case where https://mcp.stripe.com hosts metadata for https://marketplace.stripe.com)
+func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string) (*AuthServerInfo, error) {
+	// Use DiscoverActualIssuer which doesn't validate issuer match
+	// This allows us to discover the real issuer even when it differs from the metadata URL
+	doc, err := oauth.DiscoverActualIssuer(ctx, potentialIssuer)
+	if err == nil && doc != nil && doc.Issuer != "" {
+		// Found valid authorization server metadata, return the actual issuer and endpoints
+		if doc.Issuer != potentialIssuer {
+			logger.Infof("Discovered actual issuer: %s (from metadata URL: %s)", doc.Issuer, potentialIssuer)
+		} else {
+			logger.Debugf("Validated authorization server: %s", potentialIssuer)
+		}
+
+		return &AuthServerInfo{
+			Issuer:               doc.Issuer,
+			AuthorizationURL:     doc.AuthorizationEndpoint,
+			TokenURL:             doc.TokenEndpoint,
+			RegistrationEndpoint: doc.RegistrationEndpoint,
+		}, nil
+	}
+
+	// If that fails, the URL might not be a valid authorization server
+	return nil, fmt.Errorf("could not validate %s as an authorization server: %w", potentialIssuer, err)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -100,7 +101,8 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 	if len(workloadNames) == 1 {
 		fmt.Printf("workload %s stopped successfully\n", workloadNames[0])
 	} else {
-		fmt.Printf("workloads %v stopped successfully\n", workloadNames)
+		formattedNames := strings.Join(workloadNames, ", ")
+		fmt.Printf("workloads %v stopped successfully\n", formattedNames)
 	}
 
 	return nil

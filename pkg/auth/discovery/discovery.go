@@ -240,15 +240,16 @@ func DeriveIssuerFromURL(remoteURL string) string {
 
 // OAuthFlowConfig contains configuration for performing OAuth flows
 type OAuthFlowConfig struct {
-	ClientID     string
-	ClientSecret string
-	AuthorizeURL string // Manual OAuth endpoint (optional)
-	TokenURL     string // Manual OAuth endpoint (optional)
-	Scopes       []string
-	CallbackPort int
-	Timeout      time.Duration
-	SkipBrowser  bool
-	OAuthParams  map[string]string
+	ClientID       string
+	ClientSecret   string
+	AuthorizeURL   string // Manual OAuth endpoint (optional)
+	TokenURL       string // Manual OAuth endpoint (optional)
+	Scopes         []string
+	CallbackPort   int
+	Timeout        time.Duration
+	SkipBrowser    bool
+	OAuthParams    map[string]string
+	IssuerProvided bool // Whether the issuer was explicitly provided (not derived from URL)
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -272,7 +273,7 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 	var oauthConfig *oauth.Config
 	var err error
 	if shouldDynamicallyRegisterClient(config) {
-		discoveredDoc, err := oauth.DiscoverOIDCEndpoints(ctx, issuer)
+		discoveredDoc, err := oauth.DiscoverOIDCEndpoints(ctx, issuer, config.IssuerProvided)
 		if err != nil {
 			return nil, fmt.Errorf("failed to discover registration endpoint: %w", err)
 		}

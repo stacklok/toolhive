@@ -295,14 +295,15 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 		}
 
 		flowConfig := &discovery.OAuthFlowConfig{
-			ClientID:     remoteAuthFlags.RemoteAuthClientID,
-			ClientSecret: clientSecret,
-			AuthorizeURL: remoteAuthFlags.RemoteAuthAuthorizeURL,
-			TokenURL:     remoteAuthFlags.RemoteAuthTokenURL,
-			Scopes:       remoteAuthFlags.RemoteAuthScopes,
-			CallbackPort: remoteAuthFlags.RemoteAuthCallbackPort,
-			Timeout:      remoteAuthFlags.RemoteAuthTimeout,
-			SkipBrowser:  remoteAuthFlags.RemoteAuthSkipBrowser,
+			ClientID:       remoteAuthFlags.RemoteAuthClientID,
+			ClientSecret:   clientSecret,
+			AuthorizeURL:   remoteAuthFlags.RemoteAuthAuthorizeURL,
+			TokenURL:       remoteAuthFlags.RemoteAuthTokenURL,
+			Scopes:         remoteAuthFlags.RemoteAuthScopes,
+			CallbackPort:   remoteAuthFlags.RemoteAuthCallbackPort,
+			Timeout:        remoteAuthFlags.RemoteAuthTimeout,
+			SkipBrowser:    remoteAuthFlags.RemoteAuthSkipBrowser,
+			IssuerProvided: remoteAuthFlags.RemoteAuthIssuer != "", // Issuer was explicitly provided
 		}
 
 		result, err := discovery.PerformOAuthFlow(ctx, remoteAuthFlags.RemoteAuthIssuer, flowConfig)
@@ -325,14 +326,15 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 
 		// Perform OAuth flow with discovered configuration
 		flowConfig := &discovery.OAuthFlowConfig{
-			ClientID:     remoteAuthFlags.RemoteAuthClientID,
-			ClientSecret: clientSecret,
-			AuthorizeURL: remoteAuthFlags.RemoteAuthAuthorizeURL,
-			TokenURL:     remoteAuthFlags.RemoteAuthTokenURL,
-			Scopes:       remoteAuthFlags.RemoteAuthScopes,
-			CallbackPort: remoteAuthFlags.RemoteAuthCallbackPort,
-			Timeout:      remoteAuthFlags.RemoteAuthTimeout,
-			SkipBrowser:  remoteAuthFlags.RemoteAuthSkipBrowser,
+			ClientID:       remoteAuthFlags.RemoteAuthClientID,
+			ClientSecret:   clientSecret,
+			AuthorizeURL:   remoteAuthFlags.RemoteAuthAuthorizeURL,
+			TokenURL:       remoteAuthFlags.RemoteAuthTokenURL,
+			Scopes:         remoteAuthFlags.RemoteAuthScopes,
+			CallbackPort:   remoteAuthFlags.RemoteAuthCallbackPort,
+			Timeout:        remoteAuthFlags.RemoteAuthTimeout,
+			SkipBrowser:    remoteAuthFlags.RemoteAuthSkipBrowser,
+			IssuerProvided: false, // Issuer was derived from WWW-Authenticate header
 		}
 
 		result, err := discovery.PerformOAuthFlow(ctx, authInfo.Realm, flowConfig)

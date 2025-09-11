@@ -40,6 +40,7 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 		// Handle OAuth authentication
 		if authInfo.Type == "OAuth" {
 			issuer := h.config.Issuer
+			issuerProvided := issuer != ""
 			if issuer == "" {
 				issuer = discovery.DeriveIssuerFromURL(remoteURL)
 			}
@@ -51,15 +52,16 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 
 			// Create OAuth flow config from RemoteAuthConfig
 			flowConfig := &discovery.OAuthFlowConfig{
-				ClientID:     h.config.ClientID,
-				ClientSecret: h.config.ClientSecret,
-				AuthorizeURL: h.config.AuthorizeURL,
-				TokenURL:     h.config.TokenURL,
-				Scopes:       h.config.Scopes,
-				CallbackPort: h.config.CallbackPort,
-				Timeout:      h.config.Timeout,
-				SkipBrowser:  h.config.SkipBrowser,
-				OAuthParams:  h.config.OAuthParams,
+				ClientID:       h.config.ClientID,
+				ClientSecret:   h.config.ClientSecret,
+				AuthorizeURL:   h.config.AuthorizeURL,
+				TokenURL:       h.config.TokenURL,
+				Scopes:         h.config.Scopes,
+				CallbackPort:   h.config.CallbackPort,
+				Timeout:        h.config.Timeout,
+				SkipBrowser:    h.config.SkipBrowser,
+				OAuthParams:    h.config.OAuthParams,
+				IssuerProvided: issuerProvided,
 			}
 
 			result, err := discovery.PerformOAuthFlow(ctx, issuer, flowConfig)

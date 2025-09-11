@@ -125,7 +125,7 @@ func TestDiscoverOIDCEndpointsWithRegistration(t *testing.T) {
 				issuer = server.URL
 			}
 
-			result, err := DiscoverOIDCEndpoints(context.Background(), issuer)
+			result, err := DiscoverOIDCEndpoints(context.Background(), issuer, false)
 
 			if tt.expectedError {
 				assert.Error(t, err)

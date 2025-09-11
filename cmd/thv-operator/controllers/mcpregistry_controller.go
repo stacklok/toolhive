@@ -18,6 +18,37 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
+// Sync reason constants - package visible
+const (
+	// Registry state related reasons
+	syncReasonAlreadyInProgress = "sync-already-in-progress"
+	syncReasonRegistryNotReady  = "registry-not-ready"
+
+	// Data change related reasons
+	syncReasonSourceDataChanged    = "source-data-changed"
+	syncReasonErrorCheckingChanges = "error-checking-data-changes"
+
+	// Manual sync related reasons
+	syncReasonManualWithChanges = "manual-sync-with-data-changes"
+	syncReasonManualNoChanges   = "manual-sync-no-data-changes"
+
+	// Automatic sync related reasons
+	syncReasonErrorParsingInterval  = "error-parsing-sync-interval"
+	syncReasonErrorCheckingSyncNeed = "error-checking-sync-need"
+
+	// Up-to-date reasons
+	syncReasonUpToDateWithPolicy = "up-to-date-with-policy"
+	syncReasonUpToDateNoPolicy   = "up-to-date-no-policy"
+)
+
+// Manual sync annotation detection reasons - package visible
+const (
+	manualSyncReasonNoAnnotations    = "no-annotations"
+	manualSyncReasonNoTrigger        = "no-manual-trigger"
+	manualSyncReasonAlreadyProcessed = "manual-trigger-already-processed"
+	manualSyncReasonRequested        = "manual-sync-requested"
+)
+
 // MCPRegistryReconciler reconciles a MCPRegistry object
 type MCPRegistryReconciler struct {
 	client.Client
@@ -72,6 +103,8 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// Run finalization logic. If the finalization logic fails,
 			// don't remove the finalizer so that we can retry during the next reconciliation.
 			if err := r.finalizeMCPRegistry(ctx, mcpRegistry); err != nil {
+				ctxLogger.Error(err, "Reconciliation completed with error while finalizing MCPRegistry",
+					"MCPRegistry.Name", mcpRegistry.Name)
 				return ctrl.Result{}, err
 			}
 
@@ -79,9 +112,14 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			controllerutil.RemoveFinalizer(mcpRegistry, "mcpregistry.toolhive.stacklok.dev/finalizer")
 			err := r.Update(ctx, mcpRegistry)
 			if err != nil {
+				ctxLogger.Error(err, "Reconciliation completed with error while removing finalizer",
+					"MCPRegistry.Name", mcpRegistry.Name)
 				return ctrl.Result{}, err
 			}
 		}
+		ctxLogger.Info("Reconciliation of deleted MCPRegistry completed successfully",
+			"MCPRegistry.Name", mcpRegistry.Name,
+			"phase", mcpRegistry.Status.Phase)
 		return ctrl.Result{}, nil
 	}
 
@@ -90,38 +128,150 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		controllerutil.AddFinalizer(mcpRegistry, "mcpregistry.toolhive.stacklok.dev/finalizer")
 		err = r.Update(ctx, mcpRegistry)
 		if err != nil {
+			ctxLogger.Error(err, "Reconciliation completed with error while adding finalizer",
+				"MCPRegistry.Name", mcpRegistry.Name)
 			return ctrl.Result{}, err
 		}
+		ctxLogger.Info("Reconciliation completed successfully after adding finalizer",
+			"MCPRegistry.Name", mcpRegistry.Name)
+		return ctrl.Result{}, nil
 	}
 
 	// 3. Check if sync is needed before performing it
-	return r.reconcileSync(ctx, mcpRegistry)
+	result, err := r.reconcileSync(ctx, mcpRegistry)
+
+	// Log reconciliation completion
+	if err != nil {
+		ctxLogger.Error(err, "Reconciliation completed with error",
+			"MCPRegistry.Name", mcpRegistry.Name,
+			"requeueAfter", result.RequeueAfter)
+	} else {
+		ctxLogger.Info("Reconciliation completed successfully",
+			"MCPRegistry.Name", mcpRegistry.Name,
+			"phase", mcpRegistry.Status.Phase,
+			"requeueAfter", result.RequeueAfter)
+	}
+
+	return result, err
 }
 
 // reconcileSync checks if sync is needed and performs it if necessary
 func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
-	// Skip sync if registry is already in Ready state and no changes detected
-	if mcpRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseReady {
-		// Check if source data has changed by comparing hash
-		if syncNeeded, err := r.isSyncNeeded(ctx, mcpRegistry); err != nil {
-			ctxLogger.Error(err, "Failed to check if sync is needed")
-			// Proceed with sync on error to be safe
-		} else if !syncNeeded {
-			ctxLogger.V(1).Info("Registry is up-to-date, skipping sync")
-			return ctrl.Result{}, nil
-		}
-		ctxLogger.Info("Source data changed, performing sync")
+	// Check if sync is needed
+	syncNeeded, syncReason, nextSyncTime, err := r.shouldSync(ctx, mcpRegistry)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to determine if sync is needed")
+		// Proceed with sync on error to be safe
+		syncNeeded = true
+		syncReason = syncReasonErrorCheckingSyncNeed
 	}
 
-	// Perform the sync operation
-	return r.performSync(ctx, mcpRegistry)
+	if !syncNeeded {
+		ctxLogger.Info("Sync not needed", "reason", syncReason)
+		// Schedule next reconciliation if we have a sync policy
+		if nextSyncTime != nil {
+			requeueAfter := time.Until(*nextSyncTime)
+			ctxLogger.Info("Scheduling next automatic sync", "requeueAfter", requeueAfter)
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+		return ctrl.Result{}, nil
+	}
+
+	ctxLogger.Info("Sync needed", "reason", syncReason)
+
+	// Handle manual sync with no data changes - update trigger tracking only
+	if syncReason == syncReasonManualNoChanges {
+		return r.updateManualSyncTriggerOnly(ctx, mcpRegistry)
+	}
+
+	result, err := r.performSync(ctx, mcpRegistry)
+
+	if err != nil {
+		// Sync failed - schedule retry with exponential backoff
+		ctxLogger.Error(err, "Sync failed, scheduling retry")
+		// Use a shorter retry interval instead of the full sync interval
+		retryAfter := time.Minute * 5 // Default retry interval
+		if result.RequeueAfter > 0 {
+			// If performSync already set a retry interval, use it
+			retryAfter = result.RequeueAfter
+		}
+		return ctrl.Result{RequeueAfter: retryAfter}, err
+	}
+
+	// Schedule next automatic sync only if this was an automatic sync (not manual)
+	if mcpRegistry.Spec.SyncPolicy != nil && !isManualSync(syncReason) {
+		interval, parseErr := time.ParseDuration(mcpRegistry.Spec.SyncPolicy.Interval)
+		if parseErr == nil {
+			result.RequeueAfter = interval
+			ctxLogger.Info("Automatic sync successful, scheduled next automatic sync", "interval", interval)
+		} else {
+			ctxLogger.Error(parseErr, "Invalid sync interval in policy", "interval", mcpRegistry.Spec.SyncPolicy.Interval)
+		}
+	} else if isManualSync(syncReason) {
+		ctxLogger.Info("Manual sync successful, automatic sync schedule unchanged")
+	} else {
+		ctxLogger.Info("Sync successful, no automatic sync policy configured")
+	}
+
+	return result, err
 }
 
-// isSyncNeeded checks if a sync operation is needed by comparing current source hash with last sync hash
-func (r *MCPRegistryReconciler) isSyncNeeded(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, error) {
-	// If we don't have a last sync hash, sync is needed
+// shouldSync determines if a sync operation is needed and when the next sync should occur
+// Returns: syncNeeded (bool), reason (string), nextSyncTime (*time.Time), error
+func (r *MCPRegistryReconciler) shouldSync(ctx context.Context,
+	mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string, *time.Time, error) {
+	// If registry is currently syncing, don't start another sync
+	if mcpRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseSyncing {
+		return false, syncReasonAlreadyInProgress, nil, nil
+	}
+
+	// Check for manual sync trigger first (always update trigger tracking)
+	manualSyncRequested, _ := r.isManualSyncRequested(mcpRegistry)
+
+	// If registry is in Failed or Pending state, sync is needed
+	if mcpRegistry.Status.Phase != mcpv1alpha1.MCPRegistryPhaseReady {
+		return true, syncReasonRegistryNotReady, nil, nil
+	}
+
+	// Check if source data has changed by comparing hash
+	dataChanged, err := r.isDataChanged(ctx, mcpRegistry)
+	if err != nil {
+		return true, syncReasonErrorCheckingChanges, nil, err
+	}
+
+	// Manual sync was requested - but only sync if data has actually changed
+	if manualSyncRequested {
+		if dataChanged {
+			return true, syncReasonManualWithChanges, nil, nil
+		}
+		// Manual sync requested but no data changes - update trigger tracking only
+		return true, syncReasonManualNoChanges, nil, nil
+	}
+
+	if dataChanged {
+		return true, syncReasonSourceDataChanged, nil, nil
+	}
+
+	// Data hasn't changed - check if we need to schedule future checks
+	if mcpRegistry.Spec.SyncPolicy != nil {
+		_, nextSyncTime, err := r.isIntervalSyncNeeded(mcpRegistry)
+		if err != nil {
+			return true, syncReasonErrorParsingInterval, nil, err
+		}
+
+		// No sync needed since data hasn't changed, but schedule next check
+		return false, syncReasonUpToDateWithPolicy, &nextSyncTime, nil
+	}
+
+	// No automatic sync policy, registry is up-to-date
+	return false, syncReasonUpToDateNoPolicy, nil, nil
+}
+
+// isDataChanged checks if source data has changed by comparing hashes
+func (r *MCPRegistryReconciler) isDataChanged(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, error) {
+	// If we don't have a last sync hash, consider data changed
 	if mcpRegistry.Status.LastSyncHash == "" {
 		return true, nil
 	}
@@ -129,17 +279,92 @@ func (r *MCPRegistryReconciler) isSyncNeeded(ctx context.Context, mcpRegistry *m
 	// Get source handler
 	sourceHandler, err := r.sourceHandlerFactory.CreateHandler(mcpRegistry.Spec.Source.Type)
 	if err != nil {
-		return true, err // Sync on error to be safe
+		return true, err
 	}
 
 	// Get current hash from source
 	currentHash, err := sourceHandler.CurrentHash(ctx, mcpRegistry)
 	if err != nil {
-		return true, err // Sync on error to be safe
+		return true, err
 	}
 
-	// Compare hashes - sync needed if different
+	// Compare hashes - data changed if different
 	return currentHash != mcpRegistry.Status.LastSyncHash, nil
+}
+
+// updateManualSyncTriggerOnly updates the manual sync trigger tracking without performing actual sync
+func (r *MCPRegistryReconciler) updateManualSyncTriggerOnly(ctx context.Context,
+	mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Refresh the object to get latest resourceVersion
+	if err := r.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), mcpRegistry); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Update manual sync trigger tracking
+	if mcpRegistry.Annotations != nil {
+		if triggerValue := mcpRegistry.Annotations["toolhive.stacklok.dev/sync-trigger"]; triggerValue != "" {
+			mcpRegistry.Status.LastManualSyncTrigger = triggerValue
+			ctxLogger.Info("Manual sync trigger processed (no data changes)", "trigger", triggerValue)
+		}
+	}
+
+	// Update status
+	if err := r.Status().Update(ctx, mcpRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to update manual sync trigger tracking")
+		return ctrl.Result{}, err
+	}
+
+	ctxLogger.Info("Manual sync completed (no data changes required)")
+	return ctrl.Result{}, nil
+}
+
+// isManualSync checks if the sync reason indicates a manual sync
+func isManualSync(reason string) bool {
+	return reason == syncReasonManualWithChanges || reason == syncReasonManualNoChanges
+}
+
+// isManualSyncRequested checks if a manual sync was requested via annotation
+func (*MCPRegistryReconciler) isManualSyncRequested(mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string) {
+	// Check if sync-trigger annotation exists
+	if mcpRegistry.Annotations == nil {
+		return false, manualSyncReasonNoAnnotations
+	}
+
+	triggerValue := mcpRegistry.Annotations["toolhive.stacklok.dev/sync-trigger"]
+	if triggerValue == "" {
+		return false, manualSyncReasonNoTrigger
+	}
+
+	// Check if this trigger was already processed
+	lastProcessed := mcpRegistry.Status.LastManualSyncTrigger
+	if triggerValue == lastProcessed {
+		return false, manualSyncReasonAlreadyProcessed
+	}
+
+	return true, manualSyncReasonRequested
+}
+
+// isIntervalSyncNeeded checks if sync is needed based on time interval
+func (*MCPRegistryReconciler) isIntervalSyncNeeded(mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, time.Time, error) {
+	// Parse the sync interval
+	interval, err := time.ParseDuration(mcpRegistry.Spec.SyncPolicy.Interval)
+	if err != nil {
+		return false, time.Time{}, fmt.Errorf("invalid sync interval '%s': %w", mcpRegistry.Spec.SyncPolicy.Interval, err)
+	}
+
+	// If we don't have a last sync time, sync is needed
+	if mcpRegistry.Status.LastSyncTime == nil {
+		return true, time.Now().Add(interval), nil
+	}
+
+	// Calculate when next sync should happen
+	nextSyncTime := mcpRegistry.Status.LastSyncTime.Add(interval)
+
+	// Check if it's time for the next sync
+	now := time.Now()
+	return now.After(nextSyncTime) || now.Equal(nextSyncTime), nextSyncTime, nil
 }
 
 // performSync performs the complete sync operation for the MCPRegistry
@@ -227,6 +452,14 @@ func (r *MCPRegistryReconciler) performSync(ctx context.Context, mcpRegistry *mc
 	mcpRegistry.Status.SyncAttempts = 0 // Reset on success
 	if storageRef != nil {
 		mcpRegistry.Status.StorageRef = storageRef
+	}
+
+	// Update manual sync trigger tracking if annotation exists
+	if mcpRegistry.Annotations != nil {
+		if triggerValue := mcpRegistry.Annotations["toolhive.stacklok.dev/sync-trigger"]; triggerValue != "" {
+			mcpRegistry.Status.LastManualSyncTrigger = triggerValue
+			ctxLogger.Info("Manual sync trigger processed", "trigger", triggerValue)
+		}
 	}
 
 	// Set all success conditions in memory

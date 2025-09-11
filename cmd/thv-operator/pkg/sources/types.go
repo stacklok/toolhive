@@ -2,7 +2,6 @@ package sources
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 
@@ -62,17 +61,6 @@ func (fr *FetchResult) GetRawData() ([]byte, error) {
 		return nil, fmt.Errorf("registry is nil - cannot serialize")
 	}
 	return json.Marshal(fr.Registry)
-}
-
-// NewFetchResultFromBytes creates a new FetchResult from raw data (legacy method)
-func NewFetchResultFromBytes(data []byte, serverCount int) *FetchResult {
-	hash := fmt.Sprintf("%x", sha256.Sum256(data))
-	return &FetchResult{
-		Registry:    nil, // Will need to be parsed separately
-		Hash:        hash,
-		ServerCount: serverCount,
-		Format:      "", // Unknown format
-	}
 }
 
 // SourceHandlerFactory creates source handlers based on source type

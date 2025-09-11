@@ -6,34 +6,52 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 func TestNewFetchResult(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		data        []byte
-		serverCount int
-		expectedLen int
+		name         string
+		registryData *registry.Registry
+		hash         string
+		format       string
 	}{
 		{
-			name:        "empty data",
-			data:        []byte{},
-			serverCount: 0,
-			expectedLen: 64, // SHA256 hex string length
+			name: "empty registry",
+			registryData: &registry.Registry{
+				Version:       "1.0.0",
+				Servers:       make(map[string]*registry.ImageMetadata),
+				RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+			},
+			hash:   "abcd1234",
+			format: mcpv1alpha1.RegistryFormatToolHive,
 		},
 		{
-			name:        "simple json data",
-			data:        []byte(`{"servers": {"test": {}}}`),
-			serverCount: 1,
-			expectedLen: 64,
+			name: "registry with servers",
+			registryData: &registry.Registry{
+				Version: "1.0.0",
+				Servers: map[string]*registry.ImageMetadata{
+					"server1": {},
+					"server2": {},
+				},
+				RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+			},
+			hash:   "efgh5678",
+			format: mcpv1alpha1.RegistryFormatToolHive,
 		},
 		{
-			name:        "complex data",
-			data:        []byte(`{"servers": {"server1": {"name": "test1"}, "server2": {"name": "test2"}}}`),
-			serverCount: 2,
-			expectedLen: 64,
+			name: "registry with remote servers",
+			registryData: &registry.Registry{
+				Version: "1.0.0",
+				Servers: make(map[string]*registry.ImageMetadata),
+				RemoteServers: map[string]*registry.RemoteServerMetadata{
+					"remote1": {},
+				},
+			},
+			hash:   "ijkl9012",
+			format: mcpv1alpha1.RegistryFormatUpstream,
 		},
 	}
 
@@ -41,18 +59,17 @@ func TestNewFetchResult(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := NewFetchResultFromBytes(tt.data, tt.serverCount)
+			result := NewFetchResult(tt.registryData, tt.hash, tt.format)
 
 			rawData, err := result.GetRawData()
-			if result.Registry == nil {
-				assert.Error(t, err) // Should error when trying to marshal nil Registry
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, rawData)
-			}
-			assert.Equal(t, tt.serverCount, result.ServerCount)
-			assert.Len(t, result.Hash, tt.expectedLen)
-			assert.NotEmpty(t, result.Hash)
+			assert.NoError(t, err)
+			assert.NotNil(t, rawData)
+
+			expectedServerCount := len(tt.registryData.Servers) + len(tt.registryData.RemoteServers)
+			assert.Equal(t, expectedServerCount, result.ServerCount)
+			assert.Equal(t, tt.hash, result.Hash)
+			assert.Equal(t, tt.format, result.Format)
+			assert.Equal(t, tt.registryData, result.Registry)
 		})
 	}
 }
@@ -60,30 +77,60 @@ func TestNewFetchResult(t *testing.T) {
 func TestFetchResultHashConsistency(t *testing.T) {
 	t.Parallel()
 
-	data := []byte(`{"test": "data"}`)
-	serverCount := 5
+	registryData := &registry.Registry{
+		Version: "1.0.0",
+		Servers: map[string]*registry.ImageMetadata{
+			"server1": {},
+			"server2": {},
+			"server3": {},
+			"server4": {},
+			"server5": {},
+		},
+		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+	}
+	hash := "consistent-hash-value"
+	format := mcpv1alpha1.RegistryFormatToolHive
 
-	result1 := NewFetchResultFromBytes(data, serverCount)
-	result2 := NewFetchResultFromBytes(data, serverCount)
+	result1 := NewFetchResult(registryData, hash, format)
+	result2 := NewFetchResult(registryData, hash, format)
 
-	// Same data should produce same hash
+	// Same data should produce same results
 	assert.Equal(t, result1.Hash, result2.Hash)
 	assert.Equal(t, result1.ServerCount, result2.ServerCount)
+	assert.Equal(t, result1.Format, result2.Format)
+	assert.Equal(t, result1.Registry, result2.Registry)
 }
 
 func TestFetchResultHashDifference(t *testing.T) {
 	t.Parallel()
 
-	data1 := []byte(`{"test": "data1"}`)
-	data2 := []byte(`{"test": "data2"}`)
-	serverCount := 1
+	registryData1 := &registry.Registry{
+		Version: "1.0.0",
+		Servers: map[string]*registry.ImageMetadata{
+			"server1": {},
+		},
+		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+	}
 
-	result1 := NewFetchResultFromBytes(data1, serverCount)
-	result2 := NewFetchResultFromBytes(data2, serverCount)
+	registryData2 := &registry.Registry{
+		Version: "1.0.0",
+		Servers: map[string]*registry.ImageMetadata{
+			"server2": {},
+		},
+		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+	}
+
+	hash1 := "hash-for-data1"
+	hash2 := "hash-for-data2"
+	format := mcpv1alpha1.RegistryFormatToolHive
+
+	result1 := NewFetchResult(registryData1, hash1, format)
+	result2 := NewFetchResult(registryData2, hash2, format)
 
 	// Different data should produce different hashes
 	assert.NotEqual(t, result1.Hash, result2.Hash)
-	assert.Equal(t, result1.ServerCount, result2.ServerCount)
+	assert.Equal(t, result1.ServerCount, result2.ServerCount) // Both have 1 server
+	assert.NotEqual(t, result1.Registry, result2.Registry)    // Different registries
 }
 
 func TestNewSourceDataValidator(t *testing.T) {

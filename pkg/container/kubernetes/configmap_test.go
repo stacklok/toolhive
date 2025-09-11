@@ -14,6 +14,7 @@ import (
 )
 
 func TestNewConfigMapReaderWithClient(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		clientset *fake.Clientset
@@ -29,11 +30,14 @@ func TestNewConfigMapReaderWithClient(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // capture range variable
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			reader := NewConfigMapReaderWithClient(tt.clientset)
 
 			if reader == nil {
 				t.Error("expected non-nil reader")
+				return
 			}
 
 			if reader.clientset != tt.clientset {
@@ -44,6 +48,7 @@ func TestNewConfigMapReaderWithClient(t *testing.T) {
 }
 
 func TestNewConfigMapReader(t *testing.T) {
+	t.Parallel()
 	// This test verifies that NewConfigMapReader fails gracefully
 	// when not running in a Kubernetes cluster.
 	// The success path cannot be unit tested as it requires a real cluster.
@@ -63,6 +68,7 @@ func TestNewConfigMapReader(t *testing.T) {
 }
 
 func TestConfigMapReader_GetRunConfigMap(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		configMapRef  string
@@ -238,7 +244,9 @@ func TestConfigMapReader_GetRunConfigMap(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // capture range variable
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Create fake clientset
 			var fakeClient *fake.Clientset
 			if tt.configMap != nil {
@@ -249,7 +257,7 @@ func TestConfigMapReader_GetRunConfigMap(t *testing.T) {
 
 			// Simulate API error if needed
 			if tt.simulateError {
-				fakeClient.PrependReactor("get", "configmaps", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				fakeClient.PrependReactor("get", "configmaps", func(_ k8stesting.Action) (bool, runtime.Object, error) {
 					return true, nil, fmt.Errorf("%s", tt.errorMessage)
 				})
 			}
@@ -282,6 +290,7 @@ func TestConfigMapReader_GetRunConfigMap(t *testing.T) {
 }
 
 func TestConfigMapReader_GetRunConfigMap_ContextCancellation(t *testing.T) {
+	t.Parallel()
 	// Create a configmap
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -316,6 +325,7 @@ func TestConfigMapReader_GetRunConfigMap_ContextCancellation(t *testing.T) {
 }
 
 func TestConfigMapReader_InterfaceCompliance(t *testing.T) {
+	t.Parallel()
 	// Verify that ConfigMapReader implements RunConfigMapReader interface
 	fakeClient := fake.NewSimpleClientset()
 	reader := NewConfigMapReaderWithClient(fakeClient)
@@ -336,6 +346,7 @@ func TestConfigMapReader_InterfaceCompliance(t *testing.T) {
 }
 
 func TestConfigMapReader_MultipleCallsWithSameClient(t *testing.T) {
+	t.Parallel()
 	// Test that a single reader can be used for multiple calls
 	configMap1 := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{

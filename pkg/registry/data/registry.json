@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-19T00:17:19Z",
+  "last_updated": "2025-09-11T00:17:04Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -936,7 +936,78 @@
         "testing",
         "stagehand"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/browserbase-mcp-server:2.1.1",
+      "image": "ghcr.io/stacklok/dockyard/npx/browserbase-mcp-server:2.0.0",
+      "permissions": {
+        "network": {
+          "outbound": {
+            "insecure_allow_all": true
+          }
+        }
+      },
+      "env_vars": [
+        {
+          "name": "BROWSERBASE_API_KEY",
+          "description": "Browserbase API key",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "BROWSERBASE_PROJECT_ID",
+          "description": "Browserbase project ID",
+          "required": true
+        },
+        {
+          "name": "GEMINI_API_KEY",
+          "description": "Google Gemini API key for Stagehand",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "provenance": {
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "runner_environment": "github-hosted",
+        "cert_issuer": "https://token.actions.githubusercontent.com"
+      }
+    },
+    "browserbase-mcp-server": {
+      "description": "MCP server for cloud browser automation with Browserbase and Stagehand",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "stdio",
+      "tools": [
+        "createSession",
+        "listSessions",
+        "closeSession",
+        "navigateWithSession",
+        "actWithSession",
+        "extractWithSession",
+        "observeWithSession",
+        "getUrlWithSession",
+        "getAllUrlsWithSession",
+        "closeAllSessions",
+        "navigate",
+        "act",
+        "extract",
+        "observe",
+        "screenshot",
+        "getUrl"
+      ],
+      "metadata": {
+        "stars": 2563,
+        "pulls": 0,
+        "last_updated": "2025-09-09T02:30:40Z"
+      },
+      "repository_url": "https://github.com/browserbase/mcp-server-browserbase",
+      "tags": [
+        "browser",
+        "automation",
+        "web-scraping",
+        "testing",
+        "stagehand"
+      ],
+      "image": "ghcr.io/stacklok/dockyard/npx/browserbase-mcp-server:2.0.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -2358,7 +2429,175 @@
         "ingestion",
         "data-connectors"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250830001",
+      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250808001",
+      "permissions": {
+        "network": {
+          "outbound": {
+            "insecure_allow_all": true,
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "env_vars": [
+        {
+          "name": "GRAPHLIT_ENVIRONMENT_ID",
+          "description": "Your Graphlit environment ID",
+          "required": true
+        },
+        {
+          "name": "GRAPHLIT_ORGANIZATION_ID",
+          "description": "Your Graphlit organization ID",
+          "required": true
+        },
+        {
+          "name": "GRAPHLIT_JWT_SECRET",
+          "description": "Your JWT secret for signing the JWT token",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "SLACK_BOT_TOKEN",
+          "description": "Slack bot token for Slack integration",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "DISCORD_BOT_TOKEN",
+          "description": "Discord bot token for Discord integration",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "TWITTER_TOKEN",
+          "description": "Twitter/X API token",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "GOOGLE_EMAIL_REFRESH_TOKEN",
+          "description": "Google refresh token for Gmail integration",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "GOOGLE_EMAIL_CLIENT_ID",
+          "description": "Google client ID for Gmail integration",
+          "required": false
+        },
+        {
+          "name": "GOOGLE_EMAIL_CLIENT_SECRET",
+          "description": "Google client secret for Gmail integration",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "LINEAR_API_KEY",
+          "description": "Linear API key for Linear integration",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
+          "description": "GitHub personal access token",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "JIRA_EMAIL",
+          "description": "Jira email for authentication",
+          "required": false
+        },
+        {
+          "name": "JIRA_TOKEN",
+          "description": "Jira API token",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "NOTION_API_KEY",
+          "description": "Notion API key for Notion integration",
+          "required": false,
+          "secret": true
+        }
+      ],
+      "provenance": {
+        "sigstore_url": "tuf-repo-cdn.sigstore.dev",
+        "repository_uri": "https://github.com/stacklok/dockyard",
+        "signer_identity": "/.github/workflows/build-containers.yml",
+        "runner_environment": "github-hosted",
+        "cert_issuer": "https://token.actions.githubusercontent.com"
+      }
+    },
+    "graphlit-mcp-server": {
+      "description": "MCP server for Graphlit platform - ingest, search, and retrieve knowledge from multiple sources",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "stdio",
+      "tools": [
+        "query_contents",
+        "query_collections",
+        "query_feeds",
+        "query_conversations",
+        "retrieve_relevant_sources",
+        "retrieve_similar_images",
+        "visually_describe_image",
+        "prompt_llm_conversation",
+        "extract_structured_json_from_text",
+        "publish_as_audio",
+        "publish_as_image",
+        "ingest_files",
+        "ingest_web_pages",
+        "ingest_messages",
+        "ingest_posts",
+        "ingest_emails",
+        "ingest_issues",
+        "ingest_text",
+        "ingest_memory",
+        "web_crawling",
+        "web_search",
+        "web_mapping",
+        "screenshot_page",
+        "configure_project",
+        "create_collection",
+        "add_contents_to_collection",
+        "remove_contents_from_collection",
+        "delete_collections",
+        "delete_feeds",
+        "delete_contents",
+        "delete_conversations",
+        "is_feed_done",
+        "is_content_done",
+        "list_slack_channels",
+        "list_microsoft_teams_teams",
+        "list_microsoft_teams_channels",
+        "list_sharepoint_libraries",
+        "list_sharepoint_folders",
+        "list_linear_projects",
+        "list_notion_databases",
+        "list_notion_pages",
+        "list_dropbox_folders",
+        "list_box_folders",
+        "list_discord_guilds",
+        "list_discord_channels",
+        "list_google_calendars",
+        "list_microsoft_calendars"
+      ],
+      "metadata": {
+        "stars": 356,
+        "pulls": 0,
+        "last_updated": "2025-09-09T02:30:41Z"
+      },
+      "repository_url": "https://github.com/graphlit/graphlit-mcp-server",
+      "tags": [
+        "knowledge-base",
+        "rag",
+        "search",
+        "ingestion",
+        "data-connectors"
+      ],
+      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250808001",
       "permissions": {
         "network": {
           "outbound": {
@@ -5071,10 +5310,6 @@
         "documentation",
         "beta"
       ],
-      "custom_metadata": {
-        "author": "Atlassian",
-        "homepage": "https://www.atlassian.com/platform/remote-mcp-server"
-      },
       "url": "https://mcp.atlassian.com/v1/sse"
     },
     "canva": {
@@ -5119,10 +5354,6 @@
         "export",
         "collaboration"
       ],
-      "custom_metadata": {
-        "author": "Canva",
-        "homepage": "https://www.canva.dev/docs/connect/canva-mcp-server-setup/"
-      },
       "url": "https://mcp.canva.com/mcp"
     },
     "github-remote": {
@@ -5240,21 +5471,7 @@
         "actions",
         "copilot"
       ],
-      "custom_metadata": {
-        "author": "GitHub",
-        "homepage": "https://github.com",
-        "license": "MIT"
-      },
-      "url": "https://api.githubcopilot.com/mcp",
-      "oauth_config": {
-        "authorize_url": "https://github.com/login/oauth/authorize",
-        "token_url": "https://github.com/login/oauth/access_token",
-        "scopes": [
-          "repo",
-          "user:email"
-        ],
-        "use_pkce": true
-      }
+      "url": "https://api.githubcopilot.com/mcp"
     },
     "huggingface": {
       "description": "Official Hugging Face MCP server for models, datasets, and research papers",
@@ -5289,10 +5506,6 @@
         "image-generation",
         "authentication"
       ],
-      "custom_metadata": {
-        "author": "Hugging Face",
-        "homepage": "https://huggingface.co/mcp"
-      },
       "url": "https://huggingface.co/mcp"
     },
     "jam": {
@@ -5325,39 +5538,7 @@
         "screenshots",
         "user-events"
       ],
-      "custom_metadata": {
-        "author": "Jam",
-        "homepage": "https://jam.dev/docs/debug-a-jam/mcp"
-      },
       "url": "https://mcp.jam.dev/mcp"
-    },
-    "kiwi": {
-      "description": "Kiwi.com Flight Search MCP server to search and book flights",
-      "tier": "Official",
-      "status": "Active",
-      "transport": "streamable-http",
-      "tools": [
-        "search-flight"
-      ],
-      "metadata": {
-        "stars": 2,
-        "pulls": 0,
-        "last_updated": "2025-09-13T02:22:46Z"
-      },
-      "repository_url": "https://github.com/alpic-ai/kiwi-mcp-server-public",
-      "tags": [
-        "remote",
-        "travel",
-        "flights",
-        "booking",
-        "search",
-        "kiwi"
-      ],
-      "custom_metadata": {
-        "author": "Kiwi.com",
-        "homepage": "https://kiwi.com"
-      },
-      "url": "https://mcp.kiwi.com"
     },
     "mcp-spec": {
       "description": "Official MCP server for the Model Context Protocol specification",
@@ -5367,11 +5548,6 @@
       "tools": [
         "SearchModelContextProtocol"
       ],
-      "metadata": {
-        "stars": 0,
-        "pulls": 0,
-        "last_updated": "2025-09-11T02:29:32Z"
-      },
       "tags": [
         "remote",
         "mcp",
@@ -5380,10 +5556,6 @@
         "documentation",
         "official"
       ],
-      "custom_metadata": {
-        "author": "Model Context Protocol",
-        "homepage": "https://modelcontextprotocol.io"
-      },
       "url": "https://modelcontextprotocol.io/mcp"
     },
     "monday": {
@@ -5411,11 +5583,6 @@
         "create_dashboard",
         "all_widgets_schema"
       ],
-      "metadata": {
-        "stars": 304,
-        "pulls": 0,
-        "last_updated": "2025-09-11T02:29:32Z"
-      },
       "repository_url": "https://github.com/mondaycom/mcp",
       "tags": [
         "remote",
@@ -5429,10 +5596,6 @@
         "work-os",
         "automation"
       ],
-      "custom_metadata": {
-        "author": "Monday.com",
-        "license": "MIT"
-      },
       "url": "https://mcp.monday.com/sse"
     },
     "neon": {
@@ -5465,11 +5628,6 @@
         "complete_query_tuning",
         "list_slow_queries"
       ],
-      "metadata": {
-        "stars": 0,
-        "pulls": 0,
-        "last_updated": "2025-09-11T02:29:32Z"
-      },
       "tags": [
         "remote",
         "neon",
@@ -5482,9 +5640,6 @@
         "sql",
         "query-tuning"
       ],
-      "custom_metadata": {
-        "author": "Neon"
-      },
       "url": "https://mcp.neon.tech/sse"
     },
     "notion-remote": {
@@ -5507,11 +5662,6 @@
         "get-user",
         "get-self"
       ],
-      "metadata": {
-        "stars": 0,
-        "pulls": 0,
-        "last_updated": "2025-09-11T02:29:32Z"
-      },
       "tags": [
         "remote",
         "notion",
@@ -5523,10 +5673,6 @@
         "productivity",
         "collaboration"
       ],
-      "custom_metadata": {
-        "author": "Notion",
-        "homepage": "https://developers.notion.com/docs/get-started-with-mcp"
-      },
       "url": "https://mcp.notion.com/mcp"
     },
     "paypal": {
@@ -5567,11 +5713,6 @@
         "create_cart",
         "checkout_cart"
       ],
-      "metadata": {
-        "stars": 0,
-        "pulls": 0,
-        "last_updated": "2025-09-11T02:29:32Z"
-      },
       "tags": [
         "remote",
         "payments",
@@ -5581,10 +5722,6 @@
         "transactions",
         "invoices"
       ],
-      "custom_metadata": {
-        "author": "PayPal",
-        "homepage": "https://www.paypal.ai/docs/tools/mcp-quickstart"
-      },
       "url": "https://mcp.paypal.com/mcp"
     },
     "replicate": {
@@ -5621,11 +5758,6 @@
         "get_trainings",
         "get_default_webhooks_secret"
       ],
-      "metadata": {
-        "stars": 0,
-        "pulls": 0,
-        "last_updated": "2025-09-12T02:26:56Z"
-      },
       "tags": [
         "remote",
         "ai",
@@ -5635,10 +5767,6 @@
         "inference",
         "predictions"
       ],
-      "custom_metadata": {
-        "author": "Replicate",
-        "homepage": "https://replicate.com/docs/reference/mcp"
-      },
       "url": "https://mcp.replicate.com/sse"
     },
     "semgrep-remote": {
@@ -5657,11 +5785,6 @@
         "security_check",
         "get_abstract_syntax_tree"
       ],
-      "metadata": {
-        "stars": 545,
-        "pulls": 0,
-        "last_updated": "2025-09-12T02:26:56Z"
-      },
       "repository_url": "https://github.com/semgrep/mcp",
       "tags": [
         "remote",
@@ -5672,11 +5795,6 @@
         "code-scanning",
         "security-audit"
       ],
-      "custom_metadata": {
-        "author": "Semgrep",
-        "homepage": "https://mcp.semgrep.ai",
-        "license": "MIT"
-      },
       "url": "https://mcp.semgrep.ai"
     },
     "sentry-remote": {
@@ -5700,11 +5818,6 @@
         "get_doc",
         "search_issues"
       ],
-      "metadata": {
-        "stars": 0,
-        "pulls": 0,
-        "last_updated": "2025-09-12T02:26:56Z"
-      },
       "tags": [
         "remote",
         "sentry",
@@ -5717,10 +5830,6 @@
         "projects",
         "releases"
       ],
-      "custom_metadata": {
-        "author": "Sentry",
-        "homepage": "https://sentry.io"
-      },
       "url": "https://mcp.sentry.dev/sse"
     },
     "square": {
@@ -5733,11 +5842,6 @@
         "get_type_info",
         "get_service_info"
       ],
-      "metadata": {
-        "stars": 77,
-        "pulls": 0,
-        "last_updated": "2025-09-12T02:26:56Z"
-      },
       "repository_url": "https://github.com/square/square-mcp-server",
       "tags": [
         "remote",
@@ -5751,10 +5855,6 @@
         "items",
         "beta"
       ],
-      "custom_metadata": {
-        "author": "Square",
-        "homepage": "https://developer.squareup.com/docs/mcp"
-      },
       "url": "https://mcp.squareup.com/sse"
     },
     "stripe-remote": {
@@ -5789,11 +5889,6 @@
         "fetch_stripe_resources",
         "search_stripe_documentation"
       ],
-      "metadata": {
-        "stars": 0,
-        "pulls": 0,
-        "last_updated": "2025-09-12T02:26:56Z"
-      },
       "tags": [
         "remote",
         "payments",
@@ -5804,10 +5899,6 @@
         "invoices",
         "customers"
       ],
-      "custom_metadata": {
-        "author": "Stripe",
-        "homepage": "https://docs.stripe.com/mcp"
-      },
       "url": "https://mcp.stripe.com"
     },
     "vercel": {
@@ -5826,11 +5917,6 @@
         "get_access_to_vercel_url",
         "web_fetch_vercel_url"
       ],
-      "metadata": {
-        "stars": 0,
-        "pulls": 0,
-        "last_updated": "2025-09-13T02:22:46Z"
-      },
       "tags": [
         "remote",
         "vercel",
@@ -5843,10 +5929,6 @@
         "environment-variables",
         "projects"
       ],
-      "custom_metadata": {
-        "author": "Vercel",
-        "homepage": "https://vercel.com/docs/mcp/vercel-mcp"
-      },
       "url": "https://mcp.vercel.com"
     },
     "wix": {
@@ -5868,11 +5950,6 @@
         "ManageWixSite",
         "SupportAndFeedback"
       ],
-      "metadata": {
-        "stars": 0,
-        "pulls": 0,
-        "last_updated": "2025-09-13T02:22:46Z"
-      },
       "tags": [
         "remote",
         "wix",
@@ -5885,10 +5962,6 @@
         "development",
         "build-apps"
       ],
-      "custom_metadata": {
-        "author": "Wix",
-        "homepage": "https://dev.wix.com"
-      },
       "url": "https://mcp.wix.com/sse"
     }
   }

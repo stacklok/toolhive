@@ -27,6 +27,8 @@ type Workload struct {
 	ToolType string `json:"tool_type"`
 	// TransportType is the type of transport used for this workload.
 	TransportType types.TransportType `json:"transport_type"`
+	// ProxyMode is the proxy mode for stdio transport (sse or streamable-http).
+	ProxyMode string `json:"proxy_mode,omitempty"`
 	// Status is the current status of the workload.
 	Status runtime.WorkloadStatus `json:"status"`
 	// StatusContext provides additional context about the workload's status.

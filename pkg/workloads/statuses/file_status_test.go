@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -235,7 +236,8 @@ func TestFileStatusManager_GetWorkload_FileAndRuntimeCombination(t *testing.T) {
 	// Create a workload status file and set it to running
 	err := manager.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusStarting, "")
 	require.NoError(t, err)
-	manager.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusRunning, "container started")
+	err = manager.SetWorkloadStatus(ctx, "running-workload", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
 
 	// Mock runtime to return detailed info for running workload
 	info := rt.ContainerInfo{
@@ -279,7 +281,8 @@ func TestFileStatusManager_SetWorkloadStatus(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update the status
-	manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "container started")
+	err = manager.SetWorkloadStatus(ctx, "test-workload", rt.WorkloadStatusRunning, "container started")
+	require.NoError(t, err)
 
 	// Note: Cannot verify status was updated via GetWorkload since current implementation returns empty Workload
 	// Instead verify by reading the file directly
@@ -1775,7 +1778,10 @@ func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
 				require.NoError(t, err)
 
 				// Get the path for cleanup verification
-				pidFilePath, err = process.GetPIDFilePathWithFallback(workloadName)
+				// Copy-paste from process package to allow original function to be private.
+				// Since we do not have backwards compatibility requirements for PID file location,
+				// we can simplify the original function to a one-liner.
+				pidFilePath, err = xdg.DataFile(filepath.Join("toolhive", "pids", fmt.Sprintf("toolhive-%s.pid", workloadName)))
 				require.NoError(t, err)
 			}
 
@@ -1865,15 +1871,17 @@ func TestFileStatusManager_ListWorkloads_PIDMigration(t *testing.T) {
 	migrationPID := 12345
 	err = process.WritePIDFile(workloadMigrate, migrationPID)
 	require.NoError(t, err)
-	defer process.RemovePIDFile(workloadMigrate)
 
 	err = process.WritePIDFile(workloadNoMigrate, 99999)
 	require.NoError(t, err)
-	defer process.RemovePIDFile(workloadNoMigrate)
 
 	// Call ListWorkloads
 	workloads, err := manager.ListWorkloads(ctx, true, nil)
 	require.NoError(t, err)
+
+	// Clean up PID files after test completes
+	require.NoError(t, process.RemovePIDFile(workloadMigrate))
+	require.NoError(t, process.RemovePIDFile(workloadNoMigrate))
 
 	// Should have 2 workloads
 	require.Len(t, workloads, 2)

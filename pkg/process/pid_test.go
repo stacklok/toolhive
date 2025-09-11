@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+//nolint:paralleltest // File system operations require sequential execution
 func TestPIDFileBackwardCompatibility(t *testing.T) {
-	t.Parallel()
 
 	t.Run("ReadPIDFile_FromOldLocation", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-container-old-read"
 		testPID := 12345
@@ -23,12 +23,13 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		// Clean up any existing files
 		t.Cleanup(func() {
 			// Clean up new location
-			if newPath, err := GetPIDFilePath(containerName); err == nil {
-				os.Remove(newPath)
+			if newPath, err := getPIDFilePath(containerName); err == nil {
+				// Error expected here - ignore.
+				_ = os.Remove(newPath)
 			}
 			// Clean up old location
 			oldPath := getOldPIDFilePath(containerName)
-			os.Remove(oldPath)
+			require.NoError(t, os.Remove(oldPath))
 		})
 
 		// Write PID file to old location
@@ -45,7 +46,7 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 	})
 
 	t.Run("ReadPIDFile_PreferNewLocation", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-container-prefer-new"
 		oldPID := 11111
@@ -54,12 +55,12 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		// Clean up any existing files
 		t.Cleanup(func() {
 			// Clean up new location
-			if newPath, err := GetPIDFilePath(containerName); err == nil {
-				os.Remove(newPath)
+			if newPath, err := getPIDFilePath(containerName); err == nil {
+				require.NoError(t, os.Remove(newPath))
 			}
 			// Clean up old location
 			oldPath := getOldPIDFilePath(containerName)
-			os.Remove(oldPath)
+			require.NoError(t, os.Remove(oldPath))
 		})
 
 		// Write PID file to old location
@@ -68,7 +69,7 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 			"Failed to write PID file to old location")
 
 		// Write PID file to new location
-		newPath, err := GetPIDFilePath(containerName)
+		newPath, err := getPIDFilePath(containerName)
 		require.NoError(t, err, "Failed to get new PID file path")
 
 		newDir := filepath.Dir(newPath)
@@ -83,7 +84,7 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 	})
 
 	t.Run("WritePIDFile_WritesBothLocations", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-container-write-both"
 		testPID := 33333
@@ -91,19 +92,19 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		// Clean up any existing files
 		t.Cleanup(func() {
 			// Clean up new location
-			if newPath, err := GetPIDFilePath(containerName); err == nil {
-				os.Remove(newPath)
+			if newPath, err := getPIDFilePath(containerName); err == nil {
+				require.NoError(t, os.Remove(newPath))
 			}
 			// Clean up old location
 			oldPath := getOldPIDFilePath(containerName)
-			os.Remove(oldPath)
+			require.NoError(t, os.Remove(oldPath))
 		})
 
 		// Write PID file
 		require.NoError(t, WritePIDFile(containerName, testPID), "Failed to write PID file")
 
 		// Verify it was written to new location
-		newPath, err := GetPIDFilePath(containerName)
+		newPath, err := getPIDFilePath(containerName)
 		require.NoError(t, err, "Failed to get new PID file path")
 
 		_, err = os.Stat(newPath)
@@ -122,8 +123,9 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		assert.Equal(t, newPidBytes, oldPidBytes, "Both files should contain the same PID")
 	})
 
+	//nolint:paralleltest // File system operations require sequential execution
 	t.Run("RemovePIDFile_RemovesBothLocations", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-container-remove-both"
 		testPID := 44444
@@ -131,12 +133,14 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		// Clean up any existing files
 		t.Cleanup(func() {
 			// Clean up new location
-			if newPath, err := GetPIDFilePath(containerName); err == nil {
-				os.Remove(newPath)
+			if newPath, err := getPIDFilePath(containerName); err == nil {
+				// Error expected here - ignore.
+				_ = os.Remove(newPath)
 			}
 			// Clean up old location
 			oldPath := getOldPIDFilePath(containerName)
-			os.Remove(oldPath)
+			// Error expected here - ignore.
+			_ = os.Remove(oldPath)
 		})
 
 		// Create PID files in both locations
@@ -144,7 +148,7 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		require.NoError(t, os.WriteFile(oldPath, []byte(fmt.Sprintf("%d", testPID)), 0600),
 			"Failed to write PID file to old location")
 
-		newPath, err := GetPIDFilePath(containerName)
+		newPath, err := getPIDFilePath(containerName)
 		require.NoError(t, err, "Failed to get new PID file path")
 
 		newDir := filepath.Dir(newPath)
@@ -163,8 +167,9 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		assert.True(t, os.IsNotExist(err), "New PID file should be removed")
 	})
 
+	//nolint:paralleltest // File system operations require sequential execution
 	t.Run("RemovePIDFile_HandlesPartialExistence", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-container-partial"
 		testPID := 55555
@@ -172,12 +177,14 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		// Clean up any existing files
 		t.Cleanup(func() {
 			// Clean up new location
-			if newPath, err := GetPIDFilePath(containerName); err == nil {
-				os.Remove(newPath)
+			if newPath, err := getPIDFilePath(containerName); err == nil {
+				// Error expected here - ignore.
+				_ = os.Remove(newPath)
 			}
 			// Clean up old location
 			oldPath := getOldPIDFilePath(containerName)
-			os.Remove(oldPath)
+			// Error expected here - ignore.
+			_ = os.Remove(oldPath)
 		})
 
 		// Test removing when only old file exists
@@ -192,8 +199,9 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		assert.True(t, os.IsNotExist(err), "Old PID file should be removed")
 	})
 
+	//nolint:paralleltest // File system operations require sequential execution
 	t.Run("RemovePIDFile_NewFileOnly", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-container-new-only"
 		testPID := 66666
@@ -201,12 +209,14 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		// Clean up any existing files
 		t.Cleanup(func() {
 			// Clean up new location
-			if newPath, err := GetPIDFilePath(containerName); err == nil {
-				os.Remove(newPath)
+			if newPath, err := getPIDFilePath(containerName); err == nil {
+				// Error expected here - ignore.
+				_ = os.Remove(newPath)
 			}
 			// Clean up old location
 			oldPath := getOldPIDFilePath(containerName)
-			os.Remove(oldPath)
+			// Error expected here - ignore.
+			_ = os.Remove(oldPath)
 		})
 
 		// Test removing when only new file exists
@@ -215,32 +225,32 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		err := RemovePIDFile(containerName)
 		assert.NoError(t, err, "Should handle removing only new file")
 
-		newPath, _ := GetPIDFilePath(containerName)
+		newPath, _ := getPIDFilePath(containerName)
 		_, err = os.Stat(newPath)
 		assert.True(t, os.IsNotExist(err), "New PID file should be removed")
 	})
 
-	t.Run("GetPIDFilePathWithFallback", func(t *testing.T) {
-		t.Parallel()
+	t.Run("getPIDFilePathWithFallback", func(t *testing.T) {
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-container-fallback"
 
 		// Clean up any existing files
 		t.Cleanup(func() {
 			// Clean up new location
-			if newPath, err := GetPIDFilePath(containerName); err == nil {
-				os.Remove(newPath)
+			if newPath, err := getPIDFilePath(containerName); err == nil {
+				require.NoError(t, os.Remove(newPath))
 			}
 			// Clean up old location
 			oldPath := getOldPIDFilePath(containerName)
-			os.Remove(oldPath)
+			require.NoError(t, os.Remove(oldPath))
 		})
 
 		// Test when neither file exists (should return new path)
-		path, err := GetPIDFilePathWithFallback(containerName)
+		path, err := getPIDFilePathWithFallback(containerName)
 		require.NoError(t, err, "Failed to get PID file path with fallback")
 
-		expectedPath, _ := GetPIDFilePath(containerName)
+		expectedPath, _ := getPIDFilePath(containerName)
 		assert.Equal(t, expectedPath, path, "Should return new path when no files exist")
 
 		// Test when only old file exists
@@ -248,35 +258,35 @@ func TestPIDFileBackwardCompatibility(t *testing.T) {
 		require.NoError(t, os.WriteFile(oldPath, []byte("test"), 0600),
 			"Failed to create old PID file")
 
-		path, err = GetPIDFilePathWithFallback(containerName)
+		path, err = getPIDFilePathWithFallback(containerName)
 		require.NoError(t, err, "Failed to get PID file path with fallback")
 		assert.Equal(t, oldPath, path, "Should return old path when only old file exists")
 
 		// Test when both files exist (should prefer new)
-		newPath, _ := GetPIDFilePath(containerName)
+		newPath, _ := getPIDFilePath(containerName)
 		newDir := filepath.Dir(newPath)
 		require.NoError(t, os.MkdirAll(newDir, 0755), "Failed to create new directory")
 		require.NoError(t, os.WriteFile(newPath, []byte("test"), 0600),
 			"Failed to create new PID file")
 
-		path, err = GetPIDFilePathWithFallback(containerName)
+		path, err = getPIDFilePathWithFallback(containerName)
 		require.NoError(t, err, "Failed to get PID file path with fallback")
 		assert.Equal(t, newPath, path, "Should prefer new path when both files exist")
 	})
 }
 
+//nolint:paralleltest // File system operations require sequential execution
 func TestPIDFileOperations(t *testing.T) {
-	t.Parallel()
 
 	t.Run("WriteAndReadPIDFile", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-basic-write-read"
 		testPID := 54321
 
 		// Clean up before and after
 		t.Cleanup(func() {
-			RemovePIDFile(containerName)
+			require.NoError(t, RemovePIDFile(containerName))
 		})
 
 		// Write PID
@@ -289,13 +299,13 @@ func TestPIDFileOperations(t *testing.T) {
 	})
 
 	t.Run("WriteCurrentPIDFile", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-current-pid"
 
 		// Clean up before and after
 		t.Cleanup(func() {
-			RemovePIDFile(containerName)
+			require.NoError(t, RemovePIDFile(containerName))
 		})
 
 		// Write current process PID
@@ -308,13 +318,13 @@ func TestPIDFileOperations(t *testing.T) {
 	})
 
 	t.Run("ReadNonExistentPIDFile", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-non-existent-read"
 
 		// Clean up to ensure file doesn't exist
 		t.Cleanup(func() {
-			RemovePIDFile(containerName)
+			require.NoError(t, RemovePIDFile(containerName))
 		})
 
 		// Try to read non-existent file
@@ -322,14 +332,15 @@ func TestPIDFileOperations(t *testing.T) {
 		assert.Error(t, err, "Should error when reading non-existent PID file")
 	})
 
+	//nolint:paralleltest // File system operations require sequential execution
 	t.Run("RemoveNonExistentPIDFile", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-non-existent-remove"
 
 		// Clean up to ensure file doesn't exist
 		t.Cleanup(func() {
-			RemovePIDFile(containerName)
+			require.NoError(t, RemovePIDFile(containerName))
 		})
 
 		// Removing non-existent file may or may not error (implementation dependent)
@@ -338,15 +349,15 @@ func TestPIDFileOperations(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // File system operations require sequential execution
 func TestGetPIDFilePath(t *testing.T) {
-	t.Parallel()
 
-	t.Run("GetPIDFilePath", func(t *testing.T) {
-		t.Parallel()
+	t.Run("getPIDFilePath", func(t *testing.T) {
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-path"
 
-		path, err := GetPIDFilePath(containerName)
+		path, err := getPIDFilePath(containerName)
 		require.NoError(t, err, "Failed to get PID file path")
 
 		// Verify it's in the XDG data directory
@@ -361,7 +372,7 @@ func TestGetPIDFilePath(t *testing.T) {
 	})
 
 	t.Run("GetOldPIDFilePath", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-old-path"
 
@@ -380,18 +391,19 @@ func TestGetPIDFilePath(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // File system operations require sequential execution
 func TestPIDFileMigration(t *testing.T) {
-	t.Parallel()
 
+	//nolint:paralleltest // File system operations require sequential execution
 	t.Run("MigrationScenario", func(t *testing.T) {
-		t.Parallel()
+		//nolint:paralleltest // File system operations require sequential execution
 
 		containerName := "test-migration"
 		oldPID := 99999
 
 		// Clean up
 		t.Cleanup(func() {
-			RemovePIDFile(containerName)
+			require.NoError(t, RemovePIDFile(containerName))
 		})
 
 		// Simulate existing deployment with PID file in old location
@@ -419,7 +431,7 @@ func TestPIDFileMigration(t *testing.T) {
 		_, err = os.Stat(oldPath)
 		assert.True(t, os.IsNotExist(err), "Old file should be removed")
 
-		newPath, _ := GetPIDFilePath(containerName)
+		newPath, _ := getPIDFilePath(containerName)
 		_, err = os.Stat(newPath)
 		assert.True(t, os.IsNotExist(err), "New file should be removed")
 	})

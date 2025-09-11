@@ -11,19 +11,20 @@ mdx:
 
 ## thv rm
 
-Remove an MCP server
+Remove one or more MCP servers
 
 ### Synopsis
 
-Remove an MCP server managed by ToolHive.
+Remove one or more MCP servers managed by ToolHive.
 
 ```
-thv rm [workload-name] [flags]
+thv rm [workload-name...] [flags]
 ```
 
 ### Options
 
 ```
+      --all            Delete all workloads
       --group string   Delete all workloads in the specified group
   -h, --help           help for rm
 ```

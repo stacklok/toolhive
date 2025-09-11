@@ -99,6 +99,13 @@ func GetMCPServer(
 
 	// Pull the image if necessary
 	if err := pullImage(ctx, imageToUse, imageManager); err != nil {
+		// Check if the error is due to context cancellation/timeout
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", nil, fmt.Errorf("image pull timed out - the image may be too large or the connection too slow")
+		}
+		if ctx.Err() == context.Canceled {
+			return "", nil, fmt.Errorf("image pull was canceled")
+		}
 		return "", nil, fmt.Errorf("failed to retrieve or pull image: %v", err)
 	}
 
@@ -119,6 +126,14 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 		logger.Infof("Image %s has 'latest' tag, pulling to ensure we have the most recent version...", image)
 		err := imageManager.PullImage(ctx, image)
 		if err != nil {
+			// Check if the error is due to context cancellation/timeout
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("image pull timed out for %s - the image may be too large or the connection too slow", image)
+			}
+			if ctx.Err() == context.Canceled {
+				return fmt.Errorf("image pull was canceled for %s", image)
+			}
+
 			// Pull failed, check if it exists locally
 			logger.Infof("Pull failed, checking if image exists locally: %s", image)
 			imageExists, checkErr := imageManager.ImageExists(ctx, image)
@@ -149,6 +164,13 @@ func pullImage(ctx context.Context, image string, imageManager images.ImageManag
 			// Image doesn't exist locally, try to pull
 			logger.Infof("Image %s not found locally, pulling...", image)
 			if err := imageManager.PullImage(ctx, image); err != nil {
+				// Check if the error is due to context cancellation/timeout
+				if ctx.Err() == context.DeadlineExceeded {
+					return fmt.Errorf("image pull timed out for %s - the image may be too large or the connection too slow", image)
+				}
+				if ctx.Err() == context.Canceled {
+					return fmt.Errorf("image pull was canceled for %s", image)
+				}
 				// TODO: need more fine grained error handling here.
 				return fmt.Errorf("%w: %s", ErrImageNotFound, image)
 			}

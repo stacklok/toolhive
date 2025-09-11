@@ -161,13 +161,19 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
+	// Refresh the object to get latest status for accurate timing calculations
+	if err := r.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), mcpRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to refresh MCPRegistry object for sync check")
+		return ctrl.Result{}, err
+	}
+
 	// Check if sync is needed
-	syncNeeded, syncReason, nextSyncTime, err := r.shouldSync(ctx, mcpRegistry)
+	syncNeeded, syncReason, nextSyncTime, err := r.syncManager.ShouldSync(ctx, mcpRegistry)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to determine if sync is needed")
 		// Proceed with sync on error to be safe
 		syncNeeded = true
-		syncReason = syncReasonErrorCheckingSyncNeed
+		syncReason = sync.ReasonErrorCheckingSyncNeed
 	}
 
 	if !syncNeeded {
@@ -184,11 +190,11 @@ func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *
 	ctxLogger.Info("Sync needed", "reason", syncReason)
 
 	// Handle manual sync with no data changes - update trigger tracking only
-	if syncReason == syncReasonManualNoChanges {
-		return r.updateManualSyncTriggerOnly(ctx, mcpRegistry)
+	if syncReason == sync.ReasonManualNoChanges {
+		return r.syncManager.UpdateManualSyncTriggerOnly(ctx, mcpRegistry)
 	}
 
-	result, err := r.performSync(ctx, mcpRegistry)
+	result, err := r.syncManager.PerformSync(ctx, mcpRegistry)
 
 	if err != nil {
 		// Sync failed - schedule retry with exponential backoff
@@ -196,14 +202,14 @@ func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *
 		// Use a shorter retry interval instead of the full sync interval
 		retryAfter := time.Minute * 5 // Default retry interval
 		if result.RequeueAfter > 0 {
-			// If performSync already set a retry interval, use it
+			// If PerformSync already set a retry interval, use it
 			retryAfter = result.RequeueAfter
 		}
 		return ctrl.Result{RequeueAfter: retryAfter}, err
 	}
 
 	// Schedule next automatic sync only if this was an automatic sync (not manual)
-	if mcpRegistry.Spec.SyncPolicy != nil && !isManualSync(syncReason) {
+	if mcpRegistry.Spec.SyncPolicy != nil && !sync.IsManualSync(syncReason) {
 		interval, parseErr := time.ParseDuration(mcpRegistry.Spec.SyncPolicy.Interval)
 		if parseErr == nil {
 			result.RequeueAfter = interval
@@ -211,7 +217,7 @@ func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *
 		} else {
 			ctxLogger.Error(parseErr, "Invalid sync interval in policy", "interval", mcpRegistry.Spec.SyncPolicy.Interval)
 		}
-	} else if isManualSync(syncReason) {
+	} else if sync.IsManualSync(syncReason) {
 		ctxLogger.Info("Manual sync successful, automatic sync schedule unchanged")
 	} else {
 		ctxLogger.Info("Sync successful, no automatic sync policy configured")

@@ -76,12 +76,6 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 		return nil, fmt.Errorf("failed to build workload config: %w", err)
 	}
 
-	// Save the workload state
-	if err := runConfig.SaveState(ctx); err != nil {
-		logger.Errorf("Failed to save workload config: %v", err)
-		return nil, fmt.Errorf("failed to save workload config: %w", err)
-	}
-
 	// Use the manager's UpdateWorkload method to handle the lifecycle
 	if _, err := s.workloadManager.UpdateWorkload(ctx, name, runConfig); err != nil {
 		return nil, fmt.Errorf("failed to update workload: %w", err)

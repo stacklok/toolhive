@@ -3,6 +3,10 @@ kind: MCPServer
 metadata:
   name: fetch
   namespace: toolhive-system
+  labels:
+    toolhive.stacklok.io/registry-name: example-registry-data
+    toolhive.stacklok.io/registry-namespace: toolhive-system
+    toolhive.stacklok.io/server-registry-name: fetch
 spec:
   image: ghcr.io/stackloklabs/gofetch/server
   transport: streamable-http

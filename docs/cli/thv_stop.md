@@ -11,14 +11,14 @@ mdx:
 
 ## thv stop
 
-Stop an MCP server
+Stop one or more MCP servers
 
 ### Synopsis
 
-Stop a running MCP server managed by ToolHive.
+Stop one or more running MCP servers managed by ToolHive.
 
 ```
-thv stop [workload-name] [flags]
+thv stop [workload-name...] [flags]
 ```
 
 ### Options

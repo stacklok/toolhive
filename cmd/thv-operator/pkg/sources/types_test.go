@@ -61,10 +61,6 @@ func TestNewFetchResult(t *testing.T) {
 
 			result := NewFetchResult(tt.registryData, tt.hash, tt.format)
 
-			rawData, err := result.GetRawData()
-			assert.NoError(t, err)
-			assert.NotNil(t, rawData)
-
 			expectedServerCount := len(tt.registryData.Servers) + len(tt.registryData.RemoteServers)
 			assert.Equal(t, expectedServerCount, result.ServerCount)
 			assert.Equal(t, tt.hash, result.Hash)

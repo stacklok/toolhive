@@ -55,14 +55,6 @@ func NewFetchResult(reg *registry.Registry, hash string, format string) *FetchRe
 	}
 }
 
-// GetRawData serializes the registry back to []byte when needed
-func (fr *FetchResult) GetRawData() ([]byte, error) {
-	if fr.Registry == nil {
-		return nil, fmt.Errorf("registry is nil - cannot serialize")
-	}
-	return json.Marshal(fr.Registry)
-}
-
 // SourceHandlerFactory creates source handlers based on source type
 type SourceHandlerFactory interface {
 	// CreateHandler creates a source handler for the given source type

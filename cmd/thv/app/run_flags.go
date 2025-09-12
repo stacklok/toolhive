@@ -252,7 +252,6 @@ func BuildRunnerConfig(
 		return nil, err
 	}
 
-	// If --remote flag is provided, use it as the serverOrImage
 	if runFlags.RemoteURL != "" {
 		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
 			nil, envVarValidator, oidcConfig, telemetryConfig)
@@ -457,7 +456,7 @@ func buildRunnerConfig(
 
 	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 		if remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata); remoteAuthConfig != nil {
-			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
+			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
 		}
 	}
 	if runFlags.RemoteURL != "" {

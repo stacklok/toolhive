@@ -127,6 +127,7 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch;apply
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
@@ -159,6 +160,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		// Error reading the object - requeue the request.
 		ctxLogger.Error(err, "Failed to get MCPServer")
+		return ctrl.Result{}, err
+	}
+
+	// Check if MCPToolConfig is referenced and handle it
+	if err := r.handleToolConfig(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to handle MCPToolConfig")
+		// Update status to reflect the error
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPToolConfig error")
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -393,6 +405,50 @@ func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
 }
 
 // ensureRBACResources ensures that the RBAC resources are in place for the MCP server
+
+// handleToolConfig handles MCPToolConfig reference for an MCPServer
+func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	if m.Spec.ToolConfigRef == nil {
+		// No MCPToolConfig referenced, clear any stored hash
+		if m.Status.ToolConfigHash != "" {
+			m.Status.ToolConfigHash = ""
+			if err := r.Status().Update(ctx, m); err != nil {
+				return fmt.Errorf("failed to clear MCPToolConfig hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	// Get the referenced MCPToolConfig
+	toolConfig, err := GetToolConfigForMCPServer(ctx, r.Client, m)
+	if err != nil {
+		return err
+	}
+
+	if toolConfig == nil {
+		return fmt.Errorf("MCPToolConfig %s not found", m.Spec.ToolConfigRef.Name)
+	}
+
+	// Check if the MCPToolConfig hash has changed
+	if m.Status.ToolConfigHash != toolConfig.Status.ConfigHash {
+		ctxLogger.Info("MCPToolConfig has changed, updating MCPServer",
+			"mcpserver", m.Name,
+			"toolconfig", toolConfig.Name,
+			"oldHash", m.Status.ToolConfigHash,
+			"newHash", toolConfig.Status.ConfigHash)
+
+		// Update the stored hash
+		m.Status.ToolConfigHash = toolConfig.Status.ConfigHash
+		if err := r.Status().Update(ctx, m); err != nil {
+			return fmt.Errorf("failed to update MCPToolConfig hash in status: %w", err)
+		}
+
+		// The change in hash will trigger a reconciliation of the RunConfig
+		// which will pick up the new tool configuration
+	}
+
+	return nil
+}
 func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
 	proxyRunnerNameForRBAC := proxyRunnerServiceAccountName(mcpServer.Name)
 

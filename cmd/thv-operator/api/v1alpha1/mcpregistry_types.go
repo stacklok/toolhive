@@ -140,17 +140,17 @@ type MCPRegistryStatus struct {
 	// ServerCount is the total number of servers in the registry
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	ServerCount int32 `json:"serverCount,omitempty"`
+	ServerCount int `json:"serverCount,omitempty"`
 
 	// DeployedServerCount is the number of deployed servers with matching labels
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	DeployedServerCount int32 `json:"deployedServerCount,omitempty"`
+	DeployedServerCount int `json:"deployedServerCount,omitempty"`
 
 	// SyncAttempts is the number of sync attempts since last success
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	SyncAttempts int32 `json:"syncAttempts,omitempty"`
+	SyncAttempts int `json:"syncAttempts,omitempty"`
 
 	// APIEndpoint is the URL of the registry API service
 	// +optional

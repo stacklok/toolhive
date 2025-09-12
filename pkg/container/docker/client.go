@@ -55,11 +55,19 @@ const (
 	LabelValueTrue                 = "true"
 )
 
+// dockerAPI defines the minimal Docker client surface we need for unit-testing
+// ListWorkloads/GetWorkloadInfo through an adapter without requiring a live daemon.
+type dockerAPI interface {
+	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+}
+
 // Client implements the Deployer interface for Docker (and compatible runtimes)
 type Client struct {
 	runtimeType  runtime.Type
 	socketPath   string
 	client       *client.Client
+	api          dockerAPI
 	imageManager images.ImageManager
 }
 
@@ -76,6 +84,7 @@ func NewClient(ctx context.Context) (*Client, error) {
 		runtimeType:  runtimeType,
 		socketPath:   socketPath,
 		client:       dockerClient,
+		api:          dockerClient,
 		imageManager: imageManager,
 	}
 
@@ -224,7 +233,7 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 	filterArgs.Add("label", "toolhive=true")
 
 	// List containers
-	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+	containers, err := c.api.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: filterArgs,
 	})
@@ -1520,7 +1529,7 @@ func (c *Client) findContainerByLabel(ctx context.Context, workloadName string) 
 	filterArgs.Add("label", "toolhive=true")
 	filterArgs.Add("label", fmt.Sprintf("toolhive-basename=%s", workloadName))
 
-	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+	containers, err := c.api.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: filterArgs,
 	})
@@ -1555,7 +1564,7 @@ func (c *Client) findContainerByExactName(ctx context.Context, workloadName stri
 	filterArgs.Add("label", "toolhive=true")
 	filterArgs.Add("name", workloadName)
 
-	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+	containers, err := c.api.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: filterArgs,
 	})
@@ -1602,7 +1611,7 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 		return empty, err
 	}
 	if containerID != "" {
-		return c.client.ContainerInspect(ctx, containerID)
+		return c.api.ContainerInspect(ctx, containerID)
 	}
 
 	// Fall back to exact name matching for backward compatibility
@@ -1614,5 +1623,5 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 		return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found")
 	}
 
-	return c.client.ContainerInspect(ctx, containerID)
+	return c.api.ContainerInspect(ctx, containerID)
 }

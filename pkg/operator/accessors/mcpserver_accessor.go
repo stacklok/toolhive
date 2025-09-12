@@ -25,7 +25,9 @@ func NewMCPServerFieldAccessor() MCPServerFieldAccessor {
 }
 
 // GetProxyDeploymentLabelsAndAnnotations returns labels and annotations for the deployment
-func (f *mcpServerFieldAccessor) GetProxyDeploymentLabelsAndAnnotations(mcpServer *mcpv1alpha1.MCPServer) (map[string]string, map[string]string) {
+func (*mcpServerFieldAccessor) GetProxyDeploymentLabelsAndAnnotations(
+	mcpServer *mcpv1alpha1.MCPServer,
+) (map[string]string, map[string]string) {
 	baseAnnotations := make(map[string]string)
 	baseLabels := make(map[string]string)
 
@@ -48,7 +50,9 @@ func (f *mcpServerFieldAccessor) GetProxyDeploymentLabelsAndAnnotations(mcpServe
 }
 
 // GetProxyDeploymentTemplateLabelsAndAnnotations returns labels and annotations for the deployment pod template
-func (f *mcpServerFieldAccessor) GetProxyDeploymentTemplateLabelsAndAnnotations(mcpServer *mcpv1alpha1.MCPServer) (map[string]string, map[string]string) {
+func (*mcpServerFieldAccessor) GetProxyDeploymentTemplateLabelsAndAnnotations(
+	mcpServer *mcpv1alpha1.MCPServer,
+) (map[string]string, map[string]string) {
 	baseAnnotations := make(map[string]string)
 	baseLabels := make(map[string]string)
 
@@ -65,7 +69,8 @@ func (f *mcpServerFieldAccessor) GetProxyDeploymentTemplateLabelsAndAnnotations(
 		deploymentLabels = mergeLabels(baseLabels, mcpServer.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels)
 	}
 	if mcpServer.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations != nil {
-		deploymentAnnotations = mergeAnnotations(baseAnnotations, mcpServer.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations)
+		overrides := mcpServer.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations
+		deploymentAnnotations = mergeAnnotations(baseAnnotations, overrides)
 	}
 
 	return deploymentLabels, deploymentAnnotations

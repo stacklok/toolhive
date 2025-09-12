@@ -10,6 +10,7 @@ import (
 )
 
 func TestNewMCPServerFieldAccessor(t *testing.T) {
+	t.Parallel()
 	accessor := NewMCPServerFieldAccessor()
 	require.NotNil(t, accessor)
 	_, ok := accessor.(*mcpServerFieldAccessor)
@@ -17,6 +18,7 @@ func TestNewMCPServerFieldAccessor(t *testing.T) {
 }
 
 func TestGetProxyDeploymentLabelsAndAnnotations(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name                string
 		mcpServer           *mcpv1alpha1.MCPServer
@@ -162,6 +164,7 @@ func TestGetProxyDeploymentLabelsAndAnnotations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			labels, annotations := accessor.GetProxyDeploymentLabelsAndAnnotations(tt.mcpServer)
 			assert.Equal(t, tt.expectedLabels, labels)
 			assert.Equal(t, tt.expectedAnnotations, annotations)
@@ -170,6 +173,7 @@ func TestGetProxyDeploymentLabelsAndAnnotations(t *testing.T) {
 }
 
 func TestGetProxyDeploymentTemplateLabelsAndAnnotations(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name                string
 		mcpServer           *mcpv1alpha1.MCPServer
@@ -324,6 +328,7 @@ func TestGetProxyDeploymentTemplateLabelsAndAnnotations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			labels, annotations := accessor.GetProxyDeploymentTemplateLabelsAndAnnotations(tt.mcpServer)
 			assert.Equal(t, tt.expectedLabels, labels)
 			assert.Equal(t, tt.expectedAnnotations, annotations)
@@ -332,7 +337,8 @@ func TestGetProxyDeploymentTemplateLabelsAndAnnotations(t *testing.T) {
 }
 
 func TestInterfaceContract(t *testing.T) {
+	t.Parallel()
 	// Test that the concrete type implements the interface
 	var _ MCPServerFieldAccessor = (*mcpServerFieldAccessor)(nil)
-	var _ MCPServerFieldAccessor = NewMCPServerFieldAccessor()
+	var _ = NewMCPServerFieldAccessor()
 }

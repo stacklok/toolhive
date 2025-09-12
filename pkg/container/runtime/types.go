@@ -251,6 +251,9 @@ type DeployWorkloadOptions struct {
 	// IgnoreConfig contains configuration for ignore patterns and tmpfs overlays
 	// Used to filter bind mount contents by hiding sensitive files
 	IgnoreConfig *ignore.Config
+
+	// NetworkMode specifies the network mode for the container (e.g., "host", "bridge", "none")
+	NetworkMode string
 }
 
 // PortBinding represents a host port binding

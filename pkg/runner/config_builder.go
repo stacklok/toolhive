@@ -227,6 +227,14 @@ func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	}
 }
 
+// WithNetworkMode sets the network mode for the container
+func WithNetworkMode(networkMode string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.NetworkMode = networkMode
+		return nil
+	}
+}
+
 // WithK8sPodPatch sets the Kubernetes pod template patch
 func WithK8sPodPatch(patch string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

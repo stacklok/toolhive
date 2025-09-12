@@ -187,7 +187,12 @@ func (c *Client) DeployWorkload(
 	if options != nil {
 		ignoreConfig = options.IgnoreConfig
 	}
-	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType, ignoreConfig)
+	// Get network mode from options if available
+	networkMode := ""
+	if options != nil && options.NetworkMode != "" {
+		networkMode = options.NetworkMode
+	}
+	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType, ignoreConfig, networkMode)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get permission config: %w", err)
 	}
@@ -199,13 +204,20 @@ func (c *Client) DeployWorkload(
 	var additionalDNS string
 	networkName := fmt.Sprintf("toolhive-%s-internal", name)
 	externalEndpointsConfig := map[string]*network.EndpointSettings{
-		networkName:         {},
-		"toolhive-external": {},
+		networkName: {},
 	}
 
-	err = c.ops.createExternalNetworks(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create external networks: %v", err)
+	// Only create external networks and add endpoints if we're not using a custom network mode like "host" or "none"
+	if permissionConfig.NetworkMode == "" || permissionConfig.NetworkMode == "bridge" || permissionConfig.NetworkMode == "default" {
+		// Add toolhive-external to endpoints config for default networking modes
+		externalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{}
+		
+		err = c.ops.createExternalNetworks(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to create external networks: %v", err)
+		}
+	} else {
+		logger.Infof("Skipping external network creation for custom network mode: %s", permissionConfig.NetworkMode)
 	}
 
 	networkIsolation := false
@@ -260,6 +272,9 @@ func (c *Client) DeployWorkload(
 	// about ingress/egress/dns containers.
 	lb.AddNetworkIsolationLabel(labels, networkIsolation)
 
+	// Debug: Log before calling createMcpContainer
+	logger.Infof("DEBUG: About to call createMcpContainer with network mode: '%s'", permissionConfig.NetworkMode)
+	
 	err = c.ops.createMcpContainer(
 		ctx,
 		name,
@@ -754,15 +769,23 @@ func (c *Client) getPermissionConfigFromProfile(
 	profile *permissions.Profile,
 	transportType string,
 	ignoreConfig *ignore.Config,
+	networkMode string,
 ) (*runtime.PermissionConfig, error) {
 	// Start with a default permission config
 	config := &runtime.PermissionConfig{
 		Mounts:      []runtime.Mount{},
-		NetworkMode: "", // set to blank as podman is not recognizing the "none" value when we attach to other networks
+		NetworkMode: networkMode, // Use the provided network mode, fall back to blank if empty
 		CapDrop:     []string{"ALL"},
 		CapAdd:      []string{},
 		SecurityOpt: []string{"label:disable"},
 		Privileged:  profile.Privileged,
+	}
+
+	// Debug: Log the network mode being used
+	if networkMode != "" {
+		logger.Infof("Using network mode: %s", networkMode)
+	} else {
+		logger.Infof("No network mode specified, using default")
 	}
 
 	// Add mounts
@@ -1419,7 +1442,17 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 
 	// create mcp container
 	internalEndpointsConfig := map[string]*network.EndpointSettings{}
-	if isolateNetwork {
+	
+	// Debug: Log the network mode being processed
+	logger.Infof("DEBUG: createMcpContainer network mode: '%s', isolateNetwork: %v", permissionConfig.NetworkMode, isolateNetwork)
+	
+	// Check if we have a custom network mode (e.g., "host", "none", etc.)
+	if permissionConfig.NetworkMode != "" && permissionConfig.NetworkMode != "bridge" && permissionConfig.NetworkMode != "default" {
+		// For custom network modes like "host", "none", etc., don't add any endpoint configurations
+		// The NetworkMode in hostConfig will handle the networking
+		logger.Infof("Using custom network mode: %s, keeping endpoints config empty", permissionConfig.NetworkMode)
+		// Leave internalEndpointsConfig as empty map
+	} else if isolateNetwork {
 		internalEndpointsConfig[networkName] = &network.EndpointSettings{
 			NetworkID: networkName,
 		}

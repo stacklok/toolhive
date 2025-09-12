@@ -136,6 +136,9 @@ type RunConfig struct {
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers,omitempty" yaml:"trust_proxy_headers,omitempty"`
 
+	// NetworkMode specifies the network mode for the container (e.g., "host", "bridge", "none")
+	NetworkMode string `json:"network_mode,omitempty" yaml:"network_mode,omitempty"`
+
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode types.ProxyMode `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
 

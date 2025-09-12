@@ -1160,6 +1160,7 @@ func (d *defaultManager) getRemoteWorkloadsFromState(
 			URL:           runConfig.RemoteURL,
 			Port:          runConfig.Port,
 			TransportType: transportType,
+			ProxyMode:     string(runConfig.ProxyMode),
 			ToolType:      "remote",
 			Group:         runConfig.Group,
 			CreatedAt:     workloadStatus.CreatedAt,

@@ -205,6 +205,12 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 	// TODO: Fetch the runconfig if present to populate additional fields like package, tool type, group etc.
 	// There's currently an import cycle between this package and the runconfig package
 
+	for _, fileWorkload := range fileWorkloads {
+		if fileWorkload.Remote { // Remote workloads are not managed by the container runtime
+			delete(fileWorkloads, fileWorkload.Name) // Skip remote workloads here, we add them in workload manager
+		}
+	}
+
 	// Create a map of runtime workloads by name for easy lookup
 	workloadMap := f.mergeRuntimeAndFileWorkloads(ctx, runtimeContainers, fileWorkloads)
 
@@ -842,8 +848,7 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 	for name, fileWorkload := range fileWorkloads {
 
 		if fileWorkload.Remote { // Remote workloads are not managed by the container runtime
-			workloadMap[name] = fileWorkload
-			continue
+			continue // Skip remote workloads here, we add them in workload manager
 		}
 		if runtimeContainer, exists := runtimeWorkloadMap[name]; exists {
 			// Validate running workloads similar to GetWorkload

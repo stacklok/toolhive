@@ -110,12 +110,12 @@ tasks:
   operator-install-crds:
     desc: Install CRDs into the K8s cluster
     cmds:
-      - helm upgrade --install operator-crds deploy/charts/operator-crds --kubeconfig kconfig.yaml
+      - helm upgrade --install toolhive-operator-crds deploy/charts/operator-crds --kubeconfig kconfig.yaml
 
   operator-uninstall-crds:
     desc: Uninstall CRDs from the K8s cluster
     cmds:
-      - helm uninstall operator-crds --kubeconfig kconfig.yaml
+      - helm uninstall toolhive-operator-crds --kubeconfig kconfig.yaml
 
   operator-deploy-latest:
     desc: Deploy latest built Operator image from Github to the K8s cluster

@@ -475,7 +475,7 @@ func addToolFilterMiddlewares(
 	toolsFilter []string,
 	toolsOverride map[string]ToolOverride,
 ) []types.MiddlewareConfig {
-	if len(toolsFilter) == 0 {
+	if len(toolsFilter) == 0 && len(toolsOverride) == 0 {
 		return middlewareConfigs
 	}
 
@@ -789,20 +789,31 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 		}
 	}
 
-	if c.ToolsFilter != nil && imageMetadata != nil && imageMetadata.Tools != nil {
-		logger.Debugf("Using tools filter: %v", c.ToolsFilter)
-		for _, tool := range c.ToolsFilter {
-			if !slices.Contains(imageMetadata.Tools, tool) {
-				return fmt.Errorf("tool %s not found in registry", tool)
-			}
-		}
-	}
-
 	if c.ToolsOverride != nil && imageMetadata != nil && imageMetadata.Tools != nil {
 		logger.Debugf("Using tools override: %v", c.ToolsOverride)
 		for toolName := range c.ToolsOverride {
 			if !slices.Contains(imageMetadata.Tools, toolName) {
 				return fmt.Errorf("tool %s not found in registry", toolName)
+			}
+		}
+	}
+
+	if c.ToolsFilter != nil && imageMetadata != nil && imageMetadata.Tools != nil {
+		logger.Debugf("Using tools filter: %v", c.ToolsFilter)
+		for _, tool := range c.ToolsFilter {
+			name := tool
+
+			if c.ToolsOverride != nil {
+				for actualName, toolOverride := range c.ToolsOverride {
+					if toolOverride.Name == tool {
+						name = actualName
+						break
+					}
+				}
+			}
+
+			if !slices.Contains(imageMetadata.Tools, name) {
+				return fmt.Errorf("tool %s not found in registry", name)
 			}
 		}
 	}

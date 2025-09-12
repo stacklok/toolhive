@@ -132,6 +132,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --target-port int                         Port for the container to expose (only applicable to SSE or Streamable HTTP transport)
       --thv-ca-bundle string                    Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)
       --tools stringArray                       Filter MCP server tools (comma-separated list of tool names)
+      --tools-override string                   Path to a JSON file containing overrides for MCP server tools names and descriptions
       --transport string                        Transport mode (sse, streamable-http or stdio)
   -v, --volume stringArray                      Mount a volume into the container (format: host-path:container-path[:ro])
 ```

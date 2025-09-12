@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/cmd/thv/app"
 	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -26,6 +27,12 @@ func main() {
 
 	// Clean up stale lock files on startup
 	cleanupStaleLockFiles()
+
+	// Check if container runtime is available early
+	if err := container.CheckRuntimeAvailable(); err != nil {
+		logger.Errorf("%s", err.Error())
+		os.Exit(1)
+	}
 
 	// Check and perform auto-discovery migration if needed
 	// Handles the auto-discovery flag depreciation, only executes once on old config files

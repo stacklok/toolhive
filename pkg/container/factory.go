@@ -231,3 +231,17 @@ func (*Factory) getRuntimeFromEnv() string {
 func NewMonitor(rt runtime.Runtime, containerName string) runtime.Monitor {
 	return docker.NewMonitor(rt, containerName)
 }
+
+// CheckRuntimeAvailable checks if any container runtime is available
+// and returns a user-friendly error message if none are found
+func CheckRuntimeAvailable() error {
+	factory := NewFactory()
+	available := factory.ListAvailableRuntimes()
+
+	if len(available) == 0 {
+		return fmt.Errorf("no container runtime available. ToolHive requires Docker, Podman, Colima, " +
+			"or a Kubernetes environment to run MCP servers")
+	}
+
+	return nil
+}

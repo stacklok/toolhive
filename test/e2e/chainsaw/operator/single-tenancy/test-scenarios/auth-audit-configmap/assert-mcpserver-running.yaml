@@ -1,0 +1,7 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: auth-audit-test
+  namespace: toolhive-system
+status:
+  phase: Running

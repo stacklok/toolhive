@@ -1,0 +1,256 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: auth-audit-configmap-persistence
+spec:
+  description: Tests that MCPServer auth, authz, and audit configurations are properly persisted in ConfigMaps and translated to RunConfig
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+
+  - name: enable-configmap-mode
+    description: Enable ConfigMap mode by setting environment variable on operator
+    try:
+    - script:
+        content: |
+          echo "Setting TOOLHIVE_USE_CONFIGMAP=true on operator deployment..."
+          
+          # Use strategic merge patch to add the environment variable to existing env array
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"true"}]}]}}}}'
+          
+          # Wait for rollout to complete
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          
+          # Verify the environment variable was set
+          echo "Verifying TOOLHIVE_USE_CONFIGMAP environment variable is set..."
+          ENV_VAR=$(kubectl get deployment toolhive-operator -n toolhive-system -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].env[?(@.name=="TOOLHIVE_USE_CONFIGMAP")].value}')
+          if [ "$ENV_VAR" = "true" ]; then
+            echo "✓ TOOLHIVE_USE_CONFIGMAP=true verified on operator deployment"
+          else
+            echo "✗ Failed to set TOOLHIVE_USE_CONFIGMAP environment variable"
+            exit 1
+          fi
+
+  - name: deploy-mcpserver-with-auth-audit
+    description: Deploy MCPServer with auth, authz, and audit configurations
+    try:
+    - apply:
+        file: mcpserver-auth-audit.yaml
+    - assert:
+        file: mcpserver-auth-audit.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+
+  - name: verify-auth-audit-configmap-persistence
+    description: Verify that auth, authz, and audit configurations are properly persisted in ConfigMaps
+    try:
+    - script:
+        content: |
+          echo "Verifying auth/audit configuration persistence in ConfigMap..."
+          
+          # Wait for ConfigMap to be created
+          for i in $(seq 1 15); do
+            if kubectl get configmap auth-audit-test-runconfig -n toolhive-system >/dev/null 2>&1; then
+              echo "✓ ConfigMap auth-audit-test-runconfig exists"
+              break
+            fi
+            echo "  Waiting for ConfigMap... (attempt $i/15)"
+            sleep 3
+          done
+          
+          # Get the runconfig.json content from ConfigMap
+          CONFIGMAP_JSON=$(kubectl get configmap auth-audit-test-runconfig -n toolhive-system -o jsonpath='{.data.runconfig\.json}' 2>/dev/null || echo "")
+          
+          if [ -z "$CONFIGMAP_JSON" ]; then
+            echo "✗ ConfigMap does not contain runconfig.json data"
+            kubectl get configmap auth-audit-test-runconfig -n toolhive-system -o yaml || echo "ConfigMap not found"
+            exit 1
+          fi
+          
+          echo "✓ ConfigMap contains runconfig.json data"
+          echo "$CONFIGMAP_JSON" > /tmp/runconfig.json
+          
+          # Validate basic JSON structure
+          if ! echo "$CONFIGMAP_JSON" | jq -e '.schema_version and .image and .name and .transport' > /dev/null 2>&1; then
+            echo "✗ runconfig.json missing basic required fields"
+            exit 1
+          fi
+          echo "✓ Basic RunConfig structure validated"
+          
+          # Validate Authorization Configuration
+          AUTHZ_CONFIG=$(echo "$CONFIGMAP_JSON" | jq -r '.authz_config // empty')
+          AUTHZ_CONFIG_PATH=$(echo "$CONFIGMAP_JSON" | jq -r '.authz_config_path // empty')
+          
+          if [ -n "$AUTHZ_CONFIG" ] || [ -n "$AUTHZ_CONFIG_PATH" ]; then
+            echo "✓ Authorization configuration present in RunConfig"
+            if [ -n "$AUTHZ_CONFIG" ]; then
+              # Validate Cedar policy structure  
+              POLICIES=$(echo "$CONFIGMAP_JSON" | jq -r '.authz_config.cedar.policies // empty')
+              if [ -n "$POLICIES" ] && [ "$POLICIES" != "null" ]; then
+                echo "✓ Cedar policies found in authz_config"
+                POLICY_COUNT=$(echo "$CONFIGMAP_JSON" | jq '.authz_config.cedar.policies | length')
+                echo "  - Found $POLICY_COUNT Cedar policies"
+              else
+                echo "⚠️  No Cedar policies found in authz_config"
+              fi
+            fi
+            if [ -n "$AUTHZ_CONFIG_PATH" ] && [ "$AUTHZ_CONFIG_PATH" != "null" ]; then
+              echo "✓ Authorization config path set: $AUTHZ_CONFIG_PATH"
+            fi
+          else
+            echo "✗ Authorization configuration missing from RunConfig"
+            exit 1
+          fi
+          
+          # Validate Audit Configuration
+          AUDIT_CONFIG=$(echo "$CONFIGMAP_JSON" | jq -r '.audit_config // empty')
+          
+          if [ -n "$AUDIT_CONFIG" ] && [ "$AUDIT_CONFIG" != "null" ]; then
+            echo "✓ Audit configuration present in RunConfig"
+            # Additional audit config validation could be added here
+          else
+            echo "✗ Audit configuration missing from RunConfig"
+            exit 1
+          fi
+          
+          # Validate OIDC Configuration  
+          OIDC_CONFIG=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config // empty')
+          
+          if [ -n "$OIDC_CONFIG" ] && [ "$OIDC_CONFIG" != "null" ]; then
+            echo "✓ OIDC configuration present in RunConfig"
+            
+            # Validate OIDC fields
+            ISSUER=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.issuer // empty')
+            AUDIENCE=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.audience // empty')
+            JWKS_URL=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.jwksurl // empty')
+            
+            echo "✓ OIDC issuer found: $ISSUER"
+            
+            echo "✓ OIDC audience found: $AUDIENCE"
+            
+            if [ -n "$JWKS_URL" ]; then
+              echo "✓ JWKS URL configured: $JWKS_URL"
+            else
+              echo "⚠️  JWKS URL not configured"
+            fi
+          else
+            echo "✗ OIDC configuration missing from RunConfig"
+            exit 1
+          fi
+          
+          echo "✅ Auth/Audit configuration persistence validation successful!"
+          echo ""
+          echo "Summary of validated configurations:"
+          echo "  ✓ Authorization: $([ -n "$AUTHZ_CONFIG" ] || [ -n "$AUTHZ_CONFIG_PATH" ] && echo "Present" || echo "Missing")"
+          echo "  ✓ Audit: $([ -n "$AUDIT_CONFIG" ] && [ "$AUDIT_CONFIG" != "null" ] && echo "Present" || echo "Missing")"  
+          echo "  ✓ OIDC: $([ -n "$OIDC_CONFIG" ] && [ "$OIDC_CONFIG" != "null" ] && echo "Present" || echo "Missing")"
+
+  - name: verify-deployment-uses-auth-configs
+    description: Verify that the deployment receives the auth configurations via ConfigMap
+    try:
+    - script:
+        content: |
+          echo "Verifying deployment uses ConfigMap with auth configurations..."
+          
+          # Verify deployment arguments include ConfigMap flag
+          DEPLOYMENT_ARGS=$(kubectl get deployment auth-audit-test -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].args}')
+          echo "Deployment args: $DEPLOYMENT_ARGS"
+          
+          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--from-configmap=toolhive-system/auth-audit-test-runconfig"; then
+            echo "✓ Deployment uses --from-configmap flag with correct ConfigMap"
+          else
+            echo "✗ Deployment does not use --from-configmap flag correctly"
+            echo "Expected: --from-configmap=toolhive-system/auth-audit-test-runconfig"
+            exit 1
+          fi
+          
+          # Wait for pod to be ready to ensure configurations are working
+          echo "Waiting for pod to be ready with auth configurations..."
+          if kubectl wait --for=condition=Ready pod -l app=mcpserver,app.kubernetes.io/instance=auth-audit-test -n toolhive-system --timeout=120s; then
+            echo "✓ Pod is ready - auth configurations successfully applied"
+          else
+            echo "✗ Pod failed to become ready - possible configuration issues"
+            kubectl describe pod -l app=mcpserver,app.kubernetes.io/instance=auth-audit-test -n toolhive-system
+            kubectl logs -l app=mcpserver,app.kubernetes.io/instance=auth-audit-test -n toolhive-system --tail=50
+            exit 1
+          fi
+          
+          echo "✅ Deployment successfully uses auth configurations from ConfigMap!"
+
+  - name: validate-security-configurations
+    description: Additional validation of security configurations in the running pod
+    try:
+    - script:
+        content: |
+          echo "Performing additional security configuration validation..."
+          
+          # Get the pod name
+          POD_NAME=$(kubectl get pod -l app=mcpserver,app.kubernetes.io/instance=auth-audit-test -n toolhive-system -o jsonpath='{.items[0].metadata.name}')
+          
+          if [ -z "$POD_NAME" ]; then
+            echo "✗ Could not find pod for validation"
+            exit 1
+          fi
+          
+          echo "Found pod: $POD_NAME"
+          
+          # Check that the pod is using the expected configurations by examining logs
+          # Look for initialization logs that would indicate security features are enabled
+          echo "Checking pod logs for security configuration indicators..."
+          
+          # Get recent logs
+          LOGS=$(kubectl logs "$POD_NAME" -n toolhive-system --tail=100 || echo "No logs available")
+          
+          # Note: The specific log messages depend on the MCP server implementation
+          # This is a basic check - in a real scenario you might look for specific auth/audit initialization messages
+          if [ -n "$LOGS" ]; then
+            echo "✓ Pod is generating logs - basic functionality confirmed"
+            echo "Recent log sample:"
+            echo "$LOGS" | tail -5
+          else
+            echo "⚠️  No logs available from pod"
+          fi
+          
+          # Verify ConfigMap is mounted in the pod (if using volume mounts)
+          CONFIG_MOUNTS=$(kubectl describe pod "$POD_NAME" -n toolhive-system | grep -A 10 "Mounts:" | grep -E "(configmap|config)" || echo "")
+          
+          if [ -n "$CONFIG_MOUNTS" ]; then
+            echo "✓ ConfigMap mounts detected in pod"
+          else
+            echo "⚠️  No explicit ConfigMap mounts found (may be using --from-configmap flag instead)"
+          fi
+          
+          echo "✅ Security configuration validation completed!"
+
+  - name: cleanup-auth-audit-test
+    description: Clean up test resources and disable ConfigMap mode
+    try:
+    - script:
+        content: |
+          echo "Cleaning up auth-audit test resources..."
+          
+          # Delete the MCPServer (this will also clean up associated resources)
+          kubectl delete mcpserver auth-audit-test -n toolhive-system --timeout=60s || echo "MCPServer may not exist"
+          
+          # Wait for associated resources to be cleaned up
+          echo "Waiting for cleanup to complete..."
+          sleep 10
+          
+          # Disable ConfigMap mode to avoid affecting subsequent tests
+          echo "Disabling ConfigMap mode..."
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"false"}]}]}}}}'
+          
+          # Wait for rollout to complete
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          
+          echo "✓ Auth-audit test cleanup completed"

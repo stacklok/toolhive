@@ -23,7 +23,7 @@ const (
 	// LabelRegistryNamespace is the label key for the registry namespace
 	LabelRegistryNamespace = "toolhive.stacklok.io/registry-namespace"
 	// LabelServerRegistryName is the label key for the server's registry name
-	LabelServerRegistryName = "toolhive.stacklok.io/server-registry-name"
+	LabelServerRegistryName = "toolhive.stacklok.io/server-name"
 )
 
 // getDeployedServerLabelSelector returns the label selector string for finding deployed servers

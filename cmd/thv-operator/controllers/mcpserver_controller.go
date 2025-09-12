@@ -617,8 +617,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		}
 	}
 
-	// Add OpenTelemetry configuration args
-	if m.Spec.Telemetry != nil {
+	// Add OpenTelemetry configuration args only if not using ConfigMap
+	// When using ConfigMap, telemetry configuration is included in the runconfig.json
+	if !useConfigMap && m.Spec.Telemetry != nil {
 		if m.Spec.Telemetry.OpenTelemetry != nil {
 			otelArgs := r.generateOpenTelemetryArgs(m)
 			args = append(args, otelArgs...)

@@ -206,9 +206,9 @@ func (m *defaultManager) RemoveServerFromClients(ctx context.Context, serverName
 }
 
 // shouldSkipWorkload determines if a workload should be skipped when adding/removing servers from clients.
-// Workloads are skipped if they are not MCP tool type or if they are remote.
+// Workloads are skipped if they are not MCP tool type and if they are not remote.
 func shouldSkipWorkload(workload core.Workload) bool {
-	return workload.ToolType != mcpToolType || workload.Remote
+	return workload.ToolType != mcpToolType && !workload.Remote
 }
 
 // addWorkloadsToClient adds the specified workloads to the client's configuration

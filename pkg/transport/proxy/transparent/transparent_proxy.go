@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/healthcheck"
@@ -295,6 +297,21 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Create a reverse proxy
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 	proxy.FlushInterval = -1
+
+	// Store the original director
+	originalDirector := proxy.Director
+
+	// Override director to inject trace propagation headers
+	proxy.Director = func(req *http.Request) {
+		// Apply original director logic first
+		originalDirector(req)
+
+		// Inject OpenTelemetry trace propagation headers for downstream tracing
+		if req.Context() != nil {
+			otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
+		}
+	}
+
 	proxy.Transport = &tracingTransport{base: http.DefaultTransport, p: p}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		return p.modifyForSessionID(resp)

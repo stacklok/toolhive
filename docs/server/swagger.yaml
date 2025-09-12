@@ -194,6 +194,9 @@ components:
             Port is the port on which the workload is exposed.
             This is embedded in the URL.
           type: integer
+        proxy_mode:
+          description: ProxyMode is the proxy mode for stdio transport (sse or streamable-http).
+          type: string
         remote:
           description: Remote indicates whether this is a remote workload (true) or
             a container workload (false).

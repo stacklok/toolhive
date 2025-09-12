@@ -6,7 +6,7 @@ require (
 	github.com/1password/onepassword-sdk-go v0.3.1
 	github.com/cedar-policy/cedar-go v1.2.6
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/charmbracelet/bubbletea v1.3.8
+	github.com/charmbracelet/bubbletea v1.3.9
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/containerd/errdefs v1.0.0
 	github.com/docker/docker v28.4.0+incompatible
@@ -26,6 +26,7 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/prometheus/client_golang v1.23.2
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/sigstore/protobuf-specs v0.5.0
 	github.com/sigstore/sigstore-go v1.1.2
 	github.com/spf13/viper v1.21.0
@@ -42,7 +43,7 @@ require (
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.0
 	golang.ngrok.com/ngrok/v2 v2.1.0
-	golang.org/x/exp/jsonrpc2 v0.0.0-20250819193227-8b4c13bb791b
+	golang.org/x/exp/jsonrpc2 v0.0.0-20250911091902-df9299821621
 	golang.org/x/mod v0.28.0
 	golang.org/x/oauth2 v0.31.0
 	golang.org/x/sync v0.17.0
@@ -248,7 +249,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
-	golang.org/x/exp/event v0.0.0-20250718183923-645b1fa84792 // indirect
+	golang.org/x/exp/event v0.0.0-20250819193227-8b4c13bb791b // indirect
 	golang.org/x/net v0.43.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
 	golang.org/x/time v0.12.0 // indirect

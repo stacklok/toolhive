@@ -102,6 +102,7 @@ rules:
   resources:
   - mcpregistries
   - mcpservers
+  - mcptoolconfigs
   verbs:
   - create
   - delete
@@ -115,6 +116,7 @@ rules:
   resources:
   - mcpregistries/finalizers
   - mcpservers/finalizers
+  - mcptoolconfigs/finalizers
   verbs:
   - update
 - apiGroups:
@@ -122,6 +124,7 @@ rules:
   resources:
   - mcpregistries/status
   - mcpservers/status
+  - mcptoolconfigs/status
   verbs:
   - get
   - patch

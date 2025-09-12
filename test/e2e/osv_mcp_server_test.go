@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/workloads"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -486,26 +486,20 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
 				Expect(err).ToNot(HaveOccurred(), "server should reach running state")
 
-				// 3) PID file should be created at the known location.
-				By("verifying PID file is created")
-				pidFile, err := process.GetPIDFilePath(serverName)
-				Expect(err).ToNot(HaveOccurred(), "should be able to get PID file path")
-				Eventually(func() bool {
-					_, statErr := os.Stat(pidFile)
-					return statErr == nil
-				}, 15*time.Second, 200*time.Millisecond).Should(BeTrue(), "PID file should exist")
-
-				// 4) Read PID and sanity-check it's a live process.
-				pid, readErr := process.ReadPIDFile(serverName)
-				Expect(readErr).ToNot(HaveOccurred(), "should be able to read PID file")
-				Expect(pid).To(BeNumerically(">", 0), "PID should be a positive integer")
-
-				// Optional: on Unix, send signal 0 as a non-killing liveness probe.
-				if os.PathSeparator == '/' {
-					p, findErr := os.FindProcess(pid)
-					Expect(findErr).ToNot(HaveOccurred())
-					_ = p.Signal(syscall.Signal(0)) // best-effort; error handling not strict here
-				}
+				// 3) Verify workload is running via workload manager
+				By("verifying workload status is running via workload manager")
+				Eventually(func() runtime.WorkloadStatus {
+					ctx := context.Background()
+					manager, err := workloads.NewManager(ctx)
+					if err != nil {
+						return runtime.WorkloadStatusError
+					}
+					workload, err := manager.GetWorkload(ctx, serverName)
+					if err != nil {
+						return runtime.WorkloadStatusError
+					}
+					return workload.Status
+				}, 15*time.Second, 200*time.Millisecond).Should(Equal(runtime.WorkloadStatusRunning), "workload should be in running status")
 
 				// 5) Dwell 5 seconds, then confirm health/ready.
 				By("waiting 5 seconds and checking health")
@@ -532,12 +526,21 @@ var _ = Describe("OsvMcpServer", Serial, func() {
 					Fail("foreground run did not exit after stop; stdout="+fgStdout+" stderr="+fgStderr, 1)
 				}
 
-				// 7) PID file should be removed after stop.
-				By("verifying PID file removal")
-				Eventually(func() bool {
-					_, statErr := os.Stat(pidFile)
-					return os.IsNotExist(statErr)
-				}, 15*time.Second, 200*time.Millisecond).Should(BeTrue(), "PID file should be removed after stop")
+				// 7) Workload should be stopped via workload manager.
+				By("verifying workload status is stopped via workload manager")
+				Eventually(func() runtime.WorkloadStatus {
+					ctx := context.Background()
+					manager, err := workloads.NewManager(ctx)
+					if err != nil {
+						return runtime.WorkloadStatusError
+					}
+					workload, err := manager.GetWorkload(ctx, serverName)
+					if err != nil {
+						// If workload not found, it means it was properly cleaned up
+						return runtime.WorkloadStatusStopped
+					}
+					return workload.Status
+				}, 15*time.Second, 200*time.Millisecond).Should(Equal(runtime.WorkloadStatusStopped), "workload should be in stopped status after stop")
 
 			})
 		})

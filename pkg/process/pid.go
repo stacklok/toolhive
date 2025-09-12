@@ -23,9 +23,9 @@ func getOldPIDFilePath(containerBaseName string) string {
 	return filepath.Clean(filepath.Join(tmpDir, fmt.Sprintf("toolhive-%s.pid", containerBaseName)))
 }
 
-// GetPIDFilePath returns the path to the PID file for a container
+// getPIDFilePath returns the path to the PID file for a container
 // It first tries the new XDG location, then falls back to the old temp directory location
-func GetPIDFilePath(containerBaseName string) (string, error) {
+func getPIDFilePath(containerBaseName string) (string, error) {
 	// Return empty path in Kubernetes runtime since PID files are not used
 	if runtime.IsKubernetesRuntime() {
 		return "", fmt.Errorf("PID file operations are not supported in Kubernetes runtime")
@@ -39,27 +39,27 @@ func GetPIDFilePath(containerBaseName string) (string, error) {
 	return pidPath, nil
 }
 
-// GetPIDFilePathWithFallback returns the path to an existing PID file for a container
+// getPIDFilePathWithFallback returns the path to an existing PID file for a container
 // It checks both the new XDG location and the old temp directory location
 // Note: containerBaseName is pre-sanitized by the caller
-func GetPIDFilePathWithFallback(containerBaseName string) (string, error) {
+func getPIDFilePathWithFallback(containerBaseName string) (string, error) {
 	// Return empty path in Kubernetes runtime since PID files are not used
 	if runtime.IsKubernetesRuntime() {
 		return "", fmt.Errorf("PID file operations are not supported in Kubernetes runtime")
 	}
 
 	// First try the new XDG-based path
-	newPath, err := GetPIDFilePath(containerBaseName)
+	newPath, err := getPIDFilePath(containerBaseName)
 	if err != nil {
 		return "", err
 	}
 
-	// Check if file exists at new location
+	// Check if new file exists - prefer it if it does
 	if _, err := os.Stat(newPath); err == nil {
 		return newPath, nil
 	}
 
-	// Fall back to old location
+	// Fall back to old location if new doesn't exist
 	// Clean the path to satisfy security scanners (containerBaseName is already sanitized)
 	oldPath := filepath.Clean(getOldPIDFilePath(containerBaseName))
 	if _, err := os.Stat(oldPath); err == nil {
@@ -81,9 +81,14 @@ func WritePIDFile(containerBaseName string, pid int) error {
 	pidContent := []byte(fmt.Sprintf("%d", pid))
 
 	// Write to the new XDG location first
-	newPath, err := GetPIDFilePath(containerBaseName)
+	newPath, err := getPIDFilePath(containerBaseName)
 	if err != nil {
 		return fmt.Errorf("failed to get PID file path: %v", err)
+	}
+
+	// Ensure the directory exists before writing
+	if err := os.MkdirAll(filepath.Dir(newPath), 0750); err != nil {
+		return fmt.Errorf("failed to create PID directory: %v", err)
 	}
 
 	if err := os.WriteFile(newPath, pidContent, 0600); err != nil {
@@ -114,7 +119,7 @@ func ReadPIDFile(containerBaseName string) (int, error) {
 	}
 
 	// Get the PID file path with fallback
-	pidFilePath, err := GetPIDFilePathWithFallback(containerBaseName)
+	pidFilePath, err := getPIDFilePathWithFallback(containerBaseName)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get PID file path: %v", err)
 	}
@@ -159,7 +164,7 @@ func RemovePIDFile(containerBaseName string) error {
 	var lastErr error
 
 	// Try to remove from the new location
-	newPath, err := GetPIDFilePath(containerBaseName)
+	newPath, err := getPIDFilePath(containerBaseName)
 	if err != nil {
 		return fmt.Errorf("failed to get PID file path: %v", err)
 	}

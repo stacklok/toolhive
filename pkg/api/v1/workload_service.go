@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -15,6 +16,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
+)
+
+const (
+	// imageRetrievalTimeout is the timeout for pulling Docker images
+	// Set to 10 minutes to handle large images (1GB+) on slower connections
+	imageRetrievalTimeout = 10 * time.Minute
 )
 
 // WorkloadService handles business logic for workload operations
@@ -76,12 +83,6 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 		return nil, fmt.Errorf("failed to build workload config: %w", err)
 	}
 
-	// Save the workload state
-	if err := runConfig.SaveState(ctx); err != nil {
-		logger.Errorf("Failed to save workload config: %v", err)
-		return nil, fmt.Errorf("failed to save workload config: %w", err)
-	}
-
 	// Use the manager's UpdateWorkload method to handle the lifecycle
 	if _, err := s.workloadManager.UpdateWorkload(ctx, name, runConfig); err != nil {
 		return nil, fmt.Errorf("failed to update workload: %w", err)
@@ -91,6 +92,8 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 }
 
 // BuildFullRunConfig builds a complete RunConfig
+//
+//nolint:gocyclo // TODO: refactor this into shorter functions
 func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
 	// Default proxy mode to SSE if not specified
 	if !types.IsValidProxyMode(req.ProxyMode) {
@@ -131,14 +134,23 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		}
 	} else {
 		var serverMetadata registry.ServerMetadata
+		// Create a dedicated context with longer timeout for image retrieval
+		imageCtx, cancel := context.WithTimeout(ctx, imageRetrievalTimeout)
+		defer cancel()
+
 		// Fetch or build the requested image
 		imageURL, serverMetadata, err = s.imageRetriever(
-			ctx,
+			imageCtx,
 			req.Image,
 			"", // We do not let the user specify a CA cert path here.
 			retriever.VerifyImageWarn,
 		)
 		if err != nil {
+			// Check if the error is due to context timeout
+			if imageCtx.Err() == context.DeadlineExceeded {
+				return nil, fmt.Errorf("image retrieval timed out after %v - image may be too large or connection too slow",
+					imageRetrievalTimeout)
+			}
 			return nil, fmt.Errorf("failed to retrieve MCP server image: %w", err)
 		}
 

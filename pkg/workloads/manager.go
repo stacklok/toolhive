@@ -695,6 +695,12 @@ func (d *defaultManager) updateSingleWorkload(workloadName string, newConfig *ru
 	}
 	logger.Infof("Successfully deleted workload %s", workloadName)
 
+	// Save the new workload configuration state
+	if err := newConfig.SaveState(childCtx); err != nil {
+		logger.Errorf("Failed to save workload config: %v", err)
+		return fmt.Errorf("failed to save workload config: %w", err)
+	}
+
 	// Step 3: Start the new workload
 	// TODO: This currently just handles detached processes and wouldn't work for
 	// foreground CLI executions. Should be refactored to support both modes.
@@ -1154,6 +1160,7 @@ func (d *defaultManager) getRemoteWorkloadsFromState(
 			URL:           runConfig.RemoteURL,
 			Port:          runConfig.Port,
 			TransportType: transportType,
+			ProxyMode:     string(runConfig.ProxyMode),
 			ToolType:      "remote",
 			Group:         runConfig.Group,
 			CreatedAt:     workloadStatus.CreatedAt,

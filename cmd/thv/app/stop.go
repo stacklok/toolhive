@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -15,9 +16,9 @@ import (
 )
 
 var stopCmd = &cobra.Command{
-	Use:               "stop [workload-name]",
-	Short:             "Stop an MCP server",
-	Long:              `Stop a running MCP server managed by ToolHive.`,
+	Use:               "stop [workload-name...]",
+	Short:             "Stop one or more MCP servers",
+	Long:              `Stop one or more running MCP servers managed by ToolHive.`,
 	Args:              validateStopArgs,
 	RunE:              stopCmdFunc,
 	ValidArgsFunction: completeMCPServerNames,
@@ -52,9 +53,9 @@ func validateStopArgs(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("no arguments should be provided when --all or --group flag is set")
 		}
 	} else {
-		// If neither --all nor --group is set, exactly one argument should be provided
-		if len(args) != 1 {
-			return fmt.Errorf("exactly one workload name must be provided")
+		// If neither --all nor --group is set, at least one argument should be provided
+		if len(args) < 1 {
+			return fmt.Errorf("at least one workload name must be provided")
 		}
 	}
 
@@ -79,25 +80,30 @@ func stopCmdFunc(cmd *cobra.Command, args []string) error {
 		return stopWorkloadsByGroup(ctx, workloadManager, stopGroup)
 	}
 
-	// Stop single workload
-	workloadName := args[0]
-	group, err = workloadManager.StopWorkloads(ctx, []string{workloadName})
+	// Stop specified workloads
+	workloadNames := args
+	group, err = workloadManager.StopWorkloads(ctx, workloadNames)
 	if err != nil {
 		// If the workload is not found or not running, treat as a non-fatal error.
 		if errors.Is(err, rt.ErrWorkloadNotFound) ||
 			errors.Is(err, workloads.ErrWorkloadNotRunning) ||
 			errors.Is(err, types.ErrInvalidWorkloadName) {
-			fmt.Printf("workload %s is not running\n", workloadName)
+			fmt.Println("one or more workloads are not running")
 			return nil
 		}
-		return fmt.Errorf("unexpected error stopping workload: %v", err)
+		return fmt.Errorf("unexpected error stopping workloads: %v", err)
 	}
 
 	// Since the stop operation is asynchronous, wait for the group to finish.
 	if err := group.Wait(); err != nil {
-		return fmt.Errorf("failed to stop workload %s: %v", workloadName, err)
+		return fmt.Errorf("failed to stop workloads %v: %v", workloadNames, err)
 	}
-	fmt.Printf("workload %s stopped successfully\n", workloadName)
+	if len(workloadNames) == 1 {
+		fmt.Printf("workload %s stopped successfully\n", workloadNames[0])
+	} else {
+		formattedNames := strings.Join(workloadNames, ", ")
+		fmt.Printf("workloads %v stopped successfully\n", formattedNames)
+	}
 
 	return nil
 }

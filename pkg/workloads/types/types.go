@@ -14,14 +14,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
-// minimalRunConfig represents just the group field from a run configuration
+// minimalRunConfig represents just the fields we need from a run configuration
 type minimalRunConfig struct {
-	Group string `json:"group,omitempty" yaml:"group,omitempty"`
+	Group     string `json:"group,omitempty" yaml:"group,omitempty"`
+	ProxyMode string `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
 }
 
-// loadGroupFromRunConfig attempts to load group information from the runconfig
-// Returns empty string if runconfig doesn't exist or doesn't have group info
-func loadGroupFromRunConfig(ctx context.Context, name string) (string, error) {
+// loadRunConfigFields attempts to load specific fields from the runconfig
+// Returns empty struct if runconfig doesn't exist
+func loadRunConfigFields(ctx context.Context, name string) (*minimalRunConfig, error) {
 	// Try to load the runconfig
 	runConfig, err := state.LoadRunConfig(ctx, name, func(r io.Reader) (*minimalRunConfig, error) {
 		var config minimalRunConfig
@@ -33,13 +34,13 @@ func loadGroupFromRunConfig(ctx context.Context, name string) (string, error) {
 	})
 	if err != nil {
 		if errors.IsRunConfigNotFound(err) {
-			return "", nil
+			return &minimalRunConfig{}, nil
 		}
-		return "", err
+		return nil, err
 	}
 
-	// Return the group from the runconfig
-	return runConfig.Group, nil
+	// Return the runconfig
+	return runConfig, nil
 }
 
 // WorkloadFromContainerInfo creates a Workload struct from the runtime container info.
@@ -89,7 +90,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 	}
 
 	ctx := context.Background()
-	groupName, err := loadGroupFromRunConfig(ctx, name)
+	runConfig, err := loadRunConfigFields(ctx, name)
 	if err != nil {
 		return core.Workload{}, err
 	}
@@ -101,11 +102,12 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		URL:           url,
 		ToolType:      toolType,
 		TransportType: tType,
+		ProxyMode:     runConfig.ProxyMode,
 		Status:        container.State,
 		StatusContext: container.Status,
 		CreatedAt:     container.Created,
 		Port:          port,
 		Labels:        userLabels,
-		Group:         groupName,
+		Group:         runConfig.Group,
 	}, nil
 }

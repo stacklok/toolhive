@@ -47,6 +47,20 @@ const (
 	ManualSyncReasonRequested        = "manual-sync-requested"
 )
 
+// Condition reasons for status conditions
+const (
+	// Failure reasons
+	conditionReasonHandlerCreationFailed = "HandlerCreationFailed"
+	conditionReasonValidationFailed      = "ValidationFailed"
+	conditionReasonFetchFailed           = "FetchFailed"
+	conditionReasonStorageFailed         = "StorageFailed"
+
+	// Success reasons
+	conditionReasonSourceReady   = "SourceReady"
+	conditionReasonDataValid     = "DataValid"
+	conditionReasonSyncCompleted = "SyncCompleted"
+)
+
 // Manager manages synchronization operations for MCPRegistry resources
 type Manager interface {
 	// ShouldSync determines if a sync operation is needed
@@ -171,7 +185,7 @@ func (s *DefaultSyncManager) PerformSync(ctx context.Context, mcpRegistry *mcpv1
 		ctxLogger.Error(err, "Failed to create source handler")
 		if updateErr := s.updatePhaseFailedWithCondition(ctx, mcpRegistry,
 			fmt.Sprintf("Failed to create source handler: %v", err),
-			mcpv1alpha1.ConditionSourceAvailable, "HandlerCreationFailed", err.Error()); updateErr != nil {
+			mcpv1alpha1.ConditionSourceAvailable, conditionReasonHandlerCreationFailed, err.Error()); updateErr != nil {
 			ctxLogger.Error(updateErr, "Failed to update status after handler creation failure")
 		}
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
@@ -182,7 +196,7 @@ func (s *DefaultSyncManager) PerformSync(ctx context.Context, mcpRegistry *mcpv1
 		ctxLogger.Error(err, "Source validation failed")
 		if updateErr := s.updatePhaseFailedWithCondition(ctx, mcpRegistry,
 			fmt.Sprintf("Source validation failed: %v", err),
-			mcpv1alpha1.ConditionSourceAvailable, "ValidationFailed", err.Error()); updateErr != nil {
+			mcpv1alpha1.ConditionSourceAvailable, conditionReasonValidationFailed, err.Error()); updateErr != nil {
 			ctxLogger.Error(updateErr, "Failed to update status after validation failure")
 		}
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
@@ -196,7 +210,7 @@ func (s *DefaultSyncManager) PerformSync(ctx context.Context, mcpRegistry *mcpv1
 		mcpRegistry.Status.SyncAttempts++
 		if updateErr := s.updatePhaseFailedWithCondition(ctx, mcpRegistry,
 			fmt.Sprintf("Fetch failed: %v", err),
-			mcpv1alpha1.ConditionSyncSuccessful, "FetchFailed", err.Error()); updateErr != nil {
+			mcpv1alpha1.ConditionSyncSuccessful, conditionReasonFetchFailed, err.Error()); updateErr != nil {
 			ctxLogger.Error(updateErr, "Failed to update status after fetch failure")
 		}
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
@@ -212,7 +226,7 @@ func (s *DefaultSyncManager) PerformSync(ctx context.Context, mcpRegistry *mcpv1
 		ctxLogger.Error(err, "Failed to store registry data")
 		if updateErr := s.updatePhaseFailedWithCondition(ctx, mcpRegistry,
 			fmt.Sprintf("Storage failed: %v", err),
-			mcpv1alpha1.ConditionSyncSuccessful, "StorageFailed", err.Error()); updateErr != nil {
+			mcpv1alpha1.ConditionSyncSuccessful, conditionReasonStorageFailed, err.Error()); updateErr != nil {
 			ctxLogger.Error(updateErr, "Failed to update status after storage failure")
 		}
 		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
@@ -255,19 +269,19 @@ func (s *DefaultSyncManager) PerformSync(ctx context.Context, mcpRegistry *mcpv1
 	meta.SetStatusCondition(&mcpRegistry.Status.Conditions, metav1.Condition{
 		Type:    mcpv1alpha1.ConditionSourceAvailable,
 		Status:  metav1.ConditionTrue,
-		Reason:  "SourceReady",
+		Reason:  conditionReasonSourceReady,
 		Message: "Source configuration is valid and accessible",
 	})
 	meta.SetStatusCondition(&mcpRegistry.Status.Conditions, metav1.Condition{
 		Type:    mcpv1alpha1.ConditionDataValid,
 		Status:  metav1.ConditionTrue,
-		Reason:  "DataValid",
+		Reason:  conditionReasonDataValid,
 		Message: "Registry data is valid and parsed successfully",
 	})
 	meta.SetStatusCondition(&mcpRegistry.Status.Conditions, metav1.Condition{
 		Type:    mcpv1alpha1.ConditionSyncSuccessful,
 		Status:  metav1.ConditionTrue,
-		Reason:  "SyncCompleted",
+		Reason:  conditionReasonSyncCompleted,
 		Message: "Registry sync completed successfully",
 	})
 

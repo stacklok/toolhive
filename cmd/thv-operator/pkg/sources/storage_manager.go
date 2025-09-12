@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -14,27 +15,6 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/registry"
-)
-
-const (
-// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
-// ConfigMapStorageDataKey = "registry.json"
-// RegistryStorageComponent is the component label for the registry storage
-// RegistryStorageComponent = "registry-storage"
-)
-
-const (
-// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
-// ConfigMapStorageDataKey = "registry.json"
-// RegistryStorageComponent is the component label for the registry storage
-// RegistryStorageComponent = "registry-storage"
-)
-
-const (
-	// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
-	// ConfigMapStorageDataKey = "registry.json"
-	// RegistryStorageComponent is the component label for the registry storage
-	RegistryStorageComponent = "registry-storage"
 )
 
 const (
@@ -187,6 +167,10 @@ func (s *ConfigMapStorageManager) Delete(ctx context.Context, mcpRegistry *mcpv1
 	}
 
 	if err := s.client.Delete(ctx, configMap); err != nil {
+		// Ignore "not found" errors - delete should be idempotent
+		if errors.IsNotFound(err) {
+			return nil
+		}
 		return NewStorageError("delete", mcpRegistry.Name, "failed to delete storage ConfigMap", err)
 	}
 
@@ -228,10 +212,10 @@ func (e *StorageError) Unwrap() error {
 }
 
 // NewStorageError creates a new StorageError
-func NewStorageError(operation, registry, message string, cause error) *StorageError {
+func NewStorageError(operation, mcpRegistry, message string, cause error) *StorageError {
 	return &StorageError{
 		Operation: operation,
-		Registry:  registry,
+		Registry:  mcpRegistry,
 		Message:   message,
 		Cause:     cause,
 	}

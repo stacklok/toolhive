@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -14,27 +15,6 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/registry"
-)
-
-const (
-// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
-// ConfigMapStorageDataKey = "registry.json"
-// RegistryStorageComponent is the component label for the registry storage
-// RegistryStorageComponent = "registry-storage"
-)
-
-const (
-// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
-// ConfigMapStorageDataKey = "registry.json"
-// RegistryStorageComponent is the component label for the registry storage
-// RegistryStorageComponent = "registry-storage"
-)
-
-const (
-	// ConfigMapStorageDataKey is the key used to store registry data in ConfigMaps by the storage manager
-	// ConfigMapStorageDataKey = "registry.json"
-	// RegistryStorageComponent is the component label for the registry storage
-	RegistryStorageComponent = "registry-storage"
 )
 
 const (

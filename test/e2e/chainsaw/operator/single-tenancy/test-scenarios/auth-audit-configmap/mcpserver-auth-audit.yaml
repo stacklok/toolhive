@@ -1,0 +1,41 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: auth-audit-test
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: stdio
+  port: 8080
+  
+  # Authorization configuration (inline Cedar policies)
+  authzConfig:
+    type: inline
+    inline:
+      policies:
+        - "permit(principal, action, resource) when { principal has Profile };"
+        - "forbid(principal, action, resource) when { resource.sensitive == true };"
+      entitiesJson: '[]'
+  
+  # Audit configuration
+  audit:
+    enabled: true
+  
+  # OIDC configuration (inline)
+  oidcConfig:
+    type: inline
+    inline:
+      issuer: "https://accounts.google.com"
+      audience: "toolhive-test"
+      jwksUrl: "https://www.googleapis.com/oauth2/v3/certs"
+  
+  permissionProfile:
+    type: builtin
+    name: network
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"

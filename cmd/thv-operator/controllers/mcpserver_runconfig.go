@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -17,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -187,8 +189,6 @@ func (*MCPServerReconciler) runConfigContentEquals(current, desired *corev1.Conf
 
 // createRunConfigFromMCPServer converts MCPServer spec to RunConfig using the builder pattern
 // This creates a RunConfig for serialization to ConfigMap, not for direct execution
-//
-//nolint:gocyclo
 func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServer) (*runner.RunConfig, error) {
 	proxyHost := defaultProxyHost
 	if envHost := os.Getenv("TOOLHIVE_PROXY_HOST"); envHost != "" {
@@ -288,6 +288,10 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 			)
 		}
 	}
+	addAuthzConfigOptions(&options, m.Spec.AuthzConfig)
+	addAuditConfigOptions(&options, m.Spec.Audit)
+	addOIDCConfigOptions(&options, m.Spec.OIDCConfig)
+	addTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name)
 
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	return runner.NewOperatorRunConfigBuilder(
@@ -297,6 +301,137 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		nil,
 		options...,
 	)
+}
+
+// addAuthzConfigOptions adds authorization configuration options to the builder options
+func addAuthzConfigOptions(options *[]runner.RunConfigBuilderOption, authzConfig *mcpv1alpha1.AuthzConfigRef) {
+	if authzConfig == nil {
+		return
+	}
+
+	switch authzConfig.Type {
+	case mcpv1alpha1.AuthzConfigTypeInline:
+		if authzConfig.Inline != nil {
+			// Create authz.Config directly from inline configuration
+			config := &authz.Config{
+				Version: "1.0",
+				Type:    authz.ConfigTypeCedarV1,
+				Cedar: &authz.CedarConfig{
+					Policies:     authzConfig.Inline.Policies,
+					EntitiesJSON: authzConfig.Inline.EntitiesJSON,
+				},
+			}
+			*options = append(*options,
+				runner.WithAuthzConfig(config),
+			)
+		}
+	case mcpv1alpha1.AuthzConfigTypeConfigMap:
+		if authzConfig.ConfigMap != nil {
+			// For ConfigMap-based authz config, the configuration is propagated via runconfig.json
+			// The operator should read the ConfigMap and create the authz.Config object directly
+			// TODO: Implement ConfigMap reading and authz.Config creation
+			// For now, this is a placeholder that needs operator logic to read the ConfigMap
+			logger.Warnf("ConfigMap-based authz config not yet fully implemented for ConfigMap: %s, Key: %s",
+				authzConfig.ConfigMap.Name, authzConfig.ConfigMap.Key)
+		}
+	}
+}
+
+// addAuditConfigOptions adds audit configuration options to the builder options
+func addAuditConfigOptions(options *[]runner.RunConfigBuilderOption, auditConfig *mcpv1alpha1.AuditConfig) {
+	if auditConfig != nil && auditConfig.Enabled {
+		// Enable audit logging with default configuration
+		// The audit system will use default settings since no custom path is provided
+		*options = append(*options,
+			runner.WithAuditEnabled(true, ""),
+		)
+	}
+}
+
+// addOIDCConfigOptions adds OIDC configuration options to the builder options
+func addOIDCConfigOptions(options *[]runner.RunConfigBuilderOption, oidcConfig *mcpv1alpha1.OIDCConfigRef) {
+	if oidcConfig == nil {
+		return
+	}
+
+	var oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret string
+	var thvCABundle, jwksAuthTokenFile, resourceURL string
+	var jwksAllowPrivateIP bool
+
+	// Extract resourceURL if provided
+	resourceURL = oidcConfig.ResourceURL
+
+	switch oidcConfig.Type {
+	case mcpv1alpha1.OIDCConfigTypeKubernetes:
+		oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, thvCABundle, jwksAuthTokenFile =
+			extractKubernetesOIDCConfig(oidcConfig.Kubernetes)
+	case mcpv1alpha1.OIDCConfigTypeInline:
+		oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
+			jwksAuthTokenFile, jwksAllowPrivateIP = extractInlineOIDCConfig(oidcConfig.Inline)
+	case mcpv1alpha1.OIDCConfigTypeConfigMap:
+		handleConfigMapOIDCConfig(oidcConfig.ConfigMap)
+	}
+
+	// Add OIDC config if any values are present
+	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
+		oidcClientID != "" || oidcClientSecret != "" || jwksAuthTokenFile != "" || thvCABundle != "" {
+		*options = append(*options,
+			runner.WithOIDCConfig(
+				oidcIssuer,
+				oidcAudience,
+				oidcJwksURL,
+				oidcIntrospectionURL,
+				oidcClientID,
+				oidcClientSecret,
+				thvCABundle,
+				jwksAuthTokenFile,
+				resourceURL,
+				jwksAllowPrivateIP,
+			),
+		)
+	}
+}
+
+// extractKubernetesOIDCConfig extracts OIDC configuration from Kubernetes config
+func extractKubernetesOIDCConfig(k8sConfig *mcpv1alpha1.KubernetesOIDCConfig) (string, string, string, string, string, string) {
+	if k8sConfig == nil {
+		return "", "", "", "", "", ""
+	}
+
+	var thvCABundle, jwksAuthTokenFile string
+
+	// For Kubernetes OIDC, use service account token if UseClusterAuth is enabled
+	if k8sConfig.UseClusterAuth != nil && *k8sConfig.UseClusterAuth {
+		// #nosec G101 - This is a standard Kubernetes service account token path, not hardcoded credentials
+		jwksAuthTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+		thvCABundle = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+	}
+
+	return k8sConfig.Issuer, k8sConfig.Audience, k8sConfig.JWKSURL, k8sConfig.IntrospectionURL, thvCABundle, jwksAuthTokenFile
+}
+
+// extractInlineOIDCConfig extracts OIDC configuration from inline config
+func extractInlineOIDCConfig(inlineConfig *mcpv1alpha1.InlineOIDCConfig) (
+	string, string, string, string, string, string, string, bool,
+) {
+	if inlineConfig == nil {
+		return "", "", "", "", "", "", "", false
+	}
+
+	return inlineConfig.Issuer, inlineConfig.Audience, inlineConfig.JWKSURL, inlineConfig.IntrospectionURL,
+		inlineConfig.ClientID, inlineConfig.ClientSecret, inlineConfig.JWKSAuthTokenPath, inlineConfig.JWKSAllowPrivateIP
+}
+
+// handleConfigMapOIDCConfig handles ConfigMap-based OIDC configuration
+func handleConfigMapOIDCConfig(configMapConfig *mcpv1alpha1.ConfigMapOIDCRef) {
+	if configMapConfig != nil {
+		// For ConfigMap-based OIDC config, the configuration is propagated via runconfig.json
+		// The operator should read the ConfigMap and extract OIDC values directly
+		// TODO: Implement ConfigMap reading and OIDC config extraction
+		// For now, this is a placeholder that needs operator logic to read the ConfigMap
+		logger.Warnf("ConfigMap-based OIDC config not yet fully implemented for ConfigMap: %s, Key: %s",
+			configMapConfig.Name, configMapConfig.Key)
+	}
 }
 
 // labelsForRunConfig returns labels for run config ConfigMap
@@ -533,4 +668,76 @@ func convertSecretsFromMCPServer(secs []mcpv1alpha1.SecretRef) []string {
 		secrets = append(secrets, fmt.Sprintf("%s,target=%s", secret.Name, target))
 	}
 	return secrets
+}
+
+// addTelemetryConfigOptions adds telemetry configuration options to the builder options
+func addTelemetryConfigOptions(
+	options *[]runner.RunConfigBuilderOption,
+	telemetryConfig *mcpv1alpha1.TelemetryConfig,
+	mcpServerName string,
+) {
+	if telemetryConfig == nil {
+		return
+	}
+
+	// Default values
+	var otelEndpoint string
+	var otelEnablePrometheusMetricsPath bool
+	var otelTracingEnabled bool
+	var otelMetricsEnabled bool
+	var otelServiceName string
+	var otelSamplingRate = 0.05 // Default sampling rate
+	var otelHeaders []string
+	var otelInsecure bool
+	var otelEnvironmentVariables []string
+
+	// Process OpenTelemetry configuration
+	if telemetryConfig.OpenTelemetry != nil && telemetryConfig.OpenTelemetry.Enabled {
+		otel := telemetryConfig.OpenTelemetry
+
+		otelEndpoint = otel.Endpoint
+		otelInsecure = otel.Insecure
+		otelHeaders = otel.Headers
+
+		// Use MCPServer name as service name if not specified
+		if otel.ServiceName != "" {
+			otelServiceName = otel.ServiceName
+		} else {
+			otelServiceName = mcpServerName
+		}
+
+		// Handle tracing configuration
+		if otel.Tracing != nil {
+			otelTracingEnabled = otel.Tracing.Enabled
+			if otel.Tracing.SamplingRate != "" {
+				// Parse sampling rate string to float64
+				if rate, err := strconv.ParseFloat(otel.Tracing.SamplingRate, 64); err == nil {
+					otelSamplingRate = rate
+				}
+			}
+		}
+
+		// Handle metrics configuration
+		if otel.Metrics != nil {
+			otelMetricsEnabled = otel.Metrics.Enabled
+		}
+	}
+
+	// Process Prometheus configuration
+	if telemetryConfig.Prometheus != nil {
+		otelEnablePrometheusMetricsPath = telemetryConfig.Prometheus.Enabled
+	}
+
+	// Add telemetry config to options
+	*options = append(*options, runner.WithTelemetryConfig(
+		otelEndpoint,
+		otelEnablePrometheusMetricsPath,
+		otelTracingEnabled,
+		otelMetricsEnabled,
+		otelServiceName,
+		otelSamplingRate,
+		otelHeaders,
+		otelInsecure,
+		otelEnvironmentVariables,
+	))
 }

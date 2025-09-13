@@ -60,6 +60,7 @@ const (
 type dockerAPI interface {
 	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
 	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
 }
 
 // Client implements the Deployer interface for Docker (and compatible runtimes)
@@ -303,7 +304,7 @@ func (c *Client) StopWorkload(ctx context.Context, workloadName string) error {
 
 	// Use a reasonable timeout
 	timeoutSeconds := 30
-	err = c.client.ContainerStop(ctx, workloadName, container.StopOptions{Timeout: &timeoutSeconds})
+	err = c.api.ContainerStop(ctx, workloadName, container.StopOptions{Timeout: &timeoutSeconds})
 	if err != nil {
 		return NewContainerError(err, workloadName, fmt.Sprintf("failed to stop workload: %v", err))
 	}
@@ -708,7 +709,7 @@ func (c *Client) getPermissionConfigFromProfile(
 
 // findExistingContainer finds a container with the exact name
 func (c *Client) findExistingContainer(ctx context.Context, name string) (string, error) {
-	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+	containers, err := c.api.ContainerList(ctx, container.ListOptions{
 		All: true, // Include stopped containers
 		Filters: filters.NewArgs(
 			filters.Arg("name", name),
@@ -1471,11 +1472,13 @@ func (c *Client) stopProxyContainer(ctx context.Context, containerName string, t
 	containerId, err := c.findExistingContainer(ctx, containerName)
 	if err != nil {
 		logger.Debugf("Failed to find internal container %s: %v", containerName, err)
-	} else {
-		err = c.client.ContainerStop(ctx, containerId, container.StopOptions{Timeout: &timeoutSeconds})
-		if err != nil {
-			logger.Debugf("Failed to stop internal container %s: %v", containerName, err)
-		}
+		return
+	}
+	if containerId == "" {
+		return
+	}
+	if err := c.api.ContainerStop(ctx, containerId, container.StopOptions{Timeout: &timeoutSeconds}); err != nil {
+		logger.Debugf("Failed to stop internal container %s: %v", containerName, err)
 	}
 }
 

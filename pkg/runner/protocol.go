@@ -48,7 +48,7 @@ func BuildFromProtocolSchemeWithName(
 	imageName string,
 	dryRun bool,
 ) (string, error) {
-	transportType, packageName, err := parseProtocolScheme(serverOrImage)
+	transportType, packageName, err := ParseProtocolScheme(serverOrImage)
 	if err != nil {
 		return "", err
 	}
@@ -70,8 +70,8 @@ func BuildFromProtocolSchemeWithName(
 	return buildImageFromTemplateWithName(ctx, imageManager, transportType, packageName, templateData, imageName)
 }
 
-// parseProtocolScheme extracts the transport type and package name from the protocol scheme.
-func parseProtocolScheme(serverOrImage string) (templates.TransportType, string, error) {
+// ParseProtocolScheme extracts the transport type and package name from the protocol scheme.
+func ParseProtocolScheme(serverOrImage string) (templates.TransportType, string, error) {
 	if strings.HasPrefix(serverOrImage, UVXScheme) {
 		return templates.TransportTypeUVX, strings.TrimPrefix(serverOrImage, UVXScheme), nil
 	}
@@ -266,7 +266,7 @@ func generateImageName(transportType templates.TransportType, packageName string
 	tag := time.Now().Format("20060102150405")
 	return strings.ToLower(fmt.Sprintf("toolhivelocal/%s-%s:%s",
 		string(transportType),
-		packageNameToImageName(packageName),
+		PackageNameToImageName(packageName),
 		tag))
 }
 
@@ -335,10 +335,10 @@ func buildImageFromTemplateWithName(
 	return finalImageName, nil
 }
 
-// Replace slashes with dashes to create a valid Docker image name. If there
+// PackageNameToImageName replaces slashes with dashes to create a valid Docker image name. If there
 // is a version in the package name, the @ is replaced with a dash.
 // For local paths, we clean up the path to make it a valid image name.
-func packageNameToImageName(packageName string) string {
+func PackageNameToImageName(packageName string) string {
 	imageName := packageName
 
 	// Handle local paths by cleaning them up

@@ -32,6 +32,7 @@ type StdioTransport struct {
 	containerName     string
 	deployer          rt.Deployer
 	debug             bool
+	networkMode       string
 	middlewares       []types.MiddlewareFunction
 	prometheusHandler http.Handler
 
@@ -102,12 +103,19 @@ func (t *StdioTransport) Setup(
 	k8sPodTemplatePatch string,
 	isolateNetwork bool,
 	ignoreConfig *ignore.Config,
+	networkMode string,
 ) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
 	t.deployer = runtime
 	t.containerName = containerName
+	t.networkMode = networkMode
+
+	// Debug: Log the network mode being set
+	if networkMode != "" {
+		logger.Infof("STDIO Transport: Setting network mode to %s for container %s", networkMode, containerName)
+	}
 
 	// Add transport-specific environment variables
 	envVars["MCP_TRANSPORT"] = "stdio"
@@ -117,6 +125,7 @@ func (t *StdioTransport) Setup(
 	containerOptions.AttachStdio = true
 	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
 	containerOptions.IgnoreConfig = ignoreConfig
+	containerOptions.NetworkMode = t.networkMode
 
 	// Create the container
 	logger.Infof("Deploying workload %s from image %s...", containerName, image)

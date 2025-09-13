@@ -36,6 +36,7 @@ type HTTPTransport struct {
 	containerName     string
 	deployer          rt.Deployer
 	debug             bool
+	networkMode       string
 	middlewares       []types.MiddlewareFunction
 	prometheusHandler http.Handler
 	authInfoHandler   http.Handler
@@ -156,6 +157,7 @@ func (t *HTTPTransport) Setup(
 	k8sPodTemplatePatch string,
 	isolateNetwork bool,
 	ignoreConfig *ignore.Config,
+	networkMode string,
 ) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -169,6 +171,12 @@ func (t *HTTPTransport) Setup(
 
 	t.deployer = runtime
 	t.containerName = containerName
+	t.networkMode = networkMode
+
+	// Debug: Log the network mode being set
+	if networkMode != "" {
+		logger.Infof("HTTP Transport: Setting network mode to %s for container %s", networkMode, containerName)
+	}
 
 	env, ok := transportEnvMap[t.transportType]
 	if !ok {
@@ -185,6 +193,7 @@ func (t *HTTPTransport) Setup(
 	containerOptions := rt.NewDeployWorkloadOptions()
 	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
 	containerOptions.IgnoreConfig = ignoreConfig
+	containerOptions.NetworkMode = t.networkMode
 
 	// Expose the target port in the container
 	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)

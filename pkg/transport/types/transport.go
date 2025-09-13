@@ -91,9 +91,10 @@ type Transport interface {
 	// The runtime parameter provides access to container operations.
 	// The permissionProfile is used to configure container permissions.
 	// The k8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template.
+	// The networkMode specifies the network mode for the container (e.g., "host", "bridge", "none").
 	Setup(ctx context.Context, runtime rt.Deployer, containerName string, image string, cmdArgs []string,
 		envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
-		isolateNetwork bool, ignoreConfig *ignore.Config) error
+		isolateNetwork bool, ignoreConfig *ignore.Config, networkMode string) error
 
 	// Start initializes the transport and begins processing messages.
 	// The transport is responsible for container operations like attaching to stdin/stdout if needed.

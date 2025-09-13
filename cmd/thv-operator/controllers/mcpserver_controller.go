@@ -543,6 +543,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		if m.Spec.TargetPort != 0 {
 			args = append(args, fmt.Sprintf("--target-port=%d", m.Spec.TargetPort))
 		}
+		// Add proxy mode for stdio transport
+		if m.Spec.ProxyMode != "" {
+			args = append(args, fmt.Sprintf("--proxy-mode=%s", m.Spec.ProxyMode))
+		}
 	}
 
 	// Add pod template patch and permission profile only if not using ConfigMap

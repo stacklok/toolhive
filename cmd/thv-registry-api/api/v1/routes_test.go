@@ -262,7 +262,7 @@ func TestHealthRouter(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
-	mockSvc := mocks.NewMockService(ctrl)
+	mockSvc := mocks.NewMockRegistryService(ctrl)
 	// Set up expectations for readiness check
 	mockSvc.EXPECT().CheckReadiness(gomock.Any()).Return(nil).AnyTimes()
 
@@ -313,7 +313,7 @@ func TestRegistryRouter(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
-	mockSvc := mocks.NewMockService(ctrl)
+	mockSvc := mocks.NewMockRegistryService(ctrl)
 	// Set up expectations for all routes
 	mockSvc.EXPECT().GetRegistry(gomock.Any()).Return(&registry.Registry{
 		Version:     "1.0.0",
@@ -394,7 +394,7 @@ func TestListServers_FormatParameter(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
-	mockSvc := mocks.NewMockService(ctrl)
+	mockSvc := mocks.NewMockRegistryService(ctrl)
 	// Expect successful calls for toolhive format only
 	mockSvc.EXPECT().ListServers(gomock.Any()).Return([]registry.ServerMetadata{}, nil).Times(2) // default and explicit toolhive
 
@@ -451,7 +451,7 @@ func TestGetServer_NotFound(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	mockSvc := mocks.NewMockService(ctrl)
+	mockSvc := mocks.NewMockRegistryService(ctrl)
 	// Expect server not found error
 	mockSvc.EXPECT().GetServer(gomock.Any(), "nonexistent").Return(nil, service.ErrServerNotFound)
 
@@ -471,7 +471,7 @@ func TestNewServer(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
-	mockSvc := mocks.NewMockService(ctrl)
+	mockSvc := mocks.NewMockRegistryService(ctrl)
 
 	// Set up expectations for all test routes
 	mockSvc.EXPECT().CheckReadiness(gomock.Any()).Return(nil).AnyTimes()
@@ -528,7 +528,7 @@ func TestNewServer_WithMockService(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	mockSvc := mocks.NewMockService(ctrl)
+	mockSvc := mocks.NewMockRegistryService(ctrl)
 
 	// Expect readiness check to succeed
 	mockSvc.EXPECT().CheckReadiness(gomock.Any()).Return(nil)
@@ -552,7 +552,7 @@ func TestNewServer_WithMiddleware(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	mockSvc := mocks.NewMockService(ctrl)
+	mockSvc := mocks.NewMockRegistryService(ctrl)
 
 	// Expect readiness check to succeed
 	mockSvc.EXPECT().CheckReadiness(gomock.Any()).Return(nil)

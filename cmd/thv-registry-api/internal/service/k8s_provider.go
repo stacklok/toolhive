@@ -120,36 +120,7 @@ func (p *K8sDeploymentProvider) ListDeployedServers(ctx context.Context) ([]*Dep
 
 	// List MCPServer resources across all namespaces using the registry labels
 	labelSelector := p.getDeployedServerLabelSelector()
-	var mcpServerList thvv1alpha1.MCPServerList
-
-	listOpts := &client.ListOptions{}
-	if selector, err := metav1.ParseToLabelSelector(labelSelector); err == nil {
-		if labelSel, err := metav1.LabelSelectorAsSelector(selector); err == nil {
-			listOpts.LabelSelector = labelSel
-		}
-	}
-
-	if err := p.client.List(ctx, &mcpServerList, listOpts); err != nil {
-		return nil, fmt.Errorf("failed to list MCPServer resources: %w", err)
-	}
-
-	servers := []*DeployedServer{}
-	for _, mcpServer := range mcpServerList.Items {
-		server := &DeployedServer{
-			Name:      mcpServer.Name,
-			Namespace: mcpServer.Namespace,
-			Status:    string(mcpServer.Status.Phase),
-			Image:     mcpServer.Spec.Image,
-			Transport: mcpServer.Spec.Transport,
-		}
-
-		// Check if MCPServer is ready based on phase and conditions
-		server.Ready = isMCPServerReady(&mcpServer)
-
-		servers = append(servers, server)
-	}
-
-	return servers, nil
+	return p.listDeployedBySelector(ctx, labelSelector)
 }
 
 // GetDeployedServer implements DeploymentProvider.GetDeployedServer.
@@ -161,6 +132,10 @@ func (p *K8sDeploymentProvider) GetDeployedServer(ctx context.Context, name stri
 
 	// Create label selector to find MCPServers with the specified server-registry-name
 	labelSelector := fmt.Sprintf("%s=%s", LabelServerRegistryName, name)
+	return p.listDeployedBySelector(ctx, labelSelector)
+}
+
+func (p *K8sDeploymentProvider) listDeployedBySelector(ctx context.Context, labelSelector string) ([]*DeployedServer, error) {
 	var mcpServerList thvv1alpha1.MCPServerList
 
 	listOpts := &client.ListOptions{}
@@ -175,26 +150,27 @@ func (p *K8sDeploymentProvider) GetDeployedServer(ctx context.Context, name stri
 	}
 
 	servers := []*DeployedServer{}
-	for _, mcpServer := range mcpServerList.Items {
-		server := &DeployedServer{
-			Name:      mcpServer.Name,
-			Namespace: mcpServer.Namespace,
-			Status:    string(mcpServer.Status.Phase),
-			Image:     mcpServer.Spec.Image,
-			Transport: mcpServer.Spec.Transport,
-		}
-
-		// Check if MCPServer is ready based on phase and conditions
-		server.Ready = isMCPServerReady(&mcpServer)
-
-		servers = append(servers, server)
+	for i := range mcpServerList.Items {
+		srv := newDeployedServerFromMCP(&mcpServerList.Items[i])
+		servers = append(servers, srv)
 	}
 
 	return servers, nil
+
 }
 
-// GetSource implements DeploymentProvider.GetSource.
-// It returns a descriptive string indicating the Kubernetes deployment source.
+func newDeployedServerFromMCP(mcpServer *thvv1alpha1.MCPServer) *DeployedServer {
+	srv := &DeployedServer{
+		Name:        mcpServer.Name,
+		Namespace:   mcpServer.Namespace,
+		Status:      string(mcpServer.Status.Phase),
+		Image:       mcpServer.Spec.Image,
+		Transport:   mcpServer.Spec.Transport,
+		EndpointURL: mcpServer.Status.URL,
+	}
+	srv.Ready = isMCPServerReady(mcpServer)
+	return srv
+}
 
 // isMCPServerReady checks if an MCPServer is ready by examining its phase and conditions
 func isMCPServerReady(mcpServer *thvv1alpha1.MCPServer) bool {

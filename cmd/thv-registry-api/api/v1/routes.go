@@ -56,18 +56,18 @@ type ErrorResponse struct {
 
 // Routes defines the routes for the registry API with dependency injection
 type Routes struct {
-	service service.Service
+	service service.RegistryService
 }
 
 // NewRoutes creates a new Routes instance with the provided service
-func NewRoutes(svc service.Service) *Routes {
+func NewRoutes(svc service.RegistryService) *Routes {
 	return &Routes{
 		service: svc,
 	}
 }
 
 // Router creates a new router for the registry API
-func Router(svc service.Service) http.Handler {
+func Router(svc service.RegistryService) http.Handler {
 	routes := NewRoutes(svc)
 
 	r := chi.NewRouter()
@@ -333,7 +333,7 @@ func (rr *Routes) getDeployedServer(w http.ResponseWriter, r *http.Request) {
 }
 
 // HealthRouter creates a router for health check endpoints
-func HealthRouter(svc service.Service) http.Handler {
+func HealthRouter(svc service.RegistryService) http.Handler {
 	r := chi.NewRouter()
 
 	r.Get("/health", healthHandler)
@@ -366,11 +366,11 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 //	@Success		200	{object}	map[string]string
 //	@Failure		503	{object}	ErrorResponse
 //	@Router			/readiness [get]
-func readinessHandler(svc service.Service) http.HandlerFunc {
+func readinessHandler(svc service.RegistryService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := svc.CheckReadiness(r.Context()); err != nil {
 			errorResp := ErrorResponse{
-				Error: "Service not ready: " + err.Error(),
+				Error: "RegistryService not ready: " + err.Error(),
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)

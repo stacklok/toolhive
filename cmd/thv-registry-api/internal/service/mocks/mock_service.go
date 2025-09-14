@@ -18,32 +18,32 @@ import (
 	gomock "go.uber.org/mock/gomock"
 )
 
-// MockService is a mock of Service interface.
-type MockService struct {
+// MockRegistryService is a mock of RegistryService interface.
+type MockRegistryService struct {
 	ctrl     *gomock.Controller
-	recorder *MockServiceMockRecorder
+	recorder *MockRegistryServiceMockRecorder
 	isgomock struct{}
 }
 
-// MockServiceMockRecorder is the mock recorder for MockService.
-type MockServiceMockRecorder struct {
-	mock *MockService
+// MockRegistryServiceMockRecorder is the mock recorder for MockRegistryService.
+type MockRegistryServiceMockRecorder struct {
+	mock *MockRegistryService
 }
 
-// NewMockService creates a new mock instance.
-func NewMockService(ctrl *gomock.Controller) *MockService {
-	mock := &MockService{ctrl: ctrl}
-	mock.recorder = &MockServiceMockRecorder{mock}
+// NewMockRegistryService creates a new mock instance.
+func NewMockRegistryService(ctrl *gomock.Controller) *MockRegistryService {
+	mock := &MockRegistryService{ctrl: ctrl}
+	mock.recorder = &MockRegistryServiceMockRecorder{mock}
 	return mock
 }
 
 // EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockService) EXPECT() *MockServiceMockRecorder {
+func (m *MockRegistryService) EXPECT() *MockRegistryServiceMockRecorder {
 	return m.recorder
 }
 
 // CheckReadiness mocks base method.
-func (m *MockService) CheckReadiness(ctx context.Context) error {
+func (m *MockRegistryService) CheckReadiness(ctx context.Context) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "CheckReadiness", ctx)
 	ret0, _ := ret[0].(error)
@@ -51,13 +51,13 @@ func (m *MockService) CheckReadiness(ctx context.Context) error {
 }
 
 // CheckReadiness indicates an expected call of CheckReadiness.
-func (mr *MockServiceMockRecorder) CheckReadiness(ctx any) *gomock.Call {
+func (mr *MockRegistryServiceMockRecorder) CheckReadiness(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckReadiness", reflect.TypeOf((*MockService)(nil).CheckReadiness), ctx)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckReadiness", reflect.TypeOf((*MockRegistryService)(nil).CheckReadiness), ctx)
 }
 
 // GetDeployedServer mocks base method.
-func (m *MockService) GetDeployedServer(ctx context.Context, name string) ([]*service.DeployedServer, error) {
+func (m *MockRegistryService) GetDeployedServer(ctx context.Context, name string) ([]*service.DeployedServer, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetDeployedServer", ctx, name)
 	ret0, _ := ret[0].([]*service.DeployedServer)
@@ -66,13 +66,13 @@ func (m *MockService) GetDeployedServer(ctx context.Context, name string) ([]*se
 }
 
 // GetDeployedServer indicates an expected call of GetDeployedServer.
-func (mr *MockServiceMockRecorder) GetDeployedServer(ctx, name any) *gomock.Call {
+func (mr *MockRegistryServiceMockRecorder) GetDeployedServer(ctx, name any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetDeployedServer", reflect.TypeOf((*MockService)(nil).GetDeployedServer), ctx, name)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetDeployedServer", reflect.TypeOf((*MockRegistryService)(nil).GetDeployedServer), ctx, name)
 }
 
 // GetRegistry mocks base method.
-func (m *MockService) GetRegistry(ctx context.Context) (*registry.Registry, string, error) {
+func (m *MockRegistryService) GetRegistry(ctx context.Context) (*registry.Registry, string, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetRegistry", ctx)
 	ret0, _ := ret[0].(*registry.Registry)
@@ -82,13 +82,13 @@ func (m *MockService) GetRegistry(ctx context.Context) (*registry.Registry, stri
 }
 
 // GetRegistry indicates an expected call of GetRegistry.
-func (mr *MockServiceMockRecorder) GetRegistry(ctx any) *gomock.Call {
+func (mr *MockRegistryServiceMockRecorder) GetRegistry(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRegistry", reflect.TypeOf((*MockService)(nil).GetRegistry), ctx)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRegistry", reflect.TypeOf((*MockRegistryService)(nil).GetRegistry), ctx)
 }
 
 // GetServer mocks base method.
-func (m *MockService) GetServer(ctx context.Context, name string) (registry.ServerMetadata, error) {
+func (m *MockRegistryService) GetServer(ctx context.Context, name string) (registry.ServerMetadata, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetServer", ctx, name)
 	ret0, _ := ret[0].(registry.ServerMetadata)
@@ -97,13 +97,13 @@ func (m *MockService) GetServer(ctx context.Context, name string) (registry.Serv
 }
 
 // GetServer indicates an expected call of GetServer.
-func (mr *MockServiceMockRecorder) GetServer(ctx, name any) *gomock.Call {
+func (mr *MockRegistryServiceMockRecorder) GetServer(ctx, name any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetServer", reflect.TypeOf((*MockService)(nil).GetServer), ctx, name)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetServer", reflect.TypeOf((*MockRegistryService)(nil).GetServer), ctx, name)
 }
 
 // ListDeployedServers mocks base method.
-func (m *MockService) ListDeployedServers(ctx context.Context) ([]*service.DeployedServer, error) {
+func (m *MockRegistryService) ListDeployedServers(ctx context.Context) ([]*service.DeployedServer, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ListDeployedServers", ctx)
 	ret0, _ := ret[0].([]*service.DeployedServer)
@@ -112,13 +112,13 @@ func (m *MockService) ListDeployedServers(ctx context.Context) ([]*service.Deplo
 }
 
 // ListDeployedServers indicates an expected call of ListDeployedServers.
-func (mr *MockServiceMockRecorder) ListDeployedServers(ctx any) *gomock.Call {
+func (mr *MockRegistryServiceMockRecorder) ListDeployedServers(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListDeployedServers", reflect.TypeOf((*MockService)(nil).ListDeployedServers), ctx)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListDeployedServers", reflect.TypeOf((*MockRegistryService)(nil).ListDeployedServers), ctx)
 }
 
 // ListServers mocks base method.
-func (m *MockService) ListServers(ctx context.Context) ([]registry.ServerMetadata, error) {
+func (m *MockRegistryService) ListServers(ctx context.Context) ([]registry.ServerMetadata, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ListServers", ctx)
 	ret0, _ := ret[0].([]registry.ServerMetadata)
@@ -127,7 +127,7 @@ func (m *MockService) ListServers(ctx context.Context) ([]registry.ServerMetadat
 }
 
 // ListServers indicates an expected call of ListServers.
-func (mr *MockServiceMockRecorder) ListServers(ctx any) *gomock.Call {
+func (mr *MockRegistryServiceMockRecorder) ListServers(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListServers", reflect.TypeOf((*MockService)(nil).ListServers), ctx)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListServers", reflect.TypeOf((*MockRegistryService)(nil).ListServers), ctx)
 }

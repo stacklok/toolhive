@@ -28,7 +28,7 @@ func WithMiddlewares(mw ...func(http.Handler) http.Handler) ServerOption {
 }
 
 // NewServer creates and configures the HTTP router with the given service and options
-func NewServer(svc service.Service, opts ...ServerOption) *chi.Mux {
+func NewServer(svc service.RegistryService, opts ...ServerOption) *chi.Mux {
 	// Initialize configuration with defaults
 	cfg := &serverConfig{
 		middlewares: []func(http.Handler) http.Handler{},

@@ -1,4 +1,4 @@
-// Package service provides the business logic for the MCP registry API
+// Package regSvc provides the business logic for the MCP registry API
 package service
 
 import (
@@ -32,9 +32,9 @@ func (s *serverWithName) GetName() string {
 
 //go:generate mockgen -destination=mocks/mock_service.go -package=mocks -source=service.go Service
 
-// Service defines the interface for registry operations
-type Service interface {
-	// CheckReadiness checks if the service is ready to serve requests
+// RegistryService defines the interface for registry operations
+type RegistryService interface {
+	// CheckReadiness checks if the regSvc is ready to serve requests
 	CheckReadiness(ctx context.Context) error
 
 	// GetRegistry returns the registry data with metadata
@@ -53,8 +53,8 @@ type Service interface {
 	GetDeployedServer(ctx context.Context, name string) ([]*DeployedServer, error)
 }
 
-// service implements the Service interface
-type service struct {
+// regSvc implements the RegistryService interface
+type regSvc struct {
 	registryProvider   RegistryDataProvider
 	deploymentProvider DeploymentProvider
 
@@ -64,17 +64,17 @@ type service struct {
 	cacheDuration time.Duration
 }
 
-// Option is a functional option for configuring the service
-type Option func(*service)
+// Option is a functional option for configuring the regSvc
+type Option func(*regSvc)
 
 // WithCacheDuration sets a custom cache duration for registry data
 func WithCacheDuration(duration time.Duration) Option {
-	return func(s *service) {
+	return func(s *regSvc) {
 		s.cacheDuration = duration
 	}
 }
 
-// NewService creates a new registry service with the given providers and options.
+// NewService creates a new registry regSvc with the given providers and options.
 // registryProvider is required for registry data access.
 // deploymentProvider can be nil if deployed servers functionality is not needed.
 func NewService(
@@ -82,12 +82,12 @@ func NewService(
 	registryProvider RegistryDataProvider,
 	deploymentProvider DeploymentProvider,
 	opts ...Option,
-) (Service, error) {
+) (RegistryService, error) {
 	if registryProvider == nil {
 		return nil, fmt.Errorf("registry data provider is required")
 	}
 
-	s := &service{
+	s := &regSvc{
 		registryProvider:   registryProvider,
 		deploymentProvider: deploymentProvider,
 		cacheDuration:      30 * time.Second, // Default cache duration
@@ -101,14 +101,14 @@ func NewService(
 	// Load initial data
 	if err := s.loadRegistryData(ctx); err != nil {
 		logger.Warnf("Failed to load initial registry data: %v", err)
-		// Don't fail service creation, allow it to retry later
+		// Don't fail regSvc creation, allow it to retry later
 	}
 
 	return s, nil
 }
 
 // loadRegistryData loads registry data using the configured provider
-func (s *service) loadRegistryData(ctx context.Context) error {
+func (s *regSvc) loadRegistryData(ctx context.Context) error {
 	if s.registryProvider == nil {
 		return fmt.Errorf("registry data provider not initialized")
 	}
@@ -128,7 +128,7 @@ func (s *service) loadRegistryData(ctx context.Context) error {
 }
 
 // refreshDataIfNeeded refreshes the registry data if cache has expired
-func (s *service) refreshDataIfNeeded(ctx context.Context) error {
+func (s *regSvc) refreshDataIfNeeded(ctx context.Context) error {
 	if s.registryProvider == nil {
 		return nil // No registry provider configured
 	}
@@ -145,8 +145,8 @@ func (s *service) refreshDataIfNeeded(ctx context.Context) error {
 	return nil
 }
 
-// CheckReadiness implements Service.CheckReadiness
-func (s *service) CheckReadiness(ctx context.Context) error {
+// CheckReadiness implements RegistryService.CheckReadiness
+func (s *regSvc) CheckReadiness(ctx context.Context) error {
 	// Check if we have registry data loaded when a provider is configured
 	if s.registryProvider != nil {
 		if s.registryData == nil {
@@ -159,8 +159,8 @@ func (s *service) CheckReadiness(ctx context.Context) error {
 	return nil
 }
 
-// GetRegistry implements Service.GetRegistry
-func (s *service) GetRegistry(ctx context.Context) (*registry.Registry, string, error) {
+// GetRegistry implements RegistryService.GetRegistry
+func (s *regSvc) GetRegistry(ctx context.Context) (*registry.Registry, string, error) {
 	if err := s.refreshDataIfNeeded(ctx); err != nil {
 		logger.Warnf("Failed to refresh data: %v", err)
 	}
@@ -183,8 +183,8 @@ func (s *service) GetRegistry(ctx context.Context) (*registry.Registry, string, 
 	return s.registryData, source, nil
 }
 
-// ListServers implements Service.ListServers
-func (s *service) ListServers(ctx context.Context) ([]registry.ServerMetadata, error) {
+// ListServers implements RegistryService.ListServers
+func (s *regSvc) ListServers(ctx context.Context) ([]registry.ServerMetadata, error) {
 	if err := s.refreshDataIfNeeded(ctx); err != nil {
 		logger.Warnf("Failed to refresh data: %v", err)
 	}
@@ -196,8 +196,8 @@ func (s *service) ListServers(ctx context.Context) ([]registry.ServerMetadata, e
 	return []registry.ServerMetadata{}, nil
 }
 
-// GetServer implements Service.GetServer
-func (s *service) GetServer(ctx context.Context, name string) (registry.ServerMetadata, error) {
+// GetServer implements RegistryService.GetServer
+func (s *regSvc) GetServer(ctx context.Context, name string) (registry.ServerMetadata, error) {
 	if err := s.refreshDataIfNeeded(ctx); err != nil {
 		logger.Warnf("Failed to refresh data: %v", err)
 	}
@@ -209,8 +209,8 @@ func (s *service) GetServer(ctx context.Context, name string) (registry.ServerMe
 	return nil, ErrServerNotFound
 }
 
-// ListDeployedServers implements Service.ListDeployedServers
-func (s *service) ListDeployedServers(ctx context.Context) ([]*DeployedServer, error) {
+// ListDeployedServers implements RegistryService.ListDeployedServers
+func (s *regSvc) ListDeployedServers(ctx context.Context) ([]*DeployedServer, error) {
 	if s.deploymentProvider == nil {
 		return []*DeployedServer{}, nil
 	}
@@ -218,8 +218,8 @@ func (s *service) ListDeployedServers(ctx context.Context) ([]*DeployedServer, e
 	return s.deploymentProvider.ListDeployedServers(ctx)
 }
 
-// GetDeployedServer implements Service.GetDeployedServer
-func (s *service) GetDeployedServer(ctx context.Context, name string) ([]*DeployedServer, error) {
+// GetDeployedServer implements RegistryService.GetDeployedServer
+func (s *regSvc) GetDeployedServer(ctx context.Context, name string) ([]*DeployedServer, error) {
 	if s.deploymentProvider == nil {
 		return []*DeployedServer{}, nil
 	}
@@ -228,7 +228,7 @@ func (s *service) GetDeployedServer(ctx context.Context, name string) ([]*Deploy
 }
 
 // getAllServersWithNames returns all servers with names properly populated from map keys
-func (s *service) getAllServersWithNames() []registry.ServerMetadata {
+func (s *regSvc) getAllServersWithNames() []registry.ServerMetadata {
 	servers := make([]registry.ServerMetadata, 0, len(s.registryData.Servers)+len(s.registryData.RemoteServers))
 
 	// Add container servers with names
@@ -251,7 +251,7 @@ func (s *service) getAllServersWithNames() []registry.ServerMetadata {
 }
 
 // getServerByNameWithName returns a server by name with name properly populated
-func (s *service) getServerByNameWithName(name string) (registry.ServerMetadata, error) {
+func (s *regSvc) getServerByNameWithName(name string) (registry.ServerMetadata, error) {
 	// Check container servers first
 	if server, ok := s.registryData.Servers[name]; ok {
 		return &serverWithName{

@@ -19,6 +19,7 @@ import (
 
 	v1 "github.com/stacklok/toolhive/cmd/thv-registry-api/api/v1"
 	"github.com/stacklok/toolhive/cmd/thv-registry-api/internal/service"
+	thvk8scli "github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -41,7 +42,6 @@ const (
 func init() {
 	serveCmd.Flags().String("address", ":8080", "Address to listen on")
 	serveCmd.Flags().String("configmap", "", "ConfigMap name containing registry data")
-	serveCmd.Flags().String("namespace", "default", "Kubernetes namespace")
 
 	// Bind flags to viper
 	_ = viper.BindPFlag("address", serveCmd.Flags().Lookup("address"))
@@ -70,7 +70,8 @@ func runServe(_ *cobra.Command, _ []string) error {
 	// Get configuration
 	address := viper.GetString("address")
 	configMapName := viper.GetString("configmap")
-	namespace := viper.GetString("namespace")
+
+	namespace := thvk8scli.GetCurrentNamespace()
 
 	logger.Infof("Starting registry API server on %s", address)
 	logger.Infof("ConfigMap: %s, Namespace: %s", configMapName, namespace)

@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-registry-api/docs"
 	"github.com/stacklok/toolhive/cmd/thv-registry-api/internal/service"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
 
@@ -186,15 +187,8 @@ func (rr *Routes) listServers(w http.ResponseWriter, r *http.Request) {
 
 	// Convert to response format
 	serverResponses := make([]ServerResponse, len(servers))
-	for i, server := range servers {
-		serverResponses[i] = ServerResponse{
-			Name:        server.GetName(),
-			Description: server.GetDescription(),
-			Tier:        server.GetTier(),
-			Status:      server.GetStatus(),
-			Transport:   server.GetTransport(),
-			Tools:       server.GetTools(),
-		}
+	for i := range servers {
+		serverResponses[i] = newServerResponse(servers[i])
 	}
 
 	// Toolhive format response
@@ -257,14 +251,7 @@ func (rr *Routes) getServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Convert to response format
-	serverResponse := ServerResponse{
-		Name:        server.GetName(),
-		Description: server.GetDescription(),
-		Tier:        server.GetTier(),
-		Status:      server.GetStatus(),
-		Transport:   server.GetTransport(),
-		Tools:       server.GetTools(),
-	}
+	serverResponse := newServerResponse(server)
 
 	// Toolhive format
 	rr.writeJSONResponse(w, serverResponse)
@@ -302,6 +289,18 @@ func (rr *Routes) listDeployedServers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rr.writeJSONResponse(w, servers)
+}
+
+// newServerResponse creates a ServerResponse from server metadata
+func newServerResponse(server registry.ServerMetadata) ServerResponse {
+	return ServerResponse{
+		Name:        server.GetName(),
+		Description: server.GetDescription(),
+		Tier:        server.GetTier(),
+		Status:      server.GetStatus(),
+		Transport:   server.GetTransport(),
+		Tools:       server.GetTools(),
+	}
 }
 
 // getDeployedServer handles GET /api/v1/registry/servers/deployed/{name}

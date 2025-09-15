@@ -66,10 +66,10 @@ func TestTestRegistryBuilder_WithServer(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		format         string
-		serverName     string
-		expectedName   string
+		name         string
+		format       string
+		serverName   string
+		expectedName string
 	}{
 		{
 			name:         "toolhive format with explicit name",
@@ -144,11 +144,11 @@ func TestTestRegistryBuilder_WithRemoteServer(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		format       string
-		url          string
-		expectedURL  string
-		shouldAdd    bool
+		name        string
+		format      string
+		url         string
+		expectedURL string
+		shouldAdd   bool
 	}{
 		{
 			name:        "toolhive format with explicit URL",
@@ -218,12 +218,12 @@ func TestTestRegistryBuilder_WithRemoteServerName(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		format       string
-		serverName   string
-		url          string
-		expectedURL  string
-		shouldAdd    bool
+		name        string
+		format      string
+		serverName  string
+		url         string
+		expectedURL string
+		shouldAdd   bool
 	}{
 		{
 			name:        "toolhive format with name and explicit URL",
@@ -279,10 +279,10 @@ func TestTestRegistryBuilder_WithVersion(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		format         string
-		version        string
-		shouldUpdate   bool
+		name         string
+		format       string
+		version      string
+		shouldUpdate bool
 	}{
 		{
 			name:         "toolhive format should update version",
@@ -330,10 +330,10 @@ func TestTestRegistryBuilder_WithLastUpdated(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		format         string
-		timestamp      string
-		shouldUpdate   bool
+		name         string
+		format       string
+		timestamp    string
+		shouldUpdate bool
 	}{
 		{
 			name:         "toolhive format should update timestamp",
@@ -408,7 +408,7 @@ func TestTestRegistryBuilder_Empty(t *testing.T) {
 			t.Parallel()
 
 			builder := NewTestRegistryBuilder(tt.format)
-			
+
 			// Add some servers first
 			builder.WithServer("test1").WithServer("test2")
 			if tt.format != mcpv1alpha1.RegistryFormatUpstream {
@@ -607,11 +607,11 @@ func TestTestRegistryBuilder_ServerCount(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                string
-		format              string
-		serversToAdd        int
-		remoteServersToAdd  int
-		expectedCount       int
+		name               string
+		format             string
+		serversToAdd       int
+		remoteServersToAdd int
+		expectedCount      int
 	}{
 		{
 			name:               "toolhive format with container servers",
@@ -687,10 +687,10 @@ func TestTestRegistryBuilder_RemoteServerCount(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                string
-		format              string
-		remoteServersToAdd  int
-		expectedCount       int
+		name               string
+		format             string
+		remoteServersToAdd int
+		expectedCount      int
 	}{
 		{
 			name:               "toolhive format with remote servers",
@@ -736,7 +736,7 @@ func TestTestRegistryBuilder_ChainedCalls(t *testing.T) {
 
 	// Test method chaining works correctly
 	builder := NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive)
-	
+
 	result := builder.
 		WithVersion("2.0.0").
 		WithLastUpdated("2023-01-01T00:00:00Z").
@@ -777,9 +777,9 @@ func TestEmptyJSON(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		format         string
-		expectedJSON   string
+		name         string
+		format       string
+		expectedJSON string
 	}{
 		{
 			name:         "toolhive format",
@@ -823,7 +823,7 @@ func TestTestRegistryBuilder_WithServerName(t *testing.T) {
 
 	// Test WithServerName is an alias for WithServer
 	builder := NewTestRegistryBuilder(mcpv1alpha1.RegistryFormatToolHive)
-	
+
 	result1 := builder.WithServerName("test-server")
 	result2 := builder.WithServer("test-server-2")
 

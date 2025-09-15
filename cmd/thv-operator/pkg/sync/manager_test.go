@@ -217,14 +217,14 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	tests := []struct {
-		name                string
-		mcpRegistry         *mcpv1alpha1.MCPRegistry
-		sourceConfigMap     *corev1.ConfigMap
-		existingStorageCM   *corev1.ConfigMap
-		expectedError       bool
-		expectedPhase       mcpv1alpha1.MCPRegistryPhase
-		errorContains       string
-		validateConditions  bool
+		name               string
+		mcpRegistry        *mcpv1alpha1.MCPRegistry
+		sourceConfigMap    *corev1.ConfigMap
+		existingStorageCM  *corev1.ConfigMap
+		expectedError      bool
+		expectedPhase      mcpv1alpha1.MCPRegistryPhase
+		errorContains      string
+		validateConditions bool
 	}{
 		{
 			name: "successful sync with valid data",
@@ -283,10 +283,10 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 					Phase: mcpv1alpha1.MCPRegistryPhasePending,
 				},
 			},
-			sourceConfigMap:   nil,
-			expectedError:     false, // PerformSync handles errors internally and sets phase
-			expectedPhase:     mcpv1alpha1.MCPRegistryPhaseFailed,
-			errorContains:     "",
+			sourceConfigMap:    nil,
+			expectedError:      false, // PerformSync handles errors internally and sets phase
+			expectedPhase:      mcpv1alpha1.MCPRegistryPhaseFailed,
+			errorContains:      "",
 			validateConditions: false,
 		},
 		{
@@ -375,7 +375,7 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 				// Check that success conditions are set when sync succeeds
 				if tt.expectedPhase == mcpv1alpha1.MCPRegistryPhaseReady {
 					assert.Len(t, tt.mcpRegistry.Status.Conditions, 3)
-					
+
 					// Verify manual sync trigger is processed if annotation exists
 					if tt.mcpRegistry.Annotations != nil {
 						if triggerValue := tt.mcpRegistry.Annotations["toolhive.stacklok.dev/sync-trigger"]; triggerValue != "" {
@@ -396,10 +396,10 @@ func TestDefaultSyncManager_UpdateManualSyncTriggerOnly(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	tests := []struct {
-		name                     string
-		mcpRegistry              *mcpv1alpha1.MCPRegistry
-		expectedError            bool
-		expectedTriggerValue     string
+		name                 string
+		mcpRegistry          *mcpv1alpha1.MCPRegistry
+		expectedError        bool
+		expectedTriggerValue string
 	}{
 		{
 			name: "update manual sync trigger with annotation",
@@ -490,10 +490,10 @@ func TestDefaultSyncManager_Delete(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	tests := []struct {
-		name            string
-		mcpRegistry     *mcpv1alpha1.MCPRegistry
+		name             string
+		mcpRegistry      *mcpv1alpha1.MCPRegistry
 		storageConfigMap *corev1.ConfigMap
-		expectedError   bool
+		expectedError    bool
 	}{
 		{
 			name: "delete with existing storage configmap",
@@ -641,8 +641,8 @@ func TestDefaultSyncManager_updatePhaseFailedWithCondition(t *testing.T) {
 	defer cancel()
 
 	err := syncManager.updatePhaseFailedWithCondition(
-		ctx, 
-		mcpRegistry, 
+		ctx,
+		mcpRegistry,
 		"Test failure message",
 		mcpv1alpha1.ConditionSourceAvailable,
 		"TestFailure",
@@ -654,7 +654,7 @@ func TestDefaultSyncManager_updatePhaseFailedWithCondition(t *testing.T) {
 	// since the method modifies in place after refreshing from client
 	assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseFailed, mcpRegistry.Status.Phase)
 	assert.Equal(t, "Test failure message", mcpRegistry.Status.Message)
-	
+
 	// Check condition was set
 	require.Len(t, mcpRegistry.Status.Conditions, 1)
 	condition := mcpRegistry.Status.Conditions[0]

@@ -160,6 +160,11 @@ type MCPRegistryStatus struct {
 	// +optional
 	StorageRef *StorageReference `json:"storageRef,omitempty"`
 
+	// LastManualSyncTrigger tracks the last processed manual sync annotation value
+	// Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation
+	// +optional
+	LastManualSyncTrigger string `json:"lastManualSyncTrigger,omitempty"`
+
 	// Conditions represent the latest available observations of the MCPRegistry's state
 	// +optional
 	// +listType=map

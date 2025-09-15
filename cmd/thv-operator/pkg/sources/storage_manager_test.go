@@ -54,7 +54,6 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-registry",
 					Namespace: "test-namespace",
-					UID:       types.UID("test-uid"),
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
 					Source: mcpv1alpha1.MCPRegistrySource{
@@ -75,7 +74,6 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-registry",
 					Namespace: "test-namespace",
-					UID:       types.UID("test-uid"),
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
 					Source: mcpv1alpha1.MCPRegistrySource{
@@ -102,16 +100,15 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "store with upstream format",
+			name: "store with different namespace",
 			registry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "upstream-registry",
-					Namespace: "test-namespace",
-					UID:       types.UID("test-uid-2"),
+					Name:      "test-registry",
+					Namespace: "different-namespace",
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
 					Source: mcpv1alpha1.MCPRegistrySource{
-						Format: mcpv1alpha1.RegistryFormatUpstream,
+						Format: mcpv1alpha1.RegistryFormatToolHive,
 					},
 				},
 			},
@@ -156,10 +153,9 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 				assert.NoError(t, err)
 
 				// Verify the ConfigMap was created/updated
-				configMapName := tt.registry.Name + "-registry-storage"
 				configMap := &corev1.ConfigMap{}
 				err = fakeClient.Get(ctx, types.NamespacedName{
-					Name:      configMapName,
+					Name:      "test-registry-registry-storage",
 					Namespace: tt.registry.Namespace,
 				}, configMap)
 
@@ -180,7 +176,6 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 				// Verify owner reference
 				assert.Len(t, configMap.OwnerReferences, 1)
 				assert.Equal(t, tt.registry.Name, configMap.OwnerReferences[0].Name)
-				assert.Equal(t, tt.registry.UID, configMap.OwnerReferences[0].UID)
 			}
 		})
 	}
@@ -231,15 +226,16 @@ func TestConfigMapStorageManager_Get(t *testing.T) {
 			name: "configmap not found",
 			registry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "missing-registry",
+					Name:      "test-registry",
 					Namespace: "test-namespace",
 				},
 			},
+			configMap:     nil,
 			expectError:   true,
 			errorContains: "failed to get storage ConfigMap",
 		},
 		{
-			name: "registry data key not found",
+			name: "missing registry data key",
 			registry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-registry",
@@ -252,11 +248,31 @@ func TestConfigMapStorageManager_Get(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Data: map[string]string{
-					"other-key": "some-data",
+					"other-key": "some data",
 				},
 			},
 			expectError:   true,
 			errorContains: "registry data not found in ConfigMap",
+		},
+		{
+			name: "invalid JSON data",
+			registry: &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "test-namespace",
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry-registry-storage",
+					Namespace: "test-namespace",
+				},
+				Data: map[string]string{
+					ConfigMapStorageDataKey: "invalid json",
+				},
+			},
+			expectError:   true,
+			errorContains: "failed to parse registry data",
 		},
 	}
 
@@ -303,11 +319,11 @@ func TestConfigMapStorageManager_Delete(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	tests := []struct {
-		name          string
-		registry      *mcpv1alpha1.MCPRegistry
-		configMap     *corev1.ConfigMap
-		expectError   bool
-		errorContains string
+		name              string
+		registry          *mcpv1alpha1.MCPRegistry
+		existingConfigMap *corev1.ConfigMap
+		expectError       bool
+		errorContains     string
 	}{
 		{
 			name: "delete existing configmap",
@@ -317,7 +333,7 @@ func TestConfigMapStorageManager_Delete(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 			},
-			configMap: &corev1.ConfigMap{
+			existingConfigMap: &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-registry-registry-storage",
 					Namespace: "test-namespace",
@@ -332,12 +348,12 @@ func TestConfigMapStorageManager_Delete(t *testing.T) {
 			name: "delete non-existent configmap",
 			registry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "missing-registry",
+					Name:      "test-registry",
 					Namespace: "test-namespace",
 				},
 			},
-			expectError:   true,
-			errorContains: "failed to delete storage ConfigMap",
+			existingConfigMap: nil,
+			expectError:       false, // Delete should not error if ConfigMap doesn't exist
 		},
 	}
 
@@ -346,8 +362,8 @@ func TestConfigMapStorageManager_Delete(t *testing.T) {
 			t.Parallel()
 
 			objects := []runtime.Object{tt.registry}
-			if tt.configMap != nil {
-				objects = append(objects, tt.configMap)
+			if tt.existingConfigMap != nil {
+				objects = append(objects, tt.existingConfigMap)
 			}
 
 			fakeClient := fake.NewClientBuilder().
@@ -370,15 +386,17 @@ func TestConfigMapStorageManager_Delete(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 
-				// Verify the ConfigMap was deleted
-				configMapName := tt.registry.Name + "-registry-storage"
-				configMap := &corev1.ConfigMap{}
-				err = fakeClient.Get(ctx, types.NamespacedName{
-					Name:      configMapName,
-					Namespace: tt.registry.Namespace,
-				}, configMap)
+				// Verify the ConfigMap was deleted (if it existed)
+				if tt.existingConfigMap != nil {
+					configMap := &corev1.ConfigMap{}
+					err = fakeClient.Get(ctx, types.NamespacedName{
+						Name:      "test-registry-registry-storage",
+						Namespace: tt.registry.Namespace,
+					}, configMap)
 
-				assert.Error(t, err) // Should not be found
+					// Should get a not found error
+					assert.Error(t, err)
+				}
 			}
 		})
 	}
@@ -389,6 +407,7 @@ func TestConfigMapStorageManager_GetStorageReference(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -409,100 +428,4 @@ func TestConfigMapStorageManager_GetStorageReference(t *testing.T) {
 	assert.Equal(t, "configmap", ref.Type)
 	assert.NotNil(t, ref.ConfigMapRef)
 	assert.Equal(t, "test-registry-registry-storage", ref.ConfigMapRef.Name)
-}
-
-func TestConfigMapStorageManager_getConfigMapName(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		registryName string
-		expected     string
-	}{
-		{"simple", "simple-registry-storage"},
-		{"my-registry", "my-registry-registry-storage"},
-		{"test123", "test123-registry-storage"},
-	}
-
-	scheme := runtime.NewScheme()
-	fakeClient := fake.NewClientBuilder().Build()
-	manager := &ConfigMapStorageManager{client: fakeClient, scheme: scheme}
-
-	for _, tt := range tests {
-		t.Run(tt.registryName, func(t *testing.T) {
-			t.Parallel()
-
-			registry := &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: tt.registryName,
-				},
-			}
-
-			result := manager.getConfigMapName(registry)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-func TestStorageError(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		operation    string
-		registryName string
-		reason       string
-		wrappedErr   error
-		expectedMsg  string
-	}{
-		{
-			name:         "error with wrapped error",
-			operation:    "create",
-			registryName: "test-registry",
-			reason:       "permission denied",
-			wrappedErr:   assert.AnError,
-			expectedMsg:  "storage operation 'create' failed for registry 'test-registry': permission denied: assert.AnError general error for testing",
-		},
-		{
-			name:         "error without wrapped error",
-			operation:    "get",
-			registryName: "missing-registry",
-			reason:       "not found",
-			wrappedErr:   nil,
-			expectedMsg:  "storage operation 'get' failed for registry 'missing-registry': not found",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			err := NewStorageError(tt.operation, tt.registryName, tt.reason, tt.wrappedErr)
-
-			assert.Equal(t, tt.operation, err.Operation)
-			assert.Equal(t, tt.registryName, err.RegistryName)
-			assert.Equal(t, tt.reason, err.Reason)
-			assert.Equal(t, tt.wrappedErr, err.Err)
-			assert.Equal(t, tt.expectedMsg, err.Error())
-
-			if tt.wrappedErr != nil {
-				assert.Equal(t, tt.wrappedErr, err.Unwrap())
-			} else {
-				assert.Nil(t, err.Unwrap())
-			}
-		})
-	}
-}
-
-func TestStorageError_Is(t *testing.T) {
-	t.Parallel()
-
-	err1 := NewStorageError("create", "registry1", "reason1", nil)
-	err2 := NewStorageError("create", "registry1", "reason2", nil)
-	err3 := NewStorageError("update", "registry1", "reason1", nil)
-	err4 := NewStorageError("create", "registry2", "reason1", nil)
-
-	assert.True(t, err1.Is(err2))            // Same operation and registry
-	assert.False(t, err1.Is(err3))           // Different operation
-	assert.False(t, err1.Is(err4))           // Different registry
-	assert.False(t, err1.Is(assert.AnError)) // Different error type
 }

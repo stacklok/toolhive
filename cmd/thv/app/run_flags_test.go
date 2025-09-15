@@ -127,21 +127,22 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 		{
 			name: "Partial CLI flags provided, mix of CLI and config values",
 			setupFlags: func(cmd *cobra.Command) {
-				// Only set endpoint flag, leave others to use config values
+				// Only set endpoint and insecure flags, leave others to use config values
 				cmd.Flags().Set("otel-endpoint", "https://partial-cli-endpoint.example.com")
+				cmd.Flags().Set("otel-insecure", "true")
 			},
 			configOTEL: config.OpenTelemetryConfig{
 				Endpoint:                    "https://config-endpoint.example.com",
 				SamplingRate:                0.5,
 				EnvVars:                     []string{"CONFIG_VAR1=configvalue1"},
-				Insecure:                    true,
+				Insecure:                    false,
 				EnablePrometheusMetricsPath: true,
 			},
 			runFlags: &RunFlags{
 				OtelEndpoint:                    "https://partial-cli-endpoint.example.com",
 				OtelSamplingRate:                0.1,
 				OtelEnvironmentVariables:        nil,
-				OtelInsecure:                    false,
+				OtelInsecure:                    true,
 				OtelEnablePrometheusMetricsPath: false,
 				Transport:                       "sse",
 				ProxyMode:                       "sse",
@@ -159,29 +160,27 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			setupFlags: func(cmd *cobra.Command) {
 				cmd.Flags().Set("otel-endpoint", "https://cli-only-endpoint.example.com")
 				cmd.Flags().Set("otel-sampling-rate", "0.9")
+				cmd.Flags().Set("otel-insecure", "true")
 			},
 			configOTEL: config.OpenTelemetryConfig{
-				Endpoint:                    "",
-				SamplingRate:                0.0,
-				EnvVars:                     nil,
-				Insecure:                    false,
-				EnablePrometheusMetricsPath: false,
+				Endpoint:     "",
+				SamplingRate: 0.0,
+				EnvVars:      nil,
 			},
 			runFlags: &RunFlags{
-				OtelEndpoint:                    "https://cli-only-endpoint.example.com",
-				OtelSamplingRate:                0.9,
-				OtelEnvironmentVariables:        nil,
-				OtelInsecure:                    false,
-				OtelEnablePrometheusMetricsPath: false,
-				Transport:                       "sse",
-				ProxyMode:                       "sse",
-				Host:                            "localhost",
-				PermissionProfile:               "none",
+				OtelEndpoint:             "https://cli-only-endpoint.example.com",
+				OtelSamplingRate:         0.9,
+				OtelEnvironmentVariables: nil,
+				OtelInsecure:             true,
+				Transport:                "sse",
+				ProxyMode:                "sse",
+				Host:                     "localhost",
+				PermissionProfile:        "none",
 			},
 			expectedEndpoint:                    "https://cli-only-endpoint.example.com",
 			expectedSamplingRate:                0.9,
 			expectedEnvironmentVariables:        nil,
-			expectedInsecure:                    false,
+			expectedInsecure:                    true,
 			expectedEnablePrometheusMetricsPath: false,
 		},
 	}

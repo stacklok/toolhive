@@ -55,6 +55,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 		expectedEndpoint             string
 		expectedSamplingRate         float64
 		expectedEnvironmentVariables []string
+		expectedInsecure             bool
 	}{
 		{
 			name: "CLI flags provided, taking precedence over config file",
@@ -64,16 +65,19 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				cmd.Flags().Set("otel-sampling-rate", "0.8")
 				cmd.Flags().Set("otel-env-vars", "CLI_VAR1=value1")
 				cmd.Flags().Set("otel-env-vars", "CLI_VAR2=value2")
+				cmd.Flags().Set("otel-insecure", "true")
 			},
 			configOTEL: config.OpenTelemetryConfig{
 				Endpoint:     "https://config-endpoint.example.com",
 				SamplingRate: 0.2,
 				EnvVars:      []string{"CONFIG_VAR1=configvalue1", "CONFIG_VAR2=configvalue2"},
+				Insecure:     false,
 			},
 			runFlags: &RunFlags{
 				OtelEndpoint:             "https://cli-endpoint.example.com",
 				OtelSamplingRate:         0.8,
 				OtelEnvironmentVariables: []string{"CLI_VAR1=value1", "CLI_VAR2=value2"},
+				OtelInsecure:             true,
 				// Set other required fields to avoid nil pointer errors
 				Transport:         "sse",
 				ProxyMode:         "sse",
@@ -83,6 +87,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			expectedEndpoint:             "https://cli-endpoint.example.com",
 			expectedSamplingRate:         0.8,
 			expectedEnvironmentVariables: []string{"CLI_VAR1=value1", "CLI_VAR2=value2"},
+			expectedInsecure:             true,
 		},
 		{
 			name: "No CLI flags provided, config takes precedence",
@@ -94,11 +99,13 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				Endpoint:     "https://config-endpoint.example.com",
 				SamplingRate: 0.3,
 				EnvVars:      []string{"CONFIG_VAR1=configvalue1", "CONFIG_VAR2=configvalue2"},
+				Insecure:     true,
 			},
 			runFlags: &RunFlags{
 				OtelEndpoint:             "",
 				OtelSamplingRate:         0.1,
 				OtelEnvironmentVariables: nil,
+				OtelInsecure:             false,
 				Transport:                "sse",
 				ProxyMode:                "sse",
 				Host:                     "localhost",
@@ -107,6 +114,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			expectedEndpoint:             "https://config-endpoint.example.com",
 			expectedSamplingRate:         0.3,
 			expectedEnvironmentVariables: []string{"CONFIG_VAR1=configvalue1", "CONFIG_VAR2=configvalue2"},
+			expectedInsecure:             true,
 		},
 		{
 			name: "Partial CLI flags provided, mix of CLI and config values",
@@ -118,11 +126,13 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				Endpoint:     "https://config-endpoint.example.com",
 				SamplingRate: 0.5,
 				EnvVars:      []string{"CONFIG_VAR1=configvalue1"},
+				Insecure:     true,
 			},
 			runFlags: &RunFlags{
 				OtelEndpoint:             "https://partial-cli-endpoint.example.com",
 				OtelSamplingRate:         0.1,
 				OtelEnvironmentVariables: nil,
+				OtelInsecure:             false,
 				Transport:                "sse",
 				ProxyMode:                "sse",
 				Host:                     "localhost",
@@ -131,6 +141,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			expectedEndpoint:             "https://partial-cli-endpoint.example.com",
 			expectedSamplingRate:         0.5,
 			expectedEnvironmentVariables: []string{"CONFIG_VAR1=configvalue1"},
+			expectedInsecure:             true,
 		},
 		{
 			name: "Empty config values, CLI flags should be used",
@@ -169,18 +180,20 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			})
 			defer cleanup()
 			configInstance := configProvider.GetConfig()
-			finalEndpoint, finalSamplingRate, finalEnvVars := getTelemetryFromFlags(
+			finalEndpoint, finalSamplingRate, finalEnvVars, finalInsecure := getTelemetryFromFlags(
 				cmd,
 				configInstance,
 				tt.runFlags.OtelEndpoint,
 				tt.runFlags.OtelSamplingRate,
 				tt.runFlags.OtelEnvironmentVariables,
+				tt.runFlags.OtelInsecure,
 			)
 
 			// Assert the results
 			assert.Equal(t, tt.expectedEndpoint, finalEndpoint, "OTEL endpoint should match expected value")
 			assert.Equal(t, tt.expectedSamplingRate, finalSamplingRate, "OTEL sampling rate should match expected value")
 			assert.Equal(t, tt.expectedEnvironmentVariables, finalEnvVars, "OTEL environment variables should match expected value")
+			assert.Equal(t, tt.expectedInsecure, finalInsecure, "OTEL insecure setting should match expected value")
 		})
 	}
 }
@@ -214,16 +227,18 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	defer cleanup()
 
 	configInstance := configProvider.GetConfig()
-	finalEndpoint, finalSamplingRate, finalEnvVars := getTelemetryFromFlags(
+	finalEndpoint, finalSamplingRate, finalEnvVars, finalInsecure := getTelemetryFromFlags(
 		cmd,
 		configInstance,
 		runFlags.OtelEndpoint,
 		runFlags.OtelSamplingRate,
 		runFlags.OtelEnvironmentVariables,
+		runFlags.OtelInsecure,
 	)
 
 	// Verify that CLI values take precedence
 	assert.Equal(t, "https://integration-test.example.com", finalEndpoint, "CLI endpoint should take precedence over config")
 	assert.Equal(t, 0.7, finalSamplingRate, "CLI sampling rate should take precedence over config")
 	assert.Equal(t, []string{"CONFIG_VAR=value"}, finalEnvVars, "Environment variables should fall back to config when not set via CLI")
+	assert.Equal(t, false, finalInsecure, "Insecure setting should use runFlags value when not set via CLI")
 }

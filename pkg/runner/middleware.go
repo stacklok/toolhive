@@ -39,11 +39,21 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 	middlewareConfigs = append(middlewareConfigs, *authConfig)
 
-	// Tools filter middleware (if enabled)
-	if len(config.ToolsFilter) > 0 {
-		// Add tool filter middleware
+	// Tools filter and override middleware (if enabled)
+	if len(config.ToolsFilter) > 0 || len(config.ToolsOverride) > 0 {
+		// Prepare overrides map (convert runner.ToolOverride -> mcp.ToolOverride)
+		overrides := make(map[string]mcp.ToolOverride)
+		for actualName, tool := range config.ToolsOverride {
+			overrides[actualName] = mcp.ToolOverride{
+				Name:        tool.Name,
+				Description: tool.Description,
+			}
+		}
+
+		// Add tool filter middleware with both filter and overrides
 		toolFilterParams := mcp.ToolFilterMiddlewareParams{
-			FilterTools: config.ToolsFilter,
+			FilterTools:   config.ToolsFilter,
+			ToolsOverride: overrides,
 		}
 		toolFilterConfig, err := types.NewMiddlewareConfig(mcp.ToolFilterMiddlewareType, toolFilterParams)
 		if err != nil {
@@ -51,7 +61,7 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		}
 		middlewareConfigs = append(middlewareConfigs, *toolFilterConfig)
 
-		// Add tool call filter middleware
+		// Add tool call filter middleware with same params
 		toolCallFilterConfig, err := types.NewMiddlewareConfig(mcp.ToolCallFilterMiddlewareType, toolFilterParams)
 		if err != nil {
 			return fmt.Errorf("failed to create tool call filter middleware config: %w", err)

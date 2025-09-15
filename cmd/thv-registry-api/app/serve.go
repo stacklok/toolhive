@@ -51,10 +51,6 @@ func init() {
 	if err != nil {
 		logger.Fatalf("Failed to bind configmap flag: %v", err)
 	}
-	err = viper.BindPFlag("namespace", serveCmd.Flags().Lookup("namespace"))
-	if err != nil {
-		logger.Fatalf("Failed to bind namespace flag: %v", err)
-	}
 }
 
 // getKubernetesConfig returns a Kubernetes REST config
@@ -79,6 +75,10 @@ func runServe(_ *cobra.Command, _ []string) error {
 	address := viper.GetString("address")
 	configMapName := viper.GetString("configmap")
 
+	if configMapName == "" {
+		return fmt.Errorf("configmap flag is required")
+	}
+
 	namespace := thvk8scli.GetCurrentNamespace()
 
 	logger.Infof("Starting registry API server on %s", address)
@@ -88,35 +88,28 @@ func runServe(_ *cobra.Command, _ []string) error {
 	var registryProvider service.RegistryDataProvider
 	var deploymentProvider service.DeploymentProvider
 
-	if configMapName != "" {
-		// Get Kubernetes config
-		config, err := getKubernetesConfig()
-		if err != nil {
-			return fmt.Errorf("failed to create kubernetes config: %w", err)
-		}
-
-		// Create Kubernetes client
-		clientset, err := kubernetes.NewForConfig(config)
-		if err != nil {
-			return fmt.Errorf("failed to create kubernetes client: %w", err)
-		}
-
-		// Create the Kubernetes-based registry data provider
-		registryProvider = service.NewK8sRegistryDataProvider(clientset, configMapName, namespace)
-		logger.Infof("Created Kubernetes registry data provider for ConfigMap %s/%s", namespace, configMapName)
-
-		// Create the Kubernetes-based deployment provider
-		deploymentProvider, err = service.NewK8sDeploymentProvider(config, configMapName)
-		if err != nil {
-			return fmt.Errorf("failed to create kubernetes deployment provider: %w", err)
-		}
-		logger.Infof("Created Kubernetes deployment provider for registry: %s", configMapName)
-	} else {
-		logger.Info("No ConfigMap specified, registry API will serve without registry data")
-		// Create a no-op provider for testing
-		// TODO: Should we fail here instead?
-		return fmt.Errorf("configmap is required")
+	// Get Kubernetes config
+	config, err := getKubernetesConfig()
+	if err != nil {
+		return fmt.Errorf("failed to create kubernetes config: %w", err)
 	}
+
+	// Create Kubernetes client
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("failed to create kubernetes client: %w", err)
+	}
+
+	// Create the Kubernetes-based registry data provider
+	registryProvider = service.NewK8sRegistryDataProvider(clientset, configMapName, namespace)
+	logger.Infof("Created Kubernetes registry data provider for ConfigMap %s/%s", namespace, configMapName)
+
+	// Create the Kubernetes-based deployment provider
+	deploymentProvider, err = service.NewK8sDeploymentProvider(config, configMapName)
+	if err != nil {
+		return fmt.Errorf("failed to create kubernetes deployment provider: %w", err)
+	}
+	logger.Infof("Created Kubernetes deployment provider for registry: %s", configMapName)
 
 	// Create the registry service
 	svc, err := service.NewService(ctx, registryProvider, deploymentProvider)

@@ -88,8 +88,9 @@ const trueValue = "true"
 
 // Restart annotation keys for triggering pod restart
 const (
-	RestartedAtAnnotationKey     = "mcpserver.toolhive.stacklok.dev/restarted-at"
-	RestartStrategyAnnotationKey = "mcpserver.toolhive.stacklok.dev/restart-strategy"
+	RestartedAtAnnotationKey          = "mcpserver.toolhive.stacklok.dev/restarted-at"
+	RestartStrategyAnnotationKey      = "mcpserver.toolhive.stacklok.dev/restart-strategy"
+	LastProcessedRestartAnnotationKey = "mcpserver.toolhive.stacklok.dev/last-processed-restart"
 )
 
 // Restart strategy constants
@@ -355,6 +356,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // handleRestartAnnotation checks if the restart annotation has been updated and triggers a restart if needed
 // Returns true if a restart was triggered and the reconciliation should be requeued
 func (r *MCPServerReconciler) handleRestartAnnotation(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) (bool, error) {
+	ctxLogger := log.FromContext(ctx)
+
 	// Get the current restarted-at annotation value from the CR
 	currentRestartedAt := ""
 	if mcpServer.Annotations != nil {
@@ -376,9 +379,14 @@ func (r *MCPServerReconciler) handleRestartAnnotation(ctx context.Context, mcpSe
 	}
 
 	// Check if we've already processed this restart request
-	if mcpServer.Status.LastRestartRequest != nil {
-		lastProcessedTime := mcpServer.Status.LastRestartRequest.Time
-		if !requestTime.After(lastProcessedTime) {
+	lastProcessedRestart := ""
+	if mcpServer.Annotations != nil {
+		lastProcessedRestart = mcpServer.Annotations[LastProcessedRestartAnnotationKey]
+	}
+
+	if lastProcessedRestart != "" {
+		lastProcessedTime, err := time.Parse(time.RFC3339, lastProcessedRestart)
+		if err == nil && !requestTime.After(lastProcessedTime) {
 			// This request has already been processed
 			return false, nil
 		}
@@ -403,11 +411,14 @@ func (r *MCPServerReconciler) handleRestartAnnotation(ctx context.Context, mcpSe
 		return false, fmt.Errorf("failed to perform restart: %w", err)
 	}
 
-	// Update the last restart request timestamp in status
-	mcpServer.Status.LastRestartRequest = &metav1.Time{Time: requestTime}
-	err = r.Status().Update(ctx, mcpServer)
+	// Update the last processed restart timestamp in annotations
+	if mcpServer.Annotations == nil {
+		mcpServer.Annotations = make(map[string]string)
+	}
+	mcpServer.Annotations[LastProcessedRestartAnnotationKey] = currentRestartedAt
+	err = r.Update(ctx, mcpServer)
 	if err != nil {
-		return false, fmt.Errorf("failed to update MCPServer status with last restart request: %w", err)
+		return false, fmt.Errorf("failed to update MCPServer with last processed restart annotation: %w", err)
 	}
 
 	return true, nil
@@ -421,6 +432,7 @@ func (r *MCPServerReconciler) performRestart(ctx context.Context, mcpServer *mcp
 	case RestartStrategyImmediate:
 		return r.performImmediateRestart(ctx, mcpServer)
 	default:
+		ctxLogger := log.FromContext(ctx)
 		ctxLogger.Info("Unknown restart strategy, defaulting to rolling", "strategy", strategy)
 		return r.performRollingRestart(ctx, mcpServer)
 	}
@@ -428,6 +440,7 @@ func (r *MCPServerReconciler) performRestart(ctx context.Context, mcpServer *mcp
 
 // performRollingRestart triggers a rolling restart by updating the deployment's pod template annotation
 func (r *MCPServerReconciler) performRollingRestart(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
 	deployment := &appsv1.Deployment{}
 	err := r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, deployment)
 	if err != nil {
@@ -455,6 +468,8 @@ func (r *MCPServerReconciler) performRollingRestart(ctx context.Context, mcpServ
 
 // performImmediateRestart triggers an immediate restart by deleting the pods directly
 func (r *MCPServerReconciler) performImmediateRestart(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
+
 	// List pods belonging to this MCPServer
 	podList := &corev1.PodList{}
 	listOpts := []client.ListOption{

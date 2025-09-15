@@ -82,7 +82,7 @@ kubectl annotate mcpserver my-mcpserver \
 - Annotation value must be a valid RFC3339 timestamp
 
 ### Status Tracking
-- `status.lastRestartRequest` field prevents processing the same restart multiple times
+- `mcpserver.toolhive.stacklok.dev/last-processed-restart` annotation prevents processing the same restart multiple times
 - Only restart requests with timestamps newer than the last processed request are executed
 
 ### Rolling Strategy Implementation
@@ -113,7 +113,7 @@ kubectl annotate mcpserver my-mcpserver \
 
 ### Restart Not Triggered
 - Verify the timestamp format is valid RFC3339
-- Check that the timestamp is newer than `status.lastRestartRequest`
+- Check that the timestamp is newer than `mcpserver.toolhive.stacklok.dev/last-processed-restart` annotation
 - Ensure the operator has proper RBAC permissions to update deployments and delete pods
 
 ### Invalid Timestamp Format

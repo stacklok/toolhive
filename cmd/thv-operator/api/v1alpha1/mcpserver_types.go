@@ -574,11 +574,6 @@ type MCPServerStatus struct {
 	// Message provides additional information about the current phase
 	// +optional
 	Message string `json:"message,omitempty"`
-
-	// LastRestartRequest is the timestamp of the last restart request
-	// Used to prevent processing the same restart request multiple times
-	// +optional
-	LastRestartRequest *metav1.Time `json:"lastRestartRequest,omitempty"`
 }
 
 // MCPServerPhase is the phase of the MCPServer

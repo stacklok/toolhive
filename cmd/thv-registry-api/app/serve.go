@@ -43,10 +43,18 @@ func init() {
 	serveCmd.Flags().String("address", ":8080", "Address to listen on")
 	serveCmd.Flags().String("configmap", "", "ConfigMap name containing registry data")
 
-	// Bind flags to viper
-	_ = viper.BindPFlag("address", serveCmd.Flags().Lookup("address"))
-	_ = viper.BindPFlag("configmap", serveCmd.Flags().Lookup("configmap"))
-	_ = viper.BindPFlag("namespace", serveCmd.Flags().Lookup("namespace"))
+	err := viper.BindPFlag("address", serveCmd.Flags().Lookup("address"))
+	if err != nil {
+		logger.Fatalf("Failed to bind address flag: %v", err)
+	}
+	err = viper.BindPFlag("configmap", serveCmd.Flags().Lookup("configmap"))
+	if err != nil {
+		logger.Fatalf("Failed to bind configmap flag: %v", err)
+	}
+	err = viper.BindPFlag("namespace", serveCmd.Flags().Lookup("namespace"))
+	if err != nil {
+		logger.Fatalf("Failed to bind namespace flag: %v", err)
+	}
 }
 
 // getKubernetesConfig returns a Kubernetes REST config

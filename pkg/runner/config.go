@@ -464,3 +464,5 @@ type ToolOverride struct {
 	// Description is the redefined description of the tool
 	Description string `json:"description,omitempty"`
 }
+
+const DefaultCallbackPort = 8666

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 // RemoteAuthFlags holds the common remote authentication configuration
@@ -39,7 +40,7 @@ func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 		"Skip opening browser for remote server OAuth flow")
 	cmd.Flags().DurationVar(&config.RemoteAuthTimeout, "remote-auth-timeout", 30*time.Second,
 		"Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s)")
-	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", 8666,
+	cmd.Flags().IntVar(&config.RemoteAuthCallbackPort, "remote-auth-callback-port", runner.DefaultCallbackPort,
 		"Port for OAuth callback server during remote authentication")
 	cmd.Flags().StringVar(&config.RemoteAuthAuthorizeURL, "remote-auth-authorize-url", "",
 		"OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)")

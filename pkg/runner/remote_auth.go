@@ -40,7 +40,7 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 		// Handle OAuth authentication
 		if authInfo.Type == "OAuth" {
 			// Discover the issuer and potentially update scopes
-			issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo)
+			issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
 			if err != nil {
 				return nil, err
 			}
@@ -91,6 +91,7 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 func (h *RemoteAuthHandler) discoverIssuerAndScopes(
 	ctx context.Context,
 	authInfo *discovery.AuthInfo,
+	remoteURL string,
 ) (string, []string, *discovery.AuthServerInfo, error) {
 	// Priority 1: Use configured issuer if available
 	if h.config.Issuer != "" {
@@ -110,6 +111,11 @@ func (h *RemoteAuthHandler) discoverIssuerAndScopes(
 	// Priority 3: Fetch from resource metadata (RFC 9728)
 	if authInfo.ResourceMetadata != "" {
 		return h.tryDiscoverFromResourceMetadata(ctx, authInfo.ResourceMetadata)
+	}
+
+	issuer := discovery.DeriveIssuerFromURL(remoteURL)
+	if issuer != "" {
+		return issuer, h.config.Scopes, nil, nil
 	}
 
 	// No issuer could be determined

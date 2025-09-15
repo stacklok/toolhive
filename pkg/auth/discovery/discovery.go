@@ -231,6 +231,33 @@ func ParseWWWAuthenticate(header string) (*AuthInfo, error) {
 	return nil, fmt.Errorf("no supported authentication type found in header: %s", header)
 }
 
+// DeriveIssuerFromURL attempts to derive the OAuth issuer from the remote URL using general patterns
+func DeriveIssuerFromURL(remoteURL string) string {
+	// Parse the URL to extract the domain
+	parsedURL, err := url.Parse(remoteURL)
+	if err != nil {
+		logger.Debugf("Failed to parse remote URL: %v", err)
+		return ""
+	}
+
+	host := parsedURL.Hostname()
+	if host == "" {
+		return ""
+	}
+
+	scheme := parsedURL.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+
+	// General pattern: use the domain as the issuer
+	// This works for most OAuth providers that use their domain as the issuer
+	issuer := fmt.Sprintf("%s://%s", scheme, host)
+
+	logger.Debugf("Derived issuer from URL - remoteURL: %s, issuer: %s", remoteURL, issuer)
+	return issuer
+}
+
 // ExtractParameter extracts a parameter value from an authentication header
 // Handles both quoted and unquoted values according to RFC 2617 and RFC 6750
 func ExtractParameter(params, paramName string) string {

@@ -455,14 +455,12 @@ func buildRunnerConfig(
 	)
 
 	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
-		if remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata); remoteAuthConfig != nil {
-			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
-		}
+		remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata)
+		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
 	}
 	if runFlags.RemoteURL != "" {
-		if remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags); remoteAuthConfig != nil {
-			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
-		}
+		remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags)
+		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
 	}
 
 	// Load authz config if path is provided
@@ -527,6 +525,9 @@ func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.Remote
 	}
 
 	if remoteServerMetadata.OAuthConfig != nil {
+		if remoteServerMetadata.OAuthConfig.CallbackPort == 0 {
+			remoteServerMetadata.OAuthConfig.CallbackPort = runner.DefaultCallbackPort
+		}
 		return &runner.RemoteAuthConfig{
 			ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
 			ClientSecret: runFlags.RemoteAuthFlags.RemoteAuthClientSecret,

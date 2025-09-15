@@ -22,7 +22,7 @@ jobs:
       - name: Install Task
         uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2
         with:
-          version: 3.x
+          version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Ginkgo CLI

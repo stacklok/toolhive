@@ -26,7 +26,7 @@ jobs:
       - name: Install Task
         uses: arduino/setup-task@v2
         with:
-          version: 3.x
+          version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run tests
@@ -47,7 +47,7 @@ jobs:
       - name: Install Task
         uses: arduino/setup-task@v2
         with:
-          version: 3.x
+          version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build operator
@@ -68,7 +68,7 @@ jobs:
       - name: Install Task
         uses: arduino/setup-task@v2
         with:
-          version: 3.x
+          version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate CRDs
@@ -101,7 +101,7 @@ jobs:
       - name: Install Task
         uses: arduino/setup-task@v2
         with:
-          version: 3.x
+          version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate CRD Docs
@@ -157,7 +157,7 @@ jobs:
     - name: Install Task
       uses: arduino/setup-task@v2
       with:
-        version: 3.x
+        version: 3.44.1
         repo-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Install yardstick client

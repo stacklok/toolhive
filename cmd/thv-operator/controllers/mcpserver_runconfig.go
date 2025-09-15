@@ -300,6 +300,9 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	// Add OIDC authentication configuration if specified
 	addOIDCConfigOptions(&options, m.Spec.OIDCConfig)
 
+	// Add audit configuration if specified
+	addAuditConfigOptions(&options, m.Spec.Audit)
+
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	return runner.NewOperatorRunConfigBuilder(
 		context.Background(),
@@ -679,4 +682,17 @@ func addOIDCConfigOptions(
 	}
 
 	// ConfigMap and Kubernetes types are not currently supported for OIDC configuration
+}
+
+// addAuditConfigOptions adds audit configuration options to the builder options
+func addAuditConfigOptions(
+	options *[]runner.RunConfigBuilderOption,
+	auditConfig *mcpv1alpha1.AuditConfig,
+) {
+	if auditConfig == nil {
+		return
+	}
+
+	// Add audit config to options with default config (no custom config path for now)
+	*options = append(*options, runner.WithAuditEnabled(auditConfig.Enabled, ""))
 }

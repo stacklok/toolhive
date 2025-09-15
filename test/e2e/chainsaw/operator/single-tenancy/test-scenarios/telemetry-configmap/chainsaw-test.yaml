@@ -1,9 +1,9 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: telemetry-configmap-test
+  name: telemetry-audit-configmap-test
 spec:
-  description: Test that telemetry configuration is correctly generated in ConfigMap
+  description: Test that telemetry and audit configurations are correctly generated in ConfigMap
   steps:
   - name: enable-configmap-mode
     try:
@@ -131,7 +131,22 @@ spec:
           fi
           echo "✓ Prometheus enabled verified"
           
-          echo "✅ All telemetry configuration fields verified successfully in ConfigMap"
+          # Verify audit configuration is present in runconfig.json
+          if ! echo "$CONFIGMAP_JSON" | jq -e '.audit_config' > /dev/null 2>&1; then
+            echo "✗ audit_config section not found in runconfig.json"
+            exit 1
+          fi
+          echo "✓ audit_config section found"
+          
+          # Verify audit configuration structure (should have default config when enabled)
+          AUDIT_CONFIG_TYPE=$(echo "$CONFIGMAP_JSON" | jq -r '.audit_config | type')
+          if [ "$AUDIT_CONFIG_TYPE" != "object" ]; then
+            echo "✗ audit_config should be an object. Got: '$AUDIT_CONFIG_TYPE'"
+            exit 1
+          fi
+          echo "✓ Audit configuration structure verified"
+          
+          echo "✅ All telemetry and audit configuration fields verified successfully in ConfigMap"
         timeout: 60s
         
   - name: verify-proxyrunner-reads-configmap-telemetry

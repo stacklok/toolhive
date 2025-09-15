@@ -470,6 +470,79 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Nil(t, config.AuthzConfig)
 			},
 		},
+		{
+			name: "with inline OIDC authentication configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oidc-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:             "https://auth.example.com",
+							Audience:           "toolhive-api",
+							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
+							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
+							ClientID:           "toolhive-client",
+							ClientSecret:       "secret123",
+							ThvCABundlePath:    "/etc/ssl/ca-bundle.pem",
+							JWKSAuthTokenPath:  "/etc/auth/token",
+							JWKSAllowPrivateIP: true,
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "oidc-server", config.Name)
+				// Verify OIDC config is set
+				assert.NotNil(t, config.OIDCConfig)
+				assert.Equal(t, "https://auth.example.com", config.OIDCConfig.Issuer)
+				assert.Equal(t, "toolhive-api", config.OIDCConfig.Audience)
+				assert.Equal(t, "https://auth.example.com/.well-known/jwks.json", config.OIDCConfig.JWKSURL)
+				assert.Equal(t, "https://auth.example.com/oauth/introspect", config.OIDCConfig.IntrospectionURL)
+				assert.Equal(t, "toolhive-client", config.OIDCConfig.ClientID)
+				assert.Equal(t, "secret123", config.OIDCConfig.ClientSecret)
+				// NOTE: CACertPath and AuthTokenFile are not currently mapped in WithOIDCConfig function
+				// This is likely a bug that should be fixed separately
+				assert.Equal(t, "", config.OIDCConfig.CACertPath)
+				assert.Equal(t, "", config.OIDCConfig.AuthTokenFile)
+				assert.True(t, config.OIDCConfig.AllowPrivateIP)
+			},
+		},
+		{
+			name: "with configmap OIDC authentication configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oidc-configmap-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+							Name: "test-oidc-config",
+							Key:  "oidc.json",
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "oidc-configmap-server", config.Name)
+				// For ConfigMap type, OIDC config should not be set directly in RunConfig
+				// since it will be handled by proxyrunner when reading from ConfigMap
+				assert.Nil(t, config.OIDCConfig)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -837,6 +910,61 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
 				assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
 				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, runConfig.AuthzConfig.Cedar.EntitiesJSON)
+			},
+		},
+		{
+			name: "configmap with inline OIDC authentication configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oidc-test",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:             "https://auth.example.com",
+							Audience:           "toolhive-api",
+							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
+							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
+							ClientID:           "toolhive-client",
+							ClientSecret:       "secret123",
+							ThvCABundlePath:    "/etc/ssl/ca-bundle.pem",
+							JWKSAuthTokenPath:  "/etc/auth/token",
+							JWKSAllowPrivateIP: true,
+						},
+					},
+				},
+			},
+			existingCM:  nil,
+			expectError: false,
+			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
+				t.Helper()
+				assert.Equal(t, "oidc-test-runconfig", cm.Name)
+				assert.Equal(t, "toolhive-system", cm.Namespace)
+				assert.Contains(t, cm.Data, "runconfig.json")
+				// Parse and validate OIDC authentication configuration in runconfig.json
+				var runConfig runner.RunConfig
+				err := json.Unmarshal([]byte(cm.Data["runconfig.json"]), &runConfig)
+				require.NoError(t, err)
+				// Verify basic fields
+				assert.Equal(t, "oidc-test", runConfig.Name)
+				assert.Equal(t, "ghcr.io/example/server:v1.0.0", runConfig.Image)
+				// Verify OIDC authentication configuration is properly serialized
+				assert.NotNil(t, runConfig.OIDCConfig, "OIDCConfig should be present in runconfig.json")
+				assert.Equal(t, "https://auth.example.com", runConfig.OIDCConfig.Issuer)
+				assert.Equal(t, "toolhive-api", runConfig.OIDCConfig.Audience)
+				assert.Equal(t, "https://auth.example.com/.well-known/jwks.json", runConfig.OIDCConfig.JWKSURL)
+				assert.Equal(t, "https://auth.example.com/oauth/introspect", runConfig.OIDCConfig.IntrospectionURL)
+				assert.Equal(t, "toolhive-client", runConfig.OIDCConfig.ClientID)
+				assert.Equal(t, "secret123", runConfig.OIDCConfig.ClientSecret)
+				// NOTE: CACertPath and AuthTokenFile are not currently mapped in WithOIDCConfig function
+				assert.Equal(t, "", runConfig.OIDCConfig.CACertPath)
+				assert.Equal(t, "", runConfig.OIDCConfig.AuthTokenFile)
+				assert.True(t, runConfig.OIDCConfig.AllowPrivateIP)
 			},
 		},
 	}

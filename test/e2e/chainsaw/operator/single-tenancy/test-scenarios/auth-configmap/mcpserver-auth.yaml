@@ -1,0 +1,34 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: auth-configmap-test
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: stdio
+  port: 8080
+  
+  # Inline OIDC authentication configuration to test ConfigMap generation
+  oidcConfig:
+    type: inline
+    inline:
+      issuer: "https://auth.example.com"
+      audience: "toolhive-api"
+      jwksUrl: "https://auth.example.com/.well-known/jwks.json"
+      introspectionUrl: "https://auth.example.com/oauth/introspect"
+      clientId: "toolhive-client"
+      clientSecret: "secret123"
+      thvCABundlePath: "/etc/ssl/ca-bundle.pem"
+      jwksAuthTokenPath: "/etc/auth/token"
+      jwksAllowPrivateIP: true
+  
+  permissionProfile:
+    type: builtin
+    name: network
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"

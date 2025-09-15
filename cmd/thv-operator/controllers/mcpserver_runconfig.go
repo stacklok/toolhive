@@ -297,6 +297,9 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	// Add authorization configuration if specified
 	addAuthzConfigOptions(&options, m.Spec.AuthzConfig)
 
+	// Add OIDC authentication configuration if specified
+	addOIDCConfigOptions(&options, m.Spec.OIDCConfig)
+
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	return runner.NewOperatorRunConfigBuilder(
 		context.Background(),
@@ -645,4 +648,35 @@ func addAuthzConfigOptions(
 	}
 
 	// ConfigMap type is not currently implemented
+}
+
+// addOIDCConfigOptions adds OIDC authentication configuration options to the builder options
+func addOIDCConfigOptions(
+	options *[]runner.RunConfigBuilderOption,
+	oidcConfig *mcpv1alpha1.OIDCConfigRef,
+) {
+	if oidcConfig == nil {
+		return
+	}
+
+	// Handle inline OIDC configuration
+	if oidcConfig.Type == mcpv1alpha1.OIDCConfigTypeInline && oidcConfig.Inline != nil {
+		inline := oidcConfig.Inline
+
+		// Add OIDC config to options
+		*options = append(*options, runner.WithOIDCConfig(
+			inline.Issuer,
+			inline.Audience,
+			inline.JWKSURL,
+			inline.IntrospectionURL,
+			inline.ClientID,
+			inline.ClientSecret,
+			inline.ThvCABundlePath,
+			inline.JWKSAuthTokenPath,
+			"", // resourceURL - not available in InlineOIDCConfig
+			inline.JWKSAllowPrivateIP,
+		))
+	}
+
+	// ConfigMap and Kubernetes types are not currently supported for OIDC configuration
 }

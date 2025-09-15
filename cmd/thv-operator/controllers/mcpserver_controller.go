@@ -584,8 +584,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		}
 	}
 
-	// Add OIDC configuration args
-	if m.Spec.OIDCConfig != nil {
+	// Add OIDC configuration args only if not using ConfigMap
+	// When using ConfigMap, OIDC configuration is included in the runconfig.json
+	if !useConfigMap && m.Spec.OIDCConfig != nil {
 		// Create a context with timeout for OIDC configuration operations
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

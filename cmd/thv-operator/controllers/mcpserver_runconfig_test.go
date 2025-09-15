@@ -282,6 +282,124 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Len(t, config.Secrets, 0)
 			},
 		},
+		{
+			name: "with telemetry configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "telemetry-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					Telemetry: &mcpv1alpha1.TelemetryConfig{
+						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
+							Enabled:     true,
+							Endpoint:    "http://otel-collector:4317",
+							ServiceName: "custom-service-name",
+							Insecure:    true,
+							Headers:     []string{"Authorization=Bearer token123", "X-API-Key=abc"},
+							Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
+								Enabled:      true,
+								SamplingRate: "0.25",
+							},
+							Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
+								Enabled: true,
+							},
+						},
+						Prometheus: &mcpv1alpha1.PrometheusConfig{
+							Enabled: true,
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "telemetry-server", config.Name)
+
+				// Verify telemetry config is set
+				assert.NotNil(t, config.TelemetryConfig)
+
+				// Check OpenTelemetry settings (endpoint should have http:// prefix stripped)
+				assert.Equal(t, "otel-collector:4317", config.TelemetryConfig.Endpoint)
+				assert.Equal(t, "custom-service-name", config.TelemetryConfig.ServiceName)
+				assert.True(t, config.TelemetryConfig.Insecure)
+				assert.True(t, config.TelemetryConfig.TracingEnabled)
+				assert.True(t, config.TelemetryConfig.MetricsEnabled)
+				assert.Equal(t, 0.25, config.TelemetryConfig.SamplingRate)
+				assert.Equal(t, map[string]string{"Authorization": "Bearer token123", "X-API-Key": "abc"}, config.TelemetryConfig.Headers)
+
+				// Check Prometheus settings
+				assert.True(t, config.TelemetryConfig.EnablePrometheusMetricsPath)
+			},
+		},
+		{
+			name: "with minimal telemetry configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "minimal-telemetry-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					Telemetry: &mcpv1alpha1.TelemetryConfig{
+						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
+							Enabled:  true,
+							Endpoint: "https://secure-otel:4318",
+							// ServiceName not specified - should default to MCPServer name
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "minimal-telemetry-server", config.Name)
+
+				// Verify telemetry config is set
+				assert.NotNil(t, config.TelemetryConfig)
+
+				// Check that service name defaults to MCPServer name
+				assert.Equal(t, "minimal-telemetry-server", config.TelemetryConfig.ServiceName)
+				assert.Equal(t, "secure-otel:4318", config.TelemetryConfig.Endpoint)
+				assert.False(t, config.TelemetryConfig.Insecure)           // Default should be false
+				assert.Equal(t, 0.05, config.TelemetryConfig.SamplingRate) // Default sampling rate
+			},
+		},
+		{
+			name: "with prometheus only telemetry",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "prometheus-only-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					Telemetry: &mcpv1alpha1.TelemetryConfig{
+						Prometheus: &mcpv1alpha1.PrometheusConfig{
+							Enabled: true,
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "prometheus-only-server", config.Name)
+
+				// Verify telemetry config is set
+				assert.NotNil(t, config.TelemetryConfig)
+
+				// Only Prometheus should be enabled
+				assert.True(t, config.TelemetryConfig.EnablePrometheusMetricsPath)
+				assert.False(t, config.TelemetryConfig.TracingEnabled)
+				assert.False(t, config.TelemetryConfig.MetricsEnabled)
+				assert.Equal(t, "", config.TelemetryConfig.Endpoint)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -531,6 +649,71 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				t.Helper()
 				// Should have a valid checksum for the content
 				assert.NotEmpty(t, cm.Annotations["toolhive.stacklok.dev/content-checksum"])
+			},
+		},
+		{
+			name: "configmap with telemetry configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "telemetry-test",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					Telemetry: &mcpv1alpha1.TelemetryConfig{
+						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
+							Enabled:     true,
+							Endpoint:    "http://otel-collector:4317",
+							ServiceName: "test-service",
+							Headers:     []string{"Authorization=Bearer test-token"},
+							Insecure:    true,
+							Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
+								Enabled:      true,
+								SamplingRate: "0.1",
+							},
+							Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
+								Enabled: true,
+							},
+						},
+						Prometheus: &mcpv1alpha1.PrometheusConfig{
+							Enabled: true,
+						},
+					},
+				},
+			},
+			existingCM:  nil,
+			expectError: false,
+			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
+				t.Helper()
+				assert.Equal(t, "telemetry-test-runconfig", cm.Name)
+				assert.Equal(t, "toolhive-system", cm.Namespace)
+				assert.Contains(t, cm.Data, "runconfig.json")
+
+				// Parse and validate telemetry configuration in runconfig.json
+				var runConfig runner.RunConfig
+				err := json.Unmarshal([]byte(cm.Data["runconfig.json"]), &runConfig)
+				require.NoError(t, err)
+
+				// Verify basic fields
+				assert.Equal(t, "telemetry-test", runConfig.Name)
+				assert.Equal(t, "ghcr.io/example/server:v1.0.0", runConfig.Image)
+
+				// Verify telemetry configuration is properly serialized
+				assert.NotNil(t, runConfig.TelemetryConfig, "TelemetryConfig should be present in runconfig.json")
+
+				// Check OpenTelemetry settings (endpoint should have http:// prefix stripped)
+				assert.Equal(t, "otel-collector:4317", runConfig.TelemetryConfig.Endpoint)
+				assert.Equal(t, "test-service", runConfig.TelemetryConfig.ServiceName)
+				assert.True(t, runConfig.TelemetryConfig.Insecure)
+				assert.True(t, runConfig.TelemetryConfig.TracingEnabled)
+				assert.True(t, runConfig.TelemetryConfig.MetricsEnabled)
+				assert.Equal(t, 0.1, runConfig.TelemetryConfig.SamplingRate)
+				assert.Equal(t, map[string]string{"Authorization": "Bearer test-token"}, runConfig.TelemetryConfig.Headers)
+
+				// Check Prometheus settings
+				assert.True(t, runConfig.TelemetryConfig.EnablePrometheusMetricsPath)
 			},
 		},
 	}

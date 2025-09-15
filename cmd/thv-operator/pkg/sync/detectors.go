@@ -46,7 +46,7 @@ func (*DefaultManualSyncChecker) IsManualSyncRequested(mcpRegistry *mcpv1alpha1.
 		return false, ManualSyncReasonNoAnnotations
 	}
 
-	triggerValue := mcpRegistry.Annotations["toolhive.stacklok.dev/sync-trigger"]
+	triggerValue := mcpRegistry.Annotations[SyncTriggerAnnotation]
 	if triggerValue == "" {
 		return false, ManualSyncReasonNoTrigger
 	}

@@ -259,7 +259,7 @@ func (s *DefaultSyncManager) PerformSync(ctx context.Context, mcpRegistry *mcpv1
 
 	// Update manual sync trigger tracking if annotation exists
 	if mcpRegistry.Annotations != nil {
-		if triggerValue := mcpRegistry.Annotations["toolhive.stacklok.dev/sync-trigger"]; triggerValue != "" {
+		if triggerValue := mcpRegistry.Annotations[SyncTriggerAnnotation]; triggerValue != "" {
 			mcpRegistry.Status.LastManualSyncTrigger = triggerValue
 			ctxLogger.Info("Manual sync trigger processed", "trigger", triggerValue)
 		}
@@ -311,7 +311,7 @@ func (s *DefaultSyncManager) UpdateManualSyncTriggerOnly(
 
 	// Update manual sync trigger tracking
 	if mcpRegistry.Annotations != nil {
-		if triggerValue := mcpRegistry.Annotations["toolhive.stacklok.dev/sync-trigger"]; triggerValue != "" {
+		if triggerValue := mcpRegistry.Annotations[SyncTriggerAnnotation]; triggerValue != "" {
 			mcpRegistry.Status.LastManualSyncTrigger = triggerValue
 			ctxLogger.Info("Manual sync trigger processed (no data changes)", "trigger", triggerValue)
 		}

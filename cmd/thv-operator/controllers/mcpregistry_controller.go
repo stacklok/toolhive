@@ -112,8 +112,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Log reconciliation completion
 	if err != nil {
 		ctxLogger.Error(err, "Reconciliation completed with error",
-			"MCPRegistry.Name", mcpRegistry.Name,
-			"requeueAfter", result.RequeueAfter)
+			"MCPRegistry.Name", mcpRegistry.Name)
 	} else {
 		ctxLogger.Info("Reconciliation completed successfully",
 			"MCPRegistry.Name", mcpRegistry.Name,

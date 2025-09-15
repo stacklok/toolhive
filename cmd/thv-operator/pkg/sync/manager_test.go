@@ -133,7 +133,7 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 					Namespace: "test-namespace",
 					UID:       types.UID("test-uid"),
 					Annotations: map[string]string{
-						"toolhive.stacklok.dev/sync-trigger": "manual-sync-123",
+						SyncTriggerAnnotation: "manual-sync-123",
 					},
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
@@ -297,7 +297,7 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 					Namespace: "test-namespace",
 					UID:       types.UID("test-uid"),
 					Annotations: map[string]string{
-						"toolhive.stacklok.dev/sync-trigger": "manual-123",
+						SyncTriggerAnnotation: "manual-123",
 					},
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
@@ -378,7 +378,7 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 
 					// Verify manual sync trigger is processed if annotation exists
 					if tt.mcpRegistry.Annotations != nil {
-						if triggerValue := tt.mcpRegistry.Annotations["toolhive.stacklok.dev/sync-trigger"]; triggerValue != "" {
+						if triggerValue := tt.mcpRegistry.Annotations[SyncTriggerAnnotation]; triggerValue != "" {
 							assert.Equal(t, triggerValue, tt.mcpRegistry.Status.LastManualSyncTrigger)
 						}
 					}
@@ -409,7 +409,7 @@ func TestDefaultSyncManager_UpdateManualSyncTriggerOnly(t *testing.T) {
 					Namespace: "test-namespace",
 					UID:       types.UID("test-uid"),
 					Annotations: map[string]string{
-						"toolhive.stacklok.dev/sync-trigger": "manual-trigger-123",
+						SyncTriggerAnnotation: "manual-trigger-123",
 					},
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{

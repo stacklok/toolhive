@@ -228,7 +228,7 @@ func TestDefaultManualSyncChecker_IsManualSyncRequested(t *testing.T) {
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"toolhive.stacklok.dev/sync-trigger": "",
+						SyncTriggerAnnotation: "",
 					},
 				},
 			},
@@ -240,7 +240,7 @@ func TestDefaultManualSyncChecker_IsManualSyncRequested(t *testing.T) {
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"toolhive.stacklok.dev/sync-trigger": "trigger-123",
+						SyncTriggerAnnotation: "trigger-123",
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
@@ -255,7 +255,7 @@ func TestDefaultManualSyncChecker_IsManualSyncRequested(t *testing.T) {
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"toolhive.stacklok.dev/sync-trigger": "trigger-456",
+						SyncTriggerAnnotation: "trigger-456",
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
@@ -270,7 +270,7 @@ func TestDefaultManualSyncChecker_IsManualSyncRequested(t *testing.T) {
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"toolhive.stacklok.dev/sync-trigger": "first-trigger",
+						SyncTriggerAnnotation: "first-trigger",
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{

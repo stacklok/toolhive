@@ -26,6 +26,10 @@ spec:
     prometheus:
       enabled: true
   
+  # Audit configuration to test along with telemetry
+  audit:
+    enabled: true
+  
   permissionProfile:
     type: builtin
     name: network

@@ -543,6 +543,52 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Nil(t, config.OIDCConfig)
 			},
 		},
+		{
+			name: "with audit configuration enabled",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "audit-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					Audit: &mcpv1alpha1.AuditConfig{
+						Enabled: true,
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "audit-server", config.Name)
+				// Verify audit config is set
+				assert.NotNil(t, config.AuditConfig)
+			},
+		},
+		{
+			name: "with audit configuration disabled",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "audit-disabled-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					Audit: &mcpv1alpha1.AuditConfig{
+						Enabled: false,
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "audit-disabled-server", config.Name)
+				// When audit is disabled, config should be nil
+				assert.Nil(t, config.AuditConfig)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -965,6 +1011,40 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				assert.Equal(t, "", runConfig.OIDCConfig.CACertPath)
 				assert.Equal(t, "", runConfig.OIDCConfig.AuthTokenFile)
 				assert.True(t, runConfig.OIDCConfig.AllowPrivateIP)
+			},
+		},
+		{
+			name: "configmap with audit configuration enabled",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "audit-test",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					Audit: &mcpv1alpha1.AuditConfig{
+						Enabled: true,
+					},
+				},
+			},
+			existingCM:  nil,
+			expectError: false,
+			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
+				t.Helper()
+				assert.Equal(t, "audit-test-runconfig", cm.Name)
+				assert.Equal(t, "toolhive-system", cm.Namespace)
+				assert.Contains(t, cm.Data, "runconfig.json")
+				// Parse and validate audit configuration in runconfig.json
+				var runConfig runner.RunConfig
+				err := json.Unmarshal([]byte(cm.Data["runconfig.json"]), &runConfig)
+				require.NoError(t, err)
+				// Verify basic fields
+				assert.Equal(t, "audit-test", runConfig.Name)
+				assert.Equal(t, "ghcr.io/example/server:v1.0.0", runConfig.Image)
+				// Verify audit configuration is properly serialized
+				assert.NotNil(t, runConfig.AuditConfig, "AuditConfig should be present in runconfig.json")
 			},
 		},
 	}

@@ -609,8 +609,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		args = append(args, authzArgs...)
 	}
 
-	// Add audit configuration args
-	if m.Spec.Audit != nil && m.Spec.Audit.Enabled {
+	// Add audit configuration args only if not using ConfigMap
+	// When using ConfigMap, audit configuration is included in the runconfig.json
+	if !useConfigMap && m.Spec.Audit != nil && m.Spec.Audit.Enabled {
 		args = append(args, "--enable-audit")
 	}
 

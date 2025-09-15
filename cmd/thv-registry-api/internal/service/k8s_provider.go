@@ -86,6 +86,12 @@ func (p *K8sRegistryDataProvider) GetSource() string {
 	return fmt.Sprintf("configmap:%s/%s", p.namespace, p.configMapName)
 }
 
+// GetRegistryName implements RegistryDataProvider.GetRegistryName.
+// It returns the ConfigMap name as the registry identifier.
+func (p *K8sRegistryDataProvider) GetRegistryName() string {
+	return p.configMapName
+}
+
 // K8sDeploymentProvider implements DeploymentProvider using Kubernetes API.
 // This implementation queries Kubernetes MCPServer custom resources to find deployed MCP servers.
 type K8sDeploymentProvider struct {

@@ -601,8 +601,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		args = append(args, fmt.Sprintf("--resource-url=%s", resourceURL))
 	}
 
-	// Add authorization configuration args
-	if m.Spec.AuthzConfig != nil {
+	// Add authorization configuration args only if not using ConfigMap
+	// When using ConfigMap, authorization configuration is included in the runconfig.json
+	if !useConfigMap && m.Spec.AuthzConfig != nil {
 		authzArgs := r.generateAuthzArgs(m)
 		args = append(args, authzArgs...)
 	}

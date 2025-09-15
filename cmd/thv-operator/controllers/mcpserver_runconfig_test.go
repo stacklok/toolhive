@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -400,6 +401,75 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Equal(t, "", config.TelemetryConfig.Endpoint)
 			},
 		},
+		{
+			name: "with inline authorization configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "authz-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+						Type: mcpv1alpha1.AuthzConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineAuthzConfig{
+							Policies: []string{
+								`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+								`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
+							},
+							EntitiesJSON: `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`,
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "authz-server", config.Name)
+
+				// Verify authorization config is set
+				assert.NotNil(t, config.AuthzConfig)
+				assert.Equal(t, "v1", config.AuthzConfig.Version)
+				assert.Equal(t, authz.ConfigTypeCedarV1, config.AuthzConfig.Type)
+				assert.NotNil(t, config.AuthzConfig.Cedar)
+
+				// Check Cedar-specific configuration
+				assert.Len(t, config.AuthzConfig.Cedar.Policies, 2)
+				assert.Contains(t, config.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+				assert.Contains(t, config.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, config.AuthzConfig.Cedar.EntitiesJSON)
+			},
+		},
+		{
+			name: "with configmap authorization configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "authz-configmap-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+							Name: "test-authz-config",
+							Key:  "authz.json",
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "authz-configmap-server", config.Name)
+
+				// For ConfigMap type, authorization config should not be set directly in RunConfig
+				// since it will be handled by proxyrunner when reading from ConfigMap
+				assert.Nil(t, config.AuthzConfig)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -714,6 +784,59 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 
 				// Check Prometheus settings
 				assert.True(t, runConfig.TelemetryConfig.EnablePrometheusMetricsPath)
+			},
+		},
+		{
+			name: "configmap with inline authorization configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "authz-test",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+						Type: mcpv1alpha1.AuthzConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineAuthzConfig{
+							Policies: []string{
+								`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+								`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
+							},
+							EntitiesJSON: `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`,
+						},
+					},
+				},
+			},
+			existingCM:  nil,
+			expectError: false,
+			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
+				t.Helper()
+				assert.Equal(t, "authz-test-runconfig", cm.Name)
+				assert.Equal(t, "toolhive-system", cm.Namespace)
+				assert.Contains(t, cm.Data, "runconfig.json")
+
+				// Parse and validate authorization configuration in runconfig.json
+				var runConfig runner.RunConfig
+				err := json.Unmarshal([]byte(cm.Data["runconfig.json"]), &runConfig)
+				require.NoError(t, err)
+
+				// Verify basic fields
+				assert.Equal(t, "authz-test", runConfig.Name)
+				assert.Equal(t, "ghcr.io/example/server:v1.0.0", runConfig.Image)
+
+				// Verify authorization configuration is properly serialized
+				assert.NotNil(t, runConfig.AuthzConfig, "AuthzConfig should be present in runconfig.json")
+				assert.Equal(t, "v1", runConfig.AuthzConfig.Version)
+				assert.Equal(t, authz.ConfigTypeCedarV1, runConfig.AuthzConfig.Type)
+				assert.NotNil(t, runConfig.AuthzConfig.Cedar)
+
+				// Check Cedar-specific configuration
+				assert.Len(t, runConfig.AuthzConfig.Cedar.Policies, 2)
+				assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+				assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, runConfig.AuthzConfig.Cedar.EntitiesJSON)
 			},
 		},
 	}

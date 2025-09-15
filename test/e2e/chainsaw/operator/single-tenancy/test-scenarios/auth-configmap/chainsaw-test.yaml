@@ -1,0 +1,172 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: auth-configmap-test
+spec:
+  description: Test that OIDC authentication configuration is correctly generated in ConfigMap
+  steps:
+  - name: enable-configmap-mode
+    try:
+    - script:
+        content: |
+          echo "Setting TOOLHIVE_USE_CONFIGMAP=true on operator deployment..."
+          
+          # Use strategic merge patch to add the environment variable to existing env array
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"true"}]}]}}}}'
+          
+          # Wait for rollout to complete
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          
+          # Verify the environment variable was set
+          echo "Verifying TOOLHIVE_USE_CONFIGMAP environment variable is set..."
+          ENV_VAR=$(kubectl get deployment toolhive-operator -n toolhive-system -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].env[?(@.name=="TOOLHIVE_USE_CONFIGMAP")].value}')
+          if [ "$ENV_VAR" = "true" ]; then
+            echo "✓ TOOLHIVE_USE_CONFIGMAP=true verified on operator deployment"
+          else
+            echo "✗ Failed to set TOOLHIVE_USE_CONFIGMAP environment variable"
+            exit 1
+          fi
+        timeout: 120s
+        
+  - name: create-mcpserver-with-auth
+    try:
+    - apply:
+        file: mcpserver-auth.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+        timeout: 120s
+        
+  - name: verify-pod-running
+    try:
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+        timeout: 120s
+        
+  - name: verify-configmap-oidc-config
+    try:
+    - script:
+        content: |
+          echo "Verifying ConfigMap OIDC authentication configuration..."
+          
+          # Wait for ConfigMap to be created
+          for i in $(seq 1 10); do
+            if kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=auth-configmap-test >/dev/null 2>&1; then
+              echo "✓ ConfigMap exists"
+              break
+            fi
+            echo "  Waiting for ConfigMap... (attempt $i/10)"
+            sleep 2
+          done
+          
+          # Get the ConfigMap and extract the runconfig.json
+          CONFIGMAP_JSON=$(kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=auth-configmap-test -o jsonpath='{.items[0].data.runconfig\.json}' 2>/dev/null || echo "")
+          
+          if [ -z "$CONFIGMAP_JSON" ]; then
+            echo "✗ ConfigMap does not contain runconfig.json data"
+            kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=auth-configmap-test -o yaml
+            exit 1
+          fi
+          
+          echo "$CONFIGMAP_JSON" > /tmp/runconfig.json
+          
+          # Debug: Show the full ConfigMap content
+          echo "=== DEBUG: Full runconfig.json content ==="
+          echo "$CONFIGMAP_JSON" | jq . || echo "$CONFIGMAP_JSON"
+          echo "=== END DEBUG ==="
+          
+          # Verify OIDC configuration is present in runconfig.json
+          if ! echo "$CONFIGMAP_JSON" | jq -e '.oidc_config' > /dev/null 2>&1; then
+            echo "✗ oidc_config section not found in runconfig.json"
+            exit 1
+          fi
+          echo "✓ oidc_config section found"
+          
+          # Verify issuer
+          ISSUER=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.Issuer // empty')
+          if [ "$ISSUER" != "https://auth.example.com" ]; then
+            echo "✗ OIDC issuer mismatch. Expected: 'https://auth.example.com', Got: '$ISSUER'"
+            exit 1
+          fi
+          echo "✓ OIDC issuer verified"
+          
+          # Verify audience
+          AUDIENCE=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.Audience // empty')
+          if [ "$AUDIENCE" != "toolhive-api" ]; then
+            echo "✗ OIDC audience mismatch. Expected: 'toolhive-api', Got: '$AUDIENCE'"
+            exit 1
+          fi
+          echo "✓ OIDC audience verified"
+          
+          # Verify JWKS URL
+          JWKS_URL=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.JWKSURL // empty')
+          if [ "$JWKS_URL" != "https://auth.example.com/.well-known/jwks.json" ]; then
+            echo "✗ OIDC JWKS URL mismatch. Expected: 'https://auth.example.com/.well-known/jwks.json', Got: '$JWKS_URL'"
+            exit 1
+          fi
+          echo "✓ OIDC JWKS URL verified"
+          
+          # Verify introspection URL
+          INTROSPECTION_URL=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.IntrospectionURL // empty')
+          if [ "$INTROSPECTION_URL" != "https://auth.example.com/oauth/introspect" ]; then
+            echo "✗ OIDC introspection URL mismatch. Expected: 'https://auth.example.com/oauth/introspect', Got: '$INTROSPECTION_URL'"
+            exit 1
+          fi
+          echo "✓ OIDC introspection URL verified"
+          
+          # Verify client ID
+          CLIENT_ID=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.ClientID // empty')
+          if [ "$CLIENT_ID" != "toolhive-client" ]; then
+            echo "✗ OIDC client ID mismatch. Expected: 'toolhive-client', Got: '$CLIENT_ID'"
+            exit 1
+          fi
+          echo "✓ OIDC client ID verified"
+          
+          # Verify client secret
+          CLIENT_SECRET=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.ClientSecret // empty')
+          if [ "$CLIENT_SECRET" != "secret123" ]; then
+            echo "✗ OIDC client secret mismatch. Expected: 'secret123', Got: '$CLIENT_SECRET'"
+            exit 1
+          fi
+          echo "✓ OIDC client secret verified"
+          
+          # Verify allow private IP
+          ALLOW_PRIVATE_IP=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.AllowPrivateIP // empty')
+          if [ "$ALLOW_PRIVATE_IP" != "true" ]; then
+            echo "✗ OIDC allow private IP mismatch. Expected: 'true', Got: '$ALLOW_PRIVATE_IP'"
+            exit 1
+          fi
+          echo "✓ OIDC allow private IP verified"
+          
+          # Verify CA cert path and auth token file are empty (as noted in unit tests)
+          CA_CERT_PATH=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.CACertPath // empty')
+          if [ "$CA_CERT_PATH" != "" ]; then
+            echo "✗ OIDC CA cert path should be empty. Got: '$CA_CERT_PATH'"
+            exit 1
+          fi
+          echo "✓ OIDC CA cert path verified (empty as expected)"
+          
+          AUTH_TOKEN_FILE=$(echo "$CONFIGMAP_JSON" | jq -r '.oidc_config.AuthTokenFile // empty')
+          if [ "$AUTH_TOKEN_FILE" != "" ]; then
+            echo "✗ OIDC auth token file should be empty. Got: '$AUTH_TOKEN_FILE'"
+            exit 1
+          fi
+          echo "✓ OIDC auth token file verified (empty as expected)"
+          
+          echo "✓ All OIDC authentication configuration validations passed!"
+        timeout: 120s
+
+  - name: cleanup-configmap-mode
+    try:
+    - script:
+        content: |
+          echo "Cleaning up ConfigMap mode..."
+          
+          # Wait for ConfigMap to be deleted
+          kubectl wait --for=delete configmap -l toolhive.stacklok.io/mcp-server=auth-configmap-test -n toolhive-system --timeout=60s || true
+          
+          # Disable ConfigMap mode to avoid affecting subsequent tests
+          echo "Disabling ConfigMap mode..."
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"false"}]}]}}}}'
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          echo "✓ ConfigMap mode cleanup completed"
+        timeout: 120s

@@ -1,0 +1,265 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: telemetry-audit-configmap-test
+spec:
+  description: Test that telemetry and audit configurations are correctly generated in ConfigMap
+  steps:
+  - name: enable-configmap-mode
+    try:
+    - script:
+        content: |
+          echo "Setting TOOLHIVE_USE_CONFIGMAP=true on operator deployment..."
+          
+          # Use strategic merge patch to add the environment variable to existing env array
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"true"}]}]}}}}'
+          
+          # Wait for rollout to complete
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          
+          # Verify the environment variable was set
+          echo "Verifying TOOLHIVE_USE_CONFIGMAP environment variable is set..."
+          ENV_VAR=$(kubectl get deployment toolhive-operator -n toolhive-system -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].env[?(@.name=="TOOLHIVE_USE_CONFIGMAP")].value}')
+          if [ "$ENV_VAR" = "true" ]; then
+            echo "✓ TOOLHIVE_USE_CONFIGMAP=true verified on operator deployment"
+          else
+            echo "✗ Failed to set TOOLHIVE_USE_CONFIGMAP environment variable"
+            exit 1
+          fi
+        timeout: 120s
+        
+  - name: create-mcpserver-with-telemetry
+    try:
+    - apply:
+        file: mcpserver-telemetry.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+        timeout: 120s
+        
+  - name: verify-pod-running
+    try:
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+        timeout: 120s
+        
+  - name: verify-configmap-telemetry-config
+    try:
+    - script:
+        content: |
+          echo "Verifying ConfigMap telemetry configuration..."
+          
+          # Wait for ConfigMap to be created
+          for i in $(seq 1 10); do
+            if kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=telemetry-configmap-test >/dev/null 2>&1; then
+              echo "✓ ConfigMap exists"
+              break
+            fi
+            echo "  Waiting for ConfigMap... (attempt $i/10)"
+            sleep 2
+          done
+          
+          # Get the ConfigMap and extract the runconfig.json
+          CONFIGMAP_JSON=$(kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=telemetry-configmap-test -o jsonpath='{.items[0].data.runconfig\.json}' 2>/dev/null || echo "")
+          
+          if [ -z "$CONFIGMAP_JSON" ]; then
+            echo "✗ ConfigMap does not contain runconfig.json data"
+            kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=telemetry-configmap-test -o yaml
+            exit 1
+          fi
+          
+          echo "$CONFIGMAP_JSON" > /tmp/runconfig.json
+          
+          # Verify telemetry configuration is present in runconfig.json
+          if ! echo "$CONFIGMAP_JSON" | jq -e '.telemetry_config' > /dev/null 2>&1; then
+            echo "✗ telemetry_config section not found in runconfig.json"
+            exit 1
+          fi
+          echo "✓ telemetry_config section found"
+          
+          # Verify OpenTelemetry endpoint (should be without http:// prefix)
+          ENDPOINT=$(echo "$CONFIGMAP_JSON" | jq -r '.telemetry_config.endpoint // empty')
+          if [ "$ENDPOINT" != "otel-collector:4317" ]; then
+            echo "✗ OpenTelemetry endpoint mismatch. Expected: 'otel-collector:4317', Got: '$ENDPOINT'"
+            exit 1
+          fi
+          echo "✓ OpenTelemetry endpoint verified"
+          
+          # Verify service name
+          SERVICE_NAME=$(echo "$CONFIGMAP_JSON" | jq -r '.telemetry_config.serviceName // empty')
+          if [ "$SERVICE_NAME" != "telemetry-test-service" ]; then
+            echo "✗ Service name mismatch. Expected: 'telemetry-test-service', Got: '$SERVICE_NAME'"
+            exit 1
+          fi
+          echo "✓ Service name verified"
+          
+          # Verify headers exist (they're stored as an object, not array)
+          HEADERS_COUNT=$(echo "$CONFIGMAP_JSON" | jq '.telemetry_config.headers | keys | length')
+          if [ "$HEADERS_COUNT" -lt 1 ]; then
+            echo "✗ Headers object is empty or missing"
+            exit 1
+          fi
+          echo "✓ Headers object contains $HEADERS_COUNT entries"
+          
+          # Verify tracing configuration
+          TRACING_ENABLED=$(echo "$CONFIGMAP_JSON" | jq -r '.telemetry_config.tracingEnabled // empty')
+          if [ "$TRACING_ENABLED" != "true" ]; then
+            echo "✗ Tracing enabled mismatch. Expected: 'true', Got: '$TRACING_ENABLED'"
+            exit 1
+          fi
+          echo "✓ Tracing enabled verified"
+          
+          SAMPLING_RATE=$(echo "$CONFIGMAP_JSON" | jq -r '.telemetry_config.samplingRate // empty')
+          if [ "$SAMPLING_RATE" != "0.25" ]; then
+            echo "✗ Sampling rate mismatch. Expected: '0.25', Got: '$SAMPLING_RATE'"
+            exit 1
+          fi
+          echo "✓ Sampling rate verified"
+          
+          # Verify metrics configuration
+          METRICS_ENABLED=$(echo "$CONFIGMAP_JSON" | jq -r '.telemetry_config.metricsEnabled // empty')
+          if [ "$METRICS_ENABLED" != "true" ]; then
+            echo "✗ Metrics enabled mismatch. Expected: 'true', Got: '$METRICS_ENABLED'"
+            exit 1
+          fi
+          echo "✓ Metrics enabled verified"
+          
+          # Verify Prometheus configuration
+          PROMETHEUS_ENABLED=$(echo "$CONFIGMAP_JSON" | jq -r '.telemetry_config.enablePrometheusMetricsPath // empty')
+          if [ "$PROMETHEUS_ENABLED" != "true" ]; then
+            echo "✗ Prometheus enabled mismatch. Expected: 'true', Got: '$PROMETHEUS_ENABLED'"
+            exit 1
+          fi
+          echo "✓ Prometheus enabled verified"
+          
+          # Verify audit configuration is present in runconfig.json
+          if ! echo "$CONFIGMAP_JSON" | jq -e '.audit_config' > /dev/null 2>&1; then
+            echo "✗ audit_config section not found in runconfig.json"
+            exit 1
+          fi
+          echo "✓ audit_config section found"
+          
+          # Verify audit configuration structure (should have default config when enabled)
+          AUDIT_CONFIG_TYPE=$(echo "$CONFIGMAP_JSON" | jq -r '.audit_config | type')
+          if [ "$AUDIT_CONFIG_TYPE" != "object" ]; then
+            echo "✗ audit_config should be an object. Got: '$AUDIT_CONFIG_TYPE'"
+            exit 1
+          fi
+          echo "✓ Audit configuration structure verified"
+          
+          echo "✅ All telemetry and audit configuration fields verified successfully in ConfigMap"
+        timeout: 60s
+        
+  - name: verify-proxyrunner-reads-configmap-telemetry
+    try:
+    - script:
+        content: |
+          echo "Verifying proxyrunner reads telemetry config from ConfigMap..."
+          
+          # Get the deployment to verify it uses --from-configmap flag
+          DEPLOYMENT_ARGS=$(kubectl get deployment telemetry-configmap-test -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || echo "")
+          
+          if [ -z "$DEPLOYMENT_ARGS" ]; then
+            echo "✗ Could not find deployment arguments"
+            kubectl get deployment telemetry-configmap-test -n toolhive-system -o yaml
+            exit 1
+          fi
+          
+          echo "Deployment args: $DEPLOYMENT_ARGS"
+          
+          # Verify deployment uses --from-configmap flag
+          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--from-configmap=toolhive-system/telemetry-configmap-test-runconfig"; then
+            echo "✓ Deployment uses --from-configmap flag"
+          else
+            echo "✗ Deployment does not use --from-configmap flag"
+            exit 1
+          fi
+          
+          # Verify individual telemetry flags are NOT present (should come from ConfigMap)
+          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--telemetry-enabled"; then
+            echo "✗ Deployment should not use individual telemetry flags when using ConfigMap"
+            exit 1
+          fi
+          
+          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--telemetry-endpoint"; then
+            echo "✗ Deployment should not use individual telemetry flags when using ConfigMap"
+            exit 1
+          fi
+          
+          echo "✓ Individual telemetry flags correctly omitted from deployment"
+          
+          # Get pod logs to verify telemetry configuration is being applied
+          POD_NAME=$(kubectl get pods -n toolhive-system -l app.kubernetes.io/instance=telemetry-configmap-test -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          
+          if [ -z "$POD_NAME" ]; then
+            echo "✗ Could not find pod for telemetry-configmap-test"
+            kubectl get pods -n toolhive-system -l app.kubernetes.io/instance=telemetry-configmap-test
+            exit 1
+          fi
+          
+          echo "Checking pod logs for telemetry configuration usage..."
+          
+          # Wait a bit for the pod to start and generate some logs
+          sleep 5
+          
+          # Get pod logs
+          POD_LOGS=$(kubectl logs "$POD_NAME" -n toolhive-system --tail=50 2>/dev/null || echo "")
+          
+          if [ -z "$POD_LOGS" ]; then
+            echo "⚠ No pod logs available yet, this may be expected for a starting pod"
+          else
+            echo "Pod logs (last 50 lines):"
+            echo "$POD_LOGS"
+            
+            # Check for ConfigMap reading indicators in logs
+            if echo "$POD_LOGS" | grep -q "from-configmap\|Loading configuration from ConfigMap\|runconfig.json"; then
+              echo "✓ Pod logs indicate ConfigMap configuration is being read"
+            else
+              echo "⚠ Pod logs don't show clear ConfigMap reading indicators (may be expected)"
+            fi
+          fi
+          
+          # Verify that the pod environment doesn't have individual telemetry env vars
+          # (they should come from the ConfigMap runconfig.json instead)
+          POD_ENV=$(kubectl get pod "$POD_NAME" -n toolhive-system -o jsonpath='{.spec.containers[0].env}' 2>/dev/null || echo "[]")
+          
+          if echo "$POD_ENV" | grep -q "TOOLHIVE_TELEMETRY_ENABLED\|TOOLHIVE_TELEMETRY_ENDPOINT"; then
+            echo "⚠ Pod has individual telemetry environment variables, but ConfigMap should take precedence"
+          else
+            echo "✓ Pod doesn't have individual telemetry environment variables (using ConfigMap)"
+          fi
+          
+          # Final verification: Check that the container is running and ready
+          POD_STATUS=$(kubectl get pod "$POD_NAME" -n toolhive-system -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+          if [ "$POD_STATUS" = "Running" ]; then
+            echo "✓ Pod is running successfully with ConfigMap telemetry configuration"
+          else
+            echo "✗ Pod is not running. Status: $POD_STATUS"
+            kubectl describe pod "$POD_NAME" -n toolhive-system
+            exit 1
+          fi
+          
+          echo "✅ Proxyrunner successfully reads and applies telemetry config from ConfigMap"
+        timeout: 120s
+        
+  - name: cleanup
+    try:
+    - delete:
+        ref:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: MCPServer
+          name: telemetry-configmap-test
+          namespace: toolhive-system
+    - script:
+        content: |
+          # Wait for pod to be deleted
+          kubectl wait --for=delete pod -l app.kubernetes.io/instance=telemetry-configmap-test -n toolhive-system --timeout=60s || true
+          
+          # Wait for ConfigMap to be deleted
+          kubectl wait --for=delete configmap -l toolhive.stacklok.io/mcp-server=telemetry-configmap-test -n toolhive-system --timeout=60s || true
+          
+          # Disable ConfigMap mode to avoid affecting subsequent tests
+          echo "Disabling ConfigMap mode..."
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"false"}]}]}}}}'
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          echo "✓ ConfigMap mode cleanup completed"
+        timeout: 120s

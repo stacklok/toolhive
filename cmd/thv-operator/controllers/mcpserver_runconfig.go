@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -17,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -289,6 +291,18 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		}
 	}
 
+	// Add telemetry configuration if specified
+	addTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name)
+
+	// Add authorization configuration if specified
+	addAuthzConfigOptions(&options, m.Spec.AuthzConfig)
+
+	// Add OIDC authentication configuration if specified
+	addOIDCConfigOptions(&options, m.Spec.OIDCConfig)
+
+	// Add audit configuration if specified
+	addAuditConfigOptions(&options, m.Spec.Audit)
+
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	return runner.NewOperatorRunConfigBuilder(
 		context.Background(),
@@ -533,4 +547,152 @@ func convertSecretsFromMCPServer(secs []mcpv1alpha1.SecretRef) []string {
 		secrets = append(secrets, fmt.Sprintf("%s,target=%s", secret.Name, target))
 	}
 	return secrets
+}
+
+// addTelemetryConfigOptions adds telemetry configuration options to the builder options
+func addTelemetryConfigOptions(
+	options *[]runner.RunConfigBuilderOption,
+	telemetryConfig *mcpv1alpha1.TelemetryConfig,
+	mcpServerName string,
+) {
+	if telemetryConfig == nil {
+		return
+	}
+
+	// Default values
+	var otelEndpoint string
+	var otelEnablePrometheusMetricsPath bool
+	var otelTracingEnabled bool
+	var otelMetricsEnabled bool
+	var otelServiceName string
+	var otelSamplingRate = 0.05 // Default sampling rate
+	var otelHeaders []string
+	var otelInsecure bool
+	var otelEnvironmentVariables []string
+
+	// Process OpenTelemetry configuration
+	if telemetryConfig.OpenTelemetry != nil && telemetryConfig.OpenTelemetry.Enabled {
+		otel := telemetryConfig.OpenTelemetry
+
+		// Strip http:// or https:// prefix if present, as OTLP client expects host:port format
+		otelEndpoint = strings.TrimPrefix(strings.TrimPrefix(otel.Endpoint, "https://"), "http://")
+		otelInsecure = otel.Insecure
+		otelHeaders = otel.Headers
+
+		// Use MCPServer name as service name if not specified
+		if otel.ServiceName != "" {
+			otelServiceName = otel.ServiceName
+		} else {
+			otelServiceName = mcpServerName
+		}
+
+		// Handle tracing configuration
+		if otel.Tracing != nil {
+			otelTracingEnabled = otel.Tracing.Enabled
+			if otel.Tracing.SamplingRate != "" {
+				// Parse sampling rate string to float64
+				if rate, err := strconv.ParseFloat(otel.Tracing.SamplingRate, 64); err == nil {
+					otelSamplingRate = rate
+				}
+			}
+		}
+
+		// Handle metrics configuration
+		if otel.Metrics != nil {
+			otelMetricsEnabled = otel.Metrics.Enabled
+		}
+	}
+
+	// Process Prometheus configuration
+	if telemetryConfig.Prometheus != nil {
+		otelEnablePrometheusMetricsPath = telemetryConfig.Prometheus.Enabled
+	}
+
+	// Add telemetry config to options
+	*options = append(*options, runner.WithTelemetryConfig(
+		otelEndpoint,
+		otelEnablePrometheusMetricsPath,
+		otelTracingEnabled,
+		otelMetricsEnabled,
+		otelServiceName,
+		otelSamplingRate,
+		otelHeaders,
+		otelInsecure,
+		otelEnvironmentVariables,
+	))
+}
+
+// addAuthzConfigOptions adds authorization configuration options to the builder options
+func addAuthzConfigOptions(
+	options *[]runner.RunConfigBuilderOption,
+	authzConfig *mcpv1alpha1.AuthzConfigRef,
+) {
+	if authzConfig == nil {
+		return
+	}
+
+	// Handle inline authorization configuration
+	if authzConfig.Type == mcpv1alpha1.AuthzConfigTypeInline && authzConfig.Inline != nil {
+		policies := authzConfig.Inline.Policies
+		entitiesJSON := authzConfig.Inline.EntitiesJSON
+
+		// Create authorization config
+		authzCfg := &authz.Config{
+			Version: "v1",
+			Type:    authz.ConfigTypeCedarV1,
+			Cedar: &authz.CedarConfig{
+				Policies:     policies,
+				EntitiesJSON: entitiesJSON,
+			},
+		}
+
+		// Add authorization config to options
+		*options = append(*options, runner.WithAuthzConfig(authzCfg))
+	}
+
+	// ConfigMap type is not currently implemented
+}
+
+// addOIDCConfigOptions adds OIDC authentication configuration options to the builder options
+func addOIDCConfigOptions(
+	options *[]runner.RunConfigBuilderOption,
+	oidcConfig *mcpv1alpha1.OIDCConfigRef,
+) {
+	if oidcConfig == nil {
+		return
+	}
+
+	// Handle inline OIDC configuration
+	if oidcConfig.Type == mcpv1alpha1.OIDCConfigTypeInline && oidcConfig.Inline != nil {
+		inline := oidcConfig.Inline
+
+		// Add OIDC config to options
+		*options = append(*options, runner.WithOIDCConfig(
+			inline.Issuer,
+			inline.Audience,
+			inline.JWKSURL,
+			inline.IntrospectionURL,
+			inline.ClientID,
+			inline.ClientSecret,
+			inline.ThvCABundlePath,
+			inline.JWKSAuthTokenPath,
+			"", // resourceURL - not available in InlineOIDCConfig
+			inline.JWKSAllowPrivateIP,
+		))
+	}
+
+	// ConfigMap and Kubernetes types are not currently supported for OIDC configuration
+}
+
+// addAuditConfigOptions adds audit configuration options to the builder options
+func addAuditConfigOptions(
+	options *[]runner.RunConfigBuilderOption,
+	auditConfig *mcpv1alpha1.AuditConfig,
+) {
+	if auditConfig == nil {
+		return
+	}
+
+	// Add audit config to options with default config (no custom config path for now)
+	*options = append(*options, runner.WithAuditEnabled(auditConfig.Enabled, ""))
 }

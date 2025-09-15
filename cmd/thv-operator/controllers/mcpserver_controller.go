@@ -584,8 +584,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		}
 	}
 
-	// Add OIDC configuration args
-	if m.Spec.OIDCConfig != nil {
+	// Add OIDC configuration args only if not using ConfigMap
+	// When using ConfigMap, OIDC configuration is included in the runconfig.json
+	if !useConfigMap && m.Spec.OIDCConfig != nil {
 		// Create a context with timeout for OIDC configuration operations
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -601,14 +602,16 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		args = append(args, fmt.Sprintf("--resource-url=%s", resourceURL))
 	}
 
-	// Add authorization configuration args
-	if m.Spec.AuthzConfig != nil {
+	// Add authorization configuration args only if not using ConfigMap
+	// When using ConfigMap, authorization configuration is included in the runconfig.json
+	if !useConfigMap && m.Spec.AuthzConfig != nil {
 		authzArgs := r.generateAuthzArgs(m)
 		args = append(args, authzArgs...)
 	}
 
-	// Add audit configuration args
-	if m.Spec.Audit != nil && m.Spec.Audit.Enabled {
+	// Add audit configuration args only if not using ConfigMap
+	// When using ConfigMap, audit configuration is included in the runconfig.json
+	if !useConfigMap && m.Spec.Audit != nil && m.Spec.Audit.Enabled {
 		args = append(args, "--enable-audit")
 	}
 
@@ -626,8 +629,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		}
 	}
 
-	// Add OpenTelemetry configuration args
-	if m.Spec.Telemetry != nil {
+	// Add OpenTelemetry configuration args only if not using ConfigMap
+	// When using ConfigMap, telemetry configuration is included in the runconfig.json
+	if !useConfigMap && m.Spec.Telemetry != nil {
 		if m.Spec.Telemetry.OpenTelemetry != nil {
 			otelArgs := r.generateOpenTelemetryArgs(m)
 			args = append(args, otelArgs...)

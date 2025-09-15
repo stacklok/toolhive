@@ -242,11 +242,21 @@ func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registr
 	}
 
 	// TODO: Add additional cleanup logic when other features are implemented:
-	// - Clean up Registry API service
+	// - Clean up Registry API deployment and service (will be handled by owner references)
 	// - Cancel any running sync operations
 
 	ctxLogger.Info("MCPRegistry finalization completed", "registry", registry.Name)
 	return nil
+}
+
+// labelsForRegistryAPI generates standard labels for registry API resources
+func labelsForRegistryAPI(mcpRegistry *mcpv1alpha1.MCPRegistry, resourceName string) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":             resourceName,
+		"app.kubernetes.io/component":        "registry-api",
+		"app.kubernetes.io/managed-by":       "toolhive-operator",
+		"toolhive.stacklok.io/registry-name": mcpRegistry.Name,
+	}
 }
 
 // buildRegistryAPIDeployment creates and configures a Deployment object for the registry API.
@@ -257,13 +267,8 @@ func (r *MCPRegistryReconciler) buildRegistryAPIDeployment(mcpRegistry *mcpv1alp
 	// Generate deployment name using the established pattern
 	deploymentName := fmt.Sprintf("%s-api", mcpRegistry.Name)
 
-	// Define labels
-	labels := map[string]string{
-		"app.kubernetes.io/name":                 deploymentName,
-		"app.kubernetes.io/component":            "registry-api",
-		"app.kubernetes.io/managed-by":           "toolhive-operator",
-		"mcpregistry.toolhive.stacklok.dev/name": mcpRegistry.Name,
-	}
+	// Define labels using common function
+	labels := labelsForRegistryAPI(mcpRegistry, deploymentName)
 
 	// Create basic deployment specification with named container
 	deployment := &appsv1.Deployment{
@@ -414,6 +419,164 @@ func (r *MCPRegistryReconciler) ensureDeployment(
 
 	ctxLogger.Info("Successfully updated registry-api deployment", "deployment", deploymentName)
 	return existing, nil
+}
+
+// buildRegistryAPIService creates and configures a Service object for the registry API.
+// This function handles all service configuration including labels, ports, and selector.
+// It returns a fully configured ClusterIP service ready for Kubernetes API operations.
+// nolint:unused // Will be used when service functionality is integrated
+func buildRegistryAPIService(mcpRegistry *mcpv1alpha1.MCPRegistry) *corev1.Service {
+	// Generate service name using the established pattern
+	serviceName := fmt.Sprintf("%s-api", mcpRegistry.Name)
+
+	// Define labels using common function
+	labels := labelsForRegistryAPI(mcpRegistry, serviceName)
+
+	// Define selector to match deployment pod labels
+	selector := map[string]string{
+		"app.kubernetes.io/name":      serviceName,
+		"app.kubernetes.io/component": "registry-api",
+	}
+
+	// Create service specification
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName,
+			Namespace: mcpRegistry.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: selector,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "http",
+					Port:       8080,
+					TargetPort: intstr.FromInt32(8080),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+
+	return service
+}
+
+// ensureService creates or updates the registry-api Service for the MCPRegistry.
+// This function handles the Kubernetes API operations (Get, Create, Update) and delegates
+// service configuration to buildRegistryAPIService.
+// nolint:unused // Will be used in future integration
+func (r *MCPRegistryReconciler) ensureService(
+	ctx context.Context,
+	mcpRegistry *mcpv1alpha1.MCPRegistry,
+) (*corev1.Service, error) {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
+
+	// Build the desired service configuration
+	service := buildRegistryAPIService(mcpRegistry)
+	serviceName := service.Name
+
+	// Set owner reference for automatic garbage collection
+	if err := controllerutil.SetControllerReference(mcpRegistry, service, r.Scheme); err != nil {
+		ctxLogger.Error(err, "Failed to set controller reference for service")
+		return nil, fmt.Errorf("failed to set controller reference for service: %w", err)
+	}
+
+	// Check if service already exists
+	existing := &corev1.Service{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      serviceName,
+		Namespace: mcpRegistry.Namespace,
+	}, existing)
+
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Service doesn't exist, create it
+			ctxLogger.Info("Creating registry-api service", "service", serviceName)
+			if err := r.Create(ctx, service); err != nil {
+				ctxLogger.Error(err, "Failed to create service")
+				return nil, fmt.Errorf("failed to create service %s: %w", serviceName, err)
+			}
+			ctxLogger.Info("Successfully created registry-api service", "service", serviceName)
+			return service, nil
+		}
+		// Unexpected error
+		ctxLogger.Error(err, "Failed to get service")
+		return nil, fmt.Errorf("failed to get service %s: %w", serviceName, err)
+	}
+
+	// Service exists, update it if necessary
+	ctxLogger.V(1).Info("Service already exists, checking for updates", "service", serviceName)
+
+	// Update the existing service with our desired state
+	existing.Spec.Type = service.Spec.Type
+	existing.Spec.Selector = service.Spec.Selector
+	existing.Spec.Ports = service.Spec.Ports
+	existing.Labels = service.Labels
+
+	// Ensure owner reference is set
+	if err := controllerutil.SetControllerReference(mcpRegistry, existing, r.Scheme); err != nil {
+		ctxLogger.Error(err, "Failed to set controller reference for existing service")
+		return nil, fmt.Errorf("failed to set controller reference for existing service: %w", err)
+	}
+
+	if err := r.Update(ctx, existing); err != nil {
+		ctxLogger.Error(err, "Failed to update service")
+		return nil, fmt.Errorf("failed to update service %s: %w", serviceName, err)
+	}
+
+	ctxLogger.Info("Successfully updated registry-api service", "service", serviceName)
+	return existing, nil
+}
+
+// checkAPIReadiness verifies that the deployed registry-API Deployment is ready
+// by checking deployment status for ready replicas. Returns true if the deployment
+// has at least one ready replica, false otherwise. Returns an error only for
+// unexpected failures, not for deployments that are simply not ready yet.
+// nolint:unused,unparam // Will be used when deployment functionality is integrated; error param reserved for future use
+func (*MCPRegistryReconciler) checkAPIReadiness(ctx context.Context, deployment *appsv1.Deployment) (bool, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Handle nil deployment gracefully
+	if deployment == nil {
+		ctxLogger.V(1).Info("Deployment is nil, not ready")
+		return false, nil
+	}
+
+	// Log deployment status for debugging
+	ctxLogger.V(1).Info("Checking deployment readiness",
+		"deployment", deployment.Name,
+		"namespace", deployment.Namespace,
+		"replicas", deployment.Status.Replicas,
+		"readyReplicas", deployment.Status.ReadyReplicas,
+		"availableReplicas", deployment.Status.AvailableReplicas,
+		"updatedReplicas", deployment.Status.UpdatedReplicas)
+
+	// Check if deployment has ready replicas
+	if deployment.Status.ReadyReplicas > 0 {
+		ctxLogger.V(1).Info("Deployment is ready",
+			"deployment", deployment.Name,
+			"readyReplicas", deployment.Status.ReadyReplicas)
+		return true, nil
+	}
+
+	// Check deployment conditions for additional context
+	for _, condition := range deployment.Status.Conditions {
+		if condition.Type == appsv1.DeploymentProgressing {
+			if condition.Status == corev1.ConditionFalse {
+				ctxLogger.Info("Deployment is not progressing",
+					"deployment", deployment.Name,
+					"reason", condition.Reason,
+					"message", condition.Message)
+			}
+		}
+	}
+
+	ctxLogger.V(1).Info("Deployment is not ready yet",
+		"deployment", deployment.Name,
+		"readyReplicas", deployment.Status.ReadyReplicas)
+
+	return false, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -289,6 +290,9 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		}
 	}
 
+	// Add telemetry configuration if specified
+	addTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name)
+
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	return runner.NewOperatorRunConfigBuilder(
 		context.Background(),
@@ -533,4 +537,77 @@ func convertSecretsFromMCPServer(secs []mcpv1alpha1.SecretRef) []string {
 		secrets = append(secrets, fmt.Sprintf("%s,target=%s", secret.Name, target))
 	}
 	return secrets
+}
+
+// addTelemetryConfigOptions adds telemetry configuration options to the builder options
+func addTelemetryConfigOptions(
+	options *[]runner.RunConfigBuilderOption,
+	telemetryConfig *mcpv1alpha1.TelemetryConfig,
+	mcpServerName string,
+) {
+	if telemetryConfig == nil {
+		return
+	}
+
+	// Default values
+	var otelEndpoint string
+	var otelEnablePrometheusMetricsPath bool
+	var otelTracingEnabled bool
+	var otelMetricsEnabled bool
+	var otelServiceName string
+	var otelSamplingRate = 0.05 // Default sampling rate
+	var otelHeaders []string
+	var otelInsecure bool
+	var otelEnvironmentVariables []string
+
+	// Process OpenTelemetry configuration
+	if telemetryConfig.OpenTelemetry != nil && telemetryConfig.OpenTelemetry.Enabled {
+		otel := telemetryConfig.OpenTelemetry
+
+		// Strip http:// or https:// prefix if present, as OTLP client expects host:port format
+		otelEndpoint = strings.TrimPrefix(strings.TrimPrefix(otel.Endpoint, "https://"), "http://")
+		otelInsecure = otel.Insecure
+		otelHeaders = otel.Headers
+
+		// Use MCPServer name as service name if not specified
+		if otel.ServiceName != "" {
+			otelServiceName = otel.ServiceName
+		} else {
+			otelServiceName = mcpServerName
+		}
+
+		// Handle tracing configuration
+		if otel.Tracing != nil {
+			otelTracingEnabled = otel.Tracing.Enabled
+			if otel.Tracing.SamplingRate != "" {
+				// Parse sampling rate string to float64
+				if rate, err := strconv.ParseFloat(otel.Tracing.SamplingRate, 64); err == nil {
+					otelSamplingRate = rate
+				}
+			}
+		}
+
+		// Handle metrics configuration
+		if otel.Metrics != nil {
+			otelMetricsEnabled = otel.Metrics.Enabled
+		}
+	}
+
+	// Process Prometheus configuration
+	if telemetryConfig.Prometheus != nil {
+		otelEnablePrometheusMetricsPath = telemetryConfig.Prometheus.Enabled
+	}
+
+	// Add telemetry config to options
+	*options = append(*options, runner.WithTelemetryConfig(
+		otelEndpoint,
+		otelEnablePrometheusMetricsPath,
+		otelTracingEnabled,
+		otelMetricsEnabled,
+		otelServiceName,
+		otelSamplingRate,
+		otelHeaders,
+		otelInsecure,
+		otelEnvironmentVariables,
+	))
 }

@@ -508,7 +508,6 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	// otherwise, create a service account for the MCP server
 	mcpServerServiceAccountName := mcpServerServiceAccountName(mcpServer.Name)
 	return r.ensureRBACResource(ctx, mcpServer, "ServiceAccount", func() client.Object {
-		mcpServer.Spec.ServiceAccount = &mcpServerServiceAccountName
 		return &corev1.ServiceAccount{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpServerServiceAccountName,
@@ -544,14 +543,24 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		if m.Spec.TargetPort != 0 {
 			args = append(args, fmt.Sprintf("--target-port=%d", m.Spec.TargetPort))
 		}
+		// Add proxy mode for stdio transport
+		if m.Spec.ProxyMode != "" {
+			args = append(args, fmt.Sprintf("--proxy-mode=%s", m.Spec.ProxyMode))
+		}
 	}
 
 	// Add pod template patch and permission profile only if not using ConfigMap
 	// When using ConfigMap, these are included in the runconfig.json
 	if !useConfigMap {
 		// Generate pod template patch for secrets and merge with user-provided patch
+		// If service account is not specified, use the default MCP server service account
+		serviceAccount := m.Spec.ServiceAccount
+		if serviceAccount == nil {
+			defaultSA := mcpServerServiceAccountName(m.Name)
+			serviceAccount = &defaultSA
+		}
 		finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
-			WithServiceAccount(m.Spec.ServiceAccount).
+			WithServiceAccount(serviceAccount).
 			WithSecrets(m.Spec.Secrets).
 			Build()
 		// Add pod template patch if we have one
@@ -617,8 +626,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		}
 	}
 
-	// Add OpenTelemetry configuration args
-	if m.Spec.Telemetry != nil {
+	// Add OpenTelemetry configuration args only if not using ConfigMap
+	// When using ConfigMap, telemetry configuration is included in the runconfig.json
+	if !useConfigMap && m.Spec.Telemetry != nil {
 		if m.Spec.Telemetry.OpenTelemetry != nil {
 			otelArgs := r.generateOpenTelemetryArgs(m)
 			args = append(args, otelArgs...)
@@ -1183,8 +1193,14 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deploymen
 		}
 
 		// Check if the pod template spec has changed (including secrets)
+		// If service account is not specified, use the default MCP server service account
+		serviceAccount := mcpServer.Spec.ServiceAccount
+		if serviceAccount == nil {
+			defaultSA := mcpServerServiceAccountName(mcpServer.Name)
+			serviceAccount = &defaultSA
+		}
 		expectedPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec).
-			WithServiceAccount(mcpServer.Spec.ServiceAccount).
+			WithServiceAccount(serviceAccount).
 			WithSecrets(mcpServer.Spec.Secrets).
 			Build()
 

@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -292,6 +293,9 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 
 	// Add telemetry configuration if specified
 	addTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name)
+
+	// Add authorization configuration if specified
+	addAuthzConfigOptions(&options, m.Spec.AuthzConfig)
 
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	return runner.NewOperatorRunConfigBuilder(
@@ -610,4 +614,35 @@ func addTelemetryConfigOptions(
 		otelInsecure,
 		otelEnvironmentVariables,
 	))
+}
+
+// addAuthzConfigOptions adds authorization configuration options to the builder options
+func addAuthzConfigOptions(
+	options *[]runner.RunConfigBuilderOption,
+	authzConfig *mcpv1alpha1.AuthzConfigRef,
+) {
+	if authzConfig == nil {
+		return
+	}
+
+	// Handle inline authorization configuration
+	if authzConfig.Type == mcpv1alpha1.AuthzConfigTypeInline && authzConfig.Inline != nil {
+		policies := authzConfig.Inline.Policies
+		entitiesJSON := authzConfig.Inline.EntitiesJSON
+
+		// Create authorization config
+		authzCfg := &authz.Config{
+			Version: "v1",
+			Type:    authz.ConfigTypeCedarV1,
+			Cedar: &authz.CedarConfig{
+				Policies:     policies,
+				EntitiesJSON: entitiesJSON,
+			},
+		}
+
+		// Add authorization config to options
+		*options = append(*options, runner.WithAuthzConfig(authzCfg))
+	}
+
+	// ConfigMap type is not currently implemented
 }

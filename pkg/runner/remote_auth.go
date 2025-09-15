@@ -88,6 +88,7 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 
 // discoverIssuerAndScopes attempts to discover the OAuth issuer and scopes from various sources
 // following RFC 8414 and RFC 9728 standards
+// If the issuer is not derived from Realm and Resource Metadata, it derives from the remote URL
 func (h *RemoteAuthHandler) discoverIssuerAndScopes(
 	ctx context.Context,
 	authInfo *discovery.AuthInfo,

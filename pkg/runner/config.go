@@ -465,4 +465,5 @@ type ToolOverride struct {
 	Description string `json:"description,omitempty"`
 }
 
+// DefaultCallbackPort is the default port for the OAuth callback server
 const DefaultCallbackPort = 8666

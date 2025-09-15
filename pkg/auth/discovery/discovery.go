@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // Default timeout constants for authentication operations
@@ -247,7 +248,7 @@ func DeriveIssuerFromURL(remoteURL string) string {
 
 	scheme := parsedURL.Scheme
 	if scheme == "" {
-		scheme = "https"
+		scheme = networking.HttpScheme
 	}
 
 	// General pattern: use the domain as the issuer

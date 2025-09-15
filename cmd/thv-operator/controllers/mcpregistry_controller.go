@@ -2,10 +2,18 @@ package controllers
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -16,13 +24,31 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sync"
 )
 
+const (
+	// registryAPIContainerName is the name of the registry-api container in deployments
+	// nolint:unused // Will be used when ensureDeployment method is integrated
+	registryAPIContainerName = "registry-api"
+)
+
+// getRegistryAPIImage returns the container image for the registry API.
+// It checks the TOOLHIVE_REGISTRY_API_IMAGE environment variable first,
+// falling back to the default image if not set.
+// nolint:unused // Will be used when deployment functionality is integrated
+func getRegistryAPIImage() string {
+	if image := os.Getenv("TOOLHIVE_REGISTRY_API_IMAGE"); image != "" {
+		return image
+	}
+	return "ghcr.io/stacklok/toolhive/thv-registry-api:latest"
+}
+
 // MCPRegistryReconciler reconciles a MCPRegistry object
 type MCPRegistryReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
 	// Sync manager handles all sync operations
-	syncManager sync.Manager
+	syncManager    sync.Manager
+	storageManager sources.StorageManager
 }
 
 // NewMCPRegistryReconciler creates a new MCPRegistryReconciler with required dependencies
@@ -32,9 +58,10 @@ func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *
 	syncManager := sync.NewDefaultSyncManager(k8sClient, scheme, sourceHandlerFactory, storageManager)
 
 	return &MCPRegistryReconciler{
-		Client:      k8sClient,
-		Scheme:      scheme,
-		syncManager: syncManager,
+		Client:         k8sClient,
+		Scheme:         scheme,
+		syncManager:    syncManager,
+		storageManager: storageManager,
 	}
 }
 
@@ -220,6 +247,173 @@ func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registr
 
 	ctxLogger.Info("MCPRegistry finalization completed", "registry", registry.Name)
 	return nil
+}
+
+// buildRegistryAPIDeployment creates and configures a Deployment object for the registry API.
+// This function handles all deployment configuration including labels, container specs, probes,
+// and storage manager integration. It returns a fully configured deployment ready for Kubernetes API operations.
+// nolint:unused // Will be used when deployment functionality is integrated
+func (r *MCPRegistryReconciler) buildRegistryAPIDeployment(mcpRegistry *mcpv1alpha1.MCPRegistry) (*appsv1.Deployment, error) {
+	// Generate deployment name using the established pattern
+	deploymentName := fmt.Sprintf("%s-api", mcpRegistry.Name)
+
+	// Define labels
+	labels := map[string]string{
+		"app.kubernetes.io/name":                 deploymentName,
+		"app.kubernetes.io/component":            "registry-api",
+		"app.kubernetes.io/managed-by":           "toolhive-operator",
+		"mcpregistry.toolhive.stacklok.dev/name": mcpRegistry.Name,
+	}
+
+	// Create basic deployment specification with named container
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      deploymentName,
+			Namespace: mcpRegistry.Namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &[]int32{1}[0], // Single replica for registry API
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app.kubernetes.io/name":      deploymentName,
+					"app.kubernetes.io/component": "registry-api",
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "toolhive-registry-api",
+					Containers: []corev1.Container{
+						{
+							Name:  registryAPIContainerName,
+							Image: getRegistryAPIImage(),
+							Args: []string{
+								"serve",
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									ContainerPort: 8080,
+									Name:          "http",
+									Protocol:      corev1.ProtocolTCP,
+								},
+							},
+							// Add resource limits and requests for production readiness
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("128Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("500m"),
+									corev1.ResourceMemory: resource.MustParse("512Mi"),
+								},
+							},
+							// Add liveness and readiness probes
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/health",
+										Port: intstr.FromInt32(8080),
+									},
+								},
+								InitialDelaySeconds: 30,
+								PeriodSeconds:       10,
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/readiness",
+										Port: intstr.FromInt32(8080),
+									},
+								},
+								InitialDelaySeconds: 5,
+								PeriodSeconds:       5,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Configure storage-specific aspects using StorageManager
+	if err := r.storageManager.ConfigureDeployment(deployment, mcpRegistry, registryAPIContainerName); err != nil {
+		return nil, fmt.Errorf("failed to configure deployment with storage manager: %w", err)
+	}
+
+	// Set owner reference for automatic garbage collection
+	if err := controllerutil.SetControllerReference(mcpRegistry, deployment, r.Scheme); err != nil {
+		return nil, fmt.Errorf("failed to set controller reference for deployment: %w", err)
+	}
+
+	return deployment, nil
+}
+
+// ensureDeployment creates or updates the registry-api Deployment for the MCPRegistry.
+// This function handles the Kubernetes API operations (Get, Create, Update) and delegates
+// deployment configuration to buildRegistryAPIDeployment.
+// nolint:unused // Will be used in future integration
+func (r *MCPRegistryReconciler) ensureDeployment(
+	ctx context.Context,
+	mcpRegistry *mcpv1alpha1.MCPRegistry,
+) (*appsv1.Deployment, error) {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
+
+	// Build the desired deployment configuration
+	deployment, err := r.buildRegistryAPIDeployment(mcpRegistry)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to build deployment configuration")
+		return nil, fmt.Errorf("failed to build deployment configuration: %w", err)
+	}
+
+	deploymentName := deployment.Name
+
+	// Check if deployment already exists
+	existing := &appsv1.Deployment{}
+	err = r.Get(ctx, types.NamespacedName{
+		Name:      deploymentName,
+		Namespace: mcpRegistry.Namespace,
+	}, existing)
+
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Deployment doesn't exist, create it
+			ctxLogger.Info("Creating registry-api deployment", "deployment", deploymentName)
+			if err := r.Create(ctx, deployment); err != nil {
+				ctxLogger.Error(err, "Failed to create deployment")
+				return nil, fmt.Errorf("failed to create deployment %s: %w", deploymentName, err)
+			}
+			ctxLogger.Info("Successfully created registry-api deployment", "deployment", deploymentName)
+			return deployment, nil
+		}
+		// Unexpected error
+		ctxLogger.Error(err, "Failed to get deployment")
+		return nil, fmt.Errorf("failed to get deployment %s: %w", deploymentName, err)
+	}
+
+	// Deployment exists, update it if necessary
+	ctxLogger.V(1).Info("Deployment already exists, checking for updates", "deployment", deploymentName)
+
+	// Update the existing deployment with our desired state
+	existing.Spec = deployment.Spec
+	existing.Labels = deployment.Labels
+
+	// Ensure owner reference is set
+	if err := controllerutil.SetControllerReference(mcpRegistry, existing, r.Scheme); err != nil {
+		ctxLogger.Error(err, "Failed to set controller reference for existing deployment")
+		return nil, fmt.Errorf("failed to set controller reference for existing deployment: %w", err)
+	}
+
+	if err := r.Update(ctx, existing); err != nil {
+		ctxLogger.Error(err, "Failed to update deployment")
+		return nil, fmt.Errorf("failed to update deployment %s: %w", deploymentName, err)
+	}
+
+	ctxLogger.Info("Successfully updated registry-api deployment", "deployment", deploymentName)
+	return existing, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

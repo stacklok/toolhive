@@ -7,6 +7,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// GetCurrentNamespace attempts to determine the current Kubernetes namespace
+// using multiple methods, falling back to "default" if none succeed.
 func GetCurrentNamespace() string {
 	// Method 1: Try to read from the service account namespace file
 	ns, err := getNamespaceFromServiceAccount()

@@ -365,3 +365,60 @@ func TestOAuthFlowConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestDeriveIssuerFromURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "https no port",
+			in:   "https://api.example.com",
+			want: "https://api.example.com",
+		},
+		{
+			name: "https with nondefault port, path, query, fragment",
+			in:   "https://api.example.com:8443/v1/users?id=42#top",
+			want: "https://api.example.com:8443",
+		},
+		{
+			name: "http scheme forced to https",
+			in:   "http://api.example.com",
+			want: "https://api.example.com",
+		},
+		{
+			name: "userinfo ignored; keep host:port",
+			in:   "https://user:pass@auth.example.com:9443/oauth/authorize",
+			want: "https://auth.example.com:9443",
+		},
+		{
+			name: "file scheme unsupported -> empty",
+			in:   "file:///etc/passwd",
+			want: "",
+		},
+		{
+			name: "malformed url -> empty",
+			in:   "://not a url",
+			want: "",
+		},
+		{
+			name: "empty host -> empty",
+			in:   "https://",
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := DeriveIssuerFromURL(tc.in)
+			if got != tc.want {
+				t.Fatalf("DeriveIssuerFromURL(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

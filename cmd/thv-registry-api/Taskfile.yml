@@ -1,0 +1,18 @@
+version: '3'
+
+tasks:
+  registry-docs:
+    desc: Regenerate the registry API documentation
+    dir: cmd/thv-registry-api
+    cmds:
+      - swag init -g docs.go --v3.1 -o docs
+
+  registry-build:
+    desc: Build the registry API binary
+    cmds:
+      - go build -o bin/thv-registry-api ./cmd/thv-registry-api
+
+  registry-build-image:
+    desc: Build the registry API image with ko
+    cmds:
+      - ko build --local -B ./cmd/thv-registry-api

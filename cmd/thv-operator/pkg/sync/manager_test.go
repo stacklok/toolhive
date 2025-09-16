@@ -216,15 +216,18 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
+	intPtr := func(i int) *int { return &i }
+
 	tests := []struct {
-		name               string
-		mcpRegistry        *mcpv1alpha1.MCPRegistry
-		sourceConfigMap    *corev1.ConfigMap
-		existingStorageCM  *corev1.ConfigMap
-		expectedError      bool
-		expectedPhase      mcpv1alpha1.MCPRegistryPhase
-		errorContains      string
-		validateConditions bool
+		name                string
+		mcpRegistry         *mcpv1alpha1.MCPRegistry
+		sourceConfigMap     *corev1.ConfigMap
+		existingStorageCM   *corev1.ConfigMap
+		expectedError       bool
+		expectedPhase       mcpv1alpha1.MCPRegistryPhase
+		expectedServerCount *int // nil means don't validate
+		errorContains       string
+		validateConditions  bool
 	}{
 		{
 			name: "successful sync with valid data",
@@ -257,9 +260,10 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 					"registry.json": `{"version": "1.0.0", "last_updated": "2023-01-01T00:00:00Z", "servers": {"test-server": {"name": "test-server", "description": "Test server", "tier": "Community", "status": "Active", "transport": "stdio", "tools": ["test_tool"], "image": "test/image:latest"}}, "remoteServers": {}}`,
 				},
 			},
-			expectedError:      false,
-			expectedPhase:      mcpv1alpha1.MCPRegistryPhaseReady,
-			validateConditions: true,
+			expectedError:       false,
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseReady,
+			expectedServerCount: intPtr(1), // 1 server in the registry data
+			validateConditions:  true,
 		},
 		{
 			name: "sync fails when source configmap not found",
@@ -283,11 +287,12 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 					Phase: mcpv1alpha1.MCPRegistryPhasePending,
 				},
 			},
-			sourceConfigMap:    nil,
-			expectedError:      false, // PerformSync handles errors internally and sets phase
-			expectedPhase:      mcpv1alpha1.MCPRegistryPhaseFailed,
-			errorContains:      "",
-			validateConditions: false,
+			sourceConfigMap:     nil,
+			expectedError:       false, // PerformSync handles errors internally and sets phase
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseFailed,
+			expectedServerCount: nil, // Don't validate server count for failed sync
+			errorContains:       "",
+			validateConditions:  false,
 		},
 		{
 			name: "sync with manual trigger annotation",
@@ -323,9 +328,139 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 					"registry.json": `{"version": "1.0.0", "last_updated": "2023-01-01T00:00:00Z", "servers": {}, "remoteServers": {}}`,
 				},
 			},
-			expectedError:      false,
-			expectedPhase:      mcpv1alpha1.MCPRegistryPhaseReady,
-			validateConditions: true,
+			expectedError:       false,
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseReady,
+			expectedServerCount: intPtr(0), // 0 servers in the registry data
+			validateConditions:  true,
+		},
+		{
+			name: "successful sync with name filtering",
+			mcpRegistry: &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "test-namespace",
+					UID:       types.UID("test-uid"),
+				},
+				Spec: mcpv1alpha1.MCPRegistrySpec{
+					Source: mcpv1alpha1.MCPRegistrySource{
+						Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMap: &mcpv1alpha1.ConfigMapSource{
+							Name: "source-configmap",
+							Key:  "registry.json",
+						},
+					},
+					Filter: &mcpv1alpha1.RegistryFilter{
+						NameFilters: &mcpv1alpha1.NameFilter{
+							Include: []string{"test-*"},
+							Exclude: []string{"*-excluded"},
+						},
+					},
+				},
+				Status: mcpv1alpha1.MCPRegistryStatus{
+					Phase: mcpv1alpha1.MCPRegistryPhasePending,
+				},
+			},
+			sourceConfigMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "source-configmap",
+					Namespace: "test-namespace",
+				},
+				Data: map[string]string{
+					"registry.json": `{"version": "1.0.0", "last_updated": "2023-01-01T00:00:00Z", "servers": {"test-server": {"name": "test-server", "description": "Test server", "tier": "Community", "status": "Active", "transport": "stdio", "tools": ["test_tool"], "image": "test/image:latest"}, "excluded-server": {"name": "excluded-server", "description": "Excluded server", "tier": "Community", "status": "Active", "transport": "stdio", "tools": ["test_tool"], "image": "test/image:latest"}, "other-server": {"name": "other-server", "description": "Other server", "tier": "Community", "status": "Active", "transport": "stdio", "tools": ["test_tool"], "image": "test/image:latest"}}, "remoteServers": {}}`,
+				},
+			},
+			expectedError:       false,
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseReady,
+			expectedServerCount: intPtr(1), // 1 server after filtering (test-server matches include, others excluded/don't match)
+			validateConditions:  true,
+		},
+		{
+			name: "successful sync with tag filtering",
+			mcpRegistry: &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "test-namespace",
+					UID:       types.UID("test-uid"),
+				},
+				Spec: mcpv1alpha1.MCPRegistrySpec{
+					Source: mcpv1alpha1.MCPRegistrySource{
+						Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMap: &mcpv1alpha1.ConfigMapSource{
+							Name: "source-configmap",
+							Key:  "registry.json",
+						},
+					},
+					Filter: &mcpv1alpha1.RegistryFilter{
+						Tags: &mcpv1alpha1.TagFilter{
+							Include: []string{"database"},
+							Exclude: []string{"deprecated"},
+						},
+					},
+				},
+				Status: mcpv1alpha1.MCPRegistryStatus{
+					Phase: mcpv1alpha1.MCPRegistryPhasePending,
+				},
+			},
+			sourceConfigMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "source-configmap",
+					Namespace: "test-namespace",
+				},
+				Data: map[string]string{
+					"registry.json": `{"version": "1.0.0", "last_updated": "2023-01-01T00:00:00Z", "servers": {"db-server": {"name": "db-server", "description": "Database server", "tier": "Community", "status": "Active", "transport": "stdio", "tools": ["db_tool"], "tags": ["database", "sql"], "image": "db/image:latest"}, "old-db-server": {"name": "old-db-server", "description": "Old database server", "tier": "Community", "status": "Active", "transport": "stdio", "tools": ["db_tool"], "tags": ["database", "deprecated"], "image": "db/image:old"}, "web-server": {"name": "web-server", "description": "Web server", "tier": "Community", "status": "Active", "transport": "stdio", "tools": ["web_tool"], "tags": ["web"], "image": "web/image:latest"}}, "remoteServers": {}}`,
+				},
+			},
+			expectedError:       false,
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseReady,
+			expectedServerCount: intPtr(1), // 1 server after filtering (db-server has "database" tag, old-db-server excluded by "deprecated", web-server doesn't have "database")
+			validateConditions:  true,
+		},
+		{
+			name: "successful sync with combined name and tag filtering",
+			mcpRegistry: &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-registry",
+					Namespace: "test-namespace",
+					UID:       types.UID("test-uid"),
+				},
+				Spec: mcpv1alpha1.MCPRegistrySpec{
+					Source: mcpv1alpha1.MCPRegistrySource{
+						Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMap: &mcpv1alpha1.ConfigMapSource{
+							Name: "source-configmap",
+							Key:  "registry.json",
+						},
+					},
+					Filter: &mcpv1alpha1.RegistryFilter{
+						NameFilters: &mcpv1alpha1.NameFilter{
+							Include: []string{"prod-*"},
+						},
+						Tags: &mcpv1alpha1.TagFilter{
+							Include: []string{"production"},
+							Exclude: []string{"experimental"},
+						},
+					},
+				},
+				Status: mcpv1alpha1.MCPRegistryStatus{
+					Phase: mcpv1alpha1.MCPRegistryPhasePending,
+				},
+			},
+			sourceConfigMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "source-configmap",
+					Namespace: "test-namespace",
+				},
+				Data: map[string]string{
+					"registry.json": `{"version": "1.0.0", "last_updated": "2023-01-01T00:00:00Z", "servers": {"prod-db": {"name": "prod-db", "description": "Production database", "tier": "Official", "status": "Active", "transport": "stdio", "tools": ["db_tool"], "tags": ["database", "production"], "image": "db/image:prod"}, "prod-web": {"name": "prod-web", "description": "Production web server", "tier": "Official", "status": "Active", "transport": "stdio", "tools": ["web_tool"], "tags": ["web", "production"], "image": "web/image:prod"}, "prod-experimental": {"name": "prod-experimental", "description": "Experimental prod server", "tier": "Community", "status": "Active", "transport": "stdio", "tools": ["exp_tool"], "tags": ["production", "experimental"], "image": "exp/image:latest"}, "dev-db": {"name": "dev-db", "description": "Development database", "tier": "Community", "status": "Active", "transport": "stdio", "tools": ["db_tool"], "tags": ["database", "development"], "image": "db/image:dev"}}, "remoteServers": {}}`,
+				},
+			},
+			expectedError:       false,
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseReady,
+			expectedServerCount: intPtr(2), // 2 servers after filtering (prod-db and prod-web match name pattern and have "production" tag, prod-experimental excluded by "experimental", dev-db doesn't match "prod-*")
+			validateConditions:  true,
 		},
 	}
 
@@ -370,6 +505,11 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 
 			// Check the registry object directly since PerformSync modifies it in place
 			assert.Equal(t, tt.expectedPhase, tt.mcpRegistry.Status.Phase)
+
+			// Validate server count if expected
+			if tt.expectedServerCount != nil {
+				assert.Equal(t, *tt.expectedServerCount, tt.mcpRegistry.Status.ServerCount, "ServerCount should match expected value after sync")
+			}
 
 			if tt.validateConditions {
 				// Check that success conditions are set when sync succeeds
@@ -679,7 +819,6 @@ func TestIsManualSync(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.reason, func(t *testing.T) {
 			t.Parallel()
 			result := IsManualSync(tt.reason)

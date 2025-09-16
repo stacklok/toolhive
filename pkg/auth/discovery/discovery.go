@@ -23,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // Default timeout constants for authentication operations
@@ -229,6 +230,34 @@ func ParseWWWAuthenticate(header string) (*AuthInfo, error) {
 	}
 
 	return nil, fmt.Errorf("no supported authentication type found in header: %s", header)
+}
+
+// DeriveIssuerFromURL attempts to derive the OAuth issuer from the remote URL using general patterns
+func DeriveIssuerFromURL(remoteURL string) string {
+	// Parse the URL to extract the domain
+	parsedURL, err := url.Parse(remoteURL)
+	if err != nil {
+		logger.Debugf("Failed to parse remote URL: %v", err)
+		return ""
+	}
+
+	host := parsedURL.Hostname()
+	if host == "" {
+		return ""
+	}
+
+	// Append port if explicitly present in the original URL
+	port := parsedURL.Port()
+	if port != "" {
+		host = fmt.Sprintf("%s:%s", host, port)
+	}
+
+	// General pattern: use the domain as the issuer
+	// This works for most OAuth providers that use their domain as the issuer
+	issuer := fmt.Sprintf("%s://%s", networking.HttpsScheme, host)
+
+	logger.Debugf("Derived issuer from URL - remoteURL: %s, issuer: %s", remoteURL, issuer)
+	return issuer
 }
 
 // ExtractParameter extracts a parameter value from an authentication header

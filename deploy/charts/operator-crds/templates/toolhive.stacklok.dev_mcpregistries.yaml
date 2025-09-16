@@ -224,6 +224,11 @@ spec:
                   with matching labels
                 minimum: 0
                 type: integer
+              lastManualSyncTrigger:
+                description: |-
+                  LastManualSyncTrigger tracks the last processed manual sync annotation value
+                  Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation
+                type: string
               lastSyncHash:
                 description: |-
                   LastSyncHash is the hash of the last successfully synced data

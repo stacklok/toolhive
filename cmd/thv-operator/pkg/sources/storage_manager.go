@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -45,7 +46,7 @@ type ConfigMapStorageManager struct {
 }
 
 // NewConfigMapStorageManager creates a new ConfigMap-based storage manager
-func NewConfigMapStorageManager(k8sClient client.Client, scheme *runtime.Scheme) StorageManager {
+func NewConfigMapStorageManager(k8sClient client.Client, scheme *runtime.Scheme) *ConfigMapStorageManager {
 	return &ConfigMapStorageManager{
 		client: k8sClient,
 		scheme: scheme,
@@ -159,6 +160,10 @@ func (s *ConfigMapStorageManager) Delete(ctx context.Context, mcpRegistry *mcpv1
 	}
 
 	if err := s.client.Delete(ctx, configMap); err != nil {
+		// Ignore "not found" errors - delete should be idempotent
+		if errors.IsNotFound(err) {
+			return nil
+		}
 		return NewStorageError("delete", mcpRegistry.Name, "failed to delete storage ConfigMap", err)
 	}
 
@@ -182,41 +187,29 @@ func (*ConfigMapStorageManager) getConfigMapName(mcpRegistry *mcpv1alpha1.MCPReg
 
 // StorageError represents an error that occurred during storage operations
 type StorageError struct {
-	Operation    string
-	RegistryName string
-	Reason       string
-	Err          error
+	Operation string
+	Registry  string
+	Message   string
+	Cause     error
 }
 
-// NewStorageError creates a new storage error
-func NewStorageError(operation, registryName, reason string, err error) *StorageError {
-	return &StorageError{
-		Operation:    operation,
-		RegistryName: registryName,
-		Reason:       reason,
-		Err:          err,
-	}
-}
-
-// Error implements the error interface
 func (e *StorageError) Error() string {
-	if e.Err != nil {
-		return fmt.Sprintf("storage operation '%s' failed for registry '%s': %s: %v",
-			e.Operation, e.RegistryName, e.Reason, e.Err)
+	if e.Cause != nil {
+		return fmt.Sprintf("storage error [%s] for registry %s: %s: %v", e.Operation, e.Registry, e.Message, e.Cause)
 	}
-	return fmt.Sprintf("storage operation '%s' failed for registry '%s': %s",
-		e.Operation, e.RegistryName, e.Reason)
+	return fmt.Sprintf("storage error [%s] for registry %s: %s", e.Operation, e.Registry, e.Message)
 }
 
-// Unwrap returns the wrapped error
 func (e *StorageError) Unwrap() error {
-	return e.Err
+	return e.Cause
 }
 
-// Is checks if the error matches the target error type
-func (e *StorageError) Is(target error) bool {
-	if se, ok := target.(*StorageError); ok {
-		return e.Operation == se.Operation && e.RegistryName == se.RegistryName
+// NewStorageError creates a new StorageError
+func NewStorageError(operation, mcpRegistry, message string, cause error) *StorageError {
+	return &StorageError{
+		Operation: operation,
+		Registry:  mcpRegistry,
+		Message:   message,
+		Cause:     cause,
 	}
-	return false
 }

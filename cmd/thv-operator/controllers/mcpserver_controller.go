@@ -770,7 +770,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	}
 
 	// Check for Vault Agent Injection and add env-file-dir argument if needed
-	if hasVaultAgentInjection(deploymentTemplateAnnotations) {
+	// Only add the flag when not using ConfigMap mode (when using ConfigMap, this is handled via the runconfig.json)
+	if !useConfigMap && hasVaultAgentInjection(deploymentTemplateAnnotations) {
 		args = append(args, "--env-file-dir=/vault/secrets")
 	}
 

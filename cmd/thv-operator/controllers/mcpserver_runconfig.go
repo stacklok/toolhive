@@ -22,6 +22,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/operator/accessors"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -315,6 +316,28 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 
 	// Add audit configuration if specified
 	addAuditConfigOptions(&options, m.Spec.Audit)
+
+	// Check for Vault Agent Injection and add env-file-dir if needed
+	vaultDetected := false
+
+	// Check for Vault injection in pod template annotations
+	if m.Spec.PodTemplateSpec != nil &&
+		m.Spec.PodTemplateSpec.Annotations != nil {
+		vaultDetected = hasVaultAgentInjection(m.Spec.PodTemplateSpec.Annotations)
+	}
+
+	// Also check resource overrides annotations using the accessor for safe access
+	if !vaultDetected {
+		accessor := accessors.NewMCPServerFieldAccessor()
+		_, annotations := accessor.GetProxyDeploymentTemplateLabelsAndAnnotations(m)
+		if len(annotations) > 0 {
+			vaultDetected = hasVaultAgentInjection(annotations)
+		}
+	}
+
+	if vaultDetected {
+		options = append(options, runner.WithEnvFileDir("/vault/secrets"))
+	}
 
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	return runner.NewOperatorRunConfigBuilder(

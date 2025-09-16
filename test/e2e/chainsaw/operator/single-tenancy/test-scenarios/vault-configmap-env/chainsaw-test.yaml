@@ -1,0 +1,171 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: vault-configmap-env-file-dir
+spec:
+  description: Tests env-file-dir functionality in ConfigMap mode with Vault Agent injection
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+
+  - name: enable-configmap-mode
+    description: Enable ConfigMap mode by setting environment variable on operator
+    try:
+    - script:
+        content: |
+          echo "Setting TOOLHIVE_USE_CONFIGMAP=true on operator deployment..."
+
+          # Use strategic merge patch to add the environment variable to existing env array
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"true"}]}]}}}}'
+
+          # Wait for rollout to complete
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+
+          # Verify the environment variable was set
+          echo "Verifying TOOLHIVE_USE_CONFIGMAP environment variable is set..."
+          ENV_VAR=$(kubectl get deployment toolhive-operator -n toolhive-system -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].env[?(@.name=="TOOLHIVE_USE_CONFIGMAP")].value}')
+          if [ "$ENV_VAR" = "true" ]; then
+            echo "✓ TOOLHIVE_USE_CONFIGMAP=true verified on operator deployment"
+          else
+            echo "✗ Failed to set TOOLHIVE_USE_CONFIGMAP environment variable"
+            echo "Current environment variables:"
+            kubectl get deployment toolhive-operator -n toolhive-system -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].env[*]}' | jq '.'
+            exit 1
+          fi
+
+  - name: deploy-mcpserver-with-vault
+    description: Deploy MCPServer instance with Vault Agent injection annotations
+    try:
+    - apply:
+        file: mcpserver-vault.yaml
+    - assert:
+        file: mcpserver-vault.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+        timeout: 60s
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+        timeout: 120s
+
+  - name: verify-configmap-env-file-dir
+    description: Verify ConfigMap contains env_file_dir and deployment handles it correctly
+    try:
+    - script:
+        content: |
+          echo "Verifying ConfigMap mode with env-file-dir functionality..."
+
+          # Wait for ConfigMap to be created
+          for i in $(seq 1 10); do
+            if kubectl get configmap vault-test-runconfig -n toolhive-system >/dev/null 2>&1; then
+              echo "✓ ConfigMap vault-test-runconfig exists"
+              break
+            fi
+            echo "  Waiting for ConfigMap... (attempt $i/10)"
+            sleep 2
+          done
+
+          # Verify ConfigMap contains runconfig.json content
+          CONFIGMAP_JSON=$(kubectl get configmap vault-test-runconfig -n toolhive-system -o jsonpath='{.data.runconfig\.json}' 2>/dev/null || echo "")
+
+          if [ -z "$CONFIGMAP_JSON" ]; then
+            echo "✗ ConfigMap does not contain runconfig.json data"
+            kubectl get configmap vault-test-runconfig -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          echo "✓ ConfigMap contains runconfig.json data"
+          echo "ConfigMap runconfig.json content:"
+          echo "$CONFIGMAP_JSON" | jq '.'
+
+          # Verify env_file_dir is present in the RunConfig
+          ENV_FILE_DIR=$(echo "$CONFIGMAP_JSON" | jq -r '.env_file_dir // empty')
+          if [ "$ENV_FILE_DIR" = "/vault/secrets" ]; then
+            echo "✓ env_file_dir correctly set to /vault/secrets in ConfigMap"
+          else
+            echo "✗ env_file_dir not found or incorrect in ConfigMap. Expected: /vault/secrets, Got: $ENV_FILE_DIR"
+            exit 1
+          fi
+
+          # Verify deployment uses --from-configmap flag (not --env-file-dir)
+          echo "Verifying deployment arguments..."
+          DEPLOYMENT_ARGS=$(kubectl get deployment vault-test -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].args}')
+          echo "Deployment args: $DEPLOYMENT_ARGS"
+
+          # Should use --from-configmap
+          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--from-configmap=toolhive-system/vault-test-runconfig"; then
+            echo "✓ Deployment uses --from-configmap flag"
+          else
+            echo "✗ Deployment does not use --from-configmap flag"
+            exit 1
+          fi
+
+          # Should NOT use --env-file-dir flag (this would cause conflicts)
+          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--env-file-dir"; then
+            echo "✗ Deployment should not use --env-file-dir flag when using ConfigMap mode"
+            exit 1
+          fi
+
+          echo "✓ No conflicting --env-file-dir flag present"
+
+          # Verify other individual config flags are also NOT present
+          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--transport=stdio"; then
+            echo "✗ Deployment should not use --transport flag when using ConfigMap"
+            exit 1
+          fi
+
+          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--name=vault-test"; then
+            echo "✗ Deployment should not use --name flag when using ConfigMap"
+            exit 1
+          fi
+
+          echo "✓ Individual config flags correctly omitted"
+
+          # Wait for pod to be ready
+          echo "Waiting for pod to be ready..."
+          kubectl wait --for=condition=Ready pod -l app=mcpserver,app.kubernetes.io/instance=vault-test -n toolhive-system --timeout=120s
+
+          echo "✅ ConfigMap mode with env-file-dir functionality verified successfully!"
+
+  - name: verify-core-functionality
+    description: Verify the core fix works - ConfigMap has env_file_dir and no flag conflicts
+    try:
+    - script:
+        content: |
+          echo "✅ Core functionality test completed successfully!"
+          echo ""
+          echo "Summary of what was validated:"
+          echo "1. ✅ ConfigMap mode enabled on operator"
+          echo "2. ✅ MCPServer with Vault resourceOverrides deployed"
+          echo "3. ✅ ConfigMap contains env_file_dir field from Vault detection"
+          echo "4. ✅ Deployment uses --from-configmap flag (no conflicts)"
+          echo "5. ✅ MCPServer and Pod reach Running state"
+          echo ""
+          echo "The fix for GitHub + Vault flag conflict is working correctly!"
+          echo "- In ConfigMap mode: env_file_dir is stored in ConfigMap, no --env-file-dir flag used"
+          echo "- In CLI mode: --env-file-dir flag would be used directly on command line"
+
+  - name: cleanup-configmap-mode
+    description: Disable ConfigMap mode to avoid affecting subsequent tests
+    try:
+    - script:
+        content: |
+          echo "Disabling ConfigMap mode by removing environment variable..."
+
+          # Use JSON patch to remove the specific environment variable
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='json' -p='[{"op": "remove", "path": "/spec/template/spec/containers/0/env", "value": {"name": "TOOLHIVE_USE_CONFIGMAP"}}]' || echo "Environment variable may not exist to remove"
+
+          # Alternative: set it to false instead of removing
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"false"}]}]}}}}'
+
+          # Wait for rollout to complete
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+
+          echo "✓ ConfigMap mode cleanup completed"

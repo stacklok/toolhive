@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: mcpserver
+    app.kubernetes.io/instance: vault-test
+  namespace: toolhive-system
+spec:
+  containers:
+  - name: toolhive
+    # Container should exist - image will be proxy runner, not the main server image
+status:
+  phase: Running

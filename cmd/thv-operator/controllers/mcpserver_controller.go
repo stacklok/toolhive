@@ -1419,9 +1419,9 @@ func (*MCPServerReconciler) generateAuthzVolumeConfig(m *mcpv1alpha1.MCPServer) 
 								if m.Spec.AuthzConfig.ConfigMap.Key != "" {
 									return m.Spec.AuthzConfig.ConfigMap.Key
 								}
-								return "authz.json"
+								return defaultAuthzKey
 							}(),
-							Path: "authz.json",
+							Path: defaultAuthzKey,
 						},
 					},
 				},
@@ -1450,8 +1450,8 @@ func (*MCPServerReconciler) generateAuthzVolumeConfig(m *mcpv1alpha1.MCPServer) 
 					},
 					Items: []corev1.KeyToPath{
 						{
-							Key:  "authz.json",
-							Path: "authz.json",
+							Key:  defaultAuthzKey,
+							Path: defaultAuthzKey,
 						},
 					},
 				},
@@ -1734,7 +1734,7 @@ func (*MCPServerReconciler) generateAuthzArgs(m *mcpv1alpha1.MCPServer) []string
 	}
 
 	// Both ConfigMap and inline configurations use the same mounted path
-	authzConfigPath := "/etc/toolhive/authz/authz.json"
+	authzConfigPath := fmt.Sprintf("/etc/toolhive/authz/%s", defaultAuthzKey)
 	args = append(args, fmt.Sprintf("--authz-config=%s", authzConfigPath))
 
 	return args
@@ -1872,7 +1872,7 @@ func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1
 			Labels:    labelsForInlineAuthzConfig(m.Name),
 		},
 		Data: map[string]string{
-			"authz.json": string(authzConfigJSON),
+			defaultAuthzKey: string(authzConfigJSON),
 		},
 	}
 

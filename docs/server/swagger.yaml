@@ -1150,6 +1150,9 @@ components:
         proxy_mode:
           description: Proxy mode to use
           type: string
+        proxy_port:
+          description: Port for the HTTP proxy to listen on
+          type: integer
         secrets:
           description: Secret parameters to inject
           items:
@@ -1500,6 +1503,9 @@ components:
         proxy_mode:
           description: Proxy mode to use
           type: string
+        proxy_port:
+          description: Port for the HTTP proxy to listen on
+          type: integer
         secrets:
           description: Secret parameters to inject
           items:

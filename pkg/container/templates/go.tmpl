@@ -23,7 +23,6 @@ RUN mkdir -p /usr/local/share/ca-certificates && \
 # Set environment variables for better performance in containers
 ENV CGO_ENABLED=0 \
     GOOS=linux \
-    GOARCH=amd64 \
     GO111MODULE=on
 
 # Set working directory

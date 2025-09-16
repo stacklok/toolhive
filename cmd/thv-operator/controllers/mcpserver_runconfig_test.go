@@ -456,7 +456,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
 						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
 							Name: "test-authz-config",
-							Key:  "authz.json",
+							Key:  defaultAuthzKey,
 						},
 					},
 				},
@@ -465,9 +465,14 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "authz-configmap-server", config.Name)
 
-				// For ConfigMap type, authorization config should not be set directly in RunConfig
-				// since it will be handled by proxyrunner when reading from ConfigMap
-				assert.Nil(t, config.AuthzConfig)
+				// For ConfigMap type, with new feature, authorization config is embedded in RunConfig
+				require.NotNil(t, config.AuthzConfig)
+				assert.Equal(t, "v1", config.AuthzConfig.Version)
+				assert.Equal(t, authz.ConfigTypeCedarV1, config.AuthzConfig.Type)
+				require.NotNil(t, config.AuthzConfig.Cedar)
+				assert.Len(t, config.AuthzConfig.Cedar.Policies, 1)
+				assert.Contains(t, config.AuthzConfig.Cedar.Policies[0], "call_tool")
+				assert.Equal(t, "[]", config.AuthzConfig.Cedar.EntitiesJSON)
 			},
 		},
 		{
@@ -594,7 +599,54 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := &MCPServerReconciler{}
+
+			// Build reconciler; if test uses ConfigMap-based authz, provide a fake client with that ConfigMap
+			var r *MCPServerReconciler
+			if tt.mcpServer != nil &&
+				tt.mcpServer.Spec.AuthzConfig != nil &&
+				tt.mcpServer.Spec.AuthzConfig.Type == mcpv1alpha1.AuthzConfigTypeConfigMap &&
+				tt.mcpServer.Spec.AuthzConfig.ConfigMap != nil {
+
+				scheme := createRunConfigTestScheme()
+
+				// Prepare a ConfigMap with authorization configuration content
+				cm := &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      tt.mcpServer.Spec.AuthzConfig.ConfigMap.Name,
+						Namespace: tt.mcpServer.Namespace,
+					},
+					Data: map[string]string{
+						func() string {
+							if k := tt.mcpServer.Spec.AuthzConfig.ConfigMap.Key; k != "" {
+								return k
+							}
+							return defaultAuthzKey
+						}(): `{
+							"version": "v1",
+							"type": "cedarv1",
+							"cedar": {
+								"policies": [
+									"permit(principal, action == Action::\"call_tool\", resource == Tool::\"weather\");"
+								],
+								"entities_json": "[]"
+							}
+						}`,
+					},
+				}
+
+				fakeClient := fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithRuntimeObjects(cm).
+					Build()
+
+				r = &MCPServerReconciler{
+					Client: fakeClient,
+					Scheme: scheme,
+				}
+			} else {
+				r = &MCPServerReconciler{}
+			}
+
 			result, err := r.createRunConfigFromMCPServer(tt.mcpServer)
 			require.NoError(t, err)
 			assert.NotNil(t, result)
@@ -1053,7 +1105,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			testScheme := createRunConfigTestScheme()
-			objects := []runtime.Object{}
+			objects := []runtime.Object{tt.mcpServer}
 			if tt.existingCM != nil {
 				objects = append(objects, tt.existingCM)
 			}
@@ -1100,6 +1152,87 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			}
 		})
 	}
+
+	// Additional test: ConfigMap-based Authz referenced externally should be embedded into runconfig.json
+	t.Run("configmap with external authorization configuration", func(t *testing.T) {
+		t.Parallel()
+		testScheme := createRunConfigTestScheme()
+
+		mcpServer := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "authz-cm-ext",
+				Namespace: "toolhive-system",
+			},
+			Spec: mcpv1alpha1.MCPServerSpec{
+				Image:     "ghcr.io/example/server:v1.0.0",
+				Transport: "stdio",
+				Port:      8080,
+				AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+					Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
+					ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+						Name: "ext-authz-config",
+						Key:  "authz.json",
+					},
+				},
+			},
+		}
+
+		authzCM := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "ext-authz-config",
+				Namespace: "toolhive-system",
+			},
+			Data: map[string]string{
+				"authz.json": `{
+					"version": "v1",
+					"type": "cedarv1",
+					"cedar": {
+						"policies": [
+							"permit(principal, action == Action::\"call_tool\", resource == Tool::\"weather\");",
+							"permit(principal, action == Action::\"get_prompt\", resource == Prompt::\"greeting\");"
+						],
+						"entities_json": "[{\"uid\": {\"type\": \"User\", \"id\": \"user1\"}, \"attrs\": {}}]"
+					}
+				}`,
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithRuntimeObjects(mcpServer, authzCM).
+			Build()
+
+		reconciler := &MCPServerReconciler{
+			Client: fakeClient,
+			Scheme: testScheme,
+		}
+
+		err := reconciler.ensureRunConfigConfigMap(context.TODO(), mcpServer)
+		require.NoError(t, err)
+
+		// Fetch the generated runconfig ConfigMap
+		configMapName := fmt.Sprintf("%s-runconfig", mcpServer.Name)
+		configMap := &corev1.ConfigMap{}
+		err = fakeClient.Get(context.TODO(), types.NamespacedName{
+			Name:      configMapName,
+			Namespace: mcpServer.Namespace,
+		}, configMap)
+		require.NoError(t, err)
+
+		// Validate that authz config is embedded
+		var runConfig runner.RunConfig
+		err = json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
+		require.NoError(t, err)
+
+		require.NotNil(t, runConfig.AuthzConfig)
+		assert.Equal(t, "v1", runConfig.AuthzConfig.Version)
+		assert.Equal(t, authz.ConfigTypeCedarV1, runConfig.AuthzConfig.Type)
+		require.NotNil(t, runConfig.AuthzConfig.Cedar)
+		assert.Len(t, runConfig.AuthzConfig.Cedar.Policies, 2)
+		assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+		assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+		assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, runConfig.AuthzConfig.Cedar.EntitiesJSON)
+	})
 }
 
 // TestRunConfigContentEquals tests the content comparison logic

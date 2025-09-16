@@ -85,6 +85,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 			Name:           "test-workload",
 			Image:          "test-image:latest",
 			Host:           "localhost",
+			Port:           3000,
 			CmdArgs:        []string{"arg1", "arg2"},
 			TargetPort:     8080,
 			EnvVars:        map[string]string{"ENV1": "value1"},
@@ -105,6 +106,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, "localhost", result.Host)
 		assert.Equal(t, []string{"arg1", "arg2"}, result.CmdArguments)
 		assert.Equal(t, 8080, result.TargetPort)
+		assert.Equal(t, 3000, result.ProxyPort)
 		assert.Equal(t, map[string]string{"ENV1": "value1"}, result.EnvVars)
 		require.Len(t, result.Secrets, 2)
 		assert.Equal(t, "secret1", result.Secrets[0].Name)

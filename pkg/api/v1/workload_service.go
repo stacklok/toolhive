@@ -208,7 +208,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		runner.WithNetworkIsolation(req.NetworkIsolation),
 		runner.WithK8sPodPatch(""),
 		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),
-		runner.WithTransportAndPorts(req.Transport, 0, req.TargetPort),
+		runner.WithTransportAndPorts(req.Transport, req.ProxyPort, req.TargetPort),
 		runner.WithAuditEnabled(false, ""),
 		runner.WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
 			"", "", "", "", "", false),

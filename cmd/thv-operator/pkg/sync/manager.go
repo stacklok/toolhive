@@ -353,7 +353,7 @@ func (s *DefaultSyncManager) applyFilteringIfConfigured(
 			"filteredServerCount", fetchResult.ServerCount,
 			"serversFiltered", originalServerCount-fetchResult.ServerCount)
 	} else {
-		ctxLogger.V(1).Info("No filtering configured, using original registry data")
+		ctxLogger.Info("No filtering configured, using original registry data")
 	}
 
 	return nil

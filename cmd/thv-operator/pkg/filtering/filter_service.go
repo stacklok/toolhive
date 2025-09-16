@@ -55,7 +55,7 @@ func (s *DefaultFilterService) ApplyFilters(
 
 	// If no filter is specified, return original registry
 	if filter == nil {
-		ctxLogger.V(1).Info("No filter specified, returning original registry")
+		ctxLogger.Info("No filter specified, returning original registry")
 		return reg, nil
 	}
 
@@ -99,13 +99,13 @@ func (s *DefaultFilterService) ApplyFilters(
 		if included {
 			filteredRegistry.Servers[serverName] = serverMetadata
 			includedCount++
-			ctxLogger.V(1).Info("Including container server",
+			ctxLogger.Info("Including container server",
 				"name", serverName,
 				"tags", serverMetadata.Tags,
 				"reason", reason)
 		} else {
 			excludedCount++
-			ctxLogger.V(1).Info("Excluding container server",
+			ctxLogger.Info("Excluding container server",
 				"name", serverName,
 				"tags", serverMetadata.Tags,
 				"reason", reason)
@@ -125,13 +125,13 @@ func (s *DefaultFilterService) ApplyFilters(
 		if included {
 			filteredRegistry.RemoteServers[serverName] = serverMetadata
 			includedCount++
-			ctxLogger.V(1).Info("Including remote server",
+			ctxLogger.Info("Including remote server",
 				"name", serverName,
 				"tags", serverMetadata.Tags,
 				"reason", reason)
 		} else {
 			excludedCount++
-			ctxLogger.V(1).Info("Excluding remote server",
+			ctxLogger.Info("Excluding remote server",
 				"name", serverName,
 				"tags", serverMetadata.Tags,
 				"reason", reason)

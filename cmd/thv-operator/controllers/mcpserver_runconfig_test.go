@@ -26,7 +26,6 @@ const (
 	stdioTransport          = "stdio"
 	sseProxyMode            = "sse"
 	streamableHTTPProxyMode = "streamable-http"
-	defaultAuthzKey         = "authz.json"
 )
 
 func createRunConfigTestScheme() *runtime.Scheme {

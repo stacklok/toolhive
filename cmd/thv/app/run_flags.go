@@ -302,12 +302,14 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *telemetry.Config {
 	configProvider := cfg.NewDefaultProvider()
 	config := configProvider.GetConfig()
-	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(cmd, config,
-		runFlags.OtelEndpoint, runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables)
+	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables, finalOtelInsecure,
+		finalOtelEnablePrometheusMetricsPath := getTelemetryFromFlags(cmd, config, runFlags.OtelEndpoint,
+		runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables, runFlags.OtelInsecure,
+		runFlags.OtelEnablePrometheusMetricsPath)
 
-	return createTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
+	return createTelemetryConfig(finalOtelEndpoint, finalOtelEnablePrometheusMetricsPath,
 		runFlags.OtelServiceName, runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, finalOtelSamplingRate,
-		runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables)
+		runFlags.OtelHeaders, finalOtelInsecure, finalOtelEnvironmentVariables)
 }
 
 // setupRuntimeAndValidation creates container runtime and selects environment variable validator
@@ -575,7 +577,8 @@ func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, strin
 
 // getTelemetryFromFlags extracts telemetry configuration from command flags
 func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint string, otelSamplingRate float64,
-	otelEnvironmentVariables []string) (string, float64, []string) {
+	otelEnvironmentVariables []string, otelInsecure bool, otelEnablePrometheusMetricsPath bool) (
+	string, float64, []string, bool, bool) {
 	// Use config values as fallbacks for OTEL flags if not explicitly set
 	finalOtelEndpoint := otelEndpoint
 	if !cmd.Flags().Changed("otel-endpoint") && config.OTEL.Endpoint != "" {
@@ -592,7 +595,18 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 		finalOtelEnvironmentVariables = config.OTEL.EnvVars
 	}
 
-	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables
+	finalOtelInsecure := otelInsecure
+	if !cmd.Flags().Changed("otel-insecure") {
+		finalOtelInsecure = config.OTEL.Insecure
+	}
+
+	finalOtelEnablePrometheusMetricsPath := otelEnablePrometheusMetricsPath
+	if !cmd.Flags().Changed("otel-enable-prometheus-metrics-path") {
+		finalOtelEnablePrometheusMetricsPath = config.OTEL.EnablePrometheusMetricsPath
+	}
+
+	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables,
+		finalOtelInsecure, finalOtelEnablePrometheusMetricsPath
 }
 
 // createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided

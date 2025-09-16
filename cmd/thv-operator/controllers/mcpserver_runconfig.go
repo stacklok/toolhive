@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -127,6 +128,7 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMapResource(
 	mcpServer *mcpv1alpha1.MCPServer,
 	desired *corev1.ConfigMap,
 ) error {
+	ctxLogger := log.FromContext(ctx)
 	current := &corev1.ConfigMap{}
 	objectKey := types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}
 	err := r.Get(ctx, objectKey, current)

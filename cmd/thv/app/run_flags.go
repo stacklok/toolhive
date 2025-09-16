@@ -529,9 +529,6 @@ func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.Remote
 	}
 
 	if remoteServerMetadata.OAuthConfig != nil {
-		if remoteServerMetadata.OAuthConfig.CallbackPort == 0 {
-			remoteServerMetadata.OAuthConfig.CallbackPort = runner.DefaultCallbackPort
-		}
 		return &runner.RemoteAuthConfig{
 			ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
 			ClientSecret: runFlags.RemoteAuthFlags.RemoteAuthClientSecret,

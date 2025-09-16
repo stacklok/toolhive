@@ -1,0 +1,148 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: authz-configmap-ref-test
+spec:
+  description: Test that external ConfigMap-based authorization config is embedded into runconfig.json and used via --from-configmap
+  steps:
+  - name: enable-configmap-mode
+    try:
+    - script:
+        content: |
+          echo "Setting TOOLHIVE_USE_CONFIGMAP=true on operator deployment..."
+
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"true"}]}]}}}}'
+
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+
+          echo "Verifying TOOLHIVE_USE_CONFIGMAP environment variable is set..."
+          ENV_VAR=$(kubectl get deployment toolhive-operator -n toolhive-system -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].env[?(@.name=="TOOLHIVE_USE_CONFIGMAP")].value}')
+          if [ "$ENV_VAR" = "true" ]; then
+            echo "✓ TOOLHIVE_USE_CONFIGMAP=true verified on operator deployment"
+          else
+            echo "✗ Failed to set TOOLHIVE_USE_CONFIGMAP environment variable"
+            exit 1
+          fi
+        timeout: 120s
+
+  - name: create-external-authz-configmap
+    try:
+    - script:
+        content: |
+          echo "Creating external authorization ConfigMap..."
+          kubectl apply -n toolhive-system -f - <<'EOF'
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: external-authz-config
+            namespace: toolhive-system
+          data:
+            authz.json: |
+              {
+                "version": "v1",
+                "type": "cedarv1",
+                "cedar": {
+                  "policies": [
+                    "permit(principal, action == Action::\"call_tool\", resource == Tool::\"weather\");",
+                    "permit(principal, action == Action::\"get_prompt\", resource == Prompt::\"greeting\");",
+                    "forbid(principal, action == Action::\"call_tool\", resource == Tool::\"sensitive_data\");"
+                  ],
+                  "entities_json": "[{\"uid\": {\"type\": \"User\", \"id\": \"user1\"}, \"attrs\": {\"role\": \"viewer\"}}, {\"uid\": {\"type\": \"User\", \"id\": \"admin\"}, \"attrs\": {\"role\": \"admin\"}}]"
+                }
+              }
+          EOF
+          echo "✓ External authorization ConfigMap created"
+        timeout: 60s
+
+  - name: create-mcpserver-with-authz-ref
+    try:
+    - apply:
+        file: mcpserver-authz-ref.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+        timeout: 180s
+
+  - name: verify-pod-running
+    try:
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+        timeout: 180s
+
+  - name: verify-configmap-authz-config-embedded
+    try:
+    - script:
+        content: |
+          echo "Verifying RunConfig ConfigMap includes embedded authorization config..."
+
+          for i in $(seq 1 20); do
+            if kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=authz-configmap-ref-test >/dev/null 2>&1; then
+              echo "✓ RunConfig ConfigMap exists"
+              break
+            fi
+            echo "  Waiting for runconfig ConfigMap... (attempt $i/20)"
+            sleep 3
+          done
+
+          CONFIGMAP_JSON=$(kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=authz-configmap-ref-test -o jsonpath='{.items[0].data.runconfig\.json}' 2>/dev/null || echo "")
+          if [ -z "$CONFIGMAP_JSON" ]; then
+            echo "✗ ConfigMap does not contain runconfig.json data"
+            kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=authz-configmap-ref-test -o yaml
+            exit 1
+          fi
+
+          echo "$CONFIGMAP_JSON" | jq -e '.authz_config' >/dev/null
+          VERSION=$(echo "$CONFIGMAP_JSON" | jq -r '.authz_config.version // empty')
+          TYPE=$(echo "$CONFIGMAP_JSON" | jq -r '.authz_config.type // empty')
+          test "$VERSION" = "v1"
+          test "$TYPE" = "cedarv1"
+
+          echo "$CONFIGMAP_JSON" | jq -e '.authz_config.cedar' >/dev/null
+          POLICIES_COUNT=$(echo "$CONFIGMAP_JSON" | jq '.authz_config.cedar.policies | length')
+          test "$POLICIES_COUNT" = "3"
+
+          echo "$CONFIGMAP_JSON" | jq -r '.authz_config.cedar.policies[]' | grep -q "weather"
+          echo "$CONFIGMAP_JSON" | jq -r '.authz_config.cedar.policies[]' | grep -q "greeting"
+          echo "$CONFIGMAP_JSON" | jq -r '.authz_config.cedar.policies[]' | grep -qi "forbid"
+
+          ENTITIES_JSON=$(echo "$CONFIGMAP_JSON" | jq -r '.authz_config.cedar.entities_json // empty')
+          test -n "$ENTITIES_JSON"
+          ENTITIES_COUNT=$(echo "$ENTITIES_JSON" | jq '. | length')
+          test "$ENTITIES_COUNT" = "2"
+
+          echo "✓ Authorization configuration embedded and validated in runconfig.json"
+        timeout: 120s
+
+  - name: verify-proxyrunner-uses-from-configmap
+    try:
+    - script:
+        content: |
+          echo "Verifying proxyrunner uses --from-configmap and no --authz-config flag..."
+
+          DEPLOYMENT_ARGS=$(kubectl get deployment authz-configmap-ref-test -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || echo "")
+          if [ -z "$DEPLOYMENT_ARGS" ]; then
+            echo "✗ Could not find deployment arguments"
+            exit 1
+          fi
+
+          echo "$DEPLOYMENT_ARGS" | grep -q -- "--from-configmap"
+          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--authz-config"; then
+            echo "✗ --authz-config flag found in deployment arguments (should not be present when using ConfigMap)"
+            echo "Deployment args: $DEPLOYMENT_ARGS"
+            exit 1
+          fi
+
+          echo "✓ Deployment args validated"
+        timeout: 60s
+
+  - name: cleanup-configmap-mode
+    try:
+    - script:
+        content: |
+          echo "Cleaning up external authz ConfigMap and disabling ConfigMap mode..."
+          kubectl delete configmap external-authz-config -n toolhive-system --ignore-not-found
+          kubectl wait --for=delete configmap external-authz-config -n toolhive-system --timeout=60s || true
+
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"false"}]}]}}}}'
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          echo "✓ Cleanup completed"
+        timeout: 120s

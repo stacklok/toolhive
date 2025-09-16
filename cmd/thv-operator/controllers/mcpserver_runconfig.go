@@ -10,7 +10,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,6 +28,9 @@ import (
 
 // defaultProxyHost is the default host for proxy binding
 const defaultProxyHost = "0.0.0.0"
+
+// defaultAPITimeout is the default timeout for Kubernetes API calls made during reconciliation
+const defaultAPITimeout = 15 * time.Second
 
 // RunConfig management methods
 
@@ -295,7 +300,12 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	addTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name)
 
 	// Add authorization configuration if specified
-	addAuthzConfigOptions(&options, m.Spec.AuthzConfig)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
+	defer cancel()
+
+	if err := r.addAuthzConfigOptions(ctx, m, &options, m.Spec.AuthzConfig); err != nil {
+		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
+	}
 
 	// Add OIDC authentication configuration if specified
 	addOIDCConfigOptions(&options, m.Spec.OIDCConfig)
@@ -623,18 +633,25 @@ func addTelemetryConfigOptions(
 }
 
 // addAuthzConfigOptions adds authorization configuration options to the builder options
-func addAuthzConfigOptions(
+// Supports both inline and ConfigMap-based configurations.
+func (r *MCPServerReconciler) addAuthzConfigOptions(
+	ctx context.Context,
+	m *mcpv1alpha1.MCPServer,
 	options *[]runner.RunConfigBuilderOption,
-	authzConfig *mcpv1alpha1.AuthzConfigRef,
-) {
-	if authzConfig == nil {
-		return
+	authzRef *mcpv1alpha1.AuthzConfigRef,
+) error {
+	if authzRef == nil {
+		return nil
 	}
 
-	// Handle inline authorization configuration
-	if authzConfig.Type == mcpv1alpha1.AuthzConfigTypeInline && authzConfig.Inline != nil {
-		policies := authzConfig.Inline.Policies
-		entitiesJSON := authzConfig.Inline.EntitiesJSON
+	switch authzRef.Type {
+	case mcpv1alpha1.AuthzConfigTypeInline:
+		if authzRef.Inline == nil {
+			return fmt.Errorf("inline authz config type specified but inline config is nil")
+		}
+
+		policies := authzRef.Inline.Policies
+		entitiesJSON := authzRef.Inline.EntitiesJSON
 
 		// Create authorization config
 		authzCfg := &authz.Config{
@@ -648,9 +665,64 @@ func addAuthzConfigOptions(
 
 		// Add authorization config to options
 		*options = append(*options, runner.WithAuthzConfig(authzCfg))
-	}
+		return nil
 
-	// ConfigMap type is not currently implemented
+	case mcpv1alpha1.AuthzConfigTypeConfigMap:
+		// Validate reference
+		if authzRef.ConfigMap == nil || authzRef.ConfigMap.Name == "" {
+			return fmt.Errorf("configMap authz config type specified but reference is missing name")
+		}
+		key := authzRef.ConfigMap.Key
+		if key == "" {
+			key = "authz.json"
+		}
+
+		// Ensure we have a Kubernetes client to fetch the ConfigMap
+		if r.Client == nil {
+			return fmt.Errorf("kubernetes client is not configured for ConfigMap authz resolution")
+		}
+
+		// Fetch the ConfigMap from the same namespace as the MCPServer
+		var cm corev1.ConfigMap
+		if err := r.Get(ctx, types.NamespacedName{
+			Namespace: m.Namespace,
+			Name:      authzRef.ConfigMap.Name,
+		}, &cm); err != nil {
+			return fmt.Errorf("failed to get Authz ConfigMap %s/%s: %w", m.Namespace, authzRef.ConfigMap.Name, err)
+		}
+
+		raw, ok := cm.Data[key]
+		if !ok {
+			return fmt.Errorf("authz ConfigMap %s/%s is missing key %q", m.Namespace, authzRef.ConfigMap.Name, key)
+		}
+		if strings.TrimSpace(raw) == "" {
+			return fmt.Errorf("authz ConfigMap %s/%s key %q is empty", m.Namespace, authzRef.ConfigMap.Name, key)
+		}
+
+		// Unmarshal into authz.Config supporting YAML or JSON
+		var cfg authz.Config
+		// Try YAML first (it also handles JSON)
+		if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+			// Fallback to JSON explicitly for clearer error paths
+			if err2 := json.Unmarshal([]byte(raw), &cfg); err2 != nil {
+				return fmt.Errorf("failed to parse authz config from ConfigMap %s/%s key %q: %v; json fallback error: %v",
+					m.Namespace, authzRef.ConfigMap.Name, key, err, err2)
+			}
+		}
+
+		// Validate the config
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("invalid authz config from ConfigMap %s/%s key %q: %w",
+				m.Namespace, authzRef.ConfigMap.Name, key, err)
+		}
+
+		*options = append(*options, runner.WithAuthzConfig(&cfg))
+		return nil
+
+	default:
+		// Unknown type
+		return fmt.Errorf("unknown authz config type: %s", authzRef.Type)
+	}
 }
 
 // addOIDCConfigOptions adds OIDC authentication configuration options to the builder options

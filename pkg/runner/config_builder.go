@@ -76,11 +76,6 @@ func WithRemoteURL(remoteURL string) RunConfigBuilderOption {
 // WithRemoteAuth sets the remote authentication configuration
 func WithRemoteAuth(config *RemoteAuthConfig) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
-		if config == nil {
-			config = &RemoteAuthConfig{
-				CallbackPort: DefaultCallbackPort,
-			}
-		}
 		b.config.RemoteAuthConfig = config
 		return nil
 	}

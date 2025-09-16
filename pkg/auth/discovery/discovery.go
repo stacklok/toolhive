@@ -246,14 +246,15 @@ func DeriveIssuerFromURL(remoteURL string) string {
 		return ""
 	}
 
-	scheme := parsedURL.Scheme
-	if scheme == "" {
-		scheme = networking.HttpScheme
+	// Append port if explicitly present in the original URL
+	port := parsedURL.Port()
+	if port != "" {
+		host = fmt.Sprintf("%s:%s", host, port)
 	}
 
 	// General pattern: use the domain as the issuer
 	// This works for most OAuth providers that use their domain as the issuer
-	issuer := fmt.Sprintf("%s://%s", scheme, host)
+	issuer := fmt.Sprintf("%s://%s", networking.HttpsScheme, host)
 
 	logger.Debugf("Derived issuer from URL - remoteURL: %s, issuer: %s", remoteURL, issuer)
 	return issuer

@@ -455,12 +455,14 @@ func buildRunnerConfig(
 	)
 
 	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
-		remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata)
-		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
+		if remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata); remoteAuthConfig != nil {
+			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
+		}
 	}
 	if runFlags.RemoteURL != "" {
-		remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags)
-		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
+		if remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags); remoteAuthConfig != nil {
+			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
+		}
 	}
 
 	// Load authz config if path is provided

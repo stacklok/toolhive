@@ -199,25 +199,28 @@ func TestDefaultNameFilter_ShouldInclude_InvalidGlobPatterns(t *testing.T) {
 
 	// Test with malformed glob patterns - should handle gracefully
 	tests := []struct {
-		name       string
-		serverName string
-		include    []string
-		exclude    []string
-		expected   bool
+		name          string
+		serverName    string
+		include       []string
+		exclude       []string
+		expected      bool
+		expectsReason string
 	}{
 		{
-			name:       "malformed bracket pattern in include",
-			serverName: "test",
-			include:    []string{"["},
-			exclude:    []string{},
-			expected:   false, // filepath.Match returns false for malformed patterns
+			name:          "malformed bracket pattern in include",
+			serverName:    "test",
+			include:       []string{"["},
+			exclude:       []string{},
+			expected:      false,
+			expectsReason: "invalid include pattern",
 		},
 		{
-			name:       "malformed bracket pattern in exclude",
-			serverName: "test",
-			include:    []string{},
-			exclude:    []string{"["},
-			expected:   true, // exclude pattern fails to match, so include
+			name:          "malformed bracket pattern in exclude",
+			serverName:    "test",
+			include:       []string{},
+			exclude:       []string{"["},
+			expected:      false,
+			expectsReason: "invalid exclude pattern",
 		},
 	}
 
@@ -227,9 +230,7 @@ func TestDefaultNameFilter_ShouldInclude_InvalidGlobPatterns(t *testing.T) {
 
 			result, reason := filter.ShouldInclude(tt.serverName, tt.include, tt.exclude)
 			assert.Equal(t, tt.expected, result)
-			if !result {
-				assert.NotEmpty(t, reason, "Reason should be provided when excluding")
-			}
+			assert.Contains(t, reason, tt.expectsReason, "Reason should contain expected error message")
 		})
 	}
 }

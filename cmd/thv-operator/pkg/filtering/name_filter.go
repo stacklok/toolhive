@@ -32,7 +32,11 @@ func (*DefaultNameFilter) ShouldInclude(name string, include, exclude []string) 
 	// Check exclude patterns first (exclude takes precedence)
 	if len(exclude) > 0 {
 		for _, pattern := range exclude {
-			if matches, _ := filepath.Match(pattern, name); matches {
+			matches, err := filepath.Match(pattern, name)
+			if err != nil {
+				return false, fmt.Sprintf("invalid exclude pattern '%s': %v", pattern, err)
+			}
+			if matches {
 				return false, fmt.Sprintf("excluded by pattern '%s'", pattern)
 			}
 		}
@@ -41,7 +45,11 @@ func (*DefaultNameFilter) ShouldInclude(name string, include, exclude []string) 
 	// If include patterns are specified, name must match at least one
 	if len(include) > 0 {
 		for _, pattern := range include {
-			if matches, _ := filepath.Match(pattern, name); matches {
+			matches, err := filepath.Match(pattern, name)
+			if err != nil {
+				return false, fmt.Sprintf("invalid include pattern '%s': %v", pattern, err)
+			}
+			if matches {
 				return true, fmt.Sprintf("included by pattern '%s'", pattern)
 			}
 		}

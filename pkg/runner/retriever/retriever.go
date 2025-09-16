@@ -35,15 +35,17 @@ var (
 )
 
 // Retriever is a function that retrieves the MCP server definition from the registry.
-type Retriever func(context.Context, string, string, string) (string, registry.ServerMetadata, error)
+type Retriever func(context.Context, string, string, string, string) (string, registry.ServerMetadata, error)
 
 // GetMCPServer retrieves the MCP server definition from the registry.
-func GetMCPServer(
+func GetMCPServer( //nolint:gocyclo
 	ctx context.Context,
 	serverOrImage string,
 	rawCACertPath string,
 	verificationType string,
+	groupName string,
 ) (string, registry.ServerMetadata, error) {
+	// TODO This method is getting quite complex after adding group support and should be refactored
 	var imageMetadata *registry.ImageMetadata
 	var imageToUse string
 
@@ -62,33 +64,83 @@ func GetMCPServer(
 		imageToUse = generatedImage
 	} else {
 		logger.Debugf("No protocol scheme detected, using image: %s", serverOrImage)
-		// Try to find the server in the registry
-		provider, err := registry.GetDefaultProvider()
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to get registry provider: %v", err)
-		}
 
-		// First check if the server exists and whether it's remote
-		server, err := provider.GetServer(serverOrImage)
-		if err == nil {
-			// Server found, check if it's remote
-			if server.IsRemote() {
-				return serverOrImage, server, nil
-			}
-			// It's a container server, get the ImageMetadata
-			imageMetadata, err = provider.GetImageServer(serverOrImage)
+		// If group name is provided, look up server in the group first
+		if groupName != "" {
+			provider, err := registry.GetDefaultProvider()
 			if err != nil {
-				// This shouldn't happen since we just found it, but handle it anyway
-				logger.Debugf("ImageMetadata '%s' not found in registry: %v", serverOrImage, err)
-				imageToUse = serverOrImage
+				return "", nil, fmt.Errorf("failed to get registry provider: %v", err)
+			}
+
+			reg, err := provider.GetRegistry()
+			if err != nil {
+				return "", nil, fmt.Errorf("failed to get registry: %v", err)
+			}
+
+			group, exists := reg.GetGroupByName(groupName)
+			if !exists {
+				return "", nil, fmt.Errorf("group '%s' not found in registry", groupName)
+			}
+
+			// First check if the server exists and whether it's remote
+			var server registry.ServerMetadata
+			var serverFound bool
+			if containerServer, exists := group.Servers[serverOrImage]; exists {
+				server = containerServer
+				serverFound = true
+			} else if remoteServer, exists := group.RemoteServers[serverOrImage]; exists {
+				server = remoteServer
+				serverFound = true
+			}
+
+			if serverFound {
+				// Server found, check if it's remote
+				if server.IsRemote() {
+					return serverOrImage, server, nil
+				}
+				// It's a container server, get the ImageMetadata
+				if imgMetadata, ok := server.(*registry.ImageMetadata); ok {
+					imageMetadata = imgMetadata
+					logger.Debugf("Found imageMetadata '%s' in group: %v", serverOrImage, imageMetadata)
+					imageToUse = imageMetadata.Image
+				} else {
+					// This shouldn't happen since we just found it, but handle it anyway
+					logger.Debugf("ImageMetadata '%s' not found in group: could not cast", serverOrImage)
+					imageToUse = serverOrImage
+				}
 			} else {
-				logger.Debugf("Found imageMetadata '%s' in registry: %v", serverOrImage, imageMetadata)
-				imageToUse = imageMetadata.Image
+				// Server not found in group - fail explicitly
+				return "", nil, fmt.Errorf("server '%s' not found in group '%s'", serverOrImage, groupName)
 			}
 		} else {
-			// Server not found in registry, treat as a direct image reference
-			logger.Debugf("Server '%s' not found in registry: %v", serverOrImage, err)
-			imageToUse = serverOrImage
+			// Try to find the server in the registry
+			provider, err := registry.GetDefaultProvider()
+			if err != nil {
+				return "", nil, fmt.Errorf("failed to get registry provider: %v", err)
+			}
+
+			// First check if the server exists and whether it's remote
+			server, err := provider.GetServer(serverOrImage)
+			if err == nil {
+				// Server found, check if it's remote
+				if server.IsRemote() {
+					return serverOrImage, server, nil
+				}
+				// It's a container server, get the ImageMetadata
+				imageMetadata, err = provider.GetImageServer(serverOrImage)
+				if err != nil {
+					// This shouldn't happen since we just found it, but handle it anyway
+					logger.Debugf("ImageMetadata '%s' not found in registry: %v", serverOrImage, err)
+					imageToUse = serverOrImage
+				} else {
+					logger.Debugf("Found imageMetadata '%s' in registry: %v", serverOrImage, imageMetadata)
+					imageToUse = imageMetadata.Image
+				}
+			} else {
+				// Server not found in registry, treat as a direct image reference
+				logger.Debugf("Server '%s' not found in registry: %v", serverOrImage, err)
+				imageToUse = serverOrImage
+			}
 		}
 	}
 

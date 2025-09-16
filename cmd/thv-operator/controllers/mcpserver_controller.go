@@ -78,8 +78,6 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 	},
 }
 
-var ctxLogger = log.FromContext(context.Background())
-
 // mcpContainerName is the name of the mcp container used in pod templates
 const mcpContainerName = "mcp"
 
@@ -159,7 +157,7 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 //
 //nolint:gocyclo
 func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	ctxLogger = log.FromContext(ctx)
+	ctxLogger := log.FromContext(ctx)
 
 	// Fetch the MCPServer instance
 	mcpServer := &mcpv1alpha1.MCPServer{}
@@ -522,6 +520,7 @@ func (r *MCPServerReconciler) createRBACResource(
 	resourceType string,
 	createResource func() client.Object,
 ) error {
+	ctxLogger := log.FromContext(ctx)
 	desired := createResource()
 	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
 		logger.Errorf("Failed to set controller reference for %s: %v", resourceType, err)
@@ -548,6 +547,7 @@ func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
 	createResource func() client.Object,
 	current client.Object,
 ) error {
+	ctxLogger := log.FromContext(ctx)
 	desired := createResource()
 	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
 		logger.Errorf("Failed to set controller reference for %s: %v", resourceType, err)
@@ -572,6 +572,7 @@ func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
 
 // handleToolConfig handles MCPToolConfig reference for an MCPServer
 func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
 	if m.Spec.ToolConfigRef == nil {
 		// No MCPToolConfig referenced, clear any stored hash
 		if m.Status.ToolConfigHash != "" {
@@ -1186,6 +1187,7 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 
 // finalizeMCPServer performs the finalizer logic for the MCPServer
 func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
 	// Update the MCPServer status
 	m.Status.Phase = mcpv1alpha1.MCPServerPhaseTerminating
 	m.Status.Message = "MCP server is being terminated"
@@ -1583,9 +1585,9 @@ func (*MCPServerReconciler) generateAuthzVolumeConfig(m *mcpv1alpha1.MCPServer) 
 								if m.Spec.AuthzConfig.ConfigMap.Key != "" {
 									return m.Spec.AuthzConfig.ConfigMap.Key
 								}
-								return "authz.json"
+								return defaultAuthzKey
 							}(),
-							Path: "authz.json",
+							Path: defaultAuthzKey,
 						},
 					},
 				},
@@ -1614,8 +1616,8 @@ func (*MCPServerReconciler) generateAuthzVolumeConfig(m *mcpv1alpha1.MCPServer) 
 					},
 					Items: []corev1.KeyToPath{
 						{
-							Key:  "authz.json",
-							Path: "authz.json",
+							Key:  defaultAuthzKey,
+							Path: defaultAuthzKey,
 						},
 					},
 				},
@@ -1898,7 +1900,7 @@ func (*MCPServerReconciler) generateAuthzArgs(m *mcpv1alpha1.MCPServer) []string
 	}
 
 	// Both ConfigMap and inline configurations use the same mounted path
-	authzConfigPath := "/etc/toolhive/authz/authz.json"
+	authzConfigPath := fmt.Sprintf("/etc/toolhive/authz/%s", defaultAuthzKey)
 	args = append(args, fmt.Sprintf("--authz-config=%s", authzConfigPath))
 
 	return args
@@ -1999,6 +2001,7 @@ func (*MCPServerReconciler) generateOpenTelemetryEnvVars(m *mcpv1alpha1.MCPServe
 
 // ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline configuration
 func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
 	// Only create ConfigMap for inline authorization configuration
 	if m.Spec.AuthzConfig == nil || m.Spec.AuthzConfig.Type != mcpv1alpha1.AuthzConfigTypeInline ||
 		m.Spec.AuthzConfig.Inline == nil {
@@ -2036,7 +2039,7 @@ func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1
 			Labels:    labelsForInlineAuthzConfig(m.Name),
 		},
 		Data: map[string]string{
-			"authz.json": string(authzConfigJSON),
+			defaultAuthzKey: string(authzConfigJSON),
 		},
 	}
 

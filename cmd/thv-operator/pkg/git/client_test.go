@@ -69,6 +69,22 @@ func TestDefaultGitClient_Clone_NonExistentRepo(t *testing.T) {
 	}
 }
 
+func TestDefaultGitClient_GetCommitHash_NoRepo(t *testing.T) {
+	t.Parallel()
+	client := NewDefaultGitClient()
+	repoInfo := &RepositoryInfo{
+		Repository: nil,
+	}
+
+	commitHash, err := client.GetCommitHash(repoInfo)
+	if err == nil {
+		t.Error("Expected error for nil repository, got nil")
+	}
+	if commitHash != "" {
+		t.Error("Expected empty commit hash for nil repository")
+	}
+}
+
 func TestDefaultGitClient_Cleanup_NilRepoInfo(t *testing.T) {
 	t.Parallel()
 	client := NewDefaultGitClient()
@@ -108,6 +124,17 @@ func TestDefaultGitClient_GetFileContent_NoRepo(t *testing.T) {
 	}
 }
 
+func TestDefaultGitClient_Pull_NilRepo(t *testing.T) {
+	t.Parallel()
+	client := NewDefaultGitClient()
+	repoInfo := &RepositoryInfo{} // Repository field is nil
+
+	err := client.Pull(context.Background(), repoInfo)
+	if err == nil {
+		t.Error("Expected error for nil repository, got nil")
+	}
+}
+
 func TestCloneConfig_Structure(t *testing.T) {
 	t.Parallel()
 	config := CloneConfig{
@@ -138,12 +165,16 @@ func TestCloneConfig_Structure(t *testing.T) {
 func TestRepositoryInfo_Structure(t *testing.T) {
 	t.Parallel()
 	repoInfo := RepositoryInfo{
-		Branch:    "main",
-		RemoteURL: "https://github.com/example/repo.git",
+		CurrentCommit: "abc123def456",
+		Branch:        "main",
+		RemoteURL:     "https://github.com/example/repo.git",
 	}
 
 	if repoInfo.Repository != nil {
 		t.Error("Expected Repository to be nil by default")
+	}
+	if repoInfo.CurrentCommit != "abc123def456" {
+		t.Errorf("Expected CurrentCommit to be set correctly")
 	}
 	if repoInfo.Branch != "main" {
 		t.Errorf("Expected Branch to be set correctly")
@@ -180,6 +211,9 @@ func TestRepositoryInfo_EmptyFields(t *testing.T) {
 
 	if repoInfo.Repository != nil {
 		t.Error("Expected nil Repository by default")
+	}
+	if repoInfo.CurrentCommit != "" {
+		t.Error("Expected empty CurrentCommit by default")
 	}
 	if repoInfo.Branch != "" {
 		t.Error("Expected empty Branch by default")

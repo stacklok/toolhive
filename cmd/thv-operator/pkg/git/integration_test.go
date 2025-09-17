@@ -50,7 +50,7 @@ func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 		t.Fatalf("Failed to add file: %v", err)
 	}
 
-	_, err = sourceWorkTree.Commit("Add registry file", &git.CommitOptions{
+	commitHash, err := sourceWorkTree.Commit("Add registry file", &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "Test Author",
 			Email: "test@example.com",
@@ -87,6 +87,15 @@ func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 	}
 	if repoInfo.RemoteURL != sourceRepoDir {
 		t.Errorf("Expected RemoteURL to be %s, got %s", sourceRepoDir, repoInfo.RemoteURL)
+	}
+
+	// Test GetCommitHash
+	hash, err := client.GetCommitHash(repoInfo)
+	if err != nil {
+		t.Fatalf("Failed to get commit hash: %v", err)
+	}
+	if hash != commitHash.String() {
+		t.Errorf("Expected commit hash %s, got %s", commitHash.String(), hash)
 	}
 
 	// Test GetFileContent
@@ -335,6 +344,15 @@ func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 		t.Error("Expected error for file2.txt not present at first commit")
 	}
 
+	// Verify commit hash
+	hash, err := client.GetCommitHash(repoInfo)
+	if err != nil {
+		t.Fatalf("Failed to get commit hash: %v", err)
+	}
+	if hash != firstCommit.String() {
+		t.Errorf("Expected commit hash %s, got %s", firstCommit.String(), hash)
+	}
+
 	// Clean up
 	err = client.Cleanup(repoInfo)
 	if err != nil {
@@ -412,6 +430,9 @@ func TestDefaultGitClient_UpdateRepositoryInfo(t *testing.T) {
 	}
 
 	// Verify the repository info was updated correctly
+	if repoInfo.CurrentCommit != commitHash.String() {
+		t.Errorf("Expected CurrentCommit to be %s, got %s", commitHash.String(), repoInfo.CurrentCommit)
+	}
 	if repoInfo.Branch != mainBranchName {
 		t.Errorf("Expected Branch to be %q, got %s", mainBranchName, repoInfo.Branch)
 	}

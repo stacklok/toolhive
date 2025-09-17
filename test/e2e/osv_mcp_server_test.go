@@ -20,7 +20,7 @@ func generateUniqueServerName(prefix string) string {
 	return fmt.Sprintf("%s-%d-%d-%d", prefix, os.Getpid(), time.Now().UnixNano(), GinkgoRandomSeed())
 }
 
-var _ = Describe("OsvMcpServer", Serial, func() {
+var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {

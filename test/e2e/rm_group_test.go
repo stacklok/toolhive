@@ -10,7 +10,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Group Remove E2E Tests", func() {
+var _ = Describe("Group Remove E2E Tests", Label("core", "groups", "e2e"), func() {
 	var (
 		config           *e2e.TestConfig
 		testGroupName    string

@@ -11,7 +11,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Group List E2E", func() {
+var _ = Describe("Group List E2E", Label("core", "groups", "e2e"), func() {
 	var testGroupName string
 	var config *e2e.TestConfig
 	var createdGroups []string

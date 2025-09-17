@@ -13,7 +13,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Client Management", func() {
+var _ = Describe("Client Management", Label("core", "client", "e2e"), func() {
 	var (
 		testConfig        *e2e.TestConfig
 		tempXdgConfigHome string

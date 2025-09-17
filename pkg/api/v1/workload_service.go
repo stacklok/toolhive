@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -28,7 +29,6 @@ const (
 type WorkloadService struct {
 	workloadManager  workloads.Manager
 	groupManager     groups.Manager
-	secretsProvider  secrets.Provider
 	containerRuntime runtime.Runtime
 	debugMode        bool
 	imageRetriever   retriever.Retriever
@@ -38,14 +38,12 @@ type WorkloadService struct {
 func NewWorkloadService(
 	workloadManager workloads.Manager,
 	groupManager groups.Manager,
-	secretsProvider secrets.Provider,
 	containerRuntime runtime.Runtime,
 	debugMode bool,
 ) *WorkloadService {
 	return &WorkloadService{
 		workloadManager:  workloadManager,
 		groupManager:     groupManager,
-		secretsProvider:  secretsProvider,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 		imageRetriever:   retriever.GetMCPServer,
@@ -128,7 +126,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		if req.Transport == "" {
 			req.Transport = types.TransportTypeStreamableHTTP.String()
 		}
-		remoteAuthConfig, err = s.createRequestToRemoteAuthConfig(ctx, req)
+		remoteAuthConfig, err = createRequestToRemoteAuthConfig(ctx, req)
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +154,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 
 		if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 			if remoteServerMetadata.OAuthConfig != nil {
-				clientSecret, err := s.resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
+				clientSecret, err := resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
 				if err != nil {
 					return nil, err
 				}
@@ -242,13 +240,13 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 }
 
 // createRequestToRemoteAuthConfig converts API request to runner RemoteAuthConfig
-func (s *WorkloadService) createRequestToRemoteAuthConfig(
+func createRequestToRemoteAuthConfig(
 	ctx context.Context,
 	req *createRequest,
 ) (*runner.RemoteAuthConfig, error) {
 
 	// Resolve client secret from secret management if provided
-	clientSecret, err := s.resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
+	clientSecret, err := resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
 	if err != nil {
 		return nil, err
 	}
@@ -269,11 +267,16 @@ func (s *WorkloadService) createRequestToRemoteAuthConfig(
 }
 
 // resolveClientSecret resolves client secret from secret management
-func (s *WorkloadService) resolveClientSecret(ctx context.Context, secretParam *secrets.SecretParameter) (string, error) {
+func resolveClientSecret(ctx context.Context, secretParam *secrets.SecretParameter) (string, error) {
 	var clientSecret string
 	if secretParam != nil {
+
+		secretsProvider, err := getSecretsManager()
+		if err != nil {
+			return "", fmt.Errorf("failed to get secrets manager: %w", err)
+		}
 		// Get the secret from the secrets manager
-		secretValue, err := s.secretsProvider.GetSecret(ctx, secretParam.Name)
+		secretValue, err := secretsProvider.GetSecret(ctx, secretParam.Name)
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve OAuth client secret: %w", err)
 		}
@@ -308,4 +311,21 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 	}
 
 	return workloadNames, nil
+}
+
+// getSecretsManager is a helper function to get the secrets manager
+func getSecretsManager() (secrets.Provider, error) {
+	cfg := config.NewDefaultProvider().GetConfig()
+
+	// Check if secrets setup has been completed
+	if !cfg.Secrets.SetupCompleted {
+		return nil, secrets.ErrSecretsNotSetup
+	}
+
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return nil, err
+	}
+
+	return secrets.CreateSecretProvider(providerType)
 }

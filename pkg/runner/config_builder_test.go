@@ -837,3 +837,86 @@ func TestBuildForOperator(t *testing.T) {
 		})
 	}
 }
+
+func TestWithEnvFileDir(t *testing.T) {
+	t.Parallel()
+
+	// Needed to prevent a nil pointer dereference in the logger.
+	logger.Initialize()
+
+	testCases := []struct {
+		name        string
+		envFileDir  string
+		expectedDir string
+	}{
+		{
+			name:        "absolute path",
+			envFileDir:  "/vault/secrets",
+			expectedDir: "/vault/secrets",
+		},
+		{
+			name:        "relative path",
+			envFileDir:  "./secrets",
+			expectedDir: "./secrets",
+		},
+		{
+			name:        "empty string",
+			envFileDir:  "",
+			expectedDir: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockValidator := &mockEnvVarValidator{}
+
+			config, err := NewOperatorRunConfigBuilder(
+				context.Background(),
+				nil,
+				nil,
+				mockValidator,
+				WithName("test-server"),
+				WithImage("test-image:latest"),
+				WithEnvFileDir(tc.envFileDir),
+			)
+
+			require.NoError(t, err, "Builder should not fail")
+			require.NotNil(t, config, "Config should not be nil")
+			assert.Equal(t, tc.expectedDir, config.EnvFileDir, "EnvFileDir should match expected value")
+		})
+	}
+}
+
+func TestRunConfigSerialization_WithEnvFileDir(t *testing.T) {
+	t.Parallel()
+
+	// Test that EnvFileDir field is properly serialized and deserialized
+	config := &RunConfig{
+		SchemaVersion: CurrentSchemaVersion,
+		Name:          "test-server",
+		Image:         "test-image:latest",
+		EnvFileDir:    "/vault/secrets",
+		EnvVars:       map[string]string{"TEST": "value"},
+	}
+
+	// Serialize to JSON
+	jsonData, err := json.Marshal(config)
+	require.NoError(t, err, "Marshaling should not fail")
+
+	// Check that EnvFileDir is included in JSON
+	jsonStr := string(jsonData)
+	assert.Contains(t, jsonStr, "env_file_dir", "JSON should contain env_file_dir field")
+	assert.Contains(t, jsonStr, "/vault/secrets", "JSON should contain the directory path")
+
+	// Deserialize from JSON
+	var deserializedConfig RunConfig
+	err = json.Unmarshal(jsonData, &deserializedConfig)
+	require.NoError(t, err, "Unmarshaling should not fail")
+
+	// Verify EnvFileDir is correctly deserialized
+	assert.Equal(t, "/vault/secrets", deserializedConfig.EnvFileDir, "EnvFileDir should be correctly deserialized")
+	assert.Equal(t, config.Name, deserializedConfig.Name, "Name should be correctly deserialized")
+	assert.Equal(t, config.Image, deserializedConfig.Image, "Image should be correctly deserialized")
+}

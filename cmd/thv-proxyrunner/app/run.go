@@ -532,6 +532,11 @@ func applyRunConfigToBuilder(
 		runner.WithTransportAndPorts(string(config.Transport), config.Port, config.TargetPort),
 	)
 
+	// Process environment files if EnvFileDir is specified
+	if config.EnvFileDir != "" {
+		opts = append(opts, runner.WithEnvFilesFromDirectory(config.EnvFileDir))
+	}
+
 	// Apply complex configs if they exist
 	if config.AuthzConfig != nil {
 		opts = append(opts, runner.WithAuthzConfig(config.AuthzConfig))

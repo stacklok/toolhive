@@ -13,7 +13,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("TimeStreamableHttpMcpServer", Serial, func() {
+var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {

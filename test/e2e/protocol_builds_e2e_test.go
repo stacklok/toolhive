@@ -16,7 +16,7 @@ func generateUniqueProtocolServerName(prefix string) string {
 	return fmt.Sprintf("%s-%d-%d-%d", prefix, os.Getpid(), time.Now().UnixNano(), GinkgoRandomSeed())
 }
 
-var _ = Describe("Protocol Builds E2E", Serial, func() {
+var _ = Describe("Protocol Builds E2E", Label("mcp", "protocols", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {

@@ -64,6 +64,14 @@ if [ -n "$GITHUB_ACTIONS" ]; then
 else
     GINKGO_CMD="$GINKGO_CMD --vv --show-node-events --trace"
 fi
+
+# Optional label filter (LABEL_FILTER or E2E_LABEL_FILTER)
+LABEL_FILTER_EFFECTIVE="${LABEL_FILTER:-${E2E_LABEL_FILTER:-}}"
+if [ -n "$LABEL_FILTER_EFFECTIVE" ]; then
+    echo -e "${GREEN}✓${NC} Using label filter: $LABEL_FILTER_EFFECTIVE"
+    GINKGO_CMD="$GINKGO_CMD --label-filter=\"$LABEL_FILTER_EFFECTIVE\""
+fi
+
 GINKGO_CMD="$GINKGO_CMD ."
 
 if eval "$GINKGO_CMD"; then

@@ -976,3 +976,11 @@ func WithEnvFilesFromDirectory(dirPath string) RunConfigBuilderOption {
 		return nil
 	}
 }
+
+// WithEnvFileDir sets the directory path for loading environment files (for ConfigMap serialization)
+func WithEnvFileDir(dirPath string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.EnvFileDir = dirPath
+		return nil
+	}
+}

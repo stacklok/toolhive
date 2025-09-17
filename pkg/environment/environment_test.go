@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -107,7 +108,7 @@ func TestParseSecretParameters(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := ParseSecretParameters(t.Context(), tt.parameters, tt.provider)
+			got, err := ParseSecretParameters(t.Context(), tt.parameters, tt.provider, &env.OSReader{})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseSecretParameters() error = %v, wantErr %v", err, tt.wantErr)
 				return

@@ -7,6 +7,10 @@ spec:
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
   transport: stdio
   port: 8080
+  secrets:
+  - name: github-token-secret
+    key: token
+    targetEnvName: GITHUB_TOKEN
   permissionProfile:
     type: builtin
     name: network

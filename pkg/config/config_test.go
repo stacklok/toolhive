@@ -356,7 +356,9 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 			SetupCompleted: false,
 		}
 
-		// No expectation needed since the function returns early when SetupCompleted is false
+		// Mock call to TOOLHIVE_RUNTIME when SetupCompleted is false
+		mockEnv.EXPECT().Getenv("TOOLHIVE_RUNTIME").Return("")
+
 		_, err := s.GetProviderTypeWithEnv(mockEnv)
 		assert.Error(t, err, "Should return error when setup not completed")
 		assert.ErrorIs(t, err, secrets.ErrSecretsNotSetup, "Should return ErrSecretsNotSetup when setup not completed")

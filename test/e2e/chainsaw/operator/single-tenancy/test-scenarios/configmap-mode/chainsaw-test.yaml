@@ -3,7 +3,7 @@ kind: Test
 metadata:
   name: configmap-mode-mcp-server
 spec:
-  description: Tests TOOLHIVE_USE_CONFIGMAP=true environment variable functionality - verifies operator uses --from-configmap flag instead of individual config flags
+  description: Tests TOOLHIVE_USE_CONFIGMAP=true environment variable functionality with secrets - verifies operator uses --from-configmap flag and handles secrets without provider errors
   timeouts:
     apply: 30s
     assert: 60s
@@ -16,19 +16,25 @@ spec:
     - assert:
         file: ../../setup/assert-operator-ready.yaml
 
+  - name: create-test-secret
+    description: Create a test secret for the MCP server
+    try:
+    - apply:
+        file: test-secret.yaml
+
   - name: enable-configmap-mode
     description: Enable ConfigMap mode by setting environment variable on operator
     try:
     - script:
         content: |
           echo "Setting TOOLHIVE_USE_CONFIGMAP=true on operator deployment..."
-          
+
           # Use strategic merge patch to add the environment variable to existing env array
           kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"true"}]}]}}}}'
-          
+
           # Wait for rollout to complete
           kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
-          
+
           # Verify the environment variable was set
           echo "Verifying TOOLHIVE_USE_CONFIGMAP environment variable is set..."
           ENV_VAR=$(kubectl get deployment toolhive-operator -n toolhive-system -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].env[?(@.name=="TOOLHIVE_USE_CONFIGMAP")].value}')
@@ -90,6 +96,16 @@ spec:
             echo "✗ runconfig.json missing required fields"
             exit 1
           fi
+
+          # Validate secrets are included in the runconfig
+          if echo "$CONFIGMAP_JSON" | jq -e '.secrets and (.secrets | length > 0)' > /dev/null 2>&1; then
+            echo "✓ runconfig.json contains secrets configuration"
+          else
+            echo "✗ runconfig.json missing secrets configuration"
+            echo "ConfigMap content:"
+            echo "$CONFIGMAP_JSON" | jq '.'
+            exit 1
+          fi
           
           # Verify deployment arguments
           echo "Verifying deployment uses --from-configmap flag..."
@@ -119,8 +135,27 @@ spec:
           # Wait for pod to be ready
           echo "Waiting for pod to be ready..."
           kubectl wait --for=condition=Ready pod -l app=mcpserver,app.kubernetes.io/instance=yardstick -n toolhive-system --timeout=120s
-          
-          echo "✅ ConfigMap mode functionality verified successfully!"
+
+          # Verify no secrets provider errors in logs
+          echo "Checking pod logs for secrets provider errors..."
+          POD_NAME=$(kubectl get pod -l app=mcpserver,app.kubernetes.io/instance=yardstick -n toolhive-system -o jsonpath='{.items[0].metadata.name}')
+          POD_LOGS=$(kubectl logs $POD_NAME -n toolhive-system --tail=100)
+
+          if echo "$POD_LOGS" | grep -q "secrets provider not configured"; then
+            echo "✗ Pod logs contain secrets provider error:"
+            echo "$POD_LOGS"
+            exit 1
+          fi
+
+          if echo "$POD_LOGS" | grep -q "failed to create secrets provider"; then
+            echo "✗ Pod logs contain secrets provider creation error:"
+            echo "$POD_LOGS"
+            exit 1
+          fi
+
+          echo "✓ No secrets provider errors found in pod logs"
+
+          echo "✅ ConfigMap mode functionality with secrets verified successfully!"
 
   - name: cleanup-configmap-mode
     description: Disable ConfigMap mode to avoid affecting subsequent tests

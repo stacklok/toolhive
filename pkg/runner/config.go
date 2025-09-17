@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
@@ -303,7 +304,7 @@ func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.P
 		return nil // No secrets to validate
 	}
 
-	_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+	_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager, &env.OSReader{})
 	if err != nil {
 		return fmt.Errorf("failed to get secrets: %w", err)
 	}
@@ -317,7 +318,7 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 		return c, nil // No secrets to process
 	}
 
-	secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+	secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager, &env.OSReader{})
 	if err != nil {
 		return c, fmt.Errorf("failed to get secrets: %v", err)
 	}

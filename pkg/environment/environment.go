@@ -7,14 +7,27 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // ParseSecretParameters parses the secret parameters from the command line,
 // fetches them from the secrets manager, and returns a map of secrets and
 // their environment variable names.
-func ParseSecretParameters(ctx context.Context, parameters []string, secretsManager secrets.Provider) (map[string]string, error) {
+func ParseSecretParameters(
+	ctx context.Context,
+	parameters []string,
+	secretsManager secrets.Provider,
+	envReader env.Reader,
+) (map[string]string, error) {
 	secretVariables := make(map[string]string, len(parameters))
+
+	// In Kubernetes runtime, skip secrets validation as they're already
+	// available as environment variables mounted by the operator
+	if envReader.Getenv("TOOLHIVE_RUNTIME") == "kubernetes" {
+		return secretVariables, nil
+	}
+
 	for _, param := range parameters {
 		parameter, err := secrets.ParseSecretParameter(param)
 		if err != nil {
@@ -37,10 +50,10 @@ func ParseSecretParameters(ctx context.Context, parameters []string, secretsMana
 func ParseEnvironmentVariables(envVars []string) (map[string]string, error) {
 	result := make(map[string]string)
 
-	for _, env := range envVars {
-		parts := strings.SplitN(env, "=", 2)
+	for _, envVar := range envVars {
+		parts := strings.SplitN(envVar, "=", 2)
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid environment variable format: %s", env)
+			return nil, fmt.Errorf("invalid environment variable format: %s", envVar)
 		}
 
 		key := parts[0]

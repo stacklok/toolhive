@@ -168,6 +168,8 @@ func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
+//
+//nolint:gocyclo // Complex reconciliation logic requires multiple conditions
 func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -410,7 +412,9 @@ func labelsForRegistryAPI(mcpRegistry *mcpv1alpha1.MCPRegistry, resourceName str
 // buildRegistryAPIDeployment creates and configures a Deployment object for the registry API.
 // This function handles all deployment configuration including labels, container specs, probes,
 // and storage manager integration. It returns a fully configured deployment ready for Kubernetes API operations.
-func (r *MCPRegistryReconciler) buildRegistryAPIDeployment(mcpRegistry *mcpv1alpha1.MCPRegistry, sourceHandler sources.SourceHandler) (*appsv1.Deployment, error) {
+func (r *MCPRegistryReconciler) buildRegistryAPIDeployment(
+	mcpRegistry *mcpv1alpha1.MCPRegistry, sourceHandler sources.SourceHandler,
+) (*appsv1.Deployment, error) {
 	// Generate deployment name using the established pattern
 	deploymentName := fmt.Sprintf("%s-api", mcpRegistry.Name)
 
@@ -509,7 +513,9 @@ func (r *MCPRegistryReconciler) buildRegistryAPIDeployment(mcpRegistry *mcpv1alp
 
 // getSourceDataHash calculates the hash of the source ConfigMap data using the provided source handler
 // This hash is used as a deployment annotation to trigger pod restarts when data changes
-func (r *MCPRegistryReconciler) getSourceDataHash(mcpRegistry *mcpv1alpha1.MCPRegistry, sourceHandler sources.SourceHandler) string {
+func (*MCPRegistryReconciler) getSourceDataHash(
+	mcpRegistry *mcpv1alpha1.MCPRegistry, sourceHandler sources.SourceHandler,
+) string {
 	// Get current hash from source using the existing handler
 	hash, err := sourceHandler.CurrentHash(context.Background(), mcpRegistry)
 	if err != nil {

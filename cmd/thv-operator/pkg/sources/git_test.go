@@ -362,7 +362,7 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 					},
 				},
 			},
-			setupMocks: func(gitClient *MockGitClient, validator *MockSourceDataValidator) {
+			setupMocks: func(_ *MockGitClient, _ *MockSourceDataValidator) {
 				// No mocks needed as validation should fail before git operations
 			},
 			expectError:   true,
@@ -386,7 +386,7 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 					},
 				},
 			},
-			setupMocks: func(gitClient *MockGitClient, validator *MockSourceDataValidator) {
+			setupMocks: func(gitClient *MockGitClient, _ *MockSourceDataValidator) {
 				gitClient.On("Clone", mock.Anything, mock.MatchedBy(func(config *git.CloneConfig) bool {
 					return config.URL == testGitRepoURL && config.Commit == testCommit
 				})).Return(nil, errors.New("clone failed"))
@@ -411,7 +411,7 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 					},
 				},
 			},
-			setupMocks: func(gitClient *MockGitClient, validator *MockSourceDataValidator) {
+			setupMocks: func(gitClient *MockGitClient, _ *MockSourceDataValidator) {
 				repoInfo := &git.RepositoryInfo{
 					RemoteURL: testGitRepoURL,
 				}
@@ -556,7 +556,7 @@ func TestGitSourceHandler_CurrentHash(t *testing.T) {
 					},
 				},
 			},
-			setupMocks: func(gitClient *MockGitClient) {
+			setupMocks: func(_ *MockGitClient) {
 				// No mocks needed as validation should fail
 			},
 			expectError:   true,

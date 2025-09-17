@@ -15,7 +15,6 @@ import (
 	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -525,7 +524,6 @@ func deployServer(ctx context.Context, serverName string,
 		Secrets:     serverSecrets,
 	}
 
-	logger.Errorf("Server name is %s", serverName)
 	// Use the shared runSingleServer function
 	return runSingleServer(ctx, runFlags, serverName, []string{}, false, cmd, groupName)
 }
@@ -554,7 +552,6 @@ func deployRemoteServer(ctx context.Context, serverName string,
 		// Don't pre-set RemoteURL - let GetMCPServer discover it through group lookup
 	}
 
-	logger.Errorf("Server name is %s", serverName)
 	// Use the shared runSingleServer function, passing the serverName
 	return runSingleServer(ctx, runFlags, serverName, []string{}, false, cmd, groupName)
 }

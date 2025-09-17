@@ -94,9 +94,9 @@ func TestGetMCPServer_WithGroup(t *testing.T) {
 			imageURL, serverMetadata, err := GetMCPServer(
 				ctx,
 				tt.serverName,
-				"",                    // rawCACertPath
-				VerifyImageDisabled,   // verificationType
-				tt.groupName,          // groupName
+				"",
+				VerifyImageDisabled,
+				tt.groupName,
 			)
 
 			if tt.expectError {
@@ -126,10 +126,10 @@ func TestGetMCPServer_WithoutGroup(t *testing.T) {
 	// Test that passing empty group name still works (normal behavior)
 	imageURL, serverMetadata, err := GetMCPServer(
 		ctx,
-		"osv", // Use a known server from the registry
-		"",    // rawCACertPath
+		"osv",               // Use a known server from the registry
+		"",                  // rawCACertPath
 		VerifyImageDisabled, // verificationType
-		"",    // empty groupName should use normal registry lookup
+		"",                  // empty groupName should use normal registry lookup
 	)
 
 	// This should work as it's the normal flow

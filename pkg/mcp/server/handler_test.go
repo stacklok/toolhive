@@ -268,10 +268,10 @@ func TestBuildServerConfig(t *testing.T) {
 		expectError   bool
 	}{
 		{
-			name:     "valid config with nil metadata",
-			imageURL: "test/image:latest",
+			name:          "valid config with nil metadata",
+			imageURL:      "test/image:latest",
 			imageMetadata: nil,
-			expectError: false, // Actually succeeds because container runtime creation works
+			expectError:   false, // Actually succeeds because container runtime creation works
 		},
 		{
 			name:     "valid config with metadata",

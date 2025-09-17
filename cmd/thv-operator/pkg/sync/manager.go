@@ -183,12 +183,12 @@ func (s *DefaultSyncManager) PerformSync(ctx context.Context, mcpRegistry *mcpv1
 	// Fetch and process registry data
 	fetchResult, err := s.fetchAndProcessRegistryData(ctx, mcpRegistry)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
 	}
 
 	// Store the processed registry data
 	if err := s.storeRegistryData(ctx, mcpRegistry, fetchResult); err != nil {
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
 	}
 
 	// Update registry status with successful sync results

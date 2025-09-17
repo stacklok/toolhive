@@ -638,7 +638,7 @@ func TestConfigMapStorageManager_ConfigureDeployment(t *testing.T) {
 				}
 			}
 
-			// Check volume mount configuration  
+			// Check volume mount configuration
 			if tt.expectedVolumePath != "" {
 				var foundMount *corev1.VolumeMount
 				for i := range container.VolumeMounts {

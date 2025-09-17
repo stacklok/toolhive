@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,14 +27,102 @@ import (
 
 const (
 	// registryAPIContainerName is the name of the registry-api container in deployments
-	// nolint:unused // Will be used when ensureDeployment method is integrated
 	registryAPIContainerName = "registry-api"
 )
+
+// statusUpdateCollector collects status changes during reconciliation
+// and applies them in a single batch update at the end
+type statusUpdateCollector struct {
+	mcpRegistry *mcpv1alpha1.MCPRegistry
+	hasChanges  bool
+	phase       *mcpv1alpha1.MCPRegistryPhase
+	message     *string
+	apiEndpoint *string
+	conditions  map[string]metav1.Condition
+}
+
+// newStatusUpdateCollector creates a new status update collector
+func newStatusUpdateCollector(mcpRegistry *mcpv1alpha1.MCPRegistry) *statusUpdateCollector {
+	return &statusUpdateCollector{
+		mcpRegistry: mcpRegistry,
+		conditions:  make(map[string]metav1.Condition),
+	}
+}
+
+// setPhase sets the phase to be updated
+func (s *statusUpdateCollector) setPhase(phase mcpv1alpha1.MCPRegistryPhase) {
+	s.phase = &phase
+	s.hasChanges = true
+}
+
+// setMessage sets the message to be updated
+func (s *statusUpdateCollector) setMessage(message string) {
+	s.message = &message
+	s.hasChanges = true
+}
+
+// setAPIEndpoint sets the API endpoint to be updated
+func (s *statusUpdateCollector) setAPIEndpoint(endpoint string) {
+	s.apiEndpoint = &endpoint
+	s.hasChanges = true
+}
+
+// setAPIReadyCondition adds or updates the API ready condition
+func (s *statusUpdateCollector) setAPIReadyCondition(reason, message string, status metav1.ConditionStatus) {
+	s.conditions[mcpv1alpha1.ConditionAPIReady] = metav1.Condition{
+		Type:    mcpv1alpha1.ConditionAPIReady,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+	}
+	s.hasChanges = true
+}
+
+// apply applies all collected status changes in a single update
+func (s *statusUpdateCollector) apply(ctx context.Context, r *MCPRegistryReconciler) error {
+	if !s.hasChanges {
+		return nil
+	}
+
+	ctxLogger := log.FromContext(ctx)
+
+	// Apply phase change
+	if s.phase != nil {
+		s.mcpRegistry.Status.Phase = *s.phase
+	}
+
+	// Apply message change
+	if s.message != nil {
+		s.mcpRegistry.Status.Message = *s.message
+	}
+
+	// Apply API endpoint change
+	if s.apiEndpoint != nil {
+		s.mcpRegistry.Status.APIEndpoint = *s.apiEndpoint
+	}
+
+	// Apply condition changes
+	for _, condition := range s.conditions {
+		meta.SetStatusCondition(&s.mcpRegistry.Status.Conditions, condition)
+	}
+
+	// Single status update
+	if err := r.Status().Update(ctx, s.mcpRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to apply batched status update")
+		return fmt.Errorf("failed to apply batched status update: %w", err)
+	}
+
+	ctxLogger.V(1).Info("Applied batched status update",
+		"phase", s.phase,
+		"message", s.message,
+		"conditionsCount", len(s.conditions))
+
+	return nil
+}
 
 // getRegistryAPIImage returns the container image for the registry API.
 // It checks the TOOLHIVE_REGISTRY_API_IMAGE environment variable first,
 // falling back to the default image if not set.
-// nolint:unused // Will be used when deployment functionality is integrated
 func getRegistryAPIImage() string {
 	if image := os.Getenv("TOOLHIVE_REGISTRY_API_IMAGE"); image != "" {
 		return image
@@ -47,8 +136,9 @@ type MCPRegistryReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Sync manager handles all sync operations
-	syncManager    sync.Manager
-	storageManager sources.StorageManager
+	syncManager          sync.Manager
+	storageManager       sources.StorageManager
+	sourceHandlerFactory sources.SourceHandlerFactory
 }
 
 // NewMCPRegistryReconciler creates a new MCPRegistryReconciler with required dependencies
@@ -58,10 +148,11 @@ func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *
 	syncManager := sync.NewDefaultSyncManager(k8sClient, scheme, sourceHandlerFactory, storageManager)
 
 	return &MCPRegistryReconciler{
-		Client:         k8sClient,
-		Scheme:         scheme,
-		syncManager:    syncManager,
-		storageManager: storageManager,
+		Client:               k8sClient,
+		Scheme:               scheme,
+		syncManager:          syncManager,
+		storageManager:       storageManager,
+		sourceHandlerFactory: sourceHandlerFactory,
 	}
 }
 
@@ -137,8 +228,36 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	// 3. Check if sync is needed before performing it
-	result, err := r.reconcileSync(ctx, mcpRegistry)
+	// 3. Create status collector for batched updates
+	statusCollector := newStatusUpdateCollector(mcpRegistry)
+
+	// 4. Reconcile sync operation
+	result, err := r.reconcileSync(ctx, mcpRegistry, statusCollector)
+
+	// 5. Reconcile API service (deployment and service, independent of sync status)
+	if apiErr := r.reconcileAPIService(ctx, mcpRegistry, statusCollector); apiErr != nil {
+		ctxLogger.Error(apiErr, "Failed to reconcile API service")
+		if err == nil {
+			err = apiErr
+		}
+	}
+
+	// 6. Check if we need to requeue for API readiness
+	if err == nil && !r.isAPIReady(ctx, mcpRegistry) {
+		ctxLogger.Info("API not ready yet, scheduling requeue to check readiness")
+		if result.RequeueAfter == 0 || result.RequeueAfter > time.Second*30 {
+			result.RequeueAfter = time.Second * 30
+		}
+	}
+
+	// 7. Apply all status changes in a single batch update
+	if statusUpdateErr := statusCollector.apply(ctx, r); statusUpdateErr != nil {
+		ctxLogger.Error(statusUpdateErr, "Failed to apply batched status update")
+		// Return the status update error only if there was no main reconciliation error
+		if err == nil {
+			err = statusUpdateErr
+		}
+	}
 
 	// Log reconciliation completion
 	if err != nil {
@@ -155,16 +274,13 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 // reconcileSync checks if sync is needed and performs it if necessary
-func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, error) {
+// This method only handles data synchronization to the target ConfigMap
+func (r *MCPRegistryReconciler) reconcileSync(
+	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, statusCollector *statusUpdateCollector,
+) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
-	// Refresh the object to get latest status for accurate timing calculations
-	if err := r.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), mcpRegistry); err != nil {
-		ctxLogger.Error(err, "Failed to refresh MCPRegistry object for sync check")
-		return ctrl.Result{}, err
-	}
-
-	// Check if sync is needed
+	// Check if sync is needed - no need to refresh object here since we just fetched it
 	syncNeeded, syncReason, nextSyncTime, err := r.syncManager.ShouldSync(ctx, mcpRegistry)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to determine if sync is needed")
@@ -186,6 +302,10 @@ func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *
 
 	ctxLogger.Info("Sync needed", "reason", syncReason)
 
+	// Set phase to syncing before starting the sync process
+	statusCollector.setPhase(mcpv1alpha1.MCPRegistryPhaseSyncing)
+	statusCollector.setMessage("Syncing registry data")
+
 	// Handle manual sync with no data changes - update trigger tracking only
 	if syncReason == sync.ReasonManualNoChanges {
 		return r.syncManager.UpdateManualSyncTriggerOnly(ctx, mcpRegistry)
@@ -196,6 +316,8 @@ func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *
 	if err != nil {
 		// Sync failed - schedule retry with exponential backoff
 		ctxLogger.Error(err, "Sync failed, scheduling retry")
+		statusCollector.setPhase(mcpv1alpha1.MCPRegistryPhaseFailed)
+		statusCollector.setMessage(fmt.Sprintf("Sync failed: %v", err))
 		// Use a shorter retry interval instead of the full sync interval
 		retryAfter := time.Minute * 5 // Default retry interval
 		if result.RequeueAfter > 0 {
@@ -204,6 +326,11 @@ func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *
 		}
 		return ctrl.Result{RequeueAfter: retryAfter}, err
 	}
+
+	// Sync successful - keep in syncing phase until API is also ready
+	statusCollector.setMessage("Registry data synced successfully")
+
+	ctxLogger.Info("Registry data sync completed successfully")
 
 	// Schedule next automatic sync only if this was an automatic sync (not manual)
 	if mcpRegistry.Spec.SyncPolicy != nil && !sync.IsManualSync(syncReason) {
@@ -223,11 +350,32 @@ func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *
 	return result, err
 }
 
+// isAPIReady checks if the registry API deployment is ready and serving requests
+func (r *MCPRegistryReconciler) isAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) bool {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
+
+	deploymentName := fmt.Sprintf("%s-api", mcpRegistry.Name)
+	deployment := &appsv1.Deployment{}
+
+	err := r.Get(ctx, client.ObjectKey{
+		Name:      deploymentName,
+		Namespace: mcpRegistry.Namespace,
+	}, deployment)
+
+	if err != nil {
+		ctxLogger.Info("API deployment not found, considering not ready", "error", err)
+		return false
+	}
+
+	// Delegate to the existing checkAPIReadiness method for consistency
+	return r.checkAPIReadiness(ctx, deployment)
+}
+
 // finalizeMCPRegistry performs the finalizer logic for the MCPRegistry
 func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registry *mcpv1alpha1.MCPRegistry) error {
 	ctxLogger := log.FromContext(ctx)
 
-	// Update the MCPRegistry status to indicate termination
+	// Update the MCPRegistry status to indicate termination - immediate update needed since object is being deleted
 	registry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseTerminating
 	registry.Status.Message = "MCPRegistry is being terminated"
 	if err := r.Status().Update(ctx, registry); err != nil {
@@ -262,8 +410,7 @@ func labelsForRegistryAPI(mcpRegistry *mcpv1alpha1.MCPRegistry, resourceName str
 // buildRegistryAPIDeployment creates and configures a Deployment object for the registry API.
 // This function handles all deployment configuration including labels, container specs, probes,
 // and storage manager integration. It returns a fully configured deployment ready for Kubernetes API operations.
-// nolint:unused // Will be used when deployment functionality is integrated
-func (r *MCPRegistryReconciler) buildRegistryAPIDeployment(mcpRegistry *mcpv1alpha1.MCPRegistry) (*appsv1.Deployment, error) {
+func (r *MCPRegistryReconciler) buildRegistryAPIDeployment(mcpRegistry *mcpv1alpha1.MCPRegistry, sourceHandler sources.SourceHandler) (*appsv1.Deployment, error) {
 	// Generate deployment name using the established pattern
 	deploymentName := fmt.Sprintf("%s-api", mcpRegistry.Name)
 
@@ -288,6 +435,9 @@ func (r *MCPRegistryReconciler) buildRegistryAPIDeployment(mcpRegistry *mcpv1alp
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
+					Annotations: map[string]string{
+						"toolhive.stacklok.dev/config-hash": r.getSourceDataHash(mcpRegistry, sourceHandler),
+					},
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "toolhive-registry-api",
@@ -357,10 +507,23 @@ func (r *MCPRegistryReconciler) buildRegistryAPIDeployment(mcpRegistry *mcpv1alp
 	return deployment, nil
 }
 
+// getSourceDataHash calculates the hash of the source ConfigMap data using the provided source handler
+// This hash is used as a deployment annotation to trigger pod restarts when data changes
+func (r *MCPRegistryReconciler) getSourceDataHash(mcpRegistry *mcpv1alpha1.MCPRegistry, sourceHandler sources.SourceHandler) string {
+	// Get current hash from source using the existing handler
+	hash, err := sourceHandler.CurrentHash(context.Background(), mcpRegistry)
+	if err != nil {
+		// If we can't get the hash, return a time-based hash
+		// This ensures deployments get updated when there are source issues
+		return fmt.Sprintf("error-%d", time.Now().Unix())
+	}
+
+	return hash
+}
+
 // ensureDeployment creates or updates the registry-api Deployment for the MCPRegistry.
 // This function handles the Kubernetes API operations (Get, Create, Update) and delegates
 // deployment configuration to buildRegistryAPIDeployment.
-// nolint:unused // Will be used in future integration
 func (r *MCPRegistryReconciler) ensureDeployment(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
@@ -368,63 +531,55 @@ func (r *MCPRegistryReconciler) ensureDeployment(
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
 	// Build the desired deployment configuration
-	deployment, err := r.buildRegistryAPIDeployment(mcpRegistry)
+	// Get source handler for config hash calculation
+	sourceHandler, err := r.sourceHandlerFactory.CreateHandler(mcpRegistry.Spec.Source.Type)
 	if err != nil {
-		ctxLogger.Error(err, "Failed to build deployment configuration")
-		return nil, fmt.Errorf("failed to build deployment configuration: %w", err)
+		return nil, fmt.Errorf("failed to create source handler for deployment: %w", err)
 	}
 
-	deploymentName := deployment.Name
+	// Use CreateOrUpdate pattern for robust deployment management
+	deploymentName := fmt.Sprintf("%s-api", mcpRegistry.Name)
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      deploymentName,
+			Namespace: mcpRegistry.Namespace,
+		},
+	}
 
 	// Check if deployment already exists
-	existing := &appsv1.Deployment{}
-	err = r.Get(ctx, types.NamespacedName{
-		Name:      deploymentName,
-		Namespace: mcpRegistry.Namespace,
-	}, existing)
-
-	if err != nil {
-		if errors.IsNotFound(err) {
-			// Deployment doesn't exist, create it
-			ctxLogger.Info("Creating registry-api deployment", "deployment", deploymentName)
-			if err := r.Create(ctx, deployment); err != nil {
-				ctxLogger.Error(err, "Failed to create deployment")
-				return nil, fmt.Errorf("failed to create deployment %s: %w", deploymentName, err)
-			}
-			ctxLogger.Info("Successfully created registry-api deployment", "deployment", deploymentName)
-			return deployment, nil
+	err = r.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: mcpRegistry.Namespace}, deployment)
+	if errors.IsNotFound(err) {
+		// Deployment doesn't exist, create it
+		desired, buildErr := r.buildRegistryAPIDeployment(mcpRegistry, sourceHandler)
+		if buildErr != nil {
+			return nil, fmt.Errorf("failed to build deployment configuration: %w", buildErr)
 		}
-		// Unexpected error
-		ctxLogger.Error(err, "Failed to get deployment")
+
+		// Set owner reference
+		if ownerErr := controllerutil.SetControllerReference(mcpRegistry, desired, r.Scheme); ownerErr != nil {
+			return nil, fmt.Errorf("failed to set controller reference: %w", ownerErr)
+		}
+
+		if createErr := r.Create(ctx, desired); createErr != nil {
+			return nil, fmt.Errorf("failed to create deployment %s: %w", deploymentName, createErr)
+		}
+
+		ctxLogger.Info("Deployment created successfully", "deployment", deploymentName)
+		return desired, nil
+	} else if err != nil {
+		// Some other error occurred
 		return nil, fmt.Errorf("failed to get deployment %s: %w", deploymentName, err)
 	}
 
-	// Deployment exists, update it if necessary
-	ctxLogger.V(1).Info("Deployment already exists, checking for updates", "deployment", deploymentName)
-
-	// Update the existing deployment with our desired state
-	existing.Spec = deployment.Spec
-	existing.Labels = deployment.Labels
-
-	// Ensure owner reference is set
-	if err := controllerutil.SetControllerReference(mcpRegistry, existing, r.Scheme); err != nil {
-		ctxLogger.Error(err, "Failed to set controller reference for existing deployment")
-		return nil, fmt.Errorf("failed to set controller reference for existing deployment: %w", err)
-	}
-
-	if err := r.Update(ctx, existing); err != nil {
-		ctxLogger.Error(err, "Failed to update deployment")
-		return nil, fmt.Errorf("failed to update deployment %s: %w", deploymentName, err)
-	}
-
-	ctxLogger.Info("Successfully updated registry-api deployment", "deployment", deploymentName)
-	return existing, nil
+	// TODO: Implement deployment updates when needed (e.g., when config hash changes)
+	// For now, just return the existing deployment to avoid endless reconciliation loops
+	ctxLogger.Info("Deployment already exists, skipping update", "deployment", deploymentName)
+	return deployment, nil
 }
 
 // buildRegistryAPIService creates and configures a Service object for the registry API.
 // This function handles all service configuration including labels, ports, and selector.
 // It returns a fully configured ClusterIP service ready for Kubernetes API operations.
-// nolint:unused // Will be used when service functionality is integrated
 func buildRegistryAPIService(mcpRegistry *mcpv1alpha1.MCPRegistry) *corev1.Service {
 	// Generate service name using the established pattern
 	serviceName := fmt.Sprintf("%s-api", mcpRegistry.Name)
@@ -465,7 +620,6 @@ func buildRegistryAPIService(mcpRegistry *mcpv1alpha1.MCPRegistry) *corev1.Servi
 // ensureService creates or updates the registry-api Service for the MCPRegistry.
 // This function handles the Kubernetes API operations (Get, Create, Update) and delegates
 // service configuration to buildRegistryAPIService.
-// nolint:unused // Will be used in future integration
 func (r *MCPRegistryReconciler) ensureService(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
@@ -531,16 +685,14 @@ func (r *MCPRegistryReconciler) ensureService(
 
 // checkAPIReadiness verifies that the deployed registry-API Deployment is ready
 // by checking deployment status for ready replicas. Returns true if the deployment
-// has at least one ready replica, false otherwise. Returns an error only for
-// unexpected failures, not for deployments that are simply not ready yet.
-// nolint:unused,unparam // Will be used when deployment functionality is integrated; error param reserved for future use
-func (*MCPRegistryReconciler) checkAPIReadiness(ctx context.Context, deployment *appsv1.Deployment) (bool, error) {
+// has at least one ready replica, false otherwise.
+func (*MCPRegistryReconciler) checkAPIReadiness(ctx context.Context, deployment *appsv1.Deployment) bool {
 	ctxLogger := log.FromContext(ctx)
 
 	// Handle nil deployment gracefully
 	if deployment == nil {
 		ctxLogger.V(1).Info("Deployment is nil, not ready")
-		return false, nil
+		return false
 	}
 
 	// Log deployment status for debugging
@@ -557,7 +709,7 @@ func (*MCPRegistryReconciler) checkAPIReadiness(ctx context.Context, deployment 
 		ctxLogger.V(1).Info("Deployment is ready",
 			"deployment", deployment.Name,
 			"readyReplicas", deployment.Status.ReadyReplicas)
-		return true, nil
+		return true
 	}
 
 	// Check deployment conditions for additional context
@@ -576,12 +728,101 @@ func (*MCPRegistryReconciler) checkAPIReadiness(ctx context.Context, deployment 
 		"deployment", deployment.Name,
 		"readyReplicas", deployment.Status.ReadyReplicas)
 
-	return false, nil
+	return false
+}
+
+// reconcileAPIService orchestrates the deployment, service creation, and readiness checking for the registry API.
+// This method coordinates all aspects of API service including creating/updating the deployment and service,
+// checking readiness, and updating the MCPRegistry status with deployment references and endpoint information.
+func (r *MCPRegistryReconciler) reconcileAPIService(
+	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, statusCollector *statusUpdateCollector,
+) error {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
+	ctxLogger.Info("Reconciling API service")
+
+	// Step 1: Ensure deployment exists and is configured correctly
+	deployment, err := r.ensureDeployment(ctx, mcpRegistry)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to ensure deployment")
+		// Update status with failure condition
+		statusCollector.setAPIReadyCondition("DeploymentFailed",
+			fmt.Sprintf("Failed to ensure deployment: %v", err), metav1.ConditionFalse)
+		return fmt.Errorf("failed to ensure deployment: %w", err)
+	}
+
+	// Step 2: Ensure service exists and is configured correctly
+	service, err := r.ensureService(ctx, mcpRegistry)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to ensure service")
+		// Update status with failure condition
+		statusCollector.setAPIReadyCondition("ServiceFailed",
+			fmt.Sprintf("Failed to ensure service: %v", err), metav1.ConditionFalse)
+		return fmt.Errorf("failed to ensure service: %w", err)
+	}
+
+	// Step 3: Check API readiness
+	isReady := r.checkAPIReadiness(ctx, deployment)
+
+	// Step 4: Update MCPRegistry status with deployment and service references
+	r.updateAPIStatus(ctx, mcpRegistry, deployment, service, isReady, statusCollector)
+
+	// Step 5: Update overall phase based on API readiness
+	if isReady {
+		ctxLogger.Info("API service reconciliation completed successfully - API is ready")
+		statusCollector.setPhase(mcpv1alpha1.MCPRegistryPhaseReady)
+		statusCollector.setMessage("Registry is ready and API is serving requests")
+	} else {
+		ctxLogger.Info("API service reconciliation completed - API is not ready yet")
+		// Don't change phase - let it stay in current state (likely Syncing)
+		// Only update message if not in Failed state
+		if mcpRegistry.Status.Phase != mcpv1alpha1.MCPRegistryPhaseFailed {
+			statusCollector.setMessage("Registry data synced, API deployment in progress")
+		}
+	}
+
+	return nil
+}
+
+// updateAPIStatus updates the MCPRegistry status with deployment and service references and API endpoint information
+func (*MCPRegistryReconciler) updateAPIStatus(ctx context.Context, _ *mcpv1alpha1.MCPRegistry,
+	_ *appsv1.Deployment, service *corev1.Service, isReady bool, statusCollector *statusUpdateCollector) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Update API endpoint information
+	if service != nil {
+		// Construct internal URL from service information
+		endpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d",
+			service.Name, service.Namespace, service.Spec.Ports[0].Port)
+		statusCollector.setAPIEndpoint(endpoint)
+	}
+
+	// Set API readiness condition
+	var conditionStatus metav1.ConditionStatus
+	var reason, message string
+
+	if isReady {
+		conditionStatus = metav1.ConditionTrue
+		reason = "APIReady"
+		message = "Registry API is ready and serving requests"
+	} else {
+		conditionStatus = metav1.ConditionFalse
+		reason = "APINotReady"
+		message = "Registry API deployment is not ready yet"
+	}
+
+	statusCollector.setAPIReadyCondition(reason, message, conditionStatus)
+
+	ctxLogger.V(1).Info("Prepared API status update for batching",
+		"apiReady", isReady,
+		"endpoint", statusCollector.apiEndpoint)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPRegistryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPRegistry{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
 		Complete(r)
 }

@@ -1,0 +1,21 @@
+
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: my-server
+  namespace: default
+  annotations:
+    # To trigger a rolling restart, update this timestamp (RFC3339 format)
+    mcpserver.toolhive.stacklok.dev/restarted-at: ""
+    # Optional: set restart strategy to "immediate" for fast restart (default is "rolling")
+    # mcpserver.toolhive.stacklok.dev/restart-strategy: "immediate"
+spec:
+  image: "ghcr.io/stackloklabs/gofetch/server"
+  transport: stdio
+  port: 8080
+---
+# To trigger a rolling restart:
+# kubectl annotate mcpserver my-server mcpserver.toolhive.stacklok.dev/restarted-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
+#
+# To trigger an immediate restart:
+# kubectl annotate mcpserver my-server mcpserver.toolhive.stacklok.dev/restarted-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" mcpserver.toolhive.stacklok.dev/restart-strategy="immediate" --overwrite

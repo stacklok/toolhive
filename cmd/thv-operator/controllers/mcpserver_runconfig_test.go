@@ -1813,3 +1813,120 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 		})
 	}
 }
+
+func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
+	t.Parallel()
+
+	// Test that EnvFileDir is properly set when Vault Agent Injection is detected
+	testCases := []struct {
+		name           string
+		mcpServer      *mcpv1alpha1.MCPServer
+		expectedEnvDir string
+	}{
+		{
+			name: "vault injection in PodTemplateSpec annotations",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "vault-server",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					PodTemplateSpec: &corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"vault.hashicorp.com/agent-inject": "true",
+								"vault.hashicorp.com/role":         "test-role",
+							},
+						},
+					},
+				},
+			},
+			expectedEnvDir: "/vault/secrets",
+		},
+		{
+			name: "vault injection in ResourceOverrides annotations",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "vault-override-server",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
+						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+								Annotations: map[string]string{
+									"vault.hashicorp.com/agent-inject": "true",
+									"vault.hashicorp.com/role":         "override-role",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedEnvDir: "/vault/secrets",
+		},
+		{
+			name: "no vault injection - should have empty EnvFileDir",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-vault-server",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+				},
+			},
+			expectedEnvDir: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			testScheme := createRunConfigTestScheme()
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithRuntimeObjects(tc.mcpServer).
+				Build()
+
+			reconciler := &MCPServerReconciler{
+				Client: fakeClient,
+				Scheme: testScheme,
+			}
+
+			// Execute the method under test
+			err := reconciler.ensureRunConfigConfigMap(context.TODO(), tc.mcpServer)
+			require.NoError(t, err)
+
+			// Verify the ConfigMap exists
+			configMapName := fmt.Sprintf("%s-runconfig", tc.mcpServer.Name)
+			configMap := &corev1.ConfigMap{}
+			err = fakeClient.Get(context.TODO(), types.NamespacedName{
+				Name:      configMapName,
+				Namespace: tc.mcpServer.Namespace,
+			}, configMap)
+			require.NoError(t, err)
+
+			// Parse the RunConfig from the ConfigMap
+			var runConfig runner.RunConfig
+			err = json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
+			require.NoError(t, err)
+
+			// Verify EnvFileDir is set correctly
+			assert.Equal(t, tc.expectedEnvDir, runConfig.EnvFileDir, "EnvFileDir should match expected value")
+
+			// Verify basic RunConfig fields
+			assert.Equal(t, tc.mcpServer.Name, runConfig.Name)
+			assert.Equal(t, tc.mcpServer.Spec.Image, runConfig.Image)
+		})
+	}
+}

@@ -1,0 +1,17 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: toolhive-git-commit
+  namespace: toolhive-system
+spec:
+  displayName: "ToolHive Registry from Specific Commit"
+  source:
+    type: git
+    format: toolhive
+    git:
+      repository: "https://github.com/stacklok/toolhive"
+      # Using a specific commit instead of branch for reproducible deployments
+      commit: "395b6ba11bdd60b615a9630a66dcede2abcfbb48"  # A valid full commit hash
+      path: "pkg/registry/data/registry.json"
+  syncPolicy:
+    interval: "24h"  # Sync less frequently for pinned commits

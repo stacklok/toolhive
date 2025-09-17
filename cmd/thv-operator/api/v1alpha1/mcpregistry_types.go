@@ -8,6 +8,9 @@ import (
 const (
 	// RegistrySourceTypeConfigMap is the type for registry data stored in ConfigMaps
 	RegistrySourceTypeConfigMap = "configmap"
+
+	// RegistrySourceTypeGit is the type for registry data stored in Git repositories
+	RegistrySourceTypeGit = "git"
 )
 
 // Registry formats
@@ -43,8 +46,8 @@ type MCPRegistrySpec struct {
 
 // MCPRegistrySource defines the source configuration for registry data
 type MCPRegistrySource struct {
-	// Type is the type of source (configmap)
-	// +kubebuilder:validation:Enum=configmap
+	// Type is the type of source (configmap, git)
+	// +kubebuilder:validation:Enum=configmap;git
 	// +kubebuilder:default=configmap
 	Type string `json:"type"`
 
@@ -57,6 +60,11 @@ type MCPRegistrySource struct {
 	// Only used when Type is "configmap"
 	// +optional
 	ConfigMap *ConfigMapSource `json:"configmap,omitempty"`
+
+	// Git defines the Git repository source configuration
+	// Only used when Type is "git"
+	// +optional
+	Git *GitSource `json:"git,omitempty"`
 }
 
 // ConfigMapSource defines ConfigMap source configuration
@@ -71,6 +79,36 @@ type ConfigMapSource struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	Key string `json:"key,omitempty"`
+}
+
+// GitSource defines Git repository source configuration
+type GitSource struct {
+	// Repository is the Git repository URL (HTTP/HTTPS/SSH)
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern="^(https?://|git@|ssh://|git://).*"
+	Repository string `json:"repository"`
+
+	// Branch is the Git branch to use (mutually exclusive with Tag and Commit)
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Branch string `json:"branch,omitempty"`
+
+	// Tag is the Git tag to use (mutually exclusive with Branch and Commit)
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Tag string `json:"tag,omitempty"`
+
+	// Commit is the Git commit SHA to use (mutually exclusive with Branch and Tag)
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Commit string `json:"commit,omitempty"`
+
+	// Path is the path to the registry file within the repository
+	// +kubebuilder:validation:Pattern=^.*\.json$
+	// +kubebuilder:default=registry.json
+	// +optional
+	Path string `json:"path,omitempty"`
 }
 
 // SyncPolicy defines automatic synchronization behavior.
@@ -229,7 +267,7 @@ const (
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:scope=Namespaced,categories=toolhive
 //nolint:lll
-//+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configmap) : true",message="configMap field is required when source type is 'configmap'"
+//+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configmap) : (self.spec.source.type == 'git' ? has(self.spec.source.git) : true)",message="configMap field is required when source type is 'configmap', git field is required when source type is 'git'"
 
 // MCPRegistry is the Schema for the mcpregistries API
 // ⚠️ Experimental API (v1alpha1) — subject to change.

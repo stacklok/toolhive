@@ -170,7 +170,7 @@ tasks:
         platforms: [windows]
         ignore_error: true   # Windows has no mkdir -p, so just ignore error if it exists
       - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.3
-      - $(go env GOPATH)/bin/controller-gen crd webhook paths="./cmd/thv-operator/..." output:crd:artifacts:config=deploy/charts/operator-crds/templates
+      - $(go env GOPATH)/bin/controller-gen crd webhook paths="./cmd/thv-operator/..." output:crd:artifacts:config=deploy/charts/operator-crds/crds
       - $(go env GOPATH)/bin/controller-gen rbac:roleName=toolhive-operator-manager-role paths="./cmd/thv-operator/..." output:rbac:artifacts:config=deploy/charts/operator/templates/clusterrole
 
   operator-test:

@@ -84,6 +84,19 @@ const mcpContainerName = "mcp"
 // trueValue is the string value "true" used for environment variable comparisons
 const trueValue = "true"
 
+// Restart annotation keys for triggering pod restart
+const (
+	RestartedAtAnnotationKey          = "mcpserver.toolhive.stacklok.dev/restarted-at"
+	RestartStrategyAnnotationKey      = "mcpserver.toolhive.stacklok.dev/restart-strategy"
+	LastProcessedRestartAnnotationKey = "mcpserver.toolhive.stacklok.dev/last-processed-restart"
+)
+
+// Restart strategy constants
+const (
+	RestartStrategyRolling   = "rolling"
+	RestartStrategyImmediate = "immediate"
+)
+
 // Authorization ConfigMap label constants
 const (
 	// authzLabelKey is the label key for authorization configuration type
@@ -159,6 +172,15 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Error reading the object - requeue the request.
 		ctxLogger.Error(err, "Failed to get MCPServer")
 		return ctrl.Result{}, err
+	}
+
+	// Check if the restart annotation has been updated and trigger a rolling restart if needed
+	if shouldTriggerRestart, err := r.handleRestartAnnotation(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to handle restart annotation")
+		return ctrl.Result{}, err
+	} else if shouldTriggerRestart {
+		// Return and requeue to avoid double-processing after triggering restart
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Check if MCPToolConfig is referenced and handle it
@@ -327,6 +349,148 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// handleRestartAnnotation checks if the restart annotation has been updated and triggers a restart if needed
+// Returns true if a restart was triggered and the reconciliation should be requeued
+func (r *MCPServerReconciler) handleRestartAnnotation(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) (bool, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Get the current restarted-at annotation value from the CR
+	currentRestartedAt := ""
+	if mcpServer.Annotations != nil {
+		currentRestartedAt = mcpServer.Annotations[RestartedAtAnnotationKey]
+	}
+
+	// Skip if no restart annotation is present
+	if currentRestartedAt == "" {
+		return false, nil
+	}
+
+	// Parse the timestamp from the annotation
+	requestTime, err := time.Parse(time.RFC3339, currentRestartedAt)
+	if err != nil {
+		ctxLogger.Error(err, "Invalid timestamp format in restart annotation",
+			"annotation", RestartedAtAnnotationKey,
+			"value", currentRestartedAt)
+		return false, nil
+	}
+
+	// Check if we've already processed this restart request
+	lastProcessedRestart := ""
+	if mcpServer.Annotations != nil {
+		lastProcessedRestart = mcpServer.Annotations[LastProcessedRestartAnnotationKey]
+	}
+
+	if lastProcessedRestart != "" {
+		lastProcessedTime, err := time.Parse(time.RFC3339, lastProcessedRestart)
+		if err == nil && !requestTime.After(lastProcessedTime) {
+			// This request has already been processed
+			return false, nil
+		}
+	}
+
+	// Get restart strategy (default to rolling)
+	strategy := RestartStrategyRolling
+	if mcpServer.Annotations != nil {
+		if strategyValue, exists := mcpServer.Annotations[RestartStrategyAnnotationKey]; exists {
+			strategy = strategyValue
+		}
+	}
+
+	ctxLogger.Info("Processing restart request",
+		"annotation", RestartedAtAnnotationKey,
+		"timestamp", currentRestartedAt,
+		"strategy", strategy)
+
+	// Perform the restart based on strategy
+	err = r.performRestart(ctx, mcpServer, strategy)
+	if err != nil {
+		return false, fmt.Errorf("failed to perform restart: %w", err)
+	}
+
+	// Update the last processed restart timestamp in annotations
+	if mcpServer.Annotations == nil {
+		mcpServer.Annotations = make(map[string]string)
+	}
+	mcpServer.Annotations[LastProcessedRestartAnnotationKey] = currentRestartedAt
+	err = r.Update(ctx, mcpServer)
+	if err != nil {
+		return false, fmt.Errorf("failed to update MCPServer with last processed restart annotation: %w", err)
+	}
+
+	return true, nil
+}
+
+// performRestart executes the restart based on the specified strategy
+func (r *MCPServerReconciler) performRestart(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, strategy string) error {
+	switch strategy {
+	case RestartStrategyRolling:
+		return r.performRollingRestart(ctx, mcpServer)
+	case RestartStrategyImmediate:
+		return r.performImmediateRestart(ctx, mcpServer)
+	default:
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Info("Unknown restart strategy, defaulting to rolling", "strategy", strategy)
+		return r.performRollingRestart(ctx, mcpServer)
+	}
+}
+
+// performRollingRestart triggers a rolling restart by updating the deployment's pod template annotation
+func (r *MCPServerReconciler) performRollingRestart(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
+	deployment := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, deployment)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			ctxLogger.Info("Deployment not found, skipping rolling restart")
+			return nil
+		}
+		return fmt.Errorf("failed to get deployment for rolling restart: %w", err)
+	}
+
+	// Update the deployment's pod template annotation to trigger a rolling restart
+	if deployment.Spec.Template.Annotations == nil {
+		deployment.Spec.Template.Annotations = map[string]string{}
+	}
+	deployment.Spec.Template.Annotations[RestartedAtAnnotationKey] = time.Now().Format(time.RFC3339)
+
+	err = r.Update(ctx, deployment)
+	if err != nil {
+		return fmt.Errorf("failed to update deployment for rolling restart: %w", err)
+	}
+
+	ctxLogger.Info("Successfully triggered rolling restart of deployment", "deployment", deployment.Name)
+	return nil
+}
+
+// performImmediateRestart triggers an immediate restart by deleting the pods directly
+func (r *MCPServerReconciler) performImmediateRestart(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// List pods belonging to this MCPServer
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(mcpServer.Namespace),
+		client.MatchingLabels(labelsForMCPServer(mcpServer.Name)),
+	}
+
+	err := r.List(ctx, podList, listOpts...)
+	if err != nil {
+		return fmt.Errorf("failed to list pods for immediate restart: %w", err)
+	}
+
+	// Delete each pod to trigger immediate restart
+	for _, pod := range podList.Items {
+		ctxLogger.Info("Deleting pod for immediate restart", "pod", pod.Name)
+		err = r.Delete(ctx, &pod)
+		if err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete pod %s for immediate restart: %w", pod.Name, err)
+		}
+	}
+
+	ctxLogger.Info("Successfully triggered immediate restart", "podsDeleted", len(podList.Items))
+	return nil
 }
 
 // ensureRBACResource is a generic helper function to ensure a Kubernetes resource exists and is up to date

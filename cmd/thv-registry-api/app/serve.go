@@ -28,11 +28,11 @@ var serveCmd = &cobra.Command{
 	Short: "Start the registry API server",
 	Long: `Start the registry API server to serve MCP registry data.
 The server can read registry data from either:
-- ConfigMaps using --configmap flag (requires Kubernetes API access)
-- Local files using --file flag (for mounted ConfigMaps)
+- ConfigMaps using --from-configmap flag (requires Kubernetes API access)
+- Local files using --from-file flag (for mounted ConfigMaps)
 
 Both options require --registry-name to specify the registry identifier.
-One of --configmap or --file must be specified.`,
+One of --from-configmap or --from-file must be specified.`,
 	RunE: runServe,
 }
 
@@ -46,21 +46,21 @@ const (
 
 func init() {
 	serveCmd.Flags().String("address", ":8080", "Address to listen on")
-	serveCmd.Flags().String("configmap", "", "ConfigMap name containing registry data (mutually exclusive with --file)")
-	serveCmd.Flags().String("file", "", "File path to registry.json (mutually exclusive with --configmap)")
+	serveCmd.Flags().String("from-configmap", "", "ConfigMap name containing registry data (mutually exclusive with --from-file)")
+	serveCmd.Flags().String("from-file", "", "File path to registry.json (mutually exclusive with --from-configmap)")
 	serveCmd.Flags().String("registry-name", "", "Registry name identifier (required)")
 
 	err := viper.BindPFlag("address", serveCmd.Flags().Lookup("address"))
 	if err != nil {
 		logger.Fatalf("Failed to bind address flag: %v", err)
 	}
-	err = viper.BindPFlag("configmap", serveCmd.Flags().Lookup("configmap"))
+	err = viper.BindPFlag("from-configmap", serveCmd.Flags().Lookup("from-configmap"))
 	if err != nil {
-		logger.Fatalf("Failed to bind configmap flag: %v", err)
+		logger.Fatalf("Failed to bind from-configmap flag: %v", err)
 	}
-	err = viper.BindPFlag("file", serveCmd.Flags().Lookup("file"))
+	err = viper.BindPFlag("from-file", serveCmd.Flags().Lookup("from-file"))
 	if err != nil {
-		logger.Fatalf("Failed to bind file flag: %v", err)
+		logger.Fatalf("Failed to bind from-file flag: %v", err)
 	}
 	err = viper.BindPFlag("registry-name", serveCmd.Flags().Lookup("registry-name"))
 	if err != nil {
@@ -85,18 +85,18 @@ func getKubernetesConfig() (*rest.Config, error) {
 
 // buildProviderConfig creates provider configuration based on command-line flags
 func buildProviderConfig() (*service.RegistryProviderConfig, error) {
-	configMapName := viper.GetString("configmap")
-	filePath := viper.GetString("file")
+	configMapName := viper.GetString("from-configmap")
+	filePath := viper.GetString("from-file")
 	registryName := viper.GetString("registry-name")
 
 	// Validate mutual exclusivity
 	if configMapName != "" && filePath != "" {
-		return nil, fmt.Errorf("--configmap and --file flags are mutually exclusive")
+		return nil, fmt.Errorf("--from-configmap and --from-file flags are mutually exclusive")
 	}
 
 	// Require one of the flags
 	if configMapName == "" && filePath == "" {
-		return nil, fmt.Errorf("either --configmap or --file flag is required")
+		return nil, fmt.Errorf("either --from-configmap or --from-file flag is required")
 	}
 
 	// Require registry name

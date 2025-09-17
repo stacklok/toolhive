@@ -230,12 +230,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 func getSecretsManager() (secrets.Provider, error) {
 	cfg := config.NewDefaultProvider().GetConfig()
 
-	// Check if secrets setup has been completed
-	if !cfg.Secrets.SetupCompleted {
-		return nil, secrets.ErrSecretsNotSetup
-	}
-
-	providerType, err := cfg.Secrets.GetProviderType()
+	providerType, err := cfg.Secrets.GetProviderTypeOrDefault()
 	if err != nil {
 		return nil, err
 	}

@@ -62,6 +62,20 @@ func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 	return s.GetProviderTypeWithEnv(&env.OSReader{})
 }
 
+// GetProviderTypeOrDefault returns the secrets provider type, defaulting to 'none' if not configured.
+// This is useful in containerized environments (K8s, API) where secrets may not be required.
+func (s *Secrets) GetProviderTypeOrDefault() (secrets.ProviderType, error) {
+	providerType, err := s.GetProviderType()
+	if err != nil {
+		// In containerized environments (K8s, API), default to 'none' provider if config not setup
+		if errors.Is(err, secrets.ErrSecretsNotSetup) {
+			return secrets.NoneType, nil
+		}
+		return "", err
+	}
+	return providerType, nil
+}
+
 // GetProviderTypeWithEnv returns the secrets provider type using the provided environment reader.
 // This method allows for dependency injection of environment variable access for testing.
 func (s *Secrets) GetProviderTypeWithEnv(envReader env.Reader) (secrets.ProviderType, error) {

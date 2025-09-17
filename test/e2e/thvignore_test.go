@@ -13,7 +13,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("THVIgnore E2E Tests", func() {
+var _ = Describe("THVIgnore E2E Tests", Label("core", "thvignore", "e2e"), func() {
 	var (
 		config     *e2e.TestConfig
 		serverName string

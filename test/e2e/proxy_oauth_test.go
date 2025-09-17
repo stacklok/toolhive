@@ -26,7 +26,7 @@ func generateUniqueOIDCServerName(prefix string) string {
 	return fmt.Sprintf("%s-%d-%d-%d", prefix, os.Getpid(), time.Now().UnixNano(), GinkgoRandomSeed())
 }
 
-var _ = Describe("Proxy OAuth Authentication E2E", Serial, func() {
+var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"), Serial, func() {
 	var (
 		config          *e2e.TestConfig
 		mockOIDCPort    int

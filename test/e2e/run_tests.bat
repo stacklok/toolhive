@@ -70,6 +70,22 @@ if defined GITHUB_ACTIONS (
 ) else (
     set "GINKGO_CMD=%GINKGO_CMD% --vv --show-node-events --trace"
 )
+
+REM Optional label filter (LABEL_FILTER or E2E_LABEL_FILTER)
+set "LABEL_FILTER_EFFECTIVE="
+if defined LABEL_FILTER (
+    set "LABEL_FILTER_EFFECTIVE=%LABEL_FILTER%"
+) else (
+    if defined E2E_LABEL_FILTER (
+        set "LABEL_FILTER_EFFECTIVE=%E2E_LABEL_FILTER%"
+    )
+)
+
+if defined LABEL_FILTER_EFFECTIVE (
+    echo ✓ Using label filter: %LABEL_FILTER_EFFECTIVE%
+    set GINKGO_CMD=%GINKGO_CMD% --label-filter="%LABEL_FILTER_EFFECTIVE%"
+)
+
 set "GINKGO_CMD=%GINKGO_CMD% ."
 
 REM Execute the ginkgo command
@@ -82,4 +98,4 @@ if %errorlevel% equ 0 (
     echo.
     echo ✗ Some E2E tests failed
     exit /b 1
-) 
+)

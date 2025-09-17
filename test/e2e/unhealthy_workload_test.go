@@ -17,7 +17,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Unhealthy Workload Detection", func() {
+var _ = Describe("Unhealthy Workload Detection", Label("stability", "unhealthy", "e2e"), func() {
 	var (
 		config     *e2e.TestConfig
 		serverName string

@@ -77,7 +77,7 @@ jobs:
       - name: Check for changes
         id: git-check
         run: |
-          git diff --exit-code deploy/charts/operator-crds/templates || echo "crd-changes=true" >> $GITHUB_OUTPUT
+          git diff --exit-code deploy/charts/operator-crds/crds || echo "crd-changes=true" >> $GITHUB_OUTPUT
           git diff --exit-code deploy/charts/operator/templates || echo "operator-changes=true" >> $GITHUB_OUTPUT
 
       - name: Fail if CRDs are not up to date

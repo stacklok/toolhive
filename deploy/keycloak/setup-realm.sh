@@ -46,12 +46,14 @@ curl -s -X POST "$KEYCLOAK_URL/admin/realms/toolhive/clients" \
   -d '{
     "clientId": "mcp-test-client",
     "enabled": true,
-    "publicClient": true,
+    "publicClient": false,
+    "secret": "mcp-test-client-secret",
+    "serviceAccountsEnabled": true,
     "standardFlowEnabled": true,
     "directAccessGrantsEnabled": true,
     "redirectUris": ["http://localhost:*", "http://127.0.0.1:*"],
     "webOrigins": ["http://localhost:*", "http://127.0.0.1:*"],
-    "description": "Public client for MCP testing"
+    "description": "Confidential client for MCP testing"
   }' || echo "Client may already exist"
 
 echo "Creating mcp-server..."
@@ -66,8 +68,59 @@ curl -s -X POST "$KEYCLOAK_URL/admin/realms/toolhive/clients" \
     "serviceAccountsEnabled": true,
     "standardFlowEnabled": false,
     "directAccessGrantsEnabled": false,
+    "attributes": {
+      "standard.token.exchange.enabled": "true"
+    },
     "description": "Confidential client for MCP server"
   }' || echo "Client may already exist"
+
+# Create client scope for backend access
+echo "Creating backend-access client scope..."
+curl -s -X POST "$KEYCLOAK_URL/admin/realms/toolhive/client-scopes" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "backend-access",
+    "description": "Adds backend to token audience for backend service access",
+    "protocol": "openid-connect",
+    "attributes": {
+      "include.in.token.scope": "true",
+      "display.on.consent.screen": "false"
+    }
+  }' || echo "Client scope may already exist"
+
+# Get the backend-access client scope ID
+BACKEND_SCOPE_ID=$(curl -s -H "Authorization: Bearer $TOKEN" \
+  "$KEYCLOAK_URL/admin/realms/toolhive/client-scopes" | \
+  jq -r '.[] | select(.name=="backend-access") | .id')
+
+if [ "$BACKEND_SCOPE_ID" != "null" ] && [ -n "$BACKEND_SCOPE_ID" ]; then
+  echo "Adding backend audience mapper to client scope..."
+  curl -s -X POST "$KEYCLOAK_URL/admin/realms/toolhive/client-scopes/$BACKEND_SCOPE_ID/protocol-mappers/models" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "name": "backend-audience-mapper",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-audience-mapper",
+      "config": {
+        "included.custom.audience": "backend",
+        "id.token.claim": "false",
+        "access.token.claim": "true"
+      }
+    }' || echo "Backend audience mapper may already exist"
+
+  # Assign the backend-access scope as optional to mcp-server
+  MCP_SERVER_CLIENT_ID=$(curl -s -H "Authorization: Bearer $TOKEN" \
+    "$KEYCLOAK_URL/admin/realms/toolhive/clients" | \
+    jq -r '.[] | select(.clientId=="mcp-server") | .id')
+
+  if [ "$MCP_SERVER_CLIENT_ID" != "null" ] && [ -n "$MCP_SERVER_CLIENT_ID" ]; then
+    echo "Assigning backend-access scope to mcp-server as optional..."
+    curl -s -X PUT "$KEYCLOAK_URL/admin/realms/toolhive/clients/$MCP_SERVER_CLIENT_ID/optional-client-scopes/$BACKEND_SCOPE_ID" \
+      -H "Authorization: Bearer $TOKEN" || echo "Scope assignment may already exist"
+  fi
+fi
 
 # Create users
 echo "Creating toolhive-admin..."
@@ -180,5 +233,21 @@ echo "   - toolhive-admin (admin123)"
 echo "   - toolhive-user (user123)" 
 echo "   - toolhive-readonly (readonly123)"
 echo "Clients created:"
-echo "   - mcp-test-client (public)"
-echo "   - mcp-server (confidential)"
+echo "   - mcp-test-client (confidential, secret: mcp-test-client-secret, for user authentication)"
+echo "   - mcp-server (confidential, secret: PLOs4j6ti521kb5ZVVwi5GWi9eDYTwq, token exchange enabled)"
+echo ""
+echo "Client scopes created:"
+echo "   - backend-access (adds 'backend' to token audience, assigned to mcp-server as optional)"
+echo ""
+echo "Token exchange test commands:"
+echo "   # Get user token:"
+echo "   TOKEN=\$(curl -s -d \"client_id=mcp-test-client\" -d \"client_secret=mcp-test-client-secret\" -d \"username=toolhive-user\" -d \"password=user123\" -d \"grant_type=password\" \"http://localhost:8080/realms/toolhive/protocol/openid-connect/token\" | jq -r '.access_token')"
+echo ""
+echo "   # mcp-server exchanges user token for backend audience (using scope):"
+echo "   curl -s -d \"grant_type=urn:ietf:params:oauth:grant-type:token-exchange\" \\"
+echo "        -d \"client_id=mcp-server\" \\"
+echo "        -d \"client_secret=PLOs4j6ti521kb5ZVVwi5GWi9eDYTwq\" \\"
+echo "        -d \"subject_token=\$TOKEN\" \\"
+echo "        -d \"subject_token_type=urn:ietf:params:oauth:token-type:access_token\" \\"
+echo "        -d \"scope=backend-access\" \\"
+echo "        \"http://localhost:8080/realms/toolhive/protocol/openid-connect/token\""

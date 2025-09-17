@@ -123,22 +123,39 @@ tasks:
       - helm upgrade --install toolhive-operator deploy/charts/operator --namespace toolhive-system --create-namespace --kubeconfig kconfig.yaml
 
   operator-deploy-local:
-    desc: Build the ToolHive runtime and Operator image locally and deploy it to the K8s cluster
+    desc: |
+      Build the ToolHive runtime and Operator image locally and deploy it to the K8s cluster.
+      Set DEPLOY_REGISTRY_API=true to also build and deploy the registry API image.
+      Example: task operator-deploy-local DEPLOY_REGISTRY_API=true
     platforms: [linux, darwin]
     vars:
+      DEPLOY_REGISTRY_API: '{{.DEPLOY_REGISTRY_API | default "false"}}'
       OPERATOR_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
       TOOLHIVE_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1
+      REGISTRY_API_IMAGE:
+        sh: |
+          if [ "{{.DEPLOY_REGISTRY_API}}" = "true" ]; then
+            KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-registry-api | tail -n 1
+          else
+            echo ""
+          fi
     cmds:
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
       - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.TOOLHIVE_IMAGE}}
       - |
+        if [ "{{.DEPLOY_REGISTRY_API}}" = "true" ]; then
+          echo "Loading registry API image {{.REGISTRY_API_IMAGE}} into kind..."
+          kind load docker-image --name toolhive {{.REGISTRY_API_IMAGE}}
+        fi
+      - |
         helm upgrade --install toolhive-operator deploy/charts/operator \
         --set operator.image={{.OPERATOR_IMAGE}} \
         --set operator.toolhiveRunnerImage={{.TOOLHIVE_IMAGE}} \
+        {{if eq .DEPLOY_REGISTRY_API "true"}}--set registryAPI.image={{.REGISTRY_API_IMAGE}}{{end}} \
         --namespace toolhive-system \
         --create-namespace \
         --kubeconfig kconfig.yaml \

@@ -84,6 +84,9 @@ type RunConfig struct {
 	// EnvVars are the parsed environment variables as key-value pairs
 	EnvVars map[string]string `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`
 
+	// EnvFileDir is the directory path to load environment files from
+	EnvFileDir string `json:"env_file_dir,omitempty" yaml:"env_file_dir,omitempty"`
+
 	// Debug indicates whether debug mode is enabled
 	Debug bool `json:"debug,omitempty" yaml:"debug,omitempty"`
 

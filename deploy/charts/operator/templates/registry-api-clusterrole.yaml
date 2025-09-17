@@ -1,0 +1,27 @@
+{{- if .Values.registryAPI.serviceAccount.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: toolhive-registry-api-role
+  labels:
+    app.kubernetes.io/name: toolhive-registry-api
+    app.kubernetes.io/component: registry-api
+    app.kubernetes.io/managed-by: toolhive-operator
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcpservers
+  verbs:
+  - get
+  - list
+  - watch
+{{- end }}

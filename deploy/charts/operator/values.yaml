@@ -178,3 +178,20 @@ operator:
 
   # -- Affinity settings for the operator pod
   affinity: {}
+
+# -- All values for the registry API deployment and associated resources
+registryAPI:
+  # -- Container image for the registry API
+  image: "ghcr.io/stacklok/toolhive/thv-registry-api:latest"
+  # -- Service account configuration for the registry API
+  serviceAccount:
+    # -- Specifies whether a service account should be created
+    create: true
+    # -- Automatically mount a ServiceAccount's API credentials
+    automountServiceAccountToken: true
+    # -- The name of the service account to use for the registry API
+    name: "toolhive-registry-api"
+    # -- Annotations to add to the registry API service account
+    annotations: {}
+    # -- Labels to add to the registry API service account
+    labels: {}

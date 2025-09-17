@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -37,11 +38,18 @@ func (f *FallbackProvider) GetSecret(ctx context.Context, name string) (string, 
 		return "", err
 	}
 
-	// Try environment variable fallback
+	// Try environment variable fallback with prefix first
 	envValue, envErr := f.envProvider.GetSecret(ctx, name)
 	if envErr == nil {
-		logger.Debugf("Secret '%s' retrieved from environment variable fallback", name)
+		logger.Debugf("Secret '%s' retrieved from environment variable fallback with prefix", name)
 		return envValue, nil
+	}
+
+	// Try environment variable without prefix (for Kubernetes secrets)
+	directValue := os.Getenv(name)
+	if directValue != "" {
+		logger.Debugf("Secret '%s' retrieved from direct environment variable (no prefix)", name)
+		return directValue, nil
 	}
 
 	// Return the original error if no fallback found

@@ -5,9 +5,9 @@ package environment
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
-	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -18,15 +18,8 @@ func ParseSecretParameters(
 	ctx context.Context,
 	parameters []string,
 	secretsManager secrets.Provider,
-	envReader env.Reader,
 ) (map[string]string, error) {
 	secretVariables := make(map[string]string, len(parameters))
-
-	// In Kubernetes runtime, skip secrets validation as they're already
-	// available as environment variables mounted by the operator
-	if envReader.Getenv("TOOLHIVE_RUNTIME") == "kubernetes" {
-		return secretVariables, nil
-	}
 
 	for _, param := range parameters {
 		parameter, err := secrets.ParseSecretParameter(param)
@@ -36,6 +29,12 @@ func ParseSecretParameters(
 
 		secret, err := secretsManager.GetSecret(ctx, parameter.Name)
 		if err != nil {
+			// In Kubernetes, if the secret provider fails, try the target environment variable directly
+			// This handles cases where secrets are mounted as env vars with different names
+			if envValue := os.Getenv(parameter.Target); envValue != "" {
+				secretVariables[parameter.Target] = envValue
+				continue
+			}
 			return nil, err
 		}
 

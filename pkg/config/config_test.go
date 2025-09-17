@@ -345,7 +345,7 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 		assert.Contains(t, err.Error(), "invalid secrets provider type", "Error should mention invalid provider type")
 	})
 
-	t.Run("Setup not completed returns error", func(t *testing.T) {
+	t.Run("Setup not completed returns error for non-none providers", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
@@ -356,11 +356,26 @@ func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {
 			SetupCompleted: false,
 		}
 
-		// Mock call to TOOLHIVE_RUNTIME when SetupCompleted is false
-		mockEnv.EXPECT().Getenv("TOOLHIVE_RUNTIME").Return("")
-
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return("")
 		_, err := s.GetProviderTypeWithEnv(mockEnv)
-		assert.Error(t, err, "Should return error when setup not completed")
+		assert.Error(t, err, "Should return error when setup not completed for non-none providers")
 		assert.ErrorIs(t, err, secrets.ErrSecretsNotSetup, "Should return ErrSecretsNotSetup when setup not completed")
+	})
+
+	t.Run("None provider works without setup completed", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockEnv := mocks.NewMockReader(ctrl)
+		s := &Secrets{
+			ProviderType:   string(secrets.NoneType),
+			SetupCompleted: false, // Setup not completed but should work for 'none'
+		}
+
+		mockEnv.EXPECT().Getenv(secrets.ProviderEnvVar).Return("")
+		got, err := s.GetProviderTypeWithEnv(mockEnv)
+		require.NoError(t, err)
+		assert.Equal(t, secrets.NoneType, got, "None provider should work without setup completed")
 	})
 }

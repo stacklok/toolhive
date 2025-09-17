@@ -65,18 +65,20 @@ func (s *Secrets) GetProviderType() (secrets.ProviderType, error) {
 // GetProviderTypeWithEnv returns the secrets provider type using the provided environment reader.
 // This method allows for dependency injection of environment variable access for testing.
 func (s *Secrets) GetProviderTypeWithEnv(envReader env.Reader) (secrets.ProviderType, error) {
-	// Check if secrets setup has been completed
-	if !s.SetupCompleted {
-		// In Kubernetes runtime, default to 'none' provider if config not setup
-		if runtimeEnv := envReader.Getenv("TOOLHIVE_RUNTIME"); runtimeEnv == "kubernetes" {
-			return secrets.NoneType, nil
+	// First check the environment variable (takes precedence over everything)
+	if envVar := envReader.Getenv(secrets.ProviderEnvVar); envVar != "" {
+		providerType, err := validateProviderType(envVar)
+		if err != nil {
+			return "", err
 		}
-		return "", secrets.ErrSecretsNotSetup
+		// If provider is 'none', assume setup is completed
+		return providerType, nil
 	}
 
-	// First check the environment variable
-	if envVar := envReader.Getenv(secrets.ProviderEnvVar); envVar != "" {
-		return validateProviderType(envVar)
+	// Check if secrets setup has been completed
+	// For 'none' provider, assume setup is always completed
+	if !s.SetupCompleted && s.ProviderType != string(secrets.NoneType) {
+		return "", secrets.ErrSecretsNotSetup
 	}
 
 	// Fall back to config file

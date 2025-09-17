@@ -1026,11 +1026,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 }
 
 func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
-	// Check for the existence of the XDG_CONFIG_HOME, HOME, TOOLHIVE_RUNTIME, and UNSTRUCTURED_LOGS environment variables
+	// Check for the existence of required environment variables
 	// and set them to defaults if they don't exist
 	xdgConfigHomeFound := false
 	homeFound := false
 	toolhiveRuntimeFound := false
+	toolhiveSecretsProviderFound := false
 	unstructuredLogsFound := false
 	for _, envVar := range env {
 		if envVar.Name == "XDG_CONFIG_HOME" {
@@ -1041,6 +1042,9 @@ func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
 		}
 		if envVar.Name == "TOOLHIVE_RUNTIME" {
 			toolhiveRuntimeFound = true
+		}
+		if envVar.Name == "TOOLHIVE_SECRETS_PROVIDER" {
+			toolhiveSecretsProviderFound = true
 		}
 		if envVar.Name == "UNSTRUCTURED_LOGS" {
 			unstructuredLogsFound = true
@@ -1065,6 +1069,13 @@ func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{
 			Name:  "TOOLHIVE_RUNTIME",
 			Value: "kubernetes",
+		})
+	}
+	if !toolhiveSecretsProviderFound {
+		logger.Debugf("TOOLHIVE_SECRETS_PROVIDER not found, setting to none")
+		env = append(env, corev1.EnvVar{
+			Name:  "TOOLHIVE_SECRETS_PROVIDER",
+			Value: "none",
 		})
 	}
 	// Always use structured JSON logs in Kubernetes (not configurable)

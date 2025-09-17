@@ -53,7 +53,6 @@ flowchart LR
 
 ## Installation
 
-
 ## Running Operator Unit & Integration Tests
 
 To run the basic operator-only tests (unit and integration), use the following command from the root of the project:

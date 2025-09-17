@@ -699,6 +699,20 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		configMapName := fmt.Sprintf("%s-runconfig", m.Name)
 		configMapRef := fmt.Sprintf("%s/%s", m.Namespace, configMapName)
 		args = append(args, fmt.Sprintf("--from-configmap=%s", configMapRef))
+
+		// Also add pod template patch for secrets (same as regular flags approach)
+		finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
+			WithSecrets(m.Spec.Secrets).
+			Build()
+		// Add pod template patch if we have one
+		if finalPodTemplateSpec != nil {
+			podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
+			if err != nil {
+				logger.Errorf("Failed to marshal pod template spec: %v", err)
+			} else {
+				args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
+			}
+		}
 	} else {
 		// Use individual configuration flags (existing behavior)
 		args = append(args, fmt.Sprintf("--proxy-port=%d", m.Spec.Port))

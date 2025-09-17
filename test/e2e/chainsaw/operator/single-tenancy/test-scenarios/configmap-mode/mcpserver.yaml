@@ -10,6 +10,13 @@ spec:
   permissionProfile:
     type: builtin
     name: network
+  secrets:
+  - name: yardstick-test-secret
+    key: api-token
+    targetEnvName: YARDSTICK_API_TOKEN
+  - name: yardstick-test-secret
+    key: github-token
+    targetEnvName: GITHUB_TOKEN
   resources:
     limits:
       cpu: "100m"

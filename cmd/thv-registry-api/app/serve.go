@@ -31,6 +31,7 @@ The server can read registry data from either:
 - ConfigMaps using --configmap flag (requires Kubernetes API access)
 - Local files using --file flag (for mounted ConfigMaps)
 
+Both options require --registry-name to specify the registry identifier.
 One of --configmap or --file must be specified.`,
 	RunE: runServe,
 }
@@ -47,6 +48,7 @@ func init() {
 	serveCmd.Flags().String("address", ":8080", "Address to listen on")
 	serveCmd.Flags().String("configmap", "", "ConfigMap name containing registry data (mutually exclusive with --file)")
 	serveCmd.Flags().String("file", "", "File path to registry.json (mutually exclusive with --configmap)")
+	serveCmd.Flags().String("registry-name", "", "Registry name identifier (required)")
 
 	err := viper.BindPFlag("address", serveCmd.Flags().Lookup("address"))
 	if err != nil {
@@ -59,6 +61,10 @@ func init() {
 	err = viper.BindPFlag("file", serveCmd.Flags().Lookup("file"))
 	if err != nil {
 		logger.Fatalf("Failed to bind file flag: %v", err)
+	}
+	err = viper.BindPFlag("registry-name", serveCmd.Flags().Lookup("registry-name"))
+	if err != nil {
+		logger.Fatalf("Failed to bind registry-name flag: %v", err)
 	}
 }
 
@@ -81,6 +87,7 @@ func getKubernetesConfig() (*rest.Config, error) {
 func buildProviderConfig() (*service.RegistryProviderConfig, error) {
 	configMapName := viper.GetString("configmap")
 	filePath := viper.GetString("file")
+	registryName := viper.GetString("registry-name")
 
 	// Validate mutual exclusivity
 	if configMapName != "" && filePath != "" {
@@ -90,6 +97,11 @@ func buildProviderConfig() (*service.RegistryProviderConfig, error) {
 	// Require one of the flags
 	if configMapName == "" && filePath == "" {
 		return nil, fmt.Errorf("either --configmap or --file flag is required")
+	}
+
+	// Require registry name
+	if registryName == "" {
+		return nil, fmt.Errorf("--registry-name flag is required")
 	}
 
 	if configMapName != "" {
@@ -106,9 +118,10 @@ func buildProviderConfig() (*service.RegistryProviderConfig, error) {
 		return &service.RegistryProviderConfig{
 			Type: service.RegistryProviderTypeConfigMap,
 			ConfigMap: &service.ConfigMapProviderConfig{
-				Name:      configMapName,
-				Namespace: thvk8scli.GetCurrentNamespace(),
-				Clientset: clientset,
+				Name:         configMapName,
+				Namespace:    thvk8scli.GetCurrentNamespace(),
+				Clientset:    clientset,
+				RegistryName: registryName,
 			},
 		}, nil
 	}
@@ -116,7 +129,8 @@ func buildProviderConfig() (*service.RegistryProviderConfig, error) {
 	return &service.RegistryProviderConfig{
 		Type: service.RegistryProviderTypeFile,
 		File: &service.FileProviderConfig{
-			FilePath: filePath,
+			FilePath:     filePath,
+			RegistryName: registryName,
 		},
 	}, nil
 }

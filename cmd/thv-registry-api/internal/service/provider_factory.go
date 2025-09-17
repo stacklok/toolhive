@@ -26,14 +26,16 @@ type RegistryProviderConfig struct {
 
 // ConfigMapProviderConfig holds configuration for ConfigMap-based registry provider
 type ConfigMapProviderConfig struct {
-	Name      string
-	Namespace string
-	Clientset kubernetes.Interface
+	Name         string
+	Namespace    string
+	Clientset    kubernetes.Interface
+	RegistryName string
 }
 
 // FileProviderConfig holds configuration for file-based registry provider
 type FileProviderConfig struct {
-	FilePath string
+	FilePath     string
+	RegistryName string
 }
 
 // Validate validates the RegistryProviderConfig
@@ -69,6 +71,9 @@ func (c *ConfigMapProviderConfig) Validate() error {
 	if c.Namespace == "" {
 		return fmt.Errorf("configmap namespace is required")
 	}
+	if c.RegistryName == "" {
+		return fmt.Errorf("registry name is required")
+	}
 	return nil
 }
 
@@ -76,6 +81,9 @@ func (c *ConfigMapProviderConfig) Validate() error {
 func (c *FileProviderConfig) Validate() error {
 	if c.FilePath == "" {
 		return fmt.Errorf("file path is required")
+	}
+	if c.RegistryName == "" {
+		return fmt.Errorf("registry name is required")
 	}
 	return nil
 }
@@ -131,8 +139,11 @@ func (*DefaultRegistryProviderFactory) createConfigMapProvider(config *ConfigMap
 	if config.Namespace == "" {
 		return nil, fmt.Errorf("configmap namespace is required")
 	}
+	if config.RegistryName == "" {
+		return nil, fmt.Errorf("registry name is required for configmap provider")
+	}
 
-	return NewK8sRegistryDataProvider(config.Clientset, config.Name, config.Namespace), nil
+	return NewK8sRegistryDataProvider(config.Clientset, config.Name, config.Namespace, config.RegistryName), nil
 }
 
 // createFileProvider creates a file-based registry data provider
@@ -140,6 +151,9 @@ func (*DefaultRegistryProviderFactory) createFileProvider(config *FileProviderCo
 	if config.FilePath == "" {
 		return nil, fmt.Errorf("file path is required for file provider")
 	}
+	if config.RegistryName == "" {
+		return nil, fmt.Errorf("registry name is required for file provider")
+	}
 
-	return NewFileRegistryDataProvider(config.FilePath), nil
+	return NewFileRegistryDataProvider(config.FilePath, config.RegistryName), nil
 }

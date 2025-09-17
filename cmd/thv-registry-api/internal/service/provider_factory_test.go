@@ -23,9 +23,10 @@ func TestRegistryProviderConfig_Validate(t *testing.T) {
 			config: &RegistryProviderConfig{
 				Type: RegistryProviderTypeConfigMap,
 				ConfigMap: &ConfigMapProviderConfig{
-					Name:      "test-cm",
-					Namespace: "test-ns",
-					Clientset: fake.NewSimpleClientset(),
+					Name:         "test-cm",
+					Namespace:    "test-ns",
+					Clientset:    fake.NewSimpleClientset(),
+					RegistryName: "test-registry",
 				},
 			},
 			wantErr: false,
@@ -35,7 +36,8 @@ func TestRegistryProviderConfig_Validate(t *testing.T) {
 			config: &RegistryProviderConfig{
 				Type: RegistryProviderTypeFile,
 				File: &FileProviderConfig{
-					FilePath: "/data/registry.json",
+					FilePath:     "/data/registry.json",
+					RegistryName: "test-registry",
 				},
 			},
 			wantErr: false,
@@ -169,9 +171,10 @@ func TestDefaultRegistryProviderFactory_CreateProvider(t *testing.T) {
 			config: &RegistryProviderConfig{
 				Type: RegistryProviderTypeConfigMap,
 				ConfigMap: &ConfigMapProviderConfig{
-					Name:      "test-cm",
-					Namespace: "test-ns",
-					Clientset: fake.NewSimpleClientset(),
+					Name:         "test-cm",
+					Namespace:    "test-ns",
+					Clientset:    fake.NewSimpleClientset(),
+					RegistryName: "test-registry",
 				},
 			},
 			wantErr: false,
@@ -179,6 +182,7 @@ func TestDefaultRegistryProviderFactory_CreateProvider(t *testing.T) {
 				t.Helper()
 				assert.IsType(t, &K8sRegistryDataProvider{}, provider)
 				assert.Equal(t, "configmap:test-ns/test-cm", provider.GetSource())
+				assert.Equal(t, "test-registry", provider.GetRegistryName())
 			},
 		},
 		{
@@ -186,7 +190,8 @@ func TestDefaultRegistryProviderFactory_CreateProvider(t *testing.T) {
 			config: &RegistryProviderConfig{
 				Type: RegistryProviderTypeFile,
 				File: &FileProviderConfig{
-					FilePath: tmpFile,
+					FilePath:     tmpFile,
+					RegistryName: "test-file-registry",
 				},
 			},
 			wantErr: false,
@@ -194,6 +199,7 @@ func TestDefaultRegistryProviderFactory_CreateProvider(t *testing.T) {
 				t.Helper()
 				assert.IsType(t, &FileRegistryDataProvider{}, provider)
 				assert.Equal(t, "file:"+tmpFile, provider.GetSource())
+				assert.Equal(t, "test-file-registry", provider.GetRegistryName())
 			},
 		},
 		{
@@ -297,34 +303,34 @@ func TestK8sRegistryDataProvider_GetRegistryName(t *testing.T) {
 		name          string
 		configMapName string
 		namespace     string
-		expected      string
+		registryName  string
 	}{
 		{
-			name:          "simple configmap name",
-			configMapName: "my-registry",
+			name:          "registry name independent of configmap",
+			configMapName: "my-configmap",
 			namespace:     "default",
-			expected:      "my-registry",
+			registryName:  "production-registry",
 		},
 		{
-			name:          "hyphenated configmap name",
-			configMapName: "my-registry-configmap",
+			name:          "different registry name",
+			configMapName: "some-configmap",
 			namespace:     "test-namespace",
-			expected:      "my-registry-configmap",
+			registryName:  "custom-registry",
 		},
 		{
-			name:          "empty configmap name",
-			configMapName: "",
+			name:          "empty registry name",
+			configMapName: "test-cm",
 			namespace:     "default",
-			expected:      "",
+			registryName:  "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			provider := NewK8sRegistryDataProvider(fake.NewSimpleClientset(), tt.configMapName, tt.namespace)
+			provider := NewK8sRegistryDataProvider(fake.NewSimpleClientset(), tt.configMapName, tt.namespace, tt.registryName)
 			result := provider.GetRegistryName()
-			assert.Equal(t, tt.expected, result)
+			assert.Equal(t, tt.registryName, result)
 		})
 	}
 }

@@ -15,14 +15,17 @@ import (
 // This implementation reads registry data from a mounted file instead of calling the Kubernetes API.
 // It is designed to work with ConfigMaps mounted as volumes in Kubernetes deployments.
 type FileRegistryDataProvider struct {
-	filePath string
+	filePath     string
+	registryName string
 }
 
 // NewFileRegistryDataProvider creates a new file-based registry data provider.
 // The filePath parameter should point to the registry.json file, typically mounted from a ConfigMap.
-func NewFileRegistryDataProvider(filePath string) *FileRegistryDataProvider {
+// The registryName parameter specifies the registry identifier for business logic purposes.
+func NewFileRegistryDataProvider(filePath, registryName string) *FileRegistryDataProvider {
 	return &FileRegistryDataProvider{
-		filePath: filePath,
+		filePath:     filePath,
+		registryName: registryName,
 	}
 }
 
@@ -69,16 +72,7 @@ func (p *FileRegistryDataProvider) GetSource() string {
 }
 
 // GetRegistryName implements RegistryDataProvider.GetRegistryName.
-// It returns the registry name derived from the filename (without extension).
+// It returns the injected registry name identifier.
 func (p *FileRegistryDataProvider) GetRegistryName() string {
-	if p.filePath == "" {
-		return ""
-	}
-
-	// Use the filename (without extension) as registry name
-	registryName := filepath.Base(p.filePath)
-	if ext := filepath.Ext(registryName); ext != "" {
-		registryName = registryName[:len(registryName)-len(ext)]
-	}
-	return registryName
+	return p.registryName
 }

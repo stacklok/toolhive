@@ -90,7 +90,7 @@ func TestFileRegistryDataProvider_GetRegistryData(t *testing.T) {
 			require.NoError(t, err)
 
 			// Create provider
-			provider := NewFileRegistryDataProvider(tmpFile)
+			provider := NewFileRegistryDataProvider(tmpFile, "test-registry")
 
 			// Test GetRegistryData
 			result, err := provider.GetRegistryData(ctx)
@@ -145,7 +145,7 @@ func TestFileRegistryDataProvider_GetRegistryData_FileErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			provider := NewFileRegistryDataProvider(tt.filePath)
+			provider := NewFileRegistryDataProvider(tt.filePath, "test-registry")
 			result, err := provider.GetRegistryData(ctx)
 
 			if tt.wantErr {
@@ -189,7 +189,7 @@ func TestFileRegistryDataProvider_GetSource(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			provider := NewFileRegistryDataProvider(tt.filePath)
+			provider := NewFileRegistryDataProvider(tt.filePath, "test-registry")
 			result := provider.GetSource()
 			assert.Equal(t, tt.expected, result)
 		})
@@ -199,52 +199,44 @@ func TestFileRegistryDataProvider_GetSource(t *testing.T) {
 func TestNewFileRegistryDataProvider(t *testing.T) {
 	t.Parallel()
 	filePath := "/test/path/registry.json"
-	provider := NewFileRegistryDataProvider(filePath)
+	registryName := "test-registry"
+	provider := NewFileRegistryDataProvider(filePath, registryName)
 
 	assert.NotNil(t, provider)
 	assert.Equal(t, "file:/test/path/registry.json", provider.GetSource())
+	assert.Equal(t, registryName, provider.GetRegistryName())
 }
 
 func TestFileRegistryDataProvider_GetRegistryName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		filePath string
-		expected string
+		name         string
+		filePath     string
+		registryName string
 	}{
 		{
-			name:     "file with extension",
-			filePath: "/data/registry/my-registry.json",
-			expected: "my-registry",
+			name:         "normal registry name",
+			filePath:     "/data/registry/registry.json",
+			registryName: "my-custom-registry",
 		},
 		{
-			name:     "file without extension",
-			filePath: "/data/registry/registry",
-			expected: "registry",
+			name:         "production registry",
+			filePath:     "/path/to/file.json",
+			registryName: "production-registry",
 		},
 		{
-			name:     "nested path with extension",
-			filePath: "/very/deep/path/test-registry.json",
-			expected: "test-registry",
-		},
-		{
-			name:     "relative path",
-			filePath: "./registry.json",
-			expected: "registry",
-		},
-		{
-			name:     "empty path",
-			filePath: "",
-			expected: "",
+			name:         "empty registry name",
+			filePath:     "/some/path.json",
+			registryName: "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			provider := NewFileRegistryDataProvider(tt.filePath)
+			provider := NewFileRegistryDataProvider(tt.filePath, tt.registryName)
 			result := provider.GetRegistryName()
-			assert.Equal(t, tt.expected, result)
+			assert.Equal(t, tt.registryName, result)
 		})
 	}
 }

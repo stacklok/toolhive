@@ -47,7 +47,10 @@ type K8sRegistryDataProvider struct {
 // NewK8sRegistryDataProvider creates a new Kubernetes-based registry data provider.
 // It requires a Kubernetes client, the ConfigMap details where registry data is stored,
 // and the registry name identifier for business logic purposes.
-func NewK8sRegistryDataProvider(kubeClient kubernetes.Interface, configMapName, namespace, registryName string) *K8sRegistryDataProvider {
+func NewK8sRegistryDataProvider(
+	kubeClient kubernetes.Interface,
+	configMapName, namespace, registryName string,
+) *K8sRegistryDataProvider {
 	return &K8sRegistryDataProvider{
 		client:        kubeClient,
 		configMapName: configMapName,

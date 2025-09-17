@@ -13,7 +13,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Proxy Tunnel E2E", Serial, func() {
+var _ = Describe("Proxy Tunnel E2E", Label("proxy", "tunnel", "e2e"), Serial, func() {
 	var (
 		config          *e2e.TestConfig
 		proxyTunnelCmd  *exec.Cmd

@@ -21,7 +21,7 @@ type inspectorTestHelper struct {
 	inspectorURL  string
 }
 
-var _ = Describe("Inspector", func() {
+var _ = Describe("Inspector", Label("mcp", "e2e"), func() {
 	var (
 		config        *e2e.TestConfig
 		mcpServerName string

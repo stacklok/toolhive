@@ -11,7 +11,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("Server Restart", func() {
+var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 	var (
 		config     *e2e.TestConfig
 		serverName string

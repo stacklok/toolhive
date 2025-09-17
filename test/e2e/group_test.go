@@ -19,7 +19,7 @@ func init() {
 	logger.Initialize()
 }
 
-var _ = Describe("Group", func() {
+var _ = Describe("Group", Label("core", "groups", "e2e"), func() {
 	var (
 		config           *e2e.TestConfig
 		groupName        string

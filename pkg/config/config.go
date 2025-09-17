@@ -241,10 +241,6 @@ func (c *Config) saveToPath(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("error writing config file: %w", err)
 	}
-
-	// Important: Need to reset config singleton or else it won't pick up changes.
-	ResetSingleton()
-
 	return nil
 }
 

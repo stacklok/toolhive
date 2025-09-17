@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -245,6 +246,63 @@ func TestPrepareEnvironmentVariables(t *testing.T) {
 
 			// Compare maps directly
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestBuildServerConfig(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	args := &runServerArgs{
+		Server: "test-server",
+		Name:   "test-name",
+		Host:   "127.0.0.1",
+		Env:    map[string]string{"TEST_VAR": "test_value"},
+	}
+
+	tests := []struct {
+		name          string
+		imageURL      string
+		imageMetadata *registry.ImageMetadata
+		expectError   bool
+	}{
+		{
+			name:     "valid config with nil metadata",
+			imageURL: "test/image:latest",
+			imageMetadata: nil,
+			expectError: false, // Actually succeeds because container runtime creation works
+		},
+		{
+			name:     "valid config with metadata",
+			imageURL: "test/image:latest",
+			imageMetadata: &registry.ImageMetadata{
+				BaseServerMetadata: registry.BaseServerMetadata{
+					Transport: "stdio",
+				},
+				Image: "test/image:latest",
+				Args:  []string{"--test"},
+				EnvVars: []*registry.EnvVar{
+					{Name: "DEFAULT_VAR", Default: "default_value"},
+				},
+			},
+			expectError: false, // Actually succeeds and tests the type assertion line
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runConfig, err := buildServerConfig(ctx, args, tt.imageURL, tt.imageMetadata)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, runConfig)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, runConfig)
+			}
 		})
 	}
 }

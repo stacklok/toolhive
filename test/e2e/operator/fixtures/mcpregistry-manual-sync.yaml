@@ -1,0 +1,14 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: test-manual-registry
+  namespace: test-namespace
+spec:
+  source:
+    git:
+      url: "https://github.com/modelcontextprotocol/registry.git"
+      ref: "main"
+  syncPolicy:
+    automatic: false
+status:
+  phase: "Pending"

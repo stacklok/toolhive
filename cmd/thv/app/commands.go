@@ -74,6 +74,26 @@ func IsCompletionCommand(args []string) bool {
 	return false
 }
 
+// IsInformationalCommand checks if the command being run is an informational command that doesn't need container runtime
+func IsInformationalCommand(args []string) bool {
+	if len(args) < 2 {
+		return true // Help is shown when no subcommand is provided
+	}
+
+	command := args[1]
+
+	// Commands that are entirely informational and don't need container runtime
+	informationalCommands := map[string]bool{
+		"version":    true,
+		"search":     true,
+		"completion": true,
+		"registry":   true,
+		"mcp":        true,
+	}
+
+	return informationalCommands[command]
+}
+
 func checkForUpdates() {
 	if updates.ShouldSkipUpdateChecks() {
 		return

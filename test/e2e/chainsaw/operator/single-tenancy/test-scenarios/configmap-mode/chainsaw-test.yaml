@@ -98,6 +98,25 @@ spec:
             echo "✗ runconfig.json missing required fields"
             exit 1
           fi
+
+          # Validate environment variables are properly embedded in runconfig.json
+          echo "Validating environment variables in ConfigMap..."
+          if echo "$CONFIGMAP_JSON" | jq -e '.env_vars.TEST_ENV_VAR == "configmap_test_value"' > /dev/null 2>&1; then
+            echo "✓ TEST_ENV_VAR environment variable found with correct value"
+          else
+            echo "✗ TEST_ENV_VAR environment variable missing or incorrect value"
+            echo "Environment variables in ConfigMap: $(echo "$CONFIGMAP_JSON" | jq '.env_vars // {}')"
+            exit 1
+          fi
+
+          if echo "$CONFIGMAP_JSON" | jq -e '.env_vars.ANOTHER_TEST_VAR == "file_based_env"' > /dev/null 2>&1; then
+            echo "✓ ANOTHER_TEST_VAR environment variable found with correct value"
+          else
+            echo "✗ ANOTHER_TEST_VAR environment variable missing or incorrect value"
+            exit 1
+          fi
+
+          echo "✓ Environment variables properly embedded in ConfigMap runconfig.json"
           
           # Verify deployment uses volume mounting for ConfigMap
           echo "Verifying deployment uses ConfigMap volume mounting..."

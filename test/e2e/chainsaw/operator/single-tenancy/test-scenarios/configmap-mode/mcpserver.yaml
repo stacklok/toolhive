@@ -7,6 +7,11 @@ spec:
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
   transport: stdio
   port: 8080
+  env:
+  - name: TEST_ENV_VAR
+    value: "configmap_test_value"
+  - name: ANOTHER_TEST_VAR
+    value: "file_based_env"
   permissionProfile:
     type: builtin
     name: network

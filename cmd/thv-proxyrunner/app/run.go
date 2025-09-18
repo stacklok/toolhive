@@ -8,13 +8,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
-	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var runCmd *cobra.Command
@@ -247,37 +245,7 @@ func init() {
 func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	// Always try to load runconfig.json from filesystem first
-	fileBasedConfig, err := tryLoadConfigFromFile()
-	if err != nil {
-		logger.Debugf("No configuration file found or failed to load: %v", err)
-		// Continue without configuration file - will use flags instead
-	} else if fileBasedConfig != nil {
-		logger.Infof("Auto-discovered and loaded configuration from runconfig.json file")
-	}
-
-	// Validate the host flag and default resolving to IP in case hostname is provided
-	validatedHost, err := ValidateAndNormaliseHostFlag(runFlags.runHost)
-	if err != nil {
-		return fmt.Errorf("invalid host: %s", runFlags.runHost)
-	}
-	runFlags.runHost = validatedHost
-
-	// Validate and setup proxy mode
-	if !types.IsValidProxyMode(runFlags.runProxyMode) {
-		return fmt.Errorf("invalid value for --proxy-mode: %s (valid values: sse, streamable-http)", runFlags.runProxyMode)
-	}
-
-	// Get the name of the MCP server to run.
-	// This may be a server name from the registry, a container image, or a protocol scheme.
-	mcpServerImage := args[0]
-
-	// Process command arguments using os.Args to find everything after --
-	cmdArgs := parseCommandArguments(os.Args)
-
-	// Print the processed command arguments for debugging
-	logger.Debugf("Processed cmdArgs: %v", cmdArgs)
-
+	// Common setup for both execution paths
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
@@ -295,53 +263,40 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	var imageMetadata *registry.ImageMetadata
 
-	// Parse environment variables from slice to map only if env flag was set
-	var envVarsMap map[string]string
-	if cmd.Flags().Changed("env") {
-		var err error
-		envVarsMap, err = environment.ParseEnvironmentVariables(runFlags.runEnv)
-		if err != nil {
-			return fmt.Errorf("failed to parse environment variables: %v", err)
-		}
-	} else {
-		// Use empty map if no env flags were set
-		envVarsMap = make(map[string]string)
-	}
+	// Get the name of the MCP server to run.
+	// This may be a server name from the registry, a container image, or a protocol scheme.
+	mcpServerImage := args[0]
 
-	// Start with basic options
-	opts := []runner.RunConfigBuilderOption{
-		runner.WithRuntime(rt),
-		runner.WithDebug(debugMode),
-	}
+	// Process command arguments using os.Args to find everything after --
+	cmdArgs := parseCommandArguments(os.Args)
 
-	// Apply file-based configuration first (if available)
-	if fileBasedConfig != nil {
-		opts = applyRunConfigToBuilder(opts, fileBasedConfig)
-	}
+	// Print the processed command arguments for debugging
+	logger.Debugf("Processed cmdArgs: %v", cmdArgs)
 
-	// Apply CLI flag overrides
-	opts = applyBasicFlagOverrides(cmd, &runFlags, validatedHost, opts)
-
-	// Always apply essential runtime options (these are not configuration file fields)
-	opts = append(opts,
-		runner.WithCmdArgs(cmdArgs),
-		runner.WithImage(mcpServerImage),
-		runner.WithTargetHost(transport.LocalhostIPv4),
-	)
-
-	// Apply advanced flag overrides
-	opts = applyAdvancedFlagOverrides(cmd, &runFlags, runFlags.runOtelHeaders, opts)
-
-	runConfig, err := runner.NewRunConfigBuilder(ctx, imageMetadata, envVarsMap, envVarValidator, opts...)
+	// Always try to load runconfig.json from filesystem first
+	fileBasedConfig, err := tryLoadConfigFromFile()
 	if err != nil {
-		return fmt.Errorf("failed to create RunConfig: %v", err)
+		logger.Debugf("No configuration file found or failed to load: %v", err)
+		// Continue without configuration file - will use flags instead
+	} else if fileBasedConfig != nil {
+		logger.Infof("Auto-discovered and loaded configuration from runconfig.json file")
+		// Use simplified approach: when config file exists, use it directly and only apply essential flags
+		return runWithFileBasedConfig(ctx, cmd, mcpServerImage, cmdArgs, fileBasedConfig, rt, debugMode, envVarValidator, imageMetadata)
 	}
 
-	workloadManager, err := workloads.NewManagerFromRuntime(rt)
+	// Validate the host flag and default resolving to IP in case hostname is provided
+	validatedHost, err := ValidateAndNormaliseHostFlag(runFlags.runHost)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("invalid host: %s", runFlags.runHost)
 	}
-	return workloadManager.RunWorkload(ctx, runConfig)
+	runFlags.runHost = validatedHost
+
+	// Validate and setup proxy mode
+	if !types.IsValidProxyMode(runFlags.runProxyMode) {
+		return fmt.Errorf("invalid value for --proxy-mode: %s (valid values: sse, streamable-http)", runFlags.runProxyMode)
+	}
+
+	return runWithFlagsBasedConfig(ctx, mcpServerImage, cmdArgs, validatedHost, rt, debugMode, envVarValidator, imageMetadata)
 }
 
 // parseCommandArguments processes command-line arguments to find everything after the -- separator
@@ -429,220 +384,4 @@ func tryLoadConfigFromFile() (*runner.RunConfig, error) {
 
 	// No configuration file found
 	return nil, nil
-}
-
-// applyRunConfigToBuilder applies a RunConfig to the builder (works for both ConfigMap and flags)
-func applyRunConfigToBuilder(
-	opts []runner.RunConfigBuilderOption,
-	config *runner.RunConfig,
-) []runner.RunConfigBuilderOption {
-	opts = append(
-		opts,
-		runner.WithImage(config.Image),
-		runner.WithName(config.Name),
-		runner.WithCmdArgs(config.CmdArgs),
-		runner.WithHost(config.Host),
-		runner.WithTargetHost(config.TargetHost),
-		runner.WithVolumes(config.Volumes),
-		runner.WithSecrets(config.Secrets),
-		runner.WithAuthzConfigPath(config.AuthzConfigPath),
-		runner.WithAuditConfigPath(config.AuditConfigPath),
-		runner.WithAuditEnabled(config.AuditConfig != nil, config.AuditConfigPath),
-		runner.WithPermissionProfileNameOrPath(config.PermissionProfileNameOrPath),
-		runner.WithNetworkIsolation(config.IsolateNetwork),
-		runner.WithK8sPodPatch(config.K8sPodTemplatePatch),
-		runner.WithProxyMode(config.ProxyMode),
-		runner.WithGroup(config.Group),
-		runner.WithToolsFilter(config.ToolsFilter),
-		runner.WithEnvVars(config.EnvVars),
-		runner.WithTransportAndPorts(string(config.Transport), config.Port, config.TargetPort),
-	)
-
-	// Process environment files if EnvFileDir is specified
-	if config.EnvFileDir != "" {
-		opts = append(opts, runner.WithEnvFilesFromDirectory(config.EnvFileDir))
-	}
-
-	// Apply complex configs if they exist
-	if config.AuthzConfig != nil {
-		opts = append(opts, runner.WithAuthzConfig(config.AuthzConfig))
-	}
-	// Note: AuditConfig is handled via WithAuditEnabled in builder based on the flag and path
-	if config.PermissionProfile != nil {
-		opts = append(opts, runner.WithPermissionProfile(config.PermissionProfile))
-	}
-	if config.ToolsOverride != nil {
-		opts = append(opts, runner.WithToolsOverride(config.ToolsOverride))
-	}
-	if config.OIDCConfig != nil {
-		opts = append(opts,
-			runner.WithOIDCConfig(
-				config.OIDCConfig.Issuer,
-				config.OIDCConfig.Audience,
-				config.OIDCConfig.JWKSURL,
-				"", // IntrospectionURL not available in TokenValidatorConfig
-				config.OIDCConfig.ClientID,
-				config.OIDCConfig.ClientSecret,
-				config.OIDCConfig.CACertPath,
-				config.OIDCConfig.AuthTokenFile,
-				"",
-				config.OIDCConfig.AllowPrivateIP,
-			),
-		) // ResourceURL not available
-	}
-	if config.TelemetryConfig != nil {
-		// Convert headers from map[string]string to []string
-		var headersSlice []string
-		for k, v := range config.TelemetryConfig.Headers {
-			headersSlice = append(headersSlice, k+"="+v)
-		}
-
-		opts = append(opts,
-			runner.WithTelemetryConfig(
-				config.TelemetryConfig.Endpoint,
-				config.TelemetryConfig.EnablePrometheusMetricsPath,
-				config.TelemetryConfig.TracingEnabled,
-				config.TelemetryConfig.MetricsEnabled,
-				config.TelemetryConfig.ServiceName,
-				config.TelemetryConfig.SamplingRate,
-				headersSlice,
-				config.TelemetryConfig.Insecure,
-				config.TelemetryConfig.EnvironmentVariables,
-			),
-		)
-	}
-
-	return opts
-}
-
-// applyBasicFlagOverrides applies basic CLI flag overrides when explicitly set by user
-func applyBasicFlagOverrides(
-	cmd *cobra.Command,
-	runFlags *proxyRunFlags,
-	validatedHost string,
-	opts []runner.RunConfigBuilderOption,
-) []runner.RunConfigBuilderOption {
-	if cmd.Flags().Changed("transport") {
-		opts = append(opts, runner.WithTransport(runFlags.runTransport))
-	}
-	if cmd.Flags().Changed("proxy-port") {
-		opts = append(opts, runner.WithPort(runFlags.runProxyPort))
-	}
-	if cmd.Flags().Changed("target-port") {
-		opts = append(opts, runner.WithTargetPort(runFlags.runTargetPort))
-	}
-	if cmd.Flags().Changed("name") {
-		opts = append(opts, runner.WithName(runFlags.runName))
-	}
-	if cmd.Flags().Changed("proxy-mode") {
-		opts = append(opts, runner.WithProxyMode(types.ProxyMode(runFlags.runProxyMode)))
-	}
-	if cmd.Flags().Changed("host") {
-		opts = append(opts, runner.WithHost(validatedHost))
-	}
-	return opts
-}
-
-// applyAdvancedFlagOverrides applies advanced CLI flag overrides when explicitly set by user
-func applyAdvancedFlagOverrides(
-	cmd *cobra.Command,
-	runFlags *proxyRunFlags,
-	otelHeaders []string,
-	opts []runner.RunConfigBuilderOption,
-) []runner.RunConfigBuilderOption {
-	// Apply simple flags
-	if cmd.Flags().Changed("volume") {
-		opts = append(opts, runner.WithVolumes(runFlags.runVolumes))
-	}
-	if cmd.Flags().Changed("secret") {
-		opts = append(opts, runner.WithSecrets(runFlags.runSecrets))
-	}
-	if cmd.Flags().Changed("authz-config") {
-		opts = append(opts, runner.WithAuthzConfigPath(runFlags.runAuthzConfig))
-	}
-	if cmd.Flags().Changed("audit-config") {
-		opts = append(opts, runner.WithAuditConfigPath(runFlags.runAuditConfig))
-	}
-	if cmd.Flags().Changed("permission-profile") {
-		opts = append(opts, runner.WithPermissionProfileNameOrPath(runFlags.runPermissionProfile))
-	}
-	if cmd.Flags().Changed("isolate-network") {
-		opts = append(opts, runner.WithNetworkIsolation(runFlags.runIsolateNetwork))
-	}
-	if cmd.Flags().Changed("enable-audit") || cmd.Flags().Changed("audit-config") {
-		opts = append(opts, runner.WithAuditEnabled(runFlags.runEnableAudit, runFlags.runAuditConfig))
-	}
-	if cmd.Flags().Changed("tools") {
-		opts = append(opts, runner.WithToolsFilter(runFlags.runToolsFilter))
-	}
-	if cmd.Flags().Changed("env-file-dir") {
-		opts = append(opts, runner.WithEnvFilesFromDirectory(runFlags.runEnvFileDir))
-	}
-
-	// Apply complex config groups
-	opts = applyOIDCConfigIfChanged(cmd, runFlags, opts)
-	opts = applyTelemetryConfigIfChanged(cmd, runFlags, otelHeaders, opts)
-
-	// Add optional flags that are always checked (these are runtime-specific)
-	if runFlags.runK8sPodPatch != "" {
-		opts = append(opts, runner.WithK8sPodPatch(runFlags.runK8sPodPatch))
-	}
-
-	return opts
-}
-
-// applyOIDCConfigIfChanged applies OIDC configuration only if any OIDC flag was set
-func applyOIDCConfigIfChanged(
-	cmd *cobra.Command,
-	runFlags *proxyRunFlags,
-	opts []runner.RunConfigBuilderOption,
-) []runner.RunConfigBuilderOption {
-	if cmd.Flags().Changed("oidc-issuer") || cmd.Flags().Changed("oidc-audience") ||
-		cmd.Flags().Changed("oidc-jwks-url") || cmd.Flags().Changed("oidc-introspection-url") ||
-		cmd.Flags().Changed("oidc-client-id") || cmd.Flags().Changed("oidc-client-secret") ||
-		cmd.Flags().Changed("thv-ca-bundle") || cmd.Flags().Changed("jwks-auth-token-file") ||
-		cmd.Flags().Changed("resource-url") || cmd.Flags().Changed("jwks-allow-private-ip") {
-		opts = append(opts, runner.WithOIDCConfig(
-			runFlags.oidcIssuer,
-			runFlags.oidcAudience,
-			runFlags.oidcJwksURL,
-			runFlags.oidcIntrospectionURL,
-			runFlags.oidcClientID,
-			runFlags.oidcClientSecret,
-			runFlags.runThvCABundle,
-			runFlags.runJWKSAuthTokenFile,
-			runFlags.runResourceURL,
-			runFlags.runJWKSAllowPrivateIP,
-		))
-	}
-	return opts
-}
-
-// applyTelemetryConfigIfChanged applies telemetry configuration only if any telemetry flag was set
-func applyTelemetryConfigIfChanged(
-	cmd *cobra.Command,
-	runFlags *proxyRunFlags,
-	otelHeaders []string,
-	opts []runner.RunConfigBuilderOption,
-) []runner.RunConfigBuilderOption {
-	if cmd.Flags().Changed("otel-endpoint") || cmd.Flags().Changed("enable-prometheus-metrics-path") ||
-		cmd.Flags().Changed("otel-tracing-enabled") || cmd.Flags().Changed("otel-metrics-enabled") ||
-		cmd.Flags().Changed("otel-service-name") || cmd.Flags().Changed("otel-tracing-sampling-rate") {
-
-		// Use empty environment variables for now (this was originally finalOtelEnvironmentVariables)
-		finalOtelEnvironmentVariables := []string{}
-
-		opts = append(opts, runner.WithTelemetryConfig(
-			runFlags.runOtelEndpoint,
-			runFlags.enablePrometheusMetricsPath,
-			runFlags.runOtelTracingEnabled,
-			runFlags.runOtelMetricsEnabled,
-			runFlags.runOtelServiceName,
-			runFlags.runOtelTracingSamplingRate,
-			otelHeaders,
-			runFlags.runOtelInsecure,
-			finalOtelEnvironmentVariables,
-		))
-	}
-	return opts
 }

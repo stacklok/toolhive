@@ -20,6 +20,10 @@ type RegistryDataProvider interface {
 	// GetSource returns a descriptive string about where the registry data comes from.
 	// Examples: "configmap:namespace/name", "file:/path/to/registry.json", "remote:https://example.com/registry"
 	GetSource() string
+
+	// GetRegistryName returns the registry name/identifier for this provider.
+	// This name is used for business logic such as finding related Kubernetes resources.
+	GetRegistryName() string
 }
 
 // DeploymentProvider abstracts access to deployed MCP servers.

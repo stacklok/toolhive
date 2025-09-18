@@ -230,6 +230,7 @@ func BuildRunnerConfig(
 	cmdArgs []string,
 	debugMode bool,
 	cmd *cobra.Command,
+	groupName string,
 ) (*runner.RunConfig, error) {
 	// Validate and setup basic configuration
 	validatedHost, err := ValidateAndNormaliseHostFlag(runFlags.Host)
@@ -258,7 +259,7 @@ func BuildRunnerConfig(
 	}
 
 	// Handle image retrieval
-	imageURL, serverMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags)
+	imageURL, serverMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags, groupName)
 	if err != nil {
 		return nil, err
 	}
@@ -335,6 +336,7 @@ func handleImageRetrieval(
 	ctx context.Context,
 	serverOrImage string,
 	runFlags *RunFlags,
+	groupName string,
 ) (
 	string,
 	registry.ServerMetadata,
@@ -343,7 +345,7 @@ func handleImageRetrieval(
 
 	// Try to get server from registry (container or remote) or direct URL
 	imageURL, serverMetadata, err := retriever.GetMCPServer(
-		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
+		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
 	}

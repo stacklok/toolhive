@@ -35,4 +35,5 @@ The group command provides subcommands to manage logical groupings of MCP server
 * [thv group create](thv_group_create.md)	 - Create a new group of MCP servers
 * [thv group list](thv_group_list.md)	 - List all groups
 * [thv group rm](thv_group_rm.md)	 - Remove a group and remove workloads from it
+* [thv group run](thv_group_run.md)	 - Deploy all MCP servers from a registry group
 

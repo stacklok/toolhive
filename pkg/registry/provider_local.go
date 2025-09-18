@@ -72,6 +72,18 @@ func (p *LocalRegistryProvider) GetRegistry() (*Registry, error) {
 		server.Name = name
 	}
 
+	// Set name field on servers within groups
+	for _, group := range registry.Groups {
+		if group != nil {
+			for name, server := range group.Servers {
+				server.Name = name
+			}
+			for name, server := range group.RemoteServers {
+				server.Name = name
+			}
+		}
+	}
+
 	return registry, nil
 }
 

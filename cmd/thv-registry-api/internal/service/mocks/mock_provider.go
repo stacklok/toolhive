@@ -57,6 +57,20 @@ func (mr *MockRegistryDataProviderMockRecorder) GetRegistryData(ctx any) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRegistryData", reflect.TypeOf((*MockRegistryDataProvider)(nil).GetRegistryData), ctx)
 }
 
+// GetRegistryName mocks base method.
+func (m *MockRegistryDataProvider) GetRegistryName() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetRegistryName")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// GetRegistryName indicates an expected call of GetRegistryName.
+func (mr *MockRegistryDataProviderMockRecorder) GetRegistryName() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRegistryName", reflect.TypeOf((*MockRegistryDataProvider)(nil).GetRegistryName))
+}
+
 // GetSource mocks base method.
 func (m *MockRegistryDataProvider) GetSource() string {
 	m.ctrl.T.Helper()

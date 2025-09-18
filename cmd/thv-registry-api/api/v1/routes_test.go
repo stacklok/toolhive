@@ -257,6 +257,11 @@ func (*realisticRegistryProvider) GetSource() string {
 	return "test:realistic-registry-data"
 }
 
+// GetRegistryName implements RegistryDataProvider.GetRegistryName
+func (*realisticRegistryProvider) GetRegistryName() string {
+	return "test-registry"
+}
+
 func TestHealthRouter(t *testing.T) {
 	t.Parallel()
 	ctrl := gomock.NewController(t)
@@ -605,6 +610,11 @@ func (p *fileBasedRegistryProvider) GetRegistryData(_ context.Context) (*registr
 // GetSource implements RegistryDataProvider.GetSource
 func (*fileBasedRegistryProvider) GetSource() string {
 	return "embedded:pkg/registry/data/registry.json"
+}
+
+// GetRegistryName implements RegistryDataProvider.GetRegistryName
+func (*fileBasedRegistryProvider) GetRegistryName() string {
+	return "embedded-registry"
 }
 
 // TestRoutesWithRealData tests all routes using the embedded registry.json data

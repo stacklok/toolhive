@@ -3,7 +3,7 @@ kind: Test
 metadata:
   name: authz-configmap-ref-test
 spec:
-  description: Test that external ConfigMap-based authorization config is embedded into runconfig.json and used via --from-configmap
+  description: Test that external ConfigMap-based authorization config is embedded into runconfig.json and used via volume mounting
   steps:
   - name: enable-configmap-mode
     try:
@@ -112,19 +112,38 @@ spec:
           echo "✓ Authorization configuration embedded and validated in runconfig.json"
         timeout: 120s
 
-  - name: verify-proxyrunner-uses-from-configmap
+  - name: verify-proxyrunner-uses-volume-mounting
     try:
     - script:
         content: |
-          echo "Verifying proxyrunner uses --from-configmap and no --authz-config flag..."
+          echo "Verifying proxyrunner uses volume mounting..."
 
           DEPLOYMENT_ARGS=$(kubectl get deployment authz-configmap-ref-test -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || echo "")
+          VOLUME_MOUNTS=$(kubectl get deployment authz-configmap-ref-test -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].volumeMounts}' 2>/dev/null || echo "")
+          VOLUMES=$(kubectl get deployment authz-configmap-ref-test -n toolhive-system -o jsonpath='{.spec.template.spec.volumes}' 2>/dev/null || echo "")
+
           if [ -z "$DEPLOYMENT_ARGS" ]; then
             echo "✗ Could not find deployment arguments"
             exit 1
           fi
 
-          echo "$DEPLOYMENT_ARGS" | grep -q -- "--from-configmap"
+          echo "✓ Deployment arguments retrieved for volume mounting validation"
+
+          # Verify volume mounting is configured
+          if echo "$VOLUME_MOUNTS" | jq -e '.[] | select(.name=="runconfig" and .mountPath=="/etc/runconfig")' > /dev/null 2>&1; then
+            echo "✓ runconfig volume mount found"
+          else
+            echo "✗ runconfig volume mount not found"
+            exit 1
+          fi
+
+          if echo "$VOLUMES" | jq -e '.[] | select(.name=="runconfig" and .configMap.name=="authz-configmap-ref-test-runconfig")' > /dev/null 2>&1; then
+            echo "✓ ConfigMap volume source found"
+          else
+            echo "✗ ConfigMap volume source not found"
+            exit 1
+          fi
+
           if echo "$DEPLOYMENT_ARGS" | grep -q -- "--authz-config"; then
             echo "✗ --authz-config flag found in deployment arguments (should not be present when using ConfigMap)"
             echo "Deployment args: $DEPLOYMENT_ARGS"

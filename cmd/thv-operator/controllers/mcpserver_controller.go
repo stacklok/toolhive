@@ -695,10 +695,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	// Check if global ConfigMap mode is enabled via environment variable
 	useConfigMap := os.Getenv("TOOLHIVE_USE_CONFIGMAP") == trueValue
 	if useConfigMap {
-		// Use the operator-created ConfigMap (format: {name}-runconfig)
-		configMapName := fmt.Sprintf("%s-runconfig", m.Name)
-		configMapRef := fmt.Sprintf("%s/%s", m.Namespace, configMapName)
-		args = append(args, fmt.Sprintf("--from-configmap=%s", configMapRef))
+		// ConfigMap will be volume-mounted and the runner will auto-discover runconfig.json
+		// No additional flags needed - just mount the ConfigMap and let the runner find it
 
 		// Also add pod template patch for secrets (same as regular flags approach)
 		finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
@@ -899,6 +897,27 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
 		volumes = append(volumes, *authzVolume)
+	}
+
+	// Add volume mount for ConfigMap if using ConfigMap mode
+	if useConfigMap {
+		configMapName := fmt.Sprintf("%s-runconfig", m.Name)
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "runconfig",
+			MountPath: "/etc/runconfig",
+			ReadOnly:  true,
+		})
+
+		volumes = append(volumes, corev1.Volume{
+			Name: "runconfig",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configMapName,
+					},
+				},
+			},
+		})
 	}
 
 	// Prepare container resources

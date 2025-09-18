@@ -920,3 +920,108 @@ func TestRunConfigSerialization_WithEnvFileDir(t *testing.T) {
 	assert.Equal(t, config.Name, deserializedConfig.Name, "Name should be correctly deserialized")
 	assert.Equal(t, config.Image, deserializedConfig.Image, "Image should be correctly deserialized")
 }
+
+func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+	mockValidator := &mockEnvVarValidator{}
+
+	tests := []struct {
+		name               string
+		opts               []RunConfigBuilderOption
+		expectedTransport  string
+		checkPort          bool
+		expectedPort       int
+		checkTargetPort    bool
+		expectedTargetPort int
+	}{
+		{
+			name: "WithTransport sets transport",
+			opts: []RunConfigBuilderOption{
+				WithTransport("sse"),
+			},
+			expectedTransport: "sse",
+			// Port and TargetPort will be auto-generated for SSE transport
+			checkPort:       false,
+			checkTargetPort: false,
+		},
+		{
+			name: "WithPort sets port with stdio transport",
+			opts: []RunConfigBuilderOption{
+				WithTransport("stdio"), // Stdio transport to avoid auto-generated ports
+				WithPort(9090),
+			},
+			expectedTransport: "stdio",
+			checkPort:         true,
+			expectedPort:      9090,
+			checkTargetPort:   false,
+		},
+		{
+			name: "WithTargetPort sets target port for SSE transport",
+			opts: []RunConfigBuilderOption{
+				WithTransport("sse"),
+				WithTargetPort(8080),
+			},
+			expectedTransport:  "sse",
+			checkPort:          false,
+			checkTargetPort:    true,
+			expectedTargetPort: 8080,
+		},
+		{
+			name: "All individual options together with SSE",
+			opts: []RunConfigBuilderOption{
+				WithTransport("sse"),
+				WithPort(3000),
+				WithTargetPort(4000),
+			},
+			expectedTransport:  "sse",
+			checkPort:          true,
+			expectedPort:       3000,
+			checkTargetPort:    true,
+			expectedTargetPort: 4000,
+		},
+		{
+			name: "Individual options override combined option",
+			opts: []RunConfigBuilderOption{
+				WithTransportAndPorts("stdio", 8080, 8080),
+				WithTransport("sse"),
+				WithPort(9000),
+				WithTargetPort(9001),
+			},
+			expectedTransport:  "sse",
+			checkPort:          true,
+			expectedPort:       9000,
+			checkTargetPort:    true,
+			expectedTargetPort: 9001,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			envVars := make(map[string]string)
+
+			opts := append([]RunConfigBuilderOption{
+				WithImage("test-image"),
+				WithName("test-name"),
+			}, tt.opts...)
+
+			config, err := NewRunConfigBuilder(ctx, nil, envVars, mockValidator, opts...)
+			require.NoError(t, err, "Creating RunConfig should not fail")
+			require.NotNil(t, config, "RunConfig should not be nil")
+
+			assert.Equal(t, tt.expectedTransport, string(config.Transport), "Transport should match expected value")
+
+			if tt.checkPort {
+				assert.Equal(t, tt.expectedPort, config.Port, "Port should match expected value")
+			}
+
+			if tt.checkTargetPort {
+				assert.Equal(t, tt.expectedTargetPort, config.TargetPort, "TargetPort should match expected value")
+			}
+		})
+	}
+}

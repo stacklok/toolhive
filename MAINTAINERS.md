@@ -68,7 +68,7 @@ The current list of ToolHive maintainers:
 
 <!-- This section will be updated as maintainers are added -->
 
-*To be populated as the project grows and maintainers are appointed.*
+* [@stacklok/stackers](https://github.com/orgs/stacklok/teams/stackers)
 
 ## Becoming a Maintainer
 

@@ -30,7 +30,8 @@ permissions:
   contents: write
 
 jobs:
-  ldflags_args:
+  compute-build-flags:
+    name: Compute Build Flags
     runs-on: ubuntu-latest
     outputs:
       commit-date: ${{ steps.ldflags.outputs.commit-date }}
@@ -48,10 +49,10 @@ jobs:
           echo "commit-date=$(git log --date=iso8601-strict -1 --pretty=%ct)" >> $GITHUB_OUTPUT
           echo "version=$(git describe --tags --always --dirty)" >> $GITHUB_OUTPUT
           echo "tree-state=$(if git diff --quiet; then echo "clean"; else echo "dirty"; fi)" >> $GITHUB_OUTPUT
-  release:
+  release-binaries:
     needs:
-      - ldflags_args
-    name: Build and release
+      - compute-build-flags
+    name: Build and Release Binaries
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
     permissions:
@@ -107,16 +108,16 @@ jobs:
 
   image-build-and-push:
     name: Build and Sign Image
-    needs: [ release ]
+    needs: [ release-binaries ]
     permissions:
       contents: write
       packages: write
       id-token: write
     uses: ./.github/workflows/image-build-and-publish.yml
 
-  update-docs-website:
-    name: Trigger Docs Update
-    needs: [ release ]
+  update-docs-website-binaries:
+    name: Trigger Docs Update for Binaries
+    needs: [ release-binaries ]
     permissions: {}
     uses: ./.github/workflows/update-docs-website.yml
     with:

@@ -39,8 +39,8 @@ jobs:
           path: ./bin/thv
           retention-days: 1
 
-  e2e-tests:
-    name: E2E Tests (${{ matrix.title }})
+  e2e-tests-core:
+    name: E2E Tests Core (${{ matrix.title }})
     runs-on: ubuntu-latest
     needs: build-binary
     strategy:
